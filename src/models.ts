@@ -23,13 +23,15 @@ export class Group {
 export class Project {
     id: string;
     name: string;
+    description: string;
     path: string;
     color: string;
     isGitRepo = false;
 
-    constructor(name: string, path: string) {
+    constructor(name: string, path: string, description: string = null) {
         this.id = generateRandomId(name);
         this.name = name;
+        this.description = description;
         this.path = path;
     }
 

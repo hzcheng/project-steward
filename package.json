@@ -179,7 +179,8 @@
         "webpack": "webpack --mode development",
         "webpack-dev": "webpack --mode development --watch",
         "test-compile": "tsc -p ./",
-        "lint": "tslint -p ./"
+        "lint": "tslint -p ./",
+        "install-local": "./scripts/build-test-package-install.sh"
     },
     "devDependencies": {
         "@types/mocha": "^8.0.4",

@@ -7,6 +7,7 @@ import {
     getRemoteType,
     ProjectRemoteType,
     DashboardInfos,
+    sanitizeProjectName,
 } from '../models';
 import { FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, REMOTE_REGEX } from '../constants';
 import * as Icons from './webviewIcons';
@@ -181,7 +182,10 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
     var borderStyle = `background: ${project.color};`;
     var remoteType = getRemoteType(project);
     var trimmedPath = (project.path || '').replace(REMOTE_REGEX, '');
-    var lowerName = (project.name || '').toLowerCase();
+    var description = sanitizeProjectName(project.description);
+    var searchText = escapeAttribute(`${project.name || ''} ${description} ${trimmedPath}`.toLowerCase());
+    var escapedDescription = escapeAttribute(description);
+    var escapedPath = escapeAttribute(trimmedPath);
 
     var isRemote = remoteType !== ProjectRemoteType.None;
     var remoteExError = (remoteType === ProjectRemoteType.SSH && !infos.relevantExtensionsInstalls.remoteSSH)
@@ -192,7 +196,7 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
 
     return `
 <div class="project-container">
-    <div class="project" data-id="${project.id}" data-name="${lowerName}"${isRemote ? 'data-is-remote' : ''
+    <div class="project" data-id="${project.id}" data-name="${searchText}"${isRemote ? 'data-is-remote' : ''
         }>
         <div class="project-border" style="${borderStyle}"></div>
         <div class="project-actions-wrapper">
@@ -212,6 +216,12 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
                 ${project.name}
             </h2>
         </div>
+        ${description
+            ? `<p class="project-description" title="${escapedDescription}">
+                ${description}
+            </p>`
+            : ''
+        }
         <p class="project-path-info">
             ${isRemote
             ? `<span class="remote-icon ${remoteExError ? 'error-icon' : ''
@@ -225,7 +235,7 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
             ? `<span class="git-icon" title="Git Repository">${Icons.gitSvg}</span>`
             : ''
         }
-            <span class="project-path" title="${trimmedPath}">
+            <span class="project-path" title="${escapedPath}">
                 <span class="path-text">
                     ${trimmedPath}
                 </span>
@@ -233,6 +243,14 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
         </p>
     </div>
 </div>`;
+}
+
+function escapeAttribute(value: string): string {
+    return (value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 }
 
 function getNoProjectsDiv() {

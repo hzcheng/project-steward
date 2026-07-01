@@ -27,7 +27,7 @@ export enum StorageOption {
 }
 
 export const FITTY_OPTIONS = {
-    maxSize: '40',
+    maxSize: '24',
     // minSize: '20', // Apparently, fitty has a problem with our setup and will overflow text if minSize is set...
 }
 

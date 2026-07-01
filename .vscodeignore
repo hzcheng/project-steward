@@ -3,6 +3,7 @@
 out/**
 dist/**/*.map
 src/**
+scripts/**
 gulpfile.js
 .gitignore
 tsconfig.json

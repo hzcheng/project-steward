@@ -20,8 +20,9 @@ $projectCardMinHeight: calc(var(--column-width) * #{math.div(96, $defaultColumnW
 
 $borderTopSize: 7px;
 $defaultPadding: 20px;
-$projectHeaderSize: 40px; // This has also be adjusted in constants.ts for fitty
-$projectHeaderMinHeight: 53px; // To be constant even with fitted font size
+$projectHeaderSize: 24px; // This has also be adjusted in constants.ts for fitty
+$projectHeaderMinHeight: 34px; // To be constant even with fitted font size
+$groupHeaderSize: 36px;
 $projectIconSize: 20px;
 $dataActionIconSize: 15.6px; // Default font size * 1.2em, in pixel to keep constant across different font sizes
 
@@ -106,8 +107,8 @@ body {
     .group-title {
         min-width: calc(var(--column-width) - 19px);
         display: inline-block;
-        font-size: math.div($projectHeaderSize, 2);
-        font-weight: 200;
+        font-size: $groupHeaderSize;
+        font-weight: lighter;
         margin-left: 0px;
 
         > span {
@@ -246,6 +247,20 @@ body .project {
         font-size: $projectHeaderSize;
         font-weight: lighter;
         text-align: center;
+    }
+
+    .project-description {
+        color: var(--dashboard-foreground);
+        opacity: 0.82;
+        max-width: 100%;
+        min-height: 2.8em;
+        margin: 0 0 math.div($defaultPadding, 2) 0;
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        text-align: center;
+        line-height: 1.4;
     }
 
     .add-project-header {

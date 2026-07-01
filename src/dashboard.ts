@@ -550,6 +550,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             let project = new Project(projectName, currentlyOpenPath);
+            project.description = await queryProjectDescription();
             project.color = colorService.getRandomColor();
             project.isGitRepo = isFolderGitRepo(currentlyOpenPath);
 
@@ -558,6 +559,10 @@ export function activate(context: vscode.ExtensionContext) {
             if (error.message !== USER_CANCELED) {
                 vscode.window.showErrorMessage(`An error occured while saving the project.`);
                 throw error; // Rethrow error to make vscode log it
+            }
+
+            if (groupWasNewlyCreated) {
+                await projectService.removeGroup(selectedGroupId, true);
             }
 
             return;
@@ -609,15 +614,16 @@ export function activate(context: vscode.ExtensionContext) {
         showDashboard();
     }
 
-    async function queryProjectFields(groupId: string = null, isEditing: boolean, projectTemplate: { name?: string, path?: string, color?: string } = null): Promise<[Project, string]> {
+    async function queryProjectFields(groupId: string = null, isEditing: boolean, projectTemplate: { name?: string, description?: string, path?: string, color?: string } = null): Promise<[Project, string]> {
         // For editing a project: Ignore Group selection and take it from template
-        var selectedGroupId: string, projectPath: string, defaultProjectName: string;
+        var selectedGroupId: string, projectPath: string, defaultProjectName: string, defaultProjectDescription: string;
         var groupWasNewlyCreated = false;
 
         try {
             if (projectTemplate) {
                 projectPath = projectTemplate.path;
                 defaultProjectName = projectTemplate.name;
+                defaultProjectDescription = projectTemplate.description;
             }
 
             selectedGroupId = groupId;
@@ -647,6 +653,8 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 throw new Error(USER_CANCELED);
             }
+
+            let projectDescription = await queryProjectDescription(defaultProjectDescription);
 
             // Updating path if needed
             if (isEditing) {
@@ -680,7 +688,7 @@ export function activate(context: vscode.ExtensionContext) {
             let isGitRepo = isFolderGitRepo(projectPath);
 
             // Save
-            let project = new Project(projectName, projectPath);
+            let project = new Project(projectName, projectPath, projectDescription);
             project.color = color;
             project.isGitRepo = isGitRepo;
 
@@ -693,6 +701,22 @@ export function activate(context: vscode.ExtensionContext) {
 
             throw e;
         }
+    }
+
+    async function queryProjectDescription(defaultText: string = null): Promise<string> {
+        let projectDescription = await vscode.window.showInputBox({
+            value: defaultText || undefined,
+            valueSelection: defaultText ? [0, defaultText.length] : undefined,
+            placeHolder: 'Project Description',
+            prompt: 'Optional description shown on the project tile.',
+            ignoreFocusOut: true,
+        });
+
+        if (projectDescription == null) {
+            throw new Error(USER_CANCELED);
+        }
+
+        return projectDescription.trim();
     }
 
     async function queryGroup(groupId: string = null, optionForAdding: boolean = false): Promise<[string, boolean]> {
