@@ -1,6 +1,8 @@
-# VSCode Project Dashboard
+# Project Steward
 
-**VSCode Project Dashboard** is a Visual Studio Code extension that lets you organize your projects in a speed-dial like manner. Pin your frequently visited **folders**, **files**, and **SSH remotes** onto a dashboard to access them quickly.
+**Project Steward** is a fork of [Kruemelkatze/vscode-dashboard](https://github.com/Kruemelkatze/vscode-dashboard) with additional support for remote project workflows, including SSH and Dev Container project records, a sidebar dashboard, favorites, descriptions, and a command for saving the current project.
+
+It keeps the original goal of **VSCode Project Dashboard**: organizing your projects in a speed-dial like manner. Pin your frequently visited **folders**, **files**, **SSH remotes**, and **Dev Container projects** onto a dashboard to access them quickly.
 
 ![demo-screenshot](screenshot5.png)
 

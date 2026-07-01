@@ -1,9 +1,10 @@
 {
-    "name": "vscode-dashboard",
-    "displayName": "Project Dashboard",
-    "description": "Organize your workspaces in a speed-dial manner.",
-    "version": "2.6.0",
-    "publisher": "kruemelkatze",
+    "name": "project-steward",
+    "displayName": "Project Steward",
+    "description": "Organize local, SSH, and Dev Container projects in a synchronized project steward.",
+    "version": "1.0.0",
+    "publisher": "hzcheng",
+    "license": "MIT",
     "icon": "media/extension_icon.png",
     "engines": {
         "vscode": "^1.51.0"
@@ -21,7 +22,7 @@
     "main": "./dist/dashboard",
     "repository": {
         "type": "git",
-        "url": "https://github.com/Kruemelkatze/vscode-dashboard.git"
+        "url": "https://github.com/hzcheng/project-dashboard.git"
     },
     "capabilities": {
         "untrustedWorkspaces": {
