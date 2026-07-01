@@ -1,7 +1,7 @@
 'use strict';
 
 import * as vscode from 'vscode';
-import { ATTACHED_CONTAINER_REMOTE_PREFIX, DEV_CONTAINER_REMOTE_PREFIX, SSH_REMOTE_PREFIX, StorageOption, VSCODE_REMOTE_PREFIX, WSL_DEFAULT_REGEX } from "./constants";
+import { StorageOption, VSCODE_REMOTE_PREFIX, WSL_DEFAULT_REGEX } from "./constants";
 
 export class Group {
     id: string;
@@ -25,6 +25,7 @@ export class Project {
     name: string;
     description: string;
     path: string;
+    remoteType?: ProjectRemoteType;
     color: string;
     isGitRepo = false;
 
@@ -36,13 +37,19 @@ export class Project {
     }
 
     getRemoteType(): ProjectRemoteType {
-        if (this.path && this.path.startsWith(SSH_REMOTE_PREFIX)) {
+        if (this.remoteType !== null && this.remoteType !== undefined) {
+            return this.remoteType;
+        }
+
+        let remoteAuthority = getRemoteAuthority(this.path);
+
+        if (remoteAuthority && remoteAuthority.startsWith('ssh-remote+')) {
             return ProjectRemoteType.SSH;
-        } else if (this.path && (this.path.match(WSL_DEFAULT_REGEX) || this.path.startsWith("vscode-remote://wsl+"))) {
+        } else if (this.path && (this.path.match(WSL_DEFAULT_REGEX) || (remoteAuthority && remoteAuthority.startsWith('wsl+')))) {
             return ProjectRemoteType.WSL;
-        } else if (this.path && (this.path.startsWith(DEV_CONTAINER_REMOTE_PREFIX) || this.path.startsWith(ATTACHED_CONTAINER_REMOTE_PREFIX))) {
+        } else if (remoteAuthority && (remoteAuthority.startsWith('dev-container+') || remoteAuthority.startsWith('attached-container+'))) {
             return ProjectRemoteType.DevContainer;
-        } else if (this.path && this.path.startsWith(VSCODE_REMOTE_PREFIX)) {
+        } else if (remoteAuthority || (this.path && this.path.startsWith(VSCODE_REMOTE_PREFIX))) {
             return ProjectRemoteType.Remote;
         }
 
@@ -64,6 +71,52 @@ export function sanitizeProjectName(name: string) {
 
 export function getRemoteType(project: Project): ProjectRemoteType {
     return Project.prototype.getRemoteType.call(project);
+}
+
+function getRemoteAuthority(projectPath: string): string {
+    projectPath = normalizeProjectPath(projectPath);
+
+    if (!projectPath || !projectPath.startsWith(VSCODE_REMOTE_PREFIX)) {
+        return null;
+    }
+
+    try {
+        let withoutScheme = projectPath.substring(VSCODE_REMOTE_PREFIX.length);
+        let pathStart = withoutScheme.indexOf('/');
+        let authority = pathStart === -1 ? withoutScheme : withoutScheme.substring(0, pathStart);
+        return decodeURIComponent(authority);
+    } catch (e) {
+        return null;
+    }
+}
+
+function normalizeProjectPath(projectPath: string): string {
+    if (!projectPath) {
+        return projectPath;
+    }
+
+    try {
+        let decoded = decodeURIComponent(projectPath);
+        return decoded || projectPath;
+    } catch (e) {
+        return projectPath;
+    }
+}
+
+export function getRemoteTypeFromRemoteName(remoteName: string): ProjectRemoteType {
+    if (!remoteName) {
+        return ProjectRemoteType.None;
+    }
+
+    if (remoteName === 'ssh-remote') {
+        return ProjectRemoteType.SSH;
+    } else if (remoteName === 'wsl') {
+        return ProjectRemoteType.WSL;
+    } else if (remoteName === 'dev-container' || remoteName === 'attached-container') {
+        return ProjectRemoteType.DevContainer;
+    }
+
+    return ProjectRemoteType.Remote;
 }
 
 function generateRandomId(prepend: string = null) {

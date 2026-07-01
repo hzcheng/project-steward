@@ -158,7 +158,7 @@ function getGroupSection(
     </div>
     <div class="group-list">
         <div class="drop-signal"></div>
-        ${group.projects.map((p) => getProjectDiv(p, infos)).join('\n')}
+        ${group.projects.map((p) => getProjectDiv(p)).join('\n')}
         ${showAddProjectButton ? getAddProjectDiv(group.id) : ''}
     </div>       
 </div>`;
@@ -178,13 +178,15 @@ function getTempGroupSection(totalGroupCount: number) {
 </div>`;
 }
 
-function getProjectDiv(project: Project, infos: DashboardInfos) {
+function getProjectDiv(project: Project) {
     var borderStyle = `background: ${project.color};`;
     var remoteType = getRemoteType(project);
     var trimmedPath = (project.path || '').replace(REMOTE_REGEX, '');
     var description = sanitizeProjectName(project.description);
     var searchText = escapeAttribute(`${project.name || ''} ${description} ${trimmedPath}`.toLowerCase());
     var escapedDescription = escapeAttribute(description);
+    var projectIcon = getProjectIcon(remoteType);
+    var projectIconTitle = getProjectIconTitle(remoteType);
 
     var isRemote = remoteType !== ProjectRemoteType.None;
 
@@ -205,7 +207,10 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
         }</span>
             </div>
         </div>
-        <div class="fitty-container">
+        <div class="fitty-container project-title-row">
+            <span class="project-kind-icon" title="${projectIconTitle}">
+                ${projectIcon}
+            </span>
             <h2 class="project-header">
                 ${project.name}
             </h2>
@@ -215,6 +220,33 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
         </p>
     </div>
 </div>`;
+}
+
+function getProjectIcon(remoteType: ProjectRemoteType): string {
+    switch (remoteType) {
+        case ProjectRemoteType.SSH:
+        case ProjectRemoteType.WSL:
+        case ProjectRemoteType.Remote:
+            return Icons.terminal;
+        case ProjectRemoteType.DevContainer:
+            return Icons.container;
+        default:
+            return Icons.folder;
+    }
+}
+
+function getProjectIconTitle(remoteType: ProjectRemoteType): string {
+    switch (remoteType) {
+        case ProjectRemoteType.SSH:
+            return 'SSH Project';
+        case ProjectRemoteType.DevContainer:
+            return 'Dev Container Project';
+        case ProjectRemoteType.WSL:
+        case ProjectRemoteType.Remote:
+            return 'Remote Project';
+        default:
+            return 'Local Project';
+    }
 }
 
 function escapeAttribute(value: string): string {

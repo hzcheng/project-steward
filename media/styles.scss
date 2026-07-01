@@ -214,8 +214,8 @@ body .project {
     position: relative;
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    align-items: center;
+    justify-content: flex-start;
+    align-items: flex-start;
 
     margin: 0 $defaultPadding $defaultPadding 0;
     padding: $defaultPadding;
@@ -235,11 +235,29 @@ body .project {
     }
 
     .fitty-container {
+        width: 100%;
         max-width: 100%;
         min-height: $projectHeaderMinHeight;
         display: flex;
-        justify-content: center;
+        justify-content: flex-start;
         align-items: center;
+    }
+
+    .project-title-row {
+        gap: 8px;
+    }
+
+    .project-kind-icon {
+        flex: 0 0 auto;
+        width: 20px;
+        height: 20px;
+        color: var(--dashboard-foreground);
+
+        svg {
+            width: 20px;
+            height: 20px;
+            fill: currentColor;
+        }
     }
 
     .project-header {
@@ -247,7 +265,7 @@ body .project {
         margin: 0;
         font-size: $projectHeaderSize;
         font-weight: lighter;
-        text-align: center;
+        text-align: left;
     }
 
     .project-description {
@@ -260,7 +278,7 @@ body .project {
         display: -webkit-box;
         -webkit-box-orient: vertical;
         -webkit-line-clamp: 2;
-        text-align: center;
+        text-align: left;
         line-height: 1.4;
     }
 
