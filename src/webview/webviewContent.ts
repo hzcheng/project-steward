@@ -184,7 +184,11 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
     var lowerName = (project.name || '').toLowerCase();
 
     var isRemote = remoteType !== ProjectRemoteType.None;
-    var remoteExError = isRemote && !infos.relevantExtensionsInstalls.remoteSSH;
+    var remoteExError = (remoteType === ProjectRemoteType.SSH && !infos.relevantExtensionsInstalls.remoteSSH)
+        || (remoteType === ProjectRemoteType.DevContainer && !infos.relevantExtensionsInstalls.remoteContainers);
+    var remoteErrorTitle = remoteType === ProjectRemoteType.DevContainer
+        ? 'Dev Containers extension is not installed'
+        : 'Remote Development extension is not installed';
 
     return `
 <div class="project-container">
@@ -210,7 +214,7 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
             ${isRemote
             ? `<span class="remote-icon ${remoteExError ? 'error-icon' : ''
             }" title="${remoteExError
-                ? 'Remote Development extension is not installed'
+                ? remoteErrorTitle
                 : 'Remote Project'
             }">${Icons.remote}</span>`
             : ''

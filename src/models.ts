@@ -1,7 +1,7 @@
 'use strict';
 
 import * as vscode from 'vscode';
-import { SSH_REMOTE_PREFIX, StorageOption, WSL_DEFAULT_REGEX } from "./constants";
+import { ATTACHED_CONTAINER_REMOTE_PREFIX, DEV_CONTAINER_REMOTE_PREFIX, SSH_REMOTE_PREFIX, StorageOption, VSCODE_REMOTE_PREFIX, WSL_DEFAULT_REGEX } from "./constants";
 
 export class Group {
     id: string;
@@ -38,6 +38,10 @@ export class Project {
             return ProjectRemoteType.SSH;
         } else if (this.path && (this.path.match(WSL_DEFAULT_REGEX) || this.path.startsWith("vscode-remote://wsl+"))) {
             return ProjectRemoteType.WSL;
+        } else if (this.path && (this.path.startsWith(DEV_CONTAINER_REMOTE_PREFIX) || this.path.startsWith(ATTACHED_CONTAINER_REMOTE_PREFIX))) {
+            return ProjectRemoteType.DevContainer;
+        } else if (this.path && this.path.startsWith(VSCODE_REMOTE_PREFIX)) {
+            return ProjectRemoteType.Remote;
         }
 
         return ProjectRemoteType.None;
@@ -76,9 +80,9 @@ export interface GroupOrder {
 }
 
 export interface DashboardInfos {
-    relevantExtensionsInstalls: { remoteSSH },
-    config: vscode.WorkspaceConfiguration,
-    otherStorageHasData: boolean,
+    relevantExtensionsInstalls: { remoteSSH: boolean; remoteContainers: boolean };
+    config: vscode.WorkspaceConfiguration;
+    otherStorageHasData: boolean;
 }
 
 export enum ProjectPathType {
@@ -97,6 +101,8 @@ export enum ProjectRemoteType {
     None,
     SSH,
     WSL,
+    DevContainer,
+    Remote,
 }
 
 export enum ReopenDashboardReason {

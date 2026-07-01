@@ -53,6 +53,7 @@ export function activate(context: vscode.ExtensionContext) {
     const dashboardInfos: DashboardInfos = {
         relevantExtensionsInstalls: {
             remoteSSH: false,
+            remoteContainers: false,
         },
         get config() { return vscode.workspace.getConfiguration('dashboard') },
         get otherStorageHasData() { return projectService.otherStorageHasData() },
@@ -318,7 +319,7 @@ export function activate(context: vscode.ExtensionContext) {
         try {
             let currentlyOpenPath = getWorkspacePath();
             let folderPath = await vscode.window.showOpenDialog({
-                defaultUri: currentlyOpenPath ? vscode.Uri.file(currentlyOpenPath) : undefined,
+                defaultUri: currentlyOpenPath ? parsePathAsUri(currentlyOpenPath) : undefined,
                 canSelectFiles: false,
                 canSelectFolders: true,
                 canSelectMany: false,
@@ -399,7 +400,7 @@ export function activate(context: vscode.ExtensionContext) {
         let uri: vscode.Uri;
         switch (remoteType) {
             case ProjectRemoteType.None:
-                uri = vscode.Uri.file(projectPath);
+                uri = isUriString(projectPath) ? vscode.Uri.parse(projectPath) : vscode.Uri.file(projectPath);
 
                 if (projectOpenType === ProjectOpenType.AddToWorkspace) {
                     await addToWorkspace(project, uri);
@@ -428,6 +429,12 @@ export function activate(context: vscode.ExtensionContext) {
                     projectPath = `vscode-remote://wsl+${projectPath.replace(WSL_DEFAULT_REGEX, '')}`;
                 }
 
+                uri = vscode.Uri.parse(projectPath);
+
+                await vscode.commands.executeCommand("vscode.openFolder", uri, openInNewWindow);
+                break;
+            case ProjectRemoteType.DevContainer:
+            case ProjectRemoteType.Remote:
                 uri = vscode.Uri.parse(projectPath);
 
                 await vscode.commands.executeCommand("vscode.openFolder", uri, openInNewWindow);
@@ -717,10 +724,6 @@ export function activate(context: vscode.ExtensionContext) {
             throw new Error(USER_CANCELED);
         }
 
-        if (defaultPath != null) {
-            defaultPath = defaultPath.replace(REMOTE_REGEX, ''); // 'Trim vscode-remote://REMOTE_TYPE+'
-        }
-
         switch (selectedProjectTypePick.id) {
             case 'dir':
                 return await getPathFromPicker(true, defaultPath);
@@ -738,8 +741,11 @@ export function activate(context: vscode.ExtensionContext) {
     async function getPathFromPicker(folderProject: boolean, defaultPath: string = null): Promise<string> {
         var defaultUri: vscode.Uri = undefined;
         if (defaultPath) {
-            defaultPath = folderProject && fileService.isFile(defaultPath) ? path.dirname(defaultPath) : defaultPath;
-            defaultUri = vscode.Uri.file(defaultPath);
+            if (!isUriString(defaultPath)) {
+                defaultPath = folderProject && fileService.isFile(defaultPath) ? path.dirname(defaultPath) : defaultPath;
+            }
+
+            defaultUri = parsePathAsUri(defaultPath);
         }
 
         // Path
@@ -755,7 +761,7 @@ export function activate(context: vscode.ExtensionContext) {
             throw new Error(USER_CANCELED);
         }
 
-        return selectedProjectUris[0].fsPath.trim();
+        return uriToProjectPath(selectedProjectUris[0]);
     }
 
     async function getManualPath(defaultPath: string = null): Promise<string> {
@@ -774,6 +780,10 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     async function getSSHPath(defaultPath: string = null): Promise<string> {
+        if (defaultPath) {
+            defaultPath = defaultPath.replace(SSH_REMOTE_PREFIX, '');
+        }
+
         let remotePath = await vscode.window.showInputBox({
             placeHolder: 'user@target.xyz/home/optional-folder',
             value: SSH_REGEX.test(defaultPath) ? defaultPath : undefined,
@@ -1074,6 +1084,10 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function isFolderGitRepo(fPath: string) {
+        if (isUriString(fPath)) {
+            return false;
+        }
+
         try {
             fPath = lstatSync(fPath).isDirectory() ? fPath : path.dirname(fPath);
             var test = execSync(`cd ${fPath} && git rev-parse --is-inside-work-tree`, { encoding: 'utf8' });
@@ -1107,10 +1121,22 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         if (workspaceUri != null) {
-            return workspaceUri.scheme === "file" ? workspaceUri.fsPath : workspaceUri.path;
+            return uriToProjectPath(workspaceUri);
         } else {
             return null;
         }
+    }
+
+    function isUriString(projectPath: string): boolean {
+        return projectPath && projectPath.includes("://");
+    }
+
+    function parsePathAsUri(projectPath: string): vscode.Uri {
+        return isUriString(projectPath) ? vscode.Uri.parse(projectPath) : vscode.Uri.file(projectPath);
+    }
+
+    function uriToProjectPath(uri: vscode.Uri): string {
+        return uri.scheme === "file" ? uri.fsPath.trim() : uri.toString().trim();
     }
 }
 
@@ -1120,4 +1146,3 @@ export function activate(context: vscode.ExtensionContext) {
 // this method is called when your extension is deactivated
 export function deactivate() {
 }
-
