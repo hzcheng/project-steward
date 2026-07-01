@@ -32,6 +32,7 @@ export const FITTY_OPTIONS = {
 }
 
 export const USER_CANCELED = "CanceledByUser"; // A symbol would be nice, but throw new Error(Symbol) does not work
+export const SAVE_CURRENT_PROJECT = "SaveCurrentProject";
 export const ADD_NEW_PROJECT_TO_FRONT = false;
 
 export const SSH_REMOTE_PREFIX = "vscode-remote://ssh-remote+";

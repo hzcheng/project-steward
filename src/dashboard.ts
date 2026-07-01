@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, DashboardInfos, ProjectOpenType, ReopenDashboardReason, ProjectPathType, sanitizeProjectName } from './models';
 import { getSidebarContent, getDashboardContent } from './webview/webviewContent';
-import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX } from './constants';
+import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX } from './constants';
 import { execSync } from 'child_process';
 import { lstatSync } from 'fs';
 
@@ -497,10 +497,16 @@ export function activate(context: vscode.ExtensionContext) {
 
     async function addProject(groupId: string = null) {
         var project: Project, selectedGroupId: string;
+        var groupWasNewlyCreated = false;
 
         try {
             let currentlyOpenPath = getWorkspacePath();
-            [project, selectedGroupId] = await queryProjectFields(groupId, false, { path: currentlyOpenPath });
+            [project, selectedGroupId, groupWasNewlyCreated] = await queryProjectFields(groupId, false, { path: currentlyOpenPath });
+            if (project == null) {
+                await saveProject(selectedGroupId, groupWasNewlyCreated);
+                return;
+            }
+
             await projectService.addProject(project, selectedGroupId);
         } catch (error) {
             if (error.message !== USER_CANCELED) {
@@ -514,9 +520,8 @@ export function activate(context: vscode.ExtensionContext) {
         showDashboard();
     }
 
-    async function saveProject() {
+    async function saveProject(groupId: string = null, groupWasNewlyCreated: boolean = false) {
         var selectedGroupId: string;
-        var groupWasNewlyCreated = false;
 
         try {
             let currentlyOpenPath = getWorkspacePath();
@@ -531,7 +536,11 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            [selectedGroupId, groupWasNewlyCreated] = await queryGroup(null, true);
+            if (groupId == null) {
+                [selectedGroupId, groupWasNewlyCreated] = await queryGroup(null, true);
+            } else {
+                selectedGroupId = groupId;
+            }
 
             let defaultProjectName = getLastPartOfPath(currentlyOpenPath).replace(/\.code-workspace$/g, '');
             let projectName = await vscode.window.showInputBox({
@@ -614,7 +623,7 @@ export function activate(context: vscode.ExtensionContext) {
         showDashboard();
     }
 
-    async function queryProjectFields(groupId: string = null, isEditing: boolean, projectTemplate: { name?: string, description?: string, path?: string, color?: string } = null): Promise<[Project, string]> {
+    async function queryProjectFields(groupId: string = null, isEditing: boolean, projectTemplate: { name?: string, description?: string, path?: string, color?: string } = null): Promise<[Project, string, boolean]> {
         // For editing a project: Ignore Group selection and take it from template
         var selectedGroupId: string, projectPath: string, defaultProjectName: string, defaultProjectDescription: string;
         var groupWasNewlyCreated = false;
@@ -634,6 +643,9 @@ export function activate(context: vscode.ExtensionContext) {
                     [selectedGroupId, groupWasNewlyCreated] = await queryGroup(groupId, true);
                 }
                 projectPath = await queryProjectPath(projectPath);
+                if (projectPath === SAVE_CURRENT_PROJECT) {
+                    return [null, selectedGroupId, groupWasNewlyCreated];
+                }
             }
 
             defaultProjectName = defaultProjectName || getLastPartOfPath(projectPath).replace(/\.code-workspace$/g, '');
@@ -692,7 +704,7 @@ export function activate(context: vscode.ExtensionContext) {
             project.color = color;
             project.isGitRepo = isGitRepo;
 
-            return [project, selectedGroupId];
+            return [project, selectedGroupId, groupWasNewlyCreated];
         } catch (e) {
             // Cleanup
             if (groupWasNewlyCreated) {
@@ -791,6 +803,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     async function queryProjectPath(defaultPath: string = null): Promise<string> {
         let projectTypePicks = [
+            { id: 'save-current', label: 'Save Current Project' },
             { id: 'dir', label: 'Folder Project' },
             { id: 'file', label: 'Workspace or File Project' },
             { id: 'manual', label: `Enter manually` },
@@ -806,6 +819,8 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         switch (selectedProjectTypePick.id) {
+            case 'save-current':
+                return SAVE_CURRENT_PROJECT;
             case 'dir':
                 return await getPathFromPicker(true, defaultPath);
             case 'file':
