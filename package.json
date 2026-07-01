@@ -47,6 +47,10 @@
                 "title": "Project Dashboard: Add Project"
             },
             {
+                "command": "dashboard.saveProject",
+                "title": "Project Dashboard: Save Project"
+            },
+            {
                 "command": "dashboard.removeProject",
                 "title": "Project Dashboard: Remove Project"
             },

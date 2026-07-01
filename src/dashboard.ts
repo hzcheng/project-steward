@@ -67,6 +67,10 @@ export function activate(context: vscode.ExtensionContext) {
         await addProject();
     });
 
+    const saveProjectCommand = vscode.commands.registerCommand('dashboard.saveProject', async () => {
+        await saveProject();
+    });
+
     const removeProjectCommand = vscode.commands.registerCommand('dashboard.removeProject', async () => {
         await removeProjectPerCommand();
     });
@@ -88,6 +92,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(openCommand);
     context.subscriptions.push(addProjectCommand);
+    context.subscriptions.push(saveProjectCommand);
     context.subscriptions.push(removeProjectCommand);
     context.subscriptions.push(editProjectsManuallyCommand);
     context.subscriptions.push(addGroupCommand);
@@ -500,6 +505,58 @@ export function activate(context: vscode.ExtensionContext) {
         } catch (error) {
             if (error.message !== USER_CANCELED) {
                 vscode.window.showErrorMessage(`An error occured while adding the project.`);
+                throw error; // Rethrow error to make vscode log it
+            }
+
+            return;
+        }
+
+        showDashboard();
+    }
+
+    async function saveProject() {
+        var selectedGroupId: string;
+        var groupWasNewlyCreated = false;
+
+        try {
+            let currentlyOpenPath = getWorkspacePath();
+            if (!currentlyOpenPath) {
+                vscode.window.showWarningMessage("No project is currently open.");
+                return;
+            }
+
+            let duplicate = projectService.getProjectsFlat().find(p => p.path === currentlyOpenPath);
+            if (duplicate != null) {
+                vscode.window.showInformationMessage(`Project "${duplicate.name}" is already saved.`);
+                return;
+            }
+
+            [selectedGroupId, groupWasNewlyCreated] = await queryGroup(null, true);
+
+            let defaultProjectName = getLastPartOfPath(currentlyOpenPath).replace(/\.code-workspace$/g, '');
+            let projectName = await vscode.window.showInputBox({
+                value: defaultProjectName || undefined,
+                valueSelection: defaultProjectName ? [0, defaultProjectName.length] : undefined,
+                placeHolder: 'Project Name',
+                ignoreFocusOut: true,
+                validateInput: (val: string) => val ? '' : 'A Project Name must be provided.',
+            });
+
+            if (!projectName) {
+                if (groupWasNewlyCreated) {
+                    await projectService.removeGroup(selectedGroupId, true);
+                }
+                throw new Error(USER_CANCELED);
+            }
+
+            let project = new Project(projectName, currentlyOpenPath);
+            project.color = colorService.getRandomColor();
+            project.isGitRepo = isFolderGitRepo(currentlyOpenPath);
+
+            await projectService.addProject(project, selectedGroupId);
+        } catch (error) {
+            if (error.message !== USER_CANCELED) {
+                vscode.window.showErrorMessage(`An error occured while saving the project.`);
                 throw error; // Rethrow error to make vscode log it
             }
 
