@@ -209,6 +209,32 @@ function initProjects() {
         );
     }
 
+    function updateToggleAllGroupsButton(collapsed) {
+        document.body.classList.toggle("dashboard-all-collapsed", collapsed);
+
+        var button = document.querySelector('[data-action="toggle-all-groups"]');
+        if (!button)
+            return;
+
+        var label = collapsed ? "Expand All Groups" : "Collapse All Groups";
+        button.setAttribute("title", label);
+        button.setAttribute("aria-label", label);
+    }
+
+    function toggleAllGroups() {
+        var groups = [...document.querySelectorAll('.group[data-group-id]')];
+        var realGroups = groups.filter(group => !group.hasAttribute("data-virtual-group"));
+        var shouldCollapse = realGroups.some(group => !group.classList.contains("collapsed"));
+
+        groups.forEach(group => group.classList.toggle("collapsed", shouldCollapse));
+        updateToggleAllGroupsButton(shouldCollapse);
+
+        window.vscode.postMessage({
+            type: 'toggle-all-groups',
+            collapsed: shouldCollapse,
+        });
+    }
+
     function onMouseEvent(e) {
         if (!e.target || e.target.closest(".disabled"))
             return;
@@ -226,6 +252,11 @@ function initProjects() {
         }
 
         closeContextMenus();
+
+        if (e.target.closest('[data-action="toggle-all-groups"]')) {
+            toggleAllGroups();
+            return;
+        }
 
         if (e.target.closest('[data-action="add-group"]')) {
             window.vscode.postMessage({

@@ -32,6 +32,12 @@ export function activate(context: vscode.ExtensionContext) {
                     isHandlingSidebarMessage = false;
                 }
             });
+
+            webviewView.onDidChangeVisibility(() => {
+                if (webviewView.visible) {
+                    this.refresh();
+                }
+            });
         }
 
         refresh() {
@@ -107,9 +113,13 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(removeGroupCommand);
     context.subscriptions.push(addProjectsFromFolderCommand);
 
-    vscode.workspace.onDidChangeConfiguration(event => {
+    vscode.workspace.onDidChangeConfiguration(async event => {
         if (event.affectsConfiguration("dashboard.storeProjectsInSettings")) {
-            checkDataMigration(true);
+            await checkDataMigration(false);
+        }
+
+        if (event.affectsConfiguration("dashboard")) {
+            refreshDashboardViews();
         }
     });
 
@@ -288,6 +298,9 @@ export function activate(context: vscode.ExtensionContext) {
                 groupId = e.groupId as string;
                 await collapseGroup(groupId);
                 break;
+            case 'toggle-all-groups':
+                await setAllGroupsCollapsed(Boolean(e.collapsed));
+                break;
         }
     }
 
@@ -419,6 +432,14 @@ export function activate(context: vscode.ExtensionContext) {
         await projectService.updateGroup(groupId, group);
 
         //showDashboard(); // No need to repaint for that
+    }
+
+    async function setAllGroupsCollapsed(collapsed: boolean) {
+        var groups = projectService.getGroups();
+        groups.forEach(group => group.collapsed = collapsed);
+        await projectService.saveGroups(groups);
+
+        refreshAfterMutation();
     }
 
     async function openProject(project: Project, projectOpenType: ProjectOpenType): Promise<void> {

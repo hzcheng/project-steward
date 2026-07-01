@@ -433,47 +433,90 @@ body .project {
 
     padding-top: $defaultPadding;
 
-    .search-icon {
-        margin-left: $defaultPadding * (-2);
-        margin-right: -28px;
-        z-index: 5;
-        padding-top: 5px;
+    .search-box {
+        display: flex;
+        align-items: center;
+        width: calc(var(--column-width) - #{$defaultPadding});
+        max-width: calc(100% - 44px);
+        min-width: 0;
+        padding: 4px 10px;
+        background: var(--dashboard-project-card-bg);
+        border: 1pt solid transparent;
+        border-radius: 999px;
+
+        &:hover,
+        &:active,
+        &:focus-within {
+            &.has-filter-value .clear-search-icon {
+                visibility: visible;
+            }
+        }
+    }
+
+    .search-icon,
+    .clear-search-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        width: 16px;
+        height: 16px;
+        color: var(--dashboard-path);
 
         svg {
             width: 14px;
-            fill: var(--dashboard-path);
+            height: 14px;
+            fill: currentColor;
             opacity: 0.6;
         }
     }
 
     .clear-search-icon {
-        @extend .search-icon;
-        margin-left: -26px;
         visibility: hidden;
         cursor: pointer;
     }
 
-    &:hover,
-    &:active,
-    &:focus {
-        &.has-filter-value .clear-search-icon {
-            visibility: visible;
-        }
-    }
-
     input {
-        background: var(--dashboard-project-card-bg);
+        flex: 1 1 auto;
+        min-width: 0;
+        background: transparent;
         color: var(--dashboard-foreground);
-        width: calc(var(--column-width) - #{$defaultPadding});
         outline-color: transparent;
-
-        padding: 4px 34px;
-
+        padding: 0 8px;
         text-align: center;
         font-family: var(--vscode-font-family);
         font-size: 1.2em;
-        border: 1pt solid transparent;
-        border-radius: 20px;
+        border: 0;
+    }
+
+    .toggle-all-groups-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        width: 28px;
+        height: 28px;
+        margin-left: 8px;
+        padding: 0;
+        color: var(--dashboard-foreground);
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 3px;
+        cursor: pointer;
+
+        &:hover {
+            background: var(--dashboard-project-card-bg);
+        }
+
+        svg {
+            width: 13px;
+            height: 13px;
+            fill: currentColor;
+        }
+
+        .toggle-all-groups-expand-icon {
+            display: none;
+        }
     }
 
     /* clears the 'X' from Chrome */
@@ -482,6 +525,18 @@ body .project {
     input[type="search"]::-webkit-search-results-button,
     input[type="search"]::-webkit-search-results-decoration {
         display: none;
+    }
+}
+
+body.dashboard-all-collapsed {
+    .toggle-all-groups-button {
+        .toggle-all-groups-collapse-icon {
+            display: none;
+        }
+
+        .toggle-all-groups-expand-icon {
+            display: inline-flex;
+        }
     }
 }
 
@@ -520,16 +575,28 @@ body.dashboard-sidebar {
         width: calc(100% - 16px);
         padding-top: 8px;
 
-        .search-icon {
-            margin-left: -26px;
+        .search-box {
+            flex: 1 1 auto;
+            width: auto;
+            max-width: none;
+            padding: 3px 8px;
+            border-radius: 999px;
         }
 
         input {
-            width: 100%;
-            min-width: 0;
             font-size: 1em;
-            border-radius: 4px;
             text-align: left;
+        }
+
+        .toggle-all-groups-button {
+            width: 24px;
+            height: 24px;
+            margin-left: 6px;
+
+            svg {
+                width: 12px;
+                height: 12px;
+            }
         }
     }
 

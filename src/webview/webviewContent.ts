@@ -48,8 +48,10 @@ export function getDashboardContent(
         .reduce((projects, group) => projects.concat(group.projects || []), [] as Project[])
         .filter(project => project.favorite);
     var allGroups = groups.length
-        ? [getFavoritesGroup(favoriteProjects), ...groups]
+        ? [getFavoritesGroup(favoriteProjects, groups.every(group => group.collapsed)), ...groups]
         : [];
+
+    var allGroupsCollapsed = groups.length && groups.every(group => group.collapsed);
 
     return `
 <!DOCTYPE html>
@@ -71,9 +73,17 @@ export function getDashboardContent(
         <title>Dashboard</title>
         ${getCustomStyle(infos.config)}
     </head>
-    <body class="preload ${isSidebar ? 'dashboard-sidebar' : ''} ${!groups.length ? 'dashboard-empty' : ''}">
+    <body class="preload ${isSidebar ? 'dashboard-sidebar' : ''} ${!groups.length ? 'dashboard-empty' : ''} ${allGroupsCollapsed ? 'dashboard-all-collapsed' : ''}">
         <div class="filter-wrapper">
-            <span class="search-icon"/>${Icons.search}</span><input type="search" id="filter" aria-label="Filter Projects"><span id="clear" class="clear-search-icon"/>${Icons.remove}</span>
+            <div class="search-box">
+                <span class="search-icon">${Icons.search}</span>
+                <input type="search" id="filter" aria-label="Filter Projects">
+                <span id="clear" class="clear-search-icon">${Icons.remove}</span>
+            </div>
+            <button type="button" class="toggle-all-groups-button" data-action="toggle-all-groups" title="${allGroupsCollapsed ? 'Expand All Groups' : 'Collapse All Groups'}" aria-label="${allGroupsCollapsed ? 'Expand All Groups' : 'Collapse All Groups'}">
+                <span class="toggle-all-groups-collapse-icon">${Icons.collapseAll}</span>
+                <span class="toggle-all-groups-expand-icon">${Icons.expandAll}</span>
+            </button>
         </div>
         <div class="">
             <div class="groups-wrapper ${!infos.config.displayProjectPath ? 'hide-project-path' : ''
@@ -157,9 +167,10 @@ function getGroupSection(
 </div>`;
 }
 
-function getFavoritesGroup(favoriteProjects: Project[]): Group {
+function getFavoritesGroup(favoriteProjects: Project[], collapsed: boolean = false): Group {
     var group = new Group(FAVORITES_GROUP_NAME, favoriteProjects);
     group.id = FAVORITES_GROUP_ID;
+    group.collapsed = collapsed;
 
     return group;
 }
