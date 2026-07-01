@@ -197,6 +197,8 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
         <div class="project-border" style="${borderStyle}"></div>
         <div class="project-actions-wrapper">
             <div class="project-actions">
+                <span data-action="open-new-window" title="Open Project In New Window">${Icons.openNewWindow
+        }</span>
                 <span data-action="color" title="Edit Color">${Icons.palette
         }</span>
                 <span data-action="edit" title="Edit Project">${Icons.edit

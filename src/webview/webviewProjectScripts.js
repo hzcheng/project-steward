@@ -91,6 +91,11 @@ function initProjects() {
         if (!action)
             return false;
 
+        if (action === 'open-new-window') {
+            openProject(projectId, ProjectOpenType.NewWindow);
+            return true;
+        }
+
         window.vscode.postMessage({
             type: action + '-project',
             projectId,
