@@ -2,7 +2,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, DashboardInfos, ProjectOpenType, ReopenDashboardReason, ProjectPathType, sanitizeProjectName } from './models';
-import { getSidebarContent, getDashboardContent } from './webview/webviewContent';
+import { getDashboardContent } from './webview/webviewContent';
 import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX } from './constants';
 import { execSync } from 'child_process';
 import { lstatSync } from 'fs';
@@ -13,42 +13,50 @@ import FileService from './services/fileService';
 
 export function activate(context: vscode.ExtensionContext) {
 
-    class SidebarDummyDashboardViewProvider implements vscode.WebviewViewProvider {
+    class SidebarDashboardViewProvider implements vscode.WebviewViewProvider {
 
         public static readonly viewType = "projectDashboard.dashboard";
 
         private _view?: vscode.WebviewView;
 
-        constructor(
-            private readonly _extensionUri: vscode.Uri,
-        ) { }
-
         resolveWebviewView(webviewView: vscode.WebviewView, webviewContext: vscode.WebviewViewResolveContext<unknown>, token: vscode.CancellationToken): void | Thenable<void> {
             this._view = webviewView;
+            webviewView.webview.options = getWebviewOptions();
+            this.refresh();
 
-            // The only job of this "view" is to close itself and open the main project dashboard webview
-            webviewView.webview.html = getSidebarContent();
-            this.switchToMainDashboard();
-            webviewView.onDidChangeVisibility(this.switchToMainDashboard);
+            webviewView.webview.onDidReceiveMessage(async (e) => {
+                isHandlingSidebarMessage = true;
+                try {
+                    await handleDashboardMessage(e);
+                } finally {
+                    isHandlingSidebarMessage = false;
+                }
+            });
         }
 
-        switchToMainDashboard = () => {
-            if (this._view?.visible) {
-                vscode.commands.executeCommand("workbench.view.explorer");
-                showDashboard();
+        refresh() {
+            if (this._view) {
+                this._view.webview.html = getDashboardContent(
+                    context,
+                    this._view.webview,
+                    projectService.getGroups(),
+                    dashboardInfos,
+                    true
+                );
             }
         }
     }
 
     var instance: vscode.WebviewPanel = null;
+    var isHandlingSidebarMessage = false;
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
     const fileService = new FileService(context);
 
-    const provider = new SidebarDummyDashboardViewProvider(context.extensionUri);
+    const provider = new SidebarDashboardViewProvider();
 
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider(SidebarDummyDashboardViewProvider.viewType, provider));
+        vscode.window.registerWebviewViewProvider(SidebarDashboardViewProvider.viewType, provider));
 
     const dashboardInfos: DashboardInfos = {
         relevantExtensionsInstalls: {
@@ -164,27 +172,14 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function showDashboard() {
-        var columnToShowIn = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : null;
-        var projects = projectService.getGroups();
-
-        if (instance) {
-            instance.webview.html = getDashboardContent(context, instance.webview, projects, dashboardInfos);
-            instance.reveal(columnToShowIn);
-        } else {
+        if (!instance) {
             var panel = vscode.window.createWebviewPanel(
                 "dashboard",
                 "Project Dashboard",
                 vscode.ViewColumn.One,
-                {
-                    enableScripts: true,
-                    localResourceRoots: [
-                        vscode.Uri.file(path.join(context.extensionPath, 'media')),
-                    ],
-                },
+                getWebviewOptions(),
             );
             panel.iconPath = vscode.Uri.file(path.join(context.extensionPath, 'media', 'icon.svg'));
-
-            panel.webview.html = getDashboardContent(context, panel.webview, projects, dashboardInfos);
 
             // Reset when the current panel is closed
             panel.onDidDispose(() => {
@@ -192,70 +187,107 @@ export function activate(context: vscode.ExtensionContext) {
             }, null, context.subscriptions);
 
             panel.webview.onDidReceiveMessage(async (e) => {
-                let projectId: string, groupId: string;
-                switch (e.type) {
-                    case 'selected-project':
-                        projectId = e.projectId as string;
-                        let projectOpenType = e.projectOpenType as ProjectOpenType;
-
-                        let project = projectService.getProject(projectId);
-                        if (project == null) {
-                            vscode.window.showWarningMessage("Selected Project not found.");
-                            break;
-                        }
-
-                        await openProject(project, projectOpenType);
-                        break;
-                    case 'add-project':
-                        groupId = e.groupId as string;
-                        await addProject(groupId);
-                        break;
-                    case 'import-from-other-storage':
-                        await projectService.copyProjectsFromFilledStorageOptionToEmptyStorageOption();
-                        await showDashboard();
-                        break;
-                    case 'reordered-projects':
-                        let groupOrders = e.groupOrders as GroupOrder[];
-                        await reorderGroups(groupOrders);
-                        break;
-                    case 'remove-project':
-                        projectId = e.projectId as string;
-                        await removeProject(projectId);
-                        break;
-                    case 'edit-project':
-                        projectId = e.projectId as string;
-                        await editProject(projectId);
-                        break;
-                    case 'color-project':
-                        projectId = e.projectId as string;
-                        await editProjectColor(projectId);
-                        break;
-                    case 'favorite-project':
-                        projectId = e.projectId as string;
-                        await toggleProjectFavorite(projectId);
-                        break;
-                    case 'edit-group':
-                        groupId = e.groupId as string;
-                        await editGroup(groupId);
-                        break;
-                    case 'remove-group':
-                        groupId = e.groupId as string;
-                        await removeGroup(groupId);
-                        break;
-                    case 'add-group':
-                        await addGroup();
-                        break;
-                    case 'collapse-group':
-                        groupId = e.groupId as string;
-                        await collapseGroup(groupId);
-                        break;
-                }
+                await handleDashboardMessage(e);
             });
             panel.onDidDispose(() => {
                 instance = null;
             })
 
             instance = panel;
+        }
+
+        refreshDashboardViews(true);
+    }
+
+    function getWebviewOptions(): vscode.WebviewOptions {
+        return {
+            enableScripts: true,
+            localResourceRoots: [
+                vscode.Uri.file(path.join(context.extensionPath, 'media')),
+            ],
+        };
+    }
+
+    function refreshDashboardViews(revealMainDashboard: boolean = false) {
+        var columnToShowIn = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : null;
+        var projects = projectService.getGroups();
+
+        if (instance) {
+            instance.webview.html = getDashboardContent(context, instance.webview, projects, dashboardInfos);
+            if (revealMainDashboard) {
+                instance.reveal(columnToShowIn);
+            }
+        }
+
+        provider.refresh();
+    }
+
+    function refreshAfterMutation() {
+        if (isHandlingSidebarMessage) {
+            refreshDashboardViews();
+        } else {
+            showDashboard();
+        }
+    }
+
+    async function handleDashboardMessage(e: any) {
+        let projectId: string, groupId: string;
+        switch (e.type) {
+            case 'selected-project':
+                projectId = e.projectId as string;
+                let projectOpenType = e.projectOpenType as ProjectOpenType;
+
+                let project = projectService.getProject(projectId);
+                if (project == null) {
+                    vscode.window.showWarningMessage("Selected Project not found.");
+                    break;
+                }
+
+                await openProject(project, projectOpenType);
+                break;
+            case 'add-project':
+                groupId = e.groupId as string;
+                await addProject(groupId);
+                break;
+            case 'import-from-other-storage':
+                await projectService.copyProjectsFromFilledStorageOptionToEmptyStorageOption();
+                refreshAfterMutation();
+                break;
+            case 'reordered-projects':
+                let groupOrders = e.groupOrders as GroupOrder[];
+                await reorderGroups(groupOrders);
+                break;
+            case 'remove-project':
+                projectId = e.projectId as string;
+                await removeProject(projectId);
+                break;
+            case 'edit-project':
+                projectId = e.projectId as string;
+                await editProject(projectId);
+                break;
+            case 'color-project':
+                projectId = e.projectId as string;
+                await editProjectColor(projectId);
+                break;
+            case 'favorite-project':
+                projectId = e.projectId as string;
+                await toggleProjectFavorite(projectId);
+                break;
+            case 'edit-group':
+                groupId = e.groupId as string;
+                await editGroup(groupId);
+                break;
+            case 'remove-group':
+                groupId = e.groupId as string;
+                await removeGroup(groupId);
+                break;
+            case 'add-group':
+                await addGroup();
+                break;
+            case 'collapse-group':
+                groupId = e.groupId as string;
+                await collapseGroup(groupId);
+                break;
         }
     }
 
@@ -274,7 +306,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         await projectService.addGroup(groupName);
-        showDashboard();
+        refreshAfterMutation();
     }
 
     async function editGroup(groupId: string) {
@@ -300,7 +332,7 @@ export function activate(context: vscode.ExtensionContext) {
         group.groupName = groupName;
         await projectService.updateGroup(groupId, group);
 
-        showDashboard();
+        refreshAfterMutation();
     }
 
     async function queryGroupFields(defaultText: string = null): Promise<string> {
@@ -359,7 +391,7 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        showDashboard();
+        refreshAfterMutation();
     }
 
     async function removeGroup(groupId: string) {
@@ -374,7 +406,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         await projectService.removeGroup(groupId);
-        showDashboard();
+        refreshAfterMutation();
     }
 
     async function collapseGroup(groupId: string) {
@@ -525,7 +557,7 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        showDashboard();
+        refreshAfterMutation();
     }
 
     async function saveProject(groupId: string = null, groupWasNewlyCreated: boolean = false) {
@@ -586,7 +618,7 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        showDashboard();
+        refreshAfterMutation();
     }
 
     async function editProject(projectId: string) {
@@ -608,7 +640,7 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        showDashboard();
+        refreshAfterMutation();
     }
 
     async function editProjectColor(projectId: string) {
@@ -629,7 +661,7 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        showDashboard();
+        refreshAfterMutation();
     }
 
     async function toggleProjectFavorite(projectId: string) {
@@ -640,7 +672,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         project.favorite = !project.favorite;
         await projectService.updateProject(projectId, project);
-        showDashboard();
+        refreshAfterMutation();
     }
 
     async function queryProjectFields(groupId: string = null, isEditing: boolean, projectTemplate: { name?: string, description?: string, path?: string, color?: string, remoteType?: ProjectRemoteType, favorite?: boolean } = null): Promise<[Project, string, boolean]> {
@@ -1161,7 +1193,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         await projectService.removeProject(projectId);
-        showDashboard();
+        refreshAfterMutation();
     }
 
     async function reorderGroups(groupOrders: GroupOrder[]) {
@@ -1198,7 +1230,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         await projectService.saveGroups(reorderedGroups);
-        showDashboard();
+        refreshAfterMutation();
     }
 
     function isFolderGitRepo(fPath: string) {

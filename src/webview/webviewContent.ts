@@ -15,33 +15,12 @@ import * as Icons from './webviewIcons';
 const FAVORITES_GROUP_ID = '__favorites';
 const FAVORITES_GROUP_NAME = 'Favorites';
 
-export function getSidebarContent() {
-    return `
-<!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-    </head>
-    <body>
-        <p>If you are reading this, you have placed the Project Dashboard sidebar view into another sidebar container. 
-        This view is not intended to be visible. Instead, it is simply a shortcut for opening the main Project Dashboard.</p>
-
-        <p>If you moved the sidebar view unintentionally and want to restore the original (intended) state, 
-        please drag and drop this panel onto the sidebar.</p>
-
-        <p>If you encounter any problems or think this behaviour is misleading, 
-        <a href="https://github.com/Kruemelkatze/vscode-dashboard/issues">please let me know.</a></p>
-
-    </body>
-    </html>
-`;
-}
-
 export function getDashboardContent(
     context: vscode.ExtensionContext,
     webview: vscode.Webview,
     groups: Group[],
-    infos: DashboardInfos
+    infos: DashboardInfos,
+    isSidebar: boolean = false
 ): string {
     var stylesPath = getMediaResource(context, webview, 'styles.css');
     var fittyPath = getMediaResource(context, webview, 'fitty.min.js');
@@ -92,7 +71,7 @@ export function getDashboardContent(
         <title>Dashboard</title>
         ${getCustomStyle(infos.config)}
     </head>
-    <body class="preload ${!groups.length ? 'dashboard-empty' : ''}">
+    <body class="preload ${isSidebar ? 'dashboard-sidebar' : ''} ${!groups.length ? 'dashboard-empty' : ''}">
         <div class="filter-wrapper">
             <span class="search-icon"/>${Icons.search}</span><input type="search" id="filter" aria-label="Filter Projects"><span id="clear" class="clear-search-icon"/>${Icons.remove}</span>
         </div>

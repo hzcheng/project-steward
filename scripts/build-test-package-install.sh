@@ -45,7 +45,7 @@ run_step npm run lint
 run_step npm run vscode:prepublish
 
 rm -f "$VSIX_FILE"
-run_step npx --yes @vscode/vsce package --out "$VSIX_FILE"
+run_step npx --yes @vscode/vsce package --allow-star-activation --out "$VSIX_FILE"
 run_step "$CODE_CMD" --install-extension "$VSIX_FILE" --force
 
 echo

@@ -508,3 +508,147 @@ body {
         }
     }
 }
+
+body.dashboard-sidebar {
+    --column-width: 100%;
+
+    overflow-x: hidden;
+    padding-left: 8px;
+    padding-right: 8px;
+
+    .filter-wrapper {
+        width: calc(100% - 16px);
+        padding-top: 8px;
+
+        .search-icon {
+            margin-left: -26px;
+        }
+
+        input {
+            width: 100%;
+            min-width: 0;
+            font-size: 1em;
+            border-radius: 4px;
+            text-align: left;
+        }
+    }
+
+    &.filtering-active {
+        padding-top: 44px;
+    }
+
+    .groups-wrapper {
+        width: 100%;
+    }
+
+    .group {
+        margin-right: 0;
+        margin-top: 14px;
+
+        &:first-child {
+            margin-top: 8px;
+        }
+
+        .group-title {
+            display: flex;
+            align-items: center;
+            min-width: 0;
+            width: 100%;
+            font-size: 18px;
+            font-weight: 600;
+            line-height: 1.25;
+        }
+
+        .group-title-text {
+            flex: 1 1 auto;
+            min-width: 0;
+            margin-right: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .group-actions {
+            flex: 0 0 auto;
+
+            &.right {
+                float: none;
+            }
+        }
+
+        .group-list {
+            display: block;
+            padding-top: 8px;
+        }
+
+        .drop-signal {
+            width: 100%;
+            margin-bottom: 8px;
+        }
+    }
+
+    .project-container {
+        display: block;
+        width: var(--column-width);
+        margin-left: 0;
+
+        &.slim {
+            width: var(--column-width);
+        }
+    }
+
+    .project {
+        box-sizing: border-box;
+        width: 100%;
+        height: 82px;
+        margin: 0 0 8px 0;
+        padding: 9px;
+        padding-top: calc(9px + #{$borderTopSize});
+
+        .fitty-container {
+            min-height: 18px;
+        }
+
+        .project-title-row {
+            gap: 6px;
+        }
+
+        .project-kind-icon,
+        .project-kind-icon svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        .project-header {
+            font-size: 16px !important;
+            font-weight: 600;
+            line-height: 1.2;
+        }
+
+        .project-description {
+            font-size: 12px;
+            margin-top: 7px;
+            min-height: 1.2em;
+            line-height: 1.25;
+            -webkit-line-clamp: 1;
+        }
+
+        .project-actions-wrapper {
+            padding-top: calc(0.45em + #{$borderTopSize});
+        }
+
+        .project-actions {
+            @include actions(14px, 3px);
+        }
+
+        &.add-project,
+        &.no-projects {
+            height: 74px;
+            font-size: 1.1em;
+        }
+
+        &.import-data {
+            width: 100%;
+        }
+    }
+}
