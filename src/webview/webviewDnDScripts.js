@@ -7,7 +7,10 @@ function initDnD() {
     var projectsContainers = document.querySelectorAll(projectsContainerSelector);
     var projectDrake = dragula([].slice.call(projectsContainers), {
         moves: function (el, source, handle, sibling) {
-            return !el.hasAttribute("data-nodrag");
+            return !el.hasAttribute("data-nodrag") && !source.closest("[data-virtual-group]");
+        },
+        accepts: function (el, target, source, sibling) {
+            return !target.closest("[data-virtual-group]");
         },
     });
     projectDrake.on('drop', onReordered);
@@ -38,7 +41,7 @@ function initDnD() {
 
     function onReordered() {
         // Build reordering object
-        let groupElements = [...document.querySelectorAll(`${groupsContainerSelector} > [data-group-id]`)];
+        let groupElements = [...document.querySelectorAll(`${groupsContainerSelector} > [data-group-id]:not([data-virtual-group])`)];
         // If a project was dropped on the Create New Group element...
         let tempGroupElement = document.querySelector('#tempGroup');
         if (tempGroupElement && tempGroupElement.querySelector("[data-id]")) {
@@ -50,7 +53,7 @@ function initDnD() {
         for (let groupElement of groupElements) {
             var groupOrder = {
                 groupId: groupElement.getAttribute("data-group-id") || "",
-                projectIds: [].slice.call(groupElement.querySelectorAll("[data-id]")).map(p => p.getAttribute("data-id")),
+                projectIds: [].slice.call(groupElement.querySelectorAll("[data-id]:not([data-virtual-project])")).map(p => p.getAttribute("data-id")),
             };
             groupOrders.push(groupOrder);
         }

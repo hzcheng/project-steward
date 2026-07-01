@@ -230,6 +230,10 @@ export function activate(context: vscode.ExtensionContext) {
                         projectId = e.projectId as string;
                         await editProjectColor(projectId);
                         break;
+                    case 'favorite-project':
+                        projectId = e.projectId as string;
+                        await toggleProjectFavorite(projectId);
+                        break;
                     case 'edit-group':
                         groupId = e.groupId as string;
                         await editGroup(groupId);
@@ -628,7 +632,18 @@ export function activate(context: vscode.ExtensionContext) {
         showDashboard();
     }
 
-    async function queryProjectFields(groupId: string = null, isEditing: boolean, projectTemplate: { name?: string, description?: string, path?: string, color?: string } = null): Promise<[Project, string, boolean]> {
+    async function toggleProjectFavorite(projectId: string) {
+        var project = projectService.getProject(projectId);
+        if (project == null) {
+            return;
+        }
+
+        project.favorite = !project.favorite;
+        await projectService.updateProject(projectId, project);
+        showDashboard();
+    }
+
+    async function queryProjectFields(groupId: string = null, isEditing: boolean, projectTemplate: { name?: string, description?: string, path?: string, color?: string, remoteType?: ProjectRemoteType, favorite?: boolean } = null): Promise<[Project, string, boolean]> {
         // For editing a project: Ignore Group selection and take it from template
         var selectedGroupId: string, projectPath: string, defaultProjectName: string, defaultProjectDescription: string;
         var groupWasNewlyCreated = false;
@@ -708,6 +723,8 @@ export function activate(context: vscode.ExtensionContext) {
             let project = new Project(projectName, projectPath, projectDescription);
             project.color = color;
             project.isGitRepo = isGitRepo;
+            project.remoteType = projectTemplate?.remoteType;
+            project.favorite = projectTemplate?.favorite;
 
             return [project, selectedGroupId, groupWasNewlyCreated];
         } catch (e) {

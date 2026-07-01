@@ -162,6 +162,16 @@ body {
         pointer-events: all;
     }
 
+    &[data-virtual-group] {
+        .group-title-text {
+            cursor: pointer;
+        }
+
+        .drop-signal {
+            display: none;
+        }
+    }
+
     .group-list {
         display: flex;
         flex-wrap: wrap;
@@ -323,6 +333,10 @@ body .project {
         transition: margin-top $defaultTransition $actionTransitionDelay;
 
         @include actions($dataActionIconSize);
+
+        .favorite-action.active svg {
+            filter: brightness(150%);
+        }
     }
 
     &:hover .project-actions {

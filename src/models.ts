@@ -26,6 +26,7 @@ export class Project {
     description: string;
     path: string;
     remoteType?: ProjectRemoteType;
+    favorite?: boolean;
     color: string;
     isGitRepo = false;
 

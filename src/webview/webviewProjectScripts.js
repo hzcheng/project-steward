@@ -126,6 +126,9 @@ function initProjects() {
             contextMenuElement = document.getElementById("projectContextMenu");
         } else {
             let groupIdDiv = groupDiv.closest(".group[data-group-id]");
+            if (groupIdDiv && groupIdDiv.hasAttribute("data-virtual-group"))
+                return;
+
             contextMenuGroupId = groupIdDiv ? groupIdDiv.getAttribute("data-group-id") : null;
             if (contextMenuGroupId == null)
                 return;
