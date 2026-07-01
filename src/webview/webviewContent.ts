@@ -185,14 +185,8 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
     var description = sanitizeProjectName(project.description);
     var searchText = escapeAttribute(`${project.name || ''} ${description} ${trimmedPath}`.toLowerCase());
     var escapedDescription = escapeAttribute(description);
-    var escapedPath = escapeAttribute(trimmedPath);
 
     var isRemote = remoteType !== ProjectRemoteType.None;
-    var remoteExError = (remoteType === ProjectRemoteType.SSH && !infos.relevantExtensionsInstalls.remoteSSH)
-        || (remoteType === ProjectRemoteType.DevContainer && !infos.relevantExtensionsInstalls.remoteContainers);
-    var remoteErrorTitle = remoteType === ProjectRemoteType.DevContainer
-        ? 'Dev Containers extension is not installed'
-        : 'Remote Development extension is not installed';
 
     return `
 <div class="project-container">
@@ -216,30 +210,8 @@ function getProjectDiv(project: Project, infos: DashboardInfos) {
                 ${project.name}
             </h2>
         </div>
-        ${description
-            ? `<p class="project-description" title="${escapedDescription}">
-                ${description}
-            </p>`
-            : ''
-        }
-        <p class="project-path-info">
-            ${isRemote
-            ? `<span class="remote-icon ${remoteExError ? 'error-icon' : ''
-            }" title="${remoteExError
-                ? remoteErrorTitle
-                : 'Remote Project'
-            }">${Icons.remote}</span>`
-            : ''
-        }
-            ${project.isGitRepo
-            ? `<span class="git-icon" title="Git Repository">${Icons.gitSvg}</span>`
-            : ''
-        }
-            <span class="project-path" title="${escapedPath}">
-                <span class="path-text">
-                    ${trimmedPath}
-                </span>
-            </span>
+        <p class="project-description" title="${escapedDescription}">
+            ${description}
         </p>
     </div>
 </div>`;

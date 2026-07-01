@@ -22,8 +22,8 @@ $borderTopSize: 7px;
 $defaultPadding: 20px;
 $projectHeaderSize: 24px; // This has also be adjusted in constants.ts for fitty
 $projectHeaderMinHeight: 34px; // To be constant even with fitted font size
-$groupHeaderSize: 36px;
-$projectIconSize: 20px;
+$groupHeaderSize: 28px;
+$projectTileHeight: 140px;
 $dataActionIconSize: 15.6px; // Default font size * 1.2em, in pixel to keep constant across different font sizes
 
 $defaultTransition: 150ms ease-in-out;
@@ -220,6 +220,7 @@ body .project {
     margin: 0 $defaultPadding $defaultPadding 0;
     padding: $defaultPadding;
     padding-top: $defaultPadding + $borderTopSize;
+    height: $projectTileHeight;
 
     background: var(--dashboard-project-card-bg);
 
@@ -254,7 +255,7 @@ body .project {
         opacity: 0.82;
         max-width: 100%;
         min-height: 2.8em;
-        margin: 0 0 math.div($defaultPadding, 2) 0;
+        margin: 8px 0 0 0;
         overflow: hidden;
         display: -webkit-box;
         -webkit-box-orient: vertical;
@@ -267,47 +268,6 @@ body .project {
         @extend .project-header;
         font-size: 60px;
         margin-top: -0.25em;
-    }
-
-    .project-path-info {
-        display: flex;
-        max-width: 100%;
-    }
-
-    .project-path {
-        color: var(--dashboard-path);
-
-        direction: rtl;
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-
-        .path-text {
-            text-overflow: ellipsis;
-            direction: ltr;
-            unicode-bidi: bidi-override;
-        }
-    }
-
-    .project-icon {
-        svg {
-            width: $projectIconSize;
-            fill: var(--dashboard-path);
-        }
-
-        &.error-icon svg {
-            fill: var(--vscode-gitDecoration-deletedResourceForeground);
-        }
-    }
-
-    .git-icon {
-        @extend .project-icon;
-        margin: -2px 6px -4px 0;
-    }
-
-    .remote-icon {
-        @extend .project-icon;
-        margin: 0 6px -4px 0;
     }
 
     &.add-project,
@@ -386,25 +346,6 @@ body .project {
         border-top: 1pt solid var(--vscode-menu-separatorBackground);
         opacity: 50%;
         margin: 3px 10px;
-    }
-}
-
-// CUSTOM CONFIGURATION
-.hide-project-path .group {
-    .project {
-        padding: (1.5 * $defaultPadding) $defaultPadding;
-
-        .project-path-info {
-            display: none;
-        }
-
-        &.add-project {
-            height: calc(#{$projectCardMinHeight} - 1em - 24px);
-        }
-    }
-
-    .group-list {
-        min-height: calc(#{$projectListMinHeight} - 1em - 24px);
     }
 }
 
