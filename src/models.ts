@@ -135,7 +135,7 @@ export interface GroupOrder {
     projectIds: string[];
 }
 
-export interface DashboardInfos {
+export interface StewardInfos {
     relevantExtensionsInstalls: { remoteSSH: boolean; remoteContainers: boolean };
     config: vscode.WorkspaceConfiguration;
     otherStorageHasData: boolean;
@@ -164,7 +164,7 @@ export enum ProjectRemoteType {
     Remote,
 }
 
-export enum ReopenDashboardReason {
+export enum ReopenStewardReason {
     None = 0,
     EditorReopenedAsWorkspace,
 }

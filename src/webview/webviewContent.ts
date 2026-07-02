@@ -6,7 +6,7 @@ import {
     Group,
     getRemoteType,
     ProjectRemoteType,
-    DashboardInfos,
+    StewardInfos,
     sanitizeProjectName,
 } from '../models';
 import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, OPEN_PROJECTS_GROUP_ID } from '../constants';
@@ -15,11 +15,11 @@ import * as Icons from './webviewIcons';
 const FAVORITES_GROUP_NAME = 'Favorites';
 const OPEN_PROJECTS_GROUP_NAME = 'Open Projects';
 
-export function getDashboardContent(
+export function getStewardContent(
     context: vscode.ExtensionContext,
     webview: vscode.Webview,
     groups: Group[],
-    infos: DashboardInfos,
+    infos: StewardInfos,
     isSidebar: boolean = false
 ): string {
     var stylesPath = getMediaResource(context, webview, 'styles.css');
@@ -82,11 +82,11 @@ export function getDashboardContent(
             /* Custom CSS from configuration */
             ${customCss}
         </style>
-        <title>Dashboard</title>
+        <title>Project Steward</title>
         ${getCustomStyle(infos.config)}
     </head>
-    <body class="preload ${isSidebar ? 'dashboard-sidebar' : ''} ${!groups.length ? 'dashboard-empty' : ''} ${allGroupsCollapsed ? 'dashboard-all-collapsed' : ''}">
-        <div class="dashboard-sticky-header">
+    <body class="preload ${isSidebar ? 'steward-sidebar' : ''} ${!groups.length ? 'steward-empty' : ''} ${allGroupsCollapsed ? 'steward-all-collapsed' : ''}">
+        <div class="steward-sticky-header">
             <div class="filter-wrapper">
                 <div class="search-box">
                     <span class="search-icon">${Icons.search}</span>
@@ -149,7 +149,7 @@ export function getDashboardContent(
 function getGroupSection(
     group: Group,
     totalGroupCount: number,
-    infos: DashboardInfos
+    infos: StewardInfos
 ) {
     // Apply changes to HTML here also to getTempGroupSection
 
@@ -164,6 +164,7 @@ function getGroupSection(
         }</span>
         </div>`;
     var dragAttribute = isVirtualGroup ? '' : 'data-drag-group';
+    var groupName = escapeAttribute(group.groupName || 'Unnamed Group');
 
     return `
 <div class="group ${group.collapsed ? 'collapsed' : ''} ${group.projects.length === 0 ? 'no-projects' : ''
@@ -172,7 +173,7 @@ function getGroupSection(
         <span class="group-title-text" data-action="collapse" ${dragAttribute}>
             <span class="collapse-icon" title="Open/Collapse Group">${Icons.collapse
         }</span>
-            ${group.groupName || 'Unnamed Group'}
+            ${groupName}
         </span>
         ${groupActions}
     </div>
@@ -222,6 +223,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var borderStyle = `background: ${project.color};`;
     var remoteType = getRemoteType(project);
     var description = sanitizeProjectName(project.description);
+    var projectName = escapeAttribute(sanitizeProjectName(project.name));
     var searchText = escapeAttribute(`${project.name || ''} ${description}`.toLowerCase());
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
@@ -261,11 +263,11 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
                 ${projectIcon}
             </span>
             <h2 class="project-header">
-                ${project.name}
+                ${projectName}
             </h2>
         </div>
         <p class="project-description" title="${escapedDescription}">
-            ${description}
+            ${escapedDescription}
         </p>
     </div>
 </div>`;
@@ -321,7 +323,7 @@ function getImportDiv() {
     return `
 <div class="project-container">
     <div class="project no-projects import-data" data-action="import-from-other-storage" data-nodrag>
-        Your dashboard is empty, but there are projects in your other storage. 
+        Project Steward is empty, but there are projects in your other storage.
         <br/>
         This can happen if the storage option has been changed on a different device that is synced via Settings Sync.
         <p>Click here to import.</p>
@@ -405,15 +407,15 @@ function getCustomStyle(config: vscode.WorkspaceConfiguration) {
 <style>
     :root {
         ${customProjectCardBackground && customProjectCardBackground.trim()
-            ? `--dashboard-project-card-bg: ${customProjectCardBackground};`
+            ? `--steward-project-card-bg: ${customProjectCardBackground};`
             : ''
         }
         ${customProjectNameColor && customProjectNameColor.trim()
-            ? `--dashboard-foreground: ${customProjectNameColor};`
+            ? `--steward-foreground: ${customProjectNameColor};`
             : ''
         }
         ${customProjectPathColor && customProjectPathColor.trim()
-            ? `--dashboard-path: ${customProjectPathColor};`
+            ? `--steward-path: ${customProjectPathColor};`
             : ''
         }
         ${projectTileWidth && !isNaN(+projectTileWidth)

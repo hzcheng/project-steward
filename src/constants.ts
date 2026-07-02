@@ -19,7 +19,9 @@ export const INBUILT_COLOR_DEFAULTS = [
 
 export const PROJECTS_KEY = 'projects';
 export const RECENT_COLORS_KEY = 'recentColors';
-export const REOPEN_KEY = 'reopenDashboardReason';
+export const PROJECT_STEWARD_CONFIG_SECTION = 'projectSteward';
+export const LEGACY_DASHBOARD_CONFIG_SECTION = 'dashboard';
+export const REOPEN_KEY = 'reopenProjectStewardReason';
 export const FAVORITES_GROUP_ID = '__favorites';
 export const FAVORITES_GROUP_COLLAPSED_KEY = 'favoritesGroupCollapsed';
 export const OPEN_PROJECTS_GROUP_ID = '__openProjects';

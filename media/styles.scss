@@ -6,9 +6,9 @@ $defaultColumnWidth: 350;
 $filter-offset: 52px;
 
 :root {
-    --dashboard-project-card-bg: var(--vscode-tab-inactiveBackground);
-    --dashboard-foreground: var(--vscode-editor-foreground);
-    --dashboard-path: var(--vscode-descriptionForeground);
+    --steward-project-card-bg: var(--vscode-tab-inactiveBackground);
+    --steward-foreground: var(--vscode-editor-foreground);
+    --steward-path: var(--vscode-descriptionForeground);
 
     --column-width: #{$defaultColumnWidth}px;
 }
@@ -33,7 +33,7 @@ $actionTransitionDelay: 250ms;
 @mixin actions($size: $dataActionIconSize, $spacing: $dataActionIconSize * 0.3) {
     svg {
         width: $size;
-        fill: var(--dashboard-foreground);
+        fill: var(--steward-foreground);
         margin-right: $spacing;
     }
 
@@ -59,7 +59,7 @@ body {
         }
     }
 
-    &.dashboard-empty {
+    &.steward-empty {
         #tempGroup {
             display: none;
         }
@@ -96,7 +96,7 @@ body {
 
         svg {
             width: 0.75em;
-            fill: var(--dashboard-foreground);
+            fill: var(--steward-foreground);
         }
     }
 
@@ -188,7 +188,7 @@ body {
         opacity: 0;
         width: calc(var(--column-width) - 19px);
         align-self: stretch;
-        background: var(--dashboard-project-card-bg);
+        background: var(--steward-project-card-bg);
         margin-bottom: $defaultPadding;
 
         position: absolute;
@@ -232,7 +232,7 @@ body .project {
     padding-top: $defaultPadding + $borderTopSize;
     height: $projectTileHeight;
 
-    background: var(--dashboard-project-card-bg);
+    background: var(--steward-project-card-bg);
 
     .project-border {
         position: absolute;
@@ -261,7 +261,7 @@ body .project {
         flex: 0 0 auto;
         width: 20px;
         height: 20px;
-        color: var(--dashboard-foreground);
+        color: var(--steward-foreground);
 
         svg {
             width: 20px;
@@ -271,7 +271,7 @@ body .project {
     }
 
     .project-header {
-        color: var(--dashboard-foreground);
+        color: var(--steward-foreground);
         margin: 0;
         font-size: $projectHeaderSize;
         font-weight: lighter;
@@ -279,7 +279,7 @@ body .project {
     }
 
     .project-description {
-        color: var(--dashboard-foreground);
+        color: var(--steward-foreground);
         opacity: 0.82;
         max-width: 100%;
         min-height: 2.8em;
@@ -421,7 +421,7 @@ body .project {
 }
 
 // FILTERING
-.dashboard-sticky-header {
+.steward-sticky-header {
     transition: top $defaultTransition;
     top: -$filter-offset;
     position: absolute;
@@ -447,7 +447,7 @@ body .project {
         max-width: calc(100% - 44px);
         min-width: 0;
         padding: 4px 10px;
-        background: var(--dashboard-project-card-bg);
+        background: var(--steward-project-card-bg);
         border: 1pt solid transparent;
         border-radius: 999px;
 
@@ -468,7 +468,7 @@ body .project {
         flex: 0 0 auto;
         width: 16px;
         height: 16px;
-        color: var(--dashboard-path);
+        color: var(--steward-path);
 
         svg {
             width: 14px;
@@ -487,7 +487,7 @@ body .project {
         flex: 1 1 auto;
         min-width: 0;
         background: transparent;
-        color: var(--dashboard-foreground);
+        color: var(--steward-foreground);
         outline-color: transparent;
         padding: 0 8px;
         text-align: center;
@@ -505,14 +505,14 @@ body .project {
         height: 28px;
         margin-left: 8px;
         padding: 0;
-        color: var(--dashboard-foreground);
+        color: var(--steward-foreground);
         background: transparent;
         border: 1px solid transparent;
         border-radius: 3px;
         cursor: pointer;
 
         &:hover {
-            background: var(--dashboard-project-card-bg);
+            background: var(--steward-project-card-bg);
         }
 
         svg {
@@ -535,7 +535,7 @@ body .project {
     }
 }
 
-body.dashboard-all-collapsed {
+body.steward-all-collapsed {
     .toggle-all-groups-button {
         .toggle-all-groups-collapse-icon {
             display: none;
@@ -554,7 +554,7 @@ body {
     &.no-initial-transition {
         transition: none;
 
-        .dashboard-sticky-header {
+        .steward-sticky-header {
             transition: none;
         }
     }
@@ -562,7 +562,7 @@ body {
     &.filtering-active {
         padding-top: 0;
 
-        .dashboard-sticky-header {
+        .steward-sticky-header {
             position: sticky;
             top: 0;
             padding-bottom: math.div($defaultPadding, 2);
@@ -574,14 +574,14 @@ body {
     }
 }
 
-body.dashboard-sidebar {
+body.steward-sidebar {
     --column-width: 100%;
 
     overflow-x: hidden;
     padding-left: 8px;
     padding-right: 8px;
 
-    .dashboard-sticky-header {
+    .steward-sticky-header {
         position: sticky;
         top: 0;
         width: 100%;

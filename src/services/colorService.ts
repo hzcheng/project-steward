@@ -46,7 +46,7 @@ export default class ColorService extends BaseService {
         // Remove duplicate names (except empty entries)
         colors = uniqBy(colors, d => d[1] || Math.random());
 
-        var maxColorCount = this.configurationSection.get('recentColorsToRemember') as number;
+        var maxColorCount = this.getConfig<number>('recentColorsToRemember');
         colors = colors.slice(0, maxColorCount);
 
         await this.saveColors(colors);
@@ -90,7 +90,7 @@ export default class ColorService extends BaseService {
     }
 
     private getColorsFromSettings(): string[][] {
-        return this.configurationSection.get(RECENT_COLORS_KEY) as string[][] || [];
+        return this.getConfig<string[][]>(RECENT_COLORS_KEY) || [];
     }
 
     private saveColorsInGlobalState(colors: string[][]): Thenable<void> {

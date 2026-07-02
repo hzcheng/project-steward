@@ -1,6 +1,18 @@
 # Change Log
 
-All notable changes to the "Project Dashboard" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
+All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
+
+## [1.0.5] 2026-07-02
+
+### Changed
+
+-   Rename VS Code contribution IDs and commands from Project Dashboard to Project Steward to avoid stale layout cache and conflicts with the original extension.
+-   Run the extension in the workspace extension host so remote SSH and Dev Container windows load the same Project Steward build.
+-   Preserve fallback support for legacy `dashboard.*` settings after the Project Steward rename.
+
+### Fixed
+
+-   Fixed Project Steward sidebar rendering when configuration compatibility fallback is active.
 
 ## [2.6.0] 2022-11-22
 
@@ -12,7 +24,7 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 
 ### Changed
 
--   Set activation event back to `\*` from `onStartupFinished`. This should fix the dashboard starting after a long delay.
+-   Set activation event back to `\*` from `onStartupFinished`. This should fix the Project Steward panel starting after a long delay.
 -   Adding remote WSL folders is now supported via theeir `\\wsl$` uri.
 
 ### Fixed
@@ -41,7 +53,7 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 ### Added
 
 -   Added a filtering option, toggled by CTRL + F.
--   Added an option controlling '+ New Group' visibility in the dashboard.
+-   Added an option controlling '+ New Group' visibility in the Project Steward panel.
 
 ### Fixed
 
@@ -68,23 +80,23 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 
 ### Changed
 
--   Upon clicking the sidebar icon, the sidebar view switches to the explorer instead of closing itself. This fixes an unrecoverable state when the dashboard view is placed under another sidebar view container.
+-   Upon clicking the sidebar icon, the sidebar view switches to the explorer instead of closing itself. This fixes an unrecoverable state when the Project Steward panel view is placed under another sidebar view container.
 
 ## [2.3.0] 2020-11-23
 
 ### Added
 
--   Sidebar icon for opening the project dashboard.
+-   Sidebar icon for opening the project Project Steward panel.
 
 ### Changed
 
--   The dashboard now has a dedicated icon.
+-   The Project Steward panel now has a dedicated icon.
 
 ## [2.2.2] 2020-07-03
 
 ### Fixed
 
--   Editing dashboard.projectData in settings does not wrongly format null value any more.
+-   Editing `projectSteward.projectData` in settings does not wrongly format null value any more.
 
 ## [2.2.1] 2020-05-13
 
@@ -137,13 +149,13 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 
 ### Fixed
 
--   Context Menu is now correctly placed when the Dashboard is scrolled.
+-   Context Menu is now correctly placed when the Project Steward is scrolled.
 
 ## [2.0.0] 2020-04-11
 
 ### Changed
 
--   Renamed extension to **Project Dashboard**.
+-   Renamed extension to **Project Steward**.
 -   Project and Group Management
     -   'Project Groups' are now referred to as only 'Groups'.
     -   Empty groups are no longer removed.
@@ -160,7 +172,7 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 -   Groups can be collapsed
 -   Context menus for projects and groups that include all actions.
 -   Colors
-    -   Project color can now be changed directly from the dashboard without going through the whole project editing phase.
+    -   Project color can now be changed directly from the Project Steward panel without going through the whole project editing phase.
     -   Selection for recently used colors.
     -   Custom colors are now named using [Name that Color](http://chir.ag/projects/name-that-color/#6195ED).
     -   Custom Project Card background now allows for any CSS background value.
@@ -168,7 +180,7 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 
 ### Fixed
 
--   Changing the data source (globalState or user settings) now directly migrates the data and updates the dashboard.
+-   Changing the data source (globalState or user settings) now directly migrates the data and updates the Project Steward panel.
 
 ### Internal
 
@@ -179,7 +191,7 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 
 ### Fixed
 
--   Fixed all css transitions firing on opening dashboard, triggered by a bug in the Chromium version used by VSCode 1.40.0.
+-   Fixed all css transitions firing on opening Project Steward panel, triggered by a bug in the Chromium version used by VSCode 1.40.0.
 
 ## [1.5.4] 2019-11-08
 
@@ -201,7 +213,7 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 
 ### Fixed
 
--   Dashboard settings are now correctly fetched without restarting.
+-   Project Steward settings are now correctly fetched without restarting.
 
 ## [1.5.1] 2019-10-24
 
@@ -219,7 +231,7 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 
 -   Support for [Remote Development Projects](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.vscode-remote-extensionpack).
 -   Added config for startup behaviour (always, empty workspace, never).
--   Editing and rearranging projects groups directly on the dashboard.
+-   Editing and rearranging projects groups directly on the Project Steward panel.
 -   Option for storing projects in the User Settings (to be synced via [Settings Sync](https://marketplace.visualstudio.com/items?itemName=Shan.code-settings-sync)).
 -   Setting for removing the big '+' button, but added a smaller one next to the group name.
 
@@ -229,18 +241,18 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 -   Editing a project via UI now also prompts for editing its path.
 -   Reduced number of message from the extension.
 -   Temporary file for editing is now safely placed in the [Global storage path](https://code.visualstudio.com/updates/v1_31#_global-storage-path). This also removed the need for the custom temp file location setting.
--   Indicated Dashboard as "ui"-type extension, so that it works without installing if a remote workspace (SSH, WSL, Container) is opened in VSCode.
+-   Indicated Project Steward as "ui"-type extension, so that it works without installing if a remote workspace (SSH, WSL, Container) is opened in VSCode.
 
 ### Fixed
 
 -   Fixed some exceptions thrown when user cancelled any input (by pressing esc or unfocusing the window).
--   Fixed a bug that made the dashboard not open automatically because of a hidden file of the **_Code Runner_** extension.
+-   Fixed a bug that made the Project Steward panel not open automatically because of a hidden file of the **_Code Runner_** extension.
 
 ## [1.4.1] 2019-07-11
 
 ### Fixed
 
--   Fixed issue that nothing shows on the dashboard, if a user updates from 1.2.0 to 1.4.0 with only an empty, unnamed group.
+-   Fixed issue that nothing shows on the Project Steward panel, if a user updates from 1.2.0 to 1.4.0 with only an empty, unnamed group.
 
 ## [1.4] 2019-07-07
 
@@ -260,7 +272,7 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 
 ### Added
 
--   Editing functionality directly on Dashboard
+-   Editing functionality directly on Project Steward
     -   Reordering by drag & drop
     -   Edit button
     -   Remove button
@@ -270,8 +282,8 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 
 ### Changed
 
--   When editing the dashboard manually, empty unnamed groups are removed after saving.
--   Removed "Blank Page" icon of dashboard.
+-   When editing the Project Steward panel manually, empty unnamed groups are removed after saving.
+-   Removed "Blank Page" icon of Project Steward panel.
 
 ## [1.2] 2018-12-06
 
@@ -305,11 +317,11 @@ All notable changes to the "Project Dashboard" extension will be documented in t
 
 ### Added
 
--   Ctrl + F1 as default keybinding for Dashboard: Open command
+-   Ctrl + F1 as default keybinding for Project Steward: Open command
 
 ### Fixed
 
--   Add project button now works when no projects are in the dashboard
+-   Add project button now works when no projects are in the Project Steward panel
 
 # Pre-releases
 

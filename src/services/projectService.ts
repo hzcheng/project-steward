@@ -213,7 +213,7 @@ export default class ProjectService extends BaseService {
     }
 
     private getProjectsFromSettings(unsafe: boolean = false): Group[] {
-        var groups = this.configurationSection.get('projectData') as Group[];
+        var groups = this.getConfig<Group[]>('projectData');
 
         if (groups == null && !unsafe) {
             groups = [];

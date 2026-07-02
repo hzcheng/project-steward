@@ -2,7 +2,7 @@
     "name": "project-steward",
     "displayName": "Project Steward",
     "description": "Organize local, SSH, and Dev Container projects in a synchronized project steward.",
-    "version": "1.0.1",
+    "version": "1.0.5",
     "publisher": "hzcheng",
     "license": "MIT",
     "icon": "media/extension_icon.png",
@@ -10,7 +10,6 @@
         "vscode": "^1.51.0"
     },
     "extensionKind": [
-        "ui",
         "workspace"
     ],
     "categories": [
@@ -22,7 +21,7 @@
     "main": "./dist/dashboard",
     "repository": {
         "type": "git",
-        "url": "https://github.com/hzcheng/project-dashboard.git"
+        "url": "https://github.com/hzcheng/project-steward.git"
     },
     "capabilities": {
         "untrustedWorkspaces": {
@@ -32,94 +31,94 @@
     "contributes": {
         "commands": [
             {
-                "command": "dashboard.open",
-                "title": "Project Dashboard: Open"
+                "command": "projectSteward.open",
+                "title": "Project Steward: Open"
             },
             {
-                "command": "dashboard.addGroup",
-                "title": "Project Dashboard: Add Group"
+                "command": "projectSteward.addGroup",
+                "title": "Project Steward: Add Group"
             },
             {
-                "command": "dashboard.removeGroup",
-                "title": "Project Dashboard: Remove Group"
+                "command": "projectSteward.removeGroup",
+                "title": "Project Steward: Remove Group"
             },
             {
-                "command": "dashboard.addProject",
-                "title": "Project Dashboard: Add Project"
+                "command": "projectSteward.addProject",
+                "title": "Project Steward: Add Project"
             },
             {
-                "command": "dashboard.saveProject",
-                "title": "Project Dashboard: Save Project"
+                "command": "projectSteward.saveProject",
+                "title": "Project Steward: Save Project"
             },
             {
-                "command": "dashboard.removeProject",
-                "title": "Project Dashboard: Remove Project"
+                "command": "projectSteward.removeProject",
+                "title": "Project Steward: Remove Project"
             },
             {
-                "command": "dashboard.editProjects",
-                "title": "Project Dashboard: Edit Projects"
+                "command": "projectSteward.editProjects",
+                "title": "Project Steward: Edit Projects"
             },
             {
-                "command": "dashboard.addProjectsFromFolder",
-                "title": "Project Dashboard: Add Projects from Folder"
+                "command": "projectSteward.addProjectsFromFolder",
+                "title": "Project Steward: Add Projects from Folder"
             }
         ],
         "keybindings": [
             {
-                "command": "dashboard.open",
+                "command": "projectSteward.open",
                 "key": "ctrl+f1",
                 "mac": "cmd+f1"
             }
         ],
         "configuration": {
             "type": "object",
-            "title": "Project Dashboard",
+            "title": "Project Steward",
             "properties": {
-                "dashboard.projectData": {
+                "projectSteward.projectData": {
                     "type": [
                         "array",
                         "null"
                     ],
-                    "markdownDescription": "Stores the dashboard data if the ```dashboard.storeProjectsInSettings``` option is set to ```true```. The raw data can be edited by using the command ```Dashboard: Edit Projects```.",
+                    "markdownDescription": "Stores the Project Steward data if the ```projectSteward.storeProjectsInSettings``` option is set to ```true```. The raw data can be edited by using the command ```Project Steward: Edit Projects```.",
                     "default": null
                 },
-                "dashboard.searchIsActiveByDefault": {
+                "projectSteward.searchIsActiveByDefault": {
                     "type": "boolean",
                     "default": true
                 },
-                "dashboard.customCss": {
+                "projectSteward.customCss": {
                     "type": "string",
-                    "markdownDescription": "Custom CSS rules to be injected into the dashboard can be placed here. Note that this will not be sanitized!",
+                    "markdownDescription": "Custom CSS rules to be injected into the Project Steward can be placed here. Note that this will not be sanitized!",
                     "default": null
                 },
-                "dashboard.recentColors": {
+                "projectSteward.recentColors": {
                     "type": "array",
-                    "markdownDescription": "Stores the recently used colors if the ```dashboard.storeProjectsInSettings``` option is set to ```true```.",
+                    "markdownDescription": "Stores the recently used colors if the ```projectSteward.storeProjectsInSettings``` option is set to ```true```.",
                     "default": null
                 },
-                "dashboard.storeProjectsInSettings": {
+                "projectSteward.storeProjectsInSettings": {
                     "type": "boolean",
                     "default": false,
-                    "markdownDescription": "If set to ```true```, the dashboard data is saved in the user settings and can be synced using the ```Settings Sync``` extension to multiple devices. NOTE: This disables the possibility of having varying dashboard data on these devices. **(VSCode restart required)**"
+                    "markdownDescription": "If set to ```true```, the Project Steward data is saved in the user settings and can be synced using the ```Settings Sync``` extension to multiple devices. NOTE: This disables the possibility of having varying Project Steward data on these devices. **(VSCode restart required)**"
                 },
-                "dashboard.displayProjectPath": {
+                "projectSteward.displayProjectPath": {
                     "type": "boolean",
                     "default": true
                 },
-                "dashboard.prependVscodeUrlToWslRemotes": {
+                "projectSteward.prependVscodeUrlToWslRemotes": {
                     "type": "boolean",
                     "default": true
                 },
-                "dashboard.projectTileWidth": {
+                "projectSteward.projectTileWidth": {
                     "description": "In px, default: 350",
                     "type": "number",
                     "default": 350
                 },
-                "dashboard.recentColorsToRemember": {
+                "projectSteward.recentColorsToRemember": {
                     "type": "number",
                     "default": 15
                 },
-                "dashboard.openOnStartup": {
+                "projectSteward.openOnStartup": {
                     "type": "string",
                     "default": "empty workspace",
                     "markdownDescription": "Note: The ```empty workspace``` option takes only effect if [Workbench: Startup Editor](#workbench.startupEditor) is to ```none``` or a ```welcomePage``` option.",
@@ -129,47 +128,47 @@
                         "never"
                     ]
                 },
-                "dashboard.showAddGroupButtonTile": {
+                "projectSteward.showAddGroupButtonTile": {
                     "type": "boolean",
-                    "markdownDescription": "If set to ```false```, the '+ New Group' tile is hidden. Groups can be added by using the Command Palette (default ```F1```) with 'dashboard: Add Group' action. The dashboard needs to be refreshed for the changes to take effect.",
+                    "markdownDescription": "If set to ```false```, the '+ New Group' tile is hidden. Groups can be added by using the Command Palette (default ```F1```) with 'Project Steward: Add Group' action. The Project Steward needs to be refreshed for the changes to take effect.",
                     "default": true
                 },
-                "dashboard.showAddProjectButtonTile": {
+                "projectSteward.showAddProjectButtonTile": {
                     "type": "boolean",
-                    "markdownDescription": "If set to ```false```, the dedicated '+' tile is hidden inside groups. Projects can be added by using the actions when hovering the group name. The dashboard needs to be refreshed for the changes to take effect.",
+                    "markdownDescription": "If set to ```false```, the dedicated '+' tile is hidden inside groups. Projects can be added by using the actions when hovering the group name. The Project Steward needs to be refreshed for the changes to take effect.",
                     "default": true
                 },
-                "dashboard.customProjectCardBackground": {
+                "projectSteward.customProjectCardBackground": {
                     "type": "string",
                     "default": null
                 },
-                "dashboard.customProjectNameColor": {
+                "projectSteward.customProjectNameColor": {
                     "type": "string",
                     "default": null
                 },
-                "dashboard.customProjectPathColor": {
+                "projectSteward.customProjectPathColor": {
                     "type": "string",
                     "default": null
                 }
             }
         },
         "views": {
-            "project-dashboard": [
+            "project-steward": [
                 {
                     "type": "webview",
-                    "id": "projectDashboard.dashboard",
-                    "name": "Project Dashboard",
+                    "id": "projectSteward.steward",
+                    "name": "Project Steward",
                     "icon": "media/icon.svg",
                     "visibility": "visible",
-                    "contextualTitle": "Project Dashboard"
+                    "contextualTitle": "Project Steward"
                 }
             ]
         },
         "viewsContainers": {
             "activitybar": [
                 {
-                    "id": "project-dashboard",
-                    "title": "Project Dashboard",
+                    "id": "project-steward",
+                    "title": "Project Steward",
                     "icon": "media/icon.svg"
                 }
             ]

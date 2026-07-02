@@ -1,9 +1,9 @@
 'use strict';
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, DashboardInfos, ProjectOpenType, ReopenDashboardReason, ProjectPathType, sanitizeProjectName } from './models';
-import { getDashboardContent } from './webview/webviewContent';
-import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY } from './constants';
+import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName } from './models';
+import { getStewardContent } from './webview/webviewContent';
+import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
 import { execSync } from 'child_process';
 import { lstatSync } from 'fs';
 
@@ -12,10 +12,12 @@ import ProjectService from './services/projectService';
 import FileService from './services/fileService';
 
 export function activate(context: vscode.ExtensionContext) {
+    const outputChannel = vscode.window.createOutputChannel('Project Steward');
+    context.subscriptions.push(outputChannel);
 
-    class SidebarDashboardViewProvider implements vscode.WebviewViewProvider {
+    class SidebarStewardViewProvider implements vscode.WebviewViewProvider {
 
-        public static readonly viewType = "projectDashboard.dashboard";
+        public static readonly viewType = "projectSteward.steward";
 
         private _view?: vscode.WebviewView;
 
@@ -25,7 +27,7 @@ export function activate(context: vscode.ExtensionContext) {
             this.refresh();
 
             webviewView.webview.onDidReceiveMessage(async (e) => {
-                await handleDashboardMessage(e);
+                await handleStewardMessage(e);
             });
 
             webviewView.onDidChangeVisibility(() => {
@@ -37,13 +39,18 @@ export function activate(context: vscode.ExtensionContext) {
 
         refresh() {
             if (this._view) {
-                this._view.webview.html = getDashboardContent(
-                    context,
-                    this._view.webview,
-                    projectService.getGroups(),
-                    dashboardInfos,
-                    true
-                );
+                try {
+                    this._view.webview.html = getStewardContent(
+                        context,
+                        this._view.webview,
+                        projectService.getGroups(),
+                        stewardInfos,
+                        true
+                    );
+                } catch (error) {
+                    logError('Failed to render Project Steward view.', error);
+                    this._view.webview.html = getErrorContent(error);
+                }
             }
         }
     }
@@ -52,51 +59,51 @@ export function activate(context: vscode.ExtensionContext) {
     const projectService = new ProjectService(context, colorService);
     const fileService = new FileService(context);
 
-    const provider = new SidebarDashboardViewProvider();
+    const provider = new SidebarStewardViewProvider();
 
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider(SidebarDashboardViewProvider.viewType, provider));
+        vscode.window.registerWebviewViewProvider(SidebarStewardViewProvider.viewType, provider));
 
-    const dashboardInfos: DashboardInfos = {
+    const stewardInfos: StewardInfos = {
         relevantExtensionsInstalls: {
             remoteSSH: false,
             remoteContainers: false,
         },
-        get config() { return vscode.workspace.getConfiguration('dashboard') },
+        get config() { return getStewardConfiguration() },
         get otherStorageHasData() { return projectService.otherStorageHasData() },
         get favoritesGroupCollapsed() { return context.globalState.get(FAVORITES_GROUP_COLLAPSED_KEY) as boolean },
         get openProjects() { return getOpenProjects() },
         get openProjectsGroupCollapsed() { return context.globalState.get(OPEN_PROJECTS_GROUP_COLLAPSED_KEY) as boolean },
     };
 
-    const openCommand = vscode.commands.registerCommand('dashboard.open', () => {
-        showDashboard();
+    const openCommand = vscode.commands.registerCommand('projectSteward.open', () => {
+        showSteward();
     });
 
-    const addProjectCommand = vscode.commands.registerCommand('dashboard.addProject', async () => {
+    const addProjectCommand = vscode.commands.registerCommand('projectSteward.addProject', async () => {
         await addProject();
     });
 
-    const saveProjectCommand = vscode.commands.registerCommand('dashboard.saveProject', async () => {
+    const saveProjectCommand = vscode.commands.registerCommand('projectSteward.saveProject', async () => {
         await saveProject();
     });
 
-    const removeProjectCommand = vscode.commands.registerCommand('dashboard.removeProject', async () => {
+    const removeProjectCommand = vscode.commands.registerCommand('projectSteward.removeProject', async () => {
         await removeProjectPerCommand();
     });
 
-    const editProjectsManuallyCommand = vscode.commands.registerCommand('dashboard.editProjects', async () => {
+    const editProjectsManuallyCommand = vscode.commands.registerCommand('projectSteward.editProjects', async () => {
         await editProjectsManuallyPerCommand();
     });
 
-    const addGroupCommand = vscode.commands.registerCommand('dashboard.addGroup', async () => {
+    const addGroupCommand = vscode.commands.registerCommand('projectSteward.addGroup', async () => {
         await addGroup();
     });
 
-    const removeGroupCommand = vscode.commands.registerCommand('dashboard.removeGroup', async () => {
+    const removeGroupCommand = vscode.commands.registerCommand('projectSteward.removeGroup', async () => {
         await removeGroupPerCommand();
     });
-    const addProjectsFromFolderCommand = vscode.commands.registerCommand('dashboard.addProjectsFromFolder', async () => {
+    const addProjectsFromFolderCommand = vscode.commands.registerCommand('projectSteward.addProjectsFromFolder', async () => {
         await addProjectsFromFolder();
     });
 
@@ -110,53 +117,55 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(addProjectsFromFolderCommand);
 
     vscode.workspace.onDidChangeConfiguration(async event => {
-        if (event.affectsConfiguration("dashboard.storeProjectsInSettings")) {
+        if (event.affectsConfiguration("projectSteward.storeProjectsInSettings")
+            || event.affectsConfiguration("dashboard.storeProjectsInSettings")) {
             await checkDataMigration(false);
         }
 
-        if (event.affectsConfiguration("dashboard")) {
-            refreshDashboardViews();
+        if (event.affectsConfiguration("projectSteward")
+            || event.affectsConfiguration("dashboard")) {
+            refreshStewardViews();
         }
     });
 
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
-        refreshDashboardViews();
+        refreshStewardViews();
     });
 
     startUp();
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~ Functions ~~~~~~~~~~~~~~~~~~~~~~~~~
-    async function checkDataMigration(openDashboardAfterMigrate: boolean = false) {
+    async function checkDataMigration(openStewardAfterMigrate: boolean = false) {
         let migrated = await projectService.migrateDataIfNeeded();
         if (migrated) {
-            vscode.window.showInformationMessage("Migrated Dashboard Projects after changing Settings.");
+            vscode.window.showInformationMessage("Migrated Project Steward projects after changing settings.");
 
-            if (openDashboardAfterMigrate) {
-                showDashboard();
+            if (openStewardAfterMigrate) {
+                showSteward();
             }
         }
     }
 
     async function startUp() {
-        for (let exName in dashboardInfos.relevantExtensionsInstalls) {
+        for (let exName in stewardInfos.relevantExtensionsInstalls) {
             let exId = RelevantExtensions[exName];
             let installed = vscode.extensions.getExtension(exId) !== undefined;
-            dashboardInfos.relevantExtensionsInstalls[exName] = installed;
+            stewardInfos.relevantExtensionsInstalls[exName] = installed;
         }
 
         await checkDataMigration();
 
-        let reopenDashboardReason = context.globalState.get(REOPEN_KEY) as ReopenDashboardReason;
-        context.globalState.update(REOPEN_KEY, ReopenDashboardReason.None);
-        showDashboardOnOpenIfNeeded(reopenDashboardReason);
+        let reopenStewardReason = context.globalState.get(REOPEN_KEY) as ReopenStewardReason;
+        context.globalState.update(REOPEN_KEY, ReopenStewardReason.None);
+        showStewardOnOpenIfNeeded(reopenStewardReason);
     }
 
-    function showDashboardOnOpenIfNeeded(reopenReason: ReopenDashboardReason = ReopenDashboardReason.None) {
+    function showStewardOnOpenIfNeeded(reopenReason: ReopenStewardReason = ReopenStewardReason.None) {
 
-        var open = reopenReason !== ReopenDashboardReason.None;
+        var open = reopenReason !== ReopenStewardReason.None;
 
         if (!open) {
-            var { openOnStartup } = dashboardInfos.config;
+            var { openOnStartup } = stewardInfos.config;
 
             switch (openOnStartup) {
                 case StartupOptions.always:
@@ -177,20 +186,75 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         if (open) {
-            showDashboard();
+            showSteward();
         }
     }
 
-    function showDashboard() {
-        revealSidebarDashboard();
-        refreshDashboardViews();
+    function showSteward() {
+        revealSidebarSteward();
+        refreshStewardViews();
     }
 
-    function revealSidebarDashboard() {
-        vscode.commands.executeCommand('workbench.view.extension.project-dashboard')
-            .then(() => vscode.commands.executeCommand(`${SidebarDashboardViewProvider.viewType}.focus`))
-            .then(undefined, () => vscode.commands.executeCommand(`${SidebarDashboardViewProvider.viewType}.focus`))
+    function revealSidebarSteward() {
+        vscode.commands.executeCommand('workbench.view.extension.project-steward')
+            .then(() => vscode.commands.executeCommand(`${SidebarStewardViewProvider.viewType}.focus`))
+            .then(undefined, () => vscode.commands.executeCommand(`${SidebarStewardViewProvider.viewType}.focus`))
             .then(undefined, () => { });
+    }
+
+    function getStewardConfiguration(): vscode.WorkspaceConfiguration {
+        let primaryConfig = vscode.workspace.getConfiguration(PROJECT_STEWARD_CONFIG_SECTION);
+        let legacyConfig = vscode.workspace.getConfiguration(LEGACY_DASHBOARD_CONFIG_SECTION);
+
+        return new Proxy({}, {
+            get(_target, property: string | symbol) {
+                if (property === 'get') {
+                    return (key: string, defaultValue?: any) => getStewardConfigValue(key, defaultValue);
+                }
+
+                if (typeof property === 'string'
+                    && (primaryConfig.inspect(property) || legacyConfig.inspect(property))) {
+                    return getStewardConfigValue(property);
+                }
+
+                let targetValue = (primaryConfig as any)[property as any];
+                if (targetValue !== undefined) {
+                    return typeof targetValue === 'function' ? targetValue.bind(primaryConfig) : targetValue;
+                }
+
+                if (typeof property === 'string') {
+                    return getStewardConfigValue(property);
+                }
+
+                return undefined;
+            },
+        }) as vscode.WorkspaceConfiguration;
+
+        function getStewardConfigValue(key: string, defaultValue?: any) {
+            if (hasConfiguredValue(primaryConfig, key)) {
+                return primaryConfig.get(key, defaultValue);
+            }
+
+            if (hasConfiguredValue(legacyConfig, key)) {
+                return legacyConfig.get(key, defaultValue);
+            }
+
+            return primaryConfig.get(key, defaultValue);
+        }
+    }
+
+    function hasConfiguredValue(config: vscode.WorkspaceConfiguration, key: string): boolean {
+        let inspection = config.inspect(key);
+        if (!inspection) {
+            return false;
+        }
+
+        return inspection.globalValue !== undefined
+            || inspection.workspaceValue !== undefined
+            || inspection.workspaceFolderValue !== undefined
+            || inspection.globalLanguageValue !== undefined
+            || inspection.workspaceLanguageValue !== undefined
+            || inspection.workspaceFolderLanguageValue !== undefined;
     }
 
     function getWebviewOptions(): vscode.WebviewOptions {
@@ -202,15 +266,55 @@ export function activate(context: vscode.ExtensionContext) {
         };
     }
 
-    function refreshDashboardViews() {
+    function refreshStewardViews() {
         provider.refresh();
     }
 
-    function refreshAfterMutation() {
-        refreshDashboardViews();
+    function logError(message: string, error: unknown) {
+        outputChannel.appendLine(message);
+        outputChannel.appendLine(error instanceof Error ? `${error.stack || error.message}` : String(error));
     }
 
-    async function handleDashboardMessage(e: any) {
+    function getErrorContent(error: unknown): string {
+        let message = error instanceof Error ? error.message : String(error);
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            color: var(--vscode-foreground);
+            font-family: var(--vscode-font-family);
+            padding: 12px;
+        }
+        code {
+            color: var(--vscode-errorForeground);
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <p>Project Steward could not render this view.</p>
+    <code>${escapeHtml(message)}</code>
+</body>
+</html>`;
+    }
+
+    function escapeHtml(value: string): string {
+        return value
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function refreshAfterMutation() {
+        refreshStewardViews();
+    }
+
+    async function handleStewardMessage(e: any) {
         let projectId: string, groupId: string;
         switch (e.type) {
             case 'selected-project':
@@ -411,7 +515,7 @@ export function activate(context: vscode.ExtensionContext) {
         group.collapsed = collapsed !== undefined ? collapsed : !group.collapsed;
         await projectService.updateGroup(groupId, group);
 
-        //showDashboard(); // No need to repaint for that
+        //showSteward(); // No need to repaint for that
     }
 
     async function setAllGroupsCollapsed(collapsed: boolean) {
@@ -472,7 +576,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 break;
             case ProjectRemoteType.WSL:
-                var { prependVscodeUrlToWslRemotes } = dashboardInfos.config;
+                var { prependVscodeUrlToWslRemotes } = stewardInfos.config;
                 if (prependVscodeUrlToWslRemotes && projectPath.match(WSL_DEFAULT_REGEX)) {
                     projectPath = `vscode-remote://wsl+${projectPath.replace(WSL_DEFAULT_REGEX, '')}`;
                 }
@@ -533,7 +637,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (!couldOpen) {
             vscode.window.showErrorMessage('Could not add project to workspace.');
         } else if (isNewWorkSpace) {
-            context.globalState.update(REOPEN_KEY, ReopenDashboardReason.EditorReopenedAsWorkspace);
+            context.globalState.update(REOPEN_KEY, ReopenStewardReason.EditorReopenedAsWorkspace);
         }
     }
 
@@ -863,7 +967,7 @@ export function activate(context: vscode.ExtensionContext) {
             { id: 'dir', label: 'Folder Project' },
             { id: 'file', label: 'Workspace or File Project' },
             { id: 'manual', label: `Enter manually` },
-            { id: 'ssh', label: `SSH Target ${!dashboardInfos.relevantExtensionsInstalls.remoteSSH ? '(Remote Development extension is not installed)' : ''}` },
+            { id: 'ssh', label: `SSH Target ${!stewardInfos.relevantExtensionsInstalls.remoteSSH ? '(Remote Development extension is not installed)' : ''}` },
         ];
 
         let selectedProjectTypePick = await vscode.window.showQuickPick(projectTypePicks, {
@@ -1091,7 +1195,7 @@ export function activate(context: vscode.ExtensionContext) {
             return;
 
         await projectService.removeProject(selectedProjectPick.id)
-        showDashboard();
+        showSteward();
     }
 
     async function editProjectsManuallyPerCommand() {
@@ -1158,7 +1262,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
 
                 if (jsonIsInvalid) {
-                    vscode.window.showErrorMessage("Edited Projects File does not meet the Schema expected by Dashboard.");
+                    vscode.window.showErrorMessage("Edited Projects File does not meet the schema expected by Project Steward.");
                     return;
                 }
 
@@ -1176,7 +1280,7 @@ export function activate(context: vscode.ExtensionContext) {
                     vscode.window.showErrorMessage("Could not close the edited Projects File. Please close manually.")
                 }
 
-                showDashboard();
+                showSteward();
 
             }
         });
@@ -1251,7 +1355,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     function getGroupsTempFilePath(): string {
         var savePath = context.globalStoragePath;
-        return `${savePath}/Dashboard Projects.json`;
+        return `${savePath}/Project Steward Projects.json`;
     }
 
     function getLastPartOfPath(path: string): string {

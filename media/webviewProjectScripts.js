@@ -216,7 +216,7 @@ function initProjects() {
     }
 
     function updateToggleAllGroupsButton(collapsed) {
-        document.body.classList.toggle("dashboard-all-collapsed", collapsed);
+        document.body.classList.toggle("steward-all-collapsed", collapsed);
 
         var button = document.querySelector('[data-action="toggle-all-groups"]');
         if (!button)
