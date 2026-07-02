@@ -421,11 +421,18 @@ body .project {
 }
 
 // FILTERING
-.filter-wrapper {
+.dashboard-sticky-header {
     transition: top $defaultTransition;
     top: -$filter-offset;
     position: absolute;
     width: calc(100% - #{2 * $defaultPadding});
+    z-index: 200;
+    background: var(--vscode-editor-background);
+}
+
+.filter-wrapper {
+    width: 100%;
+    box-sizing: border-box;
 
     display: flex;
     align-items: center;
@@ -547,7 +554,7 @@ body {
     &.no-initial-transition {
         transition: none;
 
-        .filter-wrapper {
+        .dashboard-sticky-header {
             transition: none;
         }
     }
@@ -555,12 +562,10 @@ body {
     &.filtering-active {
         padding-top: 0;
 
-        .filter-wrapper {
+        .dashboard-sticky-header {
             position: sticky;
             top: 0;
-            z-index: 200;
             padding-bottom: math.div($defaultPadding, 2);
-            background: var(--vscode-editor-background);
         }
 
         .filtered {
@@ -576,9 +581,16 @@ body.dashboard-sidebar {
     padding-left: 8px;
     padding-right: 8px;
 
-    .filter-wrapper {
-        width: calc(100% - 16px);
+    .dashboard-sticky-header {
+        width: 100%;
+        box-sizing: border-box;
         padding-top: 8px;
+    }
+
+    .filter-wrapper {
+        width: 100%;
+        padding-top: 0;
+        justify-content: stretch;
 
         .search-box {
             flex: 1 1 auto;
@@ -608,7 +620,7 @@ body.dashboard-sidebar {
     &.filtering-active {
         padding-top: 0;
 
-        .filter-wrapper {
+        .dashboard-sticky-header {
             padding-bottom: 8px;
         }
     }

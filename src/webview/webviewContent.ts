@@ -51,10 +51,16 @@ export function getDashboardContent(
         ? infos.favoritesGroupCollapsed
         : groups.every(group => group.collapsed);
     var openProjects = infos.openProjects || [];
-    var allGroups = [
-        ...(openProjects.length ? [getOpenProjectsGroup(openProjects, infos.openProjectsGroupCollapsed)] : []),
+    var openProjectsGroup = openProjects.length
+        ? getOpenProjectsGroup(openProjects, infos.openProjectsGroupCollapsed)
+        : null;
+    var mainGroups = [
         ...(groups.length ? [getFavoritesGroup(favoriteProjects, favoritesGroupCollapsed)] : []),
         ...groups,
+    ];
+    var allGroups = [
+        ...(openProjectsGroup ? [openProjectsGroup] : []),
+        ...mainGroups,
     ];
 
     var allGroupsCollapsed = allGroups.length && allGroups.every(group => group.collapsed);
@@ -80,22 +86,27 @@ export function getDashboardContent(
         ${getCustomStyle(infos.config)}
     </head>
     <body class="preload ${isSidebar ? 'dashboard-sidebar' : ''} ${!groups.length ? 'dashboard-empty' : ''} ${allGroupsCollapsed ? 'dashboard-all-collapsed' : ''}">
-        <div class="filter-wrapper">
-            <div class="search-box">
-                <span class="search-icon">${Icons.search}</span>
-                <input type="search" id="filter" aria-label="Filter Projects">
-                <span id="clear" class="clear-search-icon">${Icons.remove}</span>
+        <div class="dashboard-sticky-header">
+            <div class="filter-wrapper">
+                <div class="search-box">
+                    <span class="search-icon">${Icons.search}</span>
+                    <input type="search" id="filter" aria-label="Filter Projects">
+                    <span id="clear" class="clear-search-icon">${Icons.remove}</span>
+                </div>
+                <button type="button" class="toggle-all-groups-button" data-action="toggle-all-groups" title="${allGroupsCollapsed ? 'Expand All Groups' : 'Collapse All Groups'}" aria-label="${allGroupsCollapsed ? 'Expand All Groups' : 'Collapse All Groups'}">
+                    <span class="toggle-all-groups-collapse-icon">${Icons.collapseAll}</span>
+                    <span class="toggle-all-groups-expand-icon">${Icons.expandAll}</span>
+                </button>
             </div>
-            <button type="button" class="toggle-all-groups-button" data-action="toggle-all-groups" title="${allGroupsCollapsed ? 'Expand All Groups' : 'Collapse All Groups'}" aria-label="${allGroupsCollapsed ? 'Expand All Groups' : 'Collapse All Groups'}">
-                <span class="toggle-all-groups-collapse-icon">${Icons.collapseAll}</span>
-                <span class="toggle-all-groups-expand-icon">${Icons.expandAll}</span>
-            </button>
+            ${openProjectsGroup ? `<div class="sticky-groups-wrapper">
+                ${getGroupSection(openProjectsGroup, allGroups.length, infos)}
+            </div>` : ''}
         </div>
         <div class="">
             <div class="groups-wrapper ${!infos.config.displayProjectPath ? 'hide-project-path' : ''
         }">
-        ${allGroups.length
-            ? allGroups
+        ${mainGroups.length
+            ? mainGroups
                 .map((group) => getGroupSection(group, allGroups.length, infos))
                 .join('\n')
             : (infos.otherStorageHasData ? getImportDiv() : getNoProjectsDiv())
