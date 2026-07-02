@@ -107,7 +107,7 @@ function initFiltering(activeByDefault) {
         let groups = document.querySelectorAll('.group[data-group-id]');
         for (let g of groups) {
             let groupProjects = [...g.querySelectorAll('.project[data-id]')].map(p => p.parentNode);
-            let noneMatches = groupProjects.length && groupProjects.every(p => p.classList.contains(filteredClass));
+            let noneMatches = filterValue && !groupProjects.some(p => !p.classList.contains(filteredClass));
             if (noneMatches) {
                 g.classList.add(filteredClass);
             } else {
