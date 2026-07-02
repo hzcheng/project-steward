@@ -725,13 +725,19 @@ body.steward-sidebar {
 
     .project {
         box-sizing: border-box;
-        width: 100%;
-        height: 62px;
-        margin: 0 0 7px 0;
-        padding: 8px 10px 8px 12px;
+        width: calc(100% - 4px);
+        height: 58px;
+        margin: 0 2px 7px 2px;
+        padding: 8px 10px 8px 15px;
         border: 1px solid var(--vscode-panel-border);
-        border-radius: 7px;
-        background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-sideBar-background));
+        border-radius: 18px;
+        background: var(
+            --vscode-sideBarSectionHeader-background,
+            var(--vscode-list-inactiveSelectionBackground, var(--vscode-sideBar-background))
+        );
+        box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.04),
+            0 1px 4px rgba(0, 0, 0, 0.14);
         overflow: hidden;
         transition:
             background $defaultTransition,
@@ -746,49 +752,41 @@ body.steward-sidebar {
             pointer-events: none;
             opacity: 0;
             background:
-                linear-gradient(
-                    110deg,
-                    transparent 0%,
-                    rgba(255, 255, 255, 0.08) 44%,
-                    rgba(255, 255, 255, 0.18) 50%,
-                    rgba(255, 255, 255, 0.08) 56%,
-                    transparent 100%
-                );
-            transform: translateX(-120%);
-            transition:
-                opacity 180ms ease,
-                transform 650ms ease;
+                linear-gradient(120deg, rgba(255, 255, 255, 0.10), transparent 46%);
+            transition: opacity 180ms ease;
         }
 
         &:hover {
             background: var(--vscode-list-hoverBackground);
             border-color: var(--vscode-focusBorder);
             box-shadow:
-                0 0 0 1px rgba(255, 255, 255, 0.03) inset,
-                0 8px 18px var(--vscode-widget-shadow);
+                inset 0 1px 0 rgba(255, 255, 255, 0.06),
+                0 0 0 1px rgba(255, 255, 255, 0.03),
+                0 6px 14px var(--vscode-widget-shadow);
             transform: translateY(-1px);
 
             &::before {
                 opacity: 1;
-                transform: translateX(120%);
             }
         }
 
         .project-border {
-            left: 0;
-            top: 8px;
-            width: 3px;
-            height: calc(100% - 16px);
-            border-radius: 0 999px 999px 0;
+            left: 7px;
+            top: 50%;
+            width: 4px;
+            height: 22px;
+            border-radius: 999px;
+            opacity: 0.9;
+            transform: translateY(-50%);
             box-shadow: 0 0 10px var(--vscode-focusBorder);
             transition:
-                width $defaultTransition,
+                height $defaultTransition,
                 opacity $defaultTransition;
         }
 
         &:hover .project-border {
-            width: 4px;
-            opacity: 0.95;
+            height: 28px;
+            opacity: 1;
         }
 
         .fitty-container {
@@ -811,11 +809,11 @@ body.steward-sidebar {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 20px;
-            height: 20px;
+            width: 18px;
+            height: 18px;
             border: 1px solid transparent;
-            border-radius: 6px;
-            background: transparent;
+            border-radius: 999px;
+            background: var(--vscode-sideBar-background);
             transition:
                 background $defaultTransition,
                 border-color $defaultTransition,
@@ -829,7 +827,7 @@ body.steward-sidebar {
 
         &:hover .project-kind-icon {
             color: var(--vscode-focusBorder);
-            background: var(--vscode-list-activeSelectionBackground);
+            background: var(--vscode-list-inactiveSelectionBackground);
             border-color: var(--vscode-focusBorder);
         }
 
@@ -849,7 +847,7 @@ body.steward-sidebar {
             font-size: 11px;
             color: var(--vscode-descriptionForeground);
             opacity: 1;
-            margin-top: 6px;
+            margin-top: 5px;
             min-height: 1.2em;
             line-height: 1.25;
             -webkit-line-clamp: 1;
