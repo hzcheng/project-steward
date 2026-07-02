@@ -130,7 +130,9 @@ export function getStewardContent(
 
     <script>
         (function() {
-            fitty('.project-header', ${JSON.stringify(FITTY_OPTIONS)});
+            if (!document.body.classList.contains('steward-sidebar')) {
+                fitty('.project-header', ${JSON.stringify(FITTY_OPTIONS)});
+            }
 
             window.vscode = acquireVsCodeApi();      
             
@@ -165,10 +167,11 @@ function getGroupSection(
         </div>`;
     var dragAttribute = isVirtualGroup ? '' : 'data-drag-group';
     var groupName = escapeAttribute(group.groupName || 'Unnamed Group');
+    var systemGroupAttribute = isVirtualGroup ? ` data-system-group="${group.id}"` : '';
 
     return `
 <div class="group ${group.collapsed ? 'collapsed' : ''} ${group.projects.length === 0 ? 'no-projects' : ''
-        }" data-group-id="${group.id}"${isVirtualGroup ? ' data-virtual-group' : ''}>
+        }" data-group-id="${group.id}"${isVirtualGroup ? ' data-virtual-group' : ''}${systemGroupAttribute}>
     <div class="group-title">
         <span class="group-title-text" data-action="collapse" ${dragAttribute}>
             <span class="collapse-icon" title="Open/Collapse Group">${Icons.collapse

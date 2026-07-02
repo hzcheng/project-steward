@@ -640,6 +640,7 @@ body.steward-sidebar {
             font-size: 15px;
             font-weight: 600;
             line-height: 1.25;
+            box-sizing: border-box;
         }
 
         .group-title-text {
@@ -649,6 +650,48 @@ body.steward-sidebar {
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            font-size: inherit;
+            font-weight: inherit;
+            line-height: inherit;
+        }
+
+        &[data-virtual-group] {
+            padding-top: 2px;
+
+            .group-title {
+                padding: 4px 6px;
+                border: 1px solid var(--vscode-panel-border);
+                border-radius: 7px;
+                background: var(--vscode-list-inactiveSelectionBackground, transparent);
+            }
+
+            .group-title-text {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                overflow: hidden;
+            }
+
+            .group-title-text::after {
+                flex: 0 0 auto;
+                padding: 1px 5px;
+                border: 1px solid var(--vscode-panel-border);
+                border-radius: 999px;
+                color: var(--vscode-descriptionForeground);
+                background: var(--vscode-editor-background);
+                font-size: 9px;
+                font-weight: 600;
+                line-height: 1.4;
+                text-transform: uppercase;
+            }
+
+            &[data-system-group="__openProjects"] .group-title-text::after {
+                content: "Live";
+            }
+
+            &[data-system-group="__favorites"] .group-title-text::after {
+                content: "Pinned";
+            }
         }
 
         .group-actions {
@@ -749,7 +792,9 @@ body.steward-sidebar {
         }
 
         .fitty-container {
+            min-width: 0;
             min-height: 16px;
+            overflow: hidden;
         }
 
         .project-title-row {
@@ -789,6 +834,12 @@ body.steward-sidebar {
         }
 
         .project-header {
+            flex: 1 1 auto;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            display: block;
             font-size: 13px !important;
             font-weight: 600;
             line-height: 1.2;
