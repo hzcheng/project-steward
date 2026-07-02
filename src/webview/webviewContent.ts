@@ -9,7 +9,7 @@ import {
     DashboardInfos,
     sanitizeProjectName,
 } from '../models';
-import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, OPEN_PROJECTS_GROUP_ID, REMOTE_REGEX } from '../constants';
+import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, OPEN_PROJECTS_GROUP_ID } from '../constants';
 import * as Icons from './webviewIcons';
 
 const FAVORITES_GROUP_NAME = 'Favorites';
@@ -221,9 +221,8 @@ function getTempGroupSection(totalGroupCount: number) {
 function getProjectDiv(project: Project, isVirtualProject: boolean = false, isReadOnlyProject: boolean = false) {
     var borderStyle = `background: ${project.color};`;
     var remoteType = getRemoteType(project);
-    var trimmedPath = (project.path || '').replace(REMOTE_REGEX, '');
     var description = sanitizeProjectName(project.description);
-    var searchText = escapeAttribute(`${project.name || ''} ${description} ${trimmedPath}`.toLowerCase());
+    var searchText = escapeAttribute(`${project.name || ''} ${description}`.toLowerCase());
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
