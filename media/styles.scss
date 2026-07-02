@@ -553,9 +553,14 @@ body {
     }
 
     &.filtering-active {
-        padding-top: $filter-offset;
+        padding-top: 0;
+
         .filter-wrapper {
+            position: sticky;
             top: 0;
+            z-index: 200;
+            padding-bottom: math.div($defaultPadding, 2);
+            background: var(--vscode-editor-background);
         }
 
         .filtered {
@@ -601,7 +606,11 @@ body.dashboard-sidebar {
     }
 
     &.filtering-active {
-        padding-top: 44px;
+        padding-top: 0;
+
+        .filter-wrapper {
+            padding-bottom: 8px;
+        }
     }
 
     .groups-wrapper {
