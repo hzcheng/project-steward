@@ -693,12 +693,42 @@ body.steward-sidebar {
         transition:
             background $defaultTransition,
             border-color $defaultTransition,
+            box-shadow $defaultTransition,
             transform $defaultTransition;
+
+        &::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            opacity: 0;
+            background:
+                linear-gradient(
+                    110deg,
+                    transparent 0%,
+                    rgba(255, 255, 255, 0.08) 44%,
+                    rgba(255, 255, 255, 0.18) 50%,
+                    rgba(255, 255, 255, 0.08) 56%,
+                    transparent 100%
+                );
+            transform: translateX(-120%);
+            transition:
+                opacity 180ms ease,
+                transform 650ms ease;
+        }
 
         &:hover {
             background: var(--vscode-list-hoverBackground);
             border-color: var(--vscode-focusBorder);
+            box-shadow:
+                0 0 0 1px rgba(255, 255, 255, 0.03) inset,
+                0 8px 18px var(--vscode-widget-shadow);
             transform: translateY(-1px);
+
+            &::before {
+                opacity: 1;
+                transform: translateX(120%);
+            }
         }
 
         .project-border {
@@ -707,6 +737,15 @@ body.steward-sidebar {
             width: 3px;
             height: calc(100% - 16px);
             border-radius: 0 999px 999px 0;
+            box-shadow: 0 0 10px var(--vscode-focusBorder);
+            transition:
+                width $defaultTransition,
+                opacity $defaultTransition;
+        }
+
+        &:hover .project-border {
+            width: 4px;
+            opacity: 0.95;
         }
 
         .fitty-container {
@@ -721,6 +760,32 @@ body.steward-sidebar {
         .project-kind-icon svg {
             width: 13px;
             height: 13px;
+        }
+
+        .project-kind-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            height: 20px;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            background: transparent;
+            transition:
+                background $defaultTransition,
+                border-color $defaultTransition,
+                color $defaultTransition;
+
+            svg {
+                width: 13px;
+                height: 13px;
+            }
+        }
+
+        &:hover .project-kind-icon {
+            color: var(--vscode-focusBorder);
+            background: var(--vscode-list-activeSelectionBackground);
+            border-color: var(--vscode-focusBorder);
         }
 
         .project-header {
