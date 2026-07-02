@@ -582,9 +582,12 @@ body.dashboard-sidebar {
     padding-right: 8px;
 
     .dashboard-sticky-header {
+        position: sticky;
+        top: 0;
         width: 100%;
         box-sizing: border-box;
         padding-top: 8px;
+        padding-bottom: 8px;
     }
 
     .filter-wrapper {
@@ -614,14 +617,6 @@ body.dashboard-sidebar {
                 width: 12px;
                 height: 12px;
             }
-        }
-    }
-
-    &.filtering-active {
-        padding-top: 0;
-
-        .dashboard-sticky-header {
-            padding-bottom: 8px;
         }
     }
 

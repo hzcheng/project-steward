@@ -25,8 +25,10 @@ function initFiltering(activeByDefault) {
             filterInput.value = '';
             toggleFiltering();
         } else if (filteringActive && e.key === "Escape") {
-            filterInput.value = '';
-            toggleFiltering(false);
+            clearFilter();
+            if (!activeByDefault) {
+                toggleFiltering(false);
+            }
         }
     });
 
