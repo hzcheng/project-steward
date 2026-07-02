@@ -139,6 +139,7 @@ export interface DashboardInfos {
     relevantExtensionsInstalls: { remoteSSH: boolean; remoteContainers: boolean };
     config: vscode.WorkspaceConfiguration;
     otherStorageHasData: boolean;
+    favoritesGroupCollapsed?: boolean;
 }
 
 export enum ProjectPathType {

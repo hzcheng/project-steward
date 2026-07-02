@@ -72,13 +72,16 @@ function initProjects() {
             return;
         }
 
+        var collapsed = groupDiv.classList.contains("collapsed");
         if (action === "collapse") {
             groupDiv.classList.toggle("collapsed");
+            collapsed = groupDiv.classList.contains("collapsed");
         }
 
         window.vscode.postMessage({
             type: action + '-group',
             groupId: groupId,
+            collapsed,
         });
     }
 

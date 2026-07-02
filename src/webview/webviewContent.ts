@@ -9,10 +9,9 @@ import {
     DashboardInfos,
     sanitizeProjectName,
 } from '../models';
-import { FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, REMOTE_REGEX } from '../constants';
+import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, REMOTE_REGEX } from '../constants';
 import * as Icons from './webviewIcons';
 
-const FAVORITES_GROUP_ID = '__favorites';
 const FAVORITES_GROUP_NAME = 'Favorites';
 
 export function getDashboardContent(
@@ -47,8 +46,11 @@ export function getDashboardContent(
     var favoriteProjects = groups
         .reduce((projects, group) => projects.concat(group.projects || []), [] as Project[])
         .filter(project => project.favorite);
+    var favoritesGroupCollapsed = infos.favoritesGroupCollapsed !== undefined
+        ? infos.favoritesGroupCollapsed
+        : groups.every(group => group.collapsed);
     var allGroups = groups.length
-        ? [getFavoritesGroup(favoriteProjects, groups.every(group => group.collapsed)), ...groups]
+        ? [getFavoritesGroup(favoriteProjects, favoritesGroupCollapsed), ...groups]
         : [];
 
     var allGroupsCollapsed = groups.length && groups.every(group => group.collapsed);

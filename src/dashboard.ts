@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, DashboardInfos, ProjectOpenType, ReopenDashboardReason, ProjectPathType, sanitizeProjectName } from './models';
 import { getDashboardContent } from './webview/webviewContent';
-import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX } from './constants';
+import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY } from './constants';
 import { execSync } from 'child_process';
 import { lstatSync } from 'fs';
 
@@ -71,6 +71,7 @@ export function activate(context: vscode.ExtensionContext) {
         },
         get config() { return vscode.workspace.getConfiguration('dashboard') },
         get otherStorageHasData() { return projectService.otherStorageHasData() },
+        get favoritesGroupCollapsed() { return context.globalState.get(FAVORITES_GROUP_COLLAPSED_KEY) as boolean },
     };
 
     const openCommand = vscode.commands.registerCommand('dashboard.open', () => {
@@ -296,7 +297,7 @@ export function activate(context: vscode.ExtensionContext) {
                 break;
             case 'collapse-group':
                 groupId = e.groupId as string;
-                await collapseGroup(groupId);
+                await collapseGroup(groupId, e.collapsed as boolean);
                 break;
             case 'toggle-all-groups':
                 await setAllGroupsCollapsed(Boolean(e.collapsed));
@@ -422,13 +423,18 @@ export function activate(context: vscode.ExtensionContext) {
         refreshAfterMutation();
     }
 
-    async function collapseGroup(groupId: string) {
+    async function collapseGroup(groupId: string, collapsed?: boolean) {
+        if (groupId === FAVORITES_GROUP_ID) {
+            await context.globalState.update(FAVORITES_GROUP_COLLAPSED_KEY, Boolean(collapsed));
+            return;
+        }
+
         var group = projectService.getGroup(groupId);
         if (group == null) {
             return;
         }
 
-        group.collapsed = !group.collapsed;
+        group.collapsed = collapsed !== undefined ? collapsed : !group.collapsed;
         await projectService.updateGroup(groupId, group);
 
         //showDashboard(); // No need to repaint for that
@@ -437,6 +443,7 @@ export function activate(context: vscode.ExtensionContext) {
     async function setAllGroupsCollapsed(collapsed: boolean) {
         var groups = projectService.getGroups();
         groups.forEach(group => group.collapsed = collapsed);
+        await context.globalState.update(FAVORITES_GROUP_COLLAPSED_KEY, collapsed);
         await projectService.saveGroups(groups);
 
         refreshAfterMutation();

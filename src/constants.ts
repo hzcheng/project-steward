@@ -20,6 +20,8 @@ export const INBUILT_COLOR_DEFAULTS = [
 export const PROJECTS_KEY = 'projects';
 export const RECENT_COLORS_KEY = 'recentColors';
 export const REOPEN_KEY = 'reopenDashboardReason';
+export const FAVORITES_GROUP_ID = '__favorites';
+export const FAVORITES_GROUP_COLLAPSED_KEY = 'favoritesGroupCollapsed';
 
 export enum StorageOption {
     GlobalState,
