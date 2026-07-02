@@ -117,6 +117,9 @@ function initProjects() {
         if (!projectDiv && !groupDiv)
             return;
 
+        if (projectDiv && projectDiv.hasAttribute("data-readonly-project"))
+            return;
+
         e.preventDefault();
 
         let contextMenuForProject = projectDiv != null;
@@ -226,8 +229,7 @@ function initProjects() {
 
     function toggleAllGroups() {
         var groups = [...document.querySelectorAll('.group[data-group-id]')];
-        var realGroups = groups.filter(group => !group.hasAttribute("data-virtual-group"));
-        var shouldCollapse = realGroups.some(group => !group.classList.contains("collapsed"));
+        var shouldCollapse = groups.some(group => !group.classList.contains("collapsed"));
 
         groups.forEach(group => group.classList.toggle("collapsed", shouldCollapse));
         updateToggleAllGroupsButton(shouldCollapse);

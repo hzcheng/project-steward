@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, DashboardInfos, ProjectOpenType, ReopenDashboardReason, ProjectPathType, sanitizeProjectName } from './models';
 import { getDashboardContent } from './webview/webviewContent';
-import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY } from './constants';
+import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY } from './constants';
 import { execSync } from 'child_process';
 import { lstatSync } from 'fs';
 
@@ -72,6 +72,8 @@ export function activate(context: vscode.ExtensionContext) {
         get config() { return vscode.workspace.getConfiguration('dashboard') },
         get otherStorageHasData() { return projectService.otherStorageHasData() },
         get favoritesGroupCollapsed() { return context.globalState.get(FAVORITES_GROUP_COLLAPSED_KEY) as boolean },
+        get openProjects() { return getOpenProjects() },
+        get openProjectsGroupCollapsed() { return context.globalState.get(OPEN_PROJECTS_GROUP_COLLAPSED_KEY) as boolean },
     };
 
     const openCommand = vscode.commands.registerCommand('dashboard.open', () => {
@@ -122,6 +124,10 @@ export function activate(context: vscode.ExtensionContext) {
         if (event.affectsConfiguration("dashboard")) {
             refreshDashboardViews();
         }
+    });
+
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        refreshDashboardViews();
     });
 
     startUp();
@@ -248,7 +254,7 @@ export function activate(context: vscode.ExtensionContext) {
                 projectId = e.projectId as string;
                 let projectOpenType = e.projectOpenType as ProjectOpenType;
 
-                let project = projectService.getProject(projectId);
+                let project = projectService.getProject(projectId) || getOpenProjects().find(p => p.id === projectId);
                 if (project == null) {
                     vscode.window.showWarningMessage("Selected Project not found.");
                     break;
@@ -429,6 +435,11 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
+        if (groupId === OPEN_PROJECTS_GROUP_ID) {
+            await context.globalState.update(OPEN_PROJECTS_GROUP_COLLAPSED_KEY, Boolean(collapsed));
+            return;
+        }
+
         var group = projectService.getGroup(groupId);
         if (group == null) {
             return;
@@ -444,6 +455,7 @@ export function activate(context: vscode.ExtensionContext) {
         var groups = projectService.getGroups();
         groups.forEach(group => group.collapsed = collapsed);
         await context.globalState.update(FAVORITES_GROUP_COLLAPSED_KEY, collapsed);
+        await context.globalState.update(OPEN_PROJECTS_GROUP_COLLAPSED_KEY, collapsed);
         await projectService.saveGroups(groups);
 
         refreshAfterMutation();
@@ -1290,6 +1302,28 @@ export function activate(context: vscode.ExtensionContext) {
         let lastPart = path.replace(/^[\\\/]|[\\\/]$/g, '').replace(/^.*[\\\/]/, '');
 
         return lastPart;
+    }
+
+    function getOpenProjects(): Project[] {
+        let workspaceFile = vscode.workspace.workspaceFile;
+        if (workspaceFile && workspaceFile.scheme !== "untitled") {
+            return [buildOpenProject(workspaceFile, 0, "Current workspace")];
+        }
+
+        return (vscode.workspace.workspaceFolders || [])
+            .map((folder, index) => buildOpenProject(folder.uri, index, "Workspace folder", folder.name));
+    }
+
+    function buildOpenProject(uri: vscode.Uri, index: number, description: string, name: string = null): Project {
+        let projectPath = uriToProjectPath(uri);
+        let projectName = name || getLastPartOfPath(projectPath).replace(/\.code-workspace$/g, '') || "Workspace";
+        let project = new Project(projectName, projectPath, description);
+        project.id = `${OPEN_PROJECTS_GROUP_ID}-${index}`;
+        project.color = "var(--vscode-focusBorder)";
+        project.isGitRepo = isFolderGitRepo(projectPath);
+        project.remoteType = getRemoteTypeFromRemoteName(vscode.env.remoteName);
+
+        return project;
     }
 
     function getWorkspacePath(): string {

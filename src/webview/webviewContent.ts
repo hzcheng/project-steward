@@ -9,10 +9,11 @@ import {
     DashboardInfos,
     sanitizeProjectName,
 } from '../models';
-import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, REMOTE_REGEX } from '../constants';
+import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, OPEN_PROJECTS_GROUP_ID, REMOTE_REGEX } from '../constants';
 import * as Icons from './webviewIcons';
 
 const FAVORITES_GROUP_NAME = 'Favorites';
+const OPEN_PROJECTS_GROUP_NAME = 'Open Projects';
 
 export function getDashboardContent(
     context: vscode.ExtensionContext,
@@ -49,11 +50,14 @@ export function getDashboardContent(
     var favoritesGroupCollapsed = infos.favoritesGroupCollapsed !== undefined
         ? infos.favoritesGroupCollapsed
         : groups.every(group => group.collapsed);
-    var allGroups = groups.length
-        ? [getFavoritesGroup(favoriteProjects, favoritesGroupCollapsed), ...groups]
-        : [];
+    var openProjects = infos.openProjects || [];
+    var allGroups = [
+        ...(openProjects.length ? [getOpenProjectsGroup(openProjects, infos.openProjectsGroupCollapsed)] : []),
+        ...(groups.length ? [getFavoritesGroup(favoriteProjects, favoritesGroupCollapsed)] : []),
+        ...groups,
+    ];
 
-    var allGroupsCollapsed = groups.length && groups.every(group => group.collapsed);
+    var allGroupsCollapsed = allGroups.length && allGroups.every(group => group.collapsed);
 
     return `
 <!DOCTYPE html>
@@ -90,7 +94,7 @@ export function getDashboardContent(
         <div class="">
             <div class="groups-wrapper ${!infos.config.displayProjectPath ? 'hide-project-path' : ''
         }">
-        ${groups.length
+        ${allGroups.length
             ? allGroups
                 .map((group) => getGroupSection(group, allGroups.length, infos))
                 .join('\n')
@@ -139,7 +143,7 @@ function getGroupSection(
     // Apply changes to HTML here also to getTempGroupSection
 
     var showAddProjectButton = infos.config.showAddProjectButtonTile;
-    var isVirtualGroup = group.id === FAVORITES_GROUP_ID;
+    var isVirtualGroup = isVirtualGroupId(group.id);
     var groupActions = isVirtualGroup
         ? ''
         : `<div class="group-actions right">
@@ -163,7 +167,7 @@ function getGroupSection(
     </div>
     <div class="group-list">
         <div class="drop-signal"></div>
-        ${group.projects.map((p) => getProjectDiv(p, isVirtualGroup)).join('\n')}
+        ${group.projects.map((p) => getProjectDiv(p, isVirtualGroup, group.id === OPEN_PROJECTS_GROUP_ID)).join('\n')}
         ${showAddProjectButton && !isVirtualGroup ? getAddProjectDiv(group.id) : ''}
     </div>       
 </div>`;
@@ -175,6 +179,18 @@ function getFavoritesGroup(favoriteProjects: Project[], collapsed: boolean = fal
     group.collapsed = collapsed;
 
     return group;
+}
+
+function getOpenProjectsGroup(openProjects: Project[], collapsed: boolean = false): Group {
+    var group = new Group(OPEN_PROJECTS_GROUP_NAME, openProjects);
+    group.id = OPEN_PROJECTS_GROUP_ID;
+    group.collapsed = collapsed;
+
+    return group;
+}
+
+function isVirtualGroupId(groupId: string): boolean {
+    return groupId === FAVORITES_GROUP_ID || groupId === OPEN_PROJECTS_GROUP_ID;
 }
 
 function getTempGroupSection(totalGroupCount: number) {
@@ -191,7 +207,7 @@ function getTempGroupSection(totalGroupCount: number) {
 </div>`;
 }
 
-function getProjectDiv(project: Project, isVirtualProject: boolean = false) {
+function getProjectDiv(project: Project, isVirtualProject: boolean = false, isReadOnlyProject: boolean = false) {
     var borderStyle = `background: ${project.color};`;
     var remoteType = getRemoteType(project);
     var trimmedPath = (project.path || '').replace(REMOTE_REGEX, '');
@@ -202,18 +218,9 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false) {
     var projectIconTitle = getProjectIconTitle(remoteType);
     var favoriteIcon = project.favorite ? Icons.starFilled : Icons.star;
     var favoriteTitle = project.favorite ? 'Remove From Favorites' : 'Add To Favorites';
-
-    var isRemote = remoteType !== ProjectRemoteType.None;
-
-    return `
-<div class="project-container"${isVirtualProject ? ' data-nodrag' : ''}>
-    <div class="project" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
-        }${isVirtualProject ? ' data-virtual-project' : ''
-        }>
-        <div class="project-border" style="${borderStyle}"></div>
-        <div class="project-actions-wrapper">
-            <div class="project-actions">
-                <span data-action="favorite" title="${favoriteTitle}" class="favorite-action ${project.favorite ? 'active' : ''
+    var projectActions = isReadOnlyProject
+        ? `<span data-action="open-new-window" title="Open Project In New Window">${Icons.openNewWindow}</span>`
+        : `<span data-action="favorite" title="${favoriteTitle}" class="favorite-action ${project.favorite ? 'active' : ''
         }">${favoriteIcon
         }</span>
                 <span data-action="open-new-window" title="Open Project In New Window">${Icons.openNewWindow
@@ -223,7 +230,20 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false) {
                 <span data-action="edit" title="Edit Project">${Icons.edit
         }</span>
                 <span data-action="remove" title="Remove Project">${Icons.remove
-        }</span>
+        }</span>`;
+
+    var isRemote = remoteType !== ProjectRemoteType.None;
+
+    return `
+<div class="project-container"${isVirtualProject ? ' data-nodrag' : ''}>
+    <div class="project" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
+        }${isVirtualProject ? ' data-virtual-project' : ''
+        }${isReadOnlyProject ? ' data-readonly-project' : ''
+        }>
+        <div class="project-border" style="${borderStyle}"></div>
+        <div class="project-actions-wrapper">
+            <div class="project-actions">
+                ${projectActions}
             </div>
         </div>
         <div class="fitty-container project-title-row">

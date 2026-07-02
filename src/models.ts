@@ -140,6 +140,8 @@ export interface DashboardInfos {
     config: vscode.WorkspaceConfiguration;
     otherStorageHasData: boolean;
     favoritesGroupCollapsed?: boolean;
+    openProjects?: Project[];
+    openProjectsGroupCollapsed?: boolean;
 }
 
 export enum ProjectPathType {

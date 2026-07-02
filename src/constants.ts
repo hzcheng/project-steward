@@ -22,6 +22,8 @@ export const RECENT_COLORS_KEY = 'recentColors';
 export const REOPEN_KEY = 'reopenDashboardReason';
 export const FAVORITES_GROUP_ID = '__favorites';
 export const FAVORITES_GROUP_COLLAPSED_KEY = 'favoritesGroupCollapsed';
+export const OPEN_PROJECTS_GROUP_ID = '__openProjects';
+export const OPEN_PROJECTS_GROUP_COLLAPSED_KEY = 'openProjectsGroupCollapsed';
 
 export enum StorageOption {
     GlobalState,
