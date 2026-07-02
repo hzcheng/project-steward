@@ -25,12 +25,7 @@ export function activate(context: vscode.ExtensionContext) {
             this.refresh();
 
             webviewView.webview.onDidReceiveMessage(async (e) => {
-                isHandlingSidebarMessage = true;
-                try {
-                    await handleDashboardMessage(e);
-                } finally {
-                    isHandlingSidebarMessage = false;
-                }
+                await handleDashboardMessage(e);
             });
 
             webviewView.onDidChangeVisibility(() => {
@@ -53,8 +48,6 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
-    var instance: vscode.WebviewPanel = null;
-    var isHandlingSidebarMessage = false;
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
     const fileService = new FileService(context);
@@ -189,31 +182,15 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function showDashboard() {
-        if (!instance) {
-            var panel = vscode.window.createWebviewPanel(
-                "dashboard",
-                "Project Dashboard",
-                vscode.ViewColumn.One,
-                getWebviewOptions(),
-            );
-            panel.iconPath = vscode.Uri.file(path.join(context.extensionPath, 'media', 'icon.svg'));
+        revealSidebarDashboard();
+        refreshDashboardViews();
+    }
 
-            // Reset when the current panel is closed
-            panel.onDidDispose(() => {
-                instance = null;
-            }, null, context.subscriptions);
-
-            panel.webview.onDidReceiveMessage(async (e) => {
-                await handleDashboardMessage(e);
-            });
-            panel.onDidDispose(() => {
-                instance = null;
-            })
-
-            instance = panel;
-        }
-
-        refreshDashboardViews(true);
+    function revealSidebarDashboard() {
+        vscode.commands.executeCommand('workbench.view.extension.project-dashboard')
+            .then(() => vscode.commands.executeCommand(`${SidebarDashboardViewProvider.viewType}.focus`))
+            .then(undefined, () => vscode.commands.executeCommand(`${SidebarDashboardViewProvider.viewType}.focus`))
+            .then(undefined, () => { });
     }
 
     function getWebviewOptions(): vscode.WebviewOptions {
@@ -225,26 +202,12 @@ export function activate(context: vscode.ExtensionContext) {
         };
     }
 
-    function refreshDashboardViews(revealMainDashboard: boolean = false) {
-        var columnToShowIn = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : null;
-        var projects = projectService.getGroups();
-
-        if (instance) {
-            instance.webview.html = getDashboardContent(context, instance.webview, projects, dashboardInfos);
-            if (revealMainDashboard) {
-                instance.reveal(columnToShowIn);
-            }
-        }
-
+    function refreshDashboardViews() {
         provider.refresh();
     }
 
     function refreshAfterMutation() {
-        if (isHandlingSidebarMessage) {
-            refreshDashboardViews();
-        } else {
-            showDashboard();
-        }
+        refreshDashboardViews();
     }
 
     async function handleDashboardMessage(e: any) {
@@ -571,7 +534,6 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showErrorMessage('Could not add project to workspace.');
         } else if (isNewWorkSpace) {
             context.globalState.update(REOPEN_KEY, ReopenDashboardReason.EditorReopenedAsWorkspace);
-            instance.dispose();
         }
     }
 
