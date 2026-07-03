@@ -357,6 +357,10 @@ export function activate(context: vscode.ExtensionContext) {
                 projectId = e.projectId as string;
                 await toggleProjectFavorite(projectId);
                 break;
+            case 'save-project':
+                projectId = e.projectId as string;
+                await saveOpenProject(projectId);
+                break;
             case 'edit-group':
                 groupId = e.groupId as string;
                 await editGroup(groupId);
@@ -754,11 +758,21 @@ export function activate(context: vscode.ExtensionContext) {
         refreshAfterMutation();
     }
 
-    async function saveProject(groupId: string = null, groupWasNewlyCreated: boolean = false) {
+    async function saveOpenProject(projectId: string) {
+        let uri = getOpenProjectUri(projectId);
+        if (uri == null) {
+            vscode.window.showWarningMessage("Selected Project not found.");
+            return;
+        }
+
+        await saveProject(null, false, await getProjectDetailsForSave(uri));
+    }
+
+    async function saveProject(groupId: string = null, groupWasNewlyCreated: boolean = false, projectDetails: { path: string, remoteType: ProjectRemoteType } = null) {
         var selectedGroupId: string;
 
         try {
-            let currentProjectDetails = await getCurrentProjectDetailsForSave();
+            let currentProjectDetails = projectDetails || await getCurrentProjectDetailsForSave();
             if (!currentProjectDetails || !currentProjectDetails.path) {
                 vscode.window.showWarningMessage("No project is currently open.");
                 return;
@@ -1484,6 +1498,25 @@ export function activate(context: vscode.ExtensionContext) {
             .map((folder, index) => buildOpenProject(folder.uri, index, "Workspace folder", folder.name));
     }
 
+    function getOpenProjectUri(projectId: string): vscode.Uri {
+        let prefix = `${OPEN_PROJECTS_GROUP_ID}-`;
+        if (!projectId || !projectId.startsWith(prefix)) {
+            return null;
+        }
+
+        let index = Number(projectId.substring(prefix.length));
+        if (!Number.isInteger(index) || index < 0) {
+            return null;
+        }
+
+        let workspaceFile = vscode.workspace.workspaceFile;
+        if (workspaceFile && workspaceFile.scheme !== "untitled") {
+            return index === 0 ? workspaceFile : null;
+        }
+
+        return (vscode.workspace.workspaceFolders || [])[index]?.uri || null;
+    }
+
     function buildOpenProject(uri: vscode.Uri, index: number, description: string, name: string = null): Project {
         let projectPath = uriToProjectPath(uri);
         let savedProject = findSavedProjectForOpenProject(uri);
@@ -1493,6 +1526,7 @@ export function activate(context: vscode.ExtensionContext) {
         project.id = `${OPEN_PROJECTS_GROUP_ID}-${index}`;
         project.color = savedProject?.color || "var(--vscode-focusBorder)";
         project.favorite = savedProject?.favorite;
+        project.showSaveAction = savedProject == null;
         project.isGitRepo = isFolderGitRepo(projectPath);
         project.remoteType = savedProject?.remoteType ?? (savedProject ? getRemoteType(savedProject) : getRemoteTypeFromRemoteName(vscode.env.remoteName));
 
@@ -1582,6 +1616,10 @@ export function activate(context: vscode.ExtensionContext) {
             return null;
         }
 
+        return getProjectDetailsForSave(workspaceUri);
+    }
+
+    async function getProjectDetailsForSave(workspaceUri: vscode.Uri): Promise<{ path: string, remoteType: ProjectRemoteType }> {
         let remoteType = getRemoteTypeFromRemoteName(vscode.env.remoteName);
         if (workspaceUri.scheme === "file") {
             let codespaceUri = await resolveCurrentCodespaceWorkspaceUri(workspaceUri);

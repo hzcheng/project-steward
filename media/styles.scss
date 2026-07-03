@@ -286,7 +286,46 @@ body .project {
         }
     }
 
+    .project-save-badge {
+        position: absolute;
+        right: 13px;
+        top: 50%;
+        z-index: 45;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        color: var(--vscode-descriptionForeground);
+        cursor: pointer;
+        opacity: 0.72;
+        transform: translateY(-50%);
+        transition:
+            color $defaultTransition,
+            opacity $defaultTransition,
+            transform $defaultTransition;
+
+        svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+
+        &:hover {
+            color: var(--vscode-focusBorder);
+            opacity: 1;
+            transform: translateY(-50%) scale(1.08);
+        }
+    }
+
     &[data-has-favorite-toggle] {
+        .project-description {
+            width: calc(100% - 30px);
+        }
+    }
+
+    &[data-has-save-action] {
+        .fitty-container,
         .project-description {
             width: calc(100% - 30px);
         }
@@ -849,7 +888,25 @@ body.steward-sidebar {
             }
         }
 
+        .project-save-badge {
+            right: 10px;
+            width: 15px;
+            height: 15px;
+
+            svg {
+                width: 13px;
+                height: 13px;
+            }
+        }
+
         &[data-has-favorite-toggle] {
+            .project-description {
+                width: calc(100% - 22px);
+            }
+        }
+
+        &[data-has-save-action] {
+            .fitty-container,
             .project-description {
                 width: calc(100% - 22px);
             }

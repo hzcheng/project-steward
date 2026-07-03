@@ -251,6 +251,9 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var favoriteBadge = isReadOnlyProject
         ? ''
         : `<span data-action="favorite" class="project-favorite-badge ${project.favorite ? 'active' : ''}" title="${favoriteTitle}">${favoriteBadgeIcon}</span>`;
+    var saveBadge = project.showSaveAction
+        ? `<span data-action="save" class="project-save-badge" title="Save Current Project">${Icons.save}</span>`
+        : '';
 
     var isRemote = remoteType !== ProjectRemoteType.None;
 
@@ -260,10 +263,12 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
         }${isVirtualProject ? ' data-virtual-project' : ''
         }${isReadOnlyProject ? ' data-readonly-project' : ''
         }${!isReadOnlyProject ? ' data-has-favorite-toggle' : ''
+        }${project.showSaveAction ? ' data-has-save-action' : ''
         }${project.favorite ? ' data-favorite-project' : ''
         }>
         <div class="project-border" style="${borderStyle}"></div>
         ${favoriteBadge}
+        ${saveBadge}
         ${projectActionsWrapper}
         <div class="fitty-container project-title-row">
             <span class="project-kind-icon" title="${projectIconTitle}">
