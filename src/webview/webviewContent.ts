@@ -231,14 +231,10 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
-    var favoriteIcon = project.favorite ? Icons.starFilled : Icons.star;
     var favoriteTitle = project.favorite ? 'Remove From Favorites' : 'Add To Favorites';
     var projectActions = isReadOnlyProject
         ? ''
-        : `<span data-action="favorite" title="${favoriteTitle}" class="favorite-action ${project.favorite ? 'active' : ''
-        }">${favoriteIcon
-        }</span>
-                <span data-action="color" title="Edit Color">${Icons.palette
+        : `<span data-action="color" title="Edit Color">${Icons.palette
         }</span>
                 <span data-action="edit" title="Edit Project">${Icons.edit
         }</span>
@@ -251,6 +247,10 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
             </div>
         </div>`
         : '';
+    var favoriteBadgeIcon = project.favorite ? Icons.starFilled : Icons.star;
+    var favoriteBadge = isReadOnlyProject
+        ? ''
+        : `<span data-action="favorite" class="project-favorite-badge ${project.favorite ? 'active' : ''}" title="${favoriteTitle}">${favoriteBadgeIcon}</span>`;
 
     var isRemote = remoteType !== ProjectRemoteType.None;
 
@@ -259,8 +259,11 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     <div class="project" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${isVirtualProject ? ' data-virtual-project' : ''
         }${isReadOnlyProject ? ' data-readonly-project' : ''
+        }${!isReadOnlyProject ? ' data-has-favorite-toggle' : ''
+        }${project.favorite ? ' data-favorite-project' : ''
         }>
         <div class="project-border" style="${borderStyle}"></div>
+        ${favoriteBadge}
         ${projectActionsWrapper}
         <div class="fitty-container project-title-row">
             <span class="project-kind-icon" title="${projectIconTitle}">

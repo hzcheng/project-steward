@@ -244,6 +244,50 @@ body .project {
         z-index: 50;
     }
 
+    .project-favorite-badge {
+        position: absolute;
+        right: 13px;
+        bottom: 13px;
+        z-index: 45;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        color: var(--vscode-descriptionForeground);
+        cursor: pointer;
+        opacity: 0.55;
+        transition:
+            color $defaultTransition,
+            filter $defaultTransition,
+            opacity $defaultTransition,
+            transform $defaultTransition;
+
+        svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+
+        &.active {
+            color: #f2c94c;
+            opacity: 1;
+            filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+        }
+
+        &:hover {
+            color: #f2c94c;
+            opacity: 1;
+            transform: scale(1.08);
+        }
+    }
+
+    &[data-has-favorite-toggle] {
+        .project-description {
+            width: calc(100% - 30px);
+        }
+    }
+
     .fitty-container {
         width: 100%;
         max-width: 100%;
@@ -333,10 +377,6 @@ body .project {
         transition: margin-top $defaultTransition $actionTransitionDelay;
 
         @include actions($dataActionIconSize);
-
-        .favorite-action.active svg {
-            filter: brightness(150%);
-        }
     }
 
     &:hover .project-actions {
@@ -787,6 +827,24 @@ body.steward-sidebar {
         &:hover .project-border {
             height: 28px;
             opacity: 1;
+        }
+
+        .project-favorite-badge {
+            right: 10px;
+            bottom: 9px;
+            width: 15px;
+            height: 15px;
+
+            svg {
+                width: 13px;
+                height: 13px;
+            }
+        }
+
+        &[data-has-favorite-toggle] {
+            .project-description {
+                width: calc(100% - 22px);
+            }
         }
 
         .fitty-container {
