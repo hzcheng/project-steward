@@ -1486,14 +1486,84 @@ export function activate(context: vscode.ExtensionContext) {
 
     function buildOpenProject(uri: vscode.Uri, index: number, description: string, name: string = null): Project {
         let projectPath = uriToProjectPath(uri);
-        let projectName = name || getLastPartOfPath(projectPath).replace(/\.code-workspace$/g, '') || "Workspace";
-        let project = new Project(projectName, projectPath, description);
+        let savedProject = findSavedProjectForOpenProject(uri);
+        let projectName = savedProject?.name || name || getLastPartOfPath(projectPath).replace(/\.code-workspace$/g, '') || "Workspace";
+        let projectDescription = savedProject ? savedProject.description : description;
+        let project = new Project(projectName, projectPath, projectDescription);
         project.id = `${OPEN_PROJECTS_GROUP_ID}-${index}`;
-        project.color = "var(--vscode-focusBorder)";
+        project.color = savedProject?.color || "var(--vscode-focusBorder)";
+        project.favorite = savedProject?.favorite;
         project.isGitRepo = isFolderGitRepo(projectPath);
-        project.remoteType = getRemoteTypeFromRemoteName(vscode.env.remoteName);
+        project.remoteType = savedProject?.remoteType ?? (savedProject ? getRemoteType(savedProject) : getRemoteTypeFromRemoteName(vscode.env.remoteName));
 
         return project;
+    }
+
+    function findSavedProjectForOpenProject(uri: vscode.Uri): Project {
+        let savedProjects = projectService.getProjectsFlat();
+        let exactMatch = savedProjects.find(project => projectMatchesOpenProject(project, uri));
+        if (exactMatch) {
+            return exactMatch;
+        }
+
+        let remotePathMatches = savedProjects.filter(project => projectPathMatchesRemoteOpenProject(project, uri));
+        return remotePathMatches.length === 1 ? remotePathMatches[0] : null;
+    }
+
+    function projectMatchesOpenProject(project: Project, uri: vscode.Uri): boolean {
+        if (!project || !project.path || !uri) {
+            return false;
+        }
+
+        if (projectPathMatchesWorkspaceUri(project.path, uri)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    function projectPathMatchesRemoteOpenProject(project: Project, uri: vscode.Uri): boolean {
+        if (!vscode.env.remoteName || !projectRemoteTypeMatchesCurrentRemote(project)) {
+            return false;
+        }
+
+        if (uri.scheme === "vscode-remote" || uri.authority) {
+            return false;
+        }
+
+        let projectPath = getProjectPathPart(project.path);
+        let openPath = uri.path || uri.fsPath;
+        if (!projectPath || !openPath) {
+            return false;
+        }
+
+        return normalizePosixPath(projectPath) === normalizePosixPath(openPath);
+    }
+
+    function projectRemoteTypeMatchesCurrentRemote(project: Project): boolean {
+        let currentRemoteType = getRemoteTypeFromRemoteName(vscode.env.remoteName);
+        if (currentRemoteType === ProjectRemoteType.None) {
+            return false;
+        }
+
+        return getRemoteType(project) === currentRemoteType;
+    }
+
+    function getProjectPathPart(projectPath: string): string {
+        if (!projectPath) {
+            return projectPath;
+        }
+
+        if (!isUriString(projectPath)) {
+            return projectPath;
+        }
+
+        try {
+            let uri = vscode.Uri.parse(projectPath);
+            return uri.path || uri.fsPath || projectPath;
+        } catch (e) {
+            return projectPath;
+        }
     }
 
     function getWorkspacePath(): string {
