@@ -562,15 +562,23 @@ export function activate(context: vscode.ExtensionContext) {
 
                 break;
             case ProjectRemoteType.SSH:
-                let remotePathMatch = projectPath.replace(SSH_REMOTE_PREFIX, '').match(SSH_REGEX);
-                let hasRemoteFolder = remotePathMatch && remotePathMatch.groups.folder != null;
-
-                if (hasRemoteFolder) {
+                let sshUri = isUriString(projectPath) ? vscode.Uri.parse(projectPath) : null;
+                if (sshUri && sshUri.path && sshUri.path !== '/') {
                     uri = vscode.Uri.parse(projectPath);
                     vscode.commands.executeCommand("vscode.openFolder", uri, openInNewWindow)
                 } else {
+                    let remotePathMatch = projectPath.replace(SSH_REMOTE_PREFIX, '').match(SSH_REGEX);
+                    let remoteAuthority = sshUri ? decodeURIComponent(sshUri.authority) : projectPath.replace("vscode-remote://", "");
+                    let hasRemoteFolder = remotePathMatch && remotePathMatch.groups.folder != null;
+
+                    if (hasRemoteFolder) {
+                        uri = vscode.Uri.parse(projectPath);
+                        vscode.commands.executeCommand("vscode.openFolder", uri, openInNewWindow);
+                        break;
+                    }
+
                     vscode.commands.executeCommand("vscode.newWindow", {
-                        remoteAuthority: projectPath.replace("vscode-remote://", ""),
+                        remoteAuthority,
                         reuseWindow: !openInNewWindow,
                     });
                 }
@@ -670,9 +678,16 @@ export function activate(context: vscode.ExtensionContext) {
         var selectedGroupId: string;
 
         try {
-            let currentlyOpenPath = getWorkspacePath();
-            if (!currentlyOpenPath) {
+            let currentProjectDetails = await getCurrentProjectDetailsForSave();
+            if (!currentProjectDetails || !currentProjectDetails.path) {
                 vscode.window.showWarningMessage("No project is currently open.");
+                return;
+            }
+
+            let currentlyOpenPath = currentProjectDetails.path;
+            let currentRemoteType = currentProjectDetails.remoteType;
+            if (currentRemoteType !== ProjectRemoteType.None && !isUriString(currentlyOpenPath) && !currentlyOpenPath.match(WSL_DEFAULT_REGEX)) {
+                vscode.window.showErrorMessage("Project Steward could not resolve the current remote project URI. Open this project once from VS Code's recent list, then run Save Project again.");
                 return;
             }
 
@@ -708,7 +723,7 @@ export function activate(context: vscode.ExtensionContext) {
             project.description = await queryProjectDescription();
             project.color = colorService.getRandomColor();
             project.isGitRepo = isFolderGitRepo(currentlyOpenPath);
-            project.remoteType = getRemoteTypeFromRemoteName(vscode.env.remoteName);
+            project.remoteType = currentRemoteType;
 
             await projectService.addProject(project, selectedGroupId);
         } catch (error) {
@@ -1362,6 +1377,15 @@ export function activate(context: vscode.ExtensionContext) {
         if (!path) {
             return "";
         }
+
+        if (isUriString(path)) {
+            try {
+                path = vscode.Uri.parse(path).path || path;
+            } catch (e) {
+                // Keep the original path and fall back to the legacy parsing below.
+            }
+        }
+
         // get last folder of filename of path/remote
         path = path.replace(REMOTE_REGEX, ''); // Remove remote prefix
         path = path.replace(/^\w+\@/, ''); // Remove Username
@@ -1393,16 +1417,272 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function getWorkspacePath(): string {
-        let workspaceUri = vscode.workspace.workspaceFile;
-        if (workspaceUri == null || workspaceUri.scheme === "untitled") {
-            workspaceUri = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length ? vscode.workspace.workspaceFolders[0].uri : null;
-        }
+        let workspaceUri = getWorkspaceUri();
 
         if (workspaceUri != null) {
             return uriToProjectPath(workspaceUri);
         } else {
             return null;
         }
+    }
+
+    async function getCurrentProjectDetailsForSave(): Promise<{ path: string, remoteType: ProjectRemoteType }> {
+        let workspaceUri = getWorkspaceUri();
+        if (workspaceUri == null) {
+            return null;
+        }
+
+        let remoteType = getRemoteTypeFromRemoteName(vscode.env.remoteName);
+        if (workspaceUri.scheme === "file") {
+            let codespaceUri = await resolveCurrentCodespaceWorkspaceUri(workspaceUri);
+            if (codespaceUri) {
+                return { path: uriToProjectPath(codespaceUri), remoteType: getRemoteTypeFromRemoteUri(codespaceUri, remoteType) };
+            }
+
+            if (remoteType !== ProjectRemoteType.None) {
+                let remoteUri = await resolveCurrentRemoteWorkspaceUri(workspaceUri, remoteType);
+                if (remoteUri) {
+                    return { path: uriToProjectPath(remoteUri), remoteType: getRemoteTypeFromRemoteUri(remoteUri, remoteType) };
+                }
+            }
+
+            return { path: uriToProjectPath(workspaceUri), remoteType };
+        }
+
+        return { path: uriToProjectPath(workspaceUri), remoteType: getRemoteTypeFromRemoteUri(workspaceUri, remoteType) };
+    }
+
+    function getWorkspaceUri(): vscode.Uri {
+        let workspaceUri = vscode.workspace.workspaceFile;
+        if (workspaceUri == null || workspaceUri.scheme === "untitled") {
+            workspaceUri = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length ? vscode.workspace.workspaceFolders[0].uri : null;
+        }
+
+        return workspaceUri;
+    }
+
+    async function resolveCurrentCodespaceWorkspaceUri(workspaceUri: vscode.Uri): Promise<vscode.Uri> {
+        if (vscode.env.remoteName !== "codespaces") {
+            return null;
+        }
+
+        try {
+            let info = await vscode.commands.executeCommand<{ name: string } | undefined>('github.codespaces.getCurrentCodespace');
+            if (info && info.name) {
+                return buildVscodeRemoteUri(`codespaces+${info.name}`, workspaceUri.fsPath || workspaceUri.path);
+            }
+        } catch (error) {
+            logError('Failed to resolve current Codespace workspace URI.', error);
+        }
+
+        return null;
+    }
+
+    async function resolveCurrentRemoteWorkspaceUri(workspaceUri: vscode.Uri, remoteType: ProjectRemoteType): Promise<vscode.Uri> {
+        let currentPath = workspaceUri.path || workspaceUri.fsPath;
+        if (!currentPath) {
+            return null;
+        }
+
+        try {
+            let recentlyOpened = await vscode.commands.executeCommand('_workbench.getRecentlyOpened') as any;
+            let candidates = [
+                ...getRecentRemoteCandidates((recentlyOpened && recentlyOpened.workspaces) || [], currentPath, remoteType, true),
+                ...getRecentRemoteCandidates((recentlyOpened && recentlyOpened.files) || [], currentPath, remoteType, false),
+            ].sort((a, b) => b.score - a.score);
+
+            if (!candidates.length) {
+                return null;
+            }
+
+            let topCandidates = candidates.filter(candidate => candidate.score === candidates[0].score);
+            let uniqueAuthorities = Array.from(new Set(topCandidates.map(candidate => normalizeRemoteAuthority(candidate.remoteAuthority))));
+            let selectedAuthority = uniqueAuthorities[0];
+
+            if (uniqueAuthorities.length > 1) {
+                let selected = await vscode.window.showQuickPick(
+                    uniqueAuthorities.map(authority => ({ label: authority })),
+                    { placeHolder: "Select the remote target for this project" }
+                );
+
+                if (!selected) {
+                    return null;
+                }
+
+                selectedAuthority = selected.label;
+            }
+
+            return buildVscodeRemoteUri(selectedAuthority, currentPath);
+        } catch (error) {
+            logError('Failed to resolve current remote workspace URI.', error);
+        }
+
+        return null;
+    }
+
+    function getRecentRemoteCandidates(recentEntries: any[], currentPath: string, remoteType: ProjectRemoteType, isWorkspaceEntry: boolean): { remoteAuthority: string, score: number }[] {
+        let candidates: { remoteAuthority: string, score: number }[] = [];
+
+        for (let recent of recentEntries) {
+            let remoteAuthority = recent && recent.remoteAuthority;
+            if (!remoteAuthority || !remoteAuthorityMatchesType(remoteAuthority, remoteType)) {
+                continue;
+            }
+
+            let recentUri = getRecentEntryUri(recent);
+            if (!recentUri) {
+                continue;
+            }
+
+            let score = getPathMatchScore(currentPath, recentUri.path || recentUri.fsPath, isWorkspaceEntry);
+            if (score > 0) {
+                candidates.push({ remoteAuthority, score });
+            }
+        }
+
+        return candidates;
+    }
+
+    function getPathMatchScore(currentPath: string, recentPath: string, isWorkspaceEntry: boolean): number {
+        if (!currentPath || !recentPath) {
+            return 0;
+        }
+
+        let normalizedCurrentPath = normalizePosixPath(currentPath);
+        let normalizedRecentPath = normalizePosixPath(recentPath);
+
+        if (normalizedCurrentPath === normalizedRecentPath) {
+            return isWorkspaceEntry ? 100 : 60;
+        }
+
+        if (isWorkspaceEntry && isPathInside(normalizedCurrentPath, normalizedRecentPath)) {
+            return 80;
+        }
+
+        if (isWorkspaceEntry && isPathInside(normalizedRecentPath, normalizedCurrentPath)) {
+            return 70;
+        }
+
+        if (!isWorkspaceEntry && isPathInside(normalizedRecentPath, normalizedCurrentPath)) {
+            return 40;
+        }
+
+        if (path.posix.basename(normalizedCurrentPath) === path.posix.basename(normalizedRecentPath)) {
+            return isWorkspaceEntry ? 30 : 10;
+        }
+
+        return 0;
+    }
+
+    function remoteAuthorityMatchesType(remoteAuthority: string, remoteType: ProjectRemoteType): boolean {
+        let normalizedAuthority = normalizeRemoteAuthority(remoteAuthority);
+
+        switch (remoteType) {
+            case ProjectRemoteType.SSH:
+                return normalizedAuthority.startsWith('ssh-remote+');
+            case ProjectRemoteType.WSL:
+                return normalizedAuthority.startsWith('wsl+');
+            case ProjectRemoteType.DevContainer:
+                return normalizedAuthority.startsWith('dev-container+') || normalizedAuthority.startsWith('attached-container+');
+            case ProjectRemoteType.Remote:
+                if (vscode.env.remoteName) {
+                    return normalizedAuthority.startsWith(`${vscode.env.remoteName}+`);
+                }
+
+                return true;
+            case ProjectRemoteType.None:
+            default:
+                return false;
+        }
+    }
+
+    function getRemoteTypeFromRemoteUri(uri: vscode.Uri, fallbackRemoteType: ProjectRemoteType): ProjectRemoteType {
+        if (!uri || uri.scheme !== "vscode-remote" || !uri.authority) {
+            return fallbackRemoteType;
+        }
+
+        let project = new Project("", uri.toString());
+        return getRemoteType(project);
+    }
+
+    function buildVscodeRemoteUri(remoteAuthority: string, resourcePath: string): vscode.Uri {
+        return vscode.Uri.parse(`vscode-remote://${encodeRemoteAuthority(remoteAuthority)}${ensureLeadingSlash(resourcePath)}`);
+    }
+
+    function ensureLeadingSlash(value: string): string {
+        if (!value) {
+            return "/";
+        }
+
+        return value.startsWith("/") ? value : `/${value}`;
+    }
+
+    function normalizeRemoteAuthority(remoteAuthority: string): string {
+        if (!remoteAuthority) {
+            return remoteAuthority;
+        }
+
+        try {
+            return decodeURIComponent(remoteAuthority);
+        } catch (e) {
+            return remoteAuthority;
+        }
+    }
+
+    function normalizePosixPath(value: string): string {
+        return path.posix.normalize(value).replace(/\/+$/g, '') || '/';
+    }
+
+    function isPathInside(childPath: string, parentPath: string): boolean {
+        return childPath !== parentPath && childPath.startsWith(`${parentPath}/`);
+    }
+
+    function getRecentEntryUri(recent: any): vscode.Uri {
+        return asUri(recent.folderUri)
+            || asUri(recent.workspace && recent.workspace.configPath)
+            || asUri(recent.fileUri);
+    }
+
+    function asUri(value: any): vscode.Uri {
+        if (!value) {
+            return null;
+        }
+
+        if (value instanceof vscode.Uri) {
+            return value;
+        }
+
+        if (typeof value === 'string') {
+            return vscode.Uri.parse(value);
+        }
+
+        if (value.scheme && typeof value.path === 'string') {
+            if (typeof value.toString === 'function') {
+                let uriString = value.toString();
+                if (uriString && uriString !== '[object Object]') {
+                    return vscode.Uri.parse(uriString);
+                }
+            }
+
+            if (value.scheme === "vscode-remote" && value.authority) {
+                return buildVscodeRemoteUri(value.authority, value.path);
+            }
+
+            if (value.scheme === "file") {
+                return vscode.Uri.file(value.fsPath || value.path);
+            }
+
+            let authority = value.authority ? `//${value.authority}` : '';
+            let query = value.query ? `?${value.query}` : '';
+            let fragment = value.fragment ? `#${value.fragment}` : '';
+            return vscode.Uri.parse(`${value.scheme}:${authority}${value.path}${query}${fragment}`);
+        }
+
+        return null;
+    }
+
+    function encodeRemoteAuthority(remoteAuthority: string): string {
+        return normalizeRemoteAuthority(remoteAuthority).split('@').map(part => encodeURIComponent(part)).join('@');
     }
 
     function isUriString(projectPath: string): boolean {
