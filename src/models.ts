@@ -154,6 +154,7 @@ export enum ProjectOpenType {
     Default = 0,
     NewWindow = 1,
     AddToWorkspace = 2,
+    CurrentWindow = 3,
 }
 
 export enum ProjectRemoteType {

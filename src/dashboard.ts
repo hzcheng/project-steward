@@ -547,6 +547,20 @@ export function activate(context: vscode.ExtensionContext) {
             remoteType = ProjectRemoteType.None;
         }
 
+        if (projectOpenType === ProjectOpenType.Default) {
+            if (projectPathMatchesCurrentWorkspace(projectPath)) {
+                return;
+            }
+
+            projectOpenType = ProjectOpenType.NewWindow;
+        }
+
+        if (projectOpenType === ProjectOpenType.CurrentWindow) {
+            if (projectPathMatchesCurrentWorkspace(projectPath)) {
+                return;
+            }
+        }
+
         var openInNewWindow = projectOpenType === ProjectOpenType.NewWindow;
 
         let uri: vscode.Uri;
@@ -557,7 +571,7 @@ export function activate(context: vscode.ExtensionContext) {
                 if (projectOpenType === ProjectOpenType.AddToWorkspace) {
                     await addToWorkspace(project, uri);
                 } else {
-                    await vscode.commands.executeCommand("vscode.openFolder", uri, openInNewWindow);
+                    await openFolderUri(uri, openInNewWindow);
                 }
 
                 break;
@@ -565,7 +579,7 @@ export function activate(context: vscode.ExtensionContext) {
                 let sshUri = isUriString(projectPath) ? vscode.Uri.parse(projectPath) : null;
                 if (sshUri && sshUri.path && sshUri.path !== '/') {
                     uri = vscode.Uri.parse(projectPath);
-                    vscode.commands.executeCommand("vscode.openFolder", uri, openInNewWindow)
+                    await openFolderUri(uri, openInNewWindow);
                 } else {
                     let remotePathMatch = projectPath.replace(SSH_REMOTE_PREFIX, '').match(SSH_REGEX);
                     let remoteAuthority = sshUri ? decodeURIComponent(sshUri.authority) : projectPath.replace("vscode-remote://", "");
@@ -573,11 +587,11 @@ export function activate(context: vscode.ExtensionContext) {
 
                     if (hasRemoteFolder) {
                         uri = vscode.Uri.parse(projectPath);
-                        vscode.commands.executeCommand("vscode.openFolder", uri, openInNewWindow);
+                        await openFolderUri(uri, openInNewWindow);
                         break;
                     }
 
-                    vscode.commands.executeCommand("vscode.newWindow", {
+                    await vscode.commands.executeCommand("vscode.newWindow", {
                         remoteAuthority,
                         reuseWindow: !openInNewWindow,
                     });
@@ -591,15 +605,81 @@ export function activate(context: vscode.ExtensionContext) {
 
                 uri = vscode.Uri.parse(projectPath);
 
-                await vscode.commands.executeCommand("vscode.openFolder", uri, openInNewWindow);
+                await openFolderUri(uri, openInNewWindow);
                 break;
             case ProjectRemoteType.DevContainer:
             case ProjectRemoteType.Remote:
                 uri = vscode.Uri.parse(projectPath);
 
-                await vscode.commands.executeCommand("vscode.openFolder", uri, openInNewWindow);
+                await openFolderUri(uri, openInNewWindow);
                 break;
         }
+    }
+
+    async function openFolderUri(uri: vscode.Uri, openInNewWindow: boolean): Promise<void> {
+        let options = openInNewWindow
+            ? { forceNewWindow: true }
+            : { forceReuseWindow: true };
+
+        await vscode.commands.executeCommand("vscode.openFolder", uri, options);
+    }
+
+    function projectPathMatchesCurrentWorkspace(projectPath: string): boolean {
+        return getWorkspaceUris().some(workspaceUri => projectPathMatchesWorkspaceUri(projectPath, workspaceUri));
+    }
+
+    function projectPathMatchesWorkspaceUri(projectPath: string, workspaceUri: vscode.Uri): boolean {
+        if (!workspaceUri || !projectPath) {
+            return false;
+        }
+
+        let currentWorkspacePath = uriToProjectPath(workspaceUri);
+        if (normalizeComparableProjectPath(projectPath) === normalizeComparableProjectPath(currentWorkspacePath)) {
+            return true;
+        }
+
+        if (!isUriString(projectPath) || workspaceUri.scheme !== "vscode-remote") {
+            return false;
+        }
+
+        try {
+            let projectUri = vscode.Uri.parse(projectPath);
+            if (projectUri.scheme !== "vscode-remote") {
+                return false;
+            }
+
+            if (normalizeRemoteAuthority(projectUri.authority) !== normalizeRemoteAuthority(workspaceUri.authority)) {
+                return false;
+            }
+
+            let projectUriPath = projectUri.path || projectUri.fsPath;
+            let workspacePath = workspaceUri.path || workspaceUri.fsPath;
+
+            return normalizePosixPath(projectUriPath) === normalizePosixPath(workspacePath);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function normalizeComparableProjectPath(projectPath: string): string {
+        if (!projectPath) {
+            return "";
+        }
+
+        try {
+            if (isUriString(projectPath)) {
+                let uri = vscode.Uri.parse(projectPath);
+                if (uri.scheme === "file") {
+                    projectPath = uri.fsPath;
+                } else {
+                    projectPath = `${uri.scheme}://${normalizeRemoteAuthority(uri.authority)}${uri.path}`;
+                }
+            }
+        } catch (e) {
+            // Keep the original path and normalize it below.
+        }
+
+        return projectPath.replace(/\\/g, '/').replace(/\/+$/g, '');
     }
 
     async function addToWorkspace(project: Project, uri: vscode.Uri): Promise<void> {
@@ -1453,12 +1533,17 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function getWorkspaceUri(): vscode.Uri {
+        let workspaceUris = getWorkspaceUris();
+        return workspaceUris.length ? workspaceUris[0] : null;
+    }
+
+    function getWorkspaceUris(): vscode.Uri[] {
         let workspaceUri = vscode.workspace.workspaceFile;
-        if (workspaceUri == null || workspaceUri.scheme === "untitled") {
-            workspaceUri = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length ? vscode.workspace.workspaceFolders[0].uri : null;
+        if (workspaceUri != null && workspaceUri.scheme !== "untitled") {
+            return [workspaceUri];
         }
 
-        return workspaceUri;
+        return (vscode.workspace.workspaceFolders || []).map(folder => folder.uri);
     }
 
     async function resolveCurrentCodespaceWorkspaceUri(workspaceUri: vscode.Uri): Promise<vscode.Uri> {

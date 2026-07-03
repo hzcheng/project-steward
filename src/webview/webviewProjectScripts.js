@@ -4,6 +4,7 @@ function initProjects() {
         Default: 0,
         NewWindow: 1,
         AddToWorkspace: 2,
+        CurrentWindow: 3,
     };
 
     function openProject(projectId, projectOpenType) {
@@ -48,8 +49,9 @@ function initProjects() {
         if (onTriggerProjectAction(e.target, dataId))
             return;
 
-        var newWindow = e.ctrlKey || e.metaKey || e.button === 1;
-        openProject(dataId, newWindow ? ProjectOpenType.NewWindow : ProjectOpenType.Default);
+        var currentWindow = e.ctrlKey || e.metaKey;
+        var newWindow = e.button === 1;
+        openProject(dataId, currentWindow ? ProjectOpenType.CurrentWindow : newWindow ? ProjectOpenType.NewWindow : ProjectOpenType.Default);
 
     }
 
@@ -93,11 +95,6 @@ function initProjects() {
         var action = actionDiv.getAttribute("data-action");
         if (!action)
             return false;
-
-        if (action === 'open-new-window') {
-            openProject(projectId, ProjectOpenType.NewWindow);
-            return true;
-        }
 
         window.vscode.postMessage({
             type: action + '-project',
@@ -164,10 +161,7 @@ function initProjects() {
 
         switch (action) {
             case 'open':
-                openProject(contextMenuProjectId, ProjectOpenType.Default);
-                break;
-            case 'open-new-window':
-                openProject(contextMenuProjectId, ProjectOpenType.NewWindow);
+                openProject(contextMenuProjectId, ProjectOpenType.CurrentWindow);
                 break;
             case 'open-add-to-workspace':
                 openProject(contextMenuProjectId, ProjectOpenType.AddToWorkspace);

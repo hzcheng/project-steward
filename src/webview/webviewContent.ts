@@ -234,11 +234,9 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var favoriteIcon = project.favorite ? Icons.starFilled : Icons.star;
     var favoriteTitle = project.favorite ? 'Remove From Favorites' : 'Add To Favorites';
     var projectActions = isReadOnlyProject
-        ? `<span data-action="open-new-window" title="Open Project In New Window">${Icons.openNewWindow}</span>`
+        ? ''
         : `<span data-action="favorite" title="${favoriteTitle}" class="favorite-action ${project.favorite ? 'active' : ''
         }">${favoriteIcon
-        }</span>
-                <span data-action="open-new-window" title="Open Project In New Window">${Icons.openNewWindow
         }</span>
                 <span data-action="color" title="Edit Color">${Icons.palette
         }</span>
@@ -246,6 +244,13 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
         }</span>
                 <span data-action="remove" title="Remove Project">${Icons.remove
         }</span>`;
+    var projectActionsWrapper = projectActions
+        ? `<div class="project-actions-wrapper">
+            <div class="project-actions">
+                ${projectActions}
+            </div>
+        </div>`
+        : '';
 
     var isRemote = remoteType !== ProjectRemoteType.None;
 
@@ -256,11 +261,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
         }${isReadOnlyProject ? ' data-readonly-project' : ''
         }>
         <div class="project-border" style="${borderStyle}"></div>
-        <div class="project-actions-wrapper">
-            <div class="project-actions">
-                ${projectActions}
-            </div>
-        </div>
+        ${projectActionsWrapper}
         <div class="fitty-container project-title-row">
             <span class="project-kind-icon" title="${projectIconTitle}">
                 ${projectIcon}
@@ -349,10 +350,7 @@ function getProjectContextMenu() {
     return `
 <div id="projectContextMenu" class="custom-context-menu">
     <div class="custom-context-menu-item" data-action="open">
-        Open Project
-    </div>
-    <div class="custom-context-menu-item" data-action="open-new-window">
-        Open Project In New Window
+        Open Project In Current Window
     </div>
     <div class="custom-context-menu-item not-remote" data-action="open-add-to-workspace">
         Add To Workspace
