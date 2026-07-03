@@ -22,7 +22,7 @@ $borderTopSize: 7px;
 $defaultPadding: 20px;
 $projectHeaderSize: 24px; // This has also be adjusted in constants.ts for fitty
 $projectHeaderMinHeight: 34px; // To be constant even with fitted font size
-$groupHeaderSize: 28px;
+$groupHeaderSize: 22px;
 $projectTileHeight: 140px;
 $dataActionIconSize: 15.6px; // Default font size * 1.2em, in pixel to keep constant across different font sizes
 
@@ -107,9 +107,12 @@ body {
     .group-title {
         min-width: calc(var(--column-width) - 19px);
         display: inline-block;
+        color: var(--steward-foreground);
+        font-family: var(--vscode-font-family);
         font-size: $groupHeaderSize;
-        font-weight: lighter;
-        margin-left: 0px;
+        font-weight: 700;
+        line-height: 1.25;
+        margin-left: 0;
 
         > span {
             cursor: pointer;
@@ -121,6 +124,7 @@ body {
             padding-right: 2px;
 
             svg {
+                fill: currentColor;
                 transition: transform $defaultTransition;
                 margin-bottom: -2px;
             }
@@ -316,9 +320,10 @@ body .project {
 
     .project-header {
         color: var(--steward-foreground);
+        font-family: var(--vscode-font-family);
         margin: 0;
         font-size: $projectHeaderSize;
-        font-weight: lighter;
+        font-weight: 600;
         text-align: left;
     }
 
@@ -677,8 +682,14 @@ body.steward-sidebar {
             align-items: center;
             min-width: 0;
             width: 100%;
+            padding: 4px 6px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 7px;
+            color: var(--steward-foreground);
+            background: var(--vscode-list-inactiveSelectionBackground, transparent);
+            font-family: var(--vscode-font-family);
             font-size: 15px;
-            font-weight: 600;
+            font-weight: 750;
             line-height: 1.25;
             box-sizing: border-box;
         }
@@ -699,9 +710,6 @@ body.steward-sidebar {
             padding-top: 2px;
 
             .group-title {
-                padding: 4px 6px;
-                border: 1px solid var(--vscode-panel-border);
-                border-radius: 7px;
                 background: var(--vscode-list-inactiveSelectionBackground, transparent);
             }
 
@@ -896,6 +904,8 @@ body.steward-sidebar {
             text-overflow: ellipsis;
             white-space: nowrap;
             display: block;
+            color: var(--steward-foreground);
+            font-family: var(--vscode-font-family);
             font-size: 13px !important;
             font-weight: 600;
             line-height: 1.2;
