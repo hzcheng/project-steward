@@ -12,8 +12,8 @@ import {
 import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, OPEN_PROJECTS_GROUP_ID } from '../constants';
 import * as Icons from './webviewIcons';
 
-const FAVORITES_GROUP_NAME = 'Favorites';
-const OPEN_PROJECTS_GROUP_NAME = 'Open Projects';
+const FAVORITES_GROUP_NAME = 'FAVORITES';
+const OPEN_PROJECTS_GROUP_NAME = 'OPEN PROJECT';
 
 export function getStewardContent(
     context: vscode.ExtensionContext,
@@ -168,6 +168,11 @@ function getGroupSection(
     var dragAttribute = isVirtualGroup ? '' : 'data-drag-group';
     var groupName = escapeAttribute(group.groupName || 'Unnamed Group');
     var systemGroupAttribute = isVirtualGroup ? ` data-system-group="${group.id}"` : '';
+    var systemGroupBadge = group.id === OPEN_PROJECTS_GROUP_ID
+        ? 'Live'
+        : group.id === FAVORITES_GROUP_ID
+            ? 'Pinned'
+            : '';
 
     return `
 <div class="group ${group.collapsed ? 'collapsed' : ''} ${group.projects.length === 0 ? 'no-projects' : ''
@@ -178,6 +183,7 @@ function getGroupSection(
         }</span>
             ${groupName}
         </span>
+        ${systemGroupBadge ? `<span class="group-title-badge">${systemGroupBadge}</span>` : ''}
         ${groupActions}
     </div>
     <div class="group-list">
@@ -227,7 +233,9 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var remoteType = getRemoteType(project);
     var description = sanitizeProjectName(project.description);
     var projectName = escapeAttribute(sanitizeProjectName(project.name));
-    var searchText = escapeAttribute(`${project.name || ''} ${description}`.toLowerCase());
+    var codexSessions = project.codexSessions || [];
+    var codexSessionSearchText = codexSessions.map(session => session.name || '').join(' ');
+    var searchText = escapeAttribute(`${project.name || ''} ${description} ${codexSessionSearchText}`.toLowerCase());
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
@@ -254,6 +262,10 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var saveBadge = project.showSaveAction
         ? `<span data-action="save" class="project-save-badge" title="Save Current Project">${Icons.save}</span>`
         : '';
+    var codexBadge = isReadOnlyProject
+        ? `<span class="project-codex-badge" title="Codex Sessions">Codex ${codexSessions.length}</span>`
+        : '';
+    var codexSessionSection = isReadOnlyProject ? getCodexSessionsDiv(project) : '';
 
     var isRemote = remoteType !== ProjectRemoteType.None;
 
@@ -262,6 +274,8 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     <div class="project" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${isVirtualProject ? ' data-virtual-project' : ''
         }${isReadOnlyProject ? ' data-readonly-project' : ''
+        }${isReadOnlyProject ? ' data-open-project' : ''
+        }${project.codexSessionsExpanded ? ' data-codex-expanded' : ''
         }${!isReadOnlyProject ? ' data-has-favorite-toggle' : ''
         }${project.showSaveAction ? ' data-has-save-action' : ''
         }${project.favorite ? ' data-favorite-project' : ''
@@ -281,8 +295,57 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
         <p class="project-description" title="${escapedDescription}">
             ${escapedDescription}
         </p>
+        ${codexBadge}
+        ${codexSessionSection}
     </div>
 </div>`;
+}
+
+function getCodexSessionsDiv(project: Project): string {
+    var codexSessions = project.codexSessions || [];
+    var emptyText = project.codexSessionsUnavailable ? 'No Codex history found' : 'No sessions yet';
+    var sessionRows = codexSessions.length
+        ? codexSessions.map(session => getCodexSessionRow(session)).join('\n')
+        : `<div class="codex-sessions-empty">${emptyText}</div>`;
+
+    return `
+<div class="codex-sessions">
+    <div class="codex-sessions-title">Codex Sessions</div>
+    <div class="codex-sessions-list">
+        ${sessionRows}
+    </div>
+</div>`;
+}
+
+function getCodexSessionRow(session: { id: string; name: string; updatedAt?: string }) {
+    var sessionName = escapeAttribute(sanitizeProjectName(session.name || session.id));
+    var sessionId = escapeAttribute(session.id || '');
+    var shortSessionId = escapeAttribute((session.id || '').substring(0, 8));
+    var updatedAt = escapeAttribute(formatCodexSessionUpdatedAt(session.updatedAt));
+    var metadata = [updatedAt, shortSessionId].filter(value => !!value).join(' · ');
+
+    return `
+<div class="codex-session-row" data-session-id="${sessionId}" title="Resume Codex Session">
+    <span class="codex-session-icon">${Icons.terminalLine}</span>
+    <span class="codex-session-text">
+        <span class="codex-session-name">${sessionName}</span>
+        <span class="codex-session-meta">${metadata}</span>
+    </span>
+    <span class="codex-session-archive" data-action="archive-codex-session" title="Archive Session">${Icons.archive}</span>
+</div>`;
+}
+
+function formatCodexSessionUpdatedAt(updatedAt: string): string {
+    if (!updatedAt) {
+        return '';
+    }
+
+    let date = new Date(updatedAt);
+    if (isNaN(date.getTime())) {
+        return '';
+    }
+
+    return date.toISOString().substring(0, 10);
 }
 
 function getProjectIcon(remoteType: ProjectRemoteType): string {

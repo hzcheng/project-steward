@@ -46,13 +46,65 @@ function initProjects() {
         if (dataId == null)
             return;
 
+        if (onTriggerCodexSessionAction(e.target, dataId))
+            return;
+
         if (onTriggerProjectAction(e.target, dataId))
             return;
+
+        if (projectDiv.hasAttribute("data-open-project")) {
+            toggleCodexSessions(projectDiv, dataId);
+            return;
+        }
 
         var currentWindow = e.ctrlKey || e.metaKey;
         var newWindow = e.button === 1;
         openProject(dataId, currentWindow ? ProjectOpenType.CurrentWindow : newWindow ? ProjectOpenType.NewWindow : ProjectOpenType.Default);
 
+    }
+
+    function onTriggerCodexSessionAction(target, projectId) {
+        var archiveAction = target.closest('[data-action="archive-codex-session"]');
+        if (archiveAction) {
+            var archiveRow = archiveAction.closest('.codex-session-row[data-session-id]');
+            var archiveSessionId = archiveRow && archiveRow.getAttribute("data-session-id");
+            if (archiveSessionId) {
+                window.vscode.postMessage({
+                    type: 'archive-codex-session',
+                    projectId,
+                    sessionId: archiveSessionId,
+                });
+            }
+
+            return true;
+        }
+
+        var sessionRow = target.closest('.codex-session-row[data-session-id]');
+        if (!sessionRow)
+            return false;
+
+        var sessionId = sessionRow.getAttribute("data-session-id");
+        if (!sessionId)
+            return true;
+
+        window.vscode.postMessage({
+            type: 'resume-codex-session',
+            projectId,
+            sessionId,
+        });
+
+        return true;
+    }
+
+    function toggleCodexSessions(projectDiv, projectId) {
+        var expanded = !projectDiv.hasAttribute("data-codex-expanded");
+        projectDiv.toggleAttribute("data-codex-expanded", expanded);
+
+        window.vscode.postMessage({
+            type: 'toggle-codex-sessions',
+            projectId,
+            expanded,
+        });
     }
 
     function onInsideGroupClick(e, groupDiv) {
@@ -285,6 +337,10 @@ function initProjects() {
     });
 
     document.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.codex-session-row')) {
+            return;
+        }
+
         if (e.button === 1) {
             onMouseEvent(e);
         }
