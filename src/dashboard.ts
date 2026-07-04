@@ -1,15 +1,25 @@
 'use strict';
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName } from './models';
+import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession } from './models';
 import { getStewardContent } from './webview/webviewContent';
-import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
+import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
 import { execSync } from 'child_process';
-import { lstatSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'fs';
 
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
 import FileService from './services/fileService';
+import CodexSessionService, { CodexSessionReadResult } from './services/codexSessionService';
+
+interface CodexSessionTerminalEntry {
+    terminal: vscode.Terminal;
+    markerPath: string;
+}
+
+const CODEX_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_CODEX_SESSION_ID';
+const CODEX_SESSION_TERMINAL_NAME_PREFIX = 'Codex';
+const CODEX_SESSION_TERMINAL_STARTUP_DELAY_MS = 1000;
 
 export function activate(context: vscode.ExtensionContext) {
     const outputChannel = vscode.window.createOutputChannel('Project Steward');
@@ -58,11 +68,33 @@ export function activate(context: vscode.ExtensionContext) {
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
     const fileService = new FileService(context);
+    const codexSessionService = new CodexSessionService();
+    const codexSessionTerminals = new Map<string, CodexSessionTerminalEntry>();
+    const codexSessionResumesInFlight = new Set<string>();
+    let codexSessionRefreshTimeout: NodeJS.Timeout = null;
 
     const provider = new SidebarStewardViewProvider();
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(SidebarStewardViewProvider.viewType, provider));
+    context.subscriptions.push(
+        vscode.window.onDidCloseTerminal(terminal => {
+            for (let [sessionId, entry] of codexSessionTerminals) {
+                if (entry.terminal === terminal) {
+                    deleteCodexSessionTerminalMarker(entry);
+                    codexSessionTerminals.delete(sessionId);
+                }
+            }
+        }));
+    context.subscriptions.push(
+        codexSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()));
+    context.subscriptions.push({
+        dispose: () => {
+            if (codexSessionRefreshTimeout) {
+                clearTimeout(codexSessionRefreshTimeout);
+            }
+        }
+    });
 
     const stewardInfos: StewardInfos = {
         relevantExtensionsInstalls: {
@@ -270,6 +302,17 @@ export function activate(context: vscode.ExtensionContext) {
         provider.refresh();
     }
 
+    function scheduleCodexSessionRefresh() {
+        if (codexSessionRefreshTimeout) {
+            clearTimeout(codexSessionRefreshTimeout);
+        }
+
+        codexSessionRefreshTimeout = setTimeout(() => {
+            codexSessionRefreshTimeout = null;
+            refreshStewardViews();
+        }, 250);
+    }
+
     function logError(message: string, error: unknown) {
         outputChannel.appendLine(message);
         outputChannel.appendLine(error instanceof Error ? `${error.stack || error.message}` : String(error));
@@ -360,6 +403,17 @@ export function activate(context: vscode.ExtensionContext) {
             case 'save-project':
                 projectId = e.projectId as string;
                 await saveOpenProject(projectId);
+                break;
+            case 'toggle-codex-sessions':
+                projectId = e.projectId as string;
+                await toggleCodexSessions(projectId, Boolean(e.expanded));
+                break;
+            case 'resume-codex-session':
+                projectId = e.projectId as string;
+                await resumeCodexSession(projectId, e.sessionId as string);
+                break;
+            case 'archive-codex-session':
+                await archiveCodexSession(e.sessionId as string);
                 break;
             case 'edit-group':
                 groupId = e.groupId as string;
@@ -529,6 +583,103 @@ export function activate(context: vscode.ExtensionContext) {
         await context.globalState.update(OPEN_PROJECTS_GROUP_COLLAPSED_KEY, collapsed);
         await projectService.saveGroups(groups);
 
+        refreshAfterMutation();
+    }
+
+    async function toggleCodexSessions(projectId: string, expanded: boolean) {
+        let project = getOpenProjects().find(p => p.id === projectId);
+        if (!project) {
+            return;
+        }
+
+        let expandedProjects = getExpandedCodexSessionProjects();
+        let projectKey = getOpenProjectCodexExpansionKey(project);
+        if (expanded) {
+            expandedProjects.add(projectKey);
+        } else {
+            expandedProjects.delete(projectKey);
+        }
+
+        await context.globalState.update(OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, Array.from(expandedProjects));
+    }
+
+    async function resumeCodexSession(projectId: string, sessionId: string) {
+        let project = getOpenProjects().find(p => p.id === projectId);
+        let session = project?.codexSessions?.find(s => s.id === sessionId);
+        if (!project || !session) {
+            vscode.window.showWarningMessage("Selected Codex session not found.");
+            return;
+        }
+
+        let cwd = getUsableTerminalCwd(getCodexSessionTerminalCwd(session, project));
+        let existingTerminal = getCodexSessionTerminal(session);
+        if (existingTerminal) {
+            existingTerminal.terminal.show();
+            return;
+        }
+
+        if (codexSessionResumesInFlight.has(session.id)) {
+            return;
+        }
+
+        codexSessionResumesInFlight.add(session.id);
+        let terminalName = getCodexSessionTerminalName(session);
+        let terminal: vscode.Terminal;
+        let terminalEnv = { [CODEX_SESSION_TERMINAL_ENV]: session.id };
+
+        try {
+            try {
+                terminal = vscode.window.createTerminal({
+                    name: terminalName,
+                    cwd: cwd || undefined,
+                    env: terminalEnv,
+                });
+            } catch (error) {
+                logError('Failed to create Codex terminal with cwd.', error);
+                cwd = null;
+                terminal = vscode.window.createTerminal({
+                    name: terminalName,
+                    env: terminalEnv,
+                });
+                vscode.window.showWarningMessage("Could not open the Codex terminal at the session directory. Resuming without a working directory.");
+            }
+
+            let markerPath = getCodexSessionTerminalMarkerPath(session.id);
+            codexSessionTerminals.set(session.id, { terminal, markerPath });
+            terminal.show();
+            await sendCodexResumeCommand(terminal, session.id, cwd, markerPath);
+        } finally {
+            codexSessionResumesInFlight.delete(session.id);
+        }
+    }
+
+    async function archiveCodexSession(sessionId: string) {
+        if (!sessionId) {
+            return;
+        }
+
+        let existingTerminal = getCodexSessionTerminalById(sessionId);
+        if (existingTerminal && !isCodexSessionTerminalComplete(existingTerminal)) {
+            vscode.window.showWarningMessage("This Codex session is open in a terminal. Exit or close that terminal before archiving it.");
+            existingTerminal.terminal.show();
+            return;
+        }
+
+        let accepted = await vscode.window.showWarningMessage("Archive this Codex session?", { modal: true }, "Archive");
+        if (!accepted) {
+            return;
+        }
+
+        if (!codexSessionService.archiveSession(sessionId)) {
+            vscode.window.showErrorMessage("Could not archive Codex session.");
+            return;
+        }
+
+        if (existingTerminal) {
+            deleteCodexSessionTerminalMarker(existingTerminal);
+        }
+
+        codexSessionTerminals.delete(sessionId);
         refreshAfterMutation();
     }
 
@@ -1490,12 +1641,15 @@ export function activate(context: vscode.ExtensionContext) {
 
     function getOpenProjects(): Project[] {
         let workspaceFile = vscode.workspace.workspaceFile;
+        let openProjects: Project[];
         if (workspaceFile && workspaceFile.scheme !== "untitled") {
-            return [buildOpenProject(workspaceFile, 0, "Current workspace")];
+            openProjects = [buildOpenProject(workspaceFile, 0, "Current workspace")];
+        } else {
+            openProjects = (vscode.workspace.workspaceFolders || [])
+                .map((folder, index) => buildOpenProject(folder.uri, index, "Workspace folder", folder.name));
         }
 
-        return (vscode.workspace.workspaceFolders || [])
-            .map((folder, index) => buildOpenProject(folder.uri, index, "Workspace folder", folder.name));
+        return withCodexSessions(openProjects);
     }
 
     function getOpenProjectUri(projectId: string): vscode.Uri {
@@ -1531,6 +1685,271 @@ export function activate(context: vscode.ExtensionContext) {
         project.remoteType = savedProject?.remoteType ?? (savedProject ? getRemoteType(savedProject) : getRemoteTypeFromRemoteName(vscode.env.remoteName));
 
         return project;
+    }
+
+    function withCodexSessions(openProjects: Project[]): Project[] {
+        if (!openProjects.length) {
+            return openProjects;
+        }
+
+        let codexSessionResult = codexSessionService.getSessions();
+        let assignments = getCodexSessionAssignments(openProjects, codexSessionResult);
+        let expandedProjects = getExpandedCodexSessionProjects();
+
+        return openProjects.map(project => {
+            project.codexSessions = (assignments.get(project.id) || []).slice(0, 20);
+            project.codexSessionsUnavailable = !codexSessionResult.available;
+            project.codexSessionsExpanded = expandedProjects.has(getOpenProjectCodexExpansionKey(project));
+            return project;
+        });
+    }
+
+    function getCodexSessionAssignments(openProjects: Project[], codexSessionResult: CodexSessionReadResult): Map<string, CodexSession[]> {
+        let assignments = new Map<string, CodexSession[]>();
+        if (!codexSessionResult.available || !codexSessionResult.sessions.length) {
+            return assignments;
+        }
+
+        let candidates = getCodexOpenProjectCandidates(openProjects);
+
+        for (let session of codexSessionResult.sessions) {
+            let sessionPath = normalizeCodexComparablePath(session.cwd);
+            if (!sessionPath) {
+                continue;
+            }
+
+            let bestMatch = candidates
+                .filter(candidate => codexPathContainsSessionPath(candidate.path, sessionPath))
+                .sort((a, b) => b.path.length - a.path.length)[0];
+
+            if (!bestMatch) {
+                continue;
+            }
+
+            let projectSessions = assignments.get(bestMatch.project.id) || [];
+            projectSessions.push(session);
+            assignments.set(bestMatch.project.id, projectSessions);
+        }
+
+        return assignments;
+    }
+
+    function getCodexOpenProjectCandidates(openProjects: Project[]): { project: Project, path: string }[] {
+        let candidates: { project: Project, path: string }[] = [];
+        let addCandidate = (project: Project, projectPath: string) => {
+            let normalizedPath = normalizeCodexComparablePath(getProjectPathPart(projectPath));
+            if (!normalizedPath) {
+                return;
+            }
+
+            if (candidates.some(candidate => candidate.project.id === project.id && candidate.path === normalizedPath)) {
+                return;
+            }
+
+            candidates.push({ project, path: normalizedPath });
+        };
+
+        for (let project of openProjects) {
+            addCandidate(project, project.path);
+        }
+
+        let workspaceFile = vscode.workspace.workspaceFile;
+        if (workspaceFile && workspaceFile.scheme !== "untitled") {
+            let workspaceProject = openProjects.find(project => normalizeComparableProjectPath(project.path) === normalizeComparableProjectPath(uriToProjectPath(workspaceFile))) || openProjects[0];
+            for (let workspaceFolder of vscode.workspace.workspaceFolders || []) {
+                addCandidate(workspaceProject, uriToProjectPath(workspaceFolder.uri));
+            }
+        }
+
+        return candidates;
+    }
+
+    function codexPathContainsSessionPath(projectPath: string, sessionPath: string): boolean {
+        if (!projectPath || !sessionPath) {
+            return false;
+        }
+
+        return sessionPath === projectPath || sessionPath.startsWith(`${projectPath}/`);
+    }
+
+    function normalizeCodexComparablePath(projectPath: string): string {
+        if (!projectPath) {
+            return "";
+        }
+
+        return decodeProjectPath(projectPath)
+            .replace(/\\/g, '/')
+            .replace(/\/+$/g, '');
+    }
+
+    function decodeProjectPath(projectPath: string): string {
+        try {
+            return decodeURIComponent(projectPath);
+        } catch (e) {
+            return projectPath;
+        }
+    }
+
+    function getExpandedCodexSessionProjects(): Set<string> {
+        let expandedProjects = context.globalState.get(OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY) as string[];
+        return new Set(Array.isArray(expandedProjects) ? expandedProjects : []);
+    }
+
+    function getOpenProjectCodexExpansionKey(project: Project): string {
+        return normalizeCodexComparablePath(getProjectPathPart(project.path)) || project.id;
+    }
+
+    function getCodexSessionTerminalCwd(session: CodexSession, project: Project): string {
+        return session.cwd || normalizeCodexComparablePath(getProjectPathPart(project.path)) || null;
+    }
+
+    function getCodexSessionTerminal(session: CodexSession): CodexSessionTerminalEntry {
+        return getCodexSessionTerminalById(session.id, session);
+    }
+
+    function getCodexSessionTerminalById(sessionId: string, session: CodexSession = null): CodexSessionTerminalEntry {
+        let trackedTerminal = codexSessionTerminals.get(sessionId);
+        if (trackedTerminal) {
+            return trackedTerminal;
+        }
+
+        let terminal = vscode.window.terminals.find(candidate => terminalMatchesCodexSession(candidate, sessionId, session));
+        if (!terminal) {
+            return null;
+        }
+
+        let entry = {
+            terminal,
+            markerPath: getCodexSessionTerminalMarkerPath(sessionId),
+        };
+        codexSessionTerminals.set(sessionId, entry);
+
+        return entry;
+    }
+
+    function terminalMatchesCodexSession(terminal: vscode.Terminal, sessionId: string, session: CodexSession = null): boolean {
+        let creationOptions = terminal.creationOptions;
+        if ('env' in creationOptions && creationOptions.env?.[CODEX_SESSION_TERMINAL_ENV] === sessionId) {
+            return true;
+        }
+
+        if (terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`)) {
+            return true;
+        }
+
+        if (!session) {
+            return false;
+        }
+
+        return terminal.name === getCodexSessionTerminalName(session)
+            || terminal.name === getLegacyCodexSessionTerminalName(session);
+    }
+
+    function getCodexSessionTerminalName(session: CodexSession): string {
+        return `${CODEX_SESSION_TERMINAL_NAME_PREFIX}: ${session.name || session.id} [${session.id.substring(0, 8)}]`;
+    }
+
+    function getLegacyCodexSessionTerminalName(session: CodexSession): string {
+        return `${CODEX_SESSION_TERMINAL_NAME_PREFIX}: ${session.name || session.id}`;
+    }
+
+    function getUsableTerminalCwd(cwd: string): string {
+        if (!cwd || isUriString(cwd)) {
+            return null;
+        }
+
+        try {
+            return lstatSync(cwd).isDirectory() ? cwd : path.dirname(cwd);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    async function sendCodexResumeCommand(terminal: vscode.Terminal, sessionId: string, cwd: string, markerPath: string) {
+        deleteCodexSessionTerminalMarker({ terminal, markerPath });
+        await waitForTerminalReady(terminal);
+        terminal.sendText(buildCodexResumeCommand(sessionId, cwd, markerPath));
+    }
+
+    async function waitForTerminalReady(terminal: vscode.Terminal) {
+        try {
+            await terminal.processId;
+            await new Promise(resolve => setTimeout(resolve, CODEX_SESSION_TERMINAL_STARTUP_DELAY_MS));
+        } catch (e) {
+            // Best effort only; sendText can still work if VS Code cannot resolve the process id.
+        }
+    }
+
+    function isCodexSessionTerminalComplete(entry: CodexSessionTerminalEntry): boolean {
+        return existsSync(entry.markerPath);
+    }
+
+    function getCodexSessionTerminalMarkerPath(sessionId: string): string {
+        let markerDir = path.join(context.globalStoragePath, 'codex-session-terminals');
+        try {
+            mkdirSync(markerDir, { recursive: true });
+        } catch (e) {
+            // Fall through; the terminal command will still run without relying on the marker.
+        }
+
+        return path.join(markerDir, `${sessionId}.done`);
+    }
+
+    function deleteCodexSessionTerminalMarker(entry: CodexSessionTerminalEntry) {
+        try {
+            if (existsSync(entry.markerPath)) {
+                unlinkSync(entry.markerPath);
+            }
+        } catch (e) {
+            // Ignore marker cleanup failures; they only affect best-effort terminal reuse.
+        }
+    }
+
+    function buildCodexResumeCommand(sessionId: string, cwd: string, markerPath: string = null): string {
+        if (process.platform === 'win32' && markerPath) {
+            return buildWindowsCodexResumeCommand(sessionId, cwd, markerPath);
+        }
+
+        let quotedSessionId = quoteShellArg(sessionId);
+        let resumeCommand = cwd
+            ? `codex resume --cd ${quoteShellArg(cwd)} ${quotedSessionId}`
+            : `codex resume ${quotedSessionId}`;
+
+        if (!markerPath) {
+            return resumeCommand;
+        }
+
+        let markerArg = quoteShellArg(markerPath);
+        return `sh -lc ${quoteShellArg(`rm -f ${markerArg}; ${resumeCommand}; : > ${markerArg}`)}`;
+    }
+
+    function buildWindowsCodexResumeCommand(sessionId: string, cwd: string, markerPath: string): string {
+        let resumeCommand = cwd
+            ? `codex resume --cd ${quotePowerShellArg(cwd)} ${quotePowerShellArg(sessionId)}`
+            : `codex resume ${quotePowerShellArg(sessionId)}`;
+        let script = [
+            `Remove-Item -LiteralPath ${quotePowerShellArg(markerPath)} -ErrorAction SilentlyContinue`,
+            resumeCommand,
+            `New-Item -ItemType File -Force -Path ${quotePowerShellArg(markerPath)} | Out-Null`,
+        ].join('; ');
+
+        return `powershell -NoProfile -ExecutionPolicy Bypass -Command ${quoteWindowsCommandArg(script)}`;
+    }
+
+    function quoteShellArg(value: string): string {
+        if (process.platform === 'win32') {
+            return `"${String(value).replace(/"/g, '\\"')}"`;
+        }
+
+        return `'${String(value).replace(/'/g, `'\\''`)}'`;
+    }
+
+    function quotePowerShellArg(value: string): string {
+        return `'${String(value).replace(/'/g, `''`)}'`;
+    }
+
+    function quoteWindowsCommandArg(value: string): string {
+        return `"${String(value).replace(/"/g, '\\"')}"`;
     }
 
     function findSavedProjectForOpenProject(uri: vscode.Uri): Project {

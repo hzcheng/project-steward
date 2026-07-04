@@ -28,6 +28,9 @@ export class Project {
     remoteType?: ProjectRemoteType;
     favorite?: boolean;
     showSaveAction?: boolean;
+    codexSessions?: CodexSession[];
+    codexSessionsExpanded?: boolean;
+    codexSessionsUnavailable?: boolean;
     color: string;
     isGitRepo = false;
 
@@ -143,6 +146,13 @@ export interface StewardInfos {
     favoritesGroupCollapsed?: boolean;
     openProjects?: Project[];
     openProjectsGroupCollapsed?: boolean;
+}
+
+export interface CodexSession {
+    id: string;
+    name: string;
+    updatedAt?: string;
+    cwd?: string;
 }
 
 export enum ProjectPathType {

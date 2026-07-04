@@ -380,6 +380,11 @@ body .project {
         line-height: 1.4;
     }
 
+    .project-codex-badge,
+    .codex-sessions {
+        display: none;
+    }
+
     .add-project-header {
         @extend .project-header;
         font-size: 60px;
@@ -674,6 +679,10 @@ body.steward-sidebar {
         padding-bottom: 8px;
     }
 
+    .sticky-groups-wrapper {
+        overflow: visible;
+    }
+
     .filter-wrapper {
         width: 100%;
         padding-top: 0;
@@ -752,14 +761,7 @@ body.steward-sidebar {
                 background: var(--vscode-list-inactiveSelectionBackground, transparent);
             }
 
-            .group-title-text {
-                display: inline-flex;
-                align-items: center;
-                gap: 6px;
-                overflow: hidden;
-            }
-
-            .group-title-text::after {
+            .group-title-badge {
                 flex: 0 0 auto;
                 padding: 1px 5px;
                 border: 1px solid var(--vscode-panel-border);
@@ -770,14 +772,7 @@ body.steward-sidebar {
                 font-weight: 600;
                 line-height: 1.4;
                 text-transform: uppercase;
-            }
-
-            &[data-system-group="__openProjects"] .group-title-text::after {
-                content: "Live";
-            }
-
-            &[data-system-group="__favorites"] .group-title-text::after {
-                content: "Pinned";
+                margin-right: 8px;
             }
         }
 
@@ -976,6 +971,187 @@ body.steward-sidebar {
             min-height: 1.2em;
             line-height: 1.25;
             -webkit-line-clamp: 1;
+        }
+
+        &[data-open-project] {
+            .fitty-container,
+            .project-description {
+                width: calc(100% - 60px);
+            }
+
+            .project-codex-badge {
+                position: absolute;
+                right: 10px;
+                top: 8px;
+                z-index: 40;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 1px 6px;
+                border: 1px solid var(--vscode-panel-border);
+                border-radius: 999px;
+                color: var(--vscode-descriptionForeground);
+                background: var(--vscode-sideBar-background);
+                font-size: 9px;
+                font-weight: 650;
+                line-height: 1.35;
+                letter-spacing: 0;
+            }
+
+            &[data-codex-expanded] {
+                height: auto;
+                min-height: 58px;
+                padding-bottom: 9px;
+
+                .codex-sessions {
+                    display: block;
+                }
+            }
+
+            &[data-codex-expanded]:hover {
+                background: var(--vscode-sideBarSectionHeader-background, var(--vscode-list-inactiveSelectionBackground, var(--vscode-sideBar-background)));
+                border-color: var(--vscode-panel-border);
+                box-shadow:
+                    inset 0 1px 0 rgba(255, 255, 255, .04),
+                    0 1px 4px rgba(0, 0, 0, .14);
+                transform: none;
+
+                &::before {
+                    opacity: 0;
+                }
+
+                .project-border {
+                    height: 22px;
+                    opacity: .9;
+                }
+            }
+        }
+
+        .codex-sessions {
+            width: 100%;
+            margin-top: 8px;
+            padding-top: 7px;
+            border-top: 1px solid var(--vscode-panel-border);
+        }
+
+        .codex-sessions-title {
+            margin-left: 0;
+            color: var(--vscode-descriptionForeground);
+            font-size: 10px;
+            font-weight: 650;
+            line-height: 1.2;
+        }
+
+        .codex-sessions-list {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            margin-top: 5px;
+            margin-left: 0;
+            max-height: calc(5 * 40px + 4 * 2px);
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding-right: 2px;
+            scrollbar-gutter: stable;
+        }
+
+        .codex-session-row {
+            display: grid;
+            grid-template-columns: 40px minmax(0, 1fr) 16px;
+            align-items: center;
+            gap: 6px;
+            box-sizing: border-box;
+            min-height: 40px;
+            padding: 3px 4px 3px 6px;
+            border-radius: 6px;
+            color: var(--steward-foreground);
+            cursor: pointer;
+            transition:
+                background $defaultTransition,
+                color $defaultTransition;
+
+            &:hover {
+                background: var(--vscode-list-hoverBackground);
+            }
+        }
+
+        .codex-session-icon,
+        .codex-session-archive {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+
+            svg {
+                fill: currentColor;
+            }
+        }
+
+        .codex-session-icon {
+            color: var(--vscode-terminal-ansiCyan);
+
+            svg {
+                width: 32px;
+                height: 32px;
+            }
+        }
+
+        .codex-session-archive {
+            svg {
+                width: 12px;
+                height: 12px;
+            }
+        }
+
+        .codex-session-archive {
+            color: var(--vscode-descriptionForeground);
+            opacity: 0;
+            pointer-events: none;
+            transition:
+                color $defaultTransition,
+                opacity $defaultTransition,
+                transform $defaultTransition;
+
+            &:hover {
+                color: var(--vscode-terminal-ansiYellow);
+                transform: scale(1.08);
+            }
+        }
+
+        .codex-session-row:hover .codex-session-archive {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .codex-session-text {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .codex-session-name,
+        .codex-session-meta {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .codex-session-name {
+            color: var(--steward-foreground);
+            font-size: 11px;
+            font-weight: 550;
+            line-height: 1.15;
+        }
+
+        .codex-session-meta,
+        .codex-sessions-empty {
+            color: var(--vscode-descriptionForeground);
+            font-size: 10px;
+            line-height: 1.15;
+        }
+
+        .codex-sessions-empty {
+            margin: 3px 0 1px 0;
         }
 
         .project-actions-wrapper {

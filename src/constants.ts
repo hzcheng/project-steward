@@ -26,6 +26,7 @@ export const FAVORITES_GROUP_ID = '__favorites';
 export const FAVORITES_GROUP_COLLAPSED_KEY = 'favoritesGroupCollapsed';
 export const OPEN_PROJECTS_GROUP_ID = '__openProjects';
 export const OPEN_PROJECTS_GROUP_COLLAPSED_KEY = 'openProjectsGroupCollapsed';
+export const OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY = 'openProjectsExpandedCodexSessions';
 
 export enum StorageOption {
     GlobalState,
