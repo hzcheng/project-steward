@@ -1,6 +1,9 @@
 name: Release VSIX
 
 on:
+  push:
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       version:
@@ -45,6 +48,8 @@ jobs:
           package_name="$(node -p "require('./package.json').name")"
           package_version="$(node -p "require('./package.json').version")"
           requested_version="${{ inputs.version }}"
+          trigger_ref_type="${{ github.ref_type }}"
+          trigger_ref_name="${{ github.ref_name }}"
 
           if [[ -n "$requested_version" && "$requested_version" != "$package_version" ]]; then
             echo "Requested version $requested_version does not match package.json version $package_version." >&2
@@ -54,6 +59,13 @@ jobs:
 
           version="${requested_version:-$package_version}"
           tag="v${version}"
+
+          if [[ "$trigger_ref_type" == "tag" && "$trigger_ref_name" != "$tag" ]]; then
+            echo "Tag $trigger_ref_name does not match package.json version $package_version." >&2
+            echo "Expected tag: $tag" >&2
+            exit 1
+          fi
+
           vsix_file="${package_name}-${version}.vsix"
 
           echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
