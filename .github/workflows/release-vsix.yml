@@ -1,0 +1,111 @@
+name: Release VSIX
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release. Leave empty to use package.json."
+        required: false
+        type: string
+      draft:
+        description: "Create the GitHub release as a draft."
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: "Mark the GitHub release as a prerelease."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release VSIX
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      - name: Read package metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          requested_version="${{ inputs.version }}"
+
+          if [[ -n "$requested_version" && "$requested_version" != "$package_version" ]]; then
+            echo "Requested version $requested_version does not match package.json version $package_version." >&2
+            echo "Update package.json first, then run this workflow again." >&2
+            exit 1
+          fi
+
+          version="${requested_version:-$package_version}"
+          tag="v${version}"
+          vsix_file="${package_name}-${version}.vsix"
+
+          echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "vsix_file=$vsix_file" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile
+        run: npm run test-compile
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Package VSIX
+        run: npx --yes @vscode/vsce package --allow-star-activation --out "${{ steps.meta.outputs.vsix_file }}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.vsix_file }}
+          path: ${{ steps.meta.outputs.vsix_file }}
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          VSIX_FILE: ${{ steps.meta.outputs.vsix_file }}
+          DRAFT: ${{ inputs.draft }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists. Delete it or bump package.json before publishing again." >&2
+            exit 1
+          fi
+
+          args=()
+          if [[ "$DRAFT" == "true" ]]; then
+            args+=(--draft)
+          fi
+          if [[ "$PRERELEASE" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "$TAG" "$VSIX_FILE" \
+            --title "Project Steward ${VERSION}" \
+            --notes "VSIX package for Project Steward ${VERSION}." \
+            "${args[@]}"
