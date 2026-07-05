@@ -613,7 +613,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         let cwd = getUsableTerminalCwd(getCodexSessionTerminalCwd(session, project));
         let existingTerminal = getCodexSessionTerminal(session);
-        if (existingTerminal) {
+        if (existingTerminal && !isCodexSessionTerminalComplete(existingTerminal)) {
             existingTerminal.terminal.show();
             return;
         }
@@ -624,27 +624,29 @@ export function activate(context: vscode.ExtensionContext) {
 
         codexSessionResumesInFlight.add(session.id);
         let terminalName = getCodexSessionTerminalName(session);
-        let terminal: vscode.Terminal;
+        let terminal: vscode.Terminal = existingTerminal?.terminal;
         let terminalEnv = { [CODEX_SESSION_TERMINAL_ENV]: session.id };
+        let markerPath = existingTerminal?.markerPath || getCodexSessionTerminalMarkerPath(session.id);
 
         try {
-            try {
-                terminal = vscode.window.createTerminal({
-                    name: terminalName,
-                    cwd: cwd || undefined,
-                    env: terminalEnv,
-                });
-            } catch (error) {
-                logError('Failed to create Codex terminal with cwd.', error);
-                cwd = null;
-                terminal = vscode.window.createTerminal({
-                    name: terminalName,
-                    env: terminalEnv,
-                });
-                vscode.window.showWarningMessage("Could not open the Codex terminal at the session directory. Resuming without a working directory.");
+            if (!terminal) {
+                try {
+                    terminal = vscode.window.createTerminal({
+                        name: terminalName,
+                        cwd: cwd || undefined,
+                        env: terminalEnv,
+                    });
+                } catch (error) {
+                    logError('Failed to create Codex terminal with cwd.', error);
+                    cwd = null;
+                    terminal = vscode.window.createTerminal({
+                        name: terminalName,
+                        env: terminalEnv,
+                    });
+                    vscode.window.showWarningMessage("Could not open the Codex terminal at the session directory. Resuming without a working directory.");
+                }
             }
 
-            let markerPath = getCodexSessionTerminalMarkerPath(session.id);
             codexSessionTerminals.set(session.id, { terminal, markerPath });
             terminal.show();
             await sendCodexResumeCommand(terminal, session.id, cwd, markerPath);

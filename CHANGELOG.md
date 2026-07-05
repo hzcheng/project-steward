@@ -2,6 +2,16 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
+## [1.1.2] 2026-07-05
+
+### Changed
+
+-   Refresh the README with the current Project Steward positioning, setup notes, Codex session behavior, and demo media.
+
+### Fixed
+
+-   Resuming a completed Codex session terminal now reruns `codex resume` instead of only focusing the stale terminal.
+
 ## [1.0.5] 2026-07-02
 
 ### Changed
