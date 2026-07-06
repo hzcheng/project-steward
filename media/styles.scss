@@ -894,6 +894,17 @@ body.steward-sidebar {
             }
         }
 
+        &[data-open-project][data-has-save-action] .project-save-badge {
+            top: 34px;
+            right: 10px;
+            bottom: auto;
+            transform: none;
+
+            &:hover {
+                transform: scale(1.08);
+            }
+        }
+
         &[data-has-favorite-toggle] {
             .project-description {
                 width: calc(100% - 22px);
