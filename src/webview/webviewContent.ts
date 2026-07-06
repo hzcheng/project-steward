@@ -8,6 +8,8 @@ import {
     ProjectRemoteType,
     StewardInfos,
     sanitizeProjectName,
+    AiSessionProviderId,
+    CodexSession,
 } from '../models';
 import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, OPEN_PROJECTS_GROUP_ID } from '../constants';
 import * as Icons from './webviewIcons';
@@ -234,8 +236,12 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var description = sanitizeProjectName(project.description);
     var projectName = escapeAttribute(sanitizeProjectName(project.name));
     var codexSessions = project.codexSessions || [];
-    var codexSessionSearchText = codexSessions.map(session => session.name || '').join(' ');
-    var searchText = escapeAttribute(`${project.name || ''} ${description} ${codexSessionSearchText}`.toLowerCase());
+    var kimiSessions = project.kimiSessions || [];
+    var aiSessionSearchText = codexSessions
+        .concat(kimiSessions)
+        .map(session => session.name || '')
+        .join(' ');
+    var searchText = escapeAttribute(`${project.name || ''} ${description} ${aiSessionSearchText}`.toLowerCase());
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
@@ -262,8 +268,9 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var saveBadge = project.showSaveAction
         ? `<span data-action="save" class="project-save-badge" title="Save Current Project">${Icons.save}</span>`
         : '';
-    var codexBadge = isReadOnlyProject
-        ? `<span class="project-codex-badge" title="Codex Sessions">Codex ${codexSessions.length}</span>`
+    var aiSessionCount = codexSessions.length + kimiSessions.length;
+    var aiSessionBadge = isReadOnlyProject && aiSessionCount
+        ? `<span class="project-codex-badge" title="AI Sessions">AI ${aiSessionCount}</span>`
         : '';
     var codexSessionSection = isReadOnlyProject ? getCodexSessionsDiv(project) : '';
 
@@ -295,7 +302,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
         <p class="project-description" title="${escapedDescription}">
             ${escapedDescription}
         </p>
-        ${codexBadge}
+        ${aiSessionBadge}
         ${codexSessionSection}
     </div>
 </div>`;
@@ -303,35 +310,65 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
 
 function getCodexSessionsDiv(project: Project): string {
     var codexSessions = project.codexSessions || [];
-    var emptyText = project.codexSessionsUnavailable ? 'No Codex history found' : 'No sessions yet';
-    var sessionRows = codexSessions.length
-        ? codexSessions.map(session => getCodexSessionRow(session)).join('\n')
+    var kimiSessions = project.kimiSessions || [];
+    var activeProvider = getActiveAiSessionProvider(project);
+    var activeSessions = activeProvider === 'kimi' ? kimiSessions : codexSessions;
+    var unavailable = activeProvider === 'kimi' ? project.kimiSessionsUnavailable : project.codexSessionsUnavailable;
+    var providerName = activeProvider === 'kimi' ? 'Kimi' : 'Codex';
+    var emptyText = unavailable ? `No ${providerName} history found` : 'No sessions yet';
+    var sessionRows = activeSessions.length
+        ? activeSessions.map(session => getCodexSessionRow(session, activeProvider)).join('\n')
         : `<div class="codex-sessions-empty">${emptyText}</div>`;
 
     return `
 <div class="codex-sessions">
-    <div class="codex-sessions-title">Codex Sessions</div>
+    <div class="ai-session-provider-tabs">
+        ${getAiProviderButton('codex', 'Codex', codexSessions.length, activeProvider)}
+        ${getAiProviderButton('kimi', 'Kimi', kimiSessions.length, activeProvider)}
+    </div>
     <div class="codex-sessions-list">
         ${sessionRows}
     </div>
 </div>`;
 }
 
-function getCodexSessionRow(session: { id: string; name: string; updatedAt?: string }) {
+function getAiProviderButton(providerId: AiSessionProviderId, label: string, count: number, activeProvider: AiSessionProviderId): string {
+    var isActive = providerId === activeProvider;
+    return `<button class="ai-session-provider-tab ${isActive ? 'active' : ''}" data-action="select-ai-provider" data-provider="${providerId}" title="${label} Sessions">
+        <span>${label}</span>
+        <span class="ai-session-provider-count">${count}</span>
+    </button>`;
+}
+
+function getActiveAiSessionProvider(project: Project): AiSessionProviderId {
+    if (project.activeAiSessionProvider === 'kimi' || project.activeAiSessionProvider === 'codex') {
+        return project.activeAiSessionProvider;
+    }
+
+    if (!(project.codexSessions || []).length && (project.kimiSessions || []).length) {
+        return 'kimi';
+    }
+
+    return 'codex';
+}
+
+function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId) {
     var sessionName = escapeAttribute(sanitizeProjectName(session.name || session.id));
     var sessionId = escapeAttribute(session.id || '');
     var shortSessionId = escapeAttribute((session.id || '').substring(0, 8));
     var updatedAt = escapeAttribute(formatCodexSessionUpdatedAt(session.updatedAt));
     var metadata = [updatedAt, shortSessionId].filter(value => !!value).join(' · ');
+    var providerLabel = provider === 'kimi' ? 'Kimi' : 'Codex';
+    var archiveAction = `<span class="codex-session-archive" data-action="archive-${provider}-session" title="Archive Session">${Icons.archive}</span>`;
 
     return `
-<div class="codex-session-row" data-session-id="${sessionId}" title="Resume Codex Session">
+<div class="codex-session-row" data-session-id="${sessionId}" data-session-provider="${provider}" title="Resume ${providerLabel} Session">
     <span class="codex-session-icon">${Icons.terminalLine}</span>
     <span class="codex-session-text">
         <span class="codex-session-name">${sessionName}</span>
         <span class="codex-session-meta">${metadata}</span>
     </span>
-    <span class="codex-session-archive" data-action="archive-codex-session" title="Archive Session">${Icons.archive}</span>
+    ${archiveAction}
 </div>`;
 }
 

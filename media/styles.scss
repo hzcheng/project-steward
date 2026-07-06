@@ -1034,12 +1034,52 @@ body.steward-sidebar {
             border-top: 1px solid var(--vscode-panel-border);
         }
 
-        .codex-sessions-title {
+        .ai-session-provider-tabs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 5px;
             margin-left: 0;
+        }
+
+        .ai-session-provider-tab {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            min-width: 0;
+            height: 23px;
+            padding: 0 7px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 999px;
             color: var(--vscode-descriptionForeground);
+            background: var(--vscode-sideBar-background);
+            font-family: var(--vscode-font-family);
             font-size: 10px;
             font-weight: 650;
-            line-height: 1.2;
+            line-height: 1;
+            cursor: pointer;
+            transition:
+                background $defaultTransition,
+                border-color $defaultTransition,
+                color $defaultTransition,
+                box-shadow $defaultTransition;
+
+            &:hover,
+            &.active {
+                color: var(--steward-foreground);
+                border-color: var(--vscode-focusBorder);
+                background: var(--vscode-list-hoverBackground);
+            }
+
+            &.active {
+                box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .04);
+            }
+        }
+
+        .ai-session-provider-count {
+            color: var(--vscode-descriptionForeground);
+            font-size: 9px;
+            font-weight: 650;
         }
 
         .codex-sessions-list {
@@ -1093,6 +1133,10 @@ body.steward-sidebar {
                 width: 32px;
                 height: 32px;
             }
+        }
+
+        .codex-session-row[data-session-provider="kimi"] .codex-session-icon {
+            color: var(--vscode-terminal-ansiMagenta, #c586c0);
         }
 
         .codex-session-archive {

@@ -46,7 +46,7 @@ function initProjects() {
         if (dataId == null)
             return;
 
-        if (onTriggerCodexSessionAction(e.target, dataId))
+        if (onTriggerAiSessionAction(e.target, dataId))
             return;
 
         if (onTriggerProjectAction(e.target, dataId))
@@ -63,14 +63,29 @@ function initProjects() {
 
     }
 
-    function onTriggerCodexSessionAction(target, projectId) {
-        var archiveAction = target.closest('[data-action="archive-codex-session"]');
+    function onTriggerAiSessionAction(target, projectId) {
+        var providerAction = target.closest('[data-action="select-ai-provider"][data-provider]');
+        if (providerAction) {
+            var provider = providerAction.getAttribute("data-provider");
+            if (provider === "codex" || provider === "kimi") {
+                window.vscode.postMessage({
+                    type: 'select-ai-session-provider',
+                    projectId,
+                    provider,
+                });
+            }
+
+            return true;
+        }
+
+        var archiveAction = target.closest('[data-action="archive-codex-session"], [data-action="archive-kimi-session"]');
         if (archiveAction) {
             var archiveRow = archiveAction.closest('.codex-session-row[data-session-id]');
             var archiveSessionId = archiveRow && archiveRow.getAttribute("data-session-id");
+            var archiveProvider = archiveRow && archiveRow.getAttribute("data-session-provider") || "codex";
             if (archiveSessionId) {
                 window.vscode.postMessage({
-                    type: 'archive-codex-session',
+                    type: archiveProvider === "kimi" ? 'archive-kimi-session' : 'archive-codex-session',
                     projectId,
                     sessionId: archiveSessionId,
                 });
@@ -86,9 +101,10 @@ function initProjects() {
         var sessionId = sessionRow.getAttribute("data-session-id");
         if (!sessionId)
             return true;
+        var sessionProvider = sessionRow.getAttribute("data-session-provider") || "codex";
 
         window.vscode.postMessage({
-            type: 'resume-codex-session',
+            type: sessionProvider === "kimi" ? 'resume-kimi-session' : 'resume-codex-session',
             projectId,
             sessionId,
         });

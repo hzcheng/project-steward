@@ -29,8 +29,11 @@ export class Project {
     favorite?: boolean;
     showSaveAction?: boolean;
     codexSessions?: CodexSession[];
+    kimiSessions?: CodexSession[];
     codexSessionsExpanded?: boolean;
     codexSessionsUnavailable?: boolean;
+    kimiSessionsUnavailable?: boolean;
+    activeAiSessionProvider?: AiSessionProviderId;
     color: string;
     isGitRepo = false;
 
@@ -139,6 +142,17 @@ export interface GroupOrder {
     projectIds: string[];
 }
 
+export type AiSessionProviderId = 'codex' | 'kimi';
+
+export interface CodexSession {
+    id: string;
+    name: string;
+    updatedAt?: string;
+    cwd?: string;
+    workDir?: string;
+    provider?: AiSessionProviderId;
+}
+
 export interface StewardInfos {
     relevantExtensionsInstalls: { remoteSSH: boolean; remoteContainers: boolean };
     config: vscode.WorkspaceConfiguration;
@@ -146,13 +160,6 @@ export interface StewardInfos {
     favoritesGroupCollapsed?: boolean;
     openProjects?: Project[];
     openProjectsGroupCollapsed?: boolean;
-}
-
-export interface CodexSession {
-    id: string;
-    name: string;
-    updatedAt?: string;
-    cwd?: string;
 }
 
 export enum ProjectPathType {

@@ -1,9 +1,9 @@
 'use strict';
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession } from './models';
+import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession, AiSessionProviderId } from './models';
 import { getStewardContent } from './webview/webviewContent';
-import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
+import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
 import { execSync } from 'child_process';
 import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'fs';
 
@@ -11,6 +11,7 @@ import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
 import FileService from './services/fileService';
 import CodexSessionService, { CodexSessionReadResult } from './services/codexSessionService';
+import KimiSessionService, { KimiSessionReadResult } from './services/kimiSessionService';
 
 interface CodexSessionTerminalEntry {
     terminal: vscode.Terminal;
@@ -20,6 +21,8 @@ interface CodexSessionTerminalEntry {
 const CODEX_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_CODEX_SESSION_ID';
 const CODEX_SESSION_TERMINAL_NAME_PREFIX = 'Codex';
 const CODEX_SESSION_TERMINAL_STARTUP_DELAY_MS = 1000;
+const KIMI_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_KIMI_SESSION_ID';
+const KIMI_SESSION_TERMINAL_NAME_PREFIX = 'Kimi';
 
 export function activate(context: vscode.ExtensionContext) {
     const outputChannel = vscode.window.createOutputChannel('Project Steward');
@@ -69,8 +72,11 @@ export function activate(context: vscode.ExtensionContext) {
     const projectService = new ProjectService(context, colorService);
     const fileService = new FileService(context);
     const codexSessionService = new CodexSessionService();
+    const kimiSessionService = new KimiSessionService();
     const codexSessionTerminals = new Map<string, CodexSessionTerminalEntry>();
+    const kimiSessionTerminals = new Map<string, CodexSessionTerminalEntry>();
     const codexSessionResumesInFlight = new Set<string>();
+    const kimiSessionResumesInFlight = new Set<string>();
     let codexSessionRefreshTimeout: NodeJS.Timeout = null;
 
     const provider = new SidebarStewardViewProvider();
@@ -85,9 +91,17 @@ export function activate(context: vscode.ExtensionContext) {
                     codexSessionTerminals.delete(sessionId);
                 }
             }
+            for (let [sessionId, entry] of kimiSessionTerminals) {
+                if (entry.terminal === terminal) {
+                    deleteKimiSessionTerminalMarker(entry);
+                    kimiSessionTerminals.delete(sessionId);
+                }
+            }
         }));
     context.subscriptions.push(
         codexSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()));
+    context.subscriptions.push(
+        kimiSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()));
     context.subscriptions.push({
         dispose: () => {
             if (codexSessionRefreshTimeout) {
@@ -408,12 +422,23 @@ export function activate(context: vscode.ExtensionContext) {
                 projectId = e.projectId as string;
                 await toggleCodexSessions(projectId, Boolean(e.expanded));
                 break;
+            case 'select-ai-session-provider':
+                projectId = e.projectId as string;
+                await selectAiSessionProvider(projectId, e.provider as AiSessionProviderId);
+                break;
             case 'resume-codex-session':
                 projectId = e.projectId as string;
                 await resumeCodexSession(projectId, e.sessionId as string);
                 break;
+            case 'resume-kimi-session':
+                projectId = e.projectId as string;
+                await resumeKimiSession(projectId, e.sessionId as string);
+                break;
             case 'archive-codex-session':
                 await archiveCodexSession(e.sessionId as string);
+                break;
+            case 'archive-kimi-session':
+                await archiveKimiSession(e.sessionId as string);
                 break;
             case 'edit-group':
                 groupId = e.groupId as string;
@@ -603,6 +628,22 @@ export function activate(context: vscode.ExtensionContext) {
         await context.globalState.update(OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, Array.from(expandedProjects));
     }
 
+    async function selectAiSessionProvider(projectId: string, providerId: AiSessionProviderId) {
+        if (providerId !== 'codex' && providerId !== 'kimi') {
+            return;
+        }
+
+        let project = getOpenProjects().find(p => p.id === projectId);
+        if (!project) {
+            return;
+        }
+
+        let selectedProviders = getActiveAiSessionProviders();
+        selectedProviders[getOpenProjectCodexExpansionKey(project)] = providerId;
+        await context.globalState.update(OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, selectedProviders);
+        refreshAfterMutation();
+    }
+
     async function resumeCodexSession(projectId: string, sessionId: string) {
         let project = getOpenProjects().find(p => p.id === projectId);
         let session = project?.codexSessions?.find(s => s.id === sessionId);
@@ -655,6 +696,58 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
+    async function resumeKimiSession(projectId: string, sessionId: string) {
+        let project = getOpenProjects().find(p => p.id === projectId);
+        let session = project?.kimiSessions?.find(s => s.id === sessionId);
+        if (!project || !session) {
+            vscode.window.showWarningMessage("Selected Kimi session not found.");
+            return;
+        }
+
+        let cwd = getUsableTerminalCwd(getKimiSessionTerminalCwd(session, project));
+        let existingTerminal = getKimiSessionTerminal(session);
+        if (existingTerminal && !isKimiSessionTerminalComplete(existingTerminal)) {
+            existingTerminal.terminal.show();
+            return;
+        }
+
+        if (kimiSessionResumesInFlight.has(session.id)) {
+            return;
+        }
+
+        kimiSessionResumesInFlight.add(session.id);
+        let terminalName = getKimiSessionTerminalName(session);
+        let terminal: vscode.Terminal = existingTerminal?.terminal;
+        let terminalEnv = { [KIMI_SESSION_TERMINAL_ENV]: session.id };
+        let markerPath = existingTerminal?.markerPath || getKimiSessionTerminalMarkerPath(session.id);
+
+        try {
+            if (!terminal) {
+                try {
+                    terminal = vscode.window.createTerminal({
+                        name: terminalName,
+                        cwd: cwd || undefined,
+                        env: terminalEnv,
+                    });
+                } catch (error) {
+                    logError('Failed to create Kimi terminal with cwd.', error);
+                    cwd = null;
+                    terminal = vscode.window.createTerminal({
+                        name: terminalName,
+                        env: terminalEnv,
+                    });
+                    vscode.window.showWarningMessage("Could not open the Kimi terminal at the session directory. Resuming without a working directory.");
+                }
+            }
+
+            kimiSessionTerminals.set(session.id, { terminal, markerPath });
+            terminal.show();
+            await sendKimiResumeCommand(terminal, session.id, cwd, markerPath);
+        } finally {
+            kimiSessionResumesInFlight.delete(session.id);
+        }
+    }
+
     async function archiveCodexSession(sessionId: string) {
         if (!sessionId) {
             return;
@@ -682,6 +775,36 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         codexSessionTerminals.delete(sessionId);
+        refreshAfterMutation();
+    }
+
+    async function archiveKimiSession(sessionId: string) {
+        if (!sessionId) {
+            return;
+        }
+
+        let existingTerminal = getKimiSessionTerminalById(sessionId);
+        if (existingTerminal && !isKimiSessionTerminalComplete(existingTerminal)) {
+            vscode.window.showWarningMessage("This Kimi session is open in a terminal. Exit or close that terminal before archiving it.");
+            existingTerminal.terminal.show();
+            return;
+        }
+
+        let accepted = await vscode.window.showWarningMessage("Archive this Kimi session?", { modal: true }, "Archive");
+        if (!accepted) {
+            return;
+        }
+
+        if (!kimiSessionService.archiveSession(sessionId)) {
+            vscode.window.showErrorMessage("Could not archive Kimi session.");
+            return;
+        }
+
+        if (existingTerminal) {
+            deleteKimiSessionTerminalMarker(existingTerminal);
+        }
+
+        kimiSessionTerminals.delete(sessionId);
         refreshAfterMutation();
     }
 
@@ -1651,7 +1774,7 @@ export function activate(context: vscode.ExtensionContext) {
                 .map((folder, index) => buildOpenProject(folder.uri, index, "Workspace folder", folder.name));
         }
 
-        return withCodexSessions(openProjects);
+        return withAiSessions(openProjects);
     }
 
     function getOpenProjectUri(projectId: string): vscode.Uri {
@@ -1689,19 +1812,25 @@ export function activate(context: vscode.ExtensionContext) {
         return project;
     }
 
-    function withCodexSessions(openProjects: Project[]): Project[] {
+    function withAiSessions(openProjects: Project[]): Project[] {
         if (!openProjects.length) {
             return openProjects;
         }
 
         let codexSessionResult = codexSessionService.getSessions();
-        let assignments = getCodexSessionAssignments(openProjects, codexSessionResult);
+        let kimiSessionResult = kimiSessionService.getSessions();
+        let codexAssignments = getCodexSessionAssignments(openProjects, codexSessionResult);
+        let kimiAssignments = getKimiSessionAssignments(openProjects, kimiSessionResult);
         let expandedProjects = getExpandedCodexSessionProjects();
+        let activeProviders = getActiveAiSessionProviders();
 
         return openProjects.map(project => {
-            project.codexSessions = (assignments.get(project.id) || []).slice(0, 20);
+            project.codexSessions = (codexAssignments.get(project.id) || []).slice(0, 20);
+            project.kimiSessions = (kimiAssignments.get(project.id) || []).slice(0, 20);
             project.codexSessionsUnavailable = !codexSessionResult.available;
+            project.kimiSessionsUnavailable = !kimiSessionResult.available;
             project.codexSessionsExpanded = expandedProjects.has(getOpenProjectCodexExpansionKey(project));
+            project.activeAiSessionProvider = getActiveAiSessionProvider(project, activeProviders);
             return project;
         });
     }
@@ -1734,6 +1863,58 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         return assignments;
+    }
+
+    function getKimiSessionAssignments(openProjects: Project[], kimiSessionResult: KimiSessionReadResult): Map<string, CodexSession[]> {
+        let assignments = new Map<string, CodexSession[]>();
+        if (!kimiSessionResult.available || !kimiSessionResult.sessions.length) {
+            return assignments;
+        }
+
+        let candidates = getCodexOpenProjectCandidates(openProjects);
+
+        for (let session of kimiSessionResult.sessions) {
+            let sessionPath = normalizeCodexComparablePath(session.workDir || session.cwd);
+            if (!sessionPath) {
+                continue;
+            }
+
+            let bestMatch = candidates
+                .filter(candidate => codexPathContainsSessionPath(candidate.path, sessionPath))
+                .sort((a, b) => b.path.length - a.path.length)[0];
+
+            if (!bestMatch) {
+                continue;
+            }
+
+            let projectSessions = assignments.get(bestMatch.project.id) || [];
+            projectSessions.push(session);
+            assignments.set(bestMatch.project.id, projectSessions);
+        }
+
+        return assignments;
+    }
+
+    function getActiveAiSessionProviders(): Record<string, AiSessionProviderId> {
+        let selectedProviders = context.globalState.get(OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY) as Record<string, AiSessionProviderId>;
+        if (!selectedProviders || typeof selectedProviders !== 'object' || Array.isArray(selectedProviders)) {
+            return {};
+        }
+
+        return selectedProviders;
+    }
+
+    function getActiveAiSessionProvider(project: Project, activeProviders: Record<string, AiSessionProviderId>): AiSessionProviderId {
+        let selectedProvider = activeProviders[getOpenProjectCodexExpansionKey(project)];
+        if (selectedProvider === 'codex' || selectedProvider === 'kimi') {
+            return selectedProvider;
+        }
+
+        if (!project.codexSessions?.length && project.kimiSessions?.length) {
+            return 'kimi';
+        }
+
+        return 'codex';
     }
 
     function getCodexOpenProjectCandidates(openProjects: Project[]): { project: Project, path: string }[] {
@@ -1835,7 +2016,7 @@ export function activate(context: vscode.ExtensionContext) {
             return true;
         }
 
-        if (terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`)) {
+        if (terminal.name.startsWith(`${CODEX_SESSION_TERMINAL_NAME_PREFIX}: `) && terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`)) {
             return true;
         }
 
@@ -1853,6 +2034,60 @@ export function activate(context: vscode.ExtensionContext) {
 
     function getLegacyCodexSessionTerminalName(session: CodexSession): string {
         return `${CODEX_SESSION_TERMINAL_NAME_PREFIX}: ${session.name || session.id}`;
+    }
+
+    function getKimiSessionTerminalCwd(session: CodexSession, project: Project): string {
+        return session.workDir || session.cwd || normalizeCodexComparablePath(getProjectPathPart(project.path)) || null;
+    }
+
+    function getKimiSessionTerminal(session: CodexSession): CodexSessionTerminalEntry {
+        return getKimiSessionTerminalById(session.id, session);
+    }
+
+    function getKimiSessionTerminalById(sessionId: string, session: CodexSession = null): CodexSessionTerminalEntry {
+        let trackedTerminal = kimiSessionTerminals.get(sessionId);
+        if (trackedTerminal) {
+            return trackedTerminal;
+        }
+
+        let terminal = vscode.window.terminals.find(candidate => terminalMatchesKimiSession(candidate, sessionId, session));
+        if (!terminal) {
+            return null;
+        }
+
+        let entry = {
+            terminal,
+            markerPath: getKimiSessionTerminalMarkerPath(sessionId),
+        };
+        kimiSessionTerminals.set(sessionId, entry);
+
+        return entry;
+    }
+
+    function terminalMatchesKimiSession(terminal: vscode.Terminal, sessionId: string, session: CodexSession = null): boolean {
+        let creationOptions = terminal.creationOptions;
+        if ('env' in creationOptions && creationOptions.env?.[KIMI_SESSION_TERMINAL_ENV] === sessionId) {
+            return true;
+        }
+
+        if (terminal.name.startsWith(`${KIMI_SESSION_TERMINAL_NAME_PREFIX}: `) && terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`)) {
+            return true;
+        }
+
+        if (!session) {
+            return false;
+        }
+
+        return terminal.name === getKimiSessionTerminalName(session)
+            || terminal.name === getLegacyKimiSessionTerminalName(session);
+    }
+
+    function getKimiSessionTerminalName(session: CodexSession): string {
+        return `${KIMI_SESSION_TERMINAL_NAME_PREFIX}: ${session.name || session.id} [${session.id.substring(0, 8)}]`;
+    }
+
+    function getLegacyKimiSessionTerminalName(session: CodexSession): string {
+        return `${KIMI_SESSION_TERMINAL_NAME_PREFIX}: ${session.name || session.id}`;
     }
 
     function getUsableTerminalCwd(cwd: string): string {
@@ -1873,6 +2108,12 @@ export function activate(context: vscode.ExtensionContext) {
         terminal.sendText(buildCodexResumeCommand(sessionId, cwd, markerPath));
     }
 
+    async function sendKimiResumeCommand(terminal: vscode.Terminal, sessionId: string, cwd: string, markerPath: string) {
+        deleteKimiSessionTerminalMarker({ terminal, markerPath });
+        await waitForTerminalReady(terminal);
+        terminal.sendText(buildKimiResumeCommand(sessionId, cwd, markerPath));
+    }
+
     async function waitForTerminalReady(terminal: vscode.Terminal) {
         try {
             await terminal.processId;
@@ -1883,6 +2124,10 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function isCodexSessionTerminalComplete(entry: CodexSessionTerminalEntry): boolean {
+        return existsSync(entry.markerPath);
+    }
+
+    function isKimiSessionTerminalComplete(entry: CodexSessionTerminalEntry): boolean {
         return existsSync(entry.markerPath);
     }
 
@@ -1897,7 +2142,28 @@ export function activate(context: vscode.ExtensionContext) {
         return path.join(markerDir, `${sessionId}.done`);
     }
 
+    function getKimiSessionTerminalMarkerPath(sessionId: string): string {
+        let markerDir = path.join(context.globalStoragePath, 'kimi-session-terminals');
+        try {
+            mkdirSync(markerDir, { recursive: true });
+        } catch (e) {
+            // Fall through; the terminal command will still run without relying on the marker.
+        }
+
+        return path.join(markerDir, `${sessionId}.done`);
+    }
+
     function deleteCodexSessionTerminalMarker(entry: CodexSessionTerminalEntry) {
+        try {
+            if (existsSync(entry.markerPath)) {
+                unlinkSync(entry.markerPath);
+            }
+        } catch (e) {
+            // Ignore marker cleanup failures; they only affect best-effort terminal reuse.
+        }
+    }
+
+    function deleteKimiSessionTerminalMarker(entry: CodexSessionTerminalEntry) {
         try {
             if (existsSync(entry.markerPath)) {
                 unlinkSync(entry.markerPath);
@@ -1929,6 +2195,36 @@ export function activate(context: vscode.ExtensionContext) {
         let resumeCommand = cwd
             ? `codex resume --cd ${quotePowerShellArg(cwd)} ${quotePowerShellArg(sessionId)}`
             : `codex resume ${quotePowerShellArg(sessionId)}`;
+        let script = [
+            `Remove-Item -LiteralPath ${quotePowerShellArg(markerPath)} -ErrorAction SilentlyContinue`,
+            resumeCommand,
+            `New-Item -ItemType File -Force -Path ${quotePowerShellArg(markerPath)} | Out-Null`,
+        ].join('; ');
+
+        return `powershell -NoProfile -ExecutionPolicy Bypass -Command ${quoteWindowsCommandArg(script)}`;
+    }
+
+    function buildKimiResumeCommand(sessionId: string, cwd: string, markerPath: string = null): string {
+        if (process.platform === 'win32' && markerPath) {
+            return buildWindowsKimiResumeCommand(sessionId, cwd, markerPath);
+        }
+
+        let resumeCommand = cwd
+            ? `kimi --work-dir ${quoteShellArg(cwd)} --resume ${quoteShellArg(sessionId)}`
+            : `kimi --resume ${quoteShellArg(sessionId)}`;
+
+        if (!markerPath) {
+            return resumeCommand;
+        }
+
+        let markerArg = quoteShellArg(markerPath);
+        return `sh -lc ${quoteShellArg(`rm -f ${markerArg}; ${resumeCommand}; : > ${markerArg}`)}`;
+    }
+
+    function buildWindowsKimiResumeCommand(sessionId: string, cwd: string, markerPath: string): string {
+        let resumeCommand = cwd
+            ? `kimi --work-dir ${quotePowerShellArg(cwd)} --resume ${quotePowerShellArg(sessionId)}`
+            : `kimi --resume ${quotePowerShellArg(sessionId)}`;
         let script = [
             `Remove-Item -LiteralPath ${quotePowerShellArg(markerPath)} -ErrorAction SilentlyContinue`,
             resumeCommand,
