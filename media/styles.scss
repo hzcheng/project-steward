@@ -1108,7 +1108,7 @@ body.steward-sidebar {
 
         .codex-session-row {
             display: grid;
-            grid-template-columns: 40px minmax(0, 1fr) 16px;
+            grid-template-columns: 40px minmax(0, 1fr) 16px 16px;
             align-items: center;
             gap: 6px;
             box-sizing: border-box;
@@ -1124,9 +1124,14 @@ body.steward-sidebar {
             &:hover {
                 background: var(--vscode-list-hoverBackground);
             }
+
+            &[data-session-pinned] {
+                background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground));
+            }
         }
 
         .codex-session-icon,
+        .codex-session-pin,
         .codex-session-archive {
             display: inline-flex;
             align-items: center;
@@ -1150,6 +1155,7 @@ body.steward-sidebar {
             color: var(--vscode-terminal-ansiMagenta, #c586c0);
         }
 
+        .codex-session-pin,
         .codex-session-archive {
             svg {
                 width: 12px;
@@ -1157,6 +1163,7 @@ body.steward-sidebar {
             }
         }
 
+        .codex-session-pin,
         .codex-session-archive {
             color: var(--vscode-descriptionForeground);
             opacity: 0;
@@ -1165,13 +1172,29 @@ body.steward-sidebar {
                 color $defaultTransition,
                 opacity $defaultTransition,
                 transform $defaultTransition;
+        }
 
+        .codex-session-pin {
+            &:hover {
+                color: var(--vscode-focusBorder);
+                transform: scale(1.08);
+            }
+
+            &.active {
+                color: var(--vscode-focusBorder);
+                opacity: 1;
+                pointer-events: auto;
+            }
+        }
+
+        .codex-session-archive {
             &:hover {
                 color: var(--vscode-terminal-ansiYellow);
                 transform: scale(1.08);
             }
         }
 
+        .codex-session-row:hover .codex-session-pin,
         .codex-session-row:hover .codex-session-archive {
             opacity: 1;
             pointer-events: auto;

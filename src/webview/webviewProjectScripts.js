@@ -78,6 +78,23 @@ function initProjects() {
             return true;
         }
 
+        var pinAction = target.closest('[data-action="toggle-ai-session-pin"]');
+        if (pinAction) {
+            var pinRow = pinAction.closest('.codex-session-row[data-session-id]');
+            var pinSessionId = pinRow && pinRow.getAttribute("data-session-id");
+            var pinProvider = pinRow && pinRow.getAttribute("data-session-provider") || "codex";
+            if (pinSessionId) {
+                window.vscode.postMessage({
+                    type: 'toggle-ai-session-pin',
+                    projectId,
+                    provider: pinProvider,
+                    sessionId: pinSessionId,
+                });
+            }
+
+            return true;
+        }
+
         var archiveAction = target.closest('[data-action="archive-codex-session"], [data-action="archive-kimi-session"]');
         if (archiveAction) {
             var archiveRow = archiveAction.closest('.codex-session-row[data-session-id]');

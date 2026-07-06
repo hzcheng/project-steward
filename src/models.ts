@@ -151,6 +151,7 @@ export interface CodexSession {
     cwd?: string;
     workDir?: string;
     provider?: AiSessionProviderId;
+    pinned?: boolean;
 }
 
 export interface StewardInfos {

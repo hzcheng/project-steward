@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession, AiSessionProviderId } from './models';
 import { getStewardContent } from './webview/webviewContent';
-import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
+import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
 import { execSync } from 'child_process';
 import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'fs';
 
@@ -426,6 +426,9 @@ export function activate(context: vscode.ExtensionContext) {
                 projectId = e.projectId as string;
                 await selectAiSessionProvider(projectId, e.provider as AiSessionProviderId);
                 break;
+            case 'toggle-ai-session-pin':
+                await toggleAiSessionPin(e.provider as AiSessionProviderId, e.sessionId as string);
+                break;
             case 'resume-codex-session':
                 projectId = e.projectId as string;
                 await resumeCodexSession(projectId, e.sessionId as string);
@@ -641,6 +644,23 @@ export function activate(context: vscode.ExtensionContext) {
         let selectedProviders = getActiveAiSessionProviders();
         selectedProviders[getOpenProjectCodexExpansionKey(project)] = providerId;
         await context.globalState.update(OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, selectedProviders);
+        refreshAfterMutation();
+    }
+
+    async function toggleAiSessionPin(providerId: AiSessionProviderId, sessionId: string) {
+        if ((providerId !== 'codex' && providerId !== 'kimi') || !sessionId) {
+            return;
+        }
+
+        let pinnedSessions = getPinnedAiSessionKeys();
+        let sessionKey = getAiSessionPinKey(providerId, sessionId);
+        if (pinnedSessions.has(sessionKey)) {
+            pinnedSessions.delete(sessionKey);
+        } else {
+            pinnedSessions.add(sessionKey);
+        }
+
+        await context.globalState.update(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, Array.from(pinnedSessions));
         refreshAfterMutation();
     }
 
@@ -1823,10 +1843,11 @@ export function activate(context: vscode.ExtensionContext) {
         let kimiAssignments = getKimiSessionAssignments(openProjects, kimiSessionResult);
         let expandedProjects = getExpandedCodexSessionProjects();
         let activeProviders = getActiveAiSessionProviders();
+        let pinnedSessions = prunePinnedAiSessionKeys(getPinnedAiSessionKeys(), codexSessionResult, kimiSessionResult);
 
         return openProjects.map(project => {
-            project.codexSessions = (codexAssignments.get(project.id) || []).slice(0, 20);
-            project.kimiSessions = (kimiAssignments.get(project.id) || []).slice(0, 20);
+            project.codexSessions = prepareAiSessionsForDisplay(codexAssignments.get(project.id) || [], 'codex', pinnedSessions);
+            project.kimiSessions = prepareAiSessionsForDisplay(kimiAssignments.get(project.id) || [], 'kimi', pinnedSessions);
             project.codexSessionsUnavailable = !codexSessionResult.available;
             project.kimiSessionsUnavailable = !kimiSessionResult.available;
             project.codexSessionsExpanded = expandedProjects.has(getOpenProjectCodexExpansionKey(project));
@@ -1893,6 +1914,100 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         return assignments;
+    }
+
+    function prepareAiSessionsForDisplay(sessions: CodexSession[], providerId: AiSessionProviderId, pinnedSessions: Set<string>): CodexSession[] {
+        let sortedSessions = sessions
+            .map(session => ({
+                ...session,
+                provider: providerId,
+                pinned: pinnedSessions.has(getAiSessionPinKey(providerId, session.id)),
+            }))
+            .sort((a, b) => {
+                if (a.pinned !== b.pinned) {
+                    return a.pinned ? -1 : 1;
+                }
+
+                return compareAiSessionUpdatedAt(b.updatedAt, a.updatedAt);
+            });
+
+        let pinned = sortedSessions.filter(session => session.pinned);
+        let recent = sortedSessions.filter(session => !session.pinned).slice(0, Math.max(20 - pinned.length, 0));
+
+        return pinned.concat(recent);
+    }
+
+    function compareAiSessionUpdatedAt(a: string, b: string): number {
+        let aTime = a ? Date.parse(a) : 0;
+        let bTime = b ? Date.parse(b) : 0;
+
+        if (isNaN(aTime) && isNaN(bTime)) {
+            return 0;
+        }
+
+        if (isNaN(aTime)) {
+            return -1;
+        }
+
+        if (isNaN(bTime)) {
+            return 1;
+        }
+
+        return aTime - bTime;
+    }
+
+    function getPinnedAiSessionKeys(): Set<string> {
+        let pinnedSessions = context.globalState.get(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY) as string[];
+        return new Set(Array.isArray(pinnedSessions) ? pinnedSessions : []);
+    }
+
+    function prunePinnedAiSessionKeys(pinnedSessions: Set<string>, codexSessionResult: CodexSessionReadResult, kimiSessionResult: KimiSessionReadResult): Set<string> {
+        if (!pinnedSessions.size) {
+            return pinnedSessions;
+        }
+
+        let availableSessionKeys = new Set<string>();
+        addAvailableAiSessionKeys(availableSessionKeys, 'codex', codexSessionResult.available, codexSessionResult.sessions);
+        addAvailableAiSessionKeys(availableSessionKeys, 'kimi', kimiSessionResult.available, kimiSessionResult.sessions);
+
+        let prunedPinnedSessions = new Set<string>();
+        for (let sessionKey of pinnedSessions) {
+            let providerId = getProviderIdFromAiSessionPinKey(sessionKey);
+            let providerUnavailable = providerId === 'codex' ? !codexSessionResult.available : providerId === 'kimi' ? !kimiSessionResult.available : false;
+            if (providerUnavailable || availableSessionKeys.has(sessionKey)) {
+                prunedPinnedSessions.add(sessionKey);
+            }
+        }
+
+        if (prunedPinnedSessions.size !== pinnedSessions.size) {
+            context.globalState.update(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, Array.from(prunedPinnedSessions));
+        }
+
+        return prunedPinnedSessions;
+    }
+
+    function addAvailableAiSessionKeys(sessionKeys: Set<string>, providerId: AiSessionProviderId, available: boolean, sessions: CodexSession[]) {
+        if (!available) {
+            return;
+        }
+
+        for (let session of sessions) {
+            sessionKeys.add(getAiSessionPinKey(providerId, session.id));
+        }
+    }
+
+    function getAiSessionPinKey(providerId: AiSessionProviderId, sessionId: string): string {
+        return `${providerId}:${sessionId}`;
+    }
+
+    function getProviderIdFromAiSessionPinKey(sessionKey: string): AiSessionProviderId {
+        let separatorIndex = sessionKey.indexOf(':');
+        if (separatorIndex === -1) {
+            return null;
+        }
+
+        let providerId = sessionKey.substring(0, separatorIndex);
+        return providerId === 'codex' || providerId === 'kimi' ? providerId : null;
     }
 
     function getActiveAiSessionProviders(): Record<string, AiSessionProviderId> {

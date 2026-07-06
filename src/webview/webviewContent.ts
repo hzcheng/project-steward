@@ -359,15 +359,19 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
     var updatedAt = escapeAttribute(formatCodexSessionUpdatedAt(session.updatedAt));
     var metadata = [updatedAt, shortSessionId].filter(value => !!value).join(' · ');
     var providerLabel = provider === 'kimi' ? 'Kimi' : 'Codex';
+    var pinned = !!session.pinned;
+    var pinTitle = pinned ? 'Unpin Session' : 'Pin Session';
+    var pinAction = `<span class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}">${Icons.pin}</span>`;
     var archiveAction = `<span class="codex-session-archive" data-action="archive-${provider}-session" title="Archive Session">${Icons.archive}</span>`;
 
     return `
-<div class="codex-session-row" data-session-id="${sessionId}" data-session-provider="${provider}" title="Resume ${providerLabel} Session">
+<div class="codex-session-row"${pinned ? ' data-session-pinned' : ''} data-session-id="${sessionId}" data-session-provider="${provider}" title="Resume ${providerLabel} Session">
     <span class="codex-session-icon">${Icons.terminalLine}</span>
     <span class="codex-session-text">
         <span class="codex-session-name">${sessionName}</span>
         <span class="codex-session-meta">${metadata}</span>
     </span>
+    ${pinAction}
     ${archiveAction}
 </div>`;
 }
