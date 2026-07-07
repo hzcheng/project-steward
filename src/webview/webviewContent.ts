@@ -8,6 +8,8 @@ import {
     ProjectRemoteType,
     StewardInfos,
     sanitizeProjectName,
+    AiSessionProviderId,
+    CodexSession,
 } from '../models';
 import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, OPEN_PROJECTS_GROUP_ID } from '../constants';
 import * as Icons from './webviewIcons';
@@ -76,6 +78,7 @@ export function getStewardContent(
         } 'unsafe-inline'; style-src ${webview.cspSource} 'unsafe-inline';"
         />
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>${criticalStartupStyle()}</style>
         <link rel="stylesheet" type="text/css" href="${stylesPath}">
         <style>${colorDefaults()}</style>
         <style>
@@ -119,6 +122,7 @@ export function getStewardContent(
 
         ${getProjectContextMenu()}
         ${getGroupContextMenu()}
+        ${getAiSessionContextMenu()}
     </body>
 
     <script src="${fittyPath}"></script>
@@ -146,6 +150,70 @@ export function getStewardContent(
 
 
 </html>`;
+}
+
+function criticalStartupStyle(): string {
+    return `
+        body {
+            color: var(--vscode-editor-foreground);
+            font-family: var(--vscode-font-family);
+            margin: 0;
+        }
+        .filter-wrapper {
+            display: flex;
+            align-items: center;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .search-box {
+            display: flex;
+            align-items: center;
+            min-width: 0;
+        }
+        .search-icon,
+        .clear-search-icon,
+        .toggle-all-groups-button,
+        .toggle-all-groups-collapse-icon,
+        .toggle-all-groups-expand-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .search-icon,
+        .clear-search-icon {
+            flex: 0 0 auto;
+            width: 16px;
+            height: 16px;
+            overflow: hidden;
+        }
+        .search-icon svg,
+        .clear-search-icon svg {
+            width: 14px;
+            height: 14px;
+        }
+        .clear-search-icon {
+            visibility: hidden;
+        }
+        .toggle-all-groups-button {
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            overflow: hidden;
+        }
+        .toggle-all-groups-button svg {
+            width: 13px;
+            height: 13px;
+        }
+        .toggle-all-groups-expand-icon {
+            display: none;
+        }
+        body.steward-all-collapsed .toggle-all-groups-collapse-icon {
+            display: none;
+        }
+        body.steward-all-collapsed .toggle-all-groups-expand-icon {
+            display: inline-flex;
+        }
+    `;
 }
 
 function getGroupSection(
@@ -234,8 +302,12 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var description = sanitizeProjectName(project.description);
     var projectName = escapeAttribute(sanitizeProjectName(project.name));
     var codexSessions = project.codexSessions || [];
-    var codexSessionSearchText = codexSessions.map(session => session.name || '').join(' ');
-    var searchText = escapeAttribute(`${project.name || ''} ${description} ${codexSessionSearchText}`.toLowerCase());
+    var kimiSessions = project.kimiSessions || [];
+    var aiSessionSearchText = codexSessions
+        .concat(kimiSessions)
+        .map(session => session.name || '')
+        .join(' ');
+    var searchText = escapeAttribute(`${project.name || ''} ${description} ${aiSessionSearchText}`.toLowerCase());
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
@@ -262,8 +334,9 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var saveBadge = project.showSaveAction
         ? `<span data-action="save" class="project-save-badge" title="Save Current Project">${Icons.save}</span>`
         : '';
-    var codexBadge = isReadOnlyProject
-        ? `<span class="project-codex-badge" title="Codex Sessions">Codex ${codexSessions.length}</span>`
+    var aiSessionCount = codexSessions.length + kimiSessions.length;
+    var aiSessionBadge = isReadOnlyProject && aiSessionCount
+        ? `<span class="project-codex-badge" title="AI Sessions">AI ${aiSessionCount}</span>`
         : '';
     var codexSessionSection = isReadOnlyProject ? getCodexSessionsDiv(project) : '';
 
@@ -295,7 +368,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
         <p class="project-description" title="${escapedDescription}">
             ${escapedDescription}
         </p>
-        ${codexBadge}
+        ${aiSessionBadge}
         ${codexSessionSection}
     </div>
 </div>`;
@@ -303,35 +376,75 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
 
 function getCodexSessionsDiv(project: Project): string {
     var codexSessions = project.codexSessions || [];
-    var emptyText = project.codexSessionsUnavailable ? 'No Codex history found' : 'No sessions yet';
-    var sessionRows = codexSessions.length
-        ? codexSessions.map(session => getCodexSessionRow(session)).join('\n')
+    var kimiSessions = project.kimiSessions || [];
+    var activeProvider = getActiveAiSessionProvider(project);
+    var activeSessions = activeProvider === 'kimi' ? kimiSessions : codexSessions;
+    var unavailable = activeProvider === 'kimi' ? project.kimiSessionsUnavailable : project.codexSessionsUnavailable;
+    var providerName = activeProvider === 'kimi' ? 'Kimi' : 'Codex';
+    var emptyText = unavailable ? `No ${providerName} history found` : 'No sessions yet';
+    var sessionRows = activeSessions.length
+        ? activeSessions.map(session => getCodexSessionRow(session, activeProvider)).join('\n')
         : `<div class="codex-sessions-empty">${emptyText}</div>`;
 
     return `
 <div class="codex-sessions">
-    <div class="codex-sessions-title">Codex Sessions</div>
+    <div class="ai-session-provider-tabs">
+        ${getAiProviderButton('codex', 'Codex', codexSessions.length, activeProvider)}
+        ${getAiProviderButton('kimi', 'Kimi', kimiSessions.length, activeProvider)}
+        ${getCreateAiSessionButton(activeProvider)}
+    </div>
     <div class="codex-sessions-list">
         ${sessionRows}
     </div>
 </div>`;
 }
 
-function getCodexSessionRow(session: { id: string; name: string; updatedAt?: string }) {
+function getAiProviderButton(providerId: AiSessionProviderId, label: string, count: number, activeProvider: AiSessionProviderId): string {
+    var isActive = providerId === activeProvider;
+    return `<button class="ai-session-provider-tab ${isActive ? 'active' : ''}" data-action="select-ai-provider" data-provider="${providerId}" title="${label} Sessions">
+        <span>${label}</span>
+        <span class="ai-session-provider-count">${count}</span>
+    </button>`;
+}
+
+function getCreateAiSessionButton(activeProvider: AiSessionProviderId): string {
+    var providerLabel = activeProvider === 'kimi' ? 'Kimi' : 'Codex';
+    return `<button class="ai-session-create-button" data-action="create-ai-session" data-provider="${activeProvider}" title="New ${providerLabel} Session">${Icons.add}</button>`;
+}
+
+function getActiveAiSessionProvider(project: Project): AiSessionProviderId {
+    if (project.activeAiSessionProvider === 'kimi' || project.activeAiSessionProvider === 'codex') {
+        return project.activeAiSessionProvider;
+    }
+
+    if (!(project.codexSessions || []).length && (project.kimiSessions || []).length) {
+        return 'kimi';
+    }
+
+    return 'codex';
+}
+
+function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId) {
     var sessionName = escapeAttribute(sanitizeProjectName(session.name || session.id));
     var sessionId = escapeAttribute(session.id || '');
     var shortSessionId = escapeAttribute((session.id || '').substring(0, 8));
     var updatedAt = escapeAttribute(formatCodexSessionUpdatedAt(session.updatedAt));
     var metadata = [updatedAt, shortSessionId].filter(value => !!value).join(' · ');
+    var providerLabel = provider === 'kimi' ? 'Kimi' : 'Codex';
+    var pinned = !!session.pinned;
+    var pinTitle = pinned ? 'Unpin Session' : 'Pin Session';
+    var pinAction = `<span class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}">${Icons.pin}</span>`;
+    var archiveAction = `<span class="codex-session-archive" data-action="archive-${provider}-session" title="Archive Session">${Icons.archive}</span>`;
 
     return `
-<div class="codex-session-row" data-session-id="${sessionId}" title="Resume Codex Session">
+<div class="codex-session-row"${pinned ? ' data-session-pinned' : ''} data-session-id="${sessionId}" data-session-provider="${provider}" title="Resume ${providerLabel} Session">
     <span class="codex-session-icon">${Icons.terminalLine}</span>
     <span class="codex-session-text">
         <span class="codex-session-name">${sessionName}</span>
         <span class="codex-session-meta">${metadata}</span>
     </span>
-    <span class="codex-session-archive" data-action="archive-codex-session" title="Archive Session">${Icons.archive}</span>
+    ${pinAction}
+    ${archiveAction}
 </div>`;
 }
 
@@ -453,6 +566,31 @@ function getGroupContextMenu() {
     </div>
     <div class="custom-context-menu-item" data-action="remove">
         Remove Group
+    </div>
+</div>
+`;
+}
+
+function getAiSessionContextMenu() {
+    return `
+<div id="aiSessionContextMenu" class="custom-context-menu">
+    <div class="custom-context-menu-item" data-action="resume">
+        Resume Chat
+    </div>
+    <div class="custom-context-menu-item" data-action="rename">
+        Rename Chat
+    </div>
+    <div class="custom-context-menu-item" data-action="copy-id">
+        Copy Chat ID
+    </div>
+
+    <div class="custom-context-menu-separator"></div>
+
+    <div class="custom-context-menu-item" data-action="pin">
+        Pin / Unpin Chat
+    </div>
+    <div class="custom-context-menu-item" data-action="archive">
+        Archive Chat
     </div>
 </div>
 `;
