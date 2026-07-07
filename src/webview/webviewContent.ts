@@ -78,6 +78,7 @@ export function getStewardContent(
         } 'unsafe-inline'; style-src ${webview.cspSource} 'unsafe-inline';"
         />
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>${criticalStartupStyle()}</style>
         <link rel="stylesheet" type="text/css" href="${stylesPath}">
         <style>${colorDefaults()}</style>
         <style>
@@ -148,6 +149,70 @@ export function getStewardContent(
 
 
 </html>`;
+}
+
+function criticalStartupStyle(): string {
+    return `
+        body {
+            color: var(--vscode-editor-foreground);
+            font-family: var(--vscode-font-family);
+            margin: 0;
+        }
+        .filter-wrapper {
+            display: flex;
+            align-items: center;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .search-box {
+            display: flex;
+            align-items: center;
+            min-width: 0;
+        }
+        .search-icon,
+        .clear-search-icon,
+        .toggle-all-groups-button,
+        .toggle-all-groups-collapse-icon,
+        .toggle-all-groups-expand-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .search-icon,
+        .clear-search-icon {
+            flex: 0 0 auto;
+            width: 16px;
+            height: 16px;
+            overflow: hidden;
+        }
+        .search-icon svg,
+        .clear-search-icon svg {
+            width: 14px;
+            height: 14px;
+        }
+        .clear-search-icon {
+            visibility: hidden;
+        }
+        .toggle-all-groups-button {
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            overflow: hidden;
+        }
+        .toggle-all-groups-button svg {
+            width: 13px;
+            height: 13px;
+        }
+        .toggle-all-groups-expand-icon {
+            display: none;
+        }
+        body.steward-all-collapsed .toggle-all-groups-collapse-icon {
+            display: none;
+        }
+        body.steward-all-collapsed .toggle-all-groups-expand-icon {
+            display: inline-flex;
+        }
+    `;
 }
 
 function getGroupSection(
@@ -325,6 +390,7 @@ function getCodexSessionsDiv(project: Project): string {
     <div class="ai-session-provider-tabs">
         ${getAiProviderButton('codex', 'Codex', codexSessions.length, activeProvider)}
         ${getAiProviderButton('kimi', 'Kimi', kimiSessions.length, activeProvider)}
+        ${getCreateAiSessionButton(activeProvider)}
     </div>
     <div class="codex-sessions-list">
         ${sessionRows}
@@ -338,6 +404,11 @@ function getAiProviderButton(providerId: AiSessionProviderId, label: string, cou
         <span>${label}</span>
         <span class="ai-session-provider-count">${count}</span>
     </button>`;
+}
+
+function getCreateAiSessionButton(activeProvider: AiSessionProviderId): string {
+    var providerLabel = activeProvider === 'kimi' ? 'Kimi' : 'Codex';
+    return `<button class="ai-session-create-button" data-action="create-ai-session" data-provider="${activeProvider}" title="New ${providerLabel} Session">${Icons.add}</button>`;
 }
 
 function getActiveAiSessionProvider(project: Project): AiSessionProviderId {

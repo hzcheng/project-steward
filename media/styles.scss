@@ -1047,19 +1047,18 @@ body.steward-sidebar {
 
         .ai-session-provider-tabs {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr 1fr 24px;
             gap: 5px;
             margin-left: 0;
         }
 
-        .ai-session-provider-tab {
+        .ai-session-provider-tab,
+        .ai-session-create-button {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 5px;
             min-width: 0;
             height: 23px;
-            padding: 0 7px;
             border: 1px solid var(--vscode-panel-border);
             border-radius: 999px;
             color: var(--vscode-descriptionForeground);
@@ -1084,6 +1083,21 @@ body.steward-sidebar {
 
             &.active {
                 box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .04);
+            }
+        }
+
+        .ai-session-provider-tab {
+            gap: 5px;
+            padding: 0 7px;
+        }
+
+        .ai-session-create-button {
+            padding: 0;
+
+            svg {
+                width: 10px;
+                height: 10px;
+                fill: currentColor;
             }
         }
 

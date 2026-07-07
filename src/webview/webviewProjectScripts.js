@@ -78,6 +78,20 @@ function initProjects() {
             return true;
         }
 
+        var createAction = target.closest('[data-action="create-ai-session"][data-provider]');
+        if (createAction) {
+            var createProvider = createAction.getAttribute("data-provider");
+            if (createProvider === "codex" || createProvider === "kimi") {
+                window.vscode.postMessage({
+                    type: 'create-ai-session',
+                    projectId,
+                    provider: createProvider,
+                });
+            }
+
+            return true;
+        }
+
         var pinAction = target.closest('[data-action="toggle-ai-session-pin"]');
         if (pinAction) {
             var pinRow = pinAction.closest('.codex-session-row[data-session-id]');
