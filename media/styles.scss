@@ -435,9 +435,11 @@ body .project {
 
 // CONTEXT MENU
 .custom-context-menu {
-    position: absolute;
-    z-index: 100;
+    position: fixed;
+    z-index: 10000;
     display: none;
+    max-width: calc(100vw - 8px);
+    white-space: nowrap;
 
     // Values chosen to match vscode theme colors
     padding: 11px 1px;

@@ -122,6 +122,7 @@ export function getStewardContent(
 
         ${getProjectContextMenu()}
         ${getGroupContextMenu()}
+        ${getAiSessionContextMenu()}
     </body>
 
     <script src="${fittyPath}"></script>
@@ -565,6 +566,31 @@ function getGroupContextMenu() {
     </div>
     <div class="custom-context-menu-item" data-action="remove">
         Remove Group
+    </div>
+</div>
+`;
+}
+
+function getAiSessionContextMenu() {
+    return `
+<div id="aiSessionContextMenu" class="custom-context-menu">
+    <div class="custom-context-menu-item" data-action="resume">
+        Resume Chat
+    </div>
+    <div class="custom-context-menu-item" data-action="rename">
+        Rename Chat
+    </div>
+    <div class="custom-context-menu-item" data-action="copy-id">
+        Copy Chat ID
+    </div>
+
+    <div class="custom-context-menu-separator"></div>
+
+    <div class="custom-context-menu-item" data-action="pin">
+        Pin / Unpin Chat
+    </div>
+    <div class="custom-context-menu-item" data-action="archive">
+        Archive Chat
     </div>
 </div>
 `;

@@ -5,7 +5,7 @@ import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemote
 import { getStewardContent } from './webview/webviewContent';
 import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
 import { execSync } from 'child_process';
-import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
@@ -38,6 +38,7 @@ const PENDING_AI_SESSION_TERMINAL_TTL_MS = 24 * 60 * 60 * 1000;
 const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
 const KIMI_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_KIMI_SESSION_ID';
 const KIMI_SESSION_TERMINAL_NAME_PREFIX = 'Kimi';
+const AI_SESSION_ALIASES_FILE_NAME = 'ai-session-aliases.json';
 
 export function activate(context: vscode.ExtensionContext) {
     const outputChannel = vscode.window.createOutputChannel('Project Steward');
@@ -474,6 +475,12 @@ export function activate(context: vscode.ExtensionContext) {
             case 'toggle-ai-session-pin':
                 await toggleAiSessionPin(e.provider as AiSessionProviderId, e.sessionId as string);
                 break;
+            case 'rename-ai-session':
+                await renameAiSession(e.provider as AiSessionProviderId, e.sessionId as string);
+                break;
+            case 'copy-ai-session-id':
+                await copyAiSessionId(e.sessionId as string);
+                break;
             case 'resume-codex-session':
                 projectId = e.projectId as string;
                 await resumeCodexSession(projectId, e.sessionId as string);
@@ -709,6 +716,46 @@ export function activate(context: vscode.ExtensionContext) {
         refreshAfterMutation();
     }
 
+    async function renameAiSession(providerId: AiSessionProviderId, sessionId: string) {
+        if ((providerId !== 'codex' && providerId !== 'kimi') || !sessionId) {
+            return;
+        }
+
+        let aliases = getAiSessionAliases();
+        let sessionKey = getAiSessionPinKey(providerId, sessionId);
+        let originalName = getAiSessionOriginalName(providerId, sessionId);
+        let currentAlias = aliases[sessionKey] || '';
+        let value = await vscode.window.showInputBox({
+            prompt: 'Set a local display name for this chat. Leave empty to reset.',
+            placeHolder: originalName || sessionId,
+            value: currentAlias || originalName || '',
+            ignoreFocusOut: true,
+        });
+
+        if (value === undefined) {
+            return;
+        }
+
+        let alias = sanitizeAiSessionAlias(value);
+        if (!alias || alias === originalName) {
+            delete aliases[sessionKey];
+        } else {
+            aliases[sessionKey] = alias;
+        }
+
+        saveAiSessionAliases(aliases);
+        refreshAfterMutation();
+    }
+
+    async function copyAiSessionId(sessionId: string) {
+        if (!sessionId) {
+            return;
+        }
+
+        await vscode.env.clipboard.writeText(sessionId);
+        vscode.window.showInformationMessage("Chat ID copied to clipboard.");
+    }
+
     async function createAiSession(projectId: string, providerId: AiSessionProviderId) {
         if (providerId !== 'codex' && providerId !== 'kimi') {
             return;
@@ -927,6 +974,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         codexSessionTerminals.delete(sessionId);
+        deleteAiSessionAlias('codex', sessionId);
         refreshAfterMutation();
     }
 
@@ -957,6 +1005,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         kimiSessionTerminals.delete(sessionId);
+        deleteAiSessionAlias('kimi', sessionId);
         refreshAfterMutation();
     }
 
@@ -1977,10 +2026,11 @@ export function activate(context: vscode.ExtensionContext) {
         let expandedProjects = getExpandedCodexSessionProjects();
         let activeProviders = getActiveAiSessionProviders();
         let pinnedSessions = prunePinnedAiSessionKeys(getPinnedAiSessionKeys(), codexSessionResult, kimiSessionResult);
+        let aliases = pruneAiSessionAliases(getAiSessionAliases(), codexSessionResult, kimiSessionResult);
 
         return openProjects.map(project => {
-            project.codexSessions = prepareAiSessionsForDisplay(codexAssignments.get(project.id) || [], 'codex', pinnedSessions);
-            project.kimiSessions = prepareAiSessionsForDisplay(kimiAssignments.get(project.id) || [], 'kimi', pinnedSessions);
+            project.codexSessions = prepareAiSessionsForDisplay(codexAssignments.get(project.id) || [], 'codex', pinnedSessions, aliases);
+            project.kimiSessions = prepareAiSessionsForDisplay(kimiAssignments.get(project.id) || [], 'kimi', pinnedSessions, aliases);
             project.codexSessionsUnavailable = !codexSessionResult.available;
             project.kimiSessionsUnavailable = !kimiSessionResult.available;
             project.codexSessionsExpanded = expandedProjects.has(getOpenProjectCodexExpansionKey(project));
@@ -2049,10 +2099,11 @@ export function activate(context: vscode.ExtensionContext) {
         return assignments;
     }
 
-    function prepareAiSessionsForDisplay(sessions: CodexSession[], providerId: AiSessionProviderId, pinnedSessions: Set<string>): CodexSession[] {
+    function prepareAiSessionsForDisplay(sessions: CodexSession[], providerId: AiSessionProviderId, pinnedSessions: Set<string>, aliases: Record<string, string>): CodexSession[] {
         let sortedSessions = sessions
             .map(session => ({
                 ...session,
+                name: aliases[getAiSessionPinKey(providerId, session.id)] || session.name,
                 provider: providerId,
                 pinned: pinnedSessions.has(getAiSessionPinKey(providerId, session.id)),
             }))
@@ -2236,6 +2287,94 @@ export function activate(context: vscode.ExtensionContext) {
 
     function getAiSessionPinKey(providerId: AiSessionProviderId, sessionId: string): string {
         return `${providerId}:${sessionId}`;
+    }
+
+    function getAiSessionAliasesPath(): string {
+        mkdirSync(context.globalStoragePath, { recursive: true });
+        return path.join(context.globalStoragePath, AI_SESSION_ALIASES_FILE_NAME);
+    }
+
+    function getAiSessionAliases(): Record<string, string> {
+        try {
+            let aliasesPath = getAiSessionAliasesPath();
+            if (!existsSync(aliasesPath)) {
+                return {};
+            }
+
+            let aliases = JSON.parse(readFileSync(aliasesPath, 'utf8'));
+            if (aliases == null || typeof aliases !== 'object' || Array.isArray(aliases)) {
+                return {};
+            }
+
+            return Object.keys(aliases).reduce((result, key) => {
+                if (typeof aliases[key] === 'string' && aliases[key].trim()) {
+                    result[key] = aliases[key];
+                }
+
+                return result;
+            }, {} as Record<string, string>);
+        } catch (error) {
+            logError('Failed to read AI session aliases.', error);
+            return {};
+        }
+    }
+
+    function pruneAiSessionAliases(aliases: Record<string, string>, codexSessionResult: CodexSessionReadResult, kimiSessionResult: KimiSessionReadResult): Record<string, string> {
+        if (!Object.keys(aliases).length) {
+            return aliases;
+        }
+
+        let availableSessionKeys = new Set<string>();
+        addAvailableAiSessionKeys(availableSessionKeys, 'codex', codexSessionResult.available, codexSessionResult.sessions);
+        addAvailableAiSessionKeys(availableSessionKeys, 'kimi', kimiSessionResult.available, kimiSessionResult.sessions);
+
+        let prunedAliases: Record<string, string> = {};
+        for (let sessionKey of Object.keys(aliases)) {
+            let providerId = getProviderIdFromAiSessionPinKey(sessionKey);
+            let providerUnavailable = providerId === 'codex' ? !codexSessionResult.available : providerId === 'kimi' ? !kimiSessionResult.available : false;
+            if (providerUnavailable || availableSessionKeys.has(sessionKey)) {
+                prunedAliases[sessionKey] = aliases[sessionKey];
+            }
+        }
+
+        if (Object.keys(prunedAliases).length !== Object.keys(aliases).length) {
+            saveAiSessionAliases(prunedAliases);
+        }
+
+        return prunedAliases;
+    }
+
+    function saveAiSessionAliases(aliases: Record<string, string>) {
+        try {
+            writeFileSync(getAiSessionAliasesPath(), JSON.stringify(aliases, null, 2), 'utf8');
+        } catch (error) {
+            logError('Failed to save AI session aliases.', error);
+            vscode.window.showErrorMessage("Could not save the chat name.");
+        }
+    }
+
+    function deleteAiSessionAlias(providerId: AiSessionProviderId, sessionId: string) {
+        let aliases = getAiSessionAliases();
+        let sessionKey = getAiSessionPinKey(providerId, sessionId);
+        if (!aliases[sessionKey]) {
+            return;
+        }
+
+        delete aliases[sessionKey];
+        saveAiSessionAliases(aliases);
+    }
+
+    function getAiSessionOriginalName(providerId: AiSessionProviderId, sessionId: string): string {
+        let sessionResult = providerId === 'kimi'
+            ? kimiSessionService.getSessions()
+            : codexSessionService.getSessions();
+        let session = sessionResult.sessions.find(candidate => candidate.id === sessionId);
+
+        return session?.name || sessionId;
+    }
+
+    function sanitizeAiSessionAlias(value: string): string {
+        return String(value || '').replace(/[\r\n]+/g, ' ').trim();
     }
 
     function getProviderIdFromAiSessionPinKey(sessionKey: string): AiSessionProviderId {

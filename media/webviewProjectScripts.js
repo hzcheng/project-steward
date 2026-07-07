@@ -205,8 +205,54 @@ function initProjects() {
 
     var contextMenuProjectId = null;
     var contextMenuGroupId = null;
+    var contextMenuAiSessionId = null;
+    var contextMenuAiSessionProvider = null;
+    var contextMenuAiSessionProjectId = null;
+
+    function showContextMenu(contextMenuElement, e) {
+        contextMenuElement.style.visibility = "hidden";
+        contextMenuElement.style.left = "0px";
+        contextMenuElement.style.top = "0px";
+        contextMenuElement.classList.add("visible");
+
+        var rect = contextMenuElement.getBoundingClientRect();
+        var viewportPadding = 4;
+        var left = e.clientX;
+        var top = e.clientY;
+
+        if (left + rect.width + viewportPadding > window.innerWidth) {
+            left = Math.max(viewportPadding, window.innerWidth - rect.width - viewportPadding);
+        }
+
+        if (top + rect.height + viewportPadding > window.innerHeight) {
+            top = Math.max(viewportPadding, window.innerHeight - rect.height - viewportPadding);
+        }
+
+        contextMenuElement.style.left = left + "px";
+        contextMenuElement.style.top = top + "px";
+        contextMenuElement.style.visibility = "";
+    }
+
     function onContextMenu(e) {
         closeContextMenus(); // Close previews
+
+        var sessionRow = e.target.closest('.codex-session-row[data-session-id][data-session-provider]');
+        if (sessionRow) {
+            contextMenuAiSessionId = sessionRow.getAttribute("data-session-id");
+            contextMenuAiSessionProvider = sessionRow.getAttribute("data-session-provider");
+            var sessionProjectDiv = sessionRow.closest('.project[data-id]');
+            contextMenuAiSessionProjectId = sessionProjectDiv ? sessionProjectDiv.getAttribute("data-id") : null;
+            if (!contextMenuAiSessionId || (contextMenuAiSessionProvider !== "codex" && contextMenuAiSessionProvider !== "kimi"))
+                return;
+
+            e.preventDefault();
+            var sessionContextMenuElement = document.getElementById("aiSessionContextMenu");
+            if (!sessionContextMenuElement)
+                return;
+
+            showContextMenu(sessionContextMenuElement, e);
+            return;
+        }
 
         var projectDiv = e.target.closest('.project[data-id]');
         var groupDiv = e.target.closest('.group-title')
@@ -241,15 +287,13 @@ function initProjects() {
         // disable elements if needed
         contextMenuElement.querySelectorAll(":scope > *").forEach(e => e.classList.remove("disabled"));
 
-        if (projectDiv.hasAttribute("data-is-remote")) {
+        if (projectDiv && projectDiv.hasAttribute("data-is-remote")) {
             contextMenuElement.querySelectorAll(".not-remote").forEach(e => e.classList.add("disabled"));
         }
 
         // place and show contextmenu
 
-        contextMenuElement.style.left = e.pageX + "px";
-        contextMenuElement.style.top = e.pageY + "px";
-        contextMenuElement.classList.add("visible");
+        showContextMenu(contextMenuElement, e);
     }
 
     function onProjectContextMenuActionClicked(el) {
@@ -300,9 +344,60 @@ function initProjects() {
         closeContextMenus();
     }
 
+    function onAiSessionContextMenuActionClicked(el) {
+        var action = el.getAttribute("data-action");
+
+        if (action == null || contextMenuAiSessionId == null || contextMenuAiSessionProvider == null)
+            return;
+
+        switch (action) {
+            case 'resume':
+                window.vscode.postMessage({
+                    type: contextMenuAiSessionProvider === "kimi" ? 'resume-kimi-session' : 'resume-codex-session',
+                    provider: contextMenuAiSessionProvider,
+                    projectId: contextMenuAiSessionProjectId,
+                    sessionId: contextMenuAiSessionId,
+                });
+                break;
+            case 'rename':
+                window.vscode.postMessage({
+                    type: 'rename-ai-session',
+                    provider: contextMenuAiSessionProvider,
+                    sessionId: contextMenuAiSessionId,
+                });
+                break;
+            case 'copy-id':
+                window.vscode.postMessage({
+                    type: 'copy-ai-session-id',
+                    provider: contextMenuAiSessionProvider,
+                    sessionId: contextMenuAiSessionId,
+                });
+                break;
+            case 'pin':
+                window.vscode.postMessage({
+                    type: 'toggle-ai-session-pin',
+                    provider: contextMenuAiSessionProvider,
+                    sessionId: contextMenuAiSessionId,
+                });
+                break;
+            case 'archive':
+                window.vscode.postMessage({
+                    type: contextMenuAiSessionProvider === "kimi" ? 'archive-kimi-session' : 'archive-codex-session',
+                    provider: contextMenuAiSessionProvider,
+                    sessionId: contextMenuAiSessionId,
+                });
+                break;
+        }
+
+        closeContextMenus();
+    }
+
     function closeContextMenus() {
         contextMenuProjectId = null;
         contextMenuGroupId = null;
+        contextMenuAiSessionId = null;
+        contextMenuAiSessionProvider = null;
+        contextMenuAiSessionProjectId = null;
         document.querySelectorAll(".custom-context-menu").forEach(element =>
             element.classList.remove("visible")
         );
@@ -340,6 +435,12 @@ function initProjects() {
         var contextMenuElement = e.target.closest("#projectContextMenu [data-action]");
         if (contextMenuElement) {
             onProjectContextMenuActionClicked(contextMenuElement);
+            return;
+        }
+
+        contextMenuElement = e.target.closest("#aiSessionContextMenu [data-action]");
+        if (contextMenuElement) {
+            onAiSessionContextMenuActionClicked(contextMenuElement);
             return;
         }
 
