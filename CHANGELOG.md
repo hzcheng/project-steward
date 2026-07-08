@@ -2,6 +2,24 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
+## [1.1.4] 2026-07-08
+
+### Added
+
+-   Track Claude sessions alongside Codex and Kimi sessions in Open Project cards.
+
+### Changed
+
+-   Replace horizontal AI session provider buttons with a compact provider selector.
+-   Reduce background AI session scanning by polling less often and pausing watchers while the sidebar is hidden.
+-   Debounce AI session refreshes to avoid repeatedly rebuilding the sidebar while session files are changing.
+
+### Fixed
+
+-   Keep the Open Project section visible when collapsing all regular project groups.
+-   Prevent Collapse All from persisting shared group state across VS Code windows.
+-   Keep sticky group headers visible when groups are collapsed.
+
 ## [1.1.3] 2026-07-07
 
 ### Added

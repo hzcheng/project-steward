@@ -32,7 +32,7 @@ export default class CodexSessionService {
     private cachedResult: CodexSessionReadResult = null;
     private cachedAt = 0;
     private readonly cacheTtlMs = 5000;
-    private readonly changePollIntervalMs = 1500;
+    private readonly changePollIntervalMs = 3000;
 
     getSessions(forceRefresh: boolean = false): CodexSessionReadResult {
         let now = Date.now();

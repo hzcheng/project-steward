@@ -38,6 +38,7 @@ const CODEX_SESSION_TERMINAL_NAME_PREFIX = 'Codex';
 const CODEX_SESSION_TERMINAL_STARTUP_DELAY_MS = 1000;
 const PENDING_AI_SESSION_TERMINAL_TTL_MS = 24 * 60 * 60 * 1000;
 const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
+const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
 const KIMI_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_KIMI_SESSION_ID';
 const KIMI_SESSION_TERMINAL_NAME_PREFIX = 'Kimi';
 const CLAUDE_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_CLAUDE_SESSION_ID';
@@ -58,6 +59,7 @@ export function activate(context: vscode.ExtensionContext) {
             this._view = webviewView;
             webviewView.webview.options = getWebviewOptions();
             this.refresh();
+            setAiSessionWatchersActive(webviewView.visible);
 
             webviewView.webview.onDidReceiveMessage(async (e) => {
                 await handleStewardMessage(e);
@@ -67,7 +69,12 @@ export function activate(context: vscode.ExtensionContext) {
                 if (webviewView.visible) {
                     this.refresh();
                 }
+                setAiSessionWatchersActive(webviewView.visible);
             });
+        }
+
+        get visible() {
+            return Boolean(this._view?.visible);
         }
 
         refresh() {
@@ -102,6 +109,7 @@ export function activate(context: vscode.ExtensionContext) {
     const kimiSessionResumesInFlight = new Set<string>();
     const claudeSessionResumesInFlight = new Set<string>();
     let codexSessionRefreshTimeout: NodeJS.Timeout = null;
+    let aiSessionWatcherDisposables: { dispose(): void }[] = [];
 
     const provider = new SidebarStewardViewProvider();
 
@@ -136,17 +144,9 @@ export function activate(context: vscode.ExtensionContext) {
                 return false;
             });
         }));
-    context.subscriptions.push(
-        codexSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()));
-    context.subscriptions.push(
-        kimiSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()));
-    context.subscriptions.push(
-        claudeSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()));
     context.subscriptions.push({
         dispose: () => {
-            if (codexSessionRefreshTimeout) {
-                clearTimeout(codexSessionRefreshTimeout);
-            }
+            stopAiSessionWatchers();
         }
     });
 
@@ -276,13 +276,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
-    function showSteward() {
-        revealSidebarSteward();
+    async function showSteward() {
+        await revealSidebarSteward();
         refreshStewardViews();
     }
 
-    function revealSidebarSteward() {
-        vscode.commands.executeCommand('workbench.view.extension.project-steward')
+    function revealSidebarSteward(): Thenable<void> {
+        return vscode.commands.executeCommand('workbench.view.extension.project-steward')
             .then(() => vscode.commands.executeCommand(`${SidebarStewardViewProvider.viewType}.focus`))
             .then(undefined, () => vscode.commands.executeCommand(`${SidebarStewardViewProvider.viewType}.focus`))
             .then(undefined, () => { });
@@ -353,10 +353,18 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function refreshStewardViews() {
+        if (!provider.visible) {
+            return;
+        }
+
         provider.refresh();
     }
 
     function scheduleCodexSessionRefresh() {
+        if (!provider.visible) {
+            return;
+        }
+
         if (codexSessionRefreshTimeout) {
             clearTimeout(codexSessionRefreshTimeout);
         }
@@ -364,7 +372,39 @@ export function activate(context: vscode.ExtensionContext) {
         codexSessionRefreshTimeout = setTimeout(() => {
             codexSessionRefreshTimeout = null;
             refreshStewardViews();
-        }, 250);
+        }, AI_SESSION_REFRESH_DEBOUNCE_MS);
+    }
+
+    function setAiSessionWatchersActive(active: boolean) {
+        if (active) {
+            startAiSessionWatchers();
+        } else {
+            stopAiSessionWatchers();
+        }
+    }
+
+    function startAiSessionWatchers() {
+        if (aiSessionWatcherDisposables.length) {
+            return;
+        }
+
+        aiSessionWatcherDisposables = [
+            codexSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()),
+            kimiSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()),
+            claudeSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()),
+        ];
+    }
+
+    function stopAiSessionWatchers() {
+        for (let disposable of aiSessionWatcherDisposables) {
+            disposable.dispose();
+        }
+
+        aiSessionWatcherDisposables = [];
+        if (codexSessionRefreshTimeout) {
+            clearTimeout(codexSessionRefreshTimeout);
+            codexSessionRefreshTimeout = null;
+        }
     }
 
     function scheduleNewAiSessionRefresh(providerId: AiSessionProviderId) {

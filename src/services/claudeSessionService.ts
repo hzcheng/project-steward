@@ -31,7 +31,7 @@ export default class ClaudeSessionService {
     private cachedAt = 0;
     private sessionCache = new Map<string, { signature: string; session: CodexSession }>();
     private readonly cacheTtlMs = 5000;
-    private readonly changePollIntervalMs = 1500;
+    private readonly changePollIntervalMs = 3000;
 
     getSessions(forceRefresh: boolean = false): ClaudeSessionReadResult {
         let now = Date.now();
