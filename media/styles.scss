@@ -1049,7 +1049,7 @@ body.steward-sidebar {
 
         .ai-session-provider-tabs {
             display: grid;
-            grid-template-columns: 1fr 1fr 24px;
+            grid-template-columns: 1fr 1fr 1fr 24px;
             gap: 5px;
             margin-left: 0;
         }
@@ -1169,6 +1169,10 @@ body.steward-sidebar {
 
         .codex-session-row[data-session-provider="kimi"] .codex-session-icon {
             color: var(--vscode-terminal-ansiMagenta, #c586c0);
+        }
+
+        .codex-session-row[data-session-provider="claude"] .codex-session-icon {
+            color: var(--vscode-terminal-ansiYellow, #dcdcaa);
         }
 
         .codex-session-pin,

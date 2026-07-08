@@ -67,7 +67,7 @@ function initProjects() {
         var providerAction = target.closest('[data-action="select-ai-provider"][data-provider]');
         if (providerAction) {
             var provider = providerAction.getAttribute("data-provider");
-            if (provider === "codex" || provider === "kimi") {
+            if (isAiSessionProvider(provider)) {
                 window.vscode.postMessage({
                     type: 'select-ai-session-provider',
                     projectId,
@@ -81,7 +81,7 @@ function initProjects() {
         var createAction = target.closest('[data-action="create-ai-session"][data-provider]');
         if (createAction) {
             var createProvider = createAction.getAttribute("data-provider");
-            if (createProvider === "codex" || createProvider === "kimi") {
+            if (isAiSessionProvider(createProvider)) {
                 window.vscode.postMessage({
                     type: 'create-ai-session',
                     projectId,
@@ -109,14 +109,14 @@ function initProjects() {
             return true;
         }
 
-        var archiveAction = target.closest('[data-action="archive-codex-session"], [data-action="archive-kimi-session"]');
+        var archiveAction = target.closest('[data-action="archive-codex-session"], [data-action="archive-kimi-session"], [data-action="archive-claude-session"]');
         if (archiveAction) {
             var archiveRow = archiveAction.closest('.codex-session-row[data-session-id]');
             var archiveSessionId = archiveRow && archiveRow.getAttribute("data-session-id");
             var archiveProvider = archiveRow && archiveRow.getAttribute("data-session-provider") || "codex";
-            if (archiveSessionId) {
+            if (archiveSessionId && isAiSessionProvider(archiveProvider)) {
                 window.vscode.postMessage({
-                    type: archiveProvider === "kimi" ? 'archive-kimi-session' : 'archive-codex-session',
+                    type: getArchiveAiSessionMessageType(archiveProvider),
                     projectId,
                     sessionId: archiveSessionId,
                 });
@@ -134,13 +134,37 @@ function initProjects() {
             return true;
         var sessionProvider = sessionRow.getAttribute("data-session-provider") || "codex";
 
-        window.vscode.postMessage({
-            type: sessionProvider === "kimi" ? 'resume-kimi-session' : 'resume-codex-session',
-            projectId,
-            sessionId,
-        });
+        if (isAiSessionProvider(sessionProvider)) {
+            window.vscode.postMessage({
+                type: getResumeAiSessionMessageType(sessionProvider),
+                projectId,
+                sessionId,
+            });
+        }
 
         return true;
+    }
+
+    function isAiSessionProvider(provider) {
+        return provider === "codex" || provider === "kimi" || provider === "claude";
+    }
+
+    function getResumeAiSessionMessageType(provider) {
+        if (provider === "kimi")
+            return 'resume-kimi-session';
+        if (provider === "claude")
+            return 'resume-claude-session';
+
+        return 'resume-codex-session';
+    }
+
+    function getArchiveAiSessionMessageType(provider) {
+        if (provider === "kimi")
+            return 'archive-kimi-session';
+        if (provider === "claude")
+            return 'archive-claude-session';
+
+        return 'archive-codex-session';
     }
 
     function toggleCodexSessions(projectDiv, projectId) {
@@ -242,7 +266,7 @@ function initProjects() {
             contextMenuAiSessionProvider = sessionRow.getAttribute("data-session-provider");
             var sessionProjectDiv = sessionRow.closest('.project[data-id]');
             contextMenuAiSessionProjectId = sessionProjectDiv ? sessionProjectDiv.getAttribute("data-id") : null;
-            if (!contextMenuAiSessionId || (contextMenuAiSessionProvider !== "codex" && contextMenuAiSessionProvider !== "kimi"))
+            if (!contextMenuAiSessionId || !isAiSessionProvider(contextMenuAiSessionProvider))
                 return;
 
             e.preventDefault();
@@ -353,7 +377,7 @@ function initProjects() {
         switch (action) {
             case 'resume':
                 window.vscode.postMessage({
-                    type: contextMenuAiSessionProvider === "kimi" ? 'resume-kimi-session' : 'resume-codex-session',
+                    type: getResumeAiSessionMessageType(contextMenuAiSessionProvider),
                     provider: contextMenuAiSessionProvider,
                     projectId: contextMenuAiSessionProjectId,
                     sessionId: contextMenuAiSessionId,
@@ -382,7 +406,7 @@ function initProjects() {
                 break;
             case 'archive':
                 window.vscode.postMessage({
-                    type: contextMenuAiSessionProvider === "kimi" ? 'archive-kimi-session' : 'archive-codex-session',
+                    type: getArchiveAiSessionMessageType(contextMenuAiSessionProvider),
                     provider: contextMenuAiSessionProvider,
                     sessionId: contextMenuAiSessionId,
                 });
