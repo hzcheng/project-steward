@@ -303,8 +303,10 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var projectName = escapeAttribute(sanitizeProjectName(project.name));
     var codexSessions = project.codexSessions || [];
     var kimiSessions = project.kimiSessions || [];
+    var claudeSessions = project.claudeSessions || [];
     var aiSessionSearchText = codexSessions
         .concat(kimiSessions)
+        .concat(claudeSessions)
         .map(session => session.name || '')
         .join(' ');
     var searchText = escapeAttribute(`${project.name || ''} ${description} ${aiSessionSearchText}`.toLowerCase());
@@ -334,7 +336,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var saveBadge = project.showSaveAction
         ? `<span data-action="save" class="project-save-badge" title="Save Current Project">${Icons.save}</span>`
         : '';
-    var aiSessionCount = codexSessions.length + kimiSessions.length;
+    var aiSessionCount = codexSessions.length + kimiSessions.length + claudeSessions.length;
     var aiSessionBadge = isReadOnlyProject && aiSessionCount
         ? `<span class="project-codex-badge" title="AI Sessions">AI ${aiSessionCount}</span>`
         : '';
@@ -377,10 +379,11 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
 function getCodexSessionsDiv(project: Project): string {
     var codexSessions = project.codexSessions || [];
     var kimiSessions = project.kimiSessions || [];
+    var claudeSessions = project.claudeSessions || [];
     var activeProvider = getActiveAiSessionProvider(project);
-    var activeSessions = activeProvider === 'kimi' ? kimiSessions : codexSessions;
-    var unavailable = activeProvider === 'kimi' ? project.kimiSessionsUnavailable : project.codexSessionsUnavailable;
-    var providerName = activeProvider === 'kimi' ? 'Kimi' : 'Codex';
+    var activeSessions = activeProvider === 'kimi' ? kimiSessions : activeProvider === 'claude' ? claudeSessions : codexSessions;
+    var unavailable = activeProvider === 'kimi' ? project.kimiSessionsUnavailable : activeProvider === 'claude' ? project.claudeSessionsUnavailable : project.codexSessionsUnavailable;
+    var providerName = getAiProviderLabel(activeProvider);
     var emptyText = unavailable ? `No ${providerName} history found` : 'No sessions yet';
     var sessionRows = activeSessions.length
         ? activeSessions.map(session => getCodexSessionRow(session, activeProvider)).join('\n')
@@ -388,9 +391,14 @@ function getCodexSessionsDiv(project: Project): string {
 
     return `
 <div class="codex-sessions">
-    <div class="ai-session-provider-tabs">
-        ${getAiProviderButton('codex', 'Codex', codexSessions.length, activeProvider)}
-        ${getAiProviderButton('kimi', 'Kimi', kimiSessions.length, activeProvider)}
+    <div class="ai-session-provider-controls">
+        <label class="ai-session-provider-select-wrapper" title="AI Provider">
+            <select class="ai-session-provider-select" data-action="select-ai-provider" aria-label="AI Provider">
+                ${getAiProviderOption('codex', 'Codex', codexSessions.length, activeProvider)}
+                ${getAiProviderOption('kimi', 'Kimi', kimiSessions.length, activeProvider)}
+                ${getAiProviderOption('claude', 'Claude', claudeSessions.length, activeProvider)}
+            </select>
+        </label>
         ${getCreateAiSessionButton(activeProvider)}
     </div>
     <div class="codex-sessions-list">
@@ -399,21 +407,18 @@ function getCodexSessionsDiv(project: Project): string {
 </div>`;
 }
 
-function getAiProviderButton(providerId: AiSessionProviderId, label: string, count: number, activeProvider: AiSessionProviderId): string {
+function getAiProviderOption(providerId: AiSessionProviderId, label: string, count: number, activeProvider: AiSessionProviderId): string {
     var isActive = providerId === activeProvider;
-    return `<button class="ai-session-provider-tab ${isActive ? 'active' : ''}" data-action="select-ai-provider" data-provider="${providerId}" title="${label} Sessions">
-        <span>${label}</span>
-        <span class="ai-session-provider-count">${count}</span>
-    </button>`;
+    return `<option value="${providerId}"${isActive ? ' selected' : ''}>${label} (${count})</option>`;
 }
 
 function getCreateAiSessionButton(activeProvider: AiSessionProviderId): string {
-    var providerLabel = activeProvider === 'kimi' ? 'Kimi' : 'Codex';
+    var providerLabel = getAiProviderLabel(activeProvider);
     return `<button class="ai-session-create-button" data-action="create-ai-session" data-provider="${activeProvider}" title="New ${providerLabel} Session">${Icons.add}</button>`;
 }
 
 function getActiveAiSessionProvider(project: Project): AiSessionProviderId {
-    if (project.activeAiSessionProvider === 'kimi' || project.activeAiSessionProvider === 'codex') {
+    if (isAiProvider(project.activeAiSessionProvider)) {
         return project.activeAiSessionProvider;
     }
 
@@ -421,7 +426,26 @@ function getActiveAiSessionProvider(project: Project): AiSessionProviderId {
         return 'kimi';
     }
 
+    if (!(project.codexSessions || []).length && !(project.kimiSessions || []).length && (project.claudeSessions || []).length) {
+        return 'claude';
+    }
+
     return 'codex';
+}
+
+function isAiProvider(providerId: string): providerId is AiSessionProviderId {
+    return providerId === 'codex' || providerId === 'kimi' || providerId === 'claude';
+}
+
+function getAiProviderLabel(providerId: AiSessionProviderId): string {
+    switch (providerId) {
+        case 'kimi':
+            return 'Kimi';
+        case 'claude':
+            return 'Claude';
+        default:
+            return 'Codex';
+    }
 }
 
 function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId) {
@@ -430,7 +454,7 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
     var shortSessionId = escapeAttribute((session.id || '').substring(0, 8));
     var updatedAt = escapeAttribute(formatCodexSessionUpdatedAt(session.updatedAt));
     var metadata = [updatedAt, shortSessionId].filter(value => !!value).join(' · ');
-    var providerLabel = provider === 'kimi' ? 'Kimi' : 'Codex';
+    var providerLabel = getAiProviderLabel(provider);
     var pinned = !!session.pinned;
     var pinTitle = pinned ? 'Unpin Session' : 'Pin Session';
     var pinAction = `<span class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}">${Icons.pin}</span>`;

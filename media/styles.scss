@@ -667,6 +667,7 @@ body {
 
 body.steward-sidebar {
     --column-width: 100%;
+    --steward-sticky-header-height: 0px;
 
     overflow-x: hidden;
     padding-left: 10px;
@@ -675,10 +676,13 @@ body.steward-sidebar {
     .steward-sticky-header {
         position: sticky;
         top: 0;
+        z-index: 300;
         width: 100%;
         box-sizing: border-box;
         padding-top: 8px;
         padding-bottom: 8px;
+        background: var(--vscode-editor-background);
+        box-shadow: 0 1px 0 var(--vscode-panel-border);
     }
 
     .sticky-groups-wrapper {
@@ -717,11 +721,23 @@ body.steward-sidebar {
 
     .groups-wrapper {
         width: 100%;
+
+        > .group:not(#tempGroup) .group-title {
+            position: sticky;
+            top: calc(var(--steward-sticky-header-height) + 4px);
+            z-index: 160;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, .12);
+        }
     }
 
     .group {
+        overflow: visible;
         margin-right: 0;
         margin-top: 12px;
+
+        &.collapsed .group-list {
+            overflow: hidden;
+        }
 
         &:first-child {
             margin-top: 8px;
@@ -1047,14 +1063,14 @@ body.steward-sidebar {
             border-top: 1px solid var(--vscode-panel-border);
         }
 
-        .ai-session-provider-tabs {
+        .ai-session-provider-controls {
             display: grid;
-            grid-template-columns: 1fr 1fr 24px;
+            grid-template-columns: minmax(0, 1fr) 24px;
             gap: 5px;
             margin-left: 0;
         }
 
-        .ai-session-provider-tab,
+        .ai-session-provider-select,
         .ai-session-create-button {
             display: inline-flex;
             align-items: center;
@@ -1077,20 +1093,23 @@ body.steward-sidebar {
                 box-shadow $defaultTransition;
 
             &:hover,
-            &.active {
+            &:focus {
                 color: var(--steward-foreground);
                 border-color: var(--vscode-focusBorder);
                 background: var(--vscode-list-hoverBackground);
-            }
-
-            &.active {
                 box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .04);
             }
         }
 
-        .ai-session-provider-tab {
-            gap: 5px;
+        .ai-session-provider-select-wrapper {
+            min-width: 0;
+        }
+
+        .ai-session-provider-select {
+            width: 100%;
             padding: 0 7px;
+            outline: none;
+            appearance: auto;
         }
 
         .ai-session-create-button {
@@ -1101,12 +1120,6 @@ body.steward-sidebar {
                 height: 10px;
                 fill: currentColor;
             }
-        }
-
-        .ai-session-provider-count {
-            color: var(--vscode-descriptionForeground);
-            font-size: 9px;
-            font-weight: 650;
         }
 
         .codex-sessions-list {
@@ -1169,6 +1182,10 @@ body.steward-sidebar {
 
         .codex-session-row[data-session-provider="kimi"] .codex-session-icon {
             color: var(--vscode-terminal-ansiMagenta, #c586c0);
+        }
+
+        .codex-session-row[data-session-provider="claude"] .codex-session-icon {
+            color: var(--vscode-terminal-ansiYellow, #dcdcaa);
         }
 
         .codex-session-pin,

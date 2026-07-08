@@ -64,15 +64,10 @@ function initProjects() {
     }
 
     function onTriggerAiSessionAction(target, projectId) {
-        var providerAction = target.closest('[data-action="select-ai-provider"][data-provider]');
+        var providerAction = target.closest('[data-action="select-ai-provider"]');
         if (providerAction) {
-            var provider = providerAction.getAttribute("data-provider");
-            if (provider === "codex" || provider === "kimi") {
-                window.vscode.postMessage({
-                    type: 'select-ai-session-provider',
-                    projectId,
-                    provider,
-                });
+            if (providerAction.tagName !== "SELECT") {
+                selectAiSessionProvider(projectId, providerAction.getAttribute("data-provider"));
             }
 
             return true;
@@ -81,7 +76,7 @@ function initProjects() {
         var createAction = target.closest('[data-action="create-ai-session"][data-provider]');
         if (createAction) {
             var createProvider = createAction.getAttribute("data-provider");
-            if (createProvider === "codex" || createProvider === "kimi") {
+            if (isAiSessionProvider(createProvider)) {
                 window.vscode.postMessage({
                     type: 'create-ai-session',
                     projectId,
@@ -109,14 +104,14 @@ function initProjects() {
             return true;
         }
 
-        var archiveAction = target.closest('[data-action="archive-codex-session"], [data-action="archive-kimi-session"]');
+        var archiveAction = target.closest('[data-action="archive-codex-session"], [data-action="archive-kimi-session"], [data-action="archive-claude-session"]');
         if (archiveAction) {
             var archiveRow = archiveAction.closest('.codex-session-row[data-session-id]');
             var archiveSessionId = archiveRow && archiveRow.getAttribute("data-session-id");
             var archiveProvider = archiveRow && archiveRow.getAttribute("data-session-provider") || "codex";
-            if (archiveSessionId) {
+            if (archiveSessionId && isAiSessionProvider(archiveProvider)) {
                 window.vscode.postMessage({
-                    type: archiveProvider === "kimi" ? 'archive-kimi-session' : 'archive-codex-session',
+                    type: getArchiveAiSessionMessageType(archiveProvider),
                     projectId,
                     sessionId: archiveSessionId,
                 });
@@ -134,18 +129,54 @@ function initProjects() {
             return true;
         var sessionProvider = sessionRow.getAttribute("data-session-provider") || "codex";
 
-        window.vscode.postMessage({
-            type: sessionProvider === "kimi" ? 'resume-kimi-session' : 'resume-codex-session',
-            projectId,
-            sessionId,
-        });
+        if (isAiSessionProvider(sessionProvider)) {
+            window.vscode.postMessage({
+                type: getResumeAiSessionMessageType(sessionProvider),
+                projectId,
+                sessionId,
+            });
+        }
 
         return true;
+    }
+
+    function selectAiSessionProvider(projectId, provider) {
+        if (!projectId || !isAiSessionProvider(provider))
+            return;
+
+        window.vscode.postMessage({
+            type: 'select-ai-session-provider',
+            projectId,
+            provider,
+        });
+    }
+
+    function isAiSessionProvider(provider) {
+        return provider === "codex" || provider === "kimi" || provider === "claude";
+    }
+
+    function getResumeAiSessionMessageType(provider) {
+        if (provider === "kimi")
+            return 'resume-kimi-session';
+        if (provider === "claude")
+            return 'resume-claude-session';
+
+        return 'resume-codex-session';
+    }
+
+    function getArchiveAiSessionMessageType(provider) {
+        if (provider === "kimi")
+            return 'archive-kimi-session';
+        if (provider === "claude")
+            return 'archive-claude-session';
+
+        return 'archive-codex-session';
     }
 
     function toggleCodexSessions(projectDiv, projectId) {
         var expanded = !projectDiv.hasAttribute("data-codex-expanded");
         projectDiv.toggleAttribute("data-codex-expanded", expanded);
+        updateStickyGroupHeaderOffset();
 
         window.vscode.postMessage({
             type: 'toggle-codex-sessions',
@@ -242,7 +273,7 @@ function initProjects() {
             contextMenuAiSessionProvider = sessionRow.getAttribute("data-session-provider");
             var sessionProjectDiv = sessionRow.closest('.project[data-id]');
             contextMenuAiSessionProjectId = sessionProjectDiv ? sessionProjectDiv.getAttribute("data-id") : null;
-            if (!contextMenuAiSessionId || (contextMenuAiSessionProvider !== "codex" && contextMenuAiSessionProvider !== "kimi"))
+            if (!contextMenuAiSessionId || !isAiSessionProvider(contextMenuAiSessionProvider))
                 return;
 
             e.preventDefault();
@@ -353,7 +384,7 @@ function initProjects() {
         switch (action) {
             case 'resume':
                 window.vscode.postMessage({
-                    type: contextMenuAiSessionProvider === "kimi" ? 'resume-kimi-session' : 'resume-codex-session',
+                    type: getResumeAiSessionMessageType(contextMenuAiSessionProvider),
                     provider: contextMenuAiSessionProvider,
                     projectId: contextMenuAiSessionProjectId,
                     sessionId: contextMenuAiSessionId,
@@ -382,7 +413,7 @@ function initProjects() {
                 break;
             case 'archive':
                 window.vscode.postMessage({
-                    type: contextMenuAiSessionProvider === "kimi" ? 'archive-kimi-session' : 'archive-codex-session',
+                    type: getArchiveAiSessionMessageType(contextMenuAiSessionProvider),
                     provider: contextMenuAiSessionProvider,
                     sessionId: contextMenuAiSessionId,
                 });
@@ -416,16 +447,11 @@ function initProjects() {
     }
 
     function toggleAllGroups() {
-        var groups = [...document.querySelectorAll('.group[data-group-id]')];
+        var groups = [...document.querySelectorAll('.groups-wrapper > .group[data-group-id]')];
         var shouldCollapse = groups.some(group => !group.classList.contains("collapsed"));
 
         groups.forEach(group => group.classList.toggle("collapsed", shouldCollapse));
         updateToggleAllGroupsButton(shouldCollapse);
-
-        window.vscode.postMessage({
-            type: 'toggle-all-groups',
-            collapsed: shouldCollapse,
-        });
     }
 
     function onMouseEvent(e) {
@@ -477,12 +503,47 @@ function initProjects() {
         }
     }
 
+    function onChangeEvent(e) {
+        if (!e.target)
+            return;
+
+        var providerSelect = e.target.closest('select[data-action="select-ai-provider"]');
+        if (!providerSelect)
+            return;
+
+        var projectDiv = providerSelect.closest('.project[data-id]');
+        var projectId = projectDiv && projectDiv.getAttribute("data-id");
+        selectAiSessionProvider(projectId, providerSelect.value);
+    }
+
+    function updateStickyGroupHeaderOffset() {
+        window.requestAnimationFrame(() => {
+            var stickyHeader = document.querySelector('.steward-sticky-header');
+            var offset = stickyHeader ? Math.ceil(stickyHeader.getBoundingClientRect().height) : 0;
+            document.body.style.setProperty('--steward-sticky-header-height', offset + 'px');
+        });
+    }
+
+    function observeStickyGroupHeaderOffset() {
+        updateStickyGroupHeaderOffset();
+        window.addEventListener('resize', updateStickyGroupHeaderOffset);
+
+        var stickyHeader = document.querySelector('.steward-sticky-header');
+        if (stickyHeader && typeof ResizeObserver !== 'undefined') {
+            var observer = new ResizeObserver(updateStickyGroupHeaderOffset);
+            observer.observe(stickyHeader);
+            window.__stewardStickyHeaderObserver = observer;
+        }
+    }
+
     // Middle mouse button requires mousedown, as it does not fire click event when scroll option is available.
     document.addEventListener('click', (e) => {
         if (e.button !== 1) {
             onMouseEvent(e);
         }
     });
+
+    document.addEventListener('change', onChangeEvent);
 
     document.addEventListener('mousedown', (e) => {
         if (e.target.closest('.codex-session-row')) {
@@ -518,4 +579,6 @@ function initProjects() {
             closeContextMenus();
         }
     });
+
+    observeStickyGroupHeaderOffset();
 }

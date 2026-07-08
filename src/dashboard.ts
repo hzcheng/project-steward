@@ -1,7 +1,7 @@
 'use strict';
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession, AiSessionProviderId } from './models';
+import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession, AiSessionProviderId, isAiSessionProviderId } from './models';
 import { getStewardContent } from './webview/webviewContent';
 import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
 import { execSync } from 'child_process';
@@ -12,6 +12,7 @@ import ProjectService from './services/projectService';
 import FileService from './services/fileService';
 import CodexSessionService, { CodexSessionReadResult } from './services/codexSessionService';
 import KimiSessionService, { KimiSessionReadResult } from './services/kimiSessionService';
+import ClaudeSessionService, { ClaudeSessionReadResult } from './services/claudeSessionService';
 
 interface CodexSessionTerminalEntry {
     terminal: vscode.Terminal;
@@ -19,7 +20,7 @@ interface CodexSessionTerminalEntry {
 }
 
 interface NewAiSessionFields {
-    prompt: string;
+    title: string;
 }
 
 interface PendingAiSessionTerminal {
@@ -29,6 +30,7 @@ interface PendingAiSessionTerminal {
     cwd: string;
     createdAt: string;
     excludedSessionIds: string[];
+    title?: string;
 }
 
 const CODEX_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_CODEX_SESSION_ID';
@@ -36,8 +38,11 @@ const CODEX_SESSION_TERMINAL_NAME_PREFIX = 'Codex';
 const CODEX_SESSION_TERMINAL_STARTUP_DELAY_MS = 1000;
 const PENDING_AI_SESSION_TERMINAL_TTL_MS = 24 * 60 * 60 * 1000;
 const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
+const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
 const KIMI_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_KIMI_SESSION_ID';
 const KIMI_SESSION_TERMINAL_NAME_PREFIX = 'Kimi';
+const CLAUDE_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_CLAUDE_SESSION_ID';
+const CLAUDE_SESSION_TERMINAL_NAME_PREFIX = 'Claude';
 const AI_SESSION_ALIASES_FILE_NAME = 'ai-session-aliases.json';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -54,6 +59,7 @@ export function activate(context: vscode.ExtensionContext) {
             this._view = webviewView;
             webviewView.webview.options = getWebviewOptions();
             this.refresh();
+            setAiSessionWatchersActive(webviewView.visible);
 
             webviewView.webview.onDidReceiveMessage(async (e) => {
                 await handleStewardMessage(e);
@@ -63,7 +69,12 @@ export function activate(context: vscode.ExtensionContext) {
                 if (webviewView.visible) {
                     this.refresh();
                 }
+                setAiSessionWatchersActive(webviewView.visible);
             });
+        }
+
+        get visible() {
+            return Boolean(this._view?.visible);
         }
 
         refresh() {
@@ -89,12 +100,16 @@ export function activate(context: vscode.ExtensionContext) {
     const fileService = new FileService(context);
     const codexSessionService = new CodexSessionService();
     const kimiSessionService = new KimiSessionService();
+    const claudeSessionService = new ClaudeSessionService();
     const codexSessionTerminals = new Map<string, CodexSessionTerminalEntry>();
     const kimiSessionTerminals = new Map<string, CodexSessionTerminalEntry>();
+    const claudeSessionTerminals = new Map<string, CodexSessionTerminalEntry>();
     let pendingAiSessionTerminals: PendingAiSessionTerminal[] = [];
     const codexSessionResumesInFlight = new Set<string>();
     const kimiSessionResumesInFlight = new Set<string>();
+    const claudeSessionResumesInFlight = new Set<string>();
     let codexSessionRefreshTimeout: NodeJS.Timeout = null;
+    let aiSessionWatcherDisposables: { dispose(): void }[] = [];
 
     const provider = new SidebarStewardViewProvider();
 
@@ -114,6 +129,12 @@ export function activate(context: vscode.ExtensionContext) {
                     kimiSessionTerminals.delete(sessionId);
                 }
             }
+            for (let [sessionId, entry] of claudeSessionTerminals) {
+                if (entry.terminal === terminal) {
+                    deleteClaudeSessionTerminalMarker(entry);
+                    claudeSessionTerminals.delete(sessionId);
+                }
+            }
             pendingAiSessionTerminals = pendingAiSessionTerminals.filter(entry => {
                 if (entry.terminal !== terminal) {
                     return true;
@@ -123,15 +144,9 @@ export function activate(context: vscode.ExtensionContext) {
                 return false;
             });
         }));
-    context.subscriptions.push(
-        codexSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()));
-    context.subscriptions.push(
-        kimiSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()));
     context.subscriptions.push({
         dispose: () => {
-            if (codexSessionRefreshTimeout) {
-                clearTimeout(codexSessionRefreshTimeout);
-            }
+            stopAiSessionWatchers();
         }
     });
 
@@ -261,13 +276,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
-    function showSteward() {
-        revealSidebarSteward();
+    async function showSteward() {
+        await revealSidebarSteward();
         refreshStewardViews();
     }
 
-    function revealSidebarSteward() {
-        vscode.commands.executeCommand('workbench.view.extension.project-steward')
+    function revealSidebarSteward(): Thenable<void> {
+        return vscode.commands.executeCommand('workbench.view.extension.project-steward')
             .then(() => vscode.commands.executeCommand(`${SidebarStewardViewProvider.viewType}.focus`))
             .then(undefined, () => vscode.commands.executeCommand(`${SidebarStewardViewProvider.viewType}.focus`))
             .then(undefined, () => { });
@@ -338,10 +353,18 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function refreshStewardViews() {
+        if (!provider.visible) {
+            return;
+        }
+
         provider.refresh();
     }
 
     function scheduleCodexSessionRefresh() {
+        if (!provider.visible) {
+            return;
+        }
+
         if (codexSessionRefreshTimeout) {
             clearTimeout(codexSessionRefreshTimeout);
         }
@@ -349,7 +372,39 @@ export function activate(context: vscode.ExtensionContext) {
         codexSessionRefreshTimeout = setTimeout(() => {
             codexSessionRefreshTimeout = null;
             refreshStewardViews();
-        }, 250);
+        }, AI_SESSION_REFRESH_DEBOUNCE_MS);
+    }
+
+    function setAiSessionWatchersActive(active: boolean) {
+        if (active) {
+            startAiSessionWatchers();
+        } else {
+            stopAiSessionWatchers();
+        }
+    }
+
+    function startAiSessionWatchers() {
+        if (aiSessionWatcherDisposables.length) {
+            return;
+        }
+
+        aiSessionWatcherDisposables = [
+            codexSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()),
+            kimiSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()),
+            claudeSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()),
+        ];
+    }
+
+    function stopAiSessionWatchers() {
+        for (let disposable of aiSessionWatcherDisposables) {
+            disposable.dispose();
+        }
+
+        aiSessionWatcherDisposables = [];
+        if (codexSessionRefreshTimeout) {
+            clearTimeout(codexSessionRefreshTimeout);
+            codexSessionRefreshTimeout = null;
+        }
     }
 
     function scheduleNewAiSessionRefresh(providerId: AiSessionProviderId) {
@@ -366,6 +421,8 @@ export function activate(context: vscode.ExtensionContext) {
             codexSessionService.invalidateCache();
         } else if (providerId === 'kimi') {
             kimiSessionService.invalidateCache();
+        } else if (providerId === 'claude') {
+            claudeSessionService.invalidateCache();
         }
     }
 
@@ -489,11 +546,18 @@ export function activate(context: vscode.ExtensionContext) {
                 projectId = e.projectId as string;
                 await resumeKimiSession(projectId, e.sessionId as string);
                 break;
+            case 'resume-claude-session':
+                projectId = e.projectId as string;
+                await resumeClaudeSession(projectId, e.sessionId as string);
+                break;
             case 'archive-codex-session':
                 await archiveCodexSession(e.sessionId as string);
                 break;
             case 'archive-kimi-session':
                 await archiveKimiSession(e.sessionId as string);
+                break;
+            case 'archive-claude-session':
+                await archiveClaudeSession(e.sessionId as string);
                 break;
             case 'edit-group':
                 groupId = e.groupId as string;
@@ -511,7 +575,7 @@ export function activate(context: vscode.ExtensionContext) {
                 await collapseGroup(groupId, e.collapsed as boolean);
                 break;
             case 'toggle-all-groups':
-                await setAllGroupsCollapsed(Boolean(e.collapsed));
+                // Collapse-all is a per-webview convenience action.
                 break;
         }
     }
@@ -656,16 +720,6 @@ export function activate(context: vscode.ExtensionContext) {
         //showSteward(); // No need to repaint for that
     }
 
-    async function setAllGroupsCollapsed(collapsed: boolean) {
-        var groups = projectService.getGroups();
-        groups.forEach(group => group.collapsed = collapsed);
-        await context.globalState.update(FAVORITES_GROUP_COLLAPSED_KEY, collapsed);
-        await context.globalState.update(OPEN_PROJECTS_GROUP_COLLAPSED_KEY, collapsed);
-        await projectService.saveGroups(groups);
-
-        refreshAfterMutation();
-    }
-
     async function toggleCodexSessions(projectId: string, expanded: boolean) {
         let project = getOpenProjects().find(p => p.id === projectId);
         if (!project) {
@@ -684,7 +738,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     async function selectAiSessionProvider(projectId: string, providerId: AiSessionProviderId) {
-        if (providerId !== 'codex' && providerId !== 'kimi') {
+        if (!isAiSessionProviderId(providerId)) {
             return;
         }
 
@@ -700,7 +754,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     async function toggleAiSessionPin(providerId: AiSessionProviderId, sessionId: string) {
-        if ((providerId !== 'codex' && providerId !== 'kimi') || !sessionId) {
+        if (!isAiSessionProviderId(providerId) || !sessionId) {
             return;
         }
 
@@ -717,7 +771,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     async function renameAiSession(providerId: AiSessionProviderId, sessionId: string) {
-        if ((providerId !== 'codex' && providerId !== 'kimi') || !sessionId) {
+        if (!isAiSessionProviderId(providerId) || !sessionId) {
             return;
         }
 
@@ -757,7 +811,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     async function createAiSession(projectId: string, providerId: AiSessionProviderId) {
-        if (providerId !== 'codex' && providerId !== 'kimi') {
+        if (!isAiSessionProviderId(providerId)) {
             return;
         }
 
@@ -774,24 +828,26 @@ export function activate(context: vscode.ExtensionContext) {
 
         if (providerId === 'codex') {
             await createCodexSession(project, fields);
+        } else if (providerId === 'claude') {
+            await createClaudeSession(project, fields);
         } else {
             await createKimiSession(project, fields);
         }
     }
 
     async function queryNewAiSessionFields(providerId: AiSessionProviderId): Promise<NewAiSessionFields> {
-        let providerLabel = providerId === 'kimi' ? 'Kimi' : 'Codex';
-        let prompt = await vscode.window.showInputBox({
-            prompt: `New ${providerLabel} initial prompt (optional)`,
-            placeHolder: 'Leave empty to start a blank session',
+        let providerLabel = getAiSessionProviderLabel(providerId);
+        let title = await vscode.window.showInputBox({
+            prompt: `New ${providerLabel} chat title (optional)`,
+            placeHolder: 'Leave empty to use the session ID',
             ignoreFocusOut: true,
         });
-        if (prompt === undefined) {
+        if (title === undefined) {
             return null;
         }
 
         return {
-            prompt: sanitizeTerminalLineInput(prompt.trim()),
+            title: sanitizeAiSessionAlias(title),
         };
     }
 
@@ -804,11 +860,11 @@ export function activate(context: vscode.ExtensionContext) {
         let createdAt = new Date().toISOString();
         let markerPath = getPendingAiSessionTerminalMarkerPath('codex');
 
-        trackPendingAiSessionTerminal('codex', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds);
+        trackPendingAiSessionTerminal('codex', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds, fields.title);
 
         terminal.show();
         await waitForTerminalReady(terminal);
-        terminal.sendText(buildCodexNewSessionCommand(cwd, fields.prompt, markerPath));
+        terminal.sendText(buildCodexNewSessionCommand(cwd, null, markerPath));
         scheduleNewAiSessionRefresh('codex');
     }
 
@@ -820,12 +876,28 @@ export function activate(context: vscode.ExtensionContext) {
         let existingSessionIds = getAiSessionIdsForCwd(kimiSessionService.getSessions(true), pendingTerminalCwd);
         let createdAt = new Date().toISOString();
         let markerPath = getPendingAiSessionTerminalMarkerPath('kimi');
-        trackPendingAiSessionTerminal('kimi', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds);
+        trackPendingAiSessionTerminal('kimi', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds, fields.title);
 
         terminal.show();
         await waitForTerminalReady(terminal);
-        terminal.sendText(buildKimiNewSessionCommand(cwd, fields.prompt, markerPath));
+        terminal.sendText(buildKimiNewSessionCommand(cwd, null, markerPath));
         scheduleNewAiSessionRefresh('kimi');
+    }
+
+    async function createClaudeSession(project: Project, fields: NewAiSessionFields) {
+        let cwd = getUsableTerminalCwd(getOpenProjectTerminalCwd(project));
+        let pendingTerminalCwd = cwd || getOpenProjectTerminalCwd(project);
+        let terminalName = `${CLAUDE_SESSION_TERMINAL_NAME_PREFIX}: ${project.name || 'New Session'}`;
+        let terminal = createAiSessionTerminal(terminalName, cwd, 'Claude');
+        let existingSessionIds = getAiSessionIdsForCwd(claudeSessionService.getSessions(true), pendingTerminalCwd);
+        let createdAt = new Date().toISOString();
+        let markerPath = getPendingAiSessionTerminalMarkerPath('claude');
+        trackPendingAiSessionTerminal('claude', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds, fields.title);
+
+        terminal.show();
+        await waitForTerminalReady(terminal);
+        terminal.sendText(buildClaudeNewSessionCommand(cwd, fields.title, markerPath));
+        scheduleNewAiSessionRefresh('claude');
     }
 
     function createAiSessionTerminal(terminalName: string, cwd: string, providerLabel: string): vscode.Terminal {
@@ -947,6 +1019,58 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
+    async function resumeClaudeSession(projectId: string, sessionId: string) {
+        let project = getOpenProjects().find(p => p.id === projectId);
+        let session = project?.claudeSessions?.find(s => s.id === sessionId);
+        if (!project || !session) {
+            vscode.window.showWarningMessage("Selected Claude session not found.");
+            return;
+        }
+
+        let cwd = getUsableTerminalCwd(getClaudeSessionTerminalCwd(session, project));
+        let existingTerminal = getClaudeSessionTerminal(session);
+        if (existingTerminal && !isClaudeSessionTerminalComplete(existingTerminal)) {
+            existingTerminal.terminal.show();
+            return;
+        }
+
+        if (claudeSessionResumesInFlight.has(session.id)) {
+            return;
+        }
+
+        claudeSessionResumesInFlight.add(session.id);
+        let terminalName = getClaudeSessionTerminalName(session);
+        let terminal: vscode.Terminal = existingTerminal?.terminal;
+        let terminalEnv = { [CLAUDE_SESSION_TERMINAL_ENV]: session.id };
+        let markerPath = existingTerminal?.markerPath || getClaudeSessionTerminalMarkerPath(session.id);
+
+        try {
+            if (!terminal) {
+                try {
+                    terminal = vscode.window.createTerminal({
+                        name: terminalName,
+                        cwd: cwd || undefined,
+                        env: terminalEnv,
+                    });
+                } catch (error) {
+                    logError('Failed to create Claude terminal with cwd.', error);
+                    cwd = null;
+                    terminal = vscode.window.createTerminal({
+                        name: terminalName,
+                        env: terminalEnv,
+                    });
+                    vscode.window.showWarningMessage("Could not open the Claude terminal at the session directory. Resuming without a working directory.");
+                }
+            }
+
+            claudeSessionTerminals.set(session.id, { terminal, markerPath });
+            terminal.show();
+            await sendClaudeResumeCommand(terminal, session.id, cwd, markerPath);
+        } finally {
+            claudeSessionResumesInFlight.delete(session.id);
+        }
+    }
+
     async function archiveCodexSession(sessionId: string) {
         if (!sessionId) {
             return;
@@ -1006,6 +1130,37 @@ export function activate(context: vscode.ExtensionContext) {
 
         kimiSessionTerminals.delete(sessionId);
         deleteAiSessionAlias('kimi', sessionId);
+        refreshAfterMutation();
+    }
+
+    async function archiveClaudeSession(sessionId: string) {
+        if (!sessionId) {
+            return;
+        }
+
+        let existingTerminal = getClaudeSessionTerminalById(sessionId);
+        if (existingTerminal && !isClaudeSessionTerminalComplete(existingTerminal)) {
+            vscode.window.showWarningMessage("This Claude session is open in a terminal. Exit or close that terminal before archiving it.");
+            existingTerminal.terminal.show();
+            return;
+        }
+
+        let accepted = await vscode.window.showWarningMessage("Archive this Claude session?", { modal: true }, "Archive");
+        if (!accepted) {
+            return;
+        }
+
+        if (!claudeSessionService.archiveSession(sessionId)) {
+            vscode.window.showErrorMessage("Could not archive Claude session.");
+            return;
+        }
+
+        if (existingTerminal) {
+            deleteClaudeSessionTerminalMarker(existingTerminal);
+        }
+
+        claudeSessionTerminals.delete(sessionId);
+        deleteAiSessionAlias('claude', sessionId);
         refreshAfterMutation();
     }
 
@@ -2020,19 +2175,23 @@ export function activate(context: vscode.ExtensionContext) {
 
         let codexSessionResult = codexSessionService.getSessions();
         let kimiSessionResult = kimiSessionService.getSessions();
-        resolvePendingAiSessionTerminals(codexSessionResult, kimiSessionResult);
+        let claudeSessionResult = claudeSessionService.getSessions();
+        resolvePendingAiSessionTerminals(codexSessionResult, kimiSessionResult, claudeSessionResult);
         let codexAssignments = getCodexSessionAssignments(openProjects, codexSessionResult);
         let kimiAssignments = getKimiSessionAssignments(openProjects, kimiSessionResult);
+        let claudeAssignments = getClaudeSessionAssignments(openProjects, claudeSessionResult);
         let expandedProjects = getExpandedCodexSessionProjects();
         let activeProviders = getActiveAiSessionProviders();
-        let pinnedSessions = prunePinnedAiSessionKeys(getPinnedAiSessionKeys(), codexSessionResult, kimiSessionResult);
-        let aliases = pruneAiSessionAliases(getAiSessionAliases(), codexSessionResult, kimiSessionResult);
+        let pinnedSessions = prunePinnedAiSessionKeys(getPinnedAiSessionKeys(), codexSessionResult, kimiSessionResult, claudeSessionResult);
+        let aliases = pruneAiSessionAliases(getAiSessionAliases(), codexSessionResult, kimiSessionResult, claudeSessionResult);
 
         return openProjects.map(project => {
             project.codexSessions = prepareAiSessionsForDisplay(codexAssignments.get(project.id) || [], 'codex', pinnedSessions, aliases);
             project.kimiSessions = prepareAiSessionsForDisplay(kimiAssignments.get(project.id) || [], 'kimi', pinnedSessions, aliases);
+            project.claudeSessions = prepareAiSessionsForDisplay(claudeAssignments.get(project.id) || [], 'claude', pinnedSessions, aliases);
             project.codexSessionsUnavailable = !codexSessionResult.available;
             project.kimiSessionsUnavailable = !kimiSessionResult.available;
+            project.claudeSessionsUnavailable = !claudeSessionResult.available;
             project.codexSessionsExpanded = expandedProjects.has(getOpenProjectCodexExpansionKey(project));
             project.activeAiSessionProvider = getActiveAiSessionProvider(project, activeProviders);
             return project;
@@ -2078,6 +2237,36 @@ export function activate(context: vscode.ExtensionContext) {
         let candidates = getCodexOpenProjectCandidates(openProjects);
 
         for (let session of kimiSessionResult.sessions) {
+            let sessionPath = normalizeCodexComparablePath(session.workDir || session.cwd);
+            if (!sessionPath) {
+                continue;
+            }
+
+            let bestMatch = candidates
+                .filter(candidate => codexPathContainsSessionPath(candidate.path, sessionPath))
+                .sort((a, b) => b.path.length - a.path.length)[0];
+
+            if (!bestMatch) {
+                continue;
+            }
+
+            let projectSessions = assignments.get(bestMatch.project.id) || [];
+            projectSessions.push(session);
+            assignments.set(bestMatch.project.id, projectSessions);
+        }
+
+        return assignments;
+    }
+
+    function getClaudeSessionAssignments(openProjects: Project[], claudeSessionResult: ClaudeSessionReadResult): Map<string, CodexSession[]> {
+        let assignments = new Map<string, CodexSession[]>();
+        if (!claudeSessionResult.available || !claudeSessionResult.sessions.length) {
+            return assignments;
+        }
+
+        let candidates = getCodexOpenProjectCandidates(openProjects);
+
+        for (let session of claudeSessionResult.sessions) {
             let sessionPath = normalizeCodexComparablePath(session.workDir || session.cwd);
             if (!sessionPath) {
                 continue;
@@ -2145,7 +2334,7 @@ export function activate(context: vscode.ExtensionContext) {
         return new Set(Array.isArray(pinnedSessions) ? pinnedSessions : []);
     }
 
-    function getAiSessionIdsForCwd(sessionResult: CodexSessionReadResult | KimiSessionReadResult, cwd: string): string[] {
+    function getAiSessionIdsForCwd(sessionResult: CodexSessionReadResult | KimiSessionReadResult | ClaudeSessionReadResult, cwd: string): string[] {
         let comparableCwd = normalizeCodexComparablePath(cwd);
         if (!sessionResult.available || !comparableCwd) {
             return [];
@@ -2157,7 +2346,7 @@ export function activate(context: vscode.ExtensionContext) {
             .filter(id => !!id);
     }
 
-    function trackPendingAiSessionTerminal(providerId: AiSessionProviderId, terminal: vscode.Terminal, markerPath: string, cwd: string, createdAt: string, excludedSessionIds: string[]) {
+    function trackPendingAiSessionTerminal(providerId: AiSessionProviderId, terminal: vscode.Terminal, markerPath: string, cwd: string, createdAt: string, excludedSessionIds: string[], title: string = null) {
         let comparableCwd = normalizeCodexComparablePath(cwd);
         if (!terminal || !markerPath || !comparableCwd) {
             return;
@@ -2170,6 +2359,7 @@ export function activate(context: vscode.ExtensionContext) {
             cwd: comparableCwd,
             createdAt,
             excludedSessionIds: Array.isArray(excludedSessionIds) ? excludedSessionIds.filter(id => !!id) : [],
+            title: sanitizeAiSessionAlias(title),
         });
         pendingAiSessionTerminals = trimPendingAiSessionTerminals(pendingAiSessionTerminals);
     }
@@ -2187,7 +2377,7 @@ export function activate(context: vscode.ExtensionContext) {
         });
     }
 
-    function resolvePendingAiSessionTerminals(codexSessionResult: CodexSessionReadResult, kimiSessionResult: KimiSessionReadResult) {
+    function resolvePendingAiSessionTerminals(codexSessionResult: CodexSessionReadResult, kimiSessionResult: KimiSessionReadResult, claudeSessionResult: ClaudeSessionReadResult) {
         if (!pendingAiSessionTerminals.length) {
             return;
         }
@@ -2196,7 +2386,11 @@ export function activate(context: vscode.ExtensionContext) {
         let claimedSessionKeys = getTrackedAiSessionTerminalKeys();
 
         for (let pendingTerminal of trimPendingAiSessionTerminals(pendingAiSessionTerminals)) {
-            let sessionResult = pendingTerminal.provider === 'codex' ? codexSessionResult : kimiSessionResult;
+            let sessionResult = pendingTerminal.provider === 'codex'
+                ? codexSessionResult
+                : pendingTerminal.provider === 'claude'
+                    ? claudeSessionResult
+                    : kimiSessionResult;
             let session = findPendingAiSessionTerminalMatch(pendingTerminal, sessionResult, claimedSessionKeys);
             if (!session) {
                 remainingPendingTerminals.push(pendingTerminal);
@@ -2209,9 +2403,12 @@ export function activate(context: vscode.ExtensionContext) {
             };
             if (pendingTerminal.provider === 'codex') {
                 codexSessionTerminals.set(session.id, entry);
+            } else if (pendingTerminal.provider === 'claude') {
+                claudeSessionTerminals.set(session.id, entry);
             } else {
                 kimiSessionTerminals.set(session.id, entry);
             }
+            setAiSessionAlias(pendingTerminal.provider, session.id, pendingTerminal.title);
             claimedSessionKeys.add(getAiSessionPinKey(pendingTerminal.provider, session.id));
         }
 
@@ -2226,11 +2423,14 @@ export function activate(context: vscode.ExtensionContext) {
         for (let sessionId of kimiSessionTerminals.keys()) {
             sessionKeys.add(getAiSessionPinKey('kimi', sessionId));
         }
+        for (let sessionId of claudeSessionTerminals.keys()) {
+            sessionKeys.add(getAiSessionPinKey('claude', sessionId));
+        }
 
         return sessionKeys;
     }
 
-    function findPendingAiSessionTerminalMatch(pendingTerminal: PendingAiSessionTerminal, sessionResult: CodexSessionReadResult | KimiSessionReadResult, claimedSessionKeys: Set<string>): CodexSession {
+    function findPendingAiSessionTerminalMatch(pendingTerminal: PendingAiSessionTerminal, sessionResult: CodexSessionReadResult | KimiSessionReadResult | ClaudeSessionReadResult, claimedSessionKeys: Set<string>): CodexSession {
         if (!sessionResult.available) {
             return null;
         }
@@ -2250,7 +2450,7 @@ export function activate(context: vscode.ExtensionContext) {
             .sort((a, b) => compareAiSessionUpdatedAt(a.updatedAt, b.updatedAt))[0] || null;
     }
 
-    function prunePinnedAiSessionKeys(pinnedSessions: Set<string>, codexSessionResult: CodexSessionReadResult, kimiSessionResult: KimiSessionReadResult): Set<string> {
+    function prunePinnedAiSessionKeys(pinnedSessions: Set<string>, codexSessionResult: CodexSessionReadResult, kimiSessionResult: KimiSessionReadResult, claudeSessionResult: ClaudeSessionReadResult): Set<string> {
         if (!pinnedSessions.size) {
             return pinnedSessions;
         }
@@ -2258,11 +2458,18 @@ export function activate(context: vscode.ExtensionContext) {
         let availableSessionKeys = new Set<string>();
         addAvailableAiSessionKeys(availableSessionKeys, 'codex', codexSessionResult.available, codexSessionResult.sessions);
         addAvailableAiSessionKeys(availableSessionKeys, 'kimi', kimiSessionResult.available, kimiSessionResult.sessions);
+        addAvailableAiSessionKeys(availableSessionKeys, 'claude', claudeSessionResult.available, claudeSessionResult.sessions);
 
         let prunedPinnedSessions = new Set<string>();
         for (let sessionKey of pinnedSessions) {
             let providerId = getProviderIdFromAiSessionPinKey(sessionKey);
-            let providerUnavailable = providerId === 'codex' ? !codexSessionResult.available : providerId === 'kimi' ? !kimiSessionResult.available : false;
+            let providerUnavailable = providerId === 'codex'
+                ? !codexSessionResult.available
+                : providerId === 'kimi'
+                    ? !kimiSessionResult.available
+                    : providerId === 'claude'
+                        ? !claudeSessionResult.available
+                        : false;
             if (providerUnavailable || availableSessionKeys.has(sessionKey)) {
                 prunedPinnedSessions.add(sessionKey);
             }
@@ -2319,7 +2526,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
-    function pruneAiSessionAliases(aliases: Record<string, string>, codexSessionResult: CodexSessionReadResult, kimiSessionResult: KimiSessionReadResult): Record<string, string> {
+    function pruneAiSessionAliases(aliases: Record<string, string>, codexSessionResult: CodexSessionReadResult, kimiSessionResult: KimiSessionReadResult, claudeSessionResult: ClaudeSessionReadResult): Record<string, string> {
         if (!Object.keys(aliases).length) {
             return aliases;
         }
@@ -2327,11 +2534,18 @@ export function activate(context: vscode.ExtensionContext) {
         let availableSessionKeys = new Set<string>();
         addAvailableAiSessionKeys(availableSessionKeys, 'codex', codexSessionResult.available, codexSessionResult.sessions);
         addAvailableAiSessionKeys(availableSessionKeys, 'kimi', kimiSessionResult.available, kimiSessionResult.sessions);
+        addAvailableAiSessionKeys(availableSessionKeys, 'claude', claudeSessionResult.available, claudeSessionResult.sessions);
 
         let prunedAliases: Record<string, string> = {};
         for (let sessionKey of Object.keys(aliases)) {
             let providerId = getProviderIdFromAiSessionPinKey(sessionKey);
-            let providerUnavailable = providerId === 'codex' ? !codexSessionResult.available : providerId === 'kimi' ? !kimiSessionResult.available : false;
+            let providerUnavailable = providerId === 'codex'
+                ? !codexSessionResult.available
+                : providerId === 'kimi'
+                    ? !kimiSessionResult.available
+                    : providerId === 'claude'
+                        ? !claudeSessionResult.available
+                        : false;
             if (providerUnavailable || availableSessionKeys.has(sessionKey)) {
                 prunedAliases[sessionKey] = aliases[sessionKey];
             }
@@ -2364,10 +2578,23 @@ export function activate(context: vscode.ExtensionContext) {
         saveAiSessionAliases(aliases);
     }
 
+    function setAiSessionAlias(providerId: AiSessionProviderId, sessionId: string, alias: string) {
+        alias = sanitizeAiSessionAlias(alias);
+        if (!isAiSessionProviderId(providerId) || !sessionId || !alias) {
+            return;
+        }
+
+        let aliases = getAiSessionAliases();
+        aliases[getAiSessionPinKey(providerId, sessionId)] = alias;
+        saveAiSessionAliases(aliases);
+    }
+
     function getAiSessionOriginalName(providerId: AiSessionProviderId, sessionId: string): string {
         let sessionResult = providerId === 'kimi'
             ? kimiSessionService.getSessions()
-            : codexSessionService.getSessions();
+            : providerId === 'claude'
+                ? claudeSessionService.getSessions()
+                : codexSessionService.getSessions();
         let session = sessionResult.sessions.find(candidate => candidate.id === sessionId);
 
         return session?.name || sessionId;
@@ -2384,7 +2611,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         let providerId = sessionKey.substring(0, separatorIndex);
-        return providerId === 'codex' || providerId === 'kimi' ? providerId : null;
+        return isAiSessionProviderId(providerId) ? providerId : null;
     }
 
     function getActiveAiSessionProviders(): Record<string, AiSessionProviderId> {
@@ -2398,15 +2625,34 @@ export function activate(context: vscode.ExtensionContext) {
 
     function getActiveAiSessionProvider(project: Project, activeProviders: Record<string, AiSessionProviderId>): AiSessionProviderId {
         let selectedProvider = activeProviders[getOpenProjectCodexExpansionKey(project)];
-        if (selectedProvider === 'codex' || selectedProvider === 'kimi') {
+        if (isAiSessionProviderId(selectedProvider)) {
             return selectedProvider;
         }
 
-        if (!project.codexSessions?.length && project.kimiSessions?.length) {
+        if (project.codexSessions?.length) {
+            return 'codex';
+        }
+
+        if (project.kimiSessions?.length) {
             return 'kimi';
         }
 
+        if (project.claudeSessions?.length) {
+            return 'claude';
+        }
+
         return 'codex';
+    }
+
+    function getAiSessionProviderLabel(providerId: AiSessionProviderId): string {
+        switch (providerId) {
+            case 'kimi':
+                return 'Kimi';
+            case 'claude':
+                return 'Claude';
+            default:
+                return 'Codex';
+        }
     }
 
     function getCodexOpenProjectCandidates(openProjects: Project[]): { project: Project, path: string }[] {
@@ -2562,6 +2808,48 @@ export function activate(context: vscode.ExtensionContext) {
         return `${KIMI_SESSION_TERMINAL_NAME_PREFIX}: ${session.name || session.id} [${session.id.substring(0, 8)}]`;
     }
 
+    function getClaudeSessionTerminalCwd(session: CodexSession, project: Project): string {
+        return session.workDir || session.cwd || normalizeCodexComparablePath(getProjectPathPart(project.path)) || null;
+    }
+
+    function getClaudeSessionTerminal(session: CodexSession): CodexSessionTerminalEntry {
+        return getClaudeSessionTerminalById(session.id, session);
+    }
+
+    function getClaudeSessionTerminalById(sessionId: string, session: CodexSession = null): CodexSessionTerminalEntry {
+        let trackedTerminal = claudeSessionTerminals.get(sessionId);
+        if (trackedTerminal) {
+            return trackedTerminal;
+        }
+
+        let terminal = vscode.window.terminals.find(candidate => terminalMatchesClaudeSession(candidate, sessionId));
+        if (!terminal) {
+            return null;
+        }
+
+        let entry = {
+            terminal,
+            markerPath: getClaudeSessionTerminalMarkerPath(sessionId),
+        };
+        claudeSessionTerminals.set(sessionId, entry);
+
+        return entry;
+    }
+
+    function terminalMatchesClaudeSession(terminal: vscode.Terminal, sessionId: string): boolean {
+        let creationOptions = terminal.creationOptions;
+        if ('env' in creationOptions && creationOptions.env?.[CLAUDE_SESSION_TERMINAL_ENV] === sessionId) {
+            return true;
+        }
+
+        return terminal.name.startsWith(`${CLAUDE_SESSION_TERMINAL_NAME_PREFIX}: `)
+            && terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`);
+    }
+
+    function getClaudeSessionTerminalName(session: CodexSession): string {
+        return `${CLAUDE_SESSION_TERMINAL_NAME_PREFIX}: ${session.name || session.id} [${session.id.substring(0, 8)}]`;
+    }
+
     function getUsableTerminalCwd(cwd: string): string {
         if (!cwd || isUriString(cwd)) {
             return null;
@@ -2586,6 +2874,12 @@ export function activate(context: vscode.ExtensionContext) {
         terminal.sendText(buildKimiResumeCommand(sessionId, cwd, markerPath));
     }
 
+    async function sendClaudeResumeCommand(terminal: vscode.Terminal, sessionId: string, cwd: string, markerPath: string) {
+        deleteClaudeSessionTerminalMarker({ terminal, markerPath });
+        await waitForTerminalReady(terminal);
+        terminal.sendText(buildClaudeResumeCommand(sessionId, cwd, markerPath));
+    }
+
     async function waitForTerminalReady(terminal: vscode.Terminal) {
         try {
             await terminal.processId;
@@ -2603,6 +2897,10 @@ export function activate(context: vscode.ExtensionContext) {
         return existsSync(entry.markerPath);
     }
 
+    function isClaudeSessionTerminalComplete(entry: CodexSessionTerminalEntry): boolean {
+        return existsSync(entry.markerPath);
+    }
+
     function getCodexSessionTerminalMarkerPath(sessionId: string): string {
         let markerDir = path.join(context.globalStoragePath, 'codex-session-terminals');
         try {
@@ -2616,6 +2914,17 @@ export function activate(context: vscode.ExtensionContext) {
 
     function getKimiSessionTerminalMarkerPath(sessionId: string): string {
         let markerDir = path.join(context.globalStoragePath, 'kimi-session-terminals');
+        try {
+            mkdirSync(markerDir, { recursive: true });
+        } catch (e) {
+            // Fall through; the terminal command will still run without relying on the marker.
+        }
+
+        return path.join(markerDir, `${sessionId}.done`);
+    }
+
+    function getClaudeSessionTerminalMarkerPath(sessionId: string): string {
+        let markerDir = path.join(context.globalStoragePath, 'claude-session-terminals');
         try {
             mkdirSync(markerDir, { recursive: true });
         } catch (e) {
@@ -2642,6 +2951,10 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function deleteKimiSessionTerminalMarker(entry: CodexSessionTerminalEntry) {
+        deleteAiSessionTerminalMarker(entry.markerPath);
+    }
+
+    function deleteClaudeSessionTerminalMarker(entry: CodexSessionTerminalEntry) {
         deleteAiSessionTerminalMarker(entry.markerPath);
     }
 
@@ -2774,6 +3087,71 @@ export function activate(context: vscode.ExtensionContext) {
         let command = cwd
             ? `kimi --work-dir ${quotePowerShellArg(cwd)}${promptArg}`
             : `kimi${promptArg}`;
+
+        if (markerPath) {
+            command = [
+                `Remove-Item -LiteralPath ${quotePowerShellArg(markerPath)} -ErrorAction SilentlyContinue`,
+                command,
+                `New-Item -ItemType File -Force -Path ${quotePowerShellArg(markerPath)} | Out-Null`,
+            ].join('; ');
+        }
+
+        return `powershell -NoProfile -ExecutionPolicy Bypass -Command ${quoteWindowsCommandArg(command)}`;
+    }
+
+    function buildClaudeResumeCommand(sessionId: string, cwd: string, markerPath: string = null): string {
+        if (process.platform === 'win32' && markerPath) {
+            return buildWindowsClaudeResumeCommand(sessionId, cwd, markerPath);
+        }
+
+        let resumeCommand = cwd
+            ? `cd ${quoteShellArg(cwd)} && claude --resume ${quoteShellArg(sessionId)}`
+            : `claude --resume ${quoteShellArg(sessionId)}`;
+
+        if (!markerPath) {
+            return resumeCommand;
+        }
+
+        let markerArg = quoteShellArg(markerPath);
+        return `sh -lc ${quoteShellArg(`rm -f ${markerArg}; ${resumeCommand}; : > ${markerArg}`)}`;
+    }
+
+    function buildWindowsClaudeResumeCommand(sessionId: string, cwd: string, markerPath: string): string {
+        let resumeCommand = cwd
+            ? `Set-Location -LiteralPath ${quotePowerShellArg(cwd)}; claude --resume ${quotePowerShellArg(sessionId)}`
+            : `claude --resume ${quotePowerShellArg(sessionId)}`;
+        let script = [
+            `Remove-Item -LiteralPath ${quotePowerShellArg(markerPath)} -ErrorAction SilentlyContinue`,
+            resumeCommand,
+            `New-Item -ItemType File -Force -Path ${quotePowerShellArg(markerPath)} | Out-Null`,
+        ].join('; ');
+
+        return `powershell -NoProfile -ExecutionPolicy Bypass -Command ${quoteWindowsCommandArg(script)}`;
+    }
+
+    function buildClaudeNewSessionCommand(cwd: string, title: string = null, markerPath: string = null): string {
+        if (process.platform === 'win32') {
+            return buildWindowsClaudeNewSessionCommand(cwd, title, markerPath);
+        }
+
+        let titleArg = title ? ` --name ${quoteShellArg(title)}` : '';
+        let newSessionCommand = cwd
+            ? `cd ${quoteShellArg(cwd)} && claude${titleArg}`
+            : `claude${titleArg}`;
+
+        if (!markerPath) {
+            return newSessionCommand;
+        }
+
+        let markerArg = quoteShellArg(markerPath);
+        return `sh -lc ${quoteShellArg(`rm -f ${markerArg}; ${newSessionCommand}; : > ${markerArg}`)}`;
+    }
+
+    function buildWindowsClaudeNewSessionCommand(cwd: string, title: string = null, markerPath: string = null): string {
+        let titleArg = title ? ` --name ${quotePowerShellArg(title)}` : '';
+        let command = cwd
+            ? `Set-Location -LiteralPath ${quotePowerShellArg(cwd)}; claude${titleArg}`
+            : `claude${titleArg}`;
 
         if (markerPath) {
             command = [

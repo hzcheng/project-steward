@@ -30,9 +30,11 @@ export class Project {
     showSaveAction?: boolean;
     codexSessions?: CodexSession[];
     kimiSessions?: CodexSession[];
+    claudeSessions?: CodexSession[];
     codexSessionsExpanded?: boolean;
     codexSessionsUnavailable?: boolean;
     kimiSessionsUnavailable?: boolean;
+    claudeSessionsUnavailable?: boolean;
     activeAiSessionProvider?: AiSessionProviderId;
     color: string;
     isGitRepo = false;
@@ -142,7 +144,11 @@ export interface GroupOrder {
     projectIds: string[];
 }
 
-export type AiSessionProviderId = 'codex' | 'kimi';
+export type AiSessionProviderId = 'codex' | 'kimi' | 'claude';
+
+export function isAiSessionProviderId(value: string): value is AiSessionProviderId {
+    return value === 'codex' || value === 'kimi' || value === 'claude';
+}
 
 export interface CodexSession {
     id: string;
