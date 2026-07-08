@@ -5,44 +5,27 @@ import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemote
 import { getStewardContent } from './webview/webviewContent';
 import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
 import { execSync } from 'child_process';
-import { existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
 import FileService from './services/fileService';
-import CodexSessionService, { CodexSessionReadResult } from './services/codexSessionService';
-import KimiSessionService, { KimiSessionReadResult } from './services/kimiSessionService';
-import ClaudeSessionService, { ClaudeSessionReadResult } from './services/claudeSessionService';
+import CodexSessionService from './services/codexSessionService';
+import KimiSessionService from './services/kimiSessionService';
+import ClaudeSessionService from './services/claudeSessionService';
+import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, getAiSessionProviderIdFromKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
+import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
+import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
+import type { AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry } from './aiSessions/types';
 
-interface CodexSessionTerminalEntry {
-    terminal: vscode.Terminal;
-    markerPath: string;
-}
+type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
 interface NewAiSessionFields {
     title: string;
 }
 
-interface PendingAiSessionTerminal {
-    provider: AiSessionProviderId;
-    terminal: vscode.Terminal;
-    markerPath: string;
-    cwd: string;
-    createdAt: string;
-    excludedSessionIds: string[];
-    title?: string;
-}
-
-const CODEX_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_CODEX_SESSION_ID';
-const CODEX_SESSION_TERMINAL_NAME_PREFIX = 'Codex';
-const CODEX_SESSION_TERMINAL_STARTUP_DELAY_MS = 1000;
-const PENDING_AI_SESSION_TERMINAL_TTL_MS = 24 * 60 * 60 * 1000;
 const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
 const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
-const KIMI_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_KIMI_SESSION_ID';
-const KIMI_SESSION_TERMINAL_NAME_PREFIX = 'Kimi';
-const CLAUDE_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_CLAUDE_SESSION_ID';
-const CLAUDE_SESSION_TERMINAL_NAME_PREFIX = 'Claude';
 const AI_SESSION_ALIASES_FILE_NAME = 'ai-session-aliases.json';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -101,14 +84,13 @@ export function activate(context: vscode.ExtensionContext) {
     const codexSessionService = new CodexSessionService();
     const kimiSessionService = new KimiSessionService();
     const claudeSessionService = new ClaudeSessionService();
-    const codexSessionTerminals = new Map<string, CodexSessionTerminalEntry>();
-    const kimiSessionTerminals = new Map<string, CodexSessionTerminalEntry>();
-    const claudeSessionTerminals = new Map<string, CodexSessionTerminalEntry>();
-    let pendingAiSessionTerminals: PendingAiSessionTerminal[] = [];
-    const codexSessionResumesInFlight = new Set<string>();
-    const kimiSessionResumesInFlight = new Set<string>();
-    const claudeSessionResumesInFlight = new Set<string>();
-    let codexSessionRefreshTimeout: NodeJS.Timeout = null;
+    const aiSessionServices: Record<AiSessionProviderId, AiSessionService> = {
+        codex: codexSessionService,
+        kimi: kimiSessionService,
+        claude: claudeSessionService,
+    };
+    const aiSessionTerminalService = new AiSessionTerminalService(context.globalStoragePath, providerId => getRegisteredAiSessionProvider(providerId));
+    let aiSessionRefreshTimeout: NodeJS.Timeout = null;
     let aiSessionWatcherDisposables: { dispose(): void }[] = [];
 
     const provider = new SidebarStewardViewProvider();
@@ -117,32 +99,8 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.registerWebviewViewProvider(SidebarStewardViewProvider.viewType, provider));
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(terminal => {
-            for (let [sessionId, entry] of codexSessionTerminals) {
-                if (entry.terminal === terminal) {
-                    deleteCodexSessionTerminalMarker(entry);
-                    codexSessionTerminals.delete(sessionId);
-                }
-            }
-            for (let [sessionId, entry] of kimiSessionTerminals) {
-                if (entry.terminal === terminal) {
-                    deleteKimiSessionTerminalMarker(entry);
-                    kimiSessionTerminals.delete(sessionId);
-                }
-            }
-            for (let [sessionId, entry] of claudeSessionTerminals) {
-                if (entry.terminal === terminal) {
-                    deleteClaudeSessionTerminalMarker(entry);
-                    claudeSessionTerminals.delete(sessionId);
-                }
-            }
-            pendingAiSessionTerminals = pendingAiSessionTerminals.filter(entry => {
-                if (entry.terminal !== terminal) {
-                    return true;
-                }
-
-                deleteAiSessionTerminalMarker(entry.markerPath);
-                return false;
-            });
+            aiSessionTerminalService.handleClosedTerminal(terminal);
+            aiSessionTerminalService.removePendingForTerminal(terminal);
         }));
     context.subscriptions.push({
         dispose: () => {
@@ -352,6 +310,19 @@ export function activate(context: vscode.ExtensionContext) {
         };
     }
 
+    function getRegisteredAiSessionProvider(providerId: AiSessionProviderId): AiSessionProvider {
+        let definition = getAiSessionProviderDefinition(providerId);
+        let service = aiSessionServices[providerId];
+        if (!definition || !service) {
+            return null;
+        }
+
+        return {
+            ...definition,
+            service,
+        };
+    }
+
     function refreshStewardViews() {
         if (!provider.visible) {
             return;
@@ -360,17 +331,17 @@ export function activate(context: vscode.ExtensionContext) {
         provider.refresh();
     }
 
-    function scheduleCodexSessionRefresh() {
+    function scheduleAiSessionRefresh() {
         if (!provider.visible) {
             return;
         }
 
-        if (codexSessionRefreshTimeout) {
-            clearTimeout(codexSessionRefreshTimeout);
+        if (aiSessionRefreshTimeout) {
+            clearTimeout(aiSessionRefreshTimeout);
         }
 
-        codexSessionRefreshTimeout = setTimeout(() => {
-            codexSessionRefreshTimeout = null;
+        aiSessionRefreshTimeout = setTimeout(() => {
+            aiSessionRefreshTimeout = null;
             refreshStewardViews();
         }, AI_SESSION_REFRESH_DEBOUNCE_MS);
     }
@@ -388,11 +359,8 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        aiSessionWatcherDisposables = [
-            codexSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()),
-            kimiSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()),
-            claudeSessionService.watchSessionChanges(() => scheduleCodexSessionRefresh()),
-        ];
+        aiSessionWatcherDisposables = AI_SESSION_PROVIDER_IDS
+            .map(providerId => getRegisteredAiSessionProvider(providerId).service.watchSessionChanges(() => scheduleAiSessionRefresh()));
     }
 
     function stopAiSessionWatchers() {
@@ -401,9 +369,9 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         aiSessionWatcherDisposables = [];
-        if (codexSessionRefreshTimeout) {
-            clearTimeout(codexSessionRefreshTimeout);
-            codexSessionRefreshTimeout = null;
+        if (aiSessionRefreshTimeout) {
+            clearTimeout(aiSessionRefreshTimeout);
+            aiSessionRefreshTimeout = null;
         }
     }
 
@@ -417,13 +385,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function invalidateAiSessionCache(providerId: AiSessionProviderId) {
-        if (providerId === 'codex') {
-            codexSessionService.invalidateCache();
-        } else if (providerId === 'kimi') {
-            kimiSessionService.invalidateCache();
-        } else if (providerId === 'claude') {
-            claudeSessionService.invalidateCache();
-        }
+        getRegisteredAiSessionProvider(providerId)?.service.invalidateCache();
     }
 
     function logError(message: string, error: unknown) {
@@ -464,6 +426,21 @@ export function activate(context: vscode.ExtensionContext) {
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+    }
+
+    function getAiSessionProviderFromMessage(e: any, action: 'resume' | 'archive'): AiSessionProviderId | null {
+        if (isAiSessionProviderId(e?.provider)) {
+            return e.provider;
+        }
+
+        let messageType = String(e?.type || '');
+        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+            if (messageType === `${action}-${providerId}-session`) {
+                return providerId;
+            }
+        }
+
+        return null;
     }
 
     function refreshAfterMutation() {
@@ -538,26 +515,18 @@ export function activate(context: vscode.ExtensionContext) {
             case 'copy-ai-session-id':
                 await copyAiSessionId(e.sessionId as string);
                 break;
+            case 'resume-ai-session':
             case 'resume-codex-session':
-                projectId = e.projectId as string;
-                await resumeCodexSession(projectId, e.sessionId as string);
-                break;
             case 'resume-kimi-session':
-                projectId = e.projectId as string;
-                await resumeKimiSession(projectId, e.sessionId as string);
-                break;
             case 'resume-claude-session':
                 projectId = e.projectId as string;
-                await resumeClaudeSession(projectId, e.sessionId as string);
+                await resumeProjectAiSession(projectId, getAiSessionProviderFromMessage(e, 'resume'), e.sessionId as string);
                 break;
+            case 'archive-ai-session':
             case 'archive-codex-session':
-                await archiveCodexSession(e.sessionId as string);
-                break;
             case 'archive-kimi-session':
-                await archiveKimiSession(e.sessionId as string);
-                break;
             case 'archive-claude-session':
-                await archiveClaudeSession(e.sessionId as string);
+                await archiveAiSession(getAiSessionProviderFromMessage(e, 'archive'), e.sessionId as string);
                 break;
             case 'edit-group':
                 groupId = e.groupId as string;
@@ -826,13 +795,7 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        if (providerId === 'codex') {
-            await createCodexSession(project, fields);
-        } else if (providerId === 'claude') {
-            await createClaudeSession(project, fields);
-        } else {
-            await createKimiSession(project, fields);
-        }
+        await createProviderAiSession(providerId, project, fields);
     }
 
     async function queryNewAiSessionFields(providerId: AiSessionProviderId): Promise<NewAiSessionFields> {
@@ -851,316 +814,132 @@ export function activate(context: vscode.ExtensionContext) {
         };
     }
 
-    async function createCodexSession(project: Project, fields: NewAiSessionFields) {
+    async function createProviderAiSession(
+        providerId: AiSessionProviderId,
+        project: Project,
+        fields: NewAiSessionFields
+    ) {
+        let sessionProvider = getRegisteredAiSessionProvider(providerId);
         let cwd = getUsableTerminalCwd(getOpenProjectTerminalCwd(project));
         let pendingTerminalCwd = cwd || getOpenProjectTerminalCwd(project);
-        let terminalName = `${CODEX_SESSION_TERMINAL_NAME_PREFIX}: ${project.name || 'New Session'}`;
-        let terminal = createAiSessionTerminal(terminalName, cwd, 'Codex');
-        let existingSessionIds = getAiSessionIdsForCwd(codexSessionService.getSessions(true), pendingTerminalCwd);
+        let terminalName = `${sessionProvider.terminalNamePrefix}: ${project.name || 'New Session'}`;
+        let terminal = aiSessionTerminalService.createTerminal({
+            name: terminalName,
+            cwd,
+            cwdFailureMessage: `Failed to create ${sessionProvider.label} terminal with cwd.`,
+            cwdWarningMessage: `Could not open the ${sessionProvider.label} terminal at the project directory. Starting without a working directory.`,
+            logError,
+        }).terminal;
+        let existingSessionIds = getAiSessionIdsForCwd(providerId, sessionProvider.service.getSessions(true), pendingTerminalCwd);
         let createdAt = new Date().toISOString();
-        let markerPath = getPendingAiSessionTerminalMarkerPath('codex');
-
-        trackPendingAiSessionTerminal('codex', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds, fields.title);
+        let markerPath = getPendingAiSessionTerminalMarkerPath(providerId);
+        trackPendingAiSessionTerminal(providerId, terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds, fields.title);
 
         terminal.show();
-        await waitForTerminalReady(terminal);
-        terminal.sendText(buildCodexNewSessionCommand(cwd, null, markerPath));
-        scheduleNewAiSessionRefresh('codex');
+        await aiSessionTerminalService.sendNewSessionCommand(providerId, terminal, cwd, fields.title, markerPath);
+        scheduleNewAiSessionRefresh(providerId);
     }
 
-    async function createKimiSession(project: Project, fields: NewAiSessionFields) {
-        let cwd = getUsableTerminalCwd(getOpenProjectTerminalCwd(project));
-        let pendingTerminalCwd = cwd || getOpenProjectTerminalCwd(project);
-        let terminalName = `${KIMI_SESSION_TERMINAL_NAME_PREFIX}: ${project.name || 'New Session'}`;
-        let terminal = createAiSessionTerminal(terminalName, cwd, 'Kimi');
-        let existingSessionIds = getAiSessionIdsForCwd(kimiSessionService.getSessions(true), pendingTerminalCwd);
-        let createdAt = new Date().toISOString();
-        let markerPath = getPendingAiSessionTerminalMarkerPath('kimi');
-        trackPendingAiSessionTerminal('kimi', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds, fields.title);
-
-        terminal.show();
-        await waitForTerminalReady(terminal);
-        terminal.sendText(buildKimiNewSessionCommand(cwd, null, markerPath));
-        scheduleNewAiSessionRefresh('kimi');
-    }
-
-    async function createClaudeSession(project: Project, fields: NewAiSessionFields) {
-        let cwd = getUsableTerminalCwd(getOpenProjectTerminalCwd(project));
-        let pendingTerminalCwd = cwd || getOpenProjectTerminalCwd(project);
-        let terminalName = `${CLAUDE_SESSION_TERMINAL_NAME_PREFIX}: ${project.name || 'New Session'}`;
-        let terminal = createAiSessionTerminal(terminalName, cwd, 'Claude');
-        let existingSessionIds = getAiSessionIdsForCwd(claudeSessionService.getSessions(true), pendingTerminalCwd);
-        let createdAt = new Date().toISOString();
-        let markerPath = getPendingAiSessionTerminalMarkerPath('claude');
-        trackPendingAiSessionTerminal('claude', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds, fields.title);
-
-        terminal.show();
-        await waitForTerminalReady(terminal);
-        terminal.sendText(buildClaudeNewSessionCommand(cwd, fields.title, markerPath));
-        scheduleNewAiSessionRefresh('claude');
-    }
-
-    function createAiSessionTerminal(terminalName: string, cwd: string, providerLabel: string): vscode.Terminal {
-        try {
-            return vscode.window.createTerminal({
-                name: terminalName,
-                cwd: cwd || undefined,
-            });
-        } catch (error) {
-            logError(`Failed to create ${providerLabel} terminal with cwd.`, error);
-            vscode.window.showWarningMessage(`Could not open the ${providerLabel} terminal at the project directory. Starting without a working directory.`);
-            return vscode.window.createTerminal({
-                name: terminalName,
-            });
-        }
-    }
-
-    async function resumeCodexSession(projectId: string, sessionId: string) {
-        let project = getOpenProjects().find(p => p.id === projectId);
-        let session = project?.codexSessions?.find(s => s.id === sessionId);
-        if (!project || !session) {
-            vscode.window.showWarningMessage("Selected Codex session not found.");
+    async function resumeProjectAiSession(projectId: string, providerId: AiSessionProviderId | null, sessionId: string) {
+        if (!providerId) {
             return;
         }
 
-        let cwd = getUsableTerminalCwd(getCodexSessionTerminalCwd(session, project));
-        let existingTerminal = getCodexSessionTerminal(session);
-        if (existingTerminal && !isCodexSessionTerminalComplete(existingTerminal)) {
+        await resumeAiSession(
+            providerId,
+            projectId,
+            sessionId,
+            project => getProjectAiSessions(project, providerId).find(s => s.id === sessionId),
+            (session, project) => getAiSessionTerminalCwd(providerId, session, project),
+            session => getAiSessionTerminal(providerId, session)
+        );
+    }
+
+    async function resumeAiSession(
+        providerId: AiSessionProviderId,
+        projectId: string,
+        sessionId: string,
+        getSession: (project: Project) => CodexSession,
+        getTerminalCwd: (session: CodexSession, project: Project) => string,
+        getExistingTerminal: (session: CodexSession) => TerminalEntry
+    ) {
+        let sessionProvider = getRegisteredAiSessionProvider(providerId);
+        let project = getOpenProjects().find(p => p.id === projectId);
+        let session = project ? getSession(project) : null;
+        if (!project || !session) {
+            vscode.window.showWarningMessage(`Selected ${sessionProvider.label} session not found.`);
+            return;
+        }
+
+        let cwd = getUsableTerminalCwd(getTerminalCwd(session, project));
+        let existingTerminal = getExistingTerminal(session);
+        if (existingTerminal && !aiSessionTerminalService.isComplete(existingTerminal)) {
             existingTerminal.terminal.show();
             return;
         }
 
-        if (codexSessionResumesInFlight.has(session.id)) {
+        if (!aiSessionTerminalService.beginResume(providerId, session.id)) {
             return;
         }
 
-        codexSessionResumesInFlight.add(session.id);
-        let terminalName = getCodexSessionTerminalName(session);
+        let terminalName = getAiSessionTerminalName(providerId, session);
         let terminal: vscode.Terminal = existingTerminal?.terminal;
-        let terminalEnv = { [CODEX_SESSION_TERMINAL_ENV]: session.id };
-        let markerPath = existingTerminal?.markerPath || getCodexSessionTerminalMarkerPath(session.id);
+        let terminalEnv = { [sessionProvider.terminalEnvKey]: session.id };
+        let markerPath = existingTerminal?.markerPath || getAiSessionTerminalMarkerPath(providerId, session.id);
 
         try {
             if (!terminal) {
-                try {
-                    terminal = vscode.window.createTerminal({
-                        name: terminalName,
-                        cwd: cwd || undefined,
-                        env: terminalEnv,
-                    });
-                } catch (error) {
-                    logError('Failed to create Codex terminal with cwd.', error);
+                let createResult = aiSessionTerminalService.createTerminal({
+                    name: terminalName,
+                    cwd,
+                    env: terminalEnv,
+                    cwdFailureMessage: `Failed to create ${sessionProvider.label} terminal with cwd.`,
+                    cwdWarningMessage: `Could not open the ${sessionProvider.label} terminal at the session directory. Resuming without a working directory.`,
+                    logError,
+                });
+                terminal = createResult.terminal;
+                if (!createResult.cwdAccepted) {
                     cwd = null;
-                    terminal = vscode.window.createTerminal({
-                        name: terminalName,
-                        env: terminalEnv,
-                    });
-                    vscode.window.showWarningMessage("Could not open the Codex terminal at the session directory. Resuming without a working directory.");
                 }
             }
 
-            codexSessionTerminals.set(session.id, { terminal, markerPath });
+            aiSessionTerminalService.track(providerId, session.id, { terminal, markerPath });
             terminal.show();
-            await sendCodexResumeCommand(terminal, session.id, cwd, markerPath);
+            await aiSessionTerminalService.sendResumeCommand(providerId, terminal, session.id, cwd, markerPath);
         } finally {
-            codexSessionResumesInFlight.delete(session.id);
+            aiSessionTerminalService.finishResume(providerId, session.id);
         }
     }
 
-    async function resumeKimiSession(projectId: string, sessionId: string) {
-        let project = getOpenProjects().find(p => p.id === projectId);
-        let session = project?.kimiSessions?.find(s => s.id === sessionId);
-        if (!project || !session) {
-            vscode.window.showWarningMessage("Selected Kimi session not found.");
+    async function archiveAiSession(providerId: AiSessionProviderId | null, sessionId: string) {
+        if (!providerId || !sessionId) {
             return;
         }
 
-        let cwd = getUsableTerminalCwd(getKimiSessionTerminalCwd(session, project));
-        let existingTerminal = getKimiSessionTerminal(session);
-        if (existingTerminal && !isKimiSessionTerminalComplete(existingTerminal)) {
+        let sessionProvider = getRegisteredAiSessionProvider(providerId);
+        let existingTerminal = aiSessionTerminalService.getById(providerId, sessionId);
+        if (existingTerminal && !aiSessionTerminalService.isComplete(existingTerminal)) {
+            vscode.window.showWarningMessage(`This ${sessionProvider.label} session is open in a terminal. Exit or close that terminal before archiving it.`);
             existingTerminal.terminal.show();
             return;
         }
 
-        if (kimiSessionResumesInFlight.has(session.id)) {
-            return;
-        }
-
-        kimiSessionResumesInFlight.add(session.id);
-        let terminalName = getKimiSessionTerminalName(session);
-        let terminal: vscode.Terminal = existingTerminal?.terminal;
-        let terminalEnv = { [KIMI_SESSION_TERMINAL_ENV]: session.id };
-        let markerPath = existingTerminal?.markerPath || getKimiSessionTerminalMarkerPath(session.id);
-
-        try {
-            if (!terminal) {
-                try {
-                    terminal = vscode.window.createTerminal({
-                        name: terminalName,
-                        cwd: cwd || undefined,
-                        env: terminalEnv,
-                    });
-                } catch (error) {
-                    logError('Failed to create Kimi terminal with cwd.', error);
-                    cwd = null;
-                    terminal = vscode.window.createTerminal({
-                        name: terminalName,
-                        env: terminalEnv,
-                    });
-                    vscode.window.showWarningMessage("Could not open the Kimi terminal at the session directory. Resuming without a working directory.");
-                }
-            }
-
-            kimiSessionTerminals.set(session.id, { terminal, markerPath });
-            terminal.show();
-            await sendKimiResumeCommand(terminal, session.id, cwd, markerPath);
-        } finally {
-            kimiSessionResumesInFlight.delete(session.id);
-        }
-    }
-
-    async function resumeClaudeSession(projectId: string, sessionId: string) {
-        let project = getOpenProjects().find(p => p.id === projectId);
-        let session = project?.claudeSessions?.find(s => s.id === sessionId);
-        if (!project || !session) {
-            vscode.window.showWarningMessage("Selected Claude session not found.");
-            return;
-        }
-
-        let cwd = getUsableTerminalCwd(getClaudeSessionTerminalCwd(session, project));
-        let existingTerminal = getClaudeSessionTerminal(session);
-        if (existingTerminal && !isClaudeSessionTerminalComplete(existingTerminal)) {
-            existingTerminal.terminal.show();
-            return;
-        }
-
-        if (claudeSessionResumesInFlight.has(session.id)) {
-            return;
-        }
-
-        claudeSessionResumesInFlight.add(session.id);
-        let terminalName = getClaudeSessionTerminalName(session);
-        let terminal: vscode.Terminal = existingTerminal?.terminal;
-        let terminalEnv = { [CLAUDE_SESSION_TERMINAL_ENV]: session.id };
-        let markerPath = existingTerminal?.markerPath || getClaudeSessionTerminalMarkerPath(session.id);
-
-        try {
-            if (!terminal) {
-                try {
-                    terminal = vscode.window.createTerminal({
-                        name: terminalName,
-                        cwd: cwd || undefined,
-                        env: terminalEnv,
-                    });
-                } catch (error) {
-                    logError('Failed to create Claude terminal with cwd.', error);
-                    cwd = null;
-                    terminal = vscode.window.createTerminal({
-                        name: terminalName,
-                        env: terminalEnv,
-                    });
-                    vscode.window.showWarningMessage("Could not open the Claude terminal at the session directory. Resuming without a working directory.");
-                }
-            }
-
-            claudeSessionTerminals.set(session.id, { terminal, markerPath });
-            terminal.show();
-            await sendClaudeResumeCommand(terminal, session.id, cwd, markerPath);
-        } finally {
-            claudeSessionResumesInFlight.delete(session.id);
-        }
-    }
-
-    async function archiveCodexSession(sessionId: string) {
-        if (!sessionId) {
-            return;
-        }
-
-        let existingTerminal = getCodexSessionTerminalById(sessionId);
-        if (existingTerminal && !isCodexSessionTerminalComplete(existingTerminal)) {
-            vscode.window.showWarningMessage("This Codex session is open in a terminal. Exit or close that terminal before archiving it.");
-            existingTerminal.terminal.show();
-            return;
-        }
-
-        let accepted = await vscode.window.showWarningMessage("Archive this Codex session?", { modal: true }, "Archive");
+        let accepted = await vscode.window.showWarningMessage(`Archive this ${sessionProvider.label} session?`, { modal: true }, "Archive");
         if (!accepted) {
             return;
         }
 
-        if (!codexSessionService.archiveSession(sessionId)) {
-            vscode.window.showErrorMessage("Could not archive Codex session.");
+        if (!sessionProvider.service.archiveSession(sessionId)) {
+            vscode.window.showErrorMessage(`Could not archive ${sessionProvider.label} session.`);
             return;
         }
 
         if (existingTerminal) {
-            deleteCodexSessionTerminalMarker(existingTerminal);
+            aiSessionTerminalService.deleteEntryMarker(existingTerminal);
         }
 
-        codexSessionTerminals.delete(sessionId);
-        deleteAiSessionAlias('codex', sessionId);
-        refreshAfterMutation();
-    }
-
-    async function archiveKimiSession(sessionId: string) {
-        if (!sessionId) {
-            return;
-        }
-
-        let existingTerminal = getKimiSessionTerminalById(sessionId);
-        if (existingTerminal && !isKimiSessionTerminalComplete(existingTerminal)) {
-            vscode.window.showWarningMessage("This Kimi session is open in a terminal. Exit or close that terminal before archiving it.");
-            existingTerminal.terminal.show();
-            return;
-        }
-
-        let accepted = await vscode.window.showWarningMessage("Archive this Kimi session?", { modal: true }, "Archive");
-        if (!accepted) {
-            return;
-        }
-
-        if (!kimiSessionService.archiveSession(sessionId)) {
-            vscode.window.showErrorMessage("Could not archive Kimi session.");
-            return;
-        }
-
-        if (existingTerminal) {
-            deleteKimiSessionTerminalMarker(existingTerminal);
-        }
-
-        kimiSessionTerminals.delete(sessionId);
-        deleteAiSessionAlias('kimi', sessionId);
-        refreshAfterMutation();
-    }
-
-    async function archiveClaudeSession(sessionId: string) {
-        if (!sessionId) {
-            return;
-        }
-
-        let existingTerminal = getClaudeSessionTerminalById(sessionId);
-        if (existingTerminal && !isClaudeSessionTerminalComplete(existingTerminal)) {
-            vscode.window.showWarningMessage("This Claude session is open in a terminal. Exit or close that terminal before archiving it.");
-            existingTerminal.terminal.show();
-            return;
-        }
-
-        let accepted = await vscode.window.showWarningMessage("Archive this Claude session?", { modal: true }, "Archive");
-        if (!accepted) {
-            return;
-        }
-
-        if (!claudeSessionService.archiveSession(sessionId)) {
-            vscode.window.showErrorMessage("Could not archive Claude session.");
-            return;
-        }
-
-        if (existingTerminal) {
-            deleteClaudeSessionTerminalMarker(existingTerminal);
-        }
-
-        claudeSessionTerminals.delete(sessionId);
-        deleteAiSessionAlias('claude', sessionId);
+        aiSessionTerminalService.untrack(providerId, sessionId);
+        deleteAiSessionAlias(providerId, sessionId);
         refreshAfterMutation();
     }
 
@@ -2173,160 +1952,51 @@ export function activate(context: vscode.ExtensionContext) {
             return openProjects;
         }
 
-        let codexSessionResult = codexSessionService.getSessions();
-        let kimiSessionResult = kimiSessionService.getSessions();
-        let claudeSessionResult = claudeSessionService.getSessions();
-        resolvePendingAiSessionTerminals(codexSessionResult, kimiSessionResult, claudeSessionResult);
-        let codexAssignments = getCodexSessionAssignments(openProjects, codexSessionResult);
-        let kimiAssignments = getKimiSessionAssignments(openProjects, kimiSessionResult);
-        let claudeAssignments = getClaudeSessionAssignments(openProjects, claudeSessionResult);
+        let sessionResults = getAiSessionResults();
+        resolvePendingAiSessionTerminals(sessionResults);
+        let assignments = getAiSessionAssignments(openProjects, sessionResults);
         let expandedProjects = getExpandedCodexSessionProjects();
         let activeProviders = getActiveAiSessionProviders();
-        let pinnedSessions = prunePinnedAiSessionKeys(getPinnedAiSessionKeys(), codexSessionResult, kimiSessionResult, claudeSessionResult);
-        let aliases = pruneAiSessionAliases(getAiSessionAliases(), codexSessionResult, kimiSessionResult, claudeSessionResult);
+        let pinnedSessions = prunePinnedAiSessionKeys(getPinnedAiSessionKeys(), sessionResults);
+        let aliases = pruneAiSessionAliases(getAiSessionAliases(), sessionResults);
 
         return openProjects.map(project => {
-            project.codexSessions = prepareAiSessionsForDisplay(codexAssignments.get(project.id) || [], 'codex', pinnedSessions, aliases);
-            project.kimiSessions = prepareAiSessionsForDisplay(kimiAssignments.get(project.id) || [], 'kimi', pinnedSessions, aliases);
-            project.claudeSessions = prepareAiSessionsForDisplay(claudeAssignments.get(project.id) || [], 'claude', pinnedSessions, aliases);
-            project.codexSessionsUnavailable = !codexSessionResult.available;
-            project.kimiSessionsUnavailable = !kimiSessionResult.available;
-            project.claudeSessionsUnavailable = !claudeSessionResult.available;
+            for (let providerId of AI_SESSION_PROVIDER_IDS) {
+                let sessionProvider = getRegisteredAiSessionProvider(providerId);
+                let sessionResult = sessionResults[providerId];
+                project[sessionProvider.projectSessionsKey] = prepareAiSessionsForDisplay(assignments[providerId].get(project.id) || [], providerId, pinnedSessions, aliases);
+                project[sessionProvider.projectSessionsUnavailableKey] = !sessionResult.available;
+            }
             project.codexSessionsExpanded = expandedProjects.has(getOpenProjectCodexExpansionKey(project));
             project.activeAiSessionProvider = getActiveAiSessionProvider(project, activeProviders);
             return project;
         });
     }
 
-    function getCodexSessionAssignments(openProjects: Project[], codexSessionResult: CodexSessionReadResult): Map<string, CodexSession[]> {
-        let assignments = new Map<string, CodexSession[]>();
-        if (!codexSessionResult.available || !codexSessionResult.sessions.length) {
-            return assignments;
+    function getAiSessionResults(): Record<AiSessionProviderId, AiSessionReadResult> {
+        let results = {} as Record<AiSessionProviderId, AiSessionReadResult>;
+        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+            results[providerId] = getRegisteredAiSessionProvider(providerId).service.getSessions();
         }
 
-        let candidates = getCodexOpenProjectCandidates(openProjects);
+        return results;
+    }
 
-        for (let session of codexSessionResult.sessions) {
-            let sessionPath = normalizeCodexComparablePath(session.cwd);
-            if (!sessionPath) {
-                continue;
-            }
-
-            let bestMatch = candidates
-                .filter(candidate => codexPathContainsSessionPath(candidate.path, sessionPath))
-                .sort((a, b) => b.path.length - a.path.length)[0];
-
-            if (!bestMatch) {
-                continue;
-            }
-
-            let projectSessions = assignments.get(bestMatch.project.id) || [];
-            projectSessions.push(session);
-            assignments.set(bestMatch.project.id, projectSessions);
+    function getAiSessionAssignments(openProjects: Project[], sessionResults: Record<AiSessionProviderId, AiSessionReadResult>): Record<AiSessionProviderId, Map<string, CodexSession[]>> {
+        let assignments = {} as Record<AiSessionProviderId, Map<string, CodexSession[]>>;
+        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+            assignments[providerId] = getAiSessionAssignmentsForProvider(openProjects, providerId, sessionResults[providerId]);
         }
 
         return assignments;
     }
 
-    function getKimiSessionAssignments(openProjects: Project[], kimiSessionResult: KimiSessionReadResult): Map<string, CodexSession[]> {
-        let assignments = new Map<string, CodexSession[]>();
-        if (!kimiSessionResult.available || !kimiSessionResult.sessions.length) {
-            return assignments;
+    function getAiSessionAssignmentsForProvider(openProjects: Project[], providerId: AiSessionProviderId, sessionResult: AiSessionReadResult): Map<string, CodexSession[]> {
+        if (!sessionResult.available || !sessionResult.sessions.length) {
+            return new Map<string, CodexSession[]>();
         }
 
-        let candidates = getCodexOpenProjectCandidates(openProjects);
-
-        for (let session of kimiSessionResult.sessions) {
-            let sessionPath = normalizeCodexComparablePath(session.workDir || session.cwd);
-            if (!sessionPath) {
-                continue;
-            }
-
-            let bestMatch = candidates
-                .filter(candidate => codexPathContainsSessionPath(candidate.path, sessionPath))
-                .sort((a, b) => b.path.length - a.path.length)[0];
-
-            if (!bestMatch) {
-                continue;
-            }
-
-            let projectSessions = assignments.get(bestMatch.project.id) || [];
-            projectSessions.push(session);
-            assignments.set(bestMatch.project.id, projectSessions);
-        }
-
-        return assignments;
-    }
-
-    function getClaudeSessionAssignments(openProjects: Project[], claudeSessionResult: ClaudeSessionReadResult): Map<string, CodexSession[]> {
-        let assignments = new Map<string, CodexSession[]>();
-        if (!claudeSessionResult.available || !claudeSessionResult.sessions.length) {
-            return assignments;
-        }
-
-        let candidates = getCodexOpenProjectCandidates(openProjects);
-
-        for (let session of claudeSessionResult.sessions) {
-            let sessionPath = normalizeCodexComparablePath(session.workDir || session.cwd);
-            if (!sessionPath) {
-                continue;
-            }
-
-            let bestMatch = candidates
-                .filter(candidate => codexPathContainsSessionPath(candidate.path, sessionPath))
-                .sort((a, b) => b.path.length - a.path.length)[0];
-
-            if (!bestMatch) {
-                continue;
-            }
-
-            let projectSessions = assignments.get(bestMatch.project.id) || [];
-            projectSessions.push(session);
-            assignments.set(bestMatch.project.id, projectSessions);
-        }
-
-        return assignments;
-    }
-
-    function prepareAiSessionsForDisplay(sessions: CodexSession[], providerId: AiSessionProviderId, pinnedSessions: Set<string>, aliases: Record<string, string>): CodexSession[] {
-        let sortedSessions = sessions
-            .map(session => ({
-                ...session,
-                name: aliases[getAiSessionPinKey(providerId, session.id)] || session.name,
-                provider: providerId,
-                pinned: pinnedSessions.has(getAiSessionPinKey(providerId, session.id)),
-            }))
-            .sort((a, b) => {
-                if (a.pinned !== b.pinned) {
-                    return a.pinned ? -1 : 1;
-                }
-
-                return compareAiSessionUpdatedAt(b.updatedAt, a.updatedAt);
-            });
-
-        let pinned = sortedSessions.filter(session => session.pinned);
-        let recent = sortedSessions.filter(session => !session.pinned).slice(0, Math.max(20 - pinned.length, 0));
-
-        return pinned.concat(recent);
-    }
-
-    function compareAiSessionUpdatedAt(a: string, b: string): number {
-        let aTime = a ? Date.parse(a) : 0;
-        let bTime = b ? Date.parse(b) : 0;
-
-        if (isNaN(aTime) && isNaN(bTime)) {
-            return 0;
-        }
-
-        if (isNaN(aTime)) {
-            return -1;
-        }
-
-        if (isNaN(bTime)) {
-            return 1;
-        }
-
-        return aTime - bTime;
+        return assignAiSessionsToProjects(getCodexOpenProjectCandidates(openProjects), sessionResult.sessions, session => getAiSessionComparableCwd(providerId, session));
     }
 
     function getPinnedAiSessionKeys(): Set<string> {
@@ -2334,14 +2004,14 @@ export function activate(context: vscode.ExtensionContext) {
         return new Set(Array.isArray(pinnedSessions) ? pinnedSessions : []);
     }
 
-    function getAiSessionIdsForCwd(sessionResult: CodexSessionReadResult | KimiSessionReadResult | ClaudeSessionReadResult, cwd: string): string[] {
+    function getAiSessionIdsForCwd(providerId: AiSessionProviderId, sessionResult: AiSessionReadResult, cwd: string): string[] {
         let comparableCwd = normalizeCodexComparablePath(cwd);
         if (!sessionResult.available || !comparableCwd) {
             return [];
         }
 
         return sessionResult.sessions
-            .filter(session => normalizeCodexComparablePath(session.workDir || session.cwd) === comparableCwd)
+            .filter(session => normalizeCodexComparablePath(getAiSessionComparableCwd(providerId, session)) === comparableCwd)
             .map(session => session.id)
             .filter(id => !!id);
     }
@@ -2352,7 +2022,7 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        pendingAiSessionTerminals.push({
+        aiSessionTerminalService.trackPending({
             provider: providerId,
             terminal,
             markerPath,
@@ -2361,36 +2031,19 @@ export function activate(context: vscode.ExtensionContext) {
             excludedSessionIds: Array.isArray(excludedSessionIds) ? excludedSessionIds.filter(id => !!id) : [],
             title: sanitizeAiSessionAlias(title),
         });
-        pendingAiSessionTerminals = trimPendingAiSessionTerminals(pendingAiSessionTerminals);
     }
 
-    function trimPendingAiSessionTerminals(pendingTerminals: PendingAiSessionTerminal[]): PendingAiSessionTerminal[] {
-        let cutoff = Date.now() - PENDING_AI_SESSION_TERMINAL_TTL_MS;
-        return pendingTerminals.filter(entry => {
-            return entry
-                && entry.terminal
-                && !!entry.markerPath
-                && !!entry.cwd
-                && !!entry.createdAt
-                && !isNaN(Date.parse(entry.createdAt))
-                && Date.parse(entry.createdAt) >= cutoff;
-        });
-    }
-
-    function resolvePendingAiSessionTerminals(codexSessionResult: CodexSessionReadResult, kimiSessionResult: KimiSessionReadResult, claudeSessionResult: ClaudeSessionReadResult) {
-        if (!pendingAiSessionTerminals.length) {
+    function resolvePendingAiSessionTerminals(sessionResults: Record<AiSessionProviderId, AiSessionReadResult>) {
+        let pendingTerminals = aiSessionTerminalService.getPendingTerminals();
+        if (!pendingTerminals.length) {
             return;
         }
 
         let remainingPendingTerminals: PendingAiSessionTerminal[] = [];
         let claimedSessionKeys = getTrackedAiSessionTerminalKeys();
 
-        for (let pendingTerminal of trimPendingAiSessionTerminals(pendingAiSessionTerminals)) {
-            let sessionResult = pendingTerminal.provider === 'codex'
-                ? codexSessionResult
-                : pendingTerminal.provider === 'claude'
-                    ? claudeSessionResult
-                    : kimiSessionResult;
+        for (let pendingTerminal of pendingTerminals) {
+            let sessionResult = sessionResults[pendingTerminal.provider];
             let session = findPendingAiSessionTerminalMatch(pendingTerminal, sessionResult, claimedSessionKeys);
             if (!session) {
                 remainingPendingTerminals.push(pendingTerminal);
@@ -2401,36 +2054,19 @@ export function activate(context: vscode.ExtensionContext) {
                 terminal: pendingTerminal.terminal,
                 markerPath: pendingTerminal.markerPath,
             };
-            if (pendingTerminal.provider === 'codex') {
-                codexSessionTerminals.set(session.id, entry);
-            } else if (pendingTerminal.provider === 'claude') {
-                claudeSessionTerminals.set(session.id, entry);
-            } else {
-                kimiSessionTerminals.set(session.id, entry);
-            }
+            aiSessionTerminalService.track(pendingTerminal.provider, session.id, entry);
             setAiSessionAlias(pendingTerminal.provider, session.id, pendingTerminal.title);
             claimedSessionKeys.add(getAiSessionPinKey(pendingTerminal.provider, session.id));
         }
 
-        pendingAiSessionTerminals = remainingPendingTerminals;
+        aiSessionTerminalService.replacePendingTerminals(remainingPendingTerminals);
     }
 
     function getTrackedAiSessionTerminalKeys(): Set<string> {
-        let sessionKeys = new Set<string>();
-        for (let sessionId of codexSessionTerminals.keys()) {
-            sessionKeys.add(getAiSessionPinKey('codex', sessionId));
-        }
-        for (let sessionId of kimiSessionTerminals.keys()) {
-            sessionKeys.add(getAiSessionPinKey('kimi', sessionId));
-        }
-        for (let sessionId of claudeSessionTerminals.keys()) {
-            sessionKeys.add(getAiSessionPinKey('claude', sessionId));
-        }
-
-        return sessionKeys;
+        return aiSessionTerminalService.getTrackedSessionKeys(getAiSessionPinKey);
     }
 
-    function findPendingAiSessionTerminalMatch(pendingTerminal: PendingAiSessionTerminal, sessionResult: CodexSessionReadResult | KimiSessionReadResult | ClaudeSessionReadResult, claimedSessionKeys: Set<string>): CodexSession {
+    function findPendingAiSessionTerminalMatch(pendingTerminal: PendingAiSessionTerminal, sessionResult: AiSessionReadResult, claimedSessionKeys: Set<string>): CodexSession {
         if (!sessionResult.available) {
             return null;
         }
@@ -2439,7 +2075,7 @@ export function activate(context: vscode.ExtensionContext) {
         return sessionResult.sessions
             .filter(session => {
                 let sessionKey = getAiSessionPinKey(pendingTerminal.provider, session.id);
-                let sessionCwd = normalizeCodexComparablePath(session.workDir || session.cwd);
+                let sessionCwd = normalizeCodexComparablePath(getAiSessionComparableCwd(pendingTerminal.provider, session));
                 let updatedAt = session.updatedAt ? Date.parse(session.updatedAt) : NaN;
                 return sessionCwd === pendingTerminal.cwd
                     && !pendingTerminal.excludedSessionIds.includes(session.id)
@@ -2450,26 +2086,18 @@ export function activate(context: vscode.ExtensionContext) {
             .sort((a, b) => compareAiSessionUpdatedAt(a.updatedAt, b.updatedAt))[0] || null;
     }
 
-    function prunePinnedAiSessionKeys(pinnedSessions: Set<string>, codexSessionResult: CodexSessionReadResult, kimiSessionResult: KimiSessionReadResult, claudeSessionResult: ClaudeSessionReadResult): Set<string> {
+    function prunePinnedAiSessionKeys(pinnedSessions: Set<string>, sessionResults: Record<AiSessionProviderId, AiSessionReadResult>): Set<string> {
         if (!pinnedSessions.size) {
             return pinnedSessions;
         }
 
         let availableSessionKeys = new Set<string>();
-        addAvailableAiSessionKeys(availableSessionKeys, 'codex', codexSessionResult.available, codexSessionResult.sessions);
-        addAvailableAiSessionKeys(availableSessionKeys, 'kimi', kimiSessionResult.available, kimiSessionResult.sessions);
-        addAvailableAiSessionKeys(availableSessionKeys, 'claude', claudeSessionResult.available, claudeSessionResult.sessions);
+        addAvailableAiSessionKeys(availableSessionKeys, sessionResults);
 
         let prunedPinnedSessions = new Set<string>();
         for (let sessionKey of pinnedSessions) {
             let providerId = getProviderIdFromAiSessionPinKey(sessionKey);
-            let providerUnavailable = providerId === 'codex'
-                ? !codexSessionResult.available
-                : providerId === 'kimi'
-                    ? !kimiSessionResult.available
-                    : providerId === 'claude'
-                        ? !claudeSessionResult.available
-                        : false;
+            let providerUnavailable = providerId ? !sessionResults[providerId]?.available : false;
             if (providerUnavailable || availableSessionKeys.has(sessionKey)) {
                 prunedPinnedSessions.add(sessionKey);
             }
@@ -2482,18 +2110,21 @@ export function activate(context: vscode.ExtensionContext) {
         return prunedPinnedSessions;
     }
 
-    function addAvailableAiSessionKeys(sessionKeys: Set<string>, providerId: AiSessionProviderId, available: boolean, sessions: CodexSession[]) {
-        if (!available) {
-            return;
-        }
+    function addAvailableAiSessionKeys(sessionKeys: Set<string>, sessionResults: Record<AiSessionProviderId, AiSessionReadResult>) {
+        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+            let sessionResult = sessionResults[providerId];
+            if (!sessionResult.available) {
+                continue;
+            }
 
-        for (let session of sessions) {
-            sessionKeys.add(getAiSessionPinKey(providerId, session.id));
+            for (let session of sessionResult.sessions) {
+                sessionKeys.add(getAiSessionPinKey(providerId, session.id));
+            }
         }
     }
 
     function getAiSessionPinKey(providerId: AiSessionProviderId, sessionId: string): string {
-        return `${providerId}:${sessionId}`;
+        return getAiSessionKey(providerId, sessionId);
     }
 
     function getAiSessionAliasesPath(): string {
@@ -2526,26 +2157,18 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
-    function pruneAiSessionAliases(aliases: Record<string, string>, codexSessionResult: CodexSessionReadResult, kimiSessionResult: KimiSessionReadResult, claudeSessionResult: ClaudeSessionReadResult): Record<string, string> {
+    function pruneAiSessionAliases(aliases: Record<string, string>, sessionResults: Record<AiSessionProviderId, AiSessionReadResult>): Record<string, string> {
         if (!Object.keys(aliases).length) {
             return aliases;
         }
 
         let availableSessionKeys = new Set<string>();
-        addAvailableAiSessionKeys(availableSessionKeys, 'codex', codexSessionResult.available, codexSessionResult.sessions);
-        addAvailableAiSessionKeys(availableSessionKeys, 'kimi', kimiSessionResult.available, kimiSessionResult.sessions);
-        addAvailableAiSessionKeys(availableSessionKeys, 'claude', claudeSessionResult.available, claudeSessionResult.sessions);
+        addAvailableAiSessionKeys(availableSessionKeys, sessionResults);
 
         let prunedAliases: Record<string, string> = {};
         for (let sessionKey of Object.keys(aliases)) {
             let providerId = getProviderIdFromAiSessionPinKey(sessionKey);
-            let providerUnavailable = providerId === 'codex'
-                ? !codexSessionResult.available
-                : providerId === 'kimi'
-                    ? !kimiSessionResult.available
-                    : providerId === 'claude'
-                        ? !claudeSessionResult.available
-                        : false;
+            let providerUnavailable = providerId ? !sessionResults[providerId]?.available : false;
             if (providerUnavailable || availableSessionKeys.has(sessionKey)) {
                 prunedAliases[sessionKey] = aliases[sessionKey];
             }
@@ -2605,13 +2228,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function getProviderIdFromAiSessionPinKey(sessionKey: string): AiSessionProviderId {
-        let separatorIndex = sessionKey.indexOf(':');
-        if (separatorIndex === -1) {
-            return null;
-        }
-
-        let providerId = sessionKey.substring(0, separatorIndex);
-        return isAiSessionProviderId(providerId) ? providerId : null;
+        return getAiSessionProviderIdFromKey(sessionKey, isAiSessionProviderId);
     }
 
     function getActiveAiSessionProviders(): Record<string, AiSessionProviderId> {
@@ -2629,30 +2246,14 @@ export function activate(context: vscode.ExtensionContext) {
             return selectedProvider;
         }
 
-        if (project.codexSessions?.length) {
-            return 'codex';
-        }
-
-        if (project.kimiSessions?.length) {
-            return 'kimi';
-        }
-
-        if (project.claudeSessions?.length) {
-            return 'claude';
+        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+            let sessionProvider = getRegisteredAiSessionProvider(providerId);
+            if (project[sessionProvider.projectSessionsKey]?.length) {
+                return providerId;
+            }
         }
 
         return 'codex';
-    }
-
-    function getAiSessionProviderLabel(providerId: AiSessionProviderId): string {
-        switch (providerId) {
-            case 'kimi':
-                return 'Kimi';
-            case 'claude':
-                return 'Claude';
-            default:
-                return 'Codex';
-        }
     }
 
     function getCodexOpenProjectCandidates(openProjects: Project[]): { project: Project, path: string }[] {
@@ -2685,30 +2286,12 @@ export function activate(context: vscode.ExtensionContext) {
         return candidates;
     }
 
-    function codexPathContainsSessionPath(projectPath: string, sessionPath: string): boolean {
-        if (!projectPath || !sessionPath) {
-            return false;
-        }
-
-        return sessionPath === projectPath || sessionPath.startsWith(`${projectPath}/`);
-    }
-
     function normalizeCodexComparablePath(projectPath: string): string {
         if (!projectPath) {
             return "";
         }
 
-        return decodeProjectPath(projectPath)
-            .replace(/\\/g, '/')
-            .replace(/\/+$/g, '');
-    }
-
-    function decodeProjectPath(projectPath: string): string {
-        try {
-            return decodeURIComponent(projectPath);
-        } catch (e) {
-            return projectPath;
-        }
+        return normalizeAiSessionComparablePath(projectPath);
     }
 
     function getExpandedCodexSessionProjects(): Set<string> {
@@ -2720,134 +2303,45 @@ export function activate(context: vscode.ExtensionContext) {
         return normalizeCodexComparablePath(getProjectPathPart(project.path)) || project.id;
     }
 
-    function getCodexSessionTerminalCwd(session: CodexSession, project: Project): string {
-        return session.cwd || normalizeCodexComparablePath(getProjectPathPart(project.path)) || null;
-    }
-
-    function getCodexSessionTerminal(session: CodexSession): CodexSessionTerminalEntry {
-        return getCodexSessionTerminalById(session.id, session);
-    }
-
-    function getCodexSessionTerminalById(sessionId: string, session: CodexSession = null): CodexSessionTerminalEntry {
-        let trackedTerminal = codexSessionTerminals.get(sessionId);
-        if (trackedTerminal) {
-            return trackedTerminal;
-        }
-
-        let terminal = vscode.window.terminals.find(candidate => terminalMatchesCodexSession(candidate, sessionId));
-        if (!terminal) {
-            return null;
-        }
-
-        let entry = {
-            terminal,
-            markerPath: getCodexSessionTerminalMarkerPath(sessionId),
-        };
-        codexSessionTerminals.set(sessionId, entry);
-
-        return entry;
-    }
-
-    function terminalMatchesCodexSession(terminal: vscode.Terminal, sessionId: string): boolean {
-        let creationOptions = terminal.creationOptions;
-        if ('env' in creationOptions && creationOptions.env?.[CODEX_SESSION_TERMINAL_ENV] === sessionId) {
-            return true;
-        }
-
-        return terminal.name.startsWith(`${CODEX_SESSION_TERMINAL_NAME_PREFIX}: `)
-            && terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`);
-    }
-
-    function getCodexSessionTerminalName(session: CodexSession): string {
-        return `${CODEX_SESSION_TERMINAL_NAME_PREFIX}: ${session.name || session.id} [${session.id.substring(0, 8)}]`;
-    }
-
-    function getKimiSessionTerminalCwd(session: CodexSession, project: Project): string {
-        return session.workDir || session.cwd || normalizeCodexComparablePath(getProjectPathPart(project.path)) || null;
-    }
-
     function getOpenProjectTerminalCwd(project: Project): string {
         return normalizeCodexComparablePath(getProjectPathPart(project.path)) || null;
     }
 
-    function getKimiSessionTerminal(session: CodexSession): CodexSessionTerminalEntry {
-        return getKimiSessionTerminalById(session.id, session);
+    function getProjectAiSessions(project: Project, providerId: AiSessionProviderId): CodexSession[] {
+        let sessionProvider = getRegisteredAiSessionProvider(providerId);
+        return sessionProvider ? project[sessionProvider.projectSessionsKey] || [] : [];
     }
 
-    function getKimiSessionTerminalById(sessionId: string, session: CodexSession = null): CodexSessionTerminalEntry {
-        let trackedTerminal = kimiSessionTerminals.get(sessionId);
-        if (trackedTerminal) {
-            return trackedTerminal;
+    function getAiSessionTerminalCwd(providerId: AiSessionProviderId, session: CodexSession, project: Project): string {
+        let sessionCwd = getAiSessionComparableCwd(providerId, session);
+        if (sessionCwd) {
+            return sessionCwd;
         }
 
-        let terminal = vscode.window.terminals.find(candidate => terminalMatchesKimiSession(candidate, sessionId));
-        if (!terminal) {
-            return null;
+        return normalizeCodexComparablePath(getProjectPathPart(project.path)) || null;
+    }
+
+    function getAiSessionComparableCwd(providerId: AiSessionProviderId, session: CodexSession): string {
+        let sessionProvider = getRegisteredAiSessionProvider(providerId);
+        if (!sessionProvider) {
+            return session.workDir || session.cwd || null;
         }
 
-        let entry = {
-            terminal,
-            markerPath: getKimiSessionTerminalMarkerPath(sessionId),
-        };
-        kimiSessionTerminals.set(sessionId, entry);
-
-        return entry;
-    }
-
-    function terminalMatchesKimiSession(terminal: vscode.Terminal, sessionId: string): boolean {
-        let creationOptions = terminal.creationOptions;
-        if ('env' in creationOptions && creationOptions.env?.[KIMI_SESSION_TERMINAL_ENV] === sessionId) {
-            return true;
+        for (let field of sessionProvider.terminalCwdFields) {
+            if (session[field]) {
+                return session[field];
+            }
         }
 
-        return terminal.name.startsWith(`${KIMI_SESSION_TERMINAL_NAME_PREFIX}: `)
-            && terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`);
+        return null;
     }
 
-    function getKimiSessionTerminalName(session: CodexSession): string {
-        return `${KIMI_SESSION_TERMINAL_NAME_PREFIX}: ${session.name || session.id} [${session.id.substring(0, 8)}]`;
+    function getAiSessionTerminal(providerId: AiSessionProviderId, session: CodexSession): TerminalEntry {
+        return aiSessionTerminalService.get(providerId, session);
     }
 
-    function getClaudeSessionTerminalCwd(session: CodexSession, project: Project): string {
-        return session.workDir || session.cwd || normalizeCodexComparablePath(getProjectPathPart(project.path)) || null;
-    }
-
-    function getClaudeSessionTerminal(session: CodexSession): CodexSessionTerminalEntry {
-        return getClaudeSessionTerminalById(session.id, session);
-    }
-
-    function getClaudeSessionTerminalById(sessionId: string, session: CodexSession = null): CodexSessionTerminalEntry {
-        let trackedTerminal = claudeSessionTerminals.get(sessionId);
-        if (trackedTerminal) {
-            return trackedTerminal;
-        }
-
-        let terminal = vscode.window.terminals.find(candidate => terminalMatchesClaudeSession(candidate, sessionId));
-        if (!terminal) {
-            return null;
-        }
-
-        let entry = {
-            terminal,
-            markerPath: getClaudeSessionTerminalMarkerPath(sessionId),
-        };
-        claudeSessionTerminals.set(sessionId, entry);
-
-        return entry;
-    }
-
-    function terminalMatchesClaudeSession(terminal: vscode.Terminal, sessionId: string): boolean {
-        let creationOptions = terminal.creationOptions;
-        if ('env' in creationOptions && creationOptions.env?.[CLAUDE_SESSION_TERMINAL_ENV] === sessionId) {
-            return true;
-        }
-
-        return terminal.name.startsWith(`${CLAUDE_SESSION_TERMINAL_NAME_PREFIX}: `)
-            && terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`);
-    }
-
-    function getClaudeSessionTerminalName(session: CodexSession): string {
-        return `${CLAUDE_SESSION_TERMINAL_NAME_PREFIX}: ${session.name || session.id} [${session.id.substring(0, 8)}]`;
+    function getAiSessionTerminalName(providerId: AiSessionProviderId, session: CodexSession): string {
+        return aiSessionTerminalService.getTerminalName(providerId, session);
     }
 
     function getUsableTerminalCwd(cwd: string): string {
@@ -2862,326 +2356,12 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
-    async function sendCodexResumeCommand(terminal: vscode.Terminal, sessionId: string, cwd: string, markerPath: string) {
-        deleteCodexSessionTerminalMarker({ terminal, markerPath });
-        await waitForTerminalReady(terminal);
-        terminal.sendText(buildCodexResumeCommand(sessionId, cwd, markerPath));
-    }
-
-    async function sendKimiResumeCommand(terminal: vscode.Terminal, sessionId: string, cwd: string, markerPath: string) {
-        deleteKimiSessionTerminalMarker({ terminal, markerPath });
-        await waitForTerminalReady(terminal);
-        terminal.sendText(buildKimiResumeCommand(sessionId, cwd, markerPath));
-    }
-
-    async function sendClaudeResumeCommand(terminal: vscode.Terminal, sessionId: string, cwd: string, markerPath: string) {
-        deleteClaudeSessionTerminalMarker({ terminal, markerPath });
-        await waitForTerminalReady(terminal);
-        terminal.sendText(buildClaudeResumeCommand(sessionId, cwd, markerPath));
-    }
-
-    async function waitForTerminalReady(terminal: vscode.Terminal) {
-        try {
-            await terminal.processId;
-            await new Promise(resolve => setTimeout(resolve, CODEX_SESSION_TERMINAL_STARTUP_DELAY_MS));
-        } catch (e) {
-            // Best effort only; sendText can still work if VS Code cannot resolve the process id.
-        }
-    }
-
-    function isCodexSessionTerminalComplete(entry: CodexSessionTerminalEntry): boolean {
-        return existsSync(entry.markerPath);
-    }
-
-    function isKimiSessionTerminalComplete(entry: CodexSessionTerminalEntry): boolean {
-        return existsSync(entry.markerPath);
-    }
-
-    function isClaudeSessionTerminalComplete(entry: CodexSessionTerminalEntry): boolean {
-        return existsSync(entry.markerPath);
-    }
-
-    function getCodexSessionTerminalMarkerPath(sessionId: string): string {
-        let markerDir = path.join(context.globalStoragePath, 'codex-session-terminals');
-        try {
-            mkdirSync(markerDir, { recursive: true });
-        } catch (e) {
-            // Fall through; the terminal command will still run without relying on the marker.
-        }
-
-        return path.join(markerDir, `${sessionId}.done`);
-    }
-
-    function getKimiSessionTerminalMarkerPath(sessionId: string): string {
-        let markerDir = path.join(context.globalStoragePath, 'kimi-session-terminals');
-        try {
-            mkdirSync(markerDir, { recursive: true });
-        } catch (e) {
-            // Fall through; the terminal command will still run without relying on the marker.
-        }
-
-        return path.join(markerDir, `${sessionId}.done`);
-    }
-
-    function getClaudeSessionTerminalMarkerPath(sessionId: string): string {
-        let markerDir = path.join(context.globalStoragePath, 'claude-session-terminals');
-        try {
-            mkdirSync(markerDir, { recursive: true });
-        } catch (e) {
-            // Fall through; the terminal command will still run without relying on the marker.
-        }
-
-        return path.join(markerDir, `${sessionId}.done`);
+    function getAiSessionTerminalMarkerPath(providerId: AiSessionProviderId, sessionId: string): string {
+        return aiSessionTerminalService.getMarkerPath(providerId, sessionId);
     }
 
     function getPendingAiSessionTerminalMarkerPath(providerId: AiSessionProviderId): string {
-        let markerDir = path.join(context.globalStoragePath, 'pending-ai-session-terminals');
-        try {
-            mkdirSync(markerDir, { recursive: true });
-        } catch (e) {
-            // Fall through; the terminal command will still run without relying on the marker.
-        }
-
-        let uniqueId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        return path.join(markerDir, `${providerId}-${uniqueId}.done`);
-    }
-
-    function deleteCodexSessionTerminalMarker(entry: CodexSessionTerminalEntry) {
-        deleteAiSessionTerminalMarker(entry.markerPath);
-    }
-
-    function deleteKimiSessionTerminalMarker(entry: CodexSessionTerminalEntry) {
-        deleteAiSessionTerminalMarker(entry.markerPath);
-    }
-
-    function deleteClaudeSessionTerminalMarker(entry: CodexSessionTerminalEntry) {
-        deleteAiSessionTerminalMarker(entry.markerPath);
-    }
-
-    function deleteAiSessionTerminalMarker(markerPath: string) {
-        try {
-            if (markerPath && existsSync(markerPath)) {
-                unlinkSync(markerPath);
-            }
-        } catch (e) {
-            // Ignore marker cleanup failures; they only affect best-effort terminal reuse.
-        }
-    }
-
-    function buildCodexResumeCommand(sessionId: string, cwd: string, markerPath: string = null): string {
-        if (process.platform === 'win32' && markerPath) {
-            return buildWindowsCodexResumeCommand(sessionId, cwd, markerPath);
-        }
-
-        let quotedSessionId = quoteShellArg(sessionId);
-        let resumeCommand = cwd
-            ? `codex resume --cd ${quoteShellArg(cwd)} ${quotedSessionId}`
-            : `codex resume ${quotedSessionId}`;
-
-        if (!markerPath) {
-            return resumeCommand;
-        }
-
-        let markerArg = quoteShellArg(markerPath);
-        return `sh -lc ${quoteShellArg(`rm -f ${markerArg}; ${resumeCommand}; : > ${markerArg}`)}`;
-    }
-
-    function buildWindowsCodexResumeCommand(sessionId: string, cwd: string, markerPath: string): string {
-        let resumeCommand = cwd
-            ? `codex resume --cd ${quotePowerShellArg(cwd)} ${quotePowerShellArg(sessionId)}`
-            : `codex resume ${quotePowerShellArg(sessionId)}`;
-        let script = [
-            `Remove-Item -LiteralPath ${quotePowerShellArg(markerPath)} -ErrorAction SilentlyContinue`,
-            resumeCommand,
-            `New-Item -ItemType File -Force -Path ${quotePowerShellArg(markerPath)} | Out-Null`,
-        ].join('; ');
-
-        return `powershell -NoProfile -ExecutionPolicy Bypass -Command ${quoteWindowsCommandArg(script)}`;
-    }
-
-    function buildCodexNewSessionCommand(cwd: string, prompt: string = null, markerPath: string = null): string {
-        if (process.platform === 'win32') {
-            return buildWindowsCodexNewSessionCommand(cwd, prompt, markerPath);
-        }
-
-        let promptArg = prompt ? ` ${quoteShellArg(prompt)}` : '';
-        let newSessionCommand = cwd
-            ? `codex --cd ${quoteShellArg(cwd)}${promptArg}`
-            : `codex${promptArg}`;
-
-        if (!markerPath) {
-            return newSessionCommand;
-        }
-
-        let markerArg = quoteShellArg(markerPath);
-        return `sh -lc ${quoteShellArg(`rm -f ${markerArg}; ${newSessionCommand}; : > ${markerArg}`)}`;
-    }
-
-    function buildWindowsCodexNewSessionCommand(cwd: string, prompt: string = null, markerPath: string = null): string {
-        let promptArg = prompt ? ` ${quotePowerShellArg(prompt)}` : '';
-        let command = cwd
-            ? `codex --cd ${quotePowerShellArg(cwd)}${promptArg}`
-            : `codex${promptArg}`;
-
-        if (markerPath) {
-            command = [
-                `Remove-Item -LiteralPath ${quotePowerShellArg(markerPath)} -ErrorAction SilentlyContinue`,
-                command,
-                `New-Item -ItemType File -Force -Path ${quotePowerShellArg(markerPath)} | Out-Null`,
-            ].join('; ');
-        }
-
-        return `powershell -NoProfile -ExecutionPolicy Bypass -Command ${quoteWindowsCommandArg(command)}`;
-    }
-
-    function buildKimiResumeCommand(sessionId: string, cwd: string, markerPath: string = null): string {
-        if (process.platform === 'win32' && markerPath) {
-            return buildWindowsKimiResumeCommand(sessionId, cwd, markerPath);
-        }
-
-        let resumeCommand = cwd
-            ? `kimi --work-dir ${quoteShellArg(cwd)} --resume ${quoteShellArg(sessionId)}`
-            : `kimi --resume ${quoteShellArg(sessionId)}`;
-
-        if (!markerPath) {
-            return resumeCommand;
-        }
-
-        let markerArg = quoteShellArg(markerPath);
-        return `sh -lc ${quoteShellArg(`rm -f ${markerArg}; ${resumeCommand}; : > ${markerArg}`)}`;
-    }
-
-    function buildWindowsKimiResumeCommand(sessionId: string, cwd: string, markerPath: string): string {
-        let resumeCommand = cwd
-            ? `kimi --work-dir ${quotePowerShellArg(cwd)} --resume ${quotePowerShellArg(sessionId)}`
-            : `kimi --resume ${quotePowerShellArg(sessionId)}`;
-        let script = [
-            `Remove-Item -LiteralPath ${quotePowerShellArg(markerPath)} -ErrorAction SilentlyContinue`,
-            resumeCommand,
-            `New-Item -ItemType File -Force -Path ${quotePowerShellArg(markerPath)} | Out-Null`,
-        ].join('; ');
-
-        return `powershell -NoProfile -ExecutionPolicy Bypass -Command ${quoteWindowsCommandArg(script)}`;
-    }
-
-    function buildKimiNewSessionCommand(cwd: string, prompt: string = null, markerPath: string = null): string {
-        if (process.platform === 'win32') {
-            return buildWindowsKimiNewSessionCommand(cwd, prompt, markerPath);
-        }
-
-        let promptArg = prompt ? ` --prompt ${quoteShellArg(prompt)}` : '';
-        let newSessionCommand = cwd
-            ? `kimi --work-dir ${quoteShellArg(cwd)}${promptArg}`
-            : `kimi${promptArg}`;
-
-        if (!markerPath) {
-            return newSessionCommand;
-        }
-
-        let markerArg = quoteShellArg(markerPath);
-        return `sh -lc ${quoteShellArg(`rm -f ${markerArg}; ${newSessionCommand}; : > ${markerArg}`)}`;
-    }
-
-    function buildWindowsKimiNewSessionCommand(cwd: string, prompt: string = null, markerPath: string = null): string {
-        let promptArg = prompt ? ` --prompt ${quotePowerShellArg(prompt)}` : '';
-        let command = cwd
-            ? `kimi --work-dir ${quotePowerShellArg(cwd)}${promptArg}`
-            : `kimi${promptArg}`;
-
-        if (markerPath) {
-            command = [
-                `Remove-Item -LiteralPath ${quotePowerShellArg(markerPath)} -ErrorAction SilentlyContinue`,
-                command,
-                `New-Item -ItemType File -Force -Path ${quotePowerShellArg(markerPath)} | Out-Null`,
-            ].join('; ');
-        }
-
-        return `powershell -NoProfile -ExecutionPolicy Bypass -Command ${quoteWindowsCommandArg(command)}`;
-    }
-
-    function buildClaudeResumeCommand(sessionId: string, cwd: string, markerPath: string = null): string {
-        if (process.platform === 'win32' && markerPath) {
-            return buildWindowsClaudeResumeCommand(sessionId, cwd, markerPath);
-        }
-
-        let resumeCommand = cwd
-            ? `cd ${quoteShellArg(cwd)} && claude --resume ${quoteShellArg(sessionId)}`
-            : `claude --resume ${quoteShellArg(sessionId)}`;
-
-        if (!markerPath) {
-            return resumeCommand;
-        }
-
-        let markerArg = quoteShellArg(markerPath);
-        return `sh -lc ${quoteShellArg(`rm -f ${markerArg}; ${resumeCommand}; : > ${markerArg}`)}`;
-    }
-
-    function buildWindowsClaudeResumeCommand(sessionId: string, cwd: string, markerPath: string): string {
-        let resumeCommand = cwd
-            ? `Set-Location -LiteralPath ${quotePowerShellArg(cwd)}; claude --resume ${quotePowerShellArg(sessionId)}`
-            : `claude --resume ${quotePowerShellArg(sessionId)}`;
-        let script = [
-            `Remove-Item -LiteralPath ${quotePowerShellArg(markerPath)} -ErrorAction SilentlyContinue`,
-            resumeCommand,
-            `New-Item -ItemType File -Force -Path ${quotePowerShellArg(markerPath)} | Out-Null`,
-        ].join('; ');
-
-        return `powershell -NoProfile -ExecutionPolicy Bypass -Command ${quoteWindowsCommandArg(script)}`;
-    }
-
-    function buildClaudeNewSessionCommand(cwd: string, title: string = null, markerPath: string = null): string {
-        if (process.platform === 'win32') {
-            return buildWindowsClaudeNewSessionCommand(cwd, title, markerPath);
-        }
-
-        let titleArg = title ? ` --name ${quoteShellArg(title)}` : '';
-        let newSessionCommand = cwd
-            ? `cd ${quoteShellArg(cwd)} && claude${titleArg}`
-            : `claude${titleArg}`;
-
-        if (!markerPath) {
-            return newSessionCommand;
-        }
-
-        let markerArg = quoteShellArg(markerPath);
-        return `sh -lc ${quoteShellArg(`rm -f ${markerArg}; ${newSessionCommand}; : > ${markerArg}`)}`;
-    }
-
-    function buildWindowsClaudeNewSessionCommand(cwd: string, title: string = null, markerPath: string = null): string {
-        let titleArg = title ? ` --name ${quotePowerShellArg(title)}` : '';
-        let command = cwd
-            ? `Set-Location -LiteralPath ${quotePowerShellArg(cwd)}; claude${titleArg}`
-            : `claude${titleArg}`;
-
-        if (markerPath) {
-            command = [
-                `Remove-Item -LiteralPath ${quotePowerShellArg(markerPath)} -ErrorAction SilentlyContinue`,
-                command,
-                `New-Item -ItemType File -Force -Path ${quotePowerShellArg(markerPath)} | Out-Null`,
-            ].join('; ');
-        }
-
-        return `powershell -NoProfile -ExecutionPolicy Bypass -Command ${quoteWindowsCommandArg(command)}`;
-    }
-
-    function sanitizeTerminalLineInput(value: string): string {
-        return String(value || '').replace(/[\r\n]+/g, ' ').trim();
-    }
-
-    function quoteShellArg(value: string): string {
-        if (process.platform === 'win32') {
-            return `"${String(value).replace(/"/g, '\\"')}"`;
-        }
-
-        return `'${String(value).replace(/'/g, `'\\''`)}'`;
-    }
-
-    function quotePowerShellArg(value: string): string {
-        return `'${String(value).replace(/'/g, `''`)}'`;
-    }
-
-    function quoteWindowsCommandArg(value: string): string {
-        return `"${String(value).replace(/"/g, '\\"')}"`;
+        return aiSessionTerminalService.getPendingMarkerPath(providerId);
     }
 
     function findSavedProjectForOpenProject(uri: vscode.Uri): Project {
