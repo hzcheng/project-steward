@@ -176,6 +176,7 @@ function initProjects() {
     function toggleCodexSessions(projectDiv, projectId) {
         var expanded = !projectDiv.hasAttribute("data-codex-expanded");
         projectDiv.toggleAttribute("data-codex-expanded", expanded);
+        updateStickyGroupHeaderOffset();
 
         window.vscode.postMessage({
             type: 'toggle-codex-sessions',
@@ -446,16 +447,11 @@ function initProjects() {
     }
 
     function toggleAllGroups() {
-        var groups = [...document.querySelectorAll('.group[data-group-id]')];
+        var groups = [...document.querySelectorAll('.groups-wrapper > .group[data-group-id]')];
         var shouldCollapse = groups.some(group => !group.classList.contains("collapsed"));
 
         groups.forEach(group => group.classList.toggle("collapsed", shouldCollapse));
         updateToggleAllGroupsButton(shouldCollapse);
-
-        window.vscode.postMessage({
-            type: 'toggle-all-groups',
-            collapsed: shouldCollapse,
-        });
     }
 
     function onMouseEvent(e) {
@@ -520,6 +516,26 @@ function initProjects() {
         selectAiSessionProvider(projectId, providerSelect.value);
     }
 
+    function updateStickyGroupHeaderOffset() {
+        window.requestAnimationFrame(() => {
+            var stickyHeader = document.querySelector('.steward-sticky-header');
+            var offset = stickyHeader ? Math.ceil(stickyHeader.getBoundingClientRect().height) : 0;
+            document.body.style.setProperty('--steward-sticky-header-height', offset + 'px');
+        });
+    }
+
+    function observeStickyGroupHeaderOffset() {
+        updateStickyGroupHeaderOffset();
+        window.addEventListener('resize', updateStickyGroupHeaderOffset);
+
+        var stickyHeader = document.querySelector('.steward-sticky-header');
+        if (stickyHeader && typeof ResizeObserver !== 'undefined') {
+            var observer = new ResizeObserver(updateStickyGroupHeaderOffset);
+            observer.observe(stickyHeader);
+            window.__stewardStickyHeaderObserver = observer;
+        }
+    }
+
     // Middle mouse button requires mousedown, as it does not fire click event when scroll option is available.
     document.addEventListener('click', (e) => {
         if (e.button !== 1) {
@@ -563,4 +579,6 @@ function initProjects() {
             closeContextMenus();
         }
     });
+
+    observeStickyGroupHeaderOffset();
 }

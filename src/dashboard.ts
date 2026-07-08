@@ -535,7 +535,7 @@ export function activate(context: vscode.ExtensionContext) {
                 await collapseGroup(groupId, e.collapsed as boolean);
                 break;
             case 'toggle-all-groups':
-                await setAllGroupsCollapsed(Boolean(e.collapsed));
+                // Collapse-all is a per-webview convenience action.
                 break;
         }
     }
@@ -678,16 +678,6 @@ export function activate(context: vscode.ExtensionContext) {
         await projectService.updateGroup(groupId, group);
 
         //showSteward(); // No need to repaint for that
-    }
-
-    async function setAllGroupsCollapsed(collapsed: boolean) {
-        var groups = projectService.getGroups();
-        groups.forEach(group => group.collapsed = collapsed);
-        await context.globalState.update(FAVORITES_GROUP_COLLAPSED_KEY, collapsed);
-        await context.globalState.update(OPEN_PROJECTS_GROUP_COLLAPSED_KEY, collapsed);
-        await projectService.saveGroups(groups);
-
-        refreshAfterMutation();
     }
 
     async function toggleCodexSessions(projectId: string, expanded: boolean) {
