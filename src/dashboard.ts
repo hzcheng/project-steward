@@ -4,7 +4,6 @@ import * as path from 'path';
 import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession, AiSessionProviderId, isAiSessionProviderId } from './models';
 import { getAiSessionsDiv, getProjectSearchText, getStewardContent } from './webview/webviewContent';
 import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
-import { execSync } from 'child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 
 import ColorService from './services/colorService';
@@ -20,6 +19,7 @@ import type { AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessio
 import { getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
 import { getLastPartOfPath, getOpenProjectUri as resolveOpenProjectUri, getOpenProjectsFromWorkspace, getWorkspaceUri as resolveWorkspaceUri, getWorkspaceUris as resolveWorkspaceUris, isUriString, parsePathAsUri } from './projects/openProjectService';
 import RemoteProjectResolver from './projects/remoteProjectResolver';
+import GitRepositoryDetector from './projects/gitRepositoryDetector';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -92,6 +92,7 @@ export function activate(context: vscode.ExtensionContext) {
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
     const fileService = new FileService(context);
+    const gitRepositoryDetector = new GitRepositoryDetector();
     const codexSessionService = new CodexSessionService();
     const kimiSessionService = new KimiSessionService();
     const claudeSessionService = new ClaudeSessionService();
@@ -867,7 +868,10 @@ export function activate(context: vscode.ExtensionContext) {
             cwdWarningMessage: `Could not open the ${sessionProvider.label} terminal at the project directory. Starting without a working directory.`,
             logError,
         }).terminal;
-        let existingSessionIds = getAiSessionIdsForCwd(providerId, sessionProvider.service.getSessions(true), pendingTerminalCwd);
+        let existingSessionIds = getAiSessionIdsForCwd(providerId, sessionProvider.service.getSessions({
+            forceRefresh: true,
+            candidatePaths: [pendingTerminalCwd],
+        }), pendingTerminalCwd);
         let createdAt = new Date().toISOString();
         let markerPath = getPendingAiSessionTerminalMarkerPath(providerId);
         trackPendingAiSessionTerminal(providerId, terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds, fields.title);
@@ -1844,17 +1848,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function isFolderGitRepo(fPath: string) {
-        if (isUriString(fPath)) {
-            return false;
-        }
-
-        try {
-            fPath = lstatSync(fPath).isDirectory() ? fPath : path.dirname(fPath);
-            var test = execSync(`cd ${fPath} && git rev-parse --is-inside-work-tree`, { encoding: 'utf8' });
-            return !!test;
-        } catch (e) {
-            return false;
-        }
+        return gitRepositoryDetector.isGitRepositoryPath(fPath);
     }
 
     function getGroupsTempFilePath(): string {
@@ -1884,7 +1878,7 @@ export function activate(context: vscode.ExtensionContext) {
             return openProjects;
         }
 
-        let sessionResults = getAiSessionResults();
+        let sessionResults = getAiSessionResults(openProjects);
         resolvePendingAiSessionTerminals(sessionResults);
         let assignments = getAiSessionAssignments(openProjects, sessionResults);
         let expandedProjects = getExpandedCodexSessionProjects();
@@ -1949,10 +1943,11 @@ export function activate(context: vscode.ExtensionContext) {
         };
     }
 
-    function getAiSessionResults(): Record<AiSessionProviderId, AiSessionReadResult> {
+    function getAiSessionResults(openProjects: Project[] = []): Record<AiSessionProviderId, AiSessionReadResult> {
         let results = {} as Record<AiSessionProviderId, AiSessionReadResult>;
+        let candidatePaths = getAiSessionCandidatePaths(openProjects);
         for (let providerId of AI_SESSION_PROVIDER_IDS) {
-            results[providerId] = getRegisteredAiSessionProvider(providerId).service.getSessions();
+            results[providerId] = getRegisteredAiSessionProvider(providerId).service.getSessions({ candidatePaths });
         }
 
         return results;
@@ -2189,11 +2184,8 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function getAiSessionOriginalName(providerId: AiSessionProviderId, sessionId: string): string {
-        let sessionResult = providerId === 'kimi'
-            ? kimiSessionService.getSessions()
-            : providerId === 'claude'
-                ? claudeSessionService.getSessions()
-                : codexSessionService.getSessions();
+        let sessionProvider = getRegisteredAiSessionProvider(providerId);
+        let sessionResult = sessionProvider.service.getSessions();
         let session = sessionResult.sessions.find(candidate => candidate.id === sessionId);
 
         return session?.name || sessionId;
@@ -2260,6 +2252,14 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         return candidates;
+    }
+
+    function getAiSessionCandidatePaths(openProjects: Project[]): string[] {
+        if (!openProjects.length) {
+            return [];
+        }
+
+        return getCodexOpenProjectCandidates(openProjects).map(candidate => candidate.path);
     }
 
     function normalizeCodexComparablePath(projectPath: string): string {

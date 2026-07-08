@@ -5,6 +5,8 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { CodexSession } from '../models';
+import { filterAiSessionsByCandidatePaths, normalizeAiSessionCandidatePaths } from '../aiSessions/sessionHelpers';
+import type { AiSessionQueryOptions } from '../aiSessions/types';
 import { Disposable } from './codexSessionService';
 
 interface ClaudeSessionEvent {
@@ -32,22 +34,25 @@ export default class ClaudeSessionService {
     private sessionCache = new Map<string, { signature: string; session: CodexSession }>();
     private readonly cacheTtlMs = 5000;
     private readonly changePollIntervalMs = 3000;
+    private readonly cwdScanChunkBytes = 64 * 1024;
+    private readonly sessionSampleBytes = 128 * 1024;
 
-    getSessions(forceRefresh: boolean = false): ClaudeSessionReadResult {
+    getSessions(options: boolean | AiSessionQueryOptions = false): ClaudeSessionReadResult {
+        let { forceRefresh, candidatePaths } = this.getQueryOptions(options);
         let now = Date.now();
         if (!forceRefresh && this.cachedResult && now - this.cachedAt < this.cacheTtlMs) {
-            return this.cachedResult;
+            return this.filterResult(this.cachedResult, candidatePaths);
         }
 
         let claudeHome = this.getClaudeHome();
         if (!claudeHome) {
-            return this.cacheResult({ available: false, sessions: [] });
+            return this.filterResult(this.cacheResult({ available: false, sessions: [] }), candidatePaths);
         }
 
         let projectRoot = path.join(claudeHome, 'projects');
         let sessionFiles = this.getSessionFiles(projectRoot);
         if (!sessionFiles.length) {
-            return this.cacheResult({ available: false, sessions: [] });
+            return this.filterResult(this.cacheResult({ available: false, sessions: [] }), candidatePaths);
         }
 
         let sessions = sessionFiles
@@ -55,7 +60,7 @@ export default class ClaudeSessionService {
             .filter(session => !!session)
             .sort((a, b) => this.compareUpdatedAt(b.updatedAt, a.updatedAt));
 
-        return this.cacheResult({ available: true, sessions });
+        return this.filterResult(this.cacheResult({ available: true, sessions }), candidatePaths);
     }
 
     archiveSession(sessionId: string): boolean {
@@ -113,6 +118,21 @@ export default class ClaudeSessionService {
         this.cachedAt = Date.now();
 
         return result;
+    }
+
+    private getQueryOptions(options: boolean | AiSessionQueryOptions): { forceRefresh: boolean; candidatePaths: string[] } {
+        if (typeof options === 'boolean') {
+            return { forceRefresh: options, candidatePaths: [] };
+        }
+
+        return {
+            forceRefresh: Boolean(options?.forceRefresh),
+            candidatePaths: normalizeAiSessionCandidatePaths(options?.candidatePaths || []),
+        };
+    }
+
+    private filterResult(result: ClaudeSessionReadResult, candidatePaths: string[]): ClaudeSessionReadResult {
+        return filterAiSessionsByCandidatePaths(result, candidatePaths, session => session.workDir || session.cwd);
     }
 
     private getClaudeHome(): string {
@@ -178,14 +198,14 @@ export default class ClaudeSessionService {
             return null;
         }
 
-        let cwd: string = null;
+        let cwd: string = this.readSessionCwd(sessionFile, sessionId);
         let updatedAt: string = new Date(stat.mtimeMs).toISOString();
         let customTitle: string = null;
         let aiTitle: string = null;
         let promptTitle: string = null;
 
         try {
-            let lines = fs.readFileSync(sessionFile, 'utf8').split(/\r?\n/g);
+            let lines = this.readSessionLines(sessionFile, stat);
             for (let line of lines) {
                 if (!line.trim()) {
                     continue;
@@ -201,8 +221,9 @@ export default class ClaudeSessionService {
                 if (event.sessionId && event.sessionId !== sessionId) {
                     continue;
                 }
-                if (event.cwd) {
-                    cwd = this.normalizePath(event.cwd);
+                let eventCwd = this.getEventCwd(event, sessionId);
+                if (eventCwd) {
+                    cwd = eventCwd;
                 }
                 if (event.timestamp && !isNaN(Date.parse(event.timestamp))) {
                     updatedAt = event.timestamp;
@@ -237,6 +258,95 @@ export default class ClaudeSessionService {
         this.sessionCache.set(sessionFile, { signature: cacheSignature, session });
 
         return session;
+    }
+
+    private readSessionCwd(sessionFile: string, sessionId: string): string {
+        let fd: number = null;
+        let carry = '';
+        try {
+            fd = fs.openSync(sessionFile, 'r');
+            let buffer = Buffer.alloc(this.cwdScanChunkBytes);
+            let bytesRead = 0;
+
+            do {
+                bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+                if (bytesRead <= 0) {
+                    break;
+                }
+
+                let chunk = carry + buffer.slice(0, bytesRead).toString('utf8');
+                let lines = chunk.split(/\r?\n/g);
+                carry = lines.pop() || '';
+
+                for (let line of lines) {
+                    let cwd = this.readCwdFromJsonLine(line, sessionId);
+                    if (cwd) {
+                        return cwd;
+                    }
+                }
+            } while (bytesRead === buffer.length);
+
+            return this.readCwdFromJsonLine(carry, sessionId);
+        } catch (e) {
+            return null;
+        } finally {
+            if (fd !== null) {
+                try {
+                    fs.closeSync(fd);
+                } catch (e) {
+                    // Ignore close failures for best-effort cwd reads.
+                }
+            }
+        }
+    }
+
+    private readCwdFromJsonLine(line: string, sessionId: string): string {
+        if (!line.trim()) {
+            return null;
+        }
+
+        try {
+            return this.getEventCwd(JSON.parse(line), sessionId);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    private getEventCwd(event: ClaudeSessionEvent, sessionId: string): string {
+        if (!event || (event.sessionId && event.sessionId !== sessionId) || !event.cwd) {
+            return null;
+        }
+
+        return this.normalizePath(event.cwd);
+    }
+
+    private readSessionLines(sessionFile: string, stat: fs.Stats): string[] {
+        if (stat.size <= this.sessionSampleBytes * 2) {
+            return fs.readFileSync(sessionFile, 'utf8').split(/\r?\n/g);
+        }
+
+        let fd: number = null;
+        try {
+            fd = fs.openSync(sessionFile, 'r');
+            let firstBuffer = Buffer.alloc(this.sessionSampleBytes);
+            let lastBuffer = Buffer.alloc(this.sessionSampleBytes);
+            let firstBytes = fs.readSync(fd, firstBuffer, 0, firstBuffer.length, 0);
+            let lastOffset = Math.max(stat.size - this.sessionSampleBytes, 0);
+            let lastBytes = fs.readSync(fd, lastBuffer, 0, lastBuffer.length, lastOffset);
+
+            return [
+                ...firstBuffer.slice(0, firstBytes).toString('utf8').split(/\r?\n/g),
+                ...lastBuffer.slice(0, lastBytes).toString('utf8').split(/\r?\n/g),
+            ];
+        } finally {
+            if (fd !== null) {
+                try {
+                    fs.closeSync(fd);
+                } catch (e) {
+                    // Ignore close failures for best-effort session reads.
+                }
+            }
+        }
     }
 
     private getMessageText(event: ClaudeSessionEvent): string {

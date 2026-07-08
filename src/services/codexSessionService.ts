@@ -5,6 +5,8 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { CodexSession } from '../models';
+import { filterAiSessionsByCandidatePaths, normalizeAiSessionCandidatePaths } from '../aiSessions/sessionHelpers';
+import type { AiSessionQueryOptions } from '../aiSessions/types';
 
 interface CodexSessionIndexEntry {
     id?: string;
@@ -34,22 +36,23 @@ export default class CodexSessionService {
     private readonly cacheTtlMs = 5000;
     private readonly changePollIntervalMs = 3000;
 
-    getSessions(forceRefresh: boolean = false): CodexSessionReadResult {
+    getSessions(options: boolean | AiSessionQueryOptions = false): CodexSessionReadResult {
+        let { forceRefresh, candidatePaths } = this.getQueryOptions(options);
         let now = Date.now();
         if (!forceRefresh && this.cachedResult && now - this.cachedAt < this.cacheTtlMs) {
-            return this.cachedResult;
+            return this.filterResult(this.cachedResult, candidatePaths);
         }
 
         let codexHome = this.getCodexHome();
         if (!codexHome) {
-            return this.cacheResult({ available: false, sessions: [] });
+            return this.filterResult(this.cacheResult({ available: false, sessions: [] }), candidatePaths);
         }
 
         let indexPath = path.join(codexHome, 'session_index.jsonl');
         let hasIndex = fs.existsSync(indexPath);
         let sessionFiles = this.getSessionFiles(codexHome);
         if (!hasIndex && !sessionFiles.size) {
-            return this.cacheResult({ available: false, sessions: [] });
+            return this.filterResult(this.cacheResult({ available: false, sessions: [] }), candidatePaths);
         }
 
         let entries = hasIndex ? this.readSessionIndex(indexPath) : [];
@@ -78,7 +81,7 @@ export default class CodexSessionService {
         let sessions = Array.from(sessionsById.values())
             .sort((a, b) => this.compareUpdatedAt(b.updatedAt, a.updatedAt));
 
-        return this.cacheResult({ available: true, sessions });
+        return this.filterResult(this.cacheResult({ available: true, sessions }), candidatePaths);
     }
 
     archiveSession(sessionId: string): boolean {
@@ -135,6 +138,21 @@ export default class CodexSessionService {
         this.cachedAt = Date.now();
 
         return result;
+    }
+
+    private getQueryOptions(options: boolean | AiSessionQueryOptions): { forceRefresh: boolean; candidatePaths: string[] } {
+        if (typeof options === 'boolean') {
+            return { forceRefresh: options, candidatePaths: [] };
+        }
+
+        return {
+            forceRefresh: Boolean(options?.forceRefresh),
+            candidatePaths: normalizeAiSessionCandidatePaths(options?.candidatePaths || []),
+        };
+    }
+
+    private filterResult(result: CodexSessionReadResult, candidatePaths: string[]): CodexSessionReadResult {
+        return filterAiSessionsByCandidatePaths(result, candidatePaths, session => session.cwd);
     }
 
     private getAvailableArchivePath(archivePath: string, fileName: string): string {

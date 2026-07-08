@@ -1,7 +1,7 @@
 'use strict';
 
 import type { AiSessionProviderId, CodexSession } from '../models';
-import type { AiSessionAssignmentCandidate } from './types';
+import type { AiSessionAssignmentCandidate, AiSessionReadResult } from './types';
 
 export function getAiSessionKey(providerId: AiSessionProviderId, sessionId: string): string {
     return `${providerId}:${sessionId}`;
@@ -82,6 +82,36 @@ export function assignAiSessionsToProjects<TProject extends { id: string }>(
     }
 
     return assignments;
+}
+
+export function normalizeAiSessionCandidatePaths(candidatePaths: string[] = []): string[] {
+    let seen = new Set<string>();
+
+    return candidatePaths
+        .map(candidatePath => normalizeAiSessionComparablePath(candidatePath))
+        .filter(candidatePath => {
+            if (!candidatePath || seen.has(candidatePath)) {
+                return false;
+            }
+
+            seen.add(candidatePath);
+            return true;
+        });
+}
+
+export function filterAiSessionsByCandidatePaths(result: AiSessionReadResult, candidatePaths: string[], getSessionPath: (session: CodexSession) => string): AiSessionReadResult {
+    let normalizedCandidates = normalizeAiSessionCandidatePaths(candidatePaths);
+    if (!normalizedCandidates.length) {
+        return result;
+    }
+
+    return {
+        available: result.available,
+        sessions: result.sessions.filter(session => {
+            let sessionPath = normalizeAiSessionComparablePath(getSessionPath(session));
+            return !!sessionPath && normalizedCandidates.some(candidatePath => aiSessionPathContains(candidatePath, sessionPath));
+        }),
+    };
 }
 
 export function prepareAiSessionsForDisplay(sessions: CodexSession[], providerId: AiSessionProviderId, pinnedSessions: Set<string>, aliases: Record<string, string>, limit: number = 20): CodexSession[] {

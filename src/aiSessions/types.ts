@@ -22,7 +22,7 @@ export interface AiSessionDisposable {
 }
 
 export interface AiSessionService {
-    getSessions(forceRefresh?: boolean): AiSessionReadResult;
+    getSessions(options?: boolean | AiSessionQueryOptions): AiSessionReadResult;
     watchSessionChanges(onDidChange: () => void): AiSessionDisposable;
     archiveSession(sessionId: string): boolean;
     invalidateCache(): void;

@@ -1,9 +1,14 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
 const providers = require('../out/aiSessions/providers');
+const ClaudeSessionService = require('../out/services/claudeSessionService').default;
+const GitRepositoryDetector = require('../out/projects/gitRepositoryDetector').default;
 const projectPathUtils = require('../out/projects/projectPathUtils');
 
 function runPathChecks() {
@@ -46,6 +51,21 @@ function runAssignmentChecks() {
     assert.strictEqual(assignments.has('root'), false);
 }
 
+function runCandidateFilterChecks() {
+    const result = {
+        available: true,
+        sessions: [
+            { id: 's1', name: 'One', cwd: '/work/app/src' },
+            { id: 's2', name: 'Two', cwd: '/elsewhere' },
+        ],
+    };
+    const filtered = helpers.filterAiSessionsByCandidatePaths(result, ['/work/app'], session => session.cwd);
+
+    assert.deepStrictEqual(filtered.sessions.map(session => session.id), ['s1']);
+    assert.strictEqual(helpers.filterAiSessionsByCandidatePaths(result, [], session => session.cwd), result);
+    assert.deepStrictEqual(helpers.normalizeAiSessionCandidatePaths(['/work/app/', '/work/app', '']).map(item => item), ['/work/app']);
+}
+
 function runDisplayChecks() {
     const prepared = helpers.prepareAiSessionsForDisplay(
         [
@@ -72,6 +92,101 @@ function runKeyChecks() {
     assert.strictEqual(helpers.getAiSessionProviderIdFromKey('claude:xyz', isProviderId), 'claude');
     assert.strictEqual(helpers.getAiSessionProviderIdFromKey('unknown:xyz', isProviderId), null);
     assert.strictEqual(helpers.getAiSessionProviderIdFromKey(':missing', isProviderId), null);
+}
+
+function runGitRepositoryDetectorChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-git-'));
+    try {
+        const repoRoot = path.join(tempRoot, 'repo');
+        const nestedDir = path.join(repoRoot, 'src');
+        fs.mkdirSync(nestedDir, { recursive: true });
+        fs.mkdirSync(path.join(repoRoot, '.git'));
+
+        const detector = new GitRepositoryDetector();
+        assert.strictEqual(detector.isGitRepositoryPath(nestedDir), true);
+        assert.strictEqual(detector.isGitRepositoryPath('vscode-remote://ssh-remote+host/work/repo'), false);
+        assert.strictEqual(detector.isGitRepositoryPath(path.join(tempRoot, 'missing')), false);
+
+        const worktreeRoot = path.join(tempRoot, 'worktree');
+        fs.mkdirSync(worktreeRoot, { recursive: true });
+        fs.writeFileSync(path.join(worktreeRoot, '.git'), 'gitdir: /tmp/git/worktrees/worktree\n');
+        assert.strictEqual(detector.isGitRepositoryPath(worktreeRoot), true);
+
+        const initializedLaterBase = createTempRootWithoutGitAncestor();
+        if (initializedLaterBase) {
+            try {
+                const initializedLaterRoot = path.join(initializedLaterBase, 'initialized-later');
+                fs.mkdirSync(initializedLaterRoot, { recursive: true });
+                assert.strictEqual(detector.isGitRepositoryPath(initializedLaterRoot), false);
+                fs.mkdirSync(path.join(initializedLaterRoot, '.git'));
+                assert.strictEqual(detector.isGitRepositoryPath(initializedLaterRoot), true);
+            } finally {
+                fs.rmSync(initializedLaterBase, { recursive: true, force: true });
+            }
+        }
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
+function createTempRootWithoutGitAncestor() {
+    for (const base of [os.tmpdir(), os.homedir()]) {
+        if (!hasGitAncestor(base)) {
+            return fs.mkdtempSync(path.join(base, 'project-steward-nongit-'));
+        }
+    }
+
+    return null;
+}
+
+function hasGitAncestor(directory) {
+    let currentDir = path.resolve(directory);
+    while (currentDir) {
+        if (fs.existsSync(path.join(currentDir, '.git'))) {
+            return true;
+        }
+
+        const parentDir = path.dirname(currentDir);
+        if (parentDir === currentDir) {
+            return false;
+        }
+
+        currentDir = parentDir;
+    }
+
+    return false;
+}
+
+function runClaudeSessionChecks() {
+    const previousClaudeHome = process.env.CLAUDE_HOME;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-claude-'));
+    const sessionId = '11111111-1111-4111-8111-111111111111';
+    try {
+        process.env.CLAUDE_HOME = tempRoot;
+        const sessionDir = path.join(tempRoot, 'projects', '-work-app');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        const sessionFile = path.join(sessionDir, `${sessionId}.jsonl`);
+        const fillerLine = JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'x'.repeat(4096) } }) + '\n';
+        const cwdLine = JSON.stringify({ sessionId, cwd: '/work/app', timestamp: '2026-01-01T00:00:00.000Z' }) + '\n';
+
+        fs.writeFileSync(
+            sessionFile,
+            fillerLine.repeat(40) + cwdLine + fillerLine.repeat(40),
+            'utf8'
+        );
+
+        const result = new ClaudeSessionService().getSessions({ candidatePaths: ['/work/app'] });
+        assert.strictEqual(result.available, true);
+        assert.deepStrictEqual(result.sessions.map(session => session.id), [sessionId]);
+        assert.strictEqual(result.sessions[0].cwd, '/work/app');
+    } finally {
+        if (previousClaudeHome === undefined) {
+            delete process.env.CLAUDE_HOME;
+        } else {
+            process.env.CLAUDE_HOME = previousClaudeHome;
+        }
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 }
 
 function runProviderChecks() {
@@ -131,8 +246,11 @@ function runCommandBuilderChecks() {
 
 runPathChecks();
 runAssignmentChecks();
+runCandidateFilterChecks();
 runDisplayChecks();
 runKeyChecks();
+runGitRepositoryDetectorChecks();
+runClaudeSessionChecks();
 runProviderChecks();
 runCommandBuilderChecks();
 
