@@ -239,6 +239,7 @@ function initProjects() {
     var contextMenuAiSessionId = null;
     var contextMenuAiSessionProvider = null;
     var contextMenuAiSessionProjectId = null;
+    var latestAiSessionUpdateSequence = 0;
 
     function showContextMenu(contextMenuElement, e) {
         contextMenuElement.style.visibility = "hidden";
@@ -524,6 +525,113 @@ function initProjects() {
         });
     }
 
+    function onWindowMessage(e) {
+        var message = e && e.data;
+        if (!message || message.type !== 'ai-sessions-updated') {
+            return;
+        }
+
+        applyAiSessionsUpdate(message);
+    }
+
+    function applyAiSessionsUpdate(message) {
+        if (message.version !== 1 || typeof message.sequence !== 'number' || !Array.isArray(message.openProjects)) {
+            requestFullRefresh('unsupported-ai-session-message');
+            return;
+        }
+
+        if (message.sequence <= latestAiSessionUpdateSequence) {
+            return;
+        }
+
+        latestAiSessionUpdateSequence = message.sequence;
+
+        for (var projectUpdate of message.openProjects) {
+            var projectDiv = findOpenProjectDiv(projectUpdate.projectId);
+            if (!projectDiv) {
+                requestFullRefresh('missing-open-project');
+                return;
+            }
+
+            if (!updateOpenProjectAiSessions(projectDiv, projectUpdate)) {
+                return;
+            }
+        }
+
+        updateStickyGroupHeaderOffset();
+        if (typeof window.__projectStewardApplyFilter === 'function') {
+            window.__projectStewardApplyFilter();
+        }
+    }
+
+    function findOpenProjectDiv(projectId) {
+        if (!projectId) {
+            return null;
+        }
+
+        var projects = document.querySelectorAll('.project[data-open-project][data-id]');
+        for (var projectDiv of projects) {
+            if (projectDiv.getAttribute("data-id") === projectId) {
+                return projectDiv;
+            }
+        }
+
+        return null;
+    }
+
+    function updateOpenProjectAiSessions(projectDiv, projectUpdate) {
+        if (typeof projectUpdate.sessionSectionHtml !== 'string') {
+            requestFullRefresh('invalid-ai-session-html');
+            return false;
+        }
+
+        projectDiv.toggleAttribute("data-codex-expanded", !!projectUpdate.expanded);
+
+        if (typeof projectUpdate.searchText === 'string') {
+            projectDiv.setAttribute("data-name", projectUpdate.searchText);
+        }
+
+        updateOpenProjectAiSessionBadge(projectDiv, projectUpdate.aiSessionCount || 0);
+
+        var sessionSection = projectDiv.querySelector('.codex-sessions');
+        if (sessionSection) {
+            sessionSection.outerHTML = projectUpdate.sessionSectionHtml;
+        } else if (projectUpdate.sessionSectionHtml) {
+            projectDiv.insertAdjacentHTML('beforeend', projectUpdate.sessionSectionHtml);
+        }
+
+        return true;
+    }
+
+    function updateOpenProjectAiSessionBadge(projectDiv, aiSessionCount) {
+        var badge = projectDiv.querySelector('.project-codex-badge');
+        if (!aiSessionCount) {
+            if (badge) {
+                badge.remove();
+            }
+            return;
+        }
+
+        if (!badge) {
+            var sessionSection = projectDiv.querySelector('.codex-sessions');
+            if (sessionSection) {
+                sessionSection.insertAdjacentHTML('beforebegin', '<span class="project-codex-badge" title="AI Sessions"></span>');
+            } else {
+                projectDiv.insertAdjacentHTML('beforeend', '<span class="project-codex-badge" title="AI Sessions"></span>');
+            }
+            badge = projectDiv.querySelector('.project-codex-badge');
+        }
+
+        badge.textContent = 'AI ' + aiSessionCount;
+    }
+
+    function requestFullRefresh(reason) {
+        window.vscode.postMessage({
+            type: 'request-full-refresh',
+            reason,
+        });
+    }
+
     function observeStickyGroupHeaderOffset() {
         updateStickyGroupHeaderOffset();
         window.addEventListener('resize', updateStickyGroupHeaderOffset);
@@ -579,6 +687,8 @@ function initProjects() {
             closeContextMenus();
         }
     });
+
+    window.addEventListener('message', onWindowMessage);
 
     observeStickyGroupHeaderOffset();
 }

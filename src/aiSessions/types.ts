@@ -70,6 +70,9 @@ export interface OpenProjectAiSessionViewModel {
     providers: AiSessionProviderSummary[];
     sessionsByProvider: Partial<Record<AiSessionProviderId, AiSessionViewModel[]>>;
     unavailableProviders: AiSessionProviderId[];
+    searchText?: string;
+    aiSessionCount?: number;
+    sessionSectionHtml?: string;
 }
 
 export interface AiSessionsUpdatedMessage {

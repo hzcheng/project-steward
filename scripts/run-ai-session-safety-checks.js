@@ -4,6 +4,7 @@ const assert = require('assert');
 const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
 const providers = require('../out/aiSessions/providers');
+const projectPathUtils = require('../out/projects/projectPathUtils');
 
 function runPathChecks() {
     assert.strictEqual(helpers.normalizeAiSessionComparablePath('/work/app/'), '/work/app');
@@ -13,6 +14,21 @@ function runPathChecks() {
     assert.strictEqual(helpers.aiSessionPathContains('/work/My App', '/work/My%20App/src'), true);
     assert.strictEqual(helpers.aiSessionPathContains('/work/app', '/work/application'), false);
     assert.strictEqual(helpers.aiSessionPathContains('', '/work/app'), false);
+    assert.strictEqual(projectPathUtils.normalizeRemoteAuthority('ssh-remote%2Bserver'), 'ssh-remote+server');
+    assert.strictEqual(projectPathUtils.normalizeRemoteAuthority('dev-container+abc'), 'dev-container+abc');
+    assert.strictEqual(projectPathUtils.normalizePosixPath('/work/app/../app/src/'), '/work/app/src');
+    assert.strictEqual(projectPathUtils.normalizePosixPath('/'), '/');
+    assert.strictEqual(projectPathUtils.isPathInside('/work/app/src', '/work/app'), true);
+    assert.strictEqual(projectPathUtils.isPathInside('/work/application', '/work/app'), false);
+    assert.strictEqual(projectPathUtils.isPathInside('/work/app', '/work/app'), false);
+    assert.strictEqual(projectPathUtils.getPathMatchScore('/work/app', '/work/app', true), 100);
+    assert.strictEqual(projectPathUtils.getPathMatchScore('/work/app/src', '/work/app', true), 80);
+    assert.strictEqual(projectPathUtils.getPathMatchScore('/work/app', '/work/app/src', true), 70);
+    assert.strictEqual(projectPathUtils.getPathMatchScore('/work/app', '/work/app/file.ts', false), 40);
+    assert.strictEqual(projectPathUtils.getPathMatchScore('/work/app', '/other/app', false), 10);
+    assert.strictEqual(projectPathUtils.ensureLeadingSlash('work/app'), '/work/app');
+    assert.strictEqual(projectPathUtils.ensureLeadingSlash('/work/app'), '/work/app');
+    assert.strictEqual(projectPathUtils.encodeRemoteAuthority('ssh-remote+user@host'), 'ssh-remote%2Buser@host');
 }
 
 function runAssignmentChecks() {

@@ -304,12 +304,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var codexSessions = project.codexSessions || [];
     var kimiSessions = project.kimiSessions || [];
     var claudeSessions = project.claudeSessions || [];
-    var aiSessionSearchText = codexSessions
-        .concat(kimiSessions)
-        .concat(claudeSessions)
-        .map(session => session.name || '')
-        .join(' ');
-    var searchText = escapeAttribute(`${project.name || ''} ${description} ${aiSessionSearchText}`.toLowerCase());
+    var searchText = escapeAttribute(getProjectSearchText(project));
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
@@ -340,7 +335,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var aiSessionBadge = isReadOnlyProject && aiSessionCount
         ? `<span class="project-codex-badge" title="AI Sessions">AI ${aiSessionCount}</span>`
         : '';
-    var codexSessionSection = isReadOnlyProject ? getCodexSessionsDiv(project) : '';
+    var codexSessionSection = isReadOnlyProject ? getAiSessionsDiv(project) : '';
 
     var isRemote = remoteType !== ProjectRemoteType.None;
 
@@ -376,7 +371,21 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
 </div>`;
 }
 
-function getCodexSessionsDiv(project: Project): string {
+export function getProjectSearchText(project: Project): string {
+    var description = sanitizeProjectName(project.description);
+    var codexSessions = project.codexSessions || [];
+    var kimiSessions = project.kimiSessions || [];
+    var claudeSessions = project.claudeSessions || [];
+    var aiSessionSearchText = codexSessions
+        .concat(kimiSessions)
+        .concat(claudeSessions)
+        .map(session => session.name || '')
+        .join(' ');
+
+    return `${project.name || ''} ${description} ${aiSessionSearchText}`.toLowerCase();
+}
+
+export function getAiSessionsDiv(project: Project): string {
     var codexSessions = project.codexSessions || [];
     var kimiSessions = project.kimiSessions || [];
     var claudeSessions = project.claudeSessions || [];

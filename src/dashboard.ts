@@ -1,9 +1,9 @@
 'use strict';
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, getRemoteTypeFromRemoteName, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession, AiSessionProviderId, isAiSessionProviderId } from './models';
-import { getStewardContent } from './webview/webviewContent';
-import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, REMOTE_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
+import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession, AiSessionProviderId, isAiSessionProviderId } from './models';
+import { getAiSessionsDiv, getProjectSearchText, getStewardContent } from './webview/webviewContent';
+import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
 import { execSync } from 'child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 
@@ -16,7 +16,10 @@ import ClaudeSessionService from './services/claudeSessionService';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, getAiSessionProviderIdFromKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
-import type { AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry } from './aiSessions/types';
+import type { AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
+import { getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
+import { getLastPartOfPath, getOpenProjectUri as resolveOpenProjectUri, getOpenProjectsFromWorkspace, getWorkspaceUri as resolveWorkspaceUri, getWorkspaceUris as resolveWorkspaceUris, isUriString, parsePathAsUri } from './projects/openProjectService';
+import RemoteProjectResolver from './projects/remoteProjectResolver';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -76,6 +79,14 @@ export function activate(context: vscode.ExtensionContext) {
                 }
             }
         }
+
+        postMessage(message: unknown): Thenable<boolean> {
+            if (!this._view) {
+                return Promise.resolve(false);
+            }
+
+            return this._view.webview.postMessage(message);
+        }
     }
 
     const colorService = new ColorService(context);
@@ -84,6 +95,7 @@ export function activate(context: vscode.ExtensionContext) {
     const codexSessionService = new CodexSessionService();
     const kimiSessionService = new KimiSessionService();
     const claudeSessionService = new ClaudeSessionService();
+    const remoteProjectResolver = new RemoteProjectResolver(logError);
     const aiSessionServices: Record<AiSessionProviderId, AiSessionService> = {
         codex: codexSessionService,
         kimi: kimiSessionService,
@@ -92,6 +104,7 @@ export function activate(context: vscode.ExtensionContext) {
     const aiSessionTerminalService = new AiSessionTerminalService(context.globalStoragePath, providerId => getRegisteredAiSessionProvider(providerId));
     let aiSessionRefreshTimeout: NodeJS.Timeout = null;
     let aiSessionWatcherDisposables: { dispose(): void }[] = [];
+    let aiSessionUpdateSequence = 0;
 
     const provider = new SidebarStewardViewProvider();
 
@@ -342,7 +355,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         aiSessionRefreshTimeout = setTimeout(() => {
             aiSessionRefreshTimeout = null;
-            refreshStewardViews();
+            refreshAiSessionViewsIncrementally();
         }, AI_SESSION_REFRESH_DEBOUNCE_MS);
     }
 
@@ -379,8 +392,29 @@ export function activate(context: vscode.ExtensionContext) {
         for (let delay of NEW_AI_SESSION_REFRESH_DELAYS_MS) {
             setTimeout(() => {
                 invalidateAiSessionCache(providerId);
-                refreshStewardViews();
+                refreshAiSessionViewsIncrementally();
             }, delay);
+        }
+    }
+
+    function refreshAiSessionViewsIncrementally() {
+        if (!provider.visible) {
+            return;
+        }
+
+        try {
+            let message = getAiSessionsUpdatedMessage();
+            provider.postMessage(message).then(delivered => {
+                if (!delivered) {
+                    refreshStewardViews();
+                }
+            }, error => {
+                logError('Failed to post AI session update message.', error);
+                refreshStewardViews();
+            });
+        } catch (error) {
+            logError('Failed to update AI sessions incrementally.', error);
+            refreshStewardViews();
         }
     }
 
@@ -514,6 +548,9 @@ export function activate(context: vscode.ExtensionContext) {
                 break;
             case 'copy-ai-session-id':
                 await copyAiSessionId(e.sessionId as string);
+                break;
+            case 'request-full-refresh':
+                refreshStewardViews();
                 break;
             case 'resume-ai-session':
             case 'resume-codex-session':
@@ -719,7 +756,7 @@ export function activate(context: vscode.ExtensionContext) {
         let selectedProviders = getActiveAiSessionProviders();
         selectedProviders[getOpenProjectCodexExpansionKey(project)] = providerId;
         await context.globalState.update(OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, selectedProviders);
-        refreshAfterMutation();
+        refreshAiSessionViewsIncrementally();
     }
 
     async function toggleAiSessionPin(providerId: AiSessionProviderId, sessionId: string) {
@@ -736,7 +773,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         await context.globalState.update(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, Array.from(pinnedSessions));
-        refreshAfterMutation();
+        refreshAiSessionViewsIncrementally();
     }
 
     async function renameAiSession(providerId: AiSessionProviderId, sessionId: string) {
@@ -767,7 +804,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         saveAiSessionAliases(aliases);
-        refreshAfterMutation();
+        refreshAiSessionViewsIncrementally();
     }
 
     async function copyAiSessionId(sessionId: string) {
@@ -940,7 +977,8 @@ export function activate(context: vscode.ExtensionContext) {
 
         aiSessionTerminalService.untrack(providerId, sessionId);
         deleteAiSessionAlias(providerId, sessionId);
-        refreshAfterMutation();
+        invalidateAiSessionCache(providerId);
+        refreshAiSessionViewsIncrementally();
     }
 
     async function openProject(project: Project, projectOpenType: ProjectOpenType): Promise<void> {
@@ -1041,60 +1079,6 @@ export function activate(context: vscode.ExtensionContext) {
 
     function projectPathMatchesCurrentWorkspace(projectPath: string): boolean {
         return getWorkspaceUris().some(workspaceUri => projectPathMatchesWorkspaceUri(projectPath, workspaceUri));
-    }
-
-    function projectPathMatchesWorkspaceUri(projectPath: string, workspaceUri: vscode.Uri): boolean {
-        if (!workspaceUri || !projectPath) {
-            return false;
-        }
-
-        let currentWorkspacePath = uriToProjectPath(workspaceUri);
-        if (normalizeComparableProjectPath(projectPath) === normalizeComparableProjectPath(currentWorkspacePath)) {
-            return true;
-        }
-
-        if (!isUriString(projectPath) || workspaceUri.scheme !== "vscode-remote") {
-            return false;
-        }
-
-        try {
-            let projectUri = vscode.Uri.parse(projectPath);
-            if (projectUri.scheme !== "vscode-remote") {
-                return false;
-            }
-
-            if (normalizeRemoteAuthority(projectUri.authority) !== normalizeRemoteAuthority(workspaceUri.authority)) {
-                return false;
-            }
-
-            let projectUriPath = projectUri.path || projectUri.fsPath;
-            let workspacePath = workspaceUri.path || workspaceUri.fsPath;
-
-            return normalizePosixPath(projectUriPath) === normalizePosixPath(workspacePath);
-        } catch (e) {
-            return false;
-        }
-    }
-
-    function normalizeComparableProjectPath(projectPath: string): string {
-        if (!projectPath) {
-            return "";
-        }
-
-        try {
-            if (isUriString(projectPath)) {
-                let uri = vscode.Uri.parse(projectPath);
-                if (uri.scheme === "file") {
-                    projectPath = uri.fsPath;
-                } else {
-                    projectPath = `${uri.scheme}://${normalizeRemoteAuthority(uri.authority)}${uri.path}`;
-                }
-            }
-        } catch (e) {
-            // Keep the original path and normalize it below.
-        }
-
-        return projectPath.replace(/\\/g, '/').replace(/\/+$/g, '');
     }
 
     async function addToWorkspace(project: Project, uri: vscode.Uri): Promise<void> {
@@ -1878,73 +1862,21 @@ export function activate(context: vscode.ExtensionContext) {
         return `${savePath}/Project Steward Projects.json`;
     }
 
-    function getLastPartOfPath(path: string): string {
-        if (!path) {
-            return "";
-        }
-
-        if (isUriString(path)) {
-            try {
-                path = vscode.Uri.parse(path).path || path;
-            } catch (e) {
-                // Keep the original path and fall back to the legacy parsing below.
-            }
-        }
-
-        // get last folder of filename of path/remote
-        path = path.replace(REMOTE_REGEX, ''); // Remove remote prefix
-        path = path.replace(/^\w+\@/, ''); // Remove Username
-        let lastPart = path.replace(/^[\\\/]|[\\\/]$/g, '').replace(/^.*[\\\/]/, '');
-
-        return lastPart;
-    }
-
     function getOpenProjects(): Project[] {
-        let workspaceFile = vscode.workspace.workspaceFile;
-        let openProjects: Project[];
-        if (workspaceFile && workspaceFile.scheme !== "untitled") {
-            openProjects = [buildOpenProject(workspaceFile, 0, "Current workspace")];
-        } else {
-            openProjects = (vscode.workspace.workspaceFolders || [])
-                .map((folder, index) => buildOpenProject(folder.uri, index, "Workspace folder", folder.name));
-        }
-
+        let openProjects = getOpenProjectsFromWorkspace(
+            vscode.workspace.workspaceFile,
+            vscode.workspace.workspaceFolders,
+            {
+                savedProjects: projectService.getProjectsFlat(),
+                currentRemoteName: vscode.env.remoteName,
+                isFolderGitRepo,
+            }
+        );
         return withAiSessions(openProjects);
     }
 
     function getOpenProjectUri(projectId: string): vscode.Uri {
-        let prefix = `${OPEN_PROJECTS_GROUP_ID}-`;
-        if (!projectId || !projectId.startsWith(prefix)) {
-            return null;
-        }
-
-        let index = Number(projectId.substring(prefix.length));
-        if (!Number.isInteger(index) || index < 0) {
-            return null;
-        }
-
-        let workspaceFile = vscode.workspace.workspaceFile;
-        if (workspaceFile && workspaceFile.scheme !== "untitled") {
-            return index === 0 ? workspaceFile : null;
-        }
-
-        return (vscode.workspace.workspaceFolders || [])[index]?.uri || null;
-    }
-
-    function buildOpenProject(uri: vscode.Uri, index: number, description: string, name: string = null): Project {
-        let projectPath = uriToProjectPath(uri);
-        let savedProject = findSavedProjectForOpenProject(uri);
-        let projectName = savedProject?.name || name || getLastPartOfPath(projectPath).replace(/\.code-workspace$/g, '') || "Workspace";
-        let projectDescription = savedProject ? savedProject.description : description;
-        let project = new Project(projectName, projectPath, projectDescription);
-        project.id = `${OPEN_PROJECTS_GROUP_ID}-${index}`;
-        project.color = savedProject?.color || "var(--vscode-focusBorder)";
-        project.favorite = savedProject?.favorite;
-        project.showSaveAction = savedProject == null;
-        project.isGitRepo = isFolderGitRepo(projectPath);
-        project.remoteType = savedProject?.remoteType ?? (savedProject ? getRemoteType(savedProject) : getRemoteTypeFromRemoteName(vscode.env.remoteName));
-
-        return project;
+        return resolveOpenProjectUri(projectId, vscode.workspace.workspaceFile, vscode.workspace.workspaceFolders);
     }
 
     function withAiSessions(openProjects: Project[]): Project[] {
@@ -1971,6 +1903,50 @@ export function activate(context: vscode.ExtensionContext) {
             project.activeAiSessionProvider = getActiveAiSessionProvider(project, activeProviders);
             return project;
         });
+    }
+
+    function getAiSessionsUpdatedMessage(): AiSessionsUpdatedMessage {
+        return {
+            type: 'ai-sessions-updated',
+            version: 1,
+            sequence: ++aiSessionUpdateSequence,
+            generatedAt: new Date().toISOString(),
+            openProjects: getOpenProjects().map(project => getOpenProjectAiSessionViewModel(project)),
+        };
+    }
+
+    function getOpenProjectAiSessionViewModel(project: Project): OpenProjectAiSessionViewModel {
+        let sessionsByProvider: Partial<Record<AiSessionProviderId, AiSessionViewModel[]>> = {};
+        let providers = AI_SESSION_PROVIDER_IDS.map(providerId => {
+            let sessionProvider = getRegisteredAiSessionProvider(providerId);
+            let sessions = project[sessionProvider.projectSessionsKey] || [];
+            sessionsByProvider[providerId] = sessions.map(session => ({
+                ...session,
+                provider: providerId,
+            }));
+            return {
+                id: providerId,
+                label: sessionProvider.label,
+                count: sessions.length,
+                unavailable: Boolean(project[sessionProvider.projectSessionsUnavailableKey]),
+            };
+        });
+
+        return {
+            projectId: project.id,
+            projectKey: getOpenProjectCodexExpansionKey(project),
+            activeProvider: project.activeAiSessionProvider,
+            expanded: Boolean(project.codexSessionsExpanded),
+            providers,
+            sessionsByProvider,
+            unavailableProviders: providers.filter(item => item.unavailable).map(item => item.id),
+            searchText: getProjectSearchText(project),
+            aiSessionCount: AI_SESSION_PROVIDER_IDS.reduce((count, providerId) => {
+                let sessionProvider = getRegisteredAiSessionProvider(providerId);
+                return count + (project[sessionProvider.projectSessionsKey] || []).length;
+            }, 0),
+            sessionSectionHtml: getAiSessionsDiv(project),
+        };
     }
 
     function getAiSessionResults(): Record<AiSessionProviderId, AiSessionReadResult> {
@@ -2364,73 +2340,6 @@ export function activate(context: vscode.ExtensionContext) {
         return aiSessionTerminalService.getPendingMarkerPath(providerId);
     }
 
-    function findSavedProjectForOpenProject(uri: vscode.Uri): Project {
-        let savedProjects = projectService.getProjectsFlat();
-        let exactMatch = savedProjects.find(project => projectMatchesOpenProject(project, uri));
-        if (exactMatch) {
-            return exactMatch;
-        }
-
-        let remotePathMatches = savedProjects.filter(project => projectPathMatchesRemoteOpenProject(project, uri));
-        return remotePathMatches.length === 1 ? remotePathMatches[0] : null;
-    }
-
-    function projectMatchesOpenProject(project: Project, uri: vscode.Uri): boolean {
-        if (!project || !project.path || !uri) {
-            return false;
-        }
-
-        if (projectPathMatchesWorkspaceUri(project.path, uri)) {
-            return true;
-        }
-
-        return false;
-    }
-
-    function projectPathMatchesRemoteOpenProject(project: Project, uri: vscode.Uri): boolean {
-        if (!vscode.env.remoteName || !projectRemoteTypeMatchesCurrentRemote(project)) {
-            return false;
-        }
-
-        if (uri.scheme === "vscode-remote" || uri.authority) {
-            return false;
-        }
-
-        let projectPath = getProjectPathPart(project.path);
-        let openPath = uri.path || uri.fsPath;
-        if (!projectPath || !openPath) {
-            return false;
-        }
-
-        return normalizePosixPath(projectPath) === normalizePosixPath(openPath);
-    }
-
-    function projectRemoteTypeMatchesCurrentRemote(project: Project): boolean {
-        let currentRemoteType = getRemoteTypeFromRemoteName(vscode.env.remoteName);
-        if (currentRemoteType === ProjectRemoteType.None) {
-            return false;
-        }
-
-        return getRemoteType(project) === currentRemoteType;
-    }
-
-    function getProjectPathPart(projectPath: string): string {
-        if (!projectPath) {
-            return projectPath;
-        }
-
-        if (!isUriString(projectPath)) {
-            return projectPath;
-        }
-
-        try {
-            let uri = vscode.Uri.parse(projectPath);
-            return uri.path || uri.fsPath || projectPath;
-        } catch (e) {
-            return projectPath;
-        }
-    }
-
     function getWorkspacePath(): string {
         let workspaceUri = getWorkspaceUri();
 
@@ -2451,260 +2360,17 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     async function getProjectDetailsForSave(workspaceUri: vscode.Uri): Promise<{ path: string, remoteType: ProjectRemoteType }> {
-        let remoteType = getRemoteTypeFromRemoteName(vscode.env.remoteName);
-        if (workspaceUri.scheme === "file") {
-            let codespaceUri = await resolveCurrentCodespaceWorkspaceUri(workspaceUri);
-            if (codespaceUri) {
-                return { path: uriToProjectPath(codespaceUri), remoteType: getRemoteTypeFromRemoteUri(codespaceUri, remoteType) };
-            }
-
-            if (remoteType !== ProjectRemoteType.None) {
-                let remoteUri = await resolveCurrentRemoteWorkspaceUri(workspaceUri, remoteType);
-                if (remoteUri) {
-                    return { path: uriToProjectPath(remoteUri), remoteType: getRemoteTypeFromRemoteUri(remoteUri, remoteType) };
-                }
-            }
-
-            return { path: uriToProjectPath(workspaceUri), remoteType };
-        }
-
-        return { path: uriToProjectPath(workspaceUri), remoteType: getRemoteTypeFromRemoteUri(workspaceUri, remoteType) };
+        return remoteProjectResolver.getProjectDetailsForSave(workspaceUri, vscode.env.remoteName);
     }
 
     function getWorkspaceUri(): vscode.Uri {
-        let workspaceUris = getWorkspaceUris();
-        return workspaceUris.length ? workspaceUris[0] : null;
+        return resolveWorkspaceUri(vscode.workspace.workspaceFile, vscode.workspace.workspaceFolders);
     }
 
     function getWorkspaceUris(): vscode.Uri[] {
-        let workspaceUri = vscode.workspace.workspaceFile;
-        if (workspaceUri != null && workspaceUri.scheme !== "untitled") {
-            return [workspaceUri];
-        }
-
-        return (vscode.workspace.workspaceFolders || []).map(folder => folder.uri);
+        return resolveWorkspaceUris(vscode.workspace.workspaceFile, vscode.workspace.workspaceFolders);
     }
 
-    async function resolveCurrentCodespaceWorkspaceUri(workspaceUri: vscode.Uri): Promise<vscode.Uri> {
-        if (vscode.env.remoteName !== "codespaces") {
-            return null;
-        }
-
-        try {
-            let info = await vscode.commands.executeCommand<{ name: string } | undefined>('github.codespaces.getCurrentCodespace');
-            if (info && info.name) {
-                return buildVscodeRemoteUri(`codespaces+${info.name}`, workspaceUri.fsPath || workspaceUri.path);
-            }
-        } catch (error) {
-            logError('Failed to resolve current Codespace workspace URI.', error);
-        }
-
-        return null;
-    }
-
-    async function resolveCurrentRemoteWorkspaceUri(workspaceUri: vscode.Uri, remoteType: ProjectRemoteType): Promise<vscode.Uri> {
-        let currentPath = workspaceUri.path || workspaceUri.fsPath;
-        if (!currentPath) {
-            return null;
-        }
-
-        try {
-            let recentlyOpened = await vscode.commands.executeCommand('_workbench.getRecentlyOpened') as any;
-            let candidates = [
-                ...getRecentRemoteCandidates((recentlyOpened && recentlyOpened.workspaces) || [], currentPath, remoteType, true),
-                ...getRecentRemoteCandidates((recentlyOpened && recentlyOpened.files) || [], currentPath, remoteType, false),
-            ].sort((a, b) => b.score - a.score);
-
-            if (!candidates.length) {
-                return null;
-            }
-
-            let selectedAuthority = normalizeRemoteAuthority(candidates[0].remoteAuthority);
-
-            return buildVscodeRemoteUri(selectedAuthority, currentPath);
-        } catch (error) {
-            logError('Failed to resolve current remote workspace URI.', error);
-        }
-
-        return null;
-    }
-
-    function getRecentRemoteCandidates(recentEntries: any[], currentPath: string, remoteType: ProjectRemoteType, isWorkspaceEntry: boolean): { remoteAuthority: string, score: number }[] {
-        let candidates: { remoteAuthority: string, score: number }[] = [];
-
-        for (let recent of recentEntries) {
-            let remoteAuthority = recent && recent.remoteAuthority;
-            if (!remoteAuthority || !remoteAuthorityMatchesType(remoteAuthority, remoteType)) {
-                continue;
-            }
-
-            let recentUri = getRecentEntryUri(recent);
-            if (!recentUri) {
-                continue;
-            }
-
-            let score = getPathMatchScore(currentPath, recentUri.path || recentUri.fsPath, isWorkspaceEntry);
-            if (score > 0) {
-                candidates.push({ remoteAuthority, score });
-            }
-        }
-
-        return candidates;
-    }
-
-    function getPathMatchScore(currentPath: string, recentPath: string, isWorkspaceEntry: boolean): number {
-        if (!currentPath || !recentPath) {
-            return 0;
-        }
-
-        let normalizedCurrentPath = normalizePosixPath(currentPath);
-        let normalizedRecentPath = normalizePosixPath(recentPath);
-
-        if (normalizedCurrentPath === normalizedRecentPath) {
-            return isWorkspaceEntry ? 100 : 60;
-        }
-
-        if (isWorkspaceEntry && isPathInside(normalizedCurrentPath, normalizedRecentPath)) {
-            return 80;
-        }
-
-        if (isWorkspaceEntry && isPathInside(normalizedRecentPath, normalizedCurrentPath)) {
-            return 70;
-        }
-
-        if (!isWorkspaceEntry && isPathInside(normalizedRecentPath, normalizedCurrentPath)) {
-            return 40;
-        }
-
-        if (path.posix.basename(normalizedCurrentPath) === path.posix.basename(normalizedRecentPath)) {
-            return isWorkspaceEntry ? 30 : 10;
-        }
-
-        return 0;
-    }
-
-    function remoteAuthorityMatchesType(remoteAuthority: string, remoteType: ProjectRemoteType): boolean {
-        let normalizedAuthority = normalizeRemoteAuthority(remoteAuthority);
-
-        switch (remoteType) {
-            case ProjectRemoteType.SSH:
-                return normalizedAuthority.startsWith('ssh-remote+');
-            case ProjectRemoteType.WSL:
-                return normalizedAuthority.startsWith('wsl+');
-            case ProjectRemoteType.DevContainer:
-                return normalizedAuthority.startsWith('dev-container+') || normalizedAuthority.startsWith('attached-container+');
-            case ProjectRemoteType.Remote:
-                if (vscode.env.remoteName) {
-                    return normalizedAuthority.startsWith(`${vscode.env.remoteName}+`);
-                }
-
-                return true;
-            case ProjectRemoteType.None:
-            default:
-                return false;
-        }
-    }
-
-    function getRemoteTypeFromRemoteUri(uri: vscode.Uri, fallbackRemoteType: ProjectRemoteType): ProjectRemoteType {
-        if (!uri || uri.scheme !== "vscode-remote" || !uri.authority) {
-            return fallbackRemoteType;
-        }
-
-        let project = new Project("", uri.toString());
-        return getRemoteType(project);
-    }
-
-    function buildVscodeRemoteUri(remoteAuthority: string, resourcePath: string): vscode.Uri {
-        return vscode.Uri.parse(`vscode-remote://${encodeRemoteAuthority(remoteAuthority)}${ensureLeadingSlash(resourcePath)}`);
-    }
-
-    function ensureLeadingSlash(value: string): string {
-        if (!value) {
-            return "/";
-        }
-
-        return value.startsWith("/") ? value : `/${value}`;
-    }
-
-    function normalizeRemoteAuthority(remoteAuthority: string): string {
-        if (!remoteAuthority) {
-            return remoteAuthority;
-        }
-
-        try {
-            return decodeURIComponent(remoteAuthority);
-        } catch (e) {
-            return remoteAuthority;
-        }
-    }
-
-    function normalizePosixPath(value: string): string {
-        return path.posix.normalize(value).replace(/\/+$/g, '') || '/';
-    }
-
-    function isPathInside(childPath: string, parentPath: string): boolean {
-        return childPath !== parentPath && childPath.startsWith(`${parentPath}/`);
-    }
-
-    function getRecentEntryUri(recent: any): vscode.Uri {
-        return asUri(recent.folderUri)
-            || asUri(recent.workspace && recent.workspace.configPath)
-            || asUri(recent.fileUri);
-    }
-
-    function asUri(value: any): vscode.Uri {
-        if (!value) {
-            return null;
-        }
-
-        if (value instanceof vscode.Uri) {
-            return value;
-        }
-
-        if (typeof value === 'string') {
-            return vscode.Uri.parse(value);
-        }
-
-        if (value.scheme && typeof value.path === 'string') {
-            if (typeof value.toString === 'function') {
-                let uriString = value.toString();
-                if (uriString && uriString !== '[object Object]') {
-                    return vscode.Uri.parse(uriString);
-                }
-            }
-
-            if (value.scheme === "vscode-remote" && value.authority) {
-                return buildVscodeRemoteUri(value.authority, value.path);
-            }
-
-            if (value.scheme === "file") {
-                return vscode.Uri.file(value.fsPath || value.path);
-            }
-
-            let authority = value.authority ? `//${value.authority}` : '';
-            let query = value.query ? `?${value.query}` : '';
-            let fragment = value.fragment ? `#${value.fragment}` : '';
-            return vscode.Uri.parse(`${value.scheme}:${authority}${value.path}${query}${fragment}`);
-        }
-
-        return null;
-    }
-
-    function encodeRemoteAuthority(remoteAuthority: string): string {
-        return normalizeRemoteAuthority(remoteAuthority).split('@').map(part => encodeURIComponent(part)).join('@');
-    }
-
-    function isUriString(projectPath: string): boolean {
-        return projectPath && projectPath.includes("://");
-    }
-
-    function parsePathAsUri(projectPath: string): vscode.Uri {
-        return isUriString(projectPath) ? vscode.Uri.parse(projectPath) : vscode.Uri.file(projectPath);
-    }
-
-    function uriToProjectPath(uri: vscode.Uri): string {
-        return uri.scheme === "file" ? uri.fsPath.trim() : uri.toString().trim();
-    }
 }
 
 
