@@ -391,10 +391,14 @@ function getCodexSessionsDiv(project: Project): string {
 
     return `
 <div class="codex-sessions">
-    <div class="ai-session-provider-tabs">
-        ${getAiProviderButton('codex', 'Codex', codexSessions.length, activeProvider)}
-        ${getAiProviderButton('kimi', 'Kimi', kimiSessions.length, activeProvider)}
-        ${getAiProviderButton('claude', 'Claude', claudeSessions.length, activeProvider)}
+    <div class="ai-session-provider-controls">
+        <label class="ai-session-provider-select-wrapper" title="AI Provider">
+            <select class="ai-session-provider-select" data-action="select-ai-provider" aria-label="AI Provider">
+                ${getAiProviderOption('codex', 'Codex', codexSessions.length, activeProvider)}
+                ${getAiProviderOption('kimi', 'Kimi', kimiSessions.length, activeProvider)}
+                ${getAiProviderOption('claude', 'Claude', claudeSessions.length, activeProvider)}
+            </select>
+        </label>
         ${getCreateAiSessionButton(activeProvider)}
     </div>
     <div class="codex-sessions-list">
@@ -403,12 +407,9 @@ function getCodexSessionsDiv(project: Project): string {
 </div>`;
 }
 
-function getAiProviderButton(providerId: AiSessionProviderId, label: string, count: number, activeProvider: AiSessionProviderId): string {
+function getAiProviderOption(providerId: AiSessionProviderId, label: string, count: number, activeProvider: AiSessionProviderId): string {
     var isActive = providerId === activeProvider;
-    return `<button class="ai-session-provider-tab ${isActive ? 'active' : ''}" data-action="select-ai-provider" data-provider="${providerId}" title="${label} Sessions">
-        <span>${label}</span>
-        <span class="ai-session-provider-count">${count}</span>
-    </button>`;
+    return `<option value="${providerId}"${isActive ? ' selected' : ''}>${label} (${count})</option>`;
 }
 
 function getCreateAiSessionButton(activeProvider: AiSessionProviderId): string {

@@ -1047,14 +1047,14 @@ body.steward-sidebar {
             border-top: 1px solid var(--vscode-panel-border);
         }
 
-        .ai-session-provider-tabs {
+        .ai-session-provider-controls {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr 24px;
+            grid-template-columns: minmax(0, 1fr) 24px;
             gap: 5px;
             margin-left: 0;
         }
 
-        .ai-session-provider-tab,
+        .ai-session-provider-select,
         .ai-session-create-button {
             display: inline-flex;
             align-items: center;
@@ -1077,20 +1077,23 @@ body.steward-sidebar {
                 box-shadow $defaultTransition;
 
             &:hover,
-            &.active {
+            &:focus {
                 color: var(--steward-foreground);
                 border-color: var(--vscode-focusBorder);
                 background: var(--vscode-list-hoverBackground);
-            }
-
-            &.active {
                 box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .04);
             }
         }
 
-        .ai-session-provider-tab {
-            gap: 5px;
+        .ai-session-provider-select-wrapper {
+            min-width: 0;
+        }
+
+        .ai-session-provider-select {
+            width: 100%;
             padding: 0 7px;
+            outline: none;
+            appearance: auto;
         }
 
         .ai-session-create-button {
@@ -1101,12 +1104,6 @@ body.steward-sidebar {
                 height: 10px;
                 fill: currentColor;
             }
-        }
-
-        .ai-session-provider-count {
-            color: var(--vscode-descriptionForeground);
-            font-size: 9px;
-            font-weight: 650;
         }
 
         .codex-sessions-list {

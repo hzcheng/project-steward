@@ -64,15 +64,10 @@ function initProjects() {
     }
 
     function onTriggerAiSessionAction(target, projectId) {
-        var providerAction = target.closest('[data-action="select-ai-provider"][data-provider]');
+        var providerAction = target.closest('[data-action="select-ai-provider"]');
         if (providerAction) {
-            var provider = providerAction.getAttribute("data-provider");
-            if (isAiSessionProvider(provider)) {
-                window.vscode.postMessage({
-                    type: 'select-ai-session-provider',
-                    projectId,
-                    provider,
-                });
+            if (providerAction.tagName !== "SELECT") {
+                selectAiSessionProvider(projectId, providerAction.getAttribute("data-provider"));
             }
 
             return true;
@@ -143,6 +138,17 @@ function initProjects() {
         }
 
         return true;
+    }
+
+    function selectAiSessionProvider(projectId, provider) {
+        if (!projectId || !isAiSessionProvider(provider))
+            return;
+
+        window.vscode.postMessage({
+            type: 'select-ai-session-provider',
+            projectId,
+            provider,
+        });
     }
 
     function isAiSessionProvider(provider) {
@@ -501,12 +507,27 @@ function initProjects() {
         }
     }
 
+    function onChangeEvent(e) {
+        if (!e.target)
+            return;
+
+        var providerSelect = e.target.closest('select[data-action="select-ai-provider"]');
+        if (!providerSelect)
+            return;
+
+        var projectDiv = providerSelect.closest('.project[data-id]');
+        var projectId = projectDiv && projectDiv.getAttribute("data-id");
+        selectAiSessionProvider(projectId, providerSelect.value);
+    }
+
     // Middle mouse button requires mousedown, as it does not fire click event when scroll option is available.
     document.addEventListener('click', (e) => {
         if (e.button !== 1) {
             onMouseEvent(e);
         }
     });
+
+    document.addEventListener('change', onChangeEvent);
 
     document.addEventListener('mousedown', (e) => {
         if (e.target.closest('.codex-session-row')) {
