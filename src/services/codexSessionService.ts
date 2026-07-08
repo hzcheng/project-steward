@@ -73,9 +73,7 @@ export default class CodexSessionService {
             }
         }
 
-        if (!hasIndex || sessionsById.size === 0) {
-            this.addSessionsFromFiles(sessionsById, sessionFiles);
-        }
+        this.addSessionsFromFiles(sessionsById, sessionFiles);
 
         let sessions = Array.from(sessionsById.values())
             .sort((a, b) => this.compareUpdatedAt(b.updatedAt, a.updatedAt));
@@ -188,7 +186,7 @@ export default class CodexSessionService {
     private getSessionFilesSignature(codexHome: string): string {
         let sessionFiles = this.getSessionFiles(codexHome);
         return Array.from(sessionFiles.entries())
-            .map(([sessionId, filePath]) => `${sessionId}:${filePath}`)
+            .map(([sessionId, filePath]) => `${sessionId}:${filePath}:${this.getFileSignature(filePath)}`)
             .sort()
             .join(',');
     }
@@ -264,11 +262,12 @@ export default class CodexSessionService {
                 continue;
             }
 
+            let previous = sessionsById.get(sessionId);
             sessionsById.set(sessionId, {
                 id: sessionId,
-                name: sessionId,
-                updatedAt: meta.timestamp,
-                cwd: meta.cwd,
+                name: previous?.name || sessionId,
+                updatedAt: previous?.updatedAt || meta.timestamp,
+                cwd: previous?.cwd || meta.cwd,
             });
         }
     }

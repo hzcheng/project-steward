@@ -19,7 +19,7 @@ interface CodexSessionTerminalEntry {
 }
 
 interface NewAiSessionFields {
-    prompt: string;
+    title: string;
 }
 
 interface PendingAiSessionTerminal {
@@ -29,6 +29,7 @@ interface PendingAiSessionTerminal {
     cwd: string;
     createdAt: string;
     excludedSessionIds: string[];
+    title?: string;
 }
 
 const CODEX_SESSION_TERMINAL_ENV = 'PROJECT_STEWARD_CODEX_SESSION_ID';
@@ -781,17 +782,17 @@ export function activate(context: vscode.ExtensionContext) {
 
     async function queryNewAiSessionFields(providerId: AiSessionProviderId): Promise<NewAiSessionFields> {
         let providerLabel = providerId === 'kimi' ? 'Kimi' : 'Codex';
-        let prompt = await vscode.window.showInputBox({
-            prompt: `New ${providerLabel} initial prompt (optional)`,
-            placeHolder: 'Leave empty to start a blank session',
+        let title = await vscode.window.showInputBox({
+            prompt: `New ${providerLabel} chat title (optional)`,
+            placeHolder: 'Leave empty to use the session ID',
             ignoreFocusOut: true,
         });
-        if (prompt === undefined) {
+        if (title === undefined) {
             return null;
         }
 
         return {
-            prompt: sanitizeTerminalLineInput(prompt.trim()),
+            title: sanitizeAiSessionAlias(title),
         };
     }
 
@@ -804,11 +805,11 @@ export function activate(context: vscode.ExtensionContext) {
         let createdAt = new Date().toISOString();
         let markerPath = getPendingAiSessionTerminalMarkerPath('codex');
 
-        trackPendingAiSessionTerminal('codex', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds);
+        trackPendingAiSessionTerminal('codex', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds, fields.title);
 
         terminal.show();
         await waitForTerminalReady(terminal);
-        terminal.sendText(buildCodexNewSessionCommand(cwd, fields.prompt, markerPath));
+        terminal.sendText(buildCodexNewSessionCommand(cwd, null, markerPath));
         scheduleNewAiSessionRefresh('codex');
     }
 
@@ -820,11 +821,11 @@ export function activate(context: vscode.ExtensionContext) {
         let existingSessionIds = getAiSessionIdsForCwd(kimiSessionService.getSessions(true), pendingTerminalCwd);
         let createdAt = new Date().toISOString();
         let markerPath = getPendingAiSessionTerminalMarkerPath('kimi');
-        trackPendingAiSessionTerminal('kimi', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds);
+        trackPendingAiSessionTerminal('kimi', terminal, markerPath, pendingTerminalCwd, createdAt, existingSessionIds, fields.title);
 
         terminal.show();
         await waitForTerminalReady(terminal);
-        terminal.sendText(buildKimiNewSessionCommand(cwd, fields.prompt, markerPath));
+        terminal.sendText(buildKimiNewSessionCommand(cwd, null, markerPath));
         scheduleNewAiSessionRefresh('kimi');
     }
 
@@ -2157,7 +2158,7 @@ export function activate(context: vscode.ExtensionContext) {
             .filter(id => !!id);
     }
 
-    function trackPendingAiSessionTerminal(providerId: AiSessionProviderId, terminal: vscode.Terminal, markerPath: string, cwd: string, createdAt: string, excludedSessionIds: string[]) {
+    function trackPendingAiSessionTerminal(providerId: AiSessionProviderId, terminal: vscode.Terminal, markerPath: string, cwd: string, createdAt: string, excludedSessionIds: string[], title: string = null) {
         let comparableCwd = normalizeCodexComparablePath(cwd);
         if (!terminal || !markerPath || !comparableCwd) {
             return;
@@ -2170,6 +2171,7 @@ export function activate(context: vscode.ExtensionContext) {
             cwd: comparableCwd,
             createdAt,
             excludedSessionIds: Array.isArray(excludedSessionIds) ? excludedSessionIds.filter(id => !!id) : [],
+            title: sanitizeAiSessionAlias(title),
         });
         pendingAiSessionTerminals = trimPendingAiSessionTerminals(pendingAiSessionTerminals);
     }
@@ -2212,6 +2214,7 @@ export function activate(context: vscode.ExtensionContext) {
             } else {
                 kimiSessionTerminals.set(session.id, entry);
             }
+            setAiSessionAlias(pendingTerminal.provider, session.id, pendingTerminal.title);
             claimedSessionKeys.add(getAiSessionPinKey(pendingTerminal.provider, session.id));
         }
 
@@ -2361,6 +2364,17 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         delete aliases[sessionKey];
+        saveAiSessionAliases(aliases);
+    }
+
+    function setAiSessionAlias(providerId: AiSessionProviderId, sessionId: string, alias: string) {
+        alias = sanitizeAiSessionAlias(alias);
+        if ((providerId !== 'codex' && providerId !== 'kimi') || !sessionId || !alias) {
+            return;
+        }
+
+        let aliases = getAiSessionAliases();
+        aliases[getAiSessionPinKey(providerId, sessionId)] = alias;
         saveAiSessionAliases(aliases);
     }
 
