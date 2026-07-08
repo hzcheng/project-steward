@@ -13,8 +13,6 @@ $filter-offset: 52px;
     --column-width: #{$defaultColumnWidth}px;
 }
 
-$useAddProjectOpacity: true;
-
 $projectListMinHeight: calc(var(--column-width) * #{math.div(163, $defaultColumnWidth)});
 $projectCardMinHeight: calc(var(--column-width) * #{math.div(96, $defaultColumnWidth)});
 
@@ -205,13 +203,6 @@ body {
     }
 }
 
-@if ($useAddProjectOpacity) {
-    .group:hover .add-project,
-    .group-title:hover + .group .add-project {
-        opacity: 0.6;
-    }
-}
-
 .project-container {
     display: inline-block;
     width: var(--column-width);
@@ -385,18 +376,11 @@ body .project {
         display: none;
     }
 
-    .add-project-header {
-        @extend .project-header;
-        font-size: 60px;
-        margin-top: -0.25em;
-    }
-
-    &.add-project,
     &.no-projects {
         height: $projectCardMinHeight;
         background: none;
         font-size: 1.5em;
-        opacity: if($useAddProjectOpacity, 0, 0.6);
+        opacity: 0.6;
         transition: opacity $defaultTransition;
 
         &:hover {
@@ -1298,7 +1282,6 @@ body.steward-sidebar {
             transform: translateY(0);
         }
 
-        &.add-project,
         &.no-projects {
             height: 58px;
             font-size: 1.1em;

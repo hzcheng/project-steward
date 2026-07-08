@@ -223,7 +223,6 @@ function getGroupSection(
 ) {
     // Apply changes to HTML here also to getTempGroupSection
 
-    var showAddProjectButton = infos.config.showAddProjectButtonTile;
     var isVirtualGroup = isVirtualGroupId(group.id);
     var groupActions = isVirtualGroup
         ? ''
@@ -257,7 +256,6 @@ function getGroupSection(
     <div class="group-list">
         <div class="drop-signal"></div>
         ${group.projects.map((p) => getProjectDiv(p, isVirtualGroup, group.id === OPEN_PROJECTS_GROUP_ID)).join('\n')}
-        ${showAddProjectButton && !isVirtualGroup ? getAddProjectDiv(group.id) : ''}
     </div>       
 </div>`;
 }
@@ -550,17 +548,6 @@ function getImportDiv() {
         <p>Click here to import.</p>
     </div>
 </div>`;
-}
-
-function getAddProjectDiv(groupId: string) {
-    return `
-<span class="project-container slim last" data-nodrag>
-    <div class="project add-project" data-action="add-project" data-group-id="${groupId}">
-        <h2 class="add-project-header">
-            +
-        </h2>
-    </div>
-</span>`;
 }
 
 function getProjectContextMenu() {

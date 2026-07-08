@@ -10,6 +10,7 @@ All notable changes to the "Project Steward" extension will be documented in thi
 -   Reuse shared Open Project matching and remote project resolution helpers when building sidebar cards and saving projects.
 -   Reduce synchronous filesystem work during sidebar refreshes by removing shell-based git detection and scoping AI session reads to open project paths.
 -   Read large Claude session files with targeted cwd scanning plus bounded title sampling instead of loading the whole JSONL file.
+-   Remove the trailing add-project tile from each group; projects can still be added from the group header action, command palette, and empty-state card.
 
 ### Fixed
 

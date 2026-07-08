@@ -94,6 +94,15 @@ function runKeyChecks() {
     assert.strictEqual(helpers.getAiSessionProviderIdFromKey(':missing', isProviderId), null);
 }
 
+function runWebviewContentChecks() {
+    const webviewContent = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts'), 'utf8');
+
+    assert.ok(webviewContent.includes('data-action="add" title="Add Project"'));
+    assert.ok(webviewContent.includes('class="project no-projects" data-action="add-project" data-nodrag'));
+    assert.ok(!webviewContent.includes('getAddProjectDiv(group.id)'));
+    assert.ok(!webviewContent.includes('function getAddProjectDiv'));
+}
+
 function runGitRepositoryDetectorChecks() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-git-'));
     try {
@@ -249,6 +258,7 @@ runAssignmentChecks();
 runCandidateFilterChecks();
 runDisplayChecks();
 runKeyChecks();
+runWebviewContentChecks();
 runGitRepositoryDetectorChecks();
 runClaudeSessionChecks();
 runProviderChecks();

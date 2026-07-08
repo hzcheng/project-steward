@@ -129,7 +129,6 @@ Common options:
 - `projectSteward.projectTileWidth`
 - `projectSteward.openOnStartup`
 - `projectSteward.showAddGroupButtonTile`
-- `projectSteward.showAddProjectButtonTile`
 - `projectSteward.customProjectCardBackground`
 - `projectSteward.customProjectNameColor`
 - `projectSteward.customProjectPathColor`
