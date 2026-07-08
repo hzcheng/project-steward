@@ -603,6 +603,19 @@ The GitHub release workflow builds and uploads VSIX on tag push. It works.
 
 ## Implementation Roadmap
 
+## Execution Status
+
+| Phase | Status | Notes |
+| --- | --- | --- |
+| Phase 0 | Complete | Added focused safety checks for path handling, session assignment, provider metadata, and command builders. |
+| Phase 1 | Complete | Extracted shared AI session types and pure helper functions. |
+| Phase 2 | Complete | Added provider registry for Codex, Kimi, and Claude. |
+| Phase 3 | Complete | Extracted AI session terminal lifecycle management. |
+| Phase 4 | Complete | Added incremental Open Project session updates for the sidebar. |
+| Phase 5 | Complete | Extracted Open Project matching, open-project services, path utilities, and remote project resolution. |
+| Phase 6 | Complete | Removed git shell detection, scoped session reads by open project paths, and reduced large Claude JSONL reads. |
+| Phase 7 | Complete | Updated user-facing docs, changelog notes, and validation coverage for the optimization branch. |
+
 ## Phase 0: Safety Net And Message Protocol
 
 ### Scope
@@ -733,15 +746,21 @@ The GitHub release workflow builds and uploads VSIX on tag push. It works.
 
 ### Scope
 
-- Fix warnings in touched files.
-- Update README if behavior or settings change.
-- Keep changelog entries ready for next release.
+- Review warnings in touched files and avoid introducing new warnings in extracted modules.
+- Update README for current AI session providers and optimized session discovery behavior.
+- Keep changelog entries ready for the next patch release.
 
 ### Validation
 
 - `npm run test-compile`
 - `npm run lint`
 - release workflow still passes.
+
+### Completion Notes
+
+- `npm run lint` exits successfully but still reports legacy warnings in older modules, especially `dashboard.ts`, `colorService.ts`, `ntc.ts`, and `projectService.ts`.
+- New extracted modules are kept narrow and covered by `scripts/run-ai-session-safety-checks.js`.
+- Release notes are staged in `CHANGELOG.md` for version `1.1.5`.
 
 ## Suggested PR Breakdown
 

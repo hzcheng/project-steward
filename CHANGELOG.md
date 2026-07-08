@@ -2,6 +2,20 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
+## [1.1.5] Unreleased
+
+### Changed
+
+-   Update Open Project AI session rendering incrementally instead of rebuilding the full sidebar for every session refresh.
+-   Reuse shared Open Project matching and remote project resolution helpers when building sidebar cards and saving projects.
+-   Reduce synchronous filesystem work during sidebar refreshes by removing shell-based git detection and scoping AI session reads to open project paths.
+-   Read large Claude session files with targeted cwd scanning plus bounded title sampling instead of loading the whole JSONL file.
+
+### Fixed
+
+-   Preserve Open Project session matching for large Claude session files whose cwd appears outside the sampled title window.
+-   Allow folders initialized as git repositories during the current VS Code session to be detected without restarting the extension.
+
 ## [1.1.4] 2026-07-08
 
 ### Added
