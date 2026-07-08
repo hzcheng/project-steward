@@ -2,7 +2,7 @@
     "name": "project-steward",
     "displayName": "Project Steward",
     "description": "Organize local, SSH, and Dev Container projects in a synchronized project steward.",
-    "version": "1.1.4",
+    "version": "1.1.5",
     "publisher": "hzcheng",
     "license": "MIT",
     "icon": "media/extension_icon.png",
@@ -134,11 +134,6 @@
                     "markdownDescription": "If set to ```false```, the '+ New Group' tile is hidden. Groups can be added by using the Command Palette (default ```F1```) with 'Project Steward: Add Group' action. The Project Steward needs to be refreshed for the changes to take effect.",
                     "default": true
                 },
-                "projectSteward.showAddProjectButtonTile": {
-                    "type": "boolean",
-                    "markdownDescription": "If set to ```false```, the dedicated '+' tile is hidden inside groups. Projects can be added by using the actions when hovering the group name. The Project Steward needs to be refreshed for the changes to take effect.",
-                    "default": true
-                },
                 "projectSteward.customProjectCardBackground": {
                     "type": "string",
                     "default": null
@@ -180,6 +175,7 @@
         "webpack": "webpack --mode development",
         "webpack-dev": "webpack --mode development --watch",
         "test-compile": "tsc -p ./",
+        "test:safety": "npm run test-compile && node scripts/run-ai-session-safety-checks.js",
         "lint": "tslint -p ./",
         "install-local": "./scripts/build-test-package-install.sh",
         "publish-marketplace": "./scripts/publish-marketplace.sh"

@@ -1,0 +1,269 @@
+'use strict';
+
+import * as path from 'path';
+import * as vscode from 'vscode';
+import { existsSync, mkdirSync, unlinkSync } from 'fs';
+
+import type { AiSessionProviderId, CodexSession } from '../models';
+import { AI_SESSION_PROVIDER_IDS } from './providers';
+import type { AiSessionProvider, AiSessionTerminalEntry } from './types';
+
+export interface AiSessionTerminalCreateOptions {
+    name: string;
+    cwd?: string;
+    env?: Record<string, string>;
+    cwdFailureMessage: string;
+    cwdWarningMessage: string;
+    logError: (message: string, error: unknown) => void;
+}
+
+export interface AiSessionTerminalCreateResult {
+    terminal: vscode.Terminal;
+    cwdAccepted: boolean;
+}
+
+export interface PendingAiSessionTerminal {
+    provider: AiSessionProviderId;
+    terminal: vscode.Terminal;
+    markerPath: string;
+    cwd: string;
+    createdAt: string;
+    excludedSessionIds: string[];
+    title?: string;
+}
+
+export default class AiSessionTerminalService {
+    private readonly terminals: Record<AiSessionProviderId, Map<string, AiSessionTerminalEntry<vscode.Terminal>>> = {
+        codex: new Map<string, AiSessionTerminalEntry<vscode.Terminal>>(),
+        kimi: new Map<string, AiSessionTerminalEntry<vscode.Terminal>>(),
+        claude: new Map<string, AiSessionTerminalEntry<vscode.Terminal>>(),
+    };
+    private readonly resumesInFlight: Record<AiSessionProviderId, Set<string>> = {
+        codex: new Set<string>(),
+        kimi: new Set<string>(),
+        claude: new Set<string>(),
+    };
+    private pendingTerminals: PendingAiSessionTerminal[] = [];
+
+    constructor(
+        private readonly globalStoragePath: string,
+        private readonly getProvider: (providerId: AiSessionProviderId) => AiSessionProvider,
+        private readonly terminalStartupDelayMs = 1000,
+        private readonly pendingTerminalTtlMs = 24 * 60 * 60 * 1000
+    ) { }
+
+    createTerminal(options: AiSessionTerminalCreateOptions): AiSessionTerminalCreateResult {
+        try {
+            return {
+                terminal: vscode.window.createTerminal({
+                    name: options.name,
+                    cwd: options.cwd || undefined,
+                    env: options.env,
+                }),
+                cwdAccepted: true,
+            };
+        } catch (error) {
+            options.logError(options.cwdFailureMessage, error);
+            vscode.window.showWarningMessage(options.cwdWarningMessage);
+            return {
+                terminal: vscode.window.createTerminal({
+                    name: options.name,
+                    env: options.env,
+                }),
+                cwdAccepted: false,
+            };
+        }
+    }
+
+    private async waitForReady(terminal: vscode.Terminal) {
+        try {
+            await terminal.processId;
+            await new Promise(resolve => setTimeout(resolve, this.terminalStartupDelayMs));
+        } catch (e) {
+            // Best effort only; sendText can still work if VS Code cannot resolve the process id.
+        }
+    }
+
+    async sendNewSessionCommand(providerId: AiSessionProviderId, terminal: vscode.Terminal, cwd: string, title: string, markerPath: string) {
+        let provider = this.getProvider(providerId);
+        await this.waitForReady(terminal);
+        terminal.sendText(provider.buildNewSessionCommand(cwd, title, markerPath));
+    }
+
+    async sendResumeCommand(providerId: AiSessionProviderId, terminal: vscode.Terminal, sessionId: string, cwd: string, markerPath: string) {
+        let provider = this.getProvider(providerId);
+        this.deleteEntryMarker({ terminal, markerPath });
+        await this.waitForReady(terminal);
+        terminal.sendText(provider.buildResumeCommand(sessionId, cwd, markerPath));
+    }
+
+    track(providerId: AiSessionProviderId, sessionId: string, entry: AiSessionTerminalEntry<vscode.Terminal>) {
+        this.terminals[providerId].set(sessionId, entry);
+    }
+
+    untrack(providerId: AiSessionProviderId, sessionId: string) {
+        this.terminals[providerId].delete(sessionId);
+    }
+
+    trackPending(entry: PendingAiSessionTerminal) {
+        if (!entry || !entry.terminal || !entry.markerPath || !entry.cwd || !entry.createdAt) {
+            return;
+        }
+
+        this.pendingTerminals.push({
+            ...entry,
+            excludedSessionIds: Array.isArray(entry.excludedSessionIds) ? entry.excludedSessionIds.filter(id => !!id) : [],
+        });
+        this.pendingTerminals = this.trimPendingTerminals(this.pendingTerminals);
+    }
+
+    getPendingTerminals(): PendingAiSessionTerminal[] {
+        this.pendingTerminals = this.trimPendingTerminals(this.pendingTerminals);
+        return [...this.pendingTerminals];
+    }
+
+    replacePendingTerminals(entries: PendingAiSessionTerminal[]) {
+        this.pendingTerminals = this.trimPendingTerminals(entries || []);
+    }
+
+    removePendingForTerminal(terminal: vscode.Terminal) {
+        this.pendingTerminals = this.pendingTerminals.filter(entry => {
+            if (entry.terminal !== terminal) {
+                return true;
+            }
+
+            this.deleteMarker(entry.markerPath);
+            return false;
+        });
+    }
+
+    beginResume(providerId: AiSessionProviderId, sessionId: string): boolean {
+        let resumesInFlight = this.resumesInFlight[providerId];
+        if (resumesInFlight.has(sessionId)) {
+            return false;
+        }
+
+        resumesInFlight.add(sessionId);
+        return true;
+    }
+
+    finishResume(providerId: AiSessionProviderId, sessionId: string) {
+        this.resumesInFlight[providerId].delete(sessionId);
+    }
+
+    get(providerId: AiSessionProviderId, session: CodexSession): AiSessionTerminalEntry<vscode.Terminal> {
+        return this.getById(providerId, session.id);
+    }
+
+    getById(providerId: AiSessionProviderId, sessionId: string): AiSessionTerminalEntry<vscode.Terminal> {
+        let trackedTerminal = this.terminals[providerId].get(sessionId);
+        if (trackedTerminal) {
+            return trackedTerminal;
+        }
+
+        let terminal = vscode.window.terminals.find(candidate => this.terminalMatchesSession(providerId, candidate, sessionId));
+        if (!terminal) {
+            return null;
+        }
+
+        let entry = {
+            terminal,
+            markerPath: this.getMarkerPath(providerId, sessionId),
+        };
+        this.track(providerId, sessionId, entry);
+
+        return entry;
+    }
+
+    getTrackedSessionKeys(getSessionKey: (providerId: AiSessionProviderId, sessionId: string) => string): Set<string> {
+        let sessionKeys = new Set<string>();
+        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+            for (let sessionId of this.terminals[providerId].keys()) {
+                sessionKeys.add(getSessionKey(providerId, sessionId));
+            }
+        }
+
+        return sessionKeys;
+    }
+
+    getTerminalName(providerId: AiSessionProviderId, session: CodexSession): string {
+        let provider = this.getProvider(providerId);
+        return `${provider.terminalNamePrefix}: ${session.name || session.id} [${session.id.substring(0, 8)}]`;
+    }
+
+    getMarkerPath(providerId: AiSessionProviderId, sessionId: string): string {
+        let markerDir = path.join(this.globalStoragePath, this.getProvider(providerId).markerDirName);
+        try {
+            mkdirSync(markerDir, { recursive: true });
+        } catch (e) {
+            // Fall through; the terminal command will still run without relying on the marker.
+        }
+
+        return path.join(markerDir, `${sessionId}.done`);
+    }
+
+    getPendingMarkerPath(providerId: AiSessionProviderId): string {
+        let markerDir = path.join(this.globalStoragePath, 'pending-ai-session-terminals');
+        try {
+            mkdirSync(markerDir, { recursive: true });
+        } catch (e) {
+            // Fall through; the terminal command will still run without relying on the marker.
+        }
+
+        let uniqueId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        return path.join(markerDir, `${providerId}-${uniqueId}.done`);
+    }
+
+    isComplete(entry: AiSessionTerminalEntry<vscode.Terminal>): boolean {
+        return existsSync(entry.markerPath);
+    }
+
+    deleteEntryMarker(entry: AiSessionTerminalEntry<vscode.Terminal>) {
+        this.deleteMarker(entry.markerPath);
+    }
+
+    deleteMarker(markerPath: string) {
+        try {
+            if (markerPath && existsSync(markerPath)) {
+                unlinkSync(markerPath);
+            }
+        } catch (e) {
+            // Ignore marker cleanup failures; they only affect best-effort terminal reuse.
+        }
+    }
+
+    handleClosedTerminal(terminal: vscode.Terminal) {
+        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+            for (let [sessionId, entry] of this.terminals[providerId]) {
+                if (entry.terminal === terminal) {
+                    this.deleteEntryMarker(entry);
+                    this.untrack(providerId, sessionId);
+                }
+            }
+        }
+    }
+
+    private trimPendingTerminals(pendingTerminals: PendingAiSessionTerminal[]): PendingAiSessionTerminal[] {
+        let cutoff = Date.now() - this.pendingTerminalTtlMs;
+        return pendingTerminals.filter(entry => {
+            return entry
+                && entry.terminal
+                && !!entry.markerPath
+                && !!entry.cwd
+                && !!entry.createdAt
+                && !isNaN(Date.parse(entry.createdAt))
+                && Date.parse(entry.createdAt) >= cutoff;
+        });
+    }
+
+    private terminalMatchesSession(providerId: AiSessionProviderId, terminal: vscode.Terminal, sessionId: string): boolean {
+        let provider = this.getProvider(providerId);
+        let creationOptions = terminal.creationOptions;
+        if ('env' in creationOptions && creationOptions.env?.[provider.terminalEnvKey] === sessionId) {
+            return true;
+        }
+
+        return terminal.name.startsWith(`${provider.terminalNamePrefix}: `)
+            && terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`);
+    }
+}

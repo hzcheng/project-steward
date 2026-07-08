@@ -6,6 +6,8 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { CodexSession } from '../models';
+import { aiSessionPathContains, filterAiSessionsByCandidatePaths, normalizeAiSessionCandidatePaths } from '../aiSessions/sessionHelpers';
+import type { AiSessionQueryOptions } from '../aiSessions/types';
 import { Disposable } from './codexSessionService';
 
 interface KimiWorkDirEntry {
@@ -36,10 +38,11 @@ export default class KimiSessionService {
     private readonly cacheTtlMs = 5000;
     private readonly changePollIntervalMs = 3000;
 
-    getSessions(forceRefresh: boolean = false): KimiSessionReadResult {
+    getSessions(options: boolean | AiSessionQueryOptions = false): KimiSessionReadResult {
+        let { forceRefresh, candidatePaths } = this.getQueryOptions(options);
         let now = Date.now();
         if (!forceRefresh && this.cachedResult && now - this.cachedAt < this.cacheTtlMs) {
-            return this.cachedResult;
+            return this.filterResult(this.cachedResult, candidatePaths);
         }
 
         let kimiHome = this.getKimiHome();
@@ -52,13 +55,21 @@ export default class KimiSessionService {
             return this.cacheResult({ available: false, sessions: [] });
         }
 
+        if (candidatePaths.length) {
+            workDirs = workDirs.filter(workDir => candidatePaths.some(candidatePath => aiSessionPathContains(candidatePath, workDir)));
+            if (!workDirs.length) {
+                return { available: true, sessions: [] };
+            }
+        }
+
         let sessions: CodexSession[] = [];
         for (let workDir of workDirs) {
             sessions.push(...this.getSessionsForWorkDir(kimiHome, workDir));
         }
 
         sessions.sort((a, b) => this.compareUpdatedAt(b.updatedAt, a.updatedAt));
-        return this.cacheResult({ available: true, sessions });
+        let result = { available: true, sessions };
+        return candidatePaths.length ? this.filterResult(result, candidatePaths) : this.cacheResult(result);
     }
 
     archiveSession(sessionId: string): boolean {
@@ -117,6 +128,21 @@ export default class KimiSessionService {
         this.cachedAt = Date.now();
 
         return result;
+    }
+
+    private getQueryOptions(options: boolean | AiSessionQueryOptions): { forceRefresh: boolean; candidatePaths: string[] } {
+        if (typeof options === 'boolean') {
+            return { forceRefresh: options, candidatePaths: [] };
+        }
+
+        return {
+            forceRefresh: Boolean(options?.forceRefresh),
+            candidatePaths: normalizeAiSessionCandidatePaths(options?.candidatePaths || []),
+        };
+    }
+
+    private filterResult(result: KimiSessionReadResult, candidatePaths: string[]): KimiSessionReadResult {
+        return filterAiSessionsByCandidatePaths(result, candidatePaths, session => session.workDir || session.cwd);
     }
 
     private getKimiHome(): string {

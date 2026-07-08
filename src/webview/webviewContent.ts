@@ -223,7 +223,6 @@ function getGroupSection(
 ) {
     // Apply changes to HTML here also to getTempGroupSection
 
-    var showAddProjectButton = infos.config.showAddProjectButtonTile;
     var isVirtualGroup = isVirtualGroupId(group.id);
     var groupActions = isVirtualGroup
         ? ''
@@ -257,7 +256,6 @@ function getGroupSection(
     <div class="group-list">
         <div class="drop-signal"></div>
         ${group.projects.map((p) => getProjectDiv(p, isVirtualGroup, group.id === OPEN_PROJECTS_GROUP_ID)).join('\n')}
-        ${showAddProjectButton && !isVirtualGroup ? getAddProjectDiv(group.id) : ''}
     </div>       
 </div>`;
 }
@@ -304,12 +302,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var codexSessions = project.codexSessions || [];
     var kimiSessions = project.kimiSessions || [];
     var claudeSessions = project.claudeSessions || [];
-    var aiSessionSearchText = codexSessions
-        .concat(kimiSessions)
-        .concat(claudeSessions)
-        .map(session => session.name || '')
-        .join(' ');
-    var searchText = escapeAttribute(`${project.name || ''} ${description} ${aiSessionSearchText}`.toLowerCase());
+    var searchText = escapeAttribute(getProjectSearchText(project));
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
@@ -340,7 +333,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var aiSessionBadge = isReadOnlyProject && aiSessionCount
         ? `<span class="project-codex-badge" title="AI Sessions">AI ${aiSessionCount}</span>`
         : '';
-    var codexSessionSection = isReadOnlyProject ? getCodexSessionsDiv(project) : '';
+    var codexSessionSection = isReadOnlyProject ? getAiSessionsDiv(project) : '';
 
     var isRemote = remoteType !== ProjectRemoteType.None;
 
@@ -376,7 +369,21 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
 </div>`;
 }
 
-function getCodexSessionsDiv(project: Project): string {
+export function getProjectSearchText(project: Project): string {
+    var description = sanitizeProjectName(project.description);
+    var codexSessions = project.codexSessions || [];
+    var kimiSessions = project.kimiSessions || [];
+    var claudeSessions = project.claudeSessions || [];
+    var aiSessionSearchText = codexSessions
+        .concat(kimiSessions)
+        .concat(claudeSessions)
+        .map(session => session.name || '')
+        .join(' ');
+
+    return `${project.name || ''} ${description} ${aiSessionSearchText}`.toLowerCase();
+}
+
+export function getAiSessionsDiv(project: Project): string {
     var codexSessions = project.codexSessions || [];
     var kimiSessions = project.kimiSessions || [];
     var claudeSessions = project.claudeSessions || [];
@@ -541,17 +548,6 @@ function getImportDiv() {
         <p>Click here to import.</p>
     </div>
 </div>`;
-}
-
-function getAddProjectDiv(groupId: string) {
-    return `
-<span class="project-container slim last" data-nodrag>
-    <div class="project add-project" data-action="add-project" data-group-id="${groupId}">
-        <h2 class="add-project-header">
-            +
-        </h2>
-    </div>
-</span>`;
 }
 
 function getProjectContextMenu() {

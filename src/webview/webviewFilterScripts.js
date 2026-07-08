@@ -118,6 +118,8 @@ function initFiltering(activeByDefault) {
         }
     }
 
+    window.__projectStewardApplyFilter = onChangeFilter;
+
     function clearFilter() {
         filterInput.value = '';
         filterInput.focus();

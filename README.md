@@ -2,7 +2,7 @@
 
 Project Steward is a VS Code project hub for developers who move between local folders, SSH remotes, Dev Containers, and AI coding sessions.
 
-It gives you a compact sidebar panel where you can save projects, group them, mark favorites, reopen workspaces, and resume related Codex sessions without searching through recent windows or terminal history.
+It gives you a compact sidebar panel where you can save projects, group them, mark favorites, reopen workspaces, and resume related AI coding sessions without searching through recent windows or terminal history.
 
 Project Steward is a fork of [Kruemelkatze/vscode-dashboard](https://github.com/Kruemelkatze/vscode-dashboard), redesigned around remote-first workflows and sidebar-based daily use.
 
@@ -19,7 +19,7 @@ Project Steward turns those entries into a persistent project catalog.
 - Use the sidebar panel instead of taking over the editor area.
 - See the projects currently open in this VS Code window.
 - Reopen a saved project in the current window or a new window.
-- Resume Codex sessions associated with the current open project.
+- Resume Codex, Kimi, and Claude sessions associated with the current open project.
 - Sync saved project data through VS Code Settings Sync when desired.
 
 ## Highlights
@@ -48,13 +48,13 @@ The `OPEN PROJECT` group shows the project currently open in the active VS Code 
 
 Use the star on each project card to pin or unpin a project. Favorites appear in the `FAVORITES` group and keep the same project metadata as the original card.
 
-### Codex Sessions
+### AI Sessions
 
-Open project cards can expand to show recent active Codex sessions related to that project. Selecting a session opens a VS Code terminal and runs `codex resume` for that session.
+Open project cards can expand to show recent active Codex, Kimi, or Claude sessions related to that project. Use the provider selector on an open project card to switch between providers.
 
-Project Steward avoids opening duplicate terminals for the same Codex session. If a matching terminal is still running, it focuses that terminal; if the prior session terminal has completed, it reuses the terminal and runs `codex resume` again.
+Selecting a session opens a VS Code terminal and runs the matching resume command for that provider. Project Steward avoids opening duplicate terminals for the same session. If a matching terminal is still running, it focuses that terminal; if the prior session terminal has completed, it reuses the terminal and runs the resume command again.
 
-You can also archive sessions from the session list to keep the panel manageable.
+You can also create, rename locally, pin, copy session IDs, and archive sessions from the session list to keep the panel manageable.
 
 ## Quick Start
 
@@ -73,19 +73,19 @@ You can also use the `+` button in a group and choose `Save Current Project`.
 - Click a project card to open it.
 - `Ctrl` + click, or `Cmd` + click on macOS, opens the project in a new window.
 - Hover a card to access edit, color, and remove actions.
-- Use the search bar to filter projects by name, description, path, group, and Codex session text.
+- Use the search bar to filter projects by name, description, path, group, and AI session text.
 
 ## Remote and Dev Container Notes
 
 Project Steward can save and reopen remote project records, including SSH and Dev Container URIs. For best results, use `Project Steward: Save Project` while you are already inside the target remote workspace.
 
-Codex session discovery reads the Codex data available to the extension host:
+AI session discovery reads the provider data available to the extension host:
 
 - local sessions are read from the local machine
 - remote sessions require the extension to run in the remote/workspace environment
 - Dev Container sessions require Project Steward to be installed or running in that Dev Container environment
 
-If a Dev Container project opens correctly but its Codex sessions do not appear, install Project Steward in the Dev Container and reload the window.
+If a Dev Container project opens correctly but its AI sessions do not appear, install Project Steward in the Dev Container and reload the window.
 
 ## Syncing Projects
 
@@ -129,7 +129,6 @@ Common options:
 - `projectSteward.projectTileWidth`
 - `projectSteward.openOnStartup`
 - `projectSteward.showAddGroupButtonTile`
-- `projectSteward.showAddProjectButtonTile`
 - `projectSteward.customProjectCardBackground`
 - `projectSteward.customProjectNameColor`
 - `projectSteward.customProjectPathColor`
