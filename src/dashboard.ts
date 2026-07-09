@@ -12,6 +12,7 @@ import FileService from './services/fileService';
 import CodexSessionService from './services/codexSessionService';
 import KimiSessionService from './services/kimiSessionService';
 import ClaudeSessionService from './services/claudeSessionService';
+import ProjectWindowColorService from './services/projectWindowColorService';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, getAiSessionProviderIdFromKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
@@ -91,6 +92,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
+    const projectWindowColorService = new ProjectWindowColorService(context);
     const fileService = new FileService(context);
     const gitRepositoryDetector = new GitRepositoryDetector();
     const codexSessionService = new CodexSessionService();
@@ -182,11 +184,13 @@ export function activate(context: vscode.ExtensionContext) {
 
         if (event.affectsConfiguration("projectSteward")
             || event.affectsConfiguration("dashboard")) {
+            applyProjectColorToCurrentWindow();
             refreshStewardViews();
         }
     });
 
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        applyProjectColorToCurrentWindow();
         refreshStewardViews();
     });
 
@@ -212,6 +216,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         await checkDataMigration();
+        applyProjectColorToCurrentWindow();
 
         let reopenStewardReason = context.globalState.get(REOPEN_KEY) as ReopenStewardReason;
         context.globalState.update(REOPEN_KEY, ReopenStewardReason.None);
@@ -479,7 +484,18 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function refreshAfterMutation() {
+        applyProjectColorToCurrentWindow();
         refreshStewardViews();
+    }
+
+    function applyProjectColorToCurrentWindow(project: Project = null) {
+        project = project || getOpenProjects()[0];
+        if (project?.showSaveAction) {
+            project = null;
+        }
+        projectWindowColorService.syncProjectColorToCurrentWindow(project).then(undefined, error => {
+            logError('Failed to apply project color to current window.', error);
+        });
     }
 
     async function handleStewardMessage(e: any) {

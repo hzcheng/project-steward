@@ -303,6 +303,7 @@ function getTempGroupSection(totalGroupCount: number) {
 
 function getProjectDiv(project: Project, isVirtualProject: boolean = false, isReadOnlyProject: boolean = false) {
     var borderStyle = `background: ${project.color};`;
+    var projectStyle = project.color ? `--project-color: ${escapeStyleValue(project.color)};` : '';
     var remoteType = getRemoteType(project);
     var description = sanitizeProjectName(project.description);
     var projectName = escapeAttribute(sanitizeProjectName(project.name));
@@ -346,7 +347,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
 
     return `
 <div class="project-container"${isVirtualProject ? ' data-nodrag' : ''}>
-    <div class="project" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
+    <div class="project" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${isVirtualProject ? ' data-virtual-project' : ''
         }${isReadOnlyProject ? ' data-readonly-project' : ''
         }${isReadOnlyProject ? ' data-open-project' : ''
@@ -355,6 +356,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
         }${project.showSaveAction ? ' data-has-save-action' : ''
         }${project.favorite ? ' data-favorite-project' : ''
         }>
+        <div class="project-aura"></div>
         <div class="project-border" style="${borderStyle}"></div>
         ${favoriteBadge}
         ${saveBadge}
@@ -535,6 +537,10 @@ function escapeAttribute(value: string): string {
         .replace(/"/g, '&quot;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+}
+
+function escapeStyleValue(value: string): string {
+    return (value || '').replace(/[;"<>]/g, '').trim();
 }
 
 function getNoProjectsDiv() {

@@ -100,6 +100,7 @@ function runWebviewContentChecks() {
     const webviewIcons = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewIcons.ts'), 'utf8');
     const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const projectWindowColorService = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'projectWindowColorService.ts'), 'utf8');
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
 
@@ -147,8 +148,35 @@ function runWebviewContentChecks() {
     assert.ok(styles.includes('calc(3 * 42px + 2 * 2px)'));
     assert.ok(!packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode']);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.storeProjectsInSettings'].default, true);
+    assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.applyProjectColorToWindow'].default, false);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].default, 3);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].minimum, 1);
+    assert.ok(dashboard.includes("ProjectWindowColorService"));
+    assert.ok(dashboard.includes("function applyProjectColorToCurrentWindow(project: Project = null)"));
+    assert.ok(dashboard.includes("project?.showSaveAction"));
+    assert.ok(dashboard.includes("syncProjectColorToCurrentWindow(project)"));
+    assert.ok(projectWindowColorService.includes("PROJECT_COLOR_TO_WINDOW_KEY = 'applyProjectColorToWindow'"));
+    assert.ok(projectWindowColorService.includes("PROJECT_WINDOW_COLOR_BACKUP_KEY"));
+    assert.ok(projectWindowColorService.includes("WORKBENCH_SECTION = 'workbench'"));
+    assert.ok(projectWindowColorService.includes("COLOR_CUSTOMIZATIONS_KEY = 'colorCustomizations'"));
+    assert.ok(projectWindowColorService.includes("syncProjectColorToCurrentWindow(project: Project)"));
+    assert.ok(projectWindowColorService.includes("restoreProjectWindowColors(project: Project = null)"));
+    assert.ok(projectWindowColorService.includes("restoreBackedUpProjectWindowColors"));
+    assert.ok(projectWindowColorService.includes("removeGeneratedProjectWindowColors"));
+    assert.ok(projectWindowColorService.includes("let originalColorCustomizations = this.removeGeneratedProjectWindowColors(colorCustomizations, project);"));
+    assert.ok(projectWindowColorService.includes("await this.backupProjectWindowColors(originalColorCustomizations);"));
+    assert.ok(projectWindowColorService.includes("getLegacyWindowColorCustomizations"));
+    assert.ok(projectWindowColorService.includes("let auraPalette = this.getAuraPalette(color);"));
+    assert.ok(projectWindowColorService.includes("'titleBar.activeBackground': auraPalette.titleBar"));
+    assert.ok(projectWindowColorService.includes("'statusBar.background': auraPalette.statusBar"));
+    assert.ok(projectWindowColorService.includes("'statusBarItem.remoteBackground': auraPalette.remote"));
+    assert.ok(projectWindowColorService.includes("'activityBar.activeBorder': color"));
+    assert.ok(projectWindowColorService.includes("'activityBar.activeBackground': auraPalette.activityActive"));
+    assert.ok(projectWindowColorService.includes("'commandCenter.activeBorder': auraPalette.commandBorder"));
+    assert.ok(!extractMethodBody(projectWindowColorService, 'getWindowColorCustomizations').includes("'activityBar.background'"));
+    assert.ok(webviewContent.includes('style="${projectStyle}"'));
+    assert.ok(styles.includes('--project-color'));
+    assert.ok(styles.includes('.project-aura'));
     assert.ok(webviewContent.includes('--steward-ai-session-list-max-height: ${getAiSessionListMaxHeight(config)}px;'));
     assert.ok(webviewContent.includes('Number.isFinite(visibleRows)'));
     assert.ok(styles.includes('height: var(--steward-ai-session-list-max-height, calc(3 * 42px + 2 * 2px));'));
@@ -175,6 +203,28 @@ function extractFunctionBody(source, functionName) {
     }
 
     assert.fail(`Could not extract ${functionName}`);
+}
+
+function extractMethodBody(source, methodName) {
+    const signatureIndex = source.indexOf(`${methodName}(`);
+    assert.notStrictEqual(signatureIndex, -1);
+
+    const openingBraceIndex = source.indexOf('{', signatureIndex);
+    assert.notStrictEqual(openingBraceIndex, -1);
+
+    let depth = 0;
+    for (let i = openingBraceIndex; i < source.length; i++) {
+        if (source[i] === '{') {
+            depth++;
+        } else if (source[i] === '}') {
+            depth--;
+            if (depth === 0) {
+                return source.slice(openingBraceIndex + 1, i);
+            }
+        }
+    }
+
+    assert.fail(`Could not extract ${methodName}`);
 }
 
 function extractScssBlock(source, selector) {

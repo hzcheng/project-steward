@@ -151,6 +151,11 @@
                 "projectSteward.customProjectPathColor": {
                     "type": "string",
                     "default": null
+                },
+                "projectSteward.applyProjectColorToWindow": {
+                    "type": "boolean",
+                    "default": false,
+                    "markdownDescription": "If set to ```true```, Project Steward applies the saved project color to the current VS Code window by writing workspace ```workbench.colorCustomizations``` values for title bar, activity bar, and status bar."
                 }
             }
         },
