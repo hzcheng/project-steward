@@ -99,7 +99,7 @@
                 },
                 "projectSteward.storeProjectsInSettings": {
                     "type": "boolean",
-                    "default": false,
+                    "default": true,
                     "markdownDescription": "If set to ```true```, the Project Steward data is saved in the user settings and can be synced using the ```Settings Sync``` extension to multiple devices. NOTE: This disables the possibility of having varying Project Steward data on these devices. **(VSCode restart required)**"
                 },
                 "projectSteward.displayProjectPath": {

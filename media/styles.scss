@@ -519,7 +519,7 @@ body .project {
         display: flex;
         align-items: center;
         width: calc(var(--column-width) - #{$defaultPadding});
-        max-width: calc(100% - 44px);
+        max-width: calc(100% - 76px);
         min-width: 0;
         padding: 4px 10px;
         background: var(--steward-project-card-bg);
@@ -571,31 +571,39 @@ body .project {
         border: 0;
     }
 
-    .toggle-all-groups-button {
+    .toggle-all-groups-button,
+    .settings-button {
         display: inline-flex;
         align-items: center;
         justify-content: center;
         flex: 0 0 auto;
-        width: 28px;
-        height: 28px;
-        margin-left: 8px;
+        width: 30px;
+        height: 30px;
+        margin-left: 4px;
         padding: 0;
         color: var(--steward-foreground);
         background: transparent;
         border: 1px solid transparent;
-        border-radius: 3px;
+        border-radius: 7px;
         cursor: pointer;
+        opacity: 1;
+        transition: background $defaultTransition, border-color $defaultTransition, color $defaultTransition, opacity $defaultTransition;
 
         &:hover {
-            background: var(--steward-project-card-bg);
+            color: var(--vscode-focusBorder);
+            background: var(--vscode-list-hoverBackground);
+            border-color: var(--vscode-panel-border);
+            opacity: 1;
         }
 
         svg {
-            width: 13px;
-            height: 13px;
+            width: 18px;
+            height: 18px;
             fill: currentColor;
         }
+    }
 
+    .toggle-all-groups-button {
         .toggle-all-groups-expand-icon {
             display: none;
         }
@@ -691,14 +699,15 @@ body.steward-sidebar {
             text-align: left;
         }
 
-        .toggle-all-groups-button {
-            width: 24px;
-            height: 24px;
-            margin-left: 6px;
+        .toggle-all-groups-button,
+        .settings-button {
+            width: 26px;
+            height: 26px;
+            margin-left: 4px;
 
             svg {
-                width: 12px;
-                height: 12px;
+                width: 17px;
+                height: 17px;
             }
         }
     }

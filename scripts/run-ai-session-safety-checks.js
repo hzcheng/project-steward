@@ -96,11 +96,63 @@ function runKeyChecks() {
 
 function runWebviewContentChecks() {
     const webviewContent = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts'), 'utf8');
+    const webviewProjectScripts = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'), 'utf8');
+    const webviewIcons = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewIcons.ts'), 'utf8');
+    const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
+    const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
 
     assert.ok(webviewContent.includes('data-action="add" title="Add Project"'));
     assert.ok(webviewContent.includes('class="project no-projects" data-action="add-project" data-nodrag'));
     assert.ok(!webviewContent.includes('getAddProjectDiv(group.id)'));
     assert.ok(!webviewContent.includes('function getAddProjectDiv'));
+    assert.ok(webviewContent.includes('class="settings-button" data-action="open-settings"'));
+    assert.ok(webviewProjectScripts.includes("type: 'open-settings'"));
+    assert.ok(dashboard.includes("case 'open-settings':"));
+    assert.ok(settingsFunction.includes("executeCommand('workbench.action.openSettings', '@ext:hzcheng.project-steward')"));
+    assert.ok(!settingsFunction.includes('showQuickPick'));
+    assert.ok(!settingsFunction.includes('ai-session-terminal-mode-planned'));
+    assert.ok(webviewContent.includes('.settings-button,'));
+    assert.ok(styles.includes('max-width: calc(100% - 76px);'));
+    assert.ok(styles.includes('margin-left: 4px;'));
+    assert.ok(styles.includes('width: 18px;'));
+    assert.ok(styles.includes('height: 18px;'));
+    assert.ok(styles.includes('width: 17px;'));
+    assert.ok(styles.includes('height: 17px;'));
+    assert.ok(styles.includes('fill: currentColor;'));
+    assert.ok(!styles.includes('stroke: currentColor;'));
+    assert.ok(styles.includes('opacity: 1;'));
+    assert.ok(!styles.includes('opacity: 0.86;'));
+    assert.ok(webviewContent.includes('width: 18px;'));
+    assert.ok(webviewContent.includes('height: 18px;'));
+    assert.ok(webviewIcons.includes('<svg viewBox="0 0 448 512">'));
+    assert.ok(webviewIcons.includes('M19.43 12.98'));
+    assert.ok(!packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode']);
+    assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.storeProjectsInSettings'].default, true);
+}
+
+function extractFunctionBody(source, functionName) {
+    const signature = `function ${functionName}(`;
+    const signatureIndex = source.indexOf(signature);
+    assert.notStrictEqual(signatureIndex, -1);
+
+    const openingBraceIndex = source.indexOf('{', signatureIndex);
+    assert.notStrictEqual(openingBraceIndex, -1);
+
+    let depth = 0;
+    for (let i = openingBraceIndex; i < source.length; i++) {
+        if (source[i] === '{') {
+            depth++;
+        } else if (source[i] === '}') {
+            depth--;
+            if (depth === 0) {
+                return source.slice(openingBraceIndex + 1, i);
+            }
+        }
+    }
+
+    assert.fail(`Could not extract ${functionName}`);
 }
 
 function runGitRepositoryDetectorChecks() {

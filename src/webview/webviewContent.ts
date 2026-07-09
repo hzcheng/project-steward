@@ -100,6 +100,9 @@ export function getStewardContent(
                     <span class="toggle-all-groups-collapse-icon">${Icons.collapseAll}</span>
                     <span class="toggle-all-groups-expand-icon">${Icons.expandAll}</span>
                 </button>
+                <button type="button" class="settings-button" data-action="open-settings" title="Project Steward Settings" aria-label="Project Steward Settings">
+                    ${Icons.settings}
+                </button>
             </div>
             ${openProjectsGroup ? `<div class="sticky-groups-wrapper">
                 ${getGroupSection(openProjectsGroup, allGroups.length, infos)}
@@ -172,6 +175,7 @@ function criticalStartupStyle(): string {
         }
         .search-icon,
         .clear-search-icon,
+        .settings-button,
         .toggle-all-groups-button,
         .toggle-all-groups-collapse-icon,
         .toggle-all-groups-expand-icon {
@@ -194,15 +198,18 @@ function criticalStartupStyle(): string {
         .clear-search-icon {
             visibility: hidden;
         }
+        .settings-button,
         .toggle-all-groups-button {
-            width: 28px;
-            height: 28px;
+            width: 30px;
+            height: 30px;
             padding: 0;
             overflow: hidden;
         }
+        .settings-button svg,
         .toggle-all-groups-button svg {
-            width: 13px;
-            height: 13px;
+            width: 18px;
+            height: 18px;
+            fill: currentColor;
         }
         .toggle-all-groups-expand-icon {
             display: none;

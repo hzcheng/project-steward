@@ -553,6 +553,9 @@ export function activate(context: vscode.ExtensionContext) {
             case 'request-full-refresh':
                 refreshStewardViews();
                 break;
+            case 'open-settings':
+                await showProjectStewardSettings();
+                break;
             case 'resume-ai-session':
             case 'resume-codex-session':
             case 'resume-kimi-session':
@@ -585,6 +588,10 @@ export function activate(context: vscode.ExtensionContext) {
                 // Collapse-all is a per-webview convenience action.
                 break;
         }
+    }
+
+    async function showProjectStewardSettings() {
+        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:hzcheng.project-steward');
     }
 
     async function addGroup() {
