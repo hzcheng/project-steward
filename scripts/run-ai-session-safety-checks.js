@@ -133,15 +133,25 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes('class="codex-session-actions"'));
     assert.ok(webviewContent.includes('<button type="button" class="codex-session-pin'));
     assert.ok(webviewContent.includes('<button type="button" class="codex-session-archive"'));
+    assert.ok(!webviewContent.includes('codex-session-meta-chip'));
+    assert.ok(webviewContent.includes("join(' · ')"));
     assert.ok(styles.includes('.codex-session-actions'));
     assert.ok(styles.includes('[data-session-pinned] .codex-session-actions'));
+    assert.ok(styles.includes('&::before'));
+    assert.ok(!styles.includes('.codex-session-meta-chip'));
+    assert.ok(styles.includes('box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04)'));
+    assert.ok(!styles.includes('color-mix('));
+    assert.ok(!extractScssBlock(styles, '.codex-session-row').includes('linear-gradient(90deg'));
+    assert.ok(!extractScssBlock(styles, '.codex-session-row').includes('translateY(-1px)'));
+    assert.ok(webviewContent.includes('visibleRows * 42'));
+    assert.ok(styles.includes('calc(5 * 42px + 4 * 2px)'));
     assert.ok(!packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode']);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.storeProjectsInSettings'].default, true);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].default, 5);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].minimum, 1);
     assert.ok(webviewContent.includes('--steward-ai-session-list-max-height: ${getAiSessionListMaxHeight(config)}px;'));
     assert.ok(webviewContent.includes('Number.isFinite(visibleRows)'));
-    assert.ok(styles.includes('max-height: var(--steward-ai-session-list-max-height, calc(5 * 40px + 4 * 2px));'));
+    assert.ok(styles.includes('max-height: var(--steward-ai-session-list-max-height, calc(5 * 42px + 4 * 2px));'));
 }
 
 function extractFunctionBody(source, functionName) {
@@ -165,6 +175,28 @@ function extractFunctionBody(source, functionName) {
     }
 
     assert.fail(`Could not extract ${functionName}`);
+}
+
+function extractScssBlock(source, selector) {
+    const selectorIndex = source.indexOf(selector);
+    assert.notStrictEqual(selectorIndex, -1);
+
+    const openingBraceIndex = source.indexOf('{', selectorIndex);
+    assert.notStrictEqual(openingBraceIndex, -1);
+
+    let depth = 0;
+    for (let i = openingBraceIndex; i < source.length; i++) {
+        if (source[i] === '{') {
+            depth++;
+        } else if (source[i] === '}') {
+            depth--;
+            if (depth === 0) {
+                return source.slice(openingBraceIndex + 1, i);
+            }
+        }
+    }
+
+    assert.fail(`Could not extract ${selector}`);
 }
 
 function runGitRepositoryDetectorChecks() {

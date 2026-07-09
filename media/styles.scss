@@ -1129,7 +1129,7 @@ body.steward-sidebar {
             gap: 2px;
             margin-top: 5px;
             margin-left: 0;
-            max-height: var(--steward-ai-session-list-max-height, calc(5 * 40px + 4 * 2px));
+            max-height: var(--steward-ai-session-list-max-height, calc(5 * 42px + 4 * 2px));
             overflow-y: auto;
             overflow-x: hidden;
             padding-right: 2px;
@@ -1137,28 +1137,70 @@ body.steward-sidebar {
         }
 
         .codex-session-row {
+            --steward-ai-accent: var(--vscode-terminal-ansiCyan);
+
             display: grid;
-            grid-template-columns: 40px minmax(0, 1fr);
+            grid-template-columns: 28px minmax(0, 1fr);
             align-items: center;
-            gap: 6px;
+            gap: 7px;
             box-sizing: border-box;
             position: relative;
-            min-height: 40px;
-            padding: 3px 42px 3px 6px;
-            border-radius: 6px;
+            min-height: 42px;
+            padding: 4px 42px 4px 8px;
+            border: 1px solid transparent;
+            border-radius: 8px;
             color: var(--steward-foreground);
+            background: transparent;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
             cursor: pointer;
+            overflow: hidden;
             transition:
+                border-color $defaultTransition,
                 background $defaultTransition,
-                color $defaultTransition;
+                box-shadow $defaultTransition,
+                color $defaultTransition,
+                transform $defaultTransition;
+
+            &::before {
+                content: "";
+                position: absolute;
+                left: 0;
+                top: 9px;
+                bottom: 9px;
+                width: 2px;
+                border-radius: 999px;
+                background: var(--steward-ai-accent);
+                opacity: 0.42;
+                transition:
+                    opacity $defaultTransition;
+            }
 
             &:hover {
+                border-color: var(--vscode-panel-border);
                 background: var(--vscode-list-hoverBackground);
+                box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+                &::before {
+                    opacity: 0.78;
+                }
             }
 
             &[data-session-pinned] {
-                background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground));
+                border-color: var(--vscode-panel-border);
+                background: var(--vscode-list-inactiveSelectionBackground, transparent);
+
+                &::before {
+                    opacity: 0.9;
+                }
             }
+        }
+
+        .codex-session-row[data-session-provider="kimi"] {
+            --steward-ai-accent: var(--vscode-terminal-ansiMagenta, #c586c0);
+        }
+
+        .codex-session-row[data-session-provider="claude"] {
+            --steward-ai-accent: var(--vscode-terminal-ansiYellow, #dcdcaa);
         }
 
         .codex-session-actions {
@@ -1199,19 +1241,25 @@ body.steward-sidebar {
 
         .codex-session-icon {
             color: var(--vscode-terminal-ansiCyan);
+            width: 26px;
+            height: 26px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 7px;
+            background: var(--vscode-sideBar-background);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 
             svg {
-                width: 32px;
-                height: 32px;
+                width: 17px;
+                height: 17px;
             }
         }
 
         .codex-session-row[data-session-provider="kimi"] .codex-session-icon {
-            color: var(--vscode-terminal-ansiMagenta, #c586c0);
+            color: var(--steward-ai-accent);
         }
 
         .codex-session-row[data-session-provider="claude"] .codex-session-icon {
-            color: var(--vscode-terminal-ansiYellow, #dcdcaa);
+            color: var(--steward-ai-accent);
         }
 
         .codex-session-pin,
@@ -1315,7 +1363,7 @@ body.steward-sidebar {
         .codex-session-name {
             color: var(--steward-foreground);
             font-size: 11px;
-            font-weight: 550;
+            font-weight: 650;
             line-height: 1.15;
         }
 

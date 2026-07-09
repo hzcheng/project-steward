@@ -467,7 +467,8 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
     var sessionId = escapeAttribute(session.id || '');
     var shortSessionId = escapeAttribute((session.id || '').substring(0, 8));
     var updatedAt = escapeAttribute(formatCodexSessionUpdatedAt(session.updatedAt));
-    var metadata = [updatedAt, shortSessionId].filter(value => !!value).join(' · ');
+    var shortId = shortSessionId ? `#${shortSessionId}` : '';
+    var metadata = [updatedAt, shortId].filter(value => !!value).join(' · ');
     var providerLabel = getAiProviderLabel(provider);
     var pinned = !!session.pinned;
     var pinTitle = pinned ? 'Unpin Session' : 'Pin Session';
@@ -668,7 +669,7 @@ function getCustomStyle(config: vscode.WorkspaceConfiguration) {
 
 function getAiSessionListMaxHeight(config: vscode.WorkspaceConfiguration): number {
     var visibleRows = getMaxVisibleAiSessions(config);
-    return visibleRows * 40 + Math.max(visibleRows - 1, 0) * 2;
+    return visibleRows * 42 + Math.max(visibleRows - 1, 0) * 2;
 }
 
 function getMaxVisibleAiSessions(config: vscode.WorkspaceConfiguration): number {
