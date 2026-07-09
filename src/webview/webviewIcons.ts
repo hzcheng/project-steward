@@ -56,8 +56,11 @@ export const archive = `
 `;
 
 export const pin = `
-<svg viewBox="0 0 24 24">
-    <path d="M14.5 3.5 20.5 9.5 18.8 11.2 17.5 9.9 13.2 14.2 13.7 18.7 12.4 20 8.8 16.4 4.8 20.4 3.6 19.2 7.6 15.2 4 11.6 5.3 10.3 9.8 10.8 14.1 6.5 12.8 5.2 14.5 3.5Z"></path>
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M15.8 4.8 19.2 8.2"></path>
+    <path d="M14.6 6 9.9 10.7 6.9 10.2 10.2 13.5 4.8 18.9"></path>
+    <path d="M13.5 10.2 18.8 15.5"></path>
+    <path d="M12.2 14.8 13 18.1 15.5 15.6"></path>
 </svg>
 `;
 

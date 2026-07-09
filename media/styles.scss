@@ -1138,12 +1138,13 @@ body.steward-sidebar {
 
         .codex-session-row {
             display: grid;
-            grid-template-columns: 40px minmax(0, 1fr) 16px 16px;
+            grid-template-columns: 40px minmax(0, 1fr);
             align-items: center;
             gap: 6px;
             box-sizing: border-box;
+            position: relative;
             min-height: 40px;
-            padding: 3px 4px 3px 6px;
+            padding: 3px 42px 3px 6px;
             border-radius: 6px;
             color: var(--steward-foreground);
             cursor: pointer;
@@ -1158,6 +1159,30 @@ body.steward-sidebar {
             &[data-session-pinned] {
                 background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground));
             }
+        }
+
+        .codex-session-actions {
+            position: absolute;
+            right: 4px;
+            top: 50%;
+            z-index: 2;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+            padding: 2px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 999px;
+            background: var(--vscode-menu-background);
+            box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(-50%) translateX(4px);
+            transition:
+                opacity $defaultTransition,
+                transform $defaultTransition,
+                border-color $defaultTransition,
+                background $defaultTransition;
         }
 
         .codex-session-icon,
@@ -1200,24 +1225,38 @@ body.steward-sidebar {
         .codex-session-pin,
         .codex-session-archive {
             color: var(--vscode-descriptionForeground);
-            opacity: 0;
-            pointer-events: none;
+            padding: 0;
+            border: 0;
+            background: transparent;
+            font: inherit;
+            cursor: pointer;
             transition:
+                background $defaultTransition,
                 color $defaultTransition,
-                opacity $defaultTransition,
                 transform $defaultTransition;
         }
 
         .codex-session-pin {
+            width: 16px;
+            height: 16px;
+            border-radius: 999px;
+
+            svg {
+                width: 14px;
+                height: 14px;
+                fill: none;
+                stroke: currentColor;
+            }
+
             &:hover {
                 color: var(--vscode-focusBorder);
+                background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground));
                 transform: scale(1.08);
             }
 
             &.active {
                 color: var(--vscode-focusBorder);
-                opacity: 1;
-                pointer-events: auto;
+                background: var(--vscode-list-inactiveSelectionBackground, transparent);
             }
         }
 
@@ -1228,10 +1267,35 @@ body.steward-sidebar {
             }
         }
 
-        .codex-session-row:hover .codex-session-pin,
-        .codex-session-row:hover .codex-session-archive {
+        .codex-session-row:hover .codex-session-actions,
+        .codex-session-row:focus-within .codex-session-actions {
             opacity: 1;
             pointer-events: auto;
+            transform: translateY(-50%) translateX(0);
+        }
+
+        .codex-session-row[data-session-pinned] .codex-session-actions {
+            opacity: 1;
+            pointer-events: auto;
+            border-color: transparent;
+            background: transparent;
+            box-shadow: none;
+            transform: translateY(-50%) translateX(0);
+
+            .codex-session-archive {
+                display: none;
+            }
+        }
+
+        .codex-session-row[data-session-pinned]:hover .codex-session-actions,
+        .codex-session-row[data-session-pinned]:focus-within .codex-session-actions {
+            border-color: var(--vscode-panel-border);
+            background: var(--vscode-menu-background);
+            box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+
+            .codex-session-archive {
+                display: inline-flex;
+            }
         }
 
         .codex-session-text {

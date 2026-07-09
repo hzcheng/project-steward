@@ -471,8 +471,8 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
     var providerLabel = getAiProviderLabel(provider);
     var pinned = !!session.pinned;
     var pinTitle = pinned ? 'Unpin Session' : 'Pin Session';
-    var pinAction = `<span class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}">${Icons.pin}</span>`;
-    var archiveAction = `<span class="codex-session-archive" data-action="archive-${provider}-session" title="Archive Session">${Icons.archive}</span>`;
+    var pinAction = `<button type="button" class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}" aria-label="${pinTitle}">${Icons.pin}</button>`;
+    var archiveAction = `<button type="button" class="codex-session-archive" data-action="archive-${provider}-session" title="Archive Session" aria-label="Archive Session">${Icons.archive}</button>`;
 
     return `
 <div class="codex-session-row"${pinned ? ' data-session-pinned' : ''} data-session-id="${sessionId}" data-session-provider="${provider}" title="Resume ${providerLabel} Session">
@@ -481,8 +481,10 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
         <span class="codex-session-name">${sessionName}</span>
         <span class="codex-session-meta">${metadata}</span>
     </span>
-    ${pinAction}
-    ${archiveAction}
+    <span class="codex-session-actions">
+        ${pinAction}
+        ${archiveAction}
+    </span>
 </div>`;
 }
 
