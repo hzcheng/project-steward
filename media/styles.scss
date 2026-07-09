@@ -1129,7 +1129,7 @@ body.steward-sidebar {
             gap: 2px;
             margin-top: 5px;
             margin-left: 0;
-            max-height: var(--steward-ai-session-list-max-height, calc(5 * 42px + 4 * 2px));
+            height: var(--steward-ai-session-list-max-height, calc(3 * 42px + 2 * 2px));
             overflow-y: auto;
             overflow-x: hidden;
             padding-right: 2px;

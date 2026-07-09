@@ -144,14 +144,14 @@ function runWebviewContentChecks() {
     assert.ok(!extractScssBlock(styles, '.codex-session-row').includes('linear-gradient(90deg'));
     assert.ok(!extractScssBlock(styles, '.codex-session-row').includes('translateY(-1px)'));
     assert.ok(webviewContent.includes('visibleRows * 42'));
-    assert.ok(styles.includes('calc(5 * 42px + 4 * 2px)'));
+    assert.ok(styles.includes('calc(3 * 42px + 2 * 2px)'));
     assert.ok(!packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode']);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.storeProjectsInSettings'].default, true);
-    assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].default, 5);
+    assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].default, 3);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].minimum, 1);
     assert.ok(webviewContent.includes('--steward-ai-session-list-max-height: ${getAiSessionListMaxHeight(config)}px;'));
     assert.ok(webviewContent.includes('Number.isFinite(visibleRows)'));
-    assert.ok(styles.includes('max-height: var(--steward-ai-session-list-max-height, calc(5 * 42px + 4 * 2px));'));
+    assert.ok(styles.includes('height: var(--steward-ai-session-list-max-height, calc(3 * 42px + 2 * 2px));'));
 }
 
 function extractFunctionBody(source, functionName) {

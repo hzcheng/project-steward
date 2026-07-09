@@ -673,9 +673,9 @@ function getAiSessionListMaxHeight(config: vscode.WorkspaceConfiguration): numbe
 }
 
 function getMaxVisibleAiSessions(config: vscode.WorkspaceConfiguration): number {
-    var configuredRows = config.get('maxVisibleAiSessions', 5);
+    var configuredRows = config.get('maxVisibleAiSessions', 3);
     var visibleRows = Math.floor(Number(configuredRows));
-    return Number.isFinite(visibleRows) && visibleRows > 0 ? visibleRows : 5;
+    return Number.isFinite(visibleRows) && visibleRows > 0 ? visibleRows : 3;
 }
 
 function getMediaResource(

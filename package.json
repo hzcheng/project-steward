@@ -104,7 +104,7 @@
                 },
                 "projectSteward.maxVisibleAiSessions": {
                     "type": "number",
-                    "default": 5,
+                    "default": 3,
                     "minimum": 1,
                     "markdownDescription": "Maximum number of AI session rows visible in an expanded project card before the session list scrolls."
                 },
