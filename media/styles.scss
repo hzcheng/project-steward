@@ -609,6 +609,10 @@ body .project {
         }
     }
 
+    .settings-button {
+        margin-left: 1px;
+    }
+
     /* clears the 'X' from Chrome */
     input[type="search"]::-webkit-search-decoration,
     input[type="search"]::-webkit-search-cancel-button,
@@ -709,6 +713,10 @@ body.steward-sidebar {
                 width: 17px;
                 height: 17px;
             }
+        }
+
+        .settings-button {
+            margin-left: 0;
         }
     }
 
@@ -1121,7 +1129,7 @@ body.steward-sidebar {
             gap: 2px;
             margin-top: 5px;
             margin-left: 0;
-            max-height: calc(5 * 40px + 4 * 2px);
+            max-height: var(--steward-ai-session-list-max-height, calc(5 * 40px + 4 * 2px));
             overflow-y: auto;
             overflow-x: hidden;
             padding-right: 2px;

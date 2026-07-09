@@ -130,6 +130,11 @@ function runWebviewContentChecks() {
     assert.ok(webviewIcons.includes('M19.43 12.98'));
     assert.ok(!packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode']);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.storeProjectsInSettings'].default, true);
+    assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].default, 5);
+    assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].minimum, 1);
+    assert.ok(webviewContent.includes('--steward-ai-session-list-max-height: ${getAiSessionListMaxHeight(config)}px;'));
+    assert.ok(webviewContent.includes('Number.isFinite(visibleRows)'));
+    assert.ok(styles.includes('max-height: var(--steward-ai-session-list-max-height, calc(5 * 40px + 4 * 2px));'));
 }
 
 function extractFunctionBody(source, functionName) {

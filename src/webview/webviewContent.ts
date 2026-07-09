@@ -659,8 +659,20 @@ function getCustomStyle(config: vscode.WorkspaceConfiguration) {
             ? `--column-width: ${projectTileWidth}px;`
             : ''
         }
+        --steward-ai-session-list-max-height: ${getAiSessionListMaxHeight(config)}px;
     }
 </style>`;
+}
+
+function getAiSessionListMaxHeight(config: vscode.WorkspaceConfiguration): number {
+    var visibleRows = getMaxVisibleAiSessions(config);
+    return visibleRows * 40 + Math.max(visibleRows - 1, 0) * 2;
+}
+
+function getMaxVisibleAiSessions(config: vscode.WorkspaceConfiguration): number {
+    var configuredRows = config.get('maxVisibleAiSessions', 5);
+    var visibleRows = Math.floor(Number(configuredRows));
+    return Number.isFinite(visibleRows) && visibleRows > 0 ? visibleRows : 5;
 }
 
 function getMediaResource(
