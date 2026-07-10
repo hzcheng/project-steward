@@ -27,6 +27,7 @@ export class Project {
     path: string;
     remoteType?: ProjectRemoteType;
     favorite?: boolean;
+    favoriteOrder?: number;
     showSaveAction?: boolean;
     isCurrentWorkspace?: boolean;
     codexSessions?: CodexSession[];

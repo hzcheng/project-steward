@@ -2,6 +2,21 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
+## [1.1.7] 2026-07-10
+
+### Added
+
+-   Allow favorite project cards to be reordered by dragging within the `FAVORITES` group.
+
+### Changed
+
+-   Persist Favorites ordering in project data so it follows the existing Settings Sync behavior.
+-   Append newly favorited projects to the end of the Favorites list.
+
+### Fixed
+
+-   Keep Favorites-only drag operations isolated from ordinary Group and Open Project cards.
+
 ## [1.1.6] 2026-07-10
 
 ### Added
