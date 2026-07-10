@@ -12,6 +12,7 @@ import {
     CodexSession,
 } from '../models';
 import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, OPEN_PROJECTS_GROUP_ID } from '../constants';
+import { withCurrentWorkspaceState } from '../projects/currentWorkspaceState';
 import * as Icons from './webviewIcons';
 
 const FAVORITES_GROUP_NAME = 'FAVORITES';
@@ -45,6 +46,13 @@ export function getStewardContent(
         'webviewFilterScripts.js'
     );
 
+    var workspaceState = withCurrentWorkspaceState(
+        groups,
+        infos.openProjects || [],
+        infos.currentWorkspaceProjectIds || []
+    );
+    groups = workspaceState.groups;
+    var openProjects = workspaceState.openProjects;
     var customCss = infos.config.get('customCss') || '';
     var favoriteProjects = groups
         .reduce((projects, group) => projects.concat(group.projects || []), [] as Project[])
@@ -52,7 +60,6 @@ export function getStewardContent(
     var favoritesGroupCollapsed = infos.favoritesGroupCollapsed !== undefined
         ? infos.favoritesGroupCollapsed
         : groups.every(group => group.collapsed);
-    var openProjects = infos.openProjects || [];
     var openProjectsGroup = openProjects.length
         ? getOpenProjectsGroup(openProjects, infos.openProjectsGroupCollapsed)
         : null;
@@ -99,6 +106,9 @@ export function getStewardContent(
                 <button type="button" class="toggle-all-groups-button" data-action="toggle-all-groups" title="${allGroupsCollapsed ? 'Expand All Groups' : 'Collapse All Groups'}" aria-label="${allGroupsCollapsed ? 'Expand All Groups' : 'Collapse All Groups'}">
                     <span class="toggle-all-groups-collapse-icon">${Icons.collapseAll}</span>
                     <span class="toggle-all-groups-expand-icon">${Icons.expandAll}</span>
+                </button>
+                <button type="button" class="settings-button" data-action="open-settings" title="Project Steward Settings" aria-label="Project Steward Settings">
+                    ${Icons.settings}
                 </button>
             </div>
             ${openProjectsGroup ? `<div class="sticky-groups-wrapper">
@@ -172,6 +182,7 @@ function criticalStartupStyle(): string {
         }
         .search-icon,
         .clear-search-icon,
+        .settings-button,
         .toggle-all-groups-button,
         .toggle-all-groups-collapse-icon,
         .toggle-all-groups-expand-icon {
@@ -194,15 +205,18 @@ function criticalStartupStyle(): string {
         .clear-search-icon {
             visibility: hidden;
         }
+        .settings-button,
         .toggle-all-groups-button {
-            width: 28px;
-            height: 28px;
+            width: 30px;
+            height: 30px;
             padding: 0;
             overflow: hidden;
         }
+        .settings-button svg,
         .toggle-all-groups-button svg {
-            width: 13px;
-            height: 13px;
+            width: 18px;
+            height: 18px;
+            fill: currentColor;
         }
         .toggle-all-groups-expand-icon {
             display: none;
@@ -296,6 +310,7 @@ function getTempGroupSection(totalGroupCount: number) {
 
 function getProjectDiv(project: Project, isVirtualProject: boolean = false, isReadOnlyProject: boolean = false) {
     var borderStyle = `background: ${project.color};`;
+    var projectStyle = project.color ? `--project-color: ${escapeStyleValue(project.color)};` : '';
     var remoteType = getRemoteType(project);
     var description = sanitizeProjectName(project.description);
     var projectName = escapeAttribute(sanitizeProjectName(project.name));
@@ -339,7 +354,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
 
     return `
 <div class="project-container"${isVirtualProject ? ' data-nodrag' : ''}>
-    <div class="project" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
+    <div class="project" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${isVirtualProject ? ' data-virtual-project' : ''
         }${isReadOnlyProject ? ' data-readonly-project' : ''
         }${isReadOnlyProject ? ' data-open-project' : ''
@@ -347,7 +362,9 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
         }${!isReadOnlyProject ? ' data-has-favorite-toggle' : ''
         }${project.showSaveAction ? ' data-has-save-action' : ''
         }${project.favorite ? ' data-favorite-project' : ''
+        }${project.isCurrentWorkspace ? ' data-current-workspace' : ''
         }>
+        <div class="project-aura"></div>
         <div class="project-border" style="${borderStyle}"></div>
         ${favoriteBadge}
         ${saveBadge}
@@ -460,12 +477,13 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
     var sessionId = escapeAttribute(session.id || '');
     var shortSessionId = escapeAttribute((session.id || '').substring(0, 8));
     var updatedAt = escapeAttribute(formatCodexSessionUpdatedAt(session.updatedAt));
-    var metadata = [updatedAt, shortSessionId].filter(value => !!value).join(' · ');
+    var shortId = shortSessionId ? `#${shortSessionId}` : '';
+    var metadata = [updatedAt, shortId].filter(value => !!value).join(' · ');
     var providerLabel = getAiProviderLabel(provider);
     var pinned = !!session.pinned;
     var pinTitle = pinned ? 'Unpin Session' : 'Pin Session';
-    var pinAction = `<span class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}">${Icons.pin}</span>`;
-    var archiveAction = `<span class="codex-session-archive" data-action="archive-${provider}-session" title="Archive Session">${Icons.archive}</span>`;
+    var pinAction = `<button type="button" class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}" aria-label="${pinTitle}">${Icons.pin}</button>`;
+    var archiveAction = `<button type="button" class="codex-session-archive" data-action="archive-${provider}-session" title="Archive Session" aria-label="Archive Session">${Icons.archive}</button>`;
 
     return `
 <div class="codex-session-row"${pinned ? ' data-session-pinned' : ''} data-session-id="${sessionId}" data-session-provider="${provider}" title="Resume ${providerLabel} Session">
@@ -474,8 +492,10 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
         <span class="codex-session-name">${sessionName}</span>
         <span class="codex-session-meta">${metadata}</span>
     </span>
-    ${pinAction}
-    ${archiveAction}
+    <span class="codex-session-actions">
+        ${pinAction}
+        ${archiveAction}
+    </span>
 </div>`;
 }
 
@@ -525,6 +545,10 @@ function escapeAttribute(value: string): string {
         .replace(/"/g, '&quot;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+}
+
+function escapeStyleValue(value: string): string {
+    return (value || '').replace(/[;"<>]/g, '').trim();
 }
 
 function getNoProjectsDiv() {
@@ -652,8 +676,20 @@ function getCustomStyle(config: vscode.WorkspaceConfiguration) {
             ? `--column-width: ${projectTileWidth}px;`
             : ''
         }
+        --steward-ai-session-list-max-height: ${getAiSessionListMaxHeight(config)}px;
     }
 </style>`;
+}
+
+function getAiSessionListMaxHeight(config: vscode.WorkspaceConfiguration): number {
+    var visibleRows = getMaxVisibleAiSessions(config);
+    return visibleRows * 42 + Math.max(visibleRows - 1, 0) * 2;
+}
+
+function getMaxVisibleAiSessions(config: vscode.WorkspaceConfiguration): number {
+    var configuredRows = config.get('maxVisibleAiSessions', 3);
+    var visibleRows = Math.floor(Number(configuredRows));
+    return Number.isFinite(visibleRows) && visibleRows > 0 ? visibleRows : 3;
 }
 
 function getMediaResource(

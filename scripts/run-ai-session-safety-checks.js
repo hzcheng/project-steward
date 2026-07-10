@@ -2,14 +2,50 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const Module = require('module');
 const os = require('os');
 const path = require('path');
 const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
+const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
 const ClaudeSessionService = require('../out/services/claudeSessionService').default;
 const GitRepositoryDetector = require('../out/projects/gitRepositoryDetector').default;
 const projectPathUtils = require('../out/projects/projectPathUtils');
+const currentWorkspaceState = require('../out/projects/currentWorkspaceState');
+const originalModuleLoad = Module._load;
+Module._load = function (request, parent, isMain) {
+    if (request === 'vscode') {
+        return { Uri: { parse: createTestUri, file: createTestFileUri } };
+    }
+    return originalModuleLoad.call(this, request, parent, isMain);
+};
+const openProjectMatcher = require('../out/projects/openProjectMatcher');
+const webviewContentModule = require('../out/webview/webviewContent');
+Module._load = originalModuleLoad;
+
+function createTestUri(value) {
+    const parsed = new URL(value);
+    const uriPath = decodeURIComponent(parsed.pathname);
+    return {
+        scheme: parsed.protocol.replace(/:$/, ''),
+        authority: parsed.host,
+        path: uriPath,
+        fsPath: uriPath,
+        toString: () => value,
+    };
+}
+
+function createTestFileUri(filePath) {
+    const normalizedPath = filePath.replace(/\\/g, '/');
+    return {
+        scheme: 'file',
+        authority: '',
+        path: normalizedPath,
+        fsPath: filePath,
+        toString: () => `file://${normalizedPath}`,
+    };
+}
 
 function runPathChecks() {
     assert.strictEqual(helpers.normalizeAiSessionComparablePath('/work/app/'), '/work/app');
@@ -51,6 +87,56 @@ function runAssignmentChecks() {
     assert.strictEqual(assignments.has('root'), false);
 }
 
+function runCurrentWorkspaceStateChecks() {
+    const saved = { id: 'saved', name: 'Saved', path: '/work/saved' };
+    const other = { id: 'other', name: 'Other', path: '/work/other' };
+    const groups = [{ id: 'group', groupName: 'Work', projects: [saved, other] }];
+    const openProjects = [{ id: '__openProjects-0', name: 'Saved', path: '/work/saved' }];
+
+    const result = currentWorkspaceState.withCurrentWorkspaceState(groups, openProjects, ['saved']);
+
+    assert.strictEqual(result.groups[0].projects[0].isCurrentWorkspace, true);
+    assert.strictEqual(result.groups[0].projects[1].isCurrentWorkspace, false);
+    assert.strictEqual(result.openProjects[0].isCurrentWorkspace, true);
+    assert.strictEqual(saved.isCurrentWorkspace, undefined);
+    assert.strictEqual(openProjects[0].isCurrentWorkspace, undefined);
+    assert.notStrictEqual(result.groups[0], groups[0]);
+}
+
+function runCurrentWorkspaceMatchingChecks() {
+    const savedProjects = [
+        { id: 'local', name: 'Same Name', path: '/work/local' },
+        { id: 'other', name: 'Same Name', path: '/work/other' },
+        { id: 'workspace', name: 'Workspace', path: '/work/team.code-workspace' },
+        { id: 'ssh', name: 'SSH', path: 'vscode-remote://ssh-remote+server/work/ssh' },
+        { id: 'container', name: 'Container', path: 'vscode-remote://dev-container+abc/work/container' },
+    ];
+    const resolveIds = (workspaceUris, remoteName = null) => currentWorkspaceState.getCurrentWorkspaceProjectIds(
+        savedProjects,
+        workspaceUris,
+        remoteName,
+        openProjectMatcher.findSavedProjectForOpenProject
+    );
+
+    assert.deepStrictEqual(resolveIds([createTestFileUri('/work/local')]), ['local']);
+    assert.deepStrictEqual(resolveIds([createTestFileUri('/work/team.code-workspace')]), ['workspace']);
+    assert.deepStrictEqual(resolveIds([
+        createTestFileUri('/work/local'),
+        createTestFileUri('/work/other'),
+    ]), ['local', 'other']);
+    assert.deepStrictEqual(resolveIds([
+        createTestUri('vscode-remote://ssh-remote+server/work/ssh'),
+    ], 'ssh-remote'), ['ssh']);
+    assert.deepStrictEqual(resolveIds([
+        createTestUri('vscode-remote://dev-container+abc/work/container'),
+    ], 'dev-container'), ['container']);
+    assert.deepStrictEqual(resolveIds([
+        createTestFileUri('/work/ssh'),
+    ], 'ssh-remote'), ['ssh']);
+    assert.deepStrictEqual(resolveIds([createTestFileUri('/missing')]), []);
+    assert.deepStrictEqual(resolveIds([]), []);
+}
+
 function runCandidateFilterChecks() {
     const result = {
         available: true,
@@ -85,6 +171,31 @@ function runDisplayChecks() {
     assert.strictEqual(prepared[1].name, 'Alias New');
 }
 
+function runPinStoreChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-pins-'));
+    try {
+        const firstStore = new AiSessionPinStore(tempRoot);
+        const secondStore = new AiSessionPinStore(tempRoot);
+
+        firstStore.add('codex:first');
+        secondStore.add('kimi:second');
+        firstStore.remove('codex:first');
+
+        assert.deepStrictEqual(Array.from(secondStore.getAll()), ['kimi:second']);
+
+        firstStore.migrateLegacy(['claude:legacy']);
+        assert.strictEqual(secondStore.has('claude:legacy'), true);
+        secondStore.remove('claude:legacy');
+        secondStore.migrateLegacy(['claude:legacy']);
+        assert.strictEqual(firstStore.has('claude:legacy'), false);
+
+        assert.strictEqual(firstStore.toggle('codex:toggle'), true);
+        assert.strictEqual(secondStore.toggle('codex:toggle'), false);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
 function runKeyChecks() {
     const isProviderId = value => value === 'codex' || value === 'kimi' || value === 'claude';
 
@@ -96,11 +207,246 @@ function runKeyChecks() {
 
 function runWebviewContentChecks() {
     const webviewContent = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts'), 'utf8');
+    const webviewProjectScripts = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'), 'utf8');
+    const webviewIcons = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewIcons.ts'), 'utf8');
+    const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
+    const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
+    const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const projectWindowColorService = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'projectWindowColorService.ts'), 'utf8');
+    const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
+    const sidebarStyles = styles.slice(styles.indexOf('body.steward-sidebar'));
+    const projectBorderBlock = extractScssBlock(sidebarStyles, '.project-border');
+    const projectBorderHoverBlock = extractScssBlock(sidebarStyles, '&:hover .project-border');
+    const expandedProjectHoverBlock = extractScssBlock(sidebarStyles, '&[data-codex-expanded]:hover');
+    const expandedProjectBorderBlock = extractScssBlock(expandedProjectHoverBlock, '.project-border');
+    const compiledProjectBorderBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project .project-border');
+    const compiledProjectBorderHoverBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project:hover .project-border');
+    const compiledExpandedProjectBorderBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project[data-open-project][data-codex-expanded]:hover .project-border');
+    const currentProjectStyleBlock = extractScssBlock(sidebarStyles, '&[data-current-workspace]');
+    const compiledCurrentProjectStyleBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project[data-current-workspace]');
 
     assert.ok(webviewContent.includes('data-action="add" title="Add Project"'));
     assert.ok(webviewContent.includes('class="project no-projects" data-action="add-project" data-nodrag'));
     assert.ok(!webviewContent.includes('getAddProjectDiv(group.id)'));
     assert.ok(!webviewContent.includes('function getAddProjectDiv'));
+    assert.ok(webviewContent.includes('class="settings-button" data-action="open-settings"'));
+    assert.ok(webviewProjectScripts.includes("type: 'open-settings'"));
+    assert.ok(dashboard.includes("case 'open-settings':"));
+    assert.ok(settingsFunction.includes("executeCommand('workbench.action.openSettings', '@ext:hzcheng.project-steward')"));
+    assert.ok(!settingsFunction.includes('showQuickPick'));
+    assert.ok(!settingsFunction.includes('ai-session-terminal-mode-planned'));
+    assert.ok(dashboard.includes('new AiSessionPinStore(context.globalStoragePath)'));
+    assert.ok(!dashboard.includes('prunePinnedAiSessionKeys'));
+    assert.ok(extractFunctionBody(dashboard, 'deletePinnedAiSession').includes("logError('Failed to delete the pinned AI session.'"));
+    assert.ok(webviewContent.includes('.settings-button,'));
+    assert.ok(styles.includes('max-width: calc(100% - 76px);'));
+    assert.ok(styles.includes('margin-left: 4px;'));
+    assert.ok(styles.includes('width: 18px;'));
+    assert.ok(styles.includes('height: 18px;'));
+    assert.ok(styles.includes('width: 17px;'));
+    assert.ok(styles.includes('height: 17px;'));
+    assert.ok(styles.includes('fill: currentColor;'));
+    assert.ok(styles.includes('.codex-session-pin {'));
+    assert.ok(styles.includes('stroke: currentColor;'));
+    assert.ok(styles.includes('opacity: 1;'));
+    assert.ok(!styles.includes('opacity: 0.86;'));
+    assert.ok(webviewContent.includes('width: 18px;'));
+    assert.ok(webviewContent.includes('height: 18px;'));
+    assert.ok(webviewIcons.includes('<svg viewBox="0 0 448 512">'));
+    assert.ok(webviewIcons.includes('M19.43 12.98'));
+    assert.ok(webviewIcons.includes('stroke-linecap="round"'));
+    assert.ok(webviewContent.includes('class="codex-session-actions"'));
+    assert.ok(webviewContent.includes('<button type="button" class="codex-session-pin'));
+    assert.ok(webviewContent.includes('<button type="button" class="codex-session-archive"'));
+    assert.ok(!webviewContent.includes('codex-session-meta-chip'));
+    assert.ok(webviewContent.includes("join(' · ')"));
+    assert.ok(styles.includes('.codex-session-actions'));
+    assert.ok(styles.includes('[data-session-pinned] .codex-session-actions'));
+    assert.ok(styles.includes('&::before'));
+    assert.ok(!styles.includes('.codex-session-meta-chip'));
+    assert.ok(styles.includes('box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04)'));
+    assert.ok(!styles.includes('color-mix('));
+    assert.ok(!extractScssBlock(styles, '.codex-session-row').includes('linear-gradient(90deg'));
+    assert.ok(!extractScssBlock(styles, '.codex-session-row').includes('translateY(-1px)'));
+    assert.ok(webviewContent.includes('visibleRows * 42'));
+    assert.ok(styles.includes('calc(3 * 42px + 2 * 2px)'));
+    assert.ok(!packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode']);
+    assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.storeProjectsInSettings'].default, true);
+    assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.applyProjectColorToWindow'].default, false);
+    assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].default, 3);
+    assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].minimum, 1);
+    assert.ok(dashboard.includes("ProjectWindowColorService"));
+    assert.ok(dashboard.includes('resolveCurrentWorkspaceProjectIds('));
+    assert.ok(dashboard.includes('findSavedProjectForOpenProject'));
+    assert.ok(dashboard.includes('get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() }'));
+    assert.ok(webviewContent.includes('withCurrentWorkspaceState('));
+    assert.ok(webviewContent.includes('infos.currentWorkspaceProjectIds || []'));
+    assert.ok(dashboard.includes("function applyProjectColorToCurrentWindow(project: Project = null)"));
+    assert.ok(dashboard.includes("project?.showSaveAction"));
+    assert.ok(dashboard.includes("syncProjectColorToCurrentWindow(project)"));
+    assert.ok(projectWindowColorService.includes("PROJECT_COLOR_TO_WINDOW_KEY = 'applyProjectColorToWindow'"));
+    assert.ok(projectWindowColorService.includes("PROJECT_WINDOW_COLOR_BACKUP_KEY"));
+    assert.ok(projectWindowColorService.includes("WORKBENCH_SECTION = 'workbench'"));
+    assert.ok(projectWindowColorService.includes("COLOR_CUSTOMIZATIONS_KEY = 'colorCustomizations'"));
+    assert.ok(projectWindowColorService.includes("syncProjectColorToCurrentWindow(project: Project)"));
+    assert.ok(projectWindowColorService.includes("restoreProjectWindowColors(project: Project = null)"));
+    assert.ok(projectWindowColorService.includes("restoreBackedUpProjectWindowColors"));
+    assert.ok(projectWindowColorService.includes("removeGeneratedProjectWindowColors"));
+    assert.ok(projectWindowColorService.includes("let originalColorCustomizations = this.removeGeneratedProjectWindowColors(colorCustomizations, project);"));
+    assert.ok(projectWindowColorService.includes("await this.backupProjectWindowColors(originalColorCustomizations);"));
+    assert.ok(projectWindowColorService.includes("getLegacyWindowColorCustomizations"));
+    assert.ok(projectWindowColorService.includes("let auraPalette = this.getAuraPalette(color);"));
+    assert.ok(projectWindowColorService.includes("'titleBar.activeBackground': auraPalette.titleBar"));
+    assert.ok(projectWindowColorService.includes("'statusBar.background': auraPalette.statusBar"));
+    assert.ok(projectWindowColorService.includes("'statusBarItem.remoteBackground': auraPalette.remote"));
+    assert.ok(projectWindowColorService.includes("'activityBar.activeBorder': color"));
+    assert.ok(projectWindowColorService.includes("'activityBar.activeBackground': auraPalette.activityActive"));
+    assert.ok(projectWindowColorService.includes("'commandCenter.activeBorder': auraPalette.commandBorder"));
+    assert.ok(!extractMethodBody(projectWindowColorService, 'getWindowColorCustomizations').includes("'activityBar.background'"));
+    assert.ok(webviewContent.includes('style="${projectStyle}"'));
+    assert.ok(webviewContent.includes("project.isCurrentWorkspace ? ' data-current-workspace' : ''"));
+    assert.ok(styles.includes('--project-color'));
+    assert.ok(styles.includes('.project-aura'));
+    assert.ok(currentProjectStyleBlock.includes('--vscode-list-inactiveSelectionBackground'));
+    assert.ok(currentProjectStyleBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(currentProjectStyleBlock.includes('box-shadow'));
+    assert.ok(compiledCurrentProjectStyleBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(!currentProjectStyleBlock.includes('animation'));
+    assert.ok(styles.indexOf('&[data-current-workspace]') > styles.indexOf('&[data-codex-expanded]:hover'));
+    assert.ok(compiledStyles.indexOf('.project[data-current-workspace]') > compiledStyles.indexOf('.project[data-open-project][data-codex-expanded]:hover'));
+    assert.ok(projectBorderBlock.includes('top: 31%'));
+    assert.ok(projectBorderBlock.includes('bottom: 31%'));
+    assert.ok(projectBorderBlock.includes('height: auto'));
+    assert.deepStrictEqual(projectBorderBlock.match(/\bheight\s*:[^;]+/g), ['height: auto']);
+    assert.ok(projectBorderHoverBlock.includes('top: 26%'));
+    assert.ok(projectBorderHoverBlock.includes('bottom: 26%'));
+    assert.ok(!/\bheight\s*:/.test(projectBorderHoverBlock));
+    assert.ok(!/\bheight\s*:/.test(expandedProjectBorderBlock));
+    assert.ok(compiledProjectBorderBlock.includes('top:31%'));
+    assert.ok(compiledProjectBorderBlock.includes('bottom:31%'));
+    assert.ok(compiledProjectBorderBlock.includes('height:auto'));
+    assert.deepStrictEqual(compiledProjectBorderBlock.match(/\bheight\s*:[^;]+/g), ['height:auto']);
+    assert.ok(compiledProjectBorderHoverBlock.includes('top:26%'));
+    assert.ok(compiledProjectBorderHoverBlock.includes('bottom:26%'));
+    assert.ok(!/\bheight\s*:/.test(compiledProjectBorderHoverBlock));
+    assert.ok(!/\bheight\s*:/.test(compiledExpandedProjectBorderBlock));
+    assert.ok(webviewContent.includes('--steward-ai-session-list-max-height: ${getAiSessionListMaxHeight(config)}px;'));
+    assert.ok(webviewContent.includes('Number.isFinite(visibleRows)'));
+    assert.ok(styles.includes('height: var(--steward-ai-session-list-max-height, calc(3 * 42px + 2 * 2px));'));
+}
+
+function runCurrentWorkspaceRenderingChecks() {
+    const config = {
+        get: (key, defaultValue) => defaultValue,
+        displayProjectPath: false,
+        searchIsActiveByDefault: false,
+        showAddGroupButtonTile: false,
+    };
+    const html = webviewContentModule.getStewardContent(
+        { extensionPath: '/extension' },
+        {
+            cspSource: 'test-source',
+            asWebviewUri: uri => uri.toString(),
+        },
+        [{
+            id: 'group',
+            groupName: 'Work',
+            collapsed: false,
+            projects: [
+                { id: 'saved', name: 'Saved', path: '/work/saved', color: '#00aacc', favorite: true },
+                { id: 'other', name: 'Other', path: '/work/other', color: '#ccaa00' },
+            ],
+        }],
+        {
+            config,
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            otherStorageHasData: false,
+            currentWorkspaceProjectIds: ['saved'],
+            openProjects: [
+                { id: '__openProjects-0', name: 'Saved', path: '/work/saved', color: '#00aacc' },
+            ],
+        },
+        true
+    );
+    const getCardTags = projectId => html.match(new RegExp(`<div class="project"[^>]*data-id="${projectId}"[^>]*>`, 'g')) || [];
+    const savedTags = getCardTags('saved');
+    const otherTags = getCardTags('other');
+    const openTags = getCardTags('__openProjects-0');
+
+    assert.strictEqual(savedTags.length, 2);
+    assert.ok(savedTags.every(tag => tag.includes('data-current-workspace')));
+    assert.strictEqual(otherTags.length, 1);
+    assert.ok(!otherTags[0].includes('data-current-workspace'));
+    assert.strictEqual(openTags.length, 1);
+    assert.ok(openTags[0].includes('data-current-workspace'));
+}
+
+function extractFunctionBody(source, functionName) {
+    const signature = `function ${functionName}(`;
+    const signatureIndex = source.indexOf(signature);
+    assert.notStrictEqual(signatureIndex, -1);
+
+    const openingBraceIndex = source.indexOf('{', signatureIndex);
+    assert.notStrictEqual(openingBraceIndex, -1);
+
+    let depth = 0;
+    for (let i = openingBraceIndex; i < source.length; i++) {
+        if (source[i] === '{') {
+            depth++;
+        } else if (source[i] === '}') {
+            depth--;
+            if (depth === 0) {
+                return source.slice(openingBraceIndex + 1, i);
+            }
+        }
+    }
+
+    assert.fail(`Could not extract ${functionName}`);
+}
+
+function extractMethodBody(source, methodName) {
+    const signatureIndex = source.indexOf(`${methodName}(`);
+    assert.notStrictEqual(signatureIndex, -1);
+
+    const openingBraceIndex = source.indexOf('{', signatureIndex);
+    assert.notStrictEqual(openingBraceIndex, -1);
+
+    let depth = 0;
+    for (let i = openingBraceIndex; i < source.length; i++) {
+        if (source[i] === '{') {
+            depth++;
+        } else if (source[i] === '}') {
+            depth--;
+            if (depth === 0) {
+                return source.slice(openingBraceIndex + 1, i);
+            }
+        }
+    }
+
+    assert.fail(`Could not extract ${methodName}`);
+}
+
+function extractScssBlock(source, selector) {
+    const selectorIndex = source.indexOf(selector);
+    assert.notStrictEqual(selectorIndex, -1);
+
+    const openingBraceIndex = source.indexOf('{', selectorIndex);
+    assert.notStrictEqual(openingBraceIndex, -1);
+
+    let depth = 0;
+    for (let i = openingBraceIndex; i < source.length; i++) {
+        if (source[i] === '{') {
+            depth++;
+        } else if (source[i] === '}') {
+            depth--;
+            if (depth === 0) {
+                return source.slice(openingBraceIndex + 1, i);
+            }
+        }
+    }
+
+    assert.fail(`Could not extract ${selector}`);
 }
 
 function runGitRepositoryDetectorChecks() {
@@ -255,10 +601,14 @@ function runCommandBuilderChecks() {
 
 runPathChecks();
 runAssignmentChecks();
+runCurrentWorkspaceStateChecks();
+runCurrentWorkspaceMatchingChecks();
 runCandidateFilterChecks();
 runDisplayChecks();
+runPinStoreChecks();
 runKeyChecks();
 runWebviewContentChecks();
+runCurrentWorkspaceRenderingChecks();
 runGitRepositoryDetectorChecks();
 runClaudeSessionChecks();
 runProviderChecks();

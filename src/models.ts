@@ -28,6 +28,7 @@ export class Project {
     remoteType?: ProjectRemoteType;
     favorite?: boolean;
     showSaveAction?: boolean;
+    isCurrentWorkspace?: boolean;
     codexSessions?: CodexSession[];
     kimiSessions?: CodexSession[];
     claudeSessions?: CodexSession[];
@@ -167,6 +168,7 @@ export interface StewardInfos {
     favoritesGroupCollapsed?: boolean;
     openProjects?: Project[];
     openProjectsGroupCollapsed?: boolean;
+    currentWorkspaceProjectIds?: string[];
 }
 
 export enum ProjectPathType {

@@ -519,7 +519,7 @@ body .project {
         display: flex;
         align-items: center;
         width: calc(var(--column-width) - #{$defaultPadding});
-        max-width: calc(100% - 44px);
+        max-width: calc(100% - 76px);
         min-width: 0;
         padding: 4px 10px;
         background: var(--steward-project-card-bg);
@@ -571,34 +571,46 @@ body .project {
         border: 0;
     }
 
-    .toggle-all-groups-button {
+    .toggle-all-groups-button,
+    .settings-button {
         display: inline-flex;
         align-items: center;
         justify-content: center;
         flex: 0 0 auto;
-        width: 28px;
-        height: 28px;
-        margin-left: 8px;
+        width: 30px;
+        height: 30px;
+        margin-left: 4px;
         padding: 0;
         color: var(--steward-foreground);
         background: transparent;
         border: 1px solid transparent;
-        border-radius: 3px;
+        border-radius: 7px;
         cursor: pointer;
+        opacity: 1;
+        transition: background $defaultTransition, border-color $defaultTransition, color $defaultTransition, opacity $defaultTransition;
 
         &:hover {
-            background: var(--steward-project-card-bg);
+            color: var(--vscode-focusBorder);
+            background: var(--vscode-list-hoverBackground);
+            border-color: var(--vscode-panel-border);
+            opacity: 1;
         }
 
         svg {
-            width: 13px;
-            height: 13px;
+            width: 18px;
+            height: 18px;
             fill: currentColor;
         }
+    }
 
+    .toggle-all-groups-button {
         .toggle-all-groups-expand-icon {
             display: none;
         }
+    }
+
+    .settings-button {
+        margin-left: 1px;
     }
 
     /* clears the 'X' from Chrome */
@@ -691,15 +703,20 @@ body.steward-sidebar {
             text-align: left;
         }
 
-        .toggle-all-groups-button {
-            width: 24px;
-            height: 24px;
-            margin-left: 6px;
+        .toggle-all-groups-button,
+        .settings-button {
+            width: 26px;
+            height: 26px;
+            margin-left: 4px;
 
             svg {
-                width: 12px;
-                height: 12px;
+                width: 17px;
+                height: 17px;
             }
+        }
+
+        .settings-button {
+            margin-left: 0;
         }
     }
 
@@ -820,8 +837,8 @@ body.steward-sidebar {
             var(--vscode-list-inactiveSelectionBackground, var(--vscode-sideBar-background))
         );
         box-shadow:
-            inset 0 1px 0 rgba(255, 255, 255, 0.04),
-            0 1px 4px rgba(0, 0, 0, 0.14);
+            inset 0 1px 0 rgba(255, 255, 255, 0.05),
+            0 1px 4px rgba(0, 0, 0, 0.16);
         overflow: hidden;
         transition:
             background $defaultTransition,
@@ -840,36 +857,58 @@ body.steward-sidebar {
             transition: opacity 180ms ease;
         }
 
+        .project-aura {
+            position: absolute;
+            inset: -12px -18px auto 28%;
+            height: 42px;
+            pointer-events: none;
+            opacity: 0.12;
+            background: var(--project-color, transparent);
+            filter: blur(16px);
+            transform: translateY(-18px) rotate(-3deg);
+            transition:
+                opacity $defaultTransition,
+                transform $defaultTransition;
+        }
+
         &:hover {
             background: var(--vscode-list-hoverBackground);
             border-color: var(--vscode-focusBorder);
             box-shadow:
                 inset 0 1px 0 rgba(255, 255, 255, 0.06),
-                0 0 0 1px rgba(255, 255, 255, 0.03),
-                0 6px 14px var(--vscode-widget-shadow);
+                0 0 0 1px rgba(255, 255, 255, 0.04),
+                0 7px 18px var(--vscode-widget-shadow);
             transform: translateY(-1px);
 
             &::before {
                 opacity: 1;
             }
+
+            .project-aura {
+                opacity: 0.22;
+                transform: translateY(-14px) rotate(-3deg);
+            }
         }
 
         .project-border {
             left: 7px;
-            top: 50%;
+            top: 31%;
+            bottom: 31%;
             width: 4px;
-            height: 22px;
+            height: auto;
             border-radius: 999px;
             opacity: 0.9;
-            transform: translateY(-50%);
-            box-shadow: 0 0 10px var(--vscode-focusBorder);
+            transform: none;
+            box-shadow: 0 0 12px var(--project-color, var(--vscode-focusBorder));
             transition:
-                height $defaultTransition,
+                top $defaultTransition,
+                bottom $defaultTransition,
                 opacity $defaultTransition;
         }
 
         &:hover .project-border {
-            height: 28px;
+            top: 26%;
+            bottom: 26%;
             opacity: 1;
         }
 
@@ -1034,10 +1073,30 @@ body.steward-sidebar {
                 }
 
                 .project-border {
-                    height: 22px;
                     opacity: .9;
                 }
             }
+        }
+
+        &[data-current-workspace],
+        &[data-current-workspace][data-codex-expanded]:hover {
+            background: var(
+                --vscode-list-inactiveSelectionBackground,
+                var(--vscode-sideBarSectionHeader-background, var(--vscode-sideBar-background))
+            );
+            border-color: var(--vscode-focusBorder);
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.07),
+                0 0 0 1px var(--vscode-focusBorder),
+                0 4px 12px var(--vscode-widget-shadow);
+        }
+
+        &[data-current-workspace]:hover {
+            border-color: var(--vscode-focusBorder);
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.08),
+                0 0 0 1px var(--vscode-focusBorder),
+                0 6px 16px var(--vscode-widget-shadow);
         }
 
         .codex-sessions {
@@ -1112,7 +1171,7 @@ body.steward-sidebar {
             gap: 2px;
             margin-top: 5px;
             margin-left: 0;
-            max-height: calc(5 * 40px + 4 * 2px);
+            height: var(--steward-ai-session-list-max-height, calc(3 * 42px + 2 * 2px));
             overflow-y: auto;
             overflow-x: hidden;
             padding-right: 2px;
@@ -1120,27 +1179,94 @@ body.steward-sidebar {
         }
 
         .codex-session-row {
+            --steward-ai-accent: var(--vscode-terminal-ansiCyan);
+
             display: grid;
-            grid-template-columns: 40px minmax(0, 1fr) 16px 16px;
+            grid-template-columns: 28px minmax(0, 1fr);
             align-items: center;
-            gap: 6px;
+            gap: 7px;
             box-sizing: border-box;
-            min-height: 40px;
-            padding: 3px 4px 3px 6px;
-            border-radius: 6px;
+            position: relative;
+            min-height: 42px;
+            padding: 4px 42px 4px 8px;
+            border: 1px solid transparent;
+            border-radius: 8px;
             color: var(--steward-foreground);
+            background: transparent;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
             cursor: pointer;
+            overflow: hidden;
             transition:
+                border-color $defaultTransition,
                 background $defaultTransition,
-                color $defaultTransition;
+                box-shadow $defaultTransition,
+                color $defaultTransition,
+                transform $defaultTransition;
+
+            &::before {
+                content: "";
+                position: absolute;
+                left: 0;
+                top: 9px;
+                bottom: 9px;
+                width: 2px;
+                border-radius: 999px;
+                background: var(--steward-ai-accent);
+                opacity: 0.42;
+                transition:
+                    opacity $defaultTransition;
+            }
 
             &:hover {
+                border-color: var(--vscode-panel-border);
                 background: var(--vscode-list-hoverBackground);
+                box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+                &::before {
+                    opacity: 0.78;
+                }
             }
 
             &[data-session-pinned] {
-                background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground));
+                border-color: var(--vscode-panel-border);
+                background: var(--vscode-list-inactiveSelectionBackground, transparent);
+
+                &::before {
+                    opacity: 0.9;
+                }
             }
+        }
+
+        .codex-session-row[data-session-provider="kimi"] {
+            --steward-ai-accent: var(--vscode-terminal-ansiMagenta, #c586c0);
+        }
+
+        .codex-session-row[data-session-provider="claude"] {
+            --steward-ai-accent: var(--vscode-terminal-ansiYellow, #dcdcaa);
+        }
+
+        .codex-session-actions {
+            position: absolute;
+            right: 4px;
+            top: 50%;
+            z-index: 2;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+            padding: 2px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 999px;
+            background: var(--vscode-menu-background);
+            box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(-50%) translateX(4px);
+            transition:
+                opacity $defaultTransition,
+                transform $defaultTransition,
+                border-color $defaultTransition,
+                background $defaultTransition;
         }
 
         .codex-session-icon,
@@ -1157,19 +1283,25 @@ body.steward-sidebar {
 
         .codex-session-icon {
             color: var(--vscode-terminal-ansiCyan);
+            width: 26px;
+            height: 26px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 7px;
+            background: var(--vscode-sideBar-background);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 
             svg {
-                width: 32px;
-                height: 32px;
+                width: 17px;
+                height: 17px;
             }
         }
 
         .codex-session-row[data-session-provider="kimi"] .codex-session-icon {
-            color: var(--vscode-terminal-ansiMagenta, #c586c0);
+            color: var(--steward-ai-accent);
         }
 
         .codex-session-row[data-session-provider="claude"] .codex-session-icon {
-            color: var(--vscode-terminal-ansiYellow, #dcdcaa);
+            color: var(--steward-ai-accent);
         }
 
         .codex-session-pin,
@@ -1183,24 +1315,38 @@ body.steward-sidebar {
         .codex-session-pin,
         .codex-session-archive {
             color: var(--vscode-descriptionForeground);
-            opacity: 0;
-            pointer-events: none;
+            padding: 0;
+            border: 0;
+            background: transparent;
+            font: inherit;
+            cursor: pointer;
             transition:
+                background $defaultTransition,
                 color $defaultTransition,
-                opacity $defaultTransition,
                 transform $defaultTransition;
         }
 
         .codex-session-pin {
+            width: 16px;
+            height: 16px;
+            border-radius: 999px;
+
+            svg {
+                width: 14px;
+                height: 14px;
+                fill: none;
+                stroke: currentColor;
+            }
+
             &:hover {
                 color: var(--vscode-focusBorder);
+                background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground));
                 transform: scale(1.08);
             }
 
             &.active {
                 color: var(--vscode-focusBorder);
-                opacity: 1;
-                pointer-events: auto;
+                background: var(--vscode-list-inactiveSelectionBackground, transparent);
             }
         }
 
@@ -1211,10 +1357,35 @@ body.steward-sidebar {
             }
         }
 
-        .codex-session-row:hover .codex-session-pin,
-        .codex-session-row:hover .codex-session-archive {
+        .codex-session-row:hover .codex-session-actions,
+        .codex-session-row:focus-within .codex-session-actions {
             opacity: 1;
             pointer-events: auto;
+            transform: translateY(-50%) translateX(0);
+        }
+
+        .codex-session-row[data-session-pinned] .codex-session-actions {
+            opacity: 1;
+            pointer-events: auto;
+            border-color: transparent;
+            background: transparent;
+            box-shadow: none;
+            transform: translateY(-50%) translateX(0);
+
+            .codex-session-archive {
+                display: none;
+            }
+        }
+
+        .codex-session-row[data-session-pinned]:hover .codex-session-actions,
+        .codex-session-row[data-session-pinned]:focus-within .codex-session-actions {
+            border-color: var(--vscode-panel-border);
+            background: var(--vscode-menu-background);
+            box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+
+            .codex-session-archive {
+                display: inline-flex;
+            }
         }
 
         .codex-session-text {
@@ -1234,7 +1405,7 @@ body.steward-sidebar {
         .codex-session-name {
             color: var(--steward-foreground);
             font-size: 11px;
-            font-weight: 550;
+            font-weight: 650;
             line-height: 1.15;
         }
 

@@ -484,6 +484,13 @@ function initProjects() {
             return;
         }
 
+        if (e.target.closest('[data-action="open-settings"]')) {
+            window.vscode.postMessage({
+                type: 'open-settings'
+            });
+            return;
+        }
+
         if (e.target.closest('[data-action="add-group"]')) {
             window.vscode.postMessage({
                 type: 'add-group'

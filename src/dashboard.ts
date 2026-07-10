@@ -12,14 +12,17 @@ import FileService from './services/fileService';
 import CodexSessionService from './services/codexSessionService';
 import KimiSessionService from './services/kimiSessionService';
 import ClaudeSessionService from './services/claudeSessionService';
+import ProjectWindowColorService from './services/projectWindowColorService';
+import AiSessionPinStore from './aiSessions/pinStore';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, getAiSessionProviderIdFromKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
 import type { AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
-import { getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
+import { findSavedProjectForOpenProject, getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
 import { getLastPartOfPath, getOpenProjectUri as resolveOpenProjectUri, getOpenProjectsFromWorkspace, getWorkspaceUri as resolveWorkspaceUri, getWorkspaceUris as resolveWorkspaceUris, isUriString, parsePathAsUri } from './projects/openProjectService';
 import RemoteProjectResolver from './projects/remoteProjectResolver';
 import GitRepositoryDetector from './projects/gitRepositoryDetector';
+import { getCurrentWorkspaceProjectIds as resolveCurrentWorkspaceProjectIds } from './projects/currentWorkspaceState';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -91,6 +94,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
+    const projectWindowColorService = new ProjectWindowColorService(context);
     const fileService = new FileService(context);
     const gitRepositoryDetector = new GitRepositoryDetector();
     const codexSessionService = new CodexSessionService();
@@ -103,6 +107,8 @@ export function activate(context: vscode.ExtensionContext) {
         claude: claudeSessionService,
     };
     const aiSessionTerminalService = new AiSessionTerminalService(context.globalStoragePath, providerId => getRegisteredAiSessionProvider(providerId));
+    const aiSessionPinStore = new AiSessionPinStore(context.globalStoragePath);
+    migrateLegacyPinnedAiSessions();
     let aiSessionRefreshTimeout: NodeJS.Timeout = null;
     let aiSessionWatcherDisposables: { dispose(): void }[] = [];
     let aiSessionUpdateSequence = 0;
@@ -132,6 +138,7 @@ export function activate(context: vscode.ExtensionContext) {
         get favoritesGroupCollapsed() { return context.globalState.get(FAVORITES_GROUP_COLLAPSED_KEY) as boolean },
         get openProjects() { return getOpenProjects() },
         get openProjectsGroupCollapsed() { return context.globalState.get(OPEN_PROJECTS_GROUP_COLLAPSED_KEY) as boolean },
+        get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() },
     };
 
     const openCommand = vscode.commands.registerCommand('projectSteward.open', () => {
@@ -182,11 +189,13 @@ export function activate(context: vscode.ExtensionContext) {
 
         if (event.affectsConfiguration("projectSteward")
             || event.affectsConfiguration("dashboard")) {
+            applyProjectColorToCurrentWindow();
             refreshStewardViews();
         }
     });
 
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        applyProjectColorToCurrentWindow();
         refreshStewardViews();
     });
 
@@ -212,6 +221,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         await checkDataMigration();
+        applyProjectColorToCurrentWindow();
 
         let reopenStewardReason = context.globalState.get(REOPEN_KEY) as ReopenStewardReason;
         context.globalState.update(REOPEN_KEY, ReopenStewardReason.None);
@@ -479,7 +489,18 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function refreshAfterMutation() {
+        applyProjectColorToCurrentWindow();
         refreshStewardViews();
+    }
+
+    function applyProjectColorToCurrentWindow(project: Project = null) {
+        project = project || getOpenProjects()[0];
+        if (project?.showSaveAction) {
+            project = null;
+        }
+        projectWindowColorService.syncProjectColorToCurrentWindow(project).then(undefined, error => {
+            logError('Failed to apply project color to current window.', error);
+        });
     }
 
     async function handleStewardMessage(e: any) {
@@ -553,6 +574,9 @@ export function activate(context: vscode.ExtensionContext) {
             case 'request-full-refresh':
                 refreshStewardViews();
                 break;
+            case 'open-settings':
+                await showProjectStewardSettings();
+                break;
             case 'resume-ai-session':
             case 'resume-codex-session':
             case 'resume-kimi-session':
@@ -585,6 +609,10 @@ export function activate(context: vscode.ExtensionContext) {
                 // Collapse-all is a per-webview convenience action.
                 break;
         }
+    }
+
+    async function showProjectStewardSettings() {
+        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:hzcheng.project-steward');
     }
 
     async function addGroup() {
@@ -765,16 +793,25 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        let pinnedSessions = getPinnedAiSessionKeys();
         let sessionKey = getAiSessionPinKey(providerId, sessionId);
-        if (pinnedSessions.has(sessionKey)) {
-            pinnedSessions.delete(sessionKey);
-        } else {
-            pinnedSessions.add(sessionKey);
+        try {
+            aiSessionPinStore.toggle(sessionKey);
+        } catch (error) {
+            logError('Failed to update the pinned AI session.', error);
+            vscode.window.showErrorMessage('Could not update the pinned chat.');
+            return;
         }
 
-        await context.globalState.update(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, Array.from(pinnedSessions));
         refreshAiSessionViewsIncrementally();
+    }
+
+    function deletePinnedAiSession(providerId: AiSessionProviderId, sessionId: string) {
+        let sessionKey = getAiSessionPinKey(providerId, sessionId);
+        try {
+            aiSessionPinStore.remove(sessionKey);
+        } catch (error) {
+            logError('Failed to delete the pinned AI session.', error);
+        }
     }
 
     async function renameAiSession(providerId: AiSessionProviderId, sessionId: string) {
@@ -980,6 +1017,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         aiSessionTerminalService.untrack(providerId, sessionId);
+        deletePinnedAiSession(providerId, sessionId);
         deleteAiSessionAlias(providerId, sessionId);
         invalidateAiSessionCache(providerId);
         refreshAiSessionViewsIncrementally();
@@ -1869,6 +1907,15 @@ export function activate(context: vscode.ExtensionContext) {
         return withAiSessions(openProjects);
     }
 
+    function getCurrentWorkspaceProjectIds(): string[] {
+        return resolveCurrentWorkspaceProjectIds(
+            projectService.getProjectsFlat(),
+            resolveWorkspaceUris(vscode.workspace.workspaceFile, vscode.workspace.workspaceFolders),
+            vscode.env.remoteName,
+            findSavedProjectForOpenProject
+        );
+    }
+
     function getOpenProjectUri(projectId: string): vscode.Uri {
         return resolveOpenProjectUri(projectId, vscode.workspace.workspaceFile, vscode.workspace.workspaceFolders);
     }
@@ -1883,7 +1930,8 @@ export function activate(context: vscode.ExtensionContext) {
         let assignments = getAiSessionAssignments(openProjects, sessionResults);
         let expandedProjects = getExpandedCodexSessionProjects();
         let activeProviders = getActiveAiSessionProviders();
-        let pinnedSessions = prunePinnedAiSessionKeys(getPinnedAiSessionKeys(), sessionResults);
+        // Results are scoped to this window, so missing sessions cannot be used to prune persisted pins.
+        let pinnedSessions = getPinnedAiSessionKeys();
         let aliases = pruneAiSessionAliases(getAiSessionAliases(), sessionResults);
 
         return openProjects.map(project => {
@@ -1971,8 +2019,24 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function getPinnedAiSessionKeys(): Set<string> {
+        try {
+            return aiSessionPinStore.getAll();
+        } catch (error) {
+            logError('Failed to read pinned AI sessions.', error);
+            return new Set<string>();
+        }
+    }
+
+    function migrateLegacyPinnedAiSessions() {
         let pinnedSessions = context.globalState.get(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY) as string[];
-        return new Set(Array.isArray(pinnedSessions) ? pinnedSessions : []);
+        try {
+            aiSessionPinStore.migrateLegacy(Array.isArray(pinnedSessions) ? pinnedSessions : []);
+            context.globalState.update(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, undefined).then(undefined, error => {
+                logError('Failed to clear legacy pinned AI session state.', error);
+            });
+        } catch (error) {
+            logError('Failed to migrate pinned AI sessions.', error);
+        }
     }
 
     function getAiSessionIdsForCwd(providerId: AiSessionProviderId, sessionResult: AiSessionReadResult, cwd: string): string[] {
@@ -2055,30 +2119,6 @@ export function activate(context: vscode.ExtensionContext) {
                     && updatedAt >= createdAt;
             })
             .sort((a, b) => compareAiSessionUpdatedAt(a.updatedAt, b.updatedAt))[0] || null;
-    }
-
-    function prunePinnedAiSessionKeys(pinnedSessions: Set<string>, sessionResults: Record<AiSessionProviderId, AiSessionReadResult>): Set<string> {
-        if (!pinnedSessions.size) {
-            return pinnedSessions;
-        }
-
-        let availableSessionKeys = new Set<string>();
-        addAvailableAiSessionKeys(availableSessionKeys, sessionResults);
-
-        let prunedPinnedSessions = new Set<string>();
-        for (let sessionKey of pinnedSessions) {
-            let providerId = getProviderIdFromAiSessionPinKey(sessionKey);
-            let providerUnavailable = providerId ? !sessionResults[providerId]?.available : false;
-            if (providerUnavailable || availableSessionKeys.has(sessionKey)) {
-                prunedPinnedSessions.add(sessionKey);
-            }
-        }
-
-        if (prunedPinnedSessions.size !== pinnedSessions.size) {
-            context.globalState.update(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, Array.from(prunedPinnedSessions));
-        }
-
-        return prunedPinnedSessions;
     }
 
     function addAvailableAiSessionKeys(sessionKeys: Set<string>, sessionResults: Record<AiSessionProviderId, AiSessionReadResult>) {

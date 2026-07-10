@@ -2,6 +2,25 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
+## [1.1.6] 2026-07-10
+
+### Added
+
+-   Add a Project Steward settings shortcut beside the group collapse/expand control.
+-   Add a configurable maximum number of visible AI sessions, with a fixed-height session list.
+-   Add optional Project Aura colors for the current VS Code window.
+-   Highlight saved project cards that match the workspace opened in the current window.
+
+### Changed
+
+-   Refresh AI session card styling and move pin/archive actions into a compact hover toolbar.
+-   Scale the project color indicator with compact and expanded project cards.
+
+### Fixed
+
+-   Preserve pinned AI session state across extension restarts and refreshes.
+-   Restore original VS Code window colors when Project Aura is disabled.
+
 ## [1.1.5] 2026-07-08
 
 ### Changed
