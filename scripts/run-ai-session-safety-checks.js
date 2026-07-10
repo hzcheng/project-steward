@@ -5,6 +5,7 @@ const fs = require('fs');
 const Module = require('module');
 const os = require('os');
 const path = require('path');
+const vm = require('vm');
 const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
@@ -13,6 +14,7 @@ const ClaudeSessionService = require('../out/services/claudeSessionService').def
 const GitRepositoryDetector = require('../out/projects/gitRepositoryDetector').default;
 const projectPathUtils = require('../out/projects/projectPathUtils');
 const currentWorkspaceState = require('../out/projects/currentWorkspaceState');
+const favoriteProjectOrder = require('../out/projects/favoriteProjectOrder');
 const originalModuleLoad = Module._load;
 Module._load = function (request, parent, isMain) {
     if (request === 'vscode') {
@@ -101,6 +103,83 @@ function runCurrentWorkspaceStateChecks() {
     assert.strictEqual(saved.isCurrentWorkspace, undefined);
     assert.strictEqual(openProjects[0].isCurrentWorkspace, undefined);
     assert.notStrictEqual(result.groups[0], groups[0]);
+}
+
+function runFavoriteProjectOrderChecks() {
+    const projects = [
+        { id: 'legacy-a', favorite: true },
+        { id: 'ordered', favorite: true, favoriteOrder: 0 },
+        { id: 'duplicate-a', favorite: true, favoriteOrder: 2 },
+        { id: 'duplicate-b', favorite: true, favoriteOrder: 2 },
+        { id: 'invalid', favorite: true, favoriteOrder: -1 },
+        { id: 'plain', favorite: false, favoriteOrder: 7 },
+    ];
+
+    assert.deepStrictEqual(
+        favoriteProjectOrder.getFavoriteProjectsInOrder(projects).map(project => project.id),
+        ['ordered', 'legacy-a', 'duplicate-a', 'duplicate-b', 'invalid']
+    );
+
+    const groups = [
+        { id: 'one', projects: [projects[0], projects[1], projects[5]] },
+        { id: 'two', projects: [projects[2], projects[3], projects[4]] },
+    ];
+    const reordered = favoriteProjectOrder.withFavoriteProjectOrder(
+        groups,
+        ['invalid', 'ordered', 'invalid', 'unknown', 'plain']
+    );
+    const reorderedProjects = reordered.reduce((all, group) => all.concat(group.projects), []);
+
+    assert.deepStrictEqual(
+        favoriteProjectOrder.getFavoriteProjectsInOrder(reorderedProjects).map(project => project.id),
+        ['invalid', 'ordered', 'legacy-a', 'duplicate-a', 'duplicate-b']
+    );
+    assert.deepStrictEqual(reordered.map(group => group.projects.map(project => project.id)), [
+        ['legacy-a', 'ordered', 'plain'],
+        ['duplicate-a', 'duplicate-b', 'invalid'],
+    ]);
+    assert.deepStrictEqual(
+        favoriteProjectOrder.getFavoriteProjectsInOrder(reorderedProjects).map(project => project.favoriteOrder),
+        [0, 1, 2, 3, 4]
+    );
+    assert.strictEqual(reordered[0].projects[2].favoriteOrder, undefined);
+    assert.strictEqual(projects[0].favoriteOrder, undefined);
+    assert.notStrictEqual(reordered[0], groups[0]);
+    assert.notStrictEqual(reordered[0].projects[0], groups[0].projects[0]);
+
+    const toggleGroups = [{
+        id: 'toggle',
+        projects: [
+            { id: 'a', favorite: true, favoriteOrder: 0 },
+            { id: 'b', favorite: true, favoriteOrder: 1 },
+            { id: 'c', favorite: false, favoriteOrder: 9 },
+        ],
+    }];
+    const added = favoriteProjectOrder.withToggledProjectFavorite(toggleGroups, 'c');
+    const addedProjects = added[0].projects;
+    assert.deepStrictEqual(
+        favoriteProjectOrder.getFavoriteProjectsInOrder(addedProjects).map(project => project.id),
+        ['a', 'b', 'c']
+    );
+    assert.strictEqual(addedProjects[2].favorite, true);
+    assert.strictEqual(addedProjects[2].favoriteOrder, 2);
+
+    const removed = favoriteProjectOrder.withToggledProjectFavorite(added, 'b');
+    assert.deepStrictEqual(
+        favoriteProjectOrder.getFavoriteProjectsInOrder(removed[0].projects).map(project => project.id),
+        ['a', 'c']
+    );
+    assert.strictEqual(removed[0].projects[1].favorite, false);
+    assert.strictEqual(removed[0].projects[1].favoriteOrder, undefined);
+
+    const readded = favoriteProjectOrder.withToggledProjectFavorite(removed, 'b');
+    assert.deepStrictEqual(
+        favoriteProjectOrder.getFavoriteProjectsInOrder(readded[0].projects).map(project => project.id),
+        ['a', 'c', 'b']
+    );
+    assert.strictEqual(favoriteProjectOrder.withToggledProjectFavorite(toggleGroups, 'missing'), null);
+    assert.strictEqual(toggleGroups[0].projects[2].favorite, false);
+    assert.strictEqual(toggleGroups[0].projects[2].favoriteOrder, 9);
 }
 
 function runCurrentWorkspaceMatchingChecks() {
@@ -282,6 +361,10 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() }'));
     assert.ok(webviewContent.includes('withCurrentWorkspaceState('));
     assert.ok(webviewContent.includes('infos.currentWorkspaceProjectIds || []'));
+    assert.ok(webviewContent.includes('getFavoriteProjectsInOrder('));
+    assert.ok(dashboard.includes("case 'reordered-favorites':"));
+    assert.ok(dashboard.includes('withFavoriteProjectOrder(groups, projectIds)'));
+    assert.ok(dashboard.includes('withToggledProjectFavorite(groups, projectId)'));
     assert.ok(dashboard.includes("function applyProjectColorToCurrentWindow(project: Project = null)"));
     assert.ok(dashboard.includes("project?.showSaveAction"));
     assert.ok(dashboard.includes("syncProjectColorToCurrentWindow(project)"));
@@ -380,6 +463,148 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.ok(!otherTags[0].includes('data-current-workspace'));
     assert.strictEqual(openTags.length, 1);
     assert.ok(openTags[0].includes('data-current-workspace'));
+}
+
+function runFavoriteRenderingChecks() {
+    const config = {
+        get: (key, defaultValue) => defaultValue,
+        displayProjectPath: false,
+        searchIsActiveByDefault: false,
+        showAddGroupButtonTile: false,
+    };
+    const html = webviewContentModule.getStewardContent(
+        { extensionPath: '/extension' },
+        {
+            cspSource: 'test-source',
+            asWebviewUri: uri => uri.toString(),
+        },
+        [{
+            id: 'group',
+            groupName: 'Work',
+            collapsed: false,
+            projects: [
+                { id: 'favorite-a', name: 'Favorite A', path: '/work/a', color: '#00aacc', favorite: true, favoriteOrder: 1 },
+                { id: 'favorite-b', name: 'Favorite B', path: '/work/b', color: '#ccaa00', favorite: true, favoriteOrder: 0 },
+                { id: 'plain', name: 'Plain', path: '/work/plain', color: '#888888' },
+            ],
+        }],
+        {
+            config,
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            otherStorageHasData: false,
+            openProjects: [],
+        },
+        true
+    );
+    const renderedProjectIds = Array.from(html.matchAll(/<div class="project"[^>]*data-id="([^"]+)"[^>]*>/g))
+        .map(match => match[1]);
+
+    assert.deepStrictEqual(renderedProjectIds, [
+        'favorite-b',
+        'favorite-a',
+        'favorite-a',
+        'favorite-b',
+        'plain',
+    ]);
+    const favoriteContainer = html.match(/<div class="project-container"([^>]*)>\s*<div class="project"[^>]*data-id="favorite-b"/);
+    assert.ok(favoriteContainer);
+    assert.ok(!favoriteContainer[1].includes('data-nodrag'));
+}
+
+function runFavoriteDndChecks() {
+    const sourcePath = path.join(__dirname, '..', 'src', 'webview', 'webviewDnDScripts.js');
+    const generatedPath = path.join(__dirname, '..', 'media', 'webviewDnDScripts.js');
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    const context = {};
+    vm.runInNewContext(source, context);
+
+    const createContainer = kind => ({
+        closest: selector => {
+            if (selector === '[data-system-group="__favorites"]') {
+                return kind === 'favorites' ? {} : null;
+            }
+            if (selector === '[data-virtual-group]') {
+                return kind === 'favorites' || kind === 'open-projects' ? {} : null;
+            }
+            return null;
+        },
+    });
+    const draggable = { hasAttribute: () => false };
+    const noDrag = { hasAttribute: attribute => attribute === 'data-nodrag' };
+    const favorites = createContainer('favorites');
+    const otherFavorites = createContainer('favorites');
+    const openProjects = createContainer('open-projects');
+    const ordinary = createContainer('ordinary');
+    const ordinaryTwo = createContainer('ordinary');
+
+    assert.strictEqual(context.canMoveProject(draggable, favorites), true);
+    assert.strictEqual(context.canMoveProject(draggable, openProjects), false);
+    assert.strictEqual(context.canMoveProject(draggable, ordinary), true);
+    assert.strictEqual(context.canMoveProject(noDrag, favorites), false);
+    assert.strictEqual(context.canAcceptProject(favorites, favorites), true);
+    assert.strictEqual(context.canAcceptProject(otherFavorites, favorites), false);
+    assert.strictEqual(context.canAcceptProject(ordinary, favorites), false);
+    assert.strictEqual(context.canAcceptProject(favorites, ordinary), false);
+    assert.strictEqual(context.canAcceptProject(openProjects, ordinary), false);
+    assert.strictEqual(context.canAcceptProject(ordinaryTwo, ordinary), true);
+    assert.ok(source.includes("type: 'reordered-favorites'"));
+    assert.strictEqual(fs.readFileSync(generatedPath, 'utf8'), source);
+
+    const drakes = [];
+    const messages = [];
+    const ordinaryGroup = {
+        getAttribute: attribute => attribute === 'data-group-id' ? 'group-one' : null,
+        querySelectorAll: () => [
+            { getAttribute: () => 'ordinary-a' },
+            { getAttribute: () => 'ordinary-b' },
+        ],
+    };
+    const runtimeContext = {
+        document: {
+            body: { classList: { add: () => {}, remove: () => {} } },
+            querySelector: () => null,
+            querySelectorAll: selector => selector.startsWith('.groups-wrapper >') ? [ordinaryGroup] : [],
+        },
+        window: {
+            addEventListener: () => {},
+            vscode: { postMessage: message => messages.push(message) },
+        },
+        dragula: (containers, options) => {
+            const handlers = {};
+            const drake = {
+                dragging: false,
+                cancel: () => {},
+                on: (event, handler) => {
+                    handlers[event] = handler;
+                    return drake;
+                },
+            };
+            drakes.push({ containers, options, handlers, drake });
+            return drake;
+        },
+        autoScroll: () => ({}),
+    };
+    vm.runInNewContext(source, runtimeContext);
+    runtimeContext.initDnD();
+
+    assert.strictEqual(drakes.length, 2);
+    const favoriteSource = {
+        closest: selector => selector === '[data-system-group="__favorites"]' ? {} : null,
+        querySelectorAll: () => [
+            { getAttribute: () => 'favorite-b' },
+            { getAttribute: () => 'favorite-a' },
+        ],
+    };
+    drakes[0].handlers.drop({}, favoriteSource, favoriteSource);
+    drakes[0].handlers.drop({}, ordinary, ordinary);
+
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [
+        { type: 'reordered-favorites', projectIds: ['favorite-b', 'favorite-a'] },
+        {
+            type: 'reordered-projects',
+            groupOrders: [{ groupId: 'group-one', projectIds: ['ordinary-a', 'ordinary-b'] }],
+        },
+    ]);
 }
 
 function extractFunctionBody(source, functionName) {
@@ -602,6 +827,7 @@ function runCommandBuilderChecks() {
 runPathChecks();
 runAssignmentChecks();
 runCurrentWorkspaceStateChecks();
+runFavoriteProjectOrderChecks();
 runCurrentWorkspaceMatchingChecks();
 runCandidateFilterChecks();
 runDisplayChecks();
@@ -609,6 +835,8 @@ runPinStoreChecks();
 runKeyChecks();
 runWebviewContentChecks();
 runCurrentWorkspaceRenderingChecks();
+runFavoriteRenderingChecks();
+runFavoriteDndChecks();
 runGitRepositoryDetectorChecks();
 runClaudeSessionChecks();
 runProviderChecks();

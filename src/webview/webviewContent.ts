@@ -13,6 +13,7 @@ import {
 } from '../models';
 import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, OPEN_PROJECTS_GROUP_ID } from '../constants';
 import { withCurrentWorkspaceState } from '../projects/currentWorkspaceState';
+import { getFavoriteProjectsInOrder } from '../projects/favoriteProjectOrder';
 import * as Icons from './webviewIcons';
 
 const FAVORITES_GROUP_NAME = 'FAVORITES';
@@ -54,9 +55,9 @@ export function getStewardContent(
     groups = workspaceState.groups;
     var openProjects = workspaceState.openProjects;
     var customCss = infos.config.get('customCss') || '';
-    var favoriteProjects = groups
-        .reduce((projects, group) => projects.concat(group.projects || []), [] as Project[])
-        .filter(project => project.favorite);
+    var favoriteProjects = getFavoriteProjectsInOrder(
+        groups.reduce((projects, group) => projects.concat(group.projects || []), [] as Project[])
+    );
     var favoritesGroupCollapsed = infos.favoritesGroupCollapsed !== undefined
         ? infos.favoritesGroupCollapsed
         : groups.every(group => group.collapsed);
@@ -238,6 +239,7 @@ function getGroupSection(
     // Apply changes to HTML here also to getTempGroupSection
 
     var isVirtualGroup = isVirtualGroupId(group.id);
+    var isFavoritesGroup = group.id === FAVORITES_GROUP_ID;
     var groupActions = isVirtualGroup
         ? ''
         : `<div class="group-actions right">
@@ -269,7 +271,7 @@ function getGroupSection(
     </div>
     <div class="group-list">
         <div class="drop-signal"></div>
-        ${group.projects.map((p) => getProjectDiv(p, isVirtualGroup, group.id === OPEN_PROJECTS_GROUP_ID)).join('\n')}
+        ${group.projects.map((p) => getProjectDiv(p, isVirtualGroup, group.id === OPEN_PROJECTS_GROUP_ID, isFavoritesGroup)).join('\n')}
     </div>       
 </div>`;
 }
@@ -308,7 +310,12 @@ function getTempGroupSection(totalGroupCount: number) {
 </div>`;
 }
 
-function getProjectDiv(project: Project, isVirtualProject: boolean = false, isReadOnlyProject: boolean = false) {
+function getProjectDiv(
+    project: Project,
+    isVirtualProject: boolean = false,
+    isReadOnlyProject: boolean = false,
+    isDraggableVirtualProject: boolean = false
+) {
     var borderStyle = `background: ${project.color};`;
     var projectStyle = project.color ? `--project-color: ${escapeStyleValue(project.color)};` : '';
     var remoteType = getRemoteType(project);
@@ -353,7 +360,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
     var isRemote = remoteType !== ProjectRemoteType.None;
 
     return `
-<div class="project-container"${isVirtualProject ? ' data-nodrag' : ''}>
+<div class="project-container"${isVirtualProject && !isDraggableVirtualProject ? ' data-nodrag' : ''}>
     <div class="project" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${isVirtualProject ? ' data-virtual-project' : ''
         }${isReadOnlyProject ? ' data-readonly-project' : ''

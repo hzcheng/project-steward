@@ -1,3 +1,26 @@
+function isFavoritesProjectContainer(container) {
+    return Boolean(container && container.closest('[data-system-group="__favorites"]'));
+}
+
+function canMoveProject(el, source) {
+    if (!el || !source || el.hasAttribute('data-nodrag')) {
+        return false;
+    }
+
+    return isFavoritesProjectContainer(source) || !source.closest('[data-virtual-group]');
+}
+
+function canAcceptProject(target, source) {
+    if (!target || !source) {
+        return false;
+    }
+    if (isFavoritesProjectContainer(source)) {
+        return target === source;
+    }
+
+    return !isFavoritesProjectContainer(target) && !target.closest('[data-virtual-group]');
+}
+
 function initDnD() {
     const projectsContainerSelector = ".group-list";
     const groupsContainerSelector = ".groups-wrapper";
@@ -7,13 +30,19 @@ function initDnD() {
     var projectsContainers = document.querySelectorAll(projectsContainerSelector);
     var projectDrake = dragula([].slice.call(projectsContainers), {
         moves: function (el, source, handle, sibling) {
-            return !el.hasAttribute("data-nodrag") && !source.closest("[data-virtual-group]");
+            return canMoveProject(el, source);
         },
         accepts: function (el, target, source, sibling) {
-            return !target.closest("[data-virtual-group]");
+            return canAcceptProject(target, source);
         },
     });
-    projectDrake.on('drop', onReordered);
+    projectDrake.on('drop', function (el, target, source) {
+        if (isFavoritesProjectContainer(source)) {
+            onFavoritesReordered(source);
+            return;
+        }
+        onReordered();
+    });
     projectDrake.on('drag', () => document.body.classList.add('project-dragging'));
     projectDrake.on('dragend', () => document.body.classList.remove('project-dragging'));
 
@@ -61,6 +90,16 @@ function initDnD() {
         window.vscode.postMessage({
             type: 'reordered-projects',
             groupOrders,
+        });
+    }
+
+    function onFavoritesReordered(favoritesContainer) {
+        let projectIds = [].slice.call(favoritesContainer.querySelectorAll('.project[data-id]'))
+            .map(project => project.getAttribute('data-id'));
+
+        window.vscode.postMessage({
+            type: 'reordered-favorites',
+            projectIds,
         });
     }
 };

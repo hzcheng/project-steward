@@ -23,6 +23,7 @@ import { getLastPartOfPath, getOpenProjectUri as resolveOpenProjectUri, getOpenP
 import RemoteProjectResolver from './projects/remoteProjectResolver';
 import GitRepositoryDetector from './projects/gitRepositoryDetector';
 import { getCurrentWorkspaceProjectIds as resolveCurrentWorkspaceProjectIds } from './projects/currentWorkspaceState';
+import { withFavoriteProjectOrder, withToggledProjectFavorite } from './projects/favoriteProjectOrder';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -529,6 +530,9 @@ export function activate(context: vscode.ExtensionContext) {
             case 'reordered-projects':
                 let groupOrders = e.groupOrders as GroupOrder[];
                 await reorderGroups(groupOrders);
+                break;
+            case 'reordered-favorites':
+                await reorderFavoriteProjects(Array.isArray(e.projectIds) ? e.projectIds : []);
                 break;
             case 'remove-project':
                 projectId = e.projectId as string;
@@ -1317,13 +1321,13 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     async function toggleProjectFavorite(projectId: string) {
-        var project = projectService.getProject(projectId);
-        if (project == null) {
+        var groups = projectService.getGroups();
+        var updatedGroups = withToggledProjectFavorite(groups, projectId);
+        if (updatedGroups == null) {
             return;
         }
 
-        project.favorite = !project.favorite;
-        await projectService.updateProject(projectId, project);
+        await projectService.saveGroups(updatedGroups);
         refreshAfterMutation();
     }
 
@@ -1881,6 +1885,13 @@ export function activate(context: vscode.ExtensionContext) {
             reorderedGroups.push(group);
         }
 
+        await projectService.saveGroups(reorderedGroups);
+        refreshAfterMutation();
+    }
+
+    async function reorderFavoriteProjects(projectIds: string[]) {
+        var groups = projectService.getGroups();
+        var reorderedGroups = withFavoriteProjectOrder(groups, projectIds);
         await projectService.saveGroups(reorderedGroups);
         refreshAfterMutation();
     }
