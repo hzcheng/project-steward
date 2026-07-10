@@ -892,20 +892,23 @@ body.steward-sidebar {
 
         .project-border {
             left: 7px;
-            top: 50%;
+            top: 31%;
+            bottom: 31%;
             width: 4px;
-            height: 22px;
+            height: auto;
             border-radius: 999px;
             opacity: 0.9;
-            transform: translateY(-50%);
+            transform: none;
             box-shadow: 0 0 12px var(--project-color, var(--vscode-focusBorder));
             transition:
-                height $defaultTransition,
+                top $defaultTransition,
+                bottom $defaultTransition,
                 opacity $defaultTransition;
         }
 
         &:hover .project-border {
-            height: 28px;
+            top: 26%;
+            bottom: 26%;
             opacity: 1;
         }
 
@@ -1070,7 +1073,6 @@ body.steward-sidebar {
                 }
 
                 .project-border {
-                    height: 22px;
                     opacity: .9;
                 }
             }
