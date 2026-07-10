@@ -12,6 +12,7 @@ import {
     CodexSession,
 } from '../models';
 import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, OPEN_PROJECTS_GROUP_ID } from '../constants';
+import { withCurrentWorkspaceState } from '../projects/currentWorkspaceState';
 import * as Icons from './webviewIcons';
 
 const FAVORITES_GROUP_NAME = 'FAVORITES';
@@ -45,6 +46,13 @@ export function getStewardContent(
         'webviewFilterScripts.js'
     );
 
+    var workspaceState = withCurrentWorkspaceState(
+        groups,
+        infos.openProjects || [],
+        infos.currentWorkspaceProjectIds || []
+    );
+    groups = workspaceState.groups;
+    var openProjects = workspaceState.openProjects;
     var customCss = infos.config.get('customCss') || '';
     var favoriteProjects = groups
         .reduce((projects, group) => projects.concat(group.projects || []), [] as Project[])
@@ -52,7 +60,6 @@ export function getStewardContent(
     var favoritesGroupCollapsed = infos.favoritesGroupCollapsed !== undefined
         ? infos.favoritesGroupCollapsed
         : groups.every(group => group.collapsed);
-    var openProjects = infos.openProjects || [];
     var openProjectsGroup = openProjects.length
         ? getOpenProjectsGroup(openProjects, infos.openProjectsGroupCollapsed)
         : null;
@@ -355,6 +362,7 @@ function getProjectDiv(project: Project, isVirtualProject: boolean = false, isRe
         }${!isReadOnlyProject ? ' data-has-favorite-toggle' : ''
         }${project.showSaveAction ? ' data-has-save-action' : ''
         }${project.favorite ? ' data-favorite-project' : ''
+        }${project.isCurrentWorkspace ? ' data-current-workspace' : ''
         }>
         <div class="project-aura"></div>
         <div class="project-border" style="${borderStyle}"></div>

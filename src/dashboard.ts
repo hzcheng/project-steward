@@ -18,10 +18,11 @@ import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey,
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
 import type { AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
-import { getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
+import { findSavedProjectForOpenProject, getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
 import { getLastPartOfPath, getOpenProjectUri as resolveOpenProjectUri, getOpenProjectsFromWorkspace, getWorkspaceUri as resolveWorkspaceUri, getWorkspaceUris as resolveWorkspaceUris, isUriString, parsePathAsUri } from './projects/openProjectService';
 import RemoteProjectResolver from './projects/remoteProjectResolver';
 import GitRepositoryDetector from './projects/gitRepositoryDetector';
+import { getCurrentWorkspaceProjectIds as resolveCurrentWorkspaceProjectIds } from './projects/currentWorkspaceState';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -137,6 +138,7 @@ export function activate(context: vscode.ExtensionContext) {
         get favoritesGroupCollapsed() { return context.globalState.get(FAVORITES_GROUP_COLLAPSED_KEY) as boolean },
         get openProjects() { return getOpenProjects() },
         get openProjectsGroupCollapsed() { return context.globalState.get(OPEN_PROJECTS_GROUP_COLLAPSED_KEY) as boolean },
+        get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() },
     };
 
     const openCommand = vscode.commands.registerCommand('projectSteward.open', () => {
@@ -1903,6 +1905,15 @@ export function activate(context: vscode.ExtensionContext) {
             }
         );
         return withAiSessions(openProjects);
+    }
+
+    function getCurrentWorkspaceProjectIds(): string[] {
+        return resolveCurrentWorkspaceProjectIds(
+            projectService.getProjectsFlat(),
+            resolveWorkspaceUris(vscode.workspace.workspaceFile, vscode.workspace.workspaceFolders),
+            vscode.env.remoteName,
+            findSavedProjectForOpenProject
+        );
     }
 
     function getOpenProjectUri(projectId: string): vscode.Uri {

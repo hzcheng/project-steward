@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const Module = require('module');
 const os = require('os');
 const path = require('path');
 const commands = require('../out/aiSessions/commandBuilders');
@@ -11,6 +12,40 @@ const providers = require('../out/aiSessions/providers');
 const ClaudeSessionService = require('../out/services/claudeSessionService').default;
 const GitRepositoryDetector = require('../out/projects/gitRepositoryDetector').default;
 const projectPathUtils = require('../out/projects/projectPathUtils');
+const currentWorkspaceState = require('../out/projects/currentWorkspaceState');
+const originalModuleLoad = Module._load;
+Module._load = function (request, parent, isMain) {
+    if (request === 'vscode') {
+        return { Uri: { parse: createTestUri, file: createTestFileUri } };
+    }
+    return originalModuleLoad.call(this, request, parent, isMain);
+};
+const openProjectMatcher = require('../out/projects/openProjectMatcher');
+const webviewContentModule = require('../out/webview/webviewContent');
+Module._load = originalModuleLoad;
+
+function createTestUri(value) {
+    const parsed = new URL(value);
+    const uriPath = decodeURIComponent(parsed.pathname);
+    return {
+        scheme: parsed.protocol.replace(/:$/, ''),
+        authority: parsed.host,
+        path: uriPath,
+        fsPath: uriPath,
+        toString: () => value,
+    };
+}
+
+function createTestFileUri(filePath) {
+    const normalizedPath = filePath.replace(/\\/g, '/');
+    return {
+        scheme: 'file',
+        authority: '',
+        path: normalizedPath,
+        fsPath: filePath,
+        toString: () => `file://${normalizedPath}`,
+    };
+}
 
 function runPathChecks() {
     assert.strictEqual(helpers.normalizeAiSessionComparablePath('/work/app/'), '/work/app');
@@ -50,6 +85,56 @@ function runAssignmentChecks() {
 
     assert.deepStrictEqual((assignments.get('app') || []).map(session => session.id), ['s1']);
     assert.strictEqual(assignments.has('root'), false);
+}
+
+function runCurrentWorkspaceStateChecks() {
+    const saved = { id: 'saved', name: 'Saved', path: '/work/saved' };
+    const other = { id: 'other', name: 'Other', path: '/work/other' };
+    const groups = [{ id: 'group', groupName: 'Work', projects: [saved, other] }];
+    const openProjects = [{ id: '__openProjects-0', name: 'Saved', path: '/work/saved' }];
+
+    const result = currentWorkspaceState.withCurrentWorkspaceState(groups, openProjects, ['saved']);
+
+    assert.strictEqual(result.groups[0].projects[0].isCurrentWorkspace, true);
+    assert.strictEqual(result.groups[0].projects[1].isCurrentWorkspace, false);
+    assert.strictEqual(result.openProjects[0].isCurrentWorkspace, true);
+    assert.strictEqual(saved.isCurrentWorkspace, undefined);
+    assert.strictEqual(openProjects[0].isCurrentWorkspace, undefined);
+    assert.notStrictEqual(result.groups[0], groups[0]);
+}
+
+function runCurrentWorkspaceMatchingChecks() {
+    const savedProjects = [
+        { id: 'local', name: 'Same Name', path: '/work/local' },
+        { id: 'other', name: 'Same Name', path: '/work/other' },
+        { id: 'workspace', name: 'Workspace', path: '/work/team.code-workspace' },
+        { id: 'ssh', name: 'SSH', path: 'vscode-remote://ssh-remote+server/work/ssh' },
+        { id: 'container', name: 'Container', path: 'vscode-remote://dev-container+abc/work/container' },
+    ];
+    const resolveIds = (workspaceUris, remoteName = null) => currentWorkspaceState.getCurrentWorkspaceProjectIds(
+        savedProjects,
+        workspaceUris,
+        remoteName,
+        openProjectMatcher.findSavedProjectForOpenProject
+    );
+
+    assert.deepStrictEqual(resolveIds([createTestFileUri('/work/local')]), ['local']);
+    assert.deepStrictEqual(resolveIds([createTestFileUri('/work/team.code-workspace')]), ['workspace']);
+    assert.deepStrictEqual(resolveIds([
+        createTestFileUri('/work/local'),
+        createTestFileUri('/work/other'),
+    ]), ['local', 'other']);
+    assert.deepStrictEqual(resolveIds([
+        createTestUri('vscode-remote://ssh-remote+server/work/ssh'),
+    ], 'ssh-remote'), ['ssh']);
+    assert.deepStrictEqual(resolveIds([
+        createTestUri('vscode-remote://dev-container+abc/work/container'),
+    ], 'dev-container'), ['container']);
+    assert.deepStrictEqual(resolveIds([
+        createTestFileUri('/work/ssh'),
+    ], 'ssh-remote'), ['ssh']);
+    assert.deepStrictEqual(resolveIds([createTestFileUri('/missing')]), []);
+    assert.deepStrictEqual(resolveIds([]), []);
 }
 
 function runCandidateFilterChecks() {
@@ -138,6 +223,8 @@ function runWebviewContentChecks() {
     const compiledProjectBorderBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project .project-border');
     const compiledProjectBorderHoverBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project:hover .project-border');
     const compiledExpandedProjectBorderBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project[data-open-project][data-codex-expanded]:hover .project-border');
+    const currentProjectStyleBlock = extractScssBlock(sidebarStyles, '&[data-current-workspace]');
+    const compiledCurrentProjectStyleBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project[data-current-workspace]');
 
     assert.ok(webviewContent.includes('data-action="add" title="Add Project"'));
     assert.ok(webviewContent.includes('class="project no-projects" data-action="add-project" data-nodrag'));
@@ -190,6 +277,11 @@ function runWebviewContentChecks() {
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].default, 3);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].minimum, 1);
     assert.ok(dashboard.includes("ProjectWindowColorService"));
+    assert.ok(dashboard.includes('resolveCurrentWorkspaceProjectIds('));
+    assert.ok(dashboard.includes('findSavedProjectForOpenProject'));
+    assert.ok(dashboard.includes('get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() }'));
+    assert.ok(webviewContent.includes('withCurrentWorkspaceState('));
+    assert.ok(webviewContent.includes('infos.currentWorkspaceProjectIds || []'));
     assert.ok(dashboard.includes("function applyProjectColorToCurrentWindow(project: Project = null)"));
     assert.ok(dashboard.includes("project?.showSaveAction"));
     assert.ok(dashboard.includes("syncProjectColorToCurrentWindow(project)"));
@@ -213,8 +305,16 @@ function runWebviewContentChecks() {
     assert.ok(projectWindowColorService.includes("'commandCenter.activeBorder': auraPalette.commandBorder"));
     assert.ok(!extractMethodBody(projectWindowColorService, 'getWindowColorCustomizations').includes("'activityBar.background'"));
     assert.ok(webviewContent.includes('style="${projectStyle}"'));
+    assert.ok(webviewContent.includes("project.isCurrentWorkspace ? ' data-current-workspace' : ''"));
     assert.ok(styles.includes('--project-color'));
     assert.ok(styles.includes('.project-aura'));
+    assert.ok(currentProjectStyleBlock.includes('--vscode-list-inactiveSelectionBackground'));
+    assert.ok(currentProjectStyleBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(currentProjectStyleBlock.includes('box-shadow'));
+    assert.ok(compiledCurrentProjectStyleBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(!currentProjectStyleBlock.includes('animation'));
+    assert.ok(styles.indexOf('&[data-current-workspace]') > styles.indexOf('&[data-codex-expanded]:hover'));
+    assert.ok(compiledStyles.indexOf('.project[data-current-workspace]') > compiledStyles.indexOf('.project[data-open-project][data-codex-expanded]:hover'));
     assert.ok(projectBorderBlock.includes('top: 31%'));
     assert.ok(projectBorderBlock.includes('bottom: 31%'));
     assert.ok(projectBorderBlock.includes('height: auto'));
@@ -234,6 +334,52 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes('--steward-ai-session-list-max-height: ${getAiSessionListMaxHeight(config)}px;'));
     assert.ok(webviewContent.includes('Number.isFinite(visibleRows)'));
     assert.ok(styles.includes('height: var(--steward-ai-session-list-max-height, calc(3 * 42px + 2 * 2px));'));
+}
+
+function runCurrentWorkspaceRenderingChecks() {
+    const config = {
+        get: (key, defaultValue) => defaultValue,
+        displayProjectPath: false,
+        searchIsActiveByDefault: false,
+        showAddGroupButtonTile: false,
+    };
+    const html = webviewContentModule.getStewardContent(
+        { extensionPath: '/extension' },
+        {
+            cspSource: 'test-source',
+            asWebviewUri: uri => uri.toString(),
+        },
+        [{
+            id: 'group',
+            groupName: 'Work',
+            collapsed: false,
+            projects: [
+                { id: 'saved', name: 'Saved', path: '/work/saved', color: '#00aacc', favorite: true },
+                { id: 'other', name: 'Other', path: '/work/other', color: '#ccaa00' },
+            ],
+        }],
+        {
+            config,
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            otherStorageHasData: false,
+            currentWorkspaceProjectIds: ['saved'],
+            openProjects: [
+                { id: '__openProjects-0', name: 'Saved', path: '/work/saved', color: '#00aacc' },
+            ],
+        },
+        true
+    );
+    const getCardTags = projectId => html.match(new RegExp(`<div class="project"[^>]*data-id="${projectId}"[^>]*>`, 'g')) || [];
+    const savedTags = getCardTags('saved');
+    const otherTags = getCardTags('other');
+    const openTags = getCardTags('__openProjects-0');
+
+    assert.strictEqual(savedTags.length, 2);
+    assert.ok(savedTags.every(tag => tag.includes('data-current-workspace')));
+    assert.strictEqual(otherTags.length, 1);
+    assert.ok(!otherTags[0].includes('data-current-workspace'));
+    assert.strictEqual(openTags.length, 1);
+    assert.ok(openTags[0].includes('data-current-workspace'));
 }
 
 function extractFunctionBody(source, functionName) {
@@ -455,11 +601,14 @@ function runCommandBuilderChecks() {
 
 runPathChecks();
 runAssignmentChecks();
+runCurrentWorkspaceStateChecks();
+runCurrentWorkspaceMatchingChecks();
 runCandidateFilterChecks();
 runDisplayChecks();
 runPinStoreChecks();
 runKeyChecks();
 runWebviewContentChecks();
+runCurrentWorkspaceRenderingChecks();
 runGitRepositoryDetectorChecks();
 runClaudeSessionChecks();
 runProviderChecks();
