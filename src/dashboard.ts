@@ -13,6 +13,7 @@ import CodexSessionService from './services/codexSessionService';
 import KimiSessionService from './services/kimiSessionService';
 import ClaudeSessionService from './services/claudeSessionService';
 import ProjectWindowColorService from './services/projectWindowColorService';
+import AiSessionPinStore from './aiSessions/pinStore';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, getAiSessionProviderIdFromKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
@@ -105,6 +106,8 @@ export function activate(context: vscode.ExtensionContext) {
         claude: claudeSessionService,
     };
     const aiSessionTerminalService = new AiSessionTerminalService(context.globalStoragePath, providerId => getRegisteredAiSessionProvider(providerId));
+    const aiSessionPinStore = new AiSessionPinStore(context.globalStoragePath);
+    migrateLegacyPinnedAiSessions();
     let aiSessionRefreshTimeout: NodeJS.Timeout = null;
     let aiSessionWatcherDisposables: { dispose(): void }[] = [];
     let aiSessionUpdateSequence = 0;
@@ -788,16 +791,25 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        let pinnedSessions = getPinnedAiSessionKeys();
         let sessionKey = getAiSessionPinKey(providerId, sessionId);
-        if (pinnedSessions.has(sessionKey)) {
-            pinnedSessions.delete(sessionKey);
-        } else {
-            pinnedSessions.add(sessionKey);
+        try {
+            aiSessionPinStore.toggle(sessionKey);
+        } catch (error) {
+            logError('Failed to update the pinned AI session.', error);
+            vscode.window.showErrorMessage('Could not update the pinned chat.');
+            return;
         }
 
-        await context.globalState.update(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, Array.from(pinnedSessions));
         refreshAiSessionViewsIncrementally();
+    }
+
+    function deletePinnedAiSession(providerId: AiSessionProviderId, sessionId: string) {
+        let sessionKey = getAiSessionPinKey(providerId, sessionId);
+        try {
+            aiSessionPinStore.remove(sessionKey);
+        } catch (error) {
+            logError('Failed to delete the pinned AI session.', error);
+        }
     }
 
     async function renameAiSession(providerId: AiSessionProviderId, sessionId: string) {
@@ -1003,6 +1015,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         aiSessionTerminalService.untrack(providerId, sessionId);
+        deletePinnedAiSession(providerId, sessionId);
         deleteAiSessionAlias(providerId, sessionId);
         invalidateAiSessionCache(providerId);
         refreshAiSessionViewsIncrementally();
@@ -1906,7 +1919,8 @@ export function activate(context: vscode.ExtensionContext) {
         let assignments = getAiSessionAssignments(openProjects, sessionResults);
         let expandedProjects = getExpandedCodexSessionProjects();
         let activeProviders = getActiveAiSessionProviders();
-        let pinnedSessions = prunePinnedAiSessionKeys(getPinnedAiSessionKeys(), sessionResults);
+        // Results are scoped to this window, so missing sessions cannot be used to prune persisted pins.
+        let pinnedSessions = getPinnedAiSessionKeys();
         let aliases = pruneAiSessionAliases(getAiSessionAliases(), sessionResults);
 
         return openProjects.map(project => {
@@ -1994,8 +2008,24 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function getPinnedAiSessionKeys(): Set<string> {
+        try {
+            return aiSessionPinStore.getAll();
+        } catch (error) {
+            logError('Failed to read pinned AI sessions.', error);
+            return new Set<string>();
+        }
+    }
+
+    function migrateLegacyPinnedAiSessions() {
         let pinnedSessions = context.globalState.get(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY) as string[];
-        return new Set(Array.isArray(pinnedSessions) ? pinnedSessions : []);
+        try {
+            aiSessionPinStore.migrateLegacy(Array.isArray(pinnedSessions) ? pinnedSessions : []);
+            context.globalState.update(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, undefined).then(undefined, error => {
+                logError('Failed to clear legacy pinned AI session state.', error);
+            });
+        } catch (error) {
+            logError('Failed to migrate pinned AI sessions.', error);
+        }
     }
 
     function getAiSessionIdsForCwd(providerId: AiSessionProviderId, sessionResult: AiSessionReadResult, cwd: string): string[] {
@@ -2078,30 +2108,6 @@ export function activate(context: vscode.ExtensionContext) {
                     && updatedAt >= createdAt;
             })
             .sort((a, b) => compareAiSessionUpdatedAt(a.updatedAt, b.updatedAt))[0] || null;
-    }
-
-    function prunePinnedAiSessionKeys(pinnedSessions: Set<string>, sessionResults: Record<AiSessionProviderId, AiSessionReadResult>): Set<string> {
-        if (!pinnedSessions.size) {
-            return pinnedSessions;
-        }
-
-        let availableSessionKeys = new Set<string>();
-        addAvailableAiSessionKeys(availableSessionKeys, sessionResults);
-
-        let prunedPinnedSessions = new Set<string>();
-        for (let sessionKey of pinnedSessions) {
-            let providerId = getProviderIdFromAiSessionPinKey(sessionKey);
-            let providerUnavailable = providerId ? !sessionResults[providerId]?.available : false;
-            if (providerUnavailable || availableSessionKeys.has(sessionKey)) {
-                prunedPinnedSessions.add(sessionKey);
-            }
-        }
-
-        if (prunedPinnedSessions.size !== pinnedSessions.size) {
-            context.globalState.update(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, Array.from(prunedPinnedSessions));
-        }
-
-        return prunedPinnedSessions;
     }
 
     function addAvailableAiSessionKeys(sessionKeys: Set<string>, sessionResults: Record<AiSessionProviderId, AiSessionReadResult>) {

@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
+const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
 const ClaudeSessionService = require('../out/services/claudeSessionService').default;
 const GitRepositoryDetector = require('../out/projects/gitRepositoryDetector').default;
@@ -85,6 +86,31 @@ function runDisplayChecks() {
     assert.strictEqual(prepared[1].name, 'Alias New');
 }
 
+function runPinStoreChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-pins-'));
+    try {
+        const firstStore = new AiSessionPinStore(tempRoot);
+        const secondStore = new AiSessionPinStore(tempRoot);
+
+        firstStore.add('codex:first');
+        secondStore.add('kimi:second');
+        firstStore.remove('codex:first');
+
+        assert.deepStrictEqual(Array.from(secondStore.getAll()), ['kimi:second']);
+
+        firstStore.migrateLegacy(['claude:legacy']);
+        assert.strictEqual(secondStore.has('claude:legacy'), true);
+        secondStore.remove('claude:legacy');
+        secondStore.migrateLegacy(['claude:legacy']);
+        assert.strictEqual(firstStore.has('claude:legacy'), false);
+
+        assert.strictEqual(firstStore.toggle('codex:toggle'), true);
+        assert.strictEqual(secondStore.toggle('codex:toggle'), false);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
 function runKeyChecks() {
     const isProviderId = value => value === 'codex' || value === 'kimi' || value === 'claude';
 
@@ -114,6 +140,9 @@ function runWebviewContentChecks() {
     assert.ok(settingsFunction.includes("executeCommand('workbench.action.openSettings', '@ext:hzcheng.project-steward')"));
     assert.ok(!settingsFunction.includes('showQuickPick'));
     assert.ok(!settingsFunction.includes('ai-session-terminal-mode-planned'));
+    assert.ok(dashboard.includes('new AiSessionPinStore(context.globalStoragePath)'));
+    assert.ok(!dashboard.includes('prunePinnedAiSessionKeys'));
+    assert.ok(extractFunctionBody(dashboard, 'deletePinnedAiSession').includes("logError('Failed to delete the pinned AI session.'"));
     assert.ok(webviewContent.includes('.settings-button,'));
     assert.ok(styles.includes('max-width: calc(100% - 76px);'));
     assert.ok(styles.includes('margin-left: 4px;'));
@@ -403,6 +432,7 @@ runPathChecks();
 runAssignmentChecks();
 runCandidateFilterChecks();
 runDisplayChecks();
+runPinStoreChecks();
 runKeyChecks();
 runWebviewContentChecks();
 runGitRepositoryDetectorChecks();
