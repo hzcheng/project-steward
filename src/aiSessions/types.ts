@@ -1,6 +1,7 @@
 'use strict';
 
 import type { AiSessionProviderId, CodexSession } from '../models';
+import type { BatchAiSessionArchiveResult } from './archiveBatch';
 
 export interface AiSessionTerminalEntry<TTerminal = unknown> {
     terminal: TTerminal;
@@ -83,7 +84,21 @@ export interface AiSessionsUpdatedMessage {
     openProjects: OpenProjectAiSessionViewModel[];
 }
 
+export interface AiSessionActiveTerminalChangedMessage {
+    type: 'active-ai-session-terminal-changed';
+    provider: AiSessionProviderId | null;
+    sessionId: string | null;
+}
+
 export interface AiSessionAssignmentCandidate<TProject = { id: string }> {
     project: TProject;
     path: string;
+}
+
+export interface AiSessionBatchArchiveCompletedMessage {
+    type: 'ai-session-batch-archive-completed';
+    projectId: string;
+    provider: AiSessionProviderId;
+    status: 'cancelled' | 'rejected' | 'finished';
+    result?: BatchAiSessionArchiveResult;
 }

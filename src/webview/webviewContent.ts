@@ -431,9 +431,20 @@ export function getAiSessionsDiv(project: Project): string {
             </select>
         </label>
         ${getCreateAiSessionButton(activeProvider)}
+        ${getManageAiSessionsButton(activeProvider)}
     </div>
     <div class="codex-sessions-list">
         ${sessionRows}
+    </div>
+    <div class="ai-session-batch-actions" aria-live="polite">
+        <div class="ai-session-batch-selection-actions">
+            <button type="button" data-action="select-unpinned-ai-sessions" title="Select all unpinned sessions" aria-label="Select all unpinned sessions">All</button>
+            <button type="button" data-action="clear-ai-session-selection">Clear</button>
+        </div>
+        <span class="ai-session-batch-count">0 selected</span>
+        <div class="ai-session-batch-submit-actions">
+            <button type="button" class="ai-session-batch-archive" data-action="archive-selected-ai-sessions" disabled>Archive</button>
+        </div>
     </div>
 </div>`;
 }
@@ -446,6 +457,11 @@ function getAiProviderOption(providerId: AiSessionProviderId, label: string, cou
 function getCreateAiSessionButton(activeProvider: AiSessionProviderId): string {
     var providerLabel = getAiProviderLabel(activeProvider);
     return `<button class="ai-session-create-button" data-action="create-ai-session" data-provider="${activeProvider}" title="New ${providerLabel} Session">${Icons.add}</button>`;
+}
+
+function getManageAiSessionsButton(activeProvider: AiSessionProviderId): string {
+    var label = `Manage ${getAiProviderLabel(activeProvider)} Sessions`;
+    return `<button type="button" class="ai-session-manage-button" data-action="manage-ai-sessions" data-provider="${activeProvider}" title="${label}" aria-label="${label}" aria-pressed="false">${Icons.manage}</button>`;
 }
 
 function getActiveAiSessionProvider(project: Project): AiSessionProviderId {
@@ -489,11 +505,13 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
     var providerLabel = getAiProviderLabel(provider);
     var pinned = !!session.pinned;
     var pinTitle = pinned ? 'Unpin Session' : 'Pin Session';
+    var batchCheckbox = `<input type="checkbox" class="ai-session-batch-checkbox" aria-label="Select ${sessionName}">`;
     var pinAction = `<button type="button" class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}" aria-label="${pinTitle}">${Icons.pin}</button>`;
     var archiveAction = `<button type="button" class="codex-session-archive" data-action="archive-${provider}-session" title="Archive Session" aria-label="Archive Session">${Icons.archive}</button>`;
 
     return `
 <div class="codex-session-row"${pinned ? ' data-session-pinned' : ''} data-session-id="${sessionId}" data-session-provider="${provider}" title="Resume ${providerLabel} Session">
+    ${batchCheckbox}
     <span class="codex-session-icon">${Icons.terminalLine}</span>
     <span class="codex-session-text">
         <span class="codex-session-name">${sessionName}</span>

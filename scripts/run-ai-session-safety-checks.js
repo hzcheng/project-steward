@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const Module = require('module');
 const os = require('os');
@@ -8,20 +9,29 @@ const path = require('path');
 const vm = require('vm');
 const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
+const archiveBatch = require('../out/aiSessions/archiveBatch');
+const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
+const CodexSessionService = require('../out/services/codexSessionService').default;
+const KimiSessionService = require('../out/services/kimiSessionService').default;
 const ClaudeSessionService = require('../out/services/claudeSessionService').default;
 const GitRepositoryDetector = require('../out/projects/gitRepositoryDetector').default;
 const projectPathUtils = require('../out/projects/projectPathUtils');
 const currentWorkspaceState = require('../out/projects/currentWorkspaceState');
 const favoriteProjectOrder = require('../out/projects/favoriteProjectOrder');
 const originalModuleLoad = Module._load;
+const vscodeTestState = { terminals: [] };
 Module._load = function (request, parent, isMain) {
     if (request === 'vscode') {
-        return { Uri: { parse: createTestUri, file: createTestFileUri } };
+        return {
+            Uri: { parse: createTestUri, file: createTestFileUri },
+            window: { terminals: vscodeTestState.terminals },
+        };
     }
     return originalModuleLoad.call(this, request, parent, isMain);
 };
+const AiSessionTerminalService = require('../out/aiSessions/terminalService').default;
 const openProjectMatcher = require('../out/projects/openProjectMatcher');
 const webviewContentModule = require('../out/webview/webviewContent');
 Module._load = originalModuleLoad;
@@ -284,6 +294,358 @@ function runKeyChecks() {
     assert.strictEqual(helpers.getAiSessionProviderIdFromKey(':missing', isProviderId), null);
 }
 
+function runActiveAiSessionTerminalHighlightChecks() {
+    const terminalA = { name: 'A' };
+    const terminalB = { name: 'B' };
+    let activeTerminal = terminalA;
+    let visible = true;
+    let complete = new Set();
+    let published = [];
+    let timers = [];
+    const resolutions = new Map([
+        [terminalA, { terminal: terminalA, provider: 'codex', sessionId: 'a', entry: { markerPath: 'a.done' } }],
+        [terminalB, { terminal: terminalB, provider: 'kimi', sessionId: 'b', entry: { markerPath: 'b.done' } }],
+    ]);
+    const highlighter = new activeTerminalHighlight.default({
+        isVisible: () => visible,
+        getActiveTerminal: () => activeTerminal,
+        resolveTerminal: terminal => resolutions.get(terminal) || null,
+        isComplete: resolution => complete.has(resolution.sessionId),
+        publish: identity => published.push(identity),
+        setInterval: callback => {
+            const handle = { callback, active: true };
+            timers.push(handle);
+            return handle;
+        },
+        clearInterval: handle => { handle.active = false; },
+    });
+
+    highlighter.sync();
+    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a' });
+    assert.strictEqual(timers.filter(timer => timer.active).length, 1);
+
+    activeTerminal = terminalB;
+    highlighter.sync();
+    assert.deepStrictEqual(published.pop(), { provider: 'kimi', sessionId: 'b' });
+    assert.strictEqual(timers.filter(timer => timer.active).length, 1);
+
+    complete.add('b');
+    timers.find(timer => timer.active).callback();
+    assert.strictEqual(published.pop(), null);
+    assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+
+    complete.clear();
+    activeTerminal = terminalA;
+    highlighter.sync();
+    highlighter.handleTerminalClosed(terminalA);
+    assert.strictEqual(published.pop(), null);
+    assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+
+    visible = false;
+    highlighter.setVisible(false);
+    highlighter.sync();
+    assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+
+    visible = true;
+    highlighter.setVisible(true);
+    highlighter.request();
+    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a' });
+    assert.strictEqual(timers.filter(timer => timer.active).length, 1);
+
+    resolutions.delete(terminalA);
+    highlighter.sync();
+    assert.strictEqual(published.pop(), null);
+    assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+
+    highlighter.dispose();
+    assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+}
+
+function runAiSessionTerminalResolutionChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-active-terminal-'));
+    try {
+        const service = new AiSessionTerminalService(tempRoot, providerId =>
+            providers.getAiSessionProviderDefinition(providerId), 0
+        );
+        const tracked = { name: 'Codex: One [session-]', creationOptions: {} };
+        service.track('codex', 'session-one', {
+            terminal: tracked,
+            markerPath: path.join(tempRoot, 'session-one.done'),
+        });
+        const candidateCalls = [];
+        const candidates = {
+            codex: [{ id: 'session-env', name: 'Environment' }],
+            kimi: [{ id: 'named-123456', name: 'Named' }],
+        };
+        const getCandidates = providerId => {
+            candidateCalls.push(providerId);
+            return candidates[providerId] || [];
+        };
+
+        assert.strictEqual(service.resolveTerminalSession(tracked, getCandidates).sessionId, 'session-one');
+        assert.deepStrictEqual(candidateCalls, []);
+
+        const byEnv = {
+            name: 'Codex restored',
+            creationOptions: { env: { PROJECT_STEWARD_CODEX_SESSION_ID: 'session-env' } },
+        };
+        const archivedByEnv = {
+            name: 'Codex archived',
+            creationOptions: { env: { PROJECT_STEWARD_CODEX_SESSION_ID: 'session-archived' } },
+        };
+        const byName = { name: 'Kimi: Named [named-12]', creationOptions: {} };
+        const ordinary = { name: 'bash', creationOptions: {} };
+        vscodeTestState.terminals.splice(
+            0,
+            vscodeTestState.terminals.length,
+            byEnv,
+            archivedByEnv,
+            byName,
+            ordinary
+        );
+
+        assert.strictEqual(service.resolveTerminalSession(byEnv, getCandidates).sessionId, 'session-env');
+        assert.deepStrictEqual(candidateCalls, ['codex']);
+
+        candidateCalls.length = 0;
+        assert.strictEqual(service.resolveTerminalSession(archivedByEnv, getCandidates), null);
+        assert.deepStrictEqual(candidateCalls, ['codex']);
+
+        candidateCalls.length = 0;
+        assert.strictEqual(service.resolveTerminalSession(byName, getCandidates).sessionId, 'named-123456');
+        assert.deepStrictEqual(candidateCalls, ['kimi']);
+
+        candidateCalls.length = 0;
+        assert.strictEqual(service.resolveTerminalSession(ordinary, getCandidates), null);
+        assert.deepStrictEqual(candidateCalls, []);
+    } finally {
+        vscodeTestState.terminals.length = 0;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
+function runBatchAiSessionArchiveChecks() {
+    assert.ok(archiveBatch.MAX_BATCH_AI_SESSION_ARCHIVE_REQUEST_ENTRIES > 20);
+    const excessiveIds = Array.from(
+        { length: archiveBatch.MAX_BATCH_AI_SESSION_ARCHIVE_REQUEST_ENTRIES + 7 },
+        (_, index) => `session-${index}`
+    );
+    const boundedSelection = archiveBatch.resolveBatchAiSessionSelection(
+        excessiveIds,
+        excessiveIds.map(id => ({ id, name: id }))
+    );
+    assert.strictEqual(
+        boundedSelection.eligibleSessions.length,
+        archiveBatch.MAX_BATCH_AI_SESSION_ARCHIVE_REQUEST_ENTRIES
+    );
+    assert.strictEqual(boundedSelection.malformedCount, 7);
+
+    const excessiveLengthId = 'x'.repeat(archiveBatch.MAX_BATCH_AI_SESSION_ID_LENGTH + 1);
+    const excessiveLengthSelection = archiveBatch.resolveBatchAiSessionSelection(
+        [excessiveLengthId],
+        [{ id: excessiveLengthId, name: 'Too long' }]
+    );
+    assert.deepStrictEqual(excessiveLengthSelection.eligibleSessions, []);
+    assert.strictEqual(excessiveLengthSelection.malformedCount, 1);
+
+    const rejectedIds = Array.from(
+        { length: archiveBatch.MAX_RETAINED_BATCH_AI_SESSION_REJECTED_IDS + 5 },
+        (_, index) => `outside-${index}`
+    );
+    const boundedRejectedSelection = archiveBatch.resolveBatchAiSessionSelection(rejectedIds, []);
+    assert.strictEqual(
+        boundedRejectedSelection.rejectedIds.length,
+        archiveBatch.MAX_RETAINED_BATCH_AI_SESSION_REJECTED_IDS
+    );
+    assert.strictEqual(boundedRejectedSelection.rejectedIdCount, rejectedIds.length);
+    assert.strictEqual(
+        archiveBatch.formatBatchAiSessionIdForLog('outside\nnext\t\u0000'),
+        'outside\\nnext\\t\\u0000'
+    );
+    assert.ok(
+        archiveBatch.formatBatchAiSessionIdForLog('z'.repeat(1000)).length
+        <= archiveBatch.MAX_BATCH_AI_SESSION_LOG_ID_LENGTH + 1
+    );
+
+    const availableSessions = [
+        { id: 'pinned', name: 'Pinned', pinned: true },
+        { id: 'plain', name: 'Plain' },
+        { id: 'running', name: 'Running' },
+        { id: 'failed', name: 'Failed' },
+    ];
+    const selection = archiveBatch.resolveBatchAiSessionSelection(
+        ['plain', 'plain', '', 42, 'pinned', 'outside', 'running', 'failed'],
+        availableSessions
+    );
+
+    assert.deepStrictEqual(selection.eligibleSessions.map(session => session.id), [
+        'plain', 'pinned', 'running', 'failed',
+    ]);
+    assert.deepStrictEqual(selection.rejectedIds, ['outside']);
+    assert.strictEqual(selection.rejectedIdCount, 1);
+    assert.strictEqual(selection.malformedCount, 2);
+    assert.strictEqual(selection.eligibleSessions.filter(session => session.pinned).length, 1);
+
+    const result = archiveBatch.archiveBatchAiSessions(selection, {
+        resolveCurrentSessions: () => availableSessions.filter(session => session.id !== 'pinned'),
+        archiveSession: sessionId => sessionId === 'running'
+            ? 'running'
+            : sessionId === 'failed' ? 'failed' : 'archived',
+    });
+
+    assert.deepStrictEqual(result.archivedIds, ['plain']);
+    assert.deepStrictEqual(result.runningIds, ['running']);
+    assert.deepStrictEqual(result.missingIds, ['pinned']);
+    assert.deepStrictEqual(result.failedIds, ['failed']);
+    assert.deepStrictEqual(result.rejectedIds, ['outside']);
+    assert.strictEqual(result.malformedCount, 2);
+    assert.strictEqual(archiveBatch.hasBatchAiSessionArchiveIssues(result), true);
+    assert.strictEqual(
+        archiveBatch.formatBatchAiSessionArchiveSummary(result),
+        'Archived 1 session; skipped 1 running session; 1 session was no longer available; rejected 3 invalid or out-of-scope selections; 1 session failed.'
+    );
+
+    const success = archiveBatch.archiveBatchAiSessions(
+        archiveBatch.resolveBatchAiSessionSelection(['plain'], availableSessions),
+        {
+            resolveCurrentSessions: () => availableSessions,
+            archiveSession: () => 'archived',
+        }
+    );
+    assert.strictEqual(archiveBatch.hasBatchAiSessionArchiveIssues(success), false);
+    assert.strictEqual(
+        archiveBatch.formatBatchAiSessionArchiveSummary(success),
+        'Archived 1 session.'
+    );
+}
+
+async function runBatchAiSessionArchiveHostChecks() {
+    const sessions = [
+        { id: 'archived', name: 'Archived' },
+        { id: 'running', name: 'Running' },
+        { id: 'missing', name: 'Missing' },
+        { id: 'provider-false', name: 'Provider false', pinned: true },
+        { id: 'provider-throw', name: 'Provider throw' },
+        { id: 'later', name: 'Later' },
+    ];
+    const createHarness = overrides => {
+        const state = {
+            confirmations: [], completions: [], refreshCount: 0, results: [], errors: [],
+            scopeRejections: 0, selectionRejections: 0,
+        };
+        const project = { id: 'project-a', activeAiSessionProvider: 'codex' };
+        const dependencies = Object.assign({
+            resolveProject: projectId => projectId === project.id ? project : null,
+            getProjectSessions: () => sessions,
+            resolveCurrentSessions: () => sessions,
+            confirm: details => {
+                state.confirmations.push(details);
+                return Promise.resolve(true);
+            },
+            archiveSession: () => 'archived',
+            reportScopeRejected: () => { state.scopeRejections++; },
+            reportSelectionRejected: () => { state.selectionRejections++; },
+            reportResult: result => { state.results.push(result); },
+            logUnexpectedError: (context, error, sessionId) => {
+                state.errors.push({ context, error: String(error), sessionId });
+            },
+            postCompletion: message => { state.completions.push(message); },
+            refresh: () => { state.refreshCount++; },
+        }, overrides || {});
+        return { state, dependencies };
+    };
+    const request = {
+        projectId: 'project-a', provider: 'codex', sessionIds: sessions.map(session => session.id),
+    };
+
+    for (const rejectedRequest of [
+        { projectId: 'project-b', provider: 'codex', sessionIds: ['archived'] },
+        { projectId: 'project-a', provider: 'kimi', sessionIds: ['archived'] },
+    ]) {
+        const harness = createHarness();
+        await archiveBatch.executeBatchAiSessionArchiveRequest(rejectedRequest, harness.dependencies);
+        assert.strictEqual(harness.state.scopeRejections, 1);
+        assert.deepStrictEqual(harness.state.completions.map(message => message.status), ['rejected']);
+        assert.strictEqual(harness.state.confirmations.length, 0);
+        assert.strictEqual(harness.state.refreshCount, 0);
+    }
+
+    const cancelled = createHarness({ confirm: () => Promise.resolve(false) });
+    await archiveBatch.executeBatchAiSessionArchiveRequest(request, cancelled.dependencies);
+    assert.deepStrictEqual(cancelled.state.completions.map(message => message.status), ['cancelled']);
+    assert.strictEqual(cancelled.state.refreshCount, 0);
+
+    const confirmation = createHarness();
+    await archiveBatch.executeBatchAiSessionArchiveRequest({
+        projectId: 'project-a', provider: 'codex',
+        sessionIds: ['archived', 'provider-false', 'archived'],
+    }, confirmation.dependencies);
+    assert.deepStrictEqual(confirmation.state.confirmations, [{
+        projectId: 'project-a', provider: 'codex', eligibleCount: 2, pinnedCount: 1,
+    }]);
+    assert.deepStrictEqual(confirmation.state.completions.map(message => message.status), ['finished']);
+    assert.strictEqual(confirmation.state.refreshCount, 1);
+
+    const mixed = createHarness({
+        resolveCurrentSessions: () => sessions.filter(session => session.id !== 'missing'),
+        archiveSession: sessionId => {
+            if (sessionId === 'running') return 'running';
+            if (sessionId === 'provider-false') return 'failed';
+            if (sessionId === 'provider-throw') throw new Error('provider exploded');
+            return 'archived';
+        },
+    });
+    await archiveBatch.executeBatchAiSessionArchiveRequest(request, mixed.dependencies);
+    const mixedResult = mixed.state.completions[0].result;
+    assert.deepStrictEqual(mixedResult.archivedIds, ['archived', 'later']);
+    assert.deepStrictEqual(mixedResult.runningIds, ['running']);
+    assert.deepStrictEqual(mixedResult.missingIds, ['missing']);
+    assert.deepStrictEqual(mixedResult.failedIds, ['provider-false', 'provider-throw']);
+    assert.strictEqual(mixed.state.errors.length, 1);
+    assert.strictEqual(mixed.state.errors[0].sessionId, 'provider-throw');
+    assert.deepStrictEqual(mixed.state.completions.map(message => message.status), ['finished']);
+    assert.strictEqual(mixed.state.refreshCount, 1);
+
+    const cleanupCalls = [];
+    const itemDependencies = archiveResult => ({
+        isRunning: () => false,
+        archiveSession: typeof archiveResult === 'function' ? archiveResult : () => archiveResult,
+        deleteEntryMarker: () => cleanupCalls.push('marker'),
+        untrackTerminal: () => cleanupCalls.push('terminal'),
+        deletePin: () => cleanupCalls.push('pin'),
+        deleteAlias: () => cleanupCalls.push('alias'),
+    });
+    assert.strictEqual(
+        archiveBatch.archiveBatchAiSessionItem('success', itemDependencies(true)),
+        'archived'
+    );
+    assert.deepStrictEqual(cleanupCalls, ['marker', 'terminal', 'pin', 'alias']);
+    cleanupCalls.length = 0;
+    assert.strictEqual(
+        archiveBatch.archiveBatchAiSessionItem('failed', itemDependencies(false)),
+        'failed'
+    );
+    assert.deepStrictEqual(cleanupCalls, []);
+    assert.throws(
+        () => archiveBatch.archiveBatchAiSessionItem('throw', itemDependencies(() => { throw new Error('boom'); })),
+        /boom/
+    );
+    assert.deepStrictEqual(cleanupCalls, []);
+
+    for (const exceptionCase of [
+        { override: { resolveProject: () => { throw new Error('resolve'); } }, status: 'rejected', refreshCount: 0 },
+        { override: { confirm: () => { throw new Error('confirm'); } }, status: 'rejected', refreshCount: 0 },
+        { override: { resolveCurrentSessions: () => { throw new Error('execute'); } }, status: 'finished', refreshCount: 1 },
+        { override: { reportResult: () => { throw new Error('report'); } }, status: 'finished', refreshCount: 1 },
+    ]) {
+        const harness = createHarness(exceptionCase.override);
+        await archiveBatch.executeBatchAiSessionArchiveRequest(request, harness.dependencies);
+        assert.deepStrictEqual(harness.state.completions.map(message => message.status), [exceptionCase.status]);
+        assert.strictEqual(harness.state.refreshCount, exceptionCase.refreshCount);
+        assert.strictEqual(harness.state.errors.length, 1);
+    }
+}
+
 function runWebviewContentChecks() {
     const webviewContent = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts'), 'utf8');
     const webviewProjectScripts = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'), 'utf8');
@@ -291,6 +653,11 @@ function runWebviewContentChecks() {
     const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
     const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const withAiSessionsFunction = extractFunctionBody(dashboard, 'withAiSessions');
+    const singleArchiveFunction = extractFunctionBody(dashboard, 'archiveAiSession');
+    const batchArchiveFunction = extractFunctionBody(dashboard, 'archiveAiSessions');
+    const archiveItemFunction = extractFunctionBody(dashboard, 'archiveAiSessionItem');
+    const batchArchiveLogFunction = extractFunctionBody(dashboard, 'logBatchAiSessionArchiveResult');
     const projectWindowColorService = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'projectWindowColorService.ts'), 'utf8');
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
@@ -316,8 +683,34 @@ function runWebviewContentChecks() {
     assert.ok(!settingsFunction.includes('showQuickPick'));
     assert.ok(!settingsFunction.includes('ai-session-terminal-mode-planned'));
     assert.ok(dashboard.includes('new AiSessionPinStore(context.globalStoragePath)'));
+    assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
+    assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
+    assert.ok(dashboard.includes("case 'request-active-ai-session-terminal':"));
+    assert.ok(dashboard.includes("type: 'active-ai-session-terminal-changed'"));
+    assert.ok(webviewProjectScripts.includes("type: 'request-active-ai-session-terminal'"));
+    assert.ok(webviewProjectScripts.includes("message.type === 'active-ai-session-terminal-changed'"));
+    assert.ok(webviewProjectScripts.includes('data-ai-session-active-terminal'));
+    assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal)'));
+    assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.sync()'));
+    assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.setVisible(webviewView.visible)'));
+    const activeTerminalCandidatesFunction = extractFunctionBody(dashboard, 'getAiSessionTerminalCandidates');
+    assert.ok(activeTerminalCandidatesFunction.includes('getRegisteredAiSessionProvider(providerId).service.getSessions().sessions'));
+    assert.ok(!activeTerminalCandidatesFunction.includes('AI_SESSION_PROVIDER_IDS'));
+    assert.ok(!activeTerminalCandidatesFunction.includes('getOpenProjects('));
+    assert.ok(!activeTerminalCandidatesFunction.includes('activeAiSessionProvider'));
     assert.ok(!dashboard.includes('prunePinnedAiSessionKeys'));
     assert.ok(extractFunctionBody(dashboard, 'deletePinnedAiSession').includes("logError('Failed to delete the pinned AI session.'"));
+    assert.ok(dashboard.includes("case 'archive-ai-sessions':"));
+    assert.ok(dashboard.includes('AiSessionBatchArchiveCompletedMessage'));
+    assert.ok(singleArchiveFunction.includes('archiveAiSessionItem(providerId, sessionId)'));
+    assert.ok(batchArchiveFunction.includes('executeBatchAiSessionArchiveRequest('));
+    assert.strictEqual((singleArchiveFunction.match(/activeAiSessionTerminalHighlighter\.sync\(\)/g) || []).length, 1);
+    assert.strictEqual((batchArchiveFunction.match(/activeAiSessionTerminalHighlighter\.sync\(\)/g) || []).length, 1);
+    assert.ok(!archiveItemFunction.includes('activeAiSessionTerminalHighlighter.sync()'));
+    assert.ok(!archiveItemFunction.includes('refreshAiSessionViewsIncrementally()'));
+    assert.ok(!archiveItemFunction.includes('invalidateAiSessionCache('));
+    assert.ok(archiveItemFunction.includes('executeBatchAiSessionArchiveItem('));
+    assert.strictEqual((batchArchiveLogFunction.match(/formatBatchAiSessionIdForLog\(sessionId\)/g) || []).length, 3);
     assert.ok(webviewContent.includes('.settings-button,'));
     assert.ok(styles.includes('max-width: calc(100% - 76px);'));
     assert.ok(styles.includes('margin-left: 4px;'));
@@ -338,9 +731,30 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes('class="codex-session-actions"'));
     assert.ok(webviewContent.includes('<button type="button" class="codex-session-pin'));
     assert.ok(webviewContent.includes('<button type="button" class="codex-session-archive"'));
+    assert.ok(webviewContent.includes('data-action="manage-ai-sessions"'));
+    assert.ok(webviewContent.includes('${Icons.manage}'));
+    assert.ok(webviewContent.includes('aria-label="${label}"'));
+    assert.ok(webviewContent.includes('aria-pressed="false"'));
+    assert.ok(webviewIcons.includes('export const manage = `'));
+    assert.ok(webviewContent.includes('class="ai-session-batch-checkbox"'));
+    assert.ok(!webviewContent.includes('class="ai-session-batch-checkbox" aria-label="Select ${sessionName}" tabindex="-1"'));
+    assert.ok(webviewContent.includes('data-action="select-unpinned-ai-sessions"'));
+    assert.ok(webviewContent.includes('data-action="select-unpinned-ai-sessions" title="Select all unpinned sessions" aria-label="Select all unpinned sessions">All</button>'));
+    assert.ok(!webviewContent.includes('>Select unpinned</button>'));
+    assert.ok(webviewContent.includes('data-action="clear-ai-session-selection"'));
+    assert.ok(!webviewContent.includes('data-action="cancel-ai-session-management"'));
+    assert.ok(!webviewProjectScripts.includes('cancelManagementAction'));
+    assert.ok(webviewContent.includes('data-action="archive-selected-ai-sessions"'));
     assert.ok(!webviewContent.includes('codex-session-meta-chip'));
     assert.ok(webviewContent.includes("join(' · ')"));
     assert.ok(styles.includes('.codex-session-actions'));
+    assert.ok(styles.includes('[data-ai-session-managing]'));
+    assert.ok(styles.includes('grid-template-columns: minmax(0, 1fr) 24px 24px;'));
+    assert.ok(styles.includes('.ai-session-manage-button[aria-pressed="true"]'));
+    assert.ok(styles.includes('.ai-session-batch-actions'));
+    assert.ok(compiledStyles.includes('.ai-session-batch-actions'));
+    assert.ok(styles.includes('[data-ai-session-active-terminal]'));
+    assert.ok(compiledStyles.includes('[data-ai-session-active-terminal]'));
     assert.ok(styles.includes('[data-session-pinned] .codex-session-actions'));
     assert.ok(styles.includes('&::before'));
     assert.ok(!styles.includes('.codex-session-meta-chip'));
@@ -351,6 +765,9 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes('visibleRows * 42'));
     assert.ok(styles.includes('calc(3 * 42px + 2 * 2px)'));
     assert.ok(!packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode']);
+    assert.ok(withAiSessionsFunction.includes('let aliases = getAiSessionAliases();'));
+    assert.ok(!withAiSessionsFunction.includes('pruneAiSessionAliases('));
+    assert.ok(!dashboard.includes('function pruneAiSessionAliases('));
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.storeProjectsInSettings'].default, true);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.applyProjectColorToWindow'].default, false);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].default, 3);
@@ -607,6 +1024,308 @@ function runFavoriteDndChecks() {
     ]);
 }
 
+function runBatchAiSessionWebviewChecks() {
+    const sourcePath = path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js');
+    const generatedPath = path.join(__dirname, '..', 'media', 'webviewProjectScripts.js');
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    assert.strictEqual(fs.readFileSync(generatedPath, 'utf8'), source);
+    const messages = [];
+    const eventListeners = {};
+    const windowEventListeners = {};
+    const createSessionRow = (provider, sessionId) => {
+        const attributes = new Set();
+        return {
+            provider,
+            sessionId,
+            getAttribute: attribute => {
+                if (attribute === 'data-session-provider') return provider;
+                if (attribute === 'data-session-id') return sessionId;
+                return null;
+            },
+            hasAttribute: attribute => attributes.has(attribute),
+            querySelector: () => null,
+            toggleAttribute: (attribute, force) => {
+                if (force) {
+                    attributes.add(attribute);
+                } else {
+                    attributes.delete(attribute);
+                }
+            },
+        };
+    };
+    const createProject = (projectId, provider) => {
+        const attributes = new Set(['data-open-project']);
+        let rows = [];
+        let replacementRows = null;
+        const sessionSection = {};
+        Object.defineProperty(sessionSection, 'outerHTML', {
+            set: () => {
+                if (replacementRows) {
+                    rows = replacementRows;
+                    replacementRows = null;
+                }
+            },
+        });
+        const manageButton = {
+            ariaPressed: 'false',
+            disabled: false,
+            setAttribute: (attribute, value) => {
+                if (attribute === 'aria-pressed') manageButton.ariaPressed = value;
+            },
+        };
+        const batchButtons = [
+            'select-unpinned-ai-sessions',
+            'clear-ai-session-selection',
+            'archive-selected-ai-sessions',
+        ].map(action => ({ action, disabled: false }));
+        return {
+            batchButtons,
+            manageButton,
+            get rows() { return rows; },
+            replaceRowsOnNextUpdate: nextRows => { replacementRows = nextRows; },
+            getAttribute: attribute => attribute === 'data-id' ? projectId : null,
+            hasAttribute: attribute => attributes.has(attribute),
+            removeAttribute: attribute => attributes.delete(attribute),
+            setAttribute: attribute => attributes.add(attribute),
+            toggleAttribute: (attribute, force) => {
+                if (force) {
+                    attributes.add(attribute);
+                } else {
+                    attributes.delete(attribute);
+                }
+            },
+            querySelector: selector => {
+                if (selector === 'select[data-action="select-ai-provider"]') {
+                    return { value: provider };
+                }
+                if (selector === '[data-action="archive-selected-ai-sessions"]') {
+                    return batchButtons.find(button => button.action === 'archive-selected-ai-sessions');
+                }
+                if (selector === '[data-action="manage-ai-sessions"]') {
+                    return manageButton;
+                }
+                if (selector === '.codex-sessions') {
+                    return sessionSection;
+                }
+                return null;
+            },
+            querySelectorAll: selector => {
+                if (selector === '.ai-session-batch-actions button') return batchButtons;
+                if (selector === '.codex-session-row[data-session-id]') return rows;
+                return [];
+            },
+        };
+    };
+    const projectA = createProject('project-a', 'codex');
+    const projectB = createProject('project-b', 'kimi');
+    const activeRow = createSessionRow('codex', 'active-session');
+    const otherCodexRow = createSessionRow('codex', 'other-session');
+    const sameIdOtherProviderRow = createSessionRow('kimi', 'active-session');
+    projectA.replaceRowsOnNextUpdate([activeRow, otherCodexRow]);
+    projectA.querySelector('.codex-sessions').outerHTML = '';
+    projectB.replaceRowsOnNextUpdate([sameIdOtherProviderRow]);
+    projectB.querySelector('.codex-sessions').outerHTML = '';
+    const projects = [projectA, projectB];
+    const context = {
+        document: {
+            body: {
+                classList: { toggle: () => {} },
+                style: { setProperty: () => {} },
+            },
+            addEventListener: (event, listener) => { eventListeners[event] = listener; },
+            getElementById: () => null,
+            querySelector: () => null,
+            querySelectorAll: selector => {
+                if (selector === '.project[data-open-project][data-id]') {
+                    return projects;
+                }
+                if (selector === '.project[data-ai-session-managing], .project[data-ai-session-pending]') {
+                    return projects.filter(project => project.hasAttribute('data-ai-session-managing')
+                        || project.hasAttribute('data-ai-session-pending'));
+                }
+                if (selector === '.codex-session-row[data-session-id]') {
+                    return projects.flatMap(project => project.rows);
+                }
+                return [];
+            },
+        },
+        window: {
+            addEventListener: (event, listener) => { windowEventListeners[event] = listener; },
+            requestAnimationFrame: callback => callback(),
+            vscode: { postMessage: message => messages.push(message) },
+        },
+    };
+
+    vm.runInNewContext(source, context);
+    context.initProjects();
+
+    const messageListenerIndex = source.indexOf("window.addEventListener('message', onWindowMessage)");
+    const activeTerminalRequestIndex = source.indexOf("type: 'request-active-ai-session-terminal'");
+    assert.notStrictEqual(messageListenerIndex, -1);
+    assert.notStrictEqual(activeTerminalRequestIndex, -1);
+    assert.ok(messageListenerIndex < activeTerminalRequestIndex);
+    assert.ok(windowEventListeners.message);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.shift())), {
+        type: 'request-active-ai-session-terminal',
+    });
+
+    windowEventListeners.message({ data: {
+        type: 'active-ai-session-terminal-changed',
+        provider: 'codex',
+        sessionId: 'active-session',
+    } });
+    assert.strictEqual(activeRow.hasAttribute('data-ai-session-active-terminal'), true);
+    assert.strictEqual(otherCodexRow.hasAttribute('data-ai-session-active-terminal'), false);
+    assert.strictEqual(sameIdOtherProviderRow.hasAttribute('data-ai-session-active-terminal'), false);
+
+    windowEventListeners.message({ data: {
+        type: 'active-ai-session-terminal-changed',
+        provider: null,
+        sessionId: null,
+    } });
+    assert.strictEqual(activeRow.hasAttribute('data-ai-session-active-terminal'), false);
+
+    windowEventListeners.message({ data: {
+        type: 'active-ai-session-terminal-changed',
+        provider: 'codex',
+        sessionId: 'active-session',
+    } });
+    const replacementActiveRow = createSessionRow('codex', 'active-session');
+    const replacementOtherRow = createSessionRow('codex', 'replacement-other');
+    projectA.replaceRowsOnNextUpdate([replacementActiveRow, replacementOtherRow]);
+    windowEventListeners.message({ data: {
+        type: 'ai-sessions-updated',
+        version: 1,
+        sequence: 1,
+        openProjects: [{
+            projectId: 'project-a',
+            expanded: true,
+            aiSessionCount: 0,
+            sessionSectionHtml: '<div class="codex-sessions">replacement</div>',
+        }],
+    } });
+    assert.strictEqual(replacementActiveRow.hasAttribute('data-ai-session-active-terminal'), true);
+    assert.strictEqual(replacementOtherRow.hasAttribute('data-ai-session-active-terminal'), false);
+
+    const manager = context.window.__projectStewardBatchAiSessions;
+    manager.enter('project-a', 'codex');
+    manager.toggle('plain', false);
+    manager.selectUnpinned([
+        { id: 'plain', pinned: false },
+        { id: 'pinned', pinned: true },
+        { id: 'second', pinned: false },
+    ]);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(manager.snapshot())), {
+        projectId: 'project-a', provider: 'codex', selectedIds: ['plain', 'second'], pending: false,
+    });
+
+    manager.toggle('pinned', true);
+    manager.reconcile('project-a', 'codex', ['pinned', 'second']);
+    assert.deepStrictEqual(Array.from(manager.snapshot().selectedIds), ['pinned', 'second']);
+
+    manager.submit();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.pop())), {
+        type: 'archive-ai-sessions', projectId: 'project-a', provider: 'codex',
+        sessionIds: ['pinned', 'second'],
+    });
+    assert.strictEqual(manager.snapshot().pending, true);
+    const archiveProjectA = {
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') return projectA;
+            if (selector === '[data-action="archive-selected-ai-sessions"]') return archiveProjectA;
+            return null;
+        },
+    };
+    eventListeners.click({ button: 0, target: archiveProjectA });
+    assert.ok(projectA.batchButtons.every(button => button.disabled));
+    assert.strictEqual(projectA.manageButton.disabled, true);
+
+    const pendingSnapshot = JSON.parse(JSON.stringify(manager.snapshot()));
+    manager.enter('project-b', 'kimi');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(manager.snapshot())), pendingSnapshot);
+    manager.submit();
+    assert.strictEqual(messages.length, 0);
+
+    projectA.toggleAttribute('data-ai-session-managing', true);
+    projectA.toggleAttribute('data-ai-session-pending', true);
+    const manageProjectB = {
+        tagName: 'BUTTON',
+        getAttribute: attribute => attribute === 'data-provider' ? 'kimi' : null,
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') {
+                return projectB;
+            }
+            if (selector === '[data-action="manage-ai-sessions"][data-provider]') {
+                return manageProjectB;
+            }
+            return null;
+        },
+    };
+    eventListeners.click({ button: 0, target: manageProjectB });
+    assert.strictEqual(projectA.hasAttribute('data-ai-session-managing'), true);
+    assert.strictEqual(projectA.hasAttribute('data-ai-session-pending'), true);
+    assert.strictEqual(projectB.hasAttribute('data-ai-session-managing'), false);
+    assert.strictEqual(projectB.hasAttribute('data-ai-session-pending'), false);
+    assert.strictEqual(messages.length, 0);
+
+    windowEventListeners.message({ data: {
+        type: 'ai-session-batch-archive-completed',
+        projectId: 'project-a',
+        provider: 'codex',
+        status: 'cancelled',
+    } });
+    assert.strictEqual(manager.snapshot().pending, false);
+    assert.deepStrictEqual(Array.from(manager.snapshot().selectedIds), ['pinned', 'second']);
+    assert.ok(projectA.batchButtons.every(button => !button.disabled));
+    assert.strictEqual(projectA.manageButton.disabled, false);
+
+    manager.submit();
+    manager.toggle('plain');
+    manager.clear();
+    manager.selectUnpinned([{ id: 'plain', pinned: false }]);
+    assert.strictEqual(manager.snapshot().pending, true);
+    assert.deepStrictEqual(Array.from(manager.snapshot().selectedIds), ['pinned', 'second']);
+    manager.complete('rejected');
+    assert.strictEqual(manager.snapshot().pending, false);
+    assert.deepStrictEqual(Array.from(manager.snapshot().selectedIds), ['pinned', 'second']);
+
+    manager.complete('finished');
+    assert.strictEqual(manager.snapshot().projectId, null);
+
+    const manageProjectA = {
+        tagName: 'BUTTON',
+        getAttribute: attribute => attribute === 'data-provider' ? 'codex' : null,
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') {
+                return projectA;
+            }
+            if (selector === '[data-action="manage-ai-sessions"][data-provider]') {
+                return manageProjectA;
+            }
+            return null;
+        },
+    };
+    eventListeners.click({ button: 0, target: manageProjectA });
+    assert.strictEqual(manager.snapshot().projectId, 'project-a');
+    assert.strictEqual(projectA.manageButton.ariaPressed, 'true');
+    eventListeners.click({ button: 0, target: manageProjectA });
+    assert.strictEqual(manager.snapshot().projectId, null);
+    assert.strictEqual(projectA.manageButton.ariaPressed, 'false');
+
+    const providerChange = extractFunctionBody(source, 'selectAiSessionProvider');
+    const providerExitIndex = providerChange.indexOf('exitAiSessionBatchManagement()');
+    const providerMessageIndex = providerChange.indexOf("type: 'select-ai-session-provider'");
+    assert.notStrictEqual(providerExitIndex, -1);
+    assert.notStrictEqual(providerMessageIndex, -1);
+    assert.ok(providerExitIndex < providerMessageIndex);
+    const projectCollapse = extractFunctionBody(source, 'toggleCodexSessions');
+    const collapseExitIndex = projectCollapse.indexOf('exitAiSessionBatchManagement()');
+    const collapseMessageIndex = projectCollapse.indexOf("type: 'toggle-codex-sessions'");
+    assert.notStrictEqual(collapseExitIndex, -1);
+    assert.notStrictEqual(collapseMessageIndex, -1);
+    assert.ok(collapseExitIndex < collapseMessageIndex);
+}
+
 function extractFunctionBody(source, functionName) {
     const signature = `function ${functionName}(`;
     const signatureIndex = source.indexOf(signature);
@@ -737,6 +1456,133 @@ function hasGitAncestor(directory) {
     return false;
 }
 
+function writeCodexSessionMetaFile(sessionsDir, sessionId, payload) {
+    const sessionFile = path.join(sessionsDir, `${sessionId}.jsonl`);
+    fs.writeFileSync(sessionFile, JSON.stringify({
+        timestamp: payload.timestamp,
+        type: 'session_meta',
+        payload,
+    }) + '\n', 'utf8');
+    return sessionFile;
+}
+
+function runCodexSubagentSessionFilterChecks() {
+    const previousCodexHome = process.env.CODEX_HOME;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-codex-subagents-'));
+    const sessionsDir = path.join(tempRoot, 'sessions', '2026', '07', '13');
+    const indexedNormalId = '11111111-1111-4111-8111-111111111111';
+    const indexedSubagentId = '22222222-2222-4222-8222-222222222222';
+    const fileNormalId = '33333333-3333-4333-8333-333333333333';
+    const fileSubagentId = '44444444-4444-4444-8444-444444444444';
+    const parentOnlyId = '55555555-5555-4555-8555-555555555555';
+    const malformedIndexedId = '66666666-6666-4666-8666-666666666666';
+    try {
+        process.env.CODEX_HOME = tempRoot;
+        fs.mkdirSync(sessionsDir, { recursive: true });
+        const writeMeta = (sessionId, timestamp, extra = {}) => writeCodexSessionMetaFile(
+            sessionsDir,
+            sessionId,
+            { id: sessionId, session_id: sessionId, cwd: '/work/app', timestamp, ...extra }
+        );
+
+        writeMeta(indexedNormalId, '2026-07-13T01:00:00.000Z', { source: 'vscode' });
+        const indexedSubagentFile = writeMeta(indexedSubagentId, '2026-07-13T02:00:00.000Z', {
+            source: { subagent: { thread_spawn: { parent_thread_id: indexedNormalId, depth: 1 } } },
+            parent_thread_id: indexedNormalId,
+        });
+        writeMeta(fileNormalId, '2026-07-13T03:00:00.000Z', { source: 'vscode' });
+        const fileSubagentFile = writeMeta(fileSubagentId, '2026-07-13T04:00:00.000Z', {
+            source: { subagent: { thread_spawn: { parent_thread_id: indexedNormalId, depth: 1 } } },
+            parent_thread_id: indexedNormalId,
+        });
+        writeMeta(parentOnlyId, '2026-07-13T05:00:00.000Z', {
+            source: 'vscode',
+            parent_thread_id: indexedNormalId,
+        });
+        fs.writeFileSync(path.join(sessionsDir, `${malformedIndexedId}.jsonl`), 'not-json\n', 'utf8');
+        fs.writeFileSync(path.join(tempRoot, 'session_index.jsonl'), [
+            { id: indexedNormalId, thread_name: 'Parent', updated_at: '2026-07-13T01:00:00.000Z' },
+            { id: indexedSubagentId, thread_name: 'Worker', updated_at: '2026-07-13T02:00:00.000Z' },
+            { id: malformedIndexedId, thread_name: 'Index fallback', updated_at: '2026-07-13T06:00:00.000Z' },
+        ].map(entry => JSON.stringify(entry)).join('\n') + '\n', 'utf8');
+
+        const result = new CodexSessionService().getSessions();
+        assert.strictEqual(result.available, true);
+        assert.deepStrictEqual(new Set(result.sessions.map(session => session.id)), new Set([
+            indexedNormalId,
+            fileNormalId,
+            parentOnlyId,
+            malformedIndexedId,
+        ]));
+        assert.strictEqual(fs.existsSync(indexedSubagentFile), true);
+        assert.strictEqual(fs.existsSync(fileSubagentFile), true);
+
+        const assignments = helpers.assignAiSessionsToProjects(
+            [{ project: { id: 'app' }, path: '/work/app' }],
+            result.sessions,
+            session => session.cwd
+        );
+        assert.deepStrictEqual(
+            new Set((assignments.get('app') || []).map(session => session.id)),
+            new Set([indexedNormalId, fileNormalId, parentOnlyId])
+        );
+
+        const terminalService = new AiSessionTerminalService(
+            path.join(tempRoot, 'storage'),
+            providerId => providers.getAiSessionProviderDefinition(providerId),
+            0
+        );
+        const subagentTerminal = {
+            name: 'Codex restored',
+            creationOptions: { env: { PROJECT_STEWARD_CODEX_SESSION_ID: indexedSubagentId } },
+        };
+        assert.strictEqual(
+            terminalService.resolveTerminalSession(subagentTerminal, () => result.sessions),
+            null
+        );
+    } finally {
+        if (previousCodexHome === undefined) {
+            delete process.env.CODEX_HOME;
+        } else {
+            process.env.CODEX_HOME = previousCodexHome;
+        }
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
+function runKimiNestedSubagentBoundaryChecks() {
+    const previousKimiHome = process.env.KIMI_SHARE_DIR;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-kimi-subagents-'));
+    const workDir = '/work/app';
+    const sessionId = '77777777-7777-4777-8777-777777777777';
+    try {
+        process.env.KIMI_SHARE_DIR = tempRoot;
+        fs.writeFileSync(path.join(tempRoot, 'kimi.json'), JSON.stringify({
+            work_dirs: [{ path: workDir }],
+        }), 'utf8');
+        const workDirHash = crypto.createHash('md5').update(workDir, 'utf8').digest('hex');
+        const sessionDir = path.join(tempRoot, 'sessions', workDirHash, sessionId);
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(sessionDir, 'wire.jsonl'), '{}\n', 'utf8');
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), '{}', 'utf8');
+
+        const nestedSubagentDir = path.join(sessionDir, 'subagents', 'a12345678');
+        fs.mkdirSync(nestedSubagentDir, { recursive: true });
+        fs.writeFileSync(path.join(nestedSubagentDir, 'wire.jsonl'), '{}\n', 'utf8');
+
+        const result = new KimiSessionService().getSessions({ candidatePaths: [workDir] });
+        assert.strictEqual(result.available, true);
+        assert.deepStrictEqual(result.sessions.map(session => session.id), [sessionId]);
+    } finally {
+        if (previousKimiHome === undefined) {
+            delete process.env.KIMI_SHARE_DIR;
+        } else {
+            process.env.KIMI_SHARE_DIR = previousKimiHome;
+        }
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
 function runClaudeSessionChecks() {
     const previousClaudeHome = process.env.CLAUDE_HOME;
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-claude-'));
@@ -752,6 +1598,14 @@ function runClaudeSessionChecks() {
         fs.writeFileSync(
             sessionFile,
             fillerLine.repeat(40) + cwdLine + fillerLine.repeat(40),
+            'utf8'
+        );
+
+        const nestedSubagentDir = path.join(sessionDir, sessionId, 'subagents');
+        fs.mkdirSync(nestedSubagentDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(nestedSubagentDir, 'agent-a1234567890abcdef.jsonl'),
+            cwdLine,
             'utf8'
         );
 
@@ -824,22 +1678,36 @@ function runCommandBuilderChecks() {
     assert.strictEqual(commands.quotePowerShellArg("O'Brien"), "'O''Brien'");
 }
 
-runPathChecks();
-runAssignmentChecks();
-runCurrentWorkspaceStateChecks();
-runFavoriteProjectOrderChecks();
-runCurrentWorkspaceMatchingChecks();
-runCandidateFilterChecks();
-runDisplayChecks();
-runPinStoreChecks();
-runKeyChecks();
-runWebviewContentChecks();
-runCurrentWorkspaceRenderingChecks();
-runFavoriteRenderingChecks();
-runFavoriteDndChecks();
-runGitRepositoryDetectorChecks();
-runClaudeSessionChecks();
-runProviderChecks();
-runCommandBuilderChecks();
+async function main() {
+    runPathChecks();
+    runAssignmentChecks();
+    runCurrentWorkspaceStateChecks();
+    runFavoriteProjectOrderChecks();
+    runCurrentWorkspaceMatchingChecks();
+    runCandidateFilterChecks();
+    runDisplayChecks();
+    runPinStoreChecks();
+    runKeyChecks();
+    runBatchAiSessionArchiveChecks();
+    runActiveAiSessionTerminalHighlightChecks();
+    runAiSessionTerminalResolutionChecks();
+    await runBatchAiSessionArchiveHostChecks();
+    runWebviewContentChecks();
+    runCurrentWorkspaceRenderingChecks();
+    runFavoriteRenderingChecks();
+    runFavoriteDndChecks();
+    runBatchAiSessionWebviewChecks();
+    runGitRepositoryDetectorChecks();
+    runCodexSubagentSessionFilterChecks();
+    runKimiNestedSubagentBoundaryChecks();
+    runClaudeSessionChecks();
+    runProviderChecks();
+    runCommandBuilderChecks();
 
-console.log('AI session safety checks passed.');
+    console.log('AI session safety checks passed.');
+}
+
+main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+});
