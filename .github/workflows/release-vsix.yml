@@ -76,6 +76,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify release notes
+        run: npm run test:release-notes
+
       - name: Compile
         run: npm run test-compile
 
@@ -117,7 +120,9 @@ jobs:
             args+=(--prerelease)
           fi
 
+          node scripts/extract-release-notes.js "$VERSION" > release-notes.md
+
           gh release create "$TAG" "$VSIX_FILE" \
             --title "Project Steward ${VERSION}" \
-            --notes "VSIX package for Project Steward ${VERSION}." \
+            --notes-file release-notes.md \
             "${args[@]}"
