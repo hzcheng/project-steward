@@ -14,12 +14,14 @@ import KimiSessionService from './services/kimiSessionService';
 import ClaudeSessionService from './services/claudeSessionService';
 import ProjectWindowColorService from './services/projectWindowColorService';
 import AiSessionPinStore from './aiSessions/pinStore';
+import ActiveAiSessionTerminalHighlighter from './aiSessions/activeTerminalHighlight';
+import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
 import { archiveBatchAiSessionItem as executeBatchAiSessionArchiveItem, executeBatchAiSessionArchiveRequest, formatBatchAiSessionArchiveSummary, formatBatchAiSessionIdForLog, hasBatchAiSessionArchiveIssues } from './aiSessions/archiveBatch';
 import type { BatchAiSessionArchiveAttemptStatus, BatchAiSessionArchiveResult, BatchAiSessionArchiveSelection } from './aiSessions/archiveBatch';
-import type { AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
+import type { AiSessionActiveTerminalChangedMessage, AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
 import { findSavedProjectForOpenProject, getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
 import { getLastPartOfPath, getOpenProjectUri as resolveOpenProjectUri, getOpenProjectsFromWorkspace, getWorkspaceUri as resolveWorkspaceUri, getWorkspaceUris as resolveWorkspaceUris, isUriString, parsePathAsUri } from './projects/openProjectService';
 import RemoteProjectResolver from './projects/remoteProjectResolver';
@@ -62,6 +64,7 @@ export function activate(context: vscode.ExtensionContext) {
                     this.refresh();
                 }
                 setAiSessionWatchersActive(webviewView.visible);
+                activeAiSessionTerminalHighlighter.setVisible(webviewView.visible);
             });
         }
 
@@ -117,14 +120,33 @@ export function activate(context: vscode.ExtensionContext) {
     let aiSessionUpdateSequence = 0;
 
     const provider = new SidebarStewardViewProvider();
+    const activeAiSessionTerminalHighlighter = new ActiveAiSessionTerminalHighlighter<
+        vscode.Terminal,
+        AiSessionTerminalEntry<vscode.Terminal>
+    >({
+        isVisible: () => provider.visible,
+        getActiveTerminal: () => vscode.window.activeTerminal || null,
+        resolveTerminal: terminal => aiSessionTerminalService.resolveTerminalSession(
+            terminal,
+            providerId => getAiSessionTerminalCandidates(providerId)
+        ),
+        isComplete: resolution => aiSessionTerminalService.isComplete(resolution.entry),
+        publish: identity => postActiveAiSessionTerminalChanged(identity),
+        setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
+        clearInterval: handle => clearInterval(handle as NodeJS.Timeout),
+    });
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(SidebarStewardViewProvider.viewType, provider));
     context.subscriptions.push(
+        vscode.window.onDidChangeActiveTerminal(() => activeAiSessionTerminalHighlighter.sync()));
+    context.subscriptions.push(
         vscode.window.onDidCloseTerminal(terminal => {
             aiSessionTerminalService.handleClosedTerminal(terminal);
             aiSessionTerminalService.removePendingForTerminal(terminal);
+            activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
         }));
+    context.subscriptions.push(activeAiSessionTerminalHighlighter);
     context.subscriptions.push({
         dispose: () => {
             stopAiSessionWatchers();
@@ -350,6 +372,10 @@ export function activate(context: vscode.ExtensionContext) {
         };
     }
 
+    function getAiSessionTerminalCandidates(providerId: AiSessionProviderId): readonly CodexSession[] {
+        return getRegisteredAiSessionProvider(providerId).service.getSessions().sessions;
+    }
+
     function refreshStewardViews() {
         if (!provider.visible) {
             return;
@@ -435,6 +461,17 @@ export function activate(context: vscode.ExtensionContext) {
     function postBatchArchiveCompletion(message: AiSessionBatchArchiveCompletedMessage) {
         provider.postMessage(message).then(undefined, error => {
             logError('Failed to post batch AI session archive completion.', error);
+        });
+    }
+
+    function postActiveAiSessionTerminalChanged(identity: ActiveAiSessionTerminalIdentity | null) {
+        let message: AiSessionActiveTerminalChangedMessage = {
+            type: 'active-ai-session-terminal-changed',
+            provider: identity?.provider || null,
+            sessionId: identity?.sessionId || null,
+        };
+        provider.postMessage(message).then(undefined, error => {
+            logError('Failed to post the active AI session terminal.', error);
         });
     }
 
@@ -585,6 +622,9 @@ export function activate(context: vscode.ExtensionContext) {
                 break;
             case 'request-full-refresh':
                 refreshStewardViews();
+                break;
+            case 'request-active-ai-session-terminal':
+                activeAiSessionTerminalHighlighter.request();
                 break;
             case 'open-settings':
                 await showProjectStewardSettings();
@@ -1003,6 +1043,7 @@ export function activate(context: vscode.ExtensionContext) {
             aiSessionTerminalService.track(providerId, session.id, { terminal, markerPath });
             terminal.show();
             await aiSessionTerminalService.sendResumeCommand(providerId, terminal, session.id, cwd, markerPath);
+            activeAiSessionTerminalHighlighter.sync();
         } finally {
             aiSessionTerminalService.finishResume(providerId, session.id);
         }
@@ -1039,6 +1080,7 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
+        activeAiSessionTerminalHighlighter.sync();
         refreshAiSessionViewsIncrementally();
     }
 
@@ -1109,6 +1151,7 @@ export function activate(context: vscode.ExtensionContext) {
             postCompletion: completion => postBatchArchiveCompletion(completion as AiSessionBatchArchiveCompletedMessage),
             refresh: () => refreshAiSessionViewsIncrementally(),
         });
+        activeAiSessionTerminalHighlighter.sync();
     }
 
     function logRejectedBatchAiSessionSelections(
@@ -2204,6 +2247,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         let remainingPendingTerminals: PendingAiSessionTerminal[] = [];
         let claimedSessionKeys = getTrackedAiSessionTerminalKeys();
+        let matchedPendingTerminal = false;
 
         for (let pendingTerminal of pendingTerminals) {
             let sessionResult = sessionResults[pendingTerminal.provider];
@@ -2220,9 +2264,13 @@ export function activate(context: vscode.ExtensionContext) {
             aiSessionTerminalService.track(pendingTerminal.provider, session.id, entry);
             setAiSessionAlias(pendingTerminal.provider, session.id, pendingTerminal.title);
             claimedSessionKeys.add(getAiSessionPinKey(pendingTerminal.provider, session.id));
+            matchedPendingTerminal = true;
         }
 
         aiSessionTerminalService.replacePendingTerminals(remainingPendingTerminals);
+        if (matchedPendingTerminal) {
+            activeAiSessionTerminalHighlighter.sync();
+        }
     }
 
     function getTrackedAiSessionTerminalKeys(): Set<string> {

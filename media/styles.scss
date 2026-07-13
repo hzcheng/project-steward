@@ -1337,6 +1337,19 @@ body.steward-sidebar {
             --steward-ai-accent: var(--vscode-terminal-ansiYellow, #dcdcaa);
         }
 
+        .codex-session-row[data-ai-session-active-terminal] {
+            border-color: var(--vscode-focusBorder);
+            background: var(--vscode-list-hoverBackground);
+
+            &::before {
+                top: 5px;
+                bottom: 5px;
+                width: 3px;
+                background: var(--vscode-focusBorder);
+                opacity: 1;
+            }
+        }
+
         .codex-session-actions {
             position: absolute;
             right: 4px;

@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import { existsSync, mkdirSync, unlinkSync } from 'fs';
 
 import type { AiSessionProviderId, CodexSession } from '../models';
+import type { ActiveAiSessionTerminalResolution } from './activeTerminalHighlight';
 import { AI_SESSION_PROVIDER_IDS } from './providers';
 import type { AiSessionProvider, AiSessionTerminalEntry } from './types';
 
@@ -175,6 +176,39 @@ export default class AiSessionTerminalService {
         return entry;
     }
 
+    resolveTerminalSession(
+        terminal: vscode.Terminal,
+        getProviderCandidates: (providerId: AiSessionProviderId) => readonly CodexSession[]
+    ): ActiveAiSessionTerminalResolution<vscode.Terminal, AiSessionTerminalEntry<vscode.Terminal>> {
+        if (!terminal) {
+            return null;
+        }
+
+        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+            for (let [sessionId, entry] of this.terminals[providerId]) {
+                if (entry.terminal === terminal) {
+                    return { provider: providerId, sessionId, terminal, entry };
+                }
+            }
+        }
+
+        let providerId = this.getTerminalProvider(terminal);
+        if (!providerId) {
+            return null;
+        }
+
+        for (let session of getProviderCandidates(providerId) || []) {
+            if (!this.terminalMatchesSession(providerId, terminal, session.id)) {
+                continue;
+            }
+            let entry = { terminal, markerPath: this.getMarkerPath(providerId, session.id) };
+            this.track(providerId, session.id, entry);
+            return { provider: providerId, sessionId: session.id, terminal, entry };
+        }
+
+        return null;
+    }
+
     getTrackedSessionKeys(getSessionKey: (providerId: AiSessionProviderId, sessionId: string) => string): Set<string> {
         let sessionKeys = new Set<string>();
         for (let providerId of AI_SESSION_PROVIDER_IDS) {
@@ -265,5 +299,24 @@ export default class AiSessionTerminalService {
 
         return terminal.name.startsWith(`${provider.terminalNamePrefix}: `)
             && terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`);
+    }
+
+    private getTerminalProvider(terminal: vscode.Terminal): AiSessionProviderId {
+        let creationOptions = terminal.creationOptions;
+        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+            let provider = this.getProvider(providerId);
+            if ('env' in creationOptions && creationOptions.env?.[provider.terminalEnvKey]) {
+                return providerId;
+            }
+        }
+
+        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+            let provider = this.getProvider(providerId);
+            if (terminal.name.startsWith(`${provider.terminalNamePrefix}: `)) {
+                return providerId;
+            }
+        }
+
+        return null;
     }
 }

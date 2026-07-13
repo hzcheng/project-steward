@@ -9,6 +9,7 @@ const vm = require('vm');
 const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
 const archiveBatch = require('../out/aiSessions/archiveBatch');
+const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
 const ClaudeSessionService = require('../out/services/claudeSessionService').default;
@@ -17,12 +18,17 @@ const projectPathUtils = require('../out/projects/projectPathUtils');
 const currentWorkspaceState = require('../out/projects/currentWorkspaceState');
 const favoriteProjectOrder = require('../out/projects/favoriteProjectOrder');
 const originalModuleLoad = Module._load;
+const vscodeTestState = { terminals: [] };
 Module._load = function (request, parent, isMain) {
     if (request === 'vscode') {
-        return { Uri: { parse: createTestUri, file: createTestFileUri } };
+        return {
+            Uri: { parse: createTestUri, file: createTestFileUri },
+            window: { terminals: vscodeTestState.terminals },
+        };
     }
     return originalModuleLoad.call(this, request, parent, isMain);
 };
+const AiSessionTerminalService = require('../out/aiSessions/terminalService').default;
 const openProjectMatcher = require('../out/projects/openProjectMatcher');
 const webviewContentModule = require('../out/webview/webviewContent');
 Module._load = originalModuleLoad;
@@ -285,6 +291,136 @@ function runKeyChecks() {
     assert.strictEqual(helpers.getAiSessionProviderIdFromKey(':missing', isProviderId), null);
 }
 
+function runActiveAiSessionTerminalHighlightChecks() {
+    const terminalA = { name: 'A' };
+    const terminalB = { name: 'B' };
+    let activeTerminal = terminalA;
+    let visible = true;
+    let complete = new Set();
+    let published = [];
+    let timers = [];
+    const resolutions = new Map([
+        [terminalA, { terminal: terminalA, provider: 'codex', sessionId: 'a', entry: { markerPath: 'a.done' } }],
+        [terminalB, { terminal: terminalB, provider: 'kimi', sessionId: 'b', entry: { markerPath: 'b.done' } }],
+    ]);
+    const highlighter = new activeTerminalHighlight.default({
+        isVisible: () => visible,
+        getActiveTerminal: () => activeTerminal,
+        resolveTerminal: terminal => resolutions.get(terminal) || null,
+        isComplete: resolution => complete.has(resolution.sessionId),
+        publish: identity => published.push(identity),
+        setInterval: callback => {
+            const handle = { callback, active: true };
+            timers.push(handle);
+            return handle;
+        },
+        clearInterval: handle => { handle.active = false; },
+    });
+
+    highlighter.sync();
+    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a' });
+    assert.strictEqual(timers.filter(timer => timer.active).length, 1);
+
+    activeTerminal = terminalB;
+    highlighter.sync();
+    assert.deepStrictEqual(published.pop(), { provider: 'kimi', sessionId: 'b' });
+    assert.strictEqual(timers.filter(timer => timer.active).length, 1);
+
+    complete.add('b');
+    timers.find(timer => timer.active).callback();
+    assert.strictEqual(published.pop(), null);
+    assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+
+    complete.clear();
+    activeTerminal = terminalA;
+    highlighter.sync();
+    highlighter.handleTerminalClosed(terminalA);
+    assert.strictEqual(published.pop(), null);
+    assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+
+    visible = false;
+    highlighter.setVisible(false);
+    highlighter.sync();
+    assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+
+    visible = true;
+    highlighter.setVisible(true);
+    highlighter.request();
+    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a' });
+    assert.strictEqual(timers.filter(timer => timer.active).length, 1);
+
+    resolutions.delete(terminalA);
+    highlighter.sync();
+    assert.strictEqual(published.pop(), null);
+    assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+
+    highlighter.dispose();
+    assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+}
+
+function runAiSessionTerminalResolutionChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-active-terminal-'));
+    try {
+        const service = new AiSessionTerminalService(tempRoot, providerId =>
+            providers.getAiSessionProviderDefinition(providerId), 0
+        );
+        const tracked = { name: 'Codex: One [session-]', creationOptions: {} };
+        service.track('codex', 'session-one', {
+            terminal: tracked,
+            markerPath: path.join(tempRoot, 'session-one.done'),
+        });
+        const candidateCalls = [];
+        const candidates = {
+            codex: [{ id: 'session-env', name: 'Environment' }],
+            kimi: [{ id: 'named-123456', name: 'Named' }],
+        };
+        const getCandidates = providerId => {
+            candidateCalls.push(providerId);
+            return candidates[providerId] || [];
+        };
+
+        assert.strictEqual(service.resolveTerminalSession(tracked, getCandidates).sessionId, 'session-one');
+        assert.deepStrictEqual(candidateCalls, []);
+
+        const byEnv = {
+            name: 'Codex restored',
+            creationOptions: { env: { PROJECT_STEWARD_CODEX_SESSION_ID: 'session-env' } },
+        };
+        const archivedByEnv = {
+            name: 'Codex archived',
+            creationOptions: { env: { PROJECT_STEWARD_CODEX_SESSION_ID: 'session-archived' } },
+        };
+        const byName = { name: 'Kimi: Named [named-12]', creationOptions: {} };
+        const ordinary = { name: 'bash', creationOptions: {} };
+        vscodeTestState.terminals.splice(
+            0,
+            vscodeTestState.terminals.length,
+            byEnv,
+            archivedByEnv,
+            byName,
+            ordinary
+        );
+
+        assert.strictEqual(service.resolveTerminalSession(byEnv, getCandidates).sessionId, 'session-env');
+        assert.deepStrictEqual(candidateCalls, ['codex']);
+
+        candidateCalls.length = 0;
+        assert.strictEqual(service.resolveTerminalSession(archivedByEnv, getCandidates), null);
+        assert.deepStrictEqual(candidateCalls, ['codex']);
+
+        candidateCalls.length = 0;
+        assert.strictEqual(service.resolveTerminalSession(byName, getCandidates).sessionId, 'named-123456');
+        assert.deepStrictEqual(candidateCalls, ['kimi']);
+
+        candidateCalls.length = 0;
+        assert.strictEqual(service.resolveTerminalSession(ordinary, getCandidates), null);
+        assert.deepStrictEqual(candidateCalls, []);
+    } finally {
+        vscodeTestState.terminals.length = 0;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
 function runBatchAiSessionArchiveChecks() {
     assert.ok(archiveBatch.MAX_BATCH_AI_SESSION_ARCHIVE_REQUEST_ENTRIES > 20);
     const excessiveIds = Array.from(
@@ -544,12 +680,30 @@ function runWebviewContentChecks() {
     assert.ok(!settingsFunction.includes('showQuickPick'));
     assert.ok(!settingsFunction.includes('ai-session-terminal-mode-planned'));
     assert.ok(dashboard.includes('new AiSessionPinStore(context.globalStoragePath)'));
+    assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
+    assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
+    assert.ok(dashboard.includes("case 'request-active-ai-session-terminal':"));
+    assert.ok(dashboard.includes("type: 'active-ai-session-terminal-changed'"));
+    assert.ok(webviewProjectScripts.includes("type: 'request-active-ai-session-terminal'"));
+    assert.ok(webviewProjectScripts.includes("message.type === 'active-ai-session-terminal-changed'"));
+    assert.ok(webviewProjectScripts.includes('data-ai-session-active-terminal'));
+    assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal)'));
+    assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.sync()'));
+    assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.setVisible(webviewView.visible)'));
+    const activeTerminalCandidatesFunction = extractFunctionBody(dashboard, 'getAiSessionTerminalCandidates');
+    assert.ok(activeTerminalCandidatesFunction.includes('getRegisteredAiSessionProvider(providerId).service.getSessions().sessions'));
+    assert.ok(!activeTerminalCandidatesFunction.includes('AI_SESSION_PROVIDER_IDS'));
+    assert.ok(!activeTerminalCandidatesFunction.includes('getOpenProjects('));
+    assert.ok(!activeTerminalCandidatesFunction.includes('activeAiSessionProvider'));
     assert.ok(!dashboard.includes('prunePinnedAiSessionKeys'));
     assert.ok(extractFunctionBody(dashboard, 'deletePinnedAiSession').includes("logError('Failed to delete the pinned AI session.'"));
     assert.ok(dashboard.includes("case 'archive-ai-sessions':"));
     assert.ok(dashboard.includes('AiSessionBatchArchiveCompletedMessage'));
     assert.ok(singleArchiveFunction.includes('archiveAiSessionItem(providerId, sessionId)'));
     assert.ok(batchArchiveFunction.includes('executeBatchAiSessionArchiveRequest('));
+    assert.strictEqual((singleArchiveFunction.match(/activeAiSessionTerminalHighlighter\.sync\(\)/g) || []).length, 1);
+    assert.strictEqual((batchArchiveFunction.match(/activeAiSessionTerminalHighlighter\.sync\(\)/g) || []).length, 1);
+    assert.ok(!archiveItemFunction.includes('activeAiSessionTerminalHighlighter.sync()'));
     assert.ok(!archiveItemFunction.includes('refreshAiSessionViewsIncrementally()'));
     assert.ok(!archiveItemFunction.includes('invalidateAiSessionCache('));
     assert.ok(archiveItemFunction.includes('executeBatchAiSessionArchiveItem('));
@@ -596,6 +750,8 @@ function runWebviewContentChecks() {
     assert.ok(styles.includes('.ai-session-manage-button[aria-pressed="true"]'));
     assert.ok(styles.includes('.ai-session-batch-actions'));
     assert.ok(compiledStyles.includes('.ai-session-batch-actions'));
+    assert.ok(styles.includes('[data-ai-session-active-terminal]'));
+    assert.ok(compiledStyles.includes('[data-ai-session-active-terminal]'));
     assert.ok(styles.includes('[data-session-pinned] .codex-session-actions'));
     assert.ok(styles.includes('&::before'));
     assert.ok(!styles.includes('.codex-session-meta-chip'));
@@ -873,8 +1029,40 @@ function runBatchAiSessionWebviewChecks() {
     const messages = [];
     const eventListeners = {};
     const windowEventListeners = {};
+    const createSessionRow = (provider, sessionId) => {
+        const attributes = new Set();
+        return {
+            provider,
+            sessionId,
+            getAttribute: attribute => {
+                if (attribute === 'data-session-provider') return provider;
+                if (attribute === 'data-session-id') return sessionId;
+                return null;
+            },
+            hasAttribute: attribute => attributes.has(attribute),
+            querySelector: () => null,
+            toggleAttribute: (attribute, force) => {
+                if (force) {
+                    attributes.add(attribute);
+                } else {
+                    attributes.delete(attribute);
+                }
+            },
+        };
+    };
     const createProject = (projectId, provider) => {
         const attributes = new Set(['data-open-project']);
+        let rows = [];
+        let replacementRows = null;
+        const sessionSection = {};
+        Object.defineProperty(sessionSection, 'outerHTML', {
+            set: () => {
+                if (replacementRows) {
+                    rows = replacementRows;
+                    replacementRows = null;
+                }
+            },
+        });
         const manageButton = {
             ariaPressed: 'false',
             disabled: false,
@@ -890,9 +1078,12 @@ function runBatchAiSessionWebviewChecks() {
         return {
             batchButtons,
             manageButton,
+            get rows() { return rows; },
+            replaceRowsOnNextUpdate: nextRows => { replacementRows = nextRows; },
             getAttribute: attribute => attribute === 'data-id' ? projectId : null,
             hasAttribute: attribute => attributes.has(attribute),
             removeAttribute: attribute => attributes.delete(attribute),
+            setAttribute: attribute => attributes.add(attribute),
             toggleAttribute: (attribute, force) => {
                 if (force) {
                     attributes.add(attribute);
@@ -910,15 +1101,27 @@ function runBatchAiSessionWebviewChecks() {
                 if (selector === '[data-action="manage-ai-sessions"]') {
                     return manageButton;
                 }
+                if (selector === '.codex-sessions') {
+                    return sessionSection;
+                }
                 return null;
             },
-            querySelectorAll: selector => selector === '.ai-session-batch-actions button'
-                ? batchButtons
-                : [],
+            querySelectorAll: selector => {
+                if (selector === '.ai-session-batch-actions button') return batchButtons;
+                if (selector === '.codex-session-row[data-session-id]') return rows;
+                return [];
+            },
         };
     };
     const projectA = createProject('project-a', 'codex');
     const projectB = createProject('project-b', 'kimi');
+    const activeRow = createSessionRow('codex', 'active-session');
+    const otherCodexRow = createSessionRow('codex', 'other-session');
+    const sameIdOtherProviderRow = createSessionRow('kimi', 'active-session');
+    projectA.replaceRowsOnNextUpdate([activeRow, otherCodexRow]);
+    projectA.querySelector('.codex-sessions').outerHTML = '';
+    projectB.replaceRowsOnNextUpdate([sameIdOtherProviderRow]);
+    projectB.querySelector('.codex-sessions').outerHTML = '';
     const projects = [projectA, projectB];
     const context = {
         document: {
@@ -937,6 +1140,9 @@ function runBatchAiSessionWebviewChecks() {
                     return projects.filter(project => project.hasAttribute('data-ai-session-managing')
                         || project.hasAttribute('data-ai-session-pending'));
                 }
+                if (selector === '.codex-session-row[data-session-id]') {
+                    return projects.flatMap(project => project.rows);
+                }
                 return [];
             },
         },
@@ -949,6 +1155,54 @@ function runBatchAiSessionWebviewChecks() {
 
     vm.runInNewContext(source, context);
     context.initProjects();
+
+    const messageListenerIndex = source.indexOf("window.addEventListener('message', onWindowMessage)");
+    const activeTerminalRequestIndex = source.indexOf("type: 'request-active-ai-session-terminal'");
+    assert.notStrictEqual(messageListenerIndex, -1);
+    assert.notStrictEqual(activeTerminalRequestIndex, -1);
+    assert.ok(messageListenerIndex < activeTerminalRequestIndex);
+    assert.ok(windowEventListeners.message);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.shift())), {
+        type: 'request-active-ai-session-terminal',
+    });
+
+    windowEventListeners.message({ data: {
+        type: 'active-ai-session-terminal-changed',
+        provider: 'codex',
+        sessionId: 'active-session',
+    } });
+    assert.strictEqual(activeRow.hasAttribute('data-ai-session-active-terminal'), true);
+    assert.strictEqual(otherCodexRow.hasAttribute('data-ai-session-active-terminal'), false);
+    assert.strictEqual(sameIdOtherProviderRow.hasAttribute('data-ai-session-active-terminal'), false);
+
+    windowEventListeners.message({ data: {
+        type: 'active-ai-session-terminal-changed',
+        provider: null,
+        sessionId: null,
+    } });
+    assert.strictEqual(activeRow.hasAttribute('data-ai-session-active-terminal'), false);
+
+    windowEventListeners.message({ data: {
+        type: 'active-ai-session-terminal-changed',
+        provider: 'codex',
+        sessionId: 'active-session',
+    } });
+    const replacementActiveRow = createSessionRow('codex', 'active-session');
+    const replacementOtherRow = createSessionRow('codex', 'replacement-other');
+    projectA.replaceRowsOnNextUpdate([replacementActiveRow, replacementOtherRow]);
+    windowEventListeners.message({ data: {
+        type: 'ai-sessions-updated',
+        version: 1,
+        sequence: 1,
+        openProjects: [{
+            projectId: 'project-a',
+            expanded: true,
+            aiSessionCount: 0,
+            sessionSectionHtml: '<div class="codex-sessions">replacement</div>',
+        }],
+    } });
+    assert.strictEqual(replacementActiveRow.hasAttribute('data-ai-session-active-terminal'), true);
+    assert.strictEqual(replacementOtherRow.hasAttribute('data-ai-session-active-terminal'), false);
 
     const manager = context.window.__projectStewardBatchAiSessions;
     manager.enter('project-a', 'codex');
@@ -1297,6 +1551,8 @@ async function main() {
     runPinStoreChecks();
     runKeyChecks();
     runBatchAiSessionArchiveChecks();
+    runActiveAiSessionTerminalHighlightChecks();
+    runAiSessionTerminalResolutionChecks();
     await runBatchAiSessionArchiveHostChecks();
     runWebviewContentChecks();
     runCurrentWorkspaceRenderingChecks();

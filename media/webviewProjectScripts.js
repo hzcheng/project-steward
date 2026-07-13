@@ -13,6 +13,7 @@ function initProjects() {
         selectedIds: new Set(),
         pending: false,
     };
+    var activeAiSessionTerminalState = { provider: null, sessionId: null };
 
     function enter(projectId, provider) {
         if (batchAiSessionState.pending)
@@ -354,6 +355,18 @@ function initProjects() {
 
         var providerSelect = projectDiv.querySelector('select[data-action="select-ai-provider"]');
         return providerSelect && providerSelect.value;
+    }
+
+    function syncActiveAiSessionTerminalDom() {
+        document.querySelectorAll('.codex-session-row[data-session-id]').forEach(row => {
+            var provider = row.getAttribute('data-session-provider') || 'codex';
+            var sessionId = row.getAttribute('data-session-id');
+            row.toggleAttribute(
+                'data-ai-session-active-terminal',
+                provider === activeAiSessionTerminalState.provider
+                    && sessionId === activeAiSessionTerminalState.sessionId
+            );
+        });
     }
 
     function syncAiSessionBatchManagementDom(projectDiv) {
@@ -767,6 +780,13 @@ function initProjects() {
 
     function onWindowMessage(e) {
         var message = e && e.data;
+        if (message && message.type === 'active-ai-session-terminal-changed') {
+            activeAiSessionTerminalState.provider = isAiSessionProvider(message.provider) ? message.provider : null;
+            activeAiSessionTerminalState.sessionId = typeof message.sessionId === 'string' ? message.sessionId : null;
+            syncActiveAiSessionTerminalDom();
+            return;
+        }
+
         if (message && message.type === 'ai-session-batch-archive-completed') {
             if (message.projectId === batchAiSessionState.projectId
                 && message.provider === batchAiSessionState.provider) {
@@ -866,6 +886,8 @@ function initProjects() {
             syncAiSessionBatchManagementDom(projectDiv);
         }
 
+        syncActiveAiSessionTerminalDom();
+
         return true;
     }
 
@@ -958,6 +980,7 @@ function initProjects() {
     });
 
     window.addEventListener('message', onWindowMessage);
+    window.vscode.postMessage({ type: 'request-active-ai-session-terminal' });
 
     observeStickyGroupHeaderOffset();
 }

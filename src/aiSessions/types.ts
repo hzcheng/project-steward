@@ -84,6 +84,12 @@ export interface AiSessionsUpdatedMessage {
     openProjects: OpenProjectAiSessionViewModel[];
 }
 
+export interface AiSessionActiveTerminalChangedMessage {
+    type: 'active-ai-session-terminal-changed';
+    provider: AiSessionProviderId | null;
+    sessionId: string | null;
+}
+
 export interface AiSessionAssignmentCandidate<TProject = { id: string }> {
     project: TProject;
     path: string;
