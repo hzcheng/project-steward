@@ -2,6 +2,18 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
+## [1.1.8] 2026-07-13
+
+### Added
+
+-   Add batch management for archiving eligible AI sessions while protecting sessions that are still open in terminals.
+-   Highlight the visible AI session associated with the active running Codex, Kimi, or Claude terminal.
+
+### Fixed
+
+-   Preserve AI session aliases across provider refreshes.
+-   Exclude explicit Codex subagent sessions from project assignment, terminal matching, and Dashboard session lists.
+
 ## [1.1.7] 2026-07-10
 
 ### Added

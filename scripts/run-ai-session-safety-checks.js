@@ -1678,6 +1678,14 @@ function runCommandBuilderChecks() {
     assert.strictEqual(commands.quotePowerShellArg("O'Brien"), "'O''Brien'");
 }
 
+function runVsixPackagingChecks() {
+    const vscodeIgnore = fs.readFileSync(path.join(__dirname, '..', '.vscodeignore'), 'utf8');
+    assert.ok(
+        vscodeIgnore.split(/\r?\n/).includes('.superpowers/**'),
+        'VSIX packaging must exclude local .superpowers artifacts'
+    );
+}
+
 async function main() {
     runPathChecks();
     runAssignmentChecks();
@@ -1703,6 +1711,7 @@ async function main() {
     runClaudeSessionChecks();
     runProviderChecks();
     runCommandBuilderChecks();
+    runVsixPackagingChecks();
 
     console.log('AI session safety checks passed.');
 }
