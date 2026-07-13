@@ -37,6 +37,15 @@ export const add = `
 </svg>
 `;
 
+export const manage = `
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m3.5 6 1.5 1.5L7.5 5"></path>
+    <path d="m3.5 12 1.5 1.5 2.5-2.5"></path>
+    <path d="m3.5 18 1.5 1.5L7.5 17"></path>
+    <path d="M10.5 6.5h10M10.5 12.5h10M10.5 18.5h10"></path>
+</svg>
+`;
+
 export const openNewWindow = `
 <svg viewBox="0 0 512 512">
     <path d="M432 320h-32c-8.8 0-16 7.2-16 16v112H64V128h144c8.8 0 16-7.2 16-16V80c0-8.8-7.2-16-16-16H48C21.5 64 0 85.5 0 112v352c0 26.5 21.5 48 48 48h352c26.5 0 48-21.5 48-48V336c0-8.8-7.2-16-16-16zM488 0H360c-21.4 0-32.1 25.9-17 41l35.7 35.7-167 167c-9.4 9.4-9.4 24.6 0 33.9l22.6 22.6c9.4 9.4 24.6 9.4 33.9 0l167-167L471 169c15.1 15.1 41 4.4 41-17V24c0-13.3-10.7-24-24-24z"></path>

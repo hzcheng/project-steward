@@ -8,6 +8,7 @@ const path = require('path');
 const vm = require('vm');
 const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
+const archiveBatch = require('../out/aiSessions/archiveBatch');
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
 const ClaudeSessionService = require('../out/services/claudeSessionService').default;
@@ -284,6 +285,228 @@ function runKeyChecks() {
     assert.strictEqual(helpers.getAiSessionProviderIdFromKey(':missing', isProviderId), null);
 }
 
+function runBatchAiSessionArchiveChecks() {
+    assert.ok(archiveBatch.MAX_BATCH_AI_SESSION_ARCHIVE_REQUEST_ENTRIES > 20);
+    const excessiveIds = Array.from(
+        { length: archiveBatch.MAX_BATCH_AI_SESSION_ARCHIVE_REQUEST_ENTRIES + 7 },
+        (_, index) => `session-${index}`
+    );
+    const boundedSelection = archiveBatch.resolveBatchAiSessionSelection(
+        excessiveIds,
+        excessiveIds.map(id => ({ id, name: id }))
+    );
+    assert.strictEqual(
+        boundedSelection.eligibleSessions.length,
+        archiveBatch.MAX_BATCH_AI_SESSION_ARCHIVE_REQUEST_ENTRIES
+    );
+    assert.strictEqual(boundedSelection.malformedCount, 7);
+
+    const excessiveLengthId = 'x'.repeat(archiveBatch.MAX_BATCH_AI_SESSION_ID_LENGTH + 1);
+    const excessiveLengthSelection = archiveBatch.resolveBatchAiSessionSelection(
+        [excessiveLengthId],
+        [{ id: excessiveLengthId, name: 'Too long' }]
+    );
+    assert.deepStrictEqual(excessiveLengthSelection.eligibleSessions, []);
+    assert.strictEqual(excessiveLengthSelection.malformedCount, 1);
+
+    const rejectedIds = Array.from(
+        { length: archiveBatch.MAX_RETAINED_BATCH_AI_SESSION_REJECTED_IDS + 5 },
+        (_, index) => `outside-${index}`
+    );
+    const boundedRejectedSelection = archiveBatch.resolveBatchAiSessionSelection(rejectedIds, []);
+    assert.strictEqual(
+        boundedRejectedSelection.rejectedIds.length,
+        archiveBatch.MAX_RETAINED_BATCH_AI_SESSION_REJECTED_IDS
+    );
+    assert.strictEqual(boundedRejectedSelection.rejectedIdCount, rejectedIds.length);
+    assert.strictEqual(
+        archiveBatch.formatBatchAiSessionIdForLog('outside\nnext\t\u0000'),
+        'outside\\nnext\\t\\u0000'
+    );
+    assert.ok(
+        archiveBatch.formatBatchAiSessionIdForLog('z'.repeat(1000)).length
+        <= archiveBatch.MAX_BATCH_AI_SESSION_LOG_ID_LENGTH + 1
+    );
+
+    const availableSessions = [
+        { id: 'pinned', name: 'Pinned', pinned: true },
+        { id: 'plain', name: 'Plain' },
+        { id: 'running', name: 'Running' },
+        { id: 'failed', name: 'Failed' },
+    ];
+    const selection = archiveBatch.resolveBatchAiSessionSelection(
+        ['plain', 'plain', '', 42, 'pinned', 'outside', 'running', 'failed'],
+        availableSessions
+    );
+
+    assert.deepStrictEqual(selection.eligibleSessions.map(session => session.id), [
+        'plain', 'pinned', 'running', 'failed',
+    ]);
+    assert.deepStrictEqual(selection.rejectedIds, ['outside']);
+    assert.strictEqual(selection.rejectedIdCount, 1);
+    assert.strictEqual(selection.malformedCount, 2);
+    assert.strictEqual(selection.eligibleSessions.filter(session => session.pinned).length, 1);
+
+    const result = archiveBatch.archiveBatchAiSessions(selection, {
+        resolveCurrentSessions: () => availableSessions.filter(session => session.id !== 'pinned'),
+        archiveSession: sessionId => sessionId === 'running'
+            ? 'running'
+            : sessionId === 'failed' ? 'failed' : 'archived',
+    });
+
+    assert.deepStrictEqual(result.archivedIds, ['plain']);
+    assert.deepStrictEqual(result.runningIds, ['running']);
+    assert.deepStrictEqual(result.missingIds, ['pinned']);
+    assert.deepStrictEqual(result.failedIds, ['failed']);
+    assert.deepStrictEqual(result.rejectedIds, ['outside']);
+    assert.strictEqual(result.malformedCount, 2);
+    assert.strictEqual(archiveBatch.hasBatchAiSessionArchiveIssues(result), true);
+    assert.strictEqual(
+        archiveBatch.formatBatchAiSessionArchiveSummary(result),
+        'Archived 1 session; skipped 1 running session; 1 session was no longer available; rejected 3 invalid or out-of-scope selections; 1 session failed.'
+    );
+
+    const success = archiveBatch.archiveBatchAiSessions(
+        archiveBatch.resolveBatchAiSessionSelection(['plain'], availableSessions),
+        {
+            resolveCurrentSessions: () => availableSessions,
+            archiveSession: () => 'archived',
+        }
+    );
+    assert.strictEqual(archiveBatch.hasBatchAiSessionArchiveIssues(success), false);
+    assert.strictEqual(
+        archiveBatch.formatBatchAiSessionArchiveSummary(success),
+        'Archived 1 session.'
+    );
+}
+
+async function runBatchAiSessionArchiveHostChecks() {
+    const sessions = [
+        { id: 'archived', name: 'Archived' },
+        { id: 'running', name: 'Running' },
+        { id: 'missing', name: 'Missing' },
+        { id: 'provider-false', name: 'Provider false', pinned: true },
+        { id: 'provider-throw', name: 'Provider throw' },
+        { id: 'later', name: 'Later' },
+    ];
+    const createHarness = overrides => {
+        const state = {
+            confirmations: [], completions: [], refreshCount: 0, results: [], errors: [],
+            scopeRejections: 0, selectionRejections: 0,
+        };
+        const project = { id: 'project-a', activeAiSessionProvider: 'codex' };
+        const dependencies = Object.assign({
+            resolveProject: projectId => projectId === project.id ? project : null,
+            getProjectSessions: () => sessions,
+            resolveCurrentSessions: () => sessions,
+            confirm: details => {
+                state.confirmations.push(details);
+                return Promise.resolve(true);
+            },
+            archiveSession: () => 'archived',
+            reportScopeRejected: () => { state.scopeRejections++; },
+            reportSelectionRejected: () => { state.selectionRejections++; },
+            reportResult: result => { state.results.push(result); },
+            logUnexpectedError: (context, error, sessionId) => {
+                state.errors.push({ context, error: String(error), sessionId });
+            },
+            postCompletion: message => { state.completions.push(message); },
+            refresh: () => { state.refreshCount++; },
+        }, overrides || {});
+        return { state, dependencies };
+    };
+    const request = {
+        projectId: 'project-a', provider: 'codex', sessionIds: sessions.map(session => session.id),
+    };
+
+    for (const rejectedRequest of [
+        { projectId: 'project-b', provider: 'codex', sessionIds: ['archived'] },
+        { projectId: 'project-a', provider: 'kimi', sessionIds: ['archived'] },
+    ]) {
+        const harness = createHarness();
+        await archiveBatch.executeBatchAiSessionArchiveRequest(rejectedRequest, harness.dependencies);
+        assert.strictEqual(harness.state.scopeRejections, 1);
+        assert.deepStrictEqual(harness.state.completions.map(message => message.status), ['rejected']);
+        assert.strictEqual(harness.state.confirmations.length, 0);
+        assert.strictEqual(harness.state.refreshCount, 0);
+    }
+
+    const cancelled = createHarness({ confirm: () => Promise.resolve(false) });
+    await archiveBatch.executeBatchAiSessionArchiveRequest(request, cancelled.dependencies);
+    assert.deepStrictEqual(cancelled.state.completions.map(message => message.status), ['cancelled']);
+    assert.strictEqual(cancelled.state.refreshCount, 0);
+
+    const confirmation = createHarness();
+    await archiveBatch.executeBatchAiSessionArchiveRequest({
+        projectId: 'project-a', provider: 'codex',
+        sessionIds: ['archived', 'provider-false', 'archived'],
+    }, confirmation.dependencies);
+    assert.deepStrictEqual(confirmation.state.confirmations, [{
+        projectId: 'project-a', provider: 'codex', eligibleCount: 2, pinnedCount: 1,
+    }]);
+    assert.deepStrictEqual(confirmation.state.completions.map(message => message.status), ['finished']);
+    assert.strictEqual(confirmation.state.refreshCount, 1);
+
+    const mixed = createHarness({
+        resolveCurrentSessions: () => sessions.filter(session => session.id !== 'missing'),
+        archiveSession: sessionId => {
+            if (sessionId === 'running') return 'running';
+            if (sessionId === 'provider-false') return 'failed';
+            if (sessionId === 'provider-throw') throw new Error('provider exploded');
+            return 'archived';
+        },
+    });
+    await archiveBatch.executeBatchAiSessionArchiveRequest(request, mixed.dependencies);
+    const mixedResult = mixed.state.completions[0].result;
+    assert.deepStrictEqual(mixedResult.archivedIds, ['archived', 'later']);
+    assert.deepStrictEqual(mixedResult.runningIds, ['running']);
+    assert.deepStrictEqual(mixedResult.missingIds, ['missing']);
+    assert.deepStrictEqual(mixedResult.failedIds, ['provider-false', 'provider-throw']);
+    assert.strictEqual(mixed.state.errors.length, 1);
+    assert.strictEqual(mixed.state.errors[0].sessionId, 'provider-throw');
+    assert.deepStrictEqual(mixed.state.completions.map(message => message.status), ['finished']);
+    assert.strictEqual(mixed.state.refreshCount, 1);
+
+    const cleanupCalls = [];
+    const itemDependencies = archiveResult => ({
+        isRunning: () => false,
+        archiveSession: typeof archiveResult === 'function' ? archiveResult : () => archiveResult,
+        deleteEntryMarker: () => cleanupCalls.push('marker'),
+        untrackTerminal: () => cleanupCalls.push('terminal'),
+        deletePin: () => cleanupCalls.push('pin'),
+        deleteAlias: () => cleanupCalls.push('alias'),
+    });
+    assert.strictEqual(
+        archiveBatch.archiveBatchAiSessionItem('success', itemDependencies(true)),
+        'archived'
+    );
+    assert.deepStrictEqual(cleanupCalls, ['marker', 'terminal', 'pin', 'alias']);
+    cleanupCalls.length = 0;
+    assert.strictEqual(
+        archiveBatch.archiveBatchAiSessionItem('failed', itemDependencies(false)),
+        'failed'
+    );
+    assert.deepStrictEqual(cleanupCalls, []);
+    assert.throws(
+        () => archiveBatch.archiveBatchAiSessionItem('throw', itemDependencies(() => { throw new Error('boom'); })),
+        /boom/
+    );
+    assert.deepStrictEqual(cleanupCalls, []);
+
+    for (const exceptionCase of [
+        { override: { resolveProject: () => { throw new Error('resolve'); } }, status: 'rejected', refreshCount: 0 },
+        { override: { confirm: () => { throw new Error('confirm'); } }, status: 'rejected', refreshCount: 0 },
+        { override: { resolveCurrentSessions: () => { throw new Error('execute'); } }, status: 'finished', refreshCount: 1 },
+        { override: { reportResult: () => { throw new Error('report'); } }, status: 'finished', refreshCount: 1 },
+    ]) {
+        const harness = createHarness(exceptionCase.override);
+        await archiveBatch.executeBatchAiSessionArchiveRequest(request, harness.dependencies);
+        assert.deepStrictEqual(harness.state.completions.map(message => message.status), [exceptionCase.status]);
+        assert.strictEqual(harness.state.refreshCount, exceptionCase.refreshCount);
+        assert.strictEqual(harness.state.errors.length, 1);
+    }
+}
+
 function runWebviewContentChecks() {
     const webviewContent = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts'), 'utf8');
     const webviewProjectScripts = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'), 'utf8');
@@ -292,6 +515,10 @@ function runWebviewContentChecks() {
     const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
     const withAiSessionsFunction = extractFunctionBody(dashboard, 'withAiSessions');
+    const singleArchiveFunction = extractFunctionBody(dashboard, 'archiveAiSession');
+    const batchArchiveFunction = extractFunctionBody(dashboard, 'archiveAiSessions');
+    const archiveItemFunction = extractFunctionBody(dashboard, 'archiveAiSessionItem');
+    const batchArchiveLogFunction = extractFunctionBody(dashboard, 'logBatchAiSessionArchiveResult');
     const projectWindowColorService = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'projectWindowColorService.ts'), 'utf8');
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
@@ -319,6 +546,14 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('new AiSessionPinStore(context.globalStoragePath)'));
     assert.ok(!dashboard.includes('prunePinnedAiSessionKeys'));
     assert.ok(extractFunctionBody(dashboard, 'deletePinnedAiSession').includes("logError('Failed to delete the pinned AI session.'"));
+    assert.ok(dashboard.includes("case 'archive-ai-sessions':"));
+    assert.ok(dashboard.includes('AiSessionBatchArchiveCompletedMessage'));
+    assert.ok(singleArchiveFunction.includes('archiveAiSessionItem(providerId, sessionId)'));
+    assert.ok(batchArchiveFunction.includes('executeBatchAiSessionArchiveRequest('));
+    assert.ok(!archiveItemFunction.includes('refreshAiSessionViewsIncrementally()'));
+    assert.ok(!archiveItemFunction.includes('invalidateAiSessionCache('));
+    assert.ok(archiveItemFunction.includes('executeBatchAiSessionArchiveItem('));
+    assert.strictEqual((batchArchiveLogFunction.match(/formatBatchAiSessionIdForLog\(sessionId\)/g) || []).length, 3);
     assert.ok(webviewContent.includes('.settings-button,'));
     assert.ok(styles.includes('max-width: calc(100% - 76px);'));
     assert.ok(styles.includes('margin-left: 4px;'));
@@ -339,9 +574,28 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes('class="codex-session-actions"'));
     assert.ok(webviewContent.includes('<button type="button" class="codex-session-pin'));
     assert.ok(webviewContent.includes('<button type="button" class="codex-session-archive"'));
+    assert.ok(webviewContent.includes('data-action="manage-ai-sessions"'));
+    assert.ok(webviewContent.includes('${Icons.manage}'));
+    assert.ok(webviewContent.includes('aria-label="${label}"'));
+    assert.ok(webviewContent.includes('aria-pressed="false"'));
+    assert.ok(webviewIcons.includes('export const manage = `'));
+    assert.ok(webviewContent.includes('class="ai-session-batch-checkbox"'));
+    assert.ok(!webviewContent.includes('class="ai-session-batch-checkbox" aria-label="Select ${sessionName}" tabindex="-1"'));
+    assert.ok(webviewContent.includes('data-action="select-unpinned-ai-sessions"'));
+    assert.ok(webviewContent.includes('data-action="select-unpinned-ai-sessions" title="Select all unpinned sessions" aria-label="Select all unpinned sessions">All</button>'));
+    assert.ok(!webviewContent.includes('>Select unpinned</button>'));
+    assert.ok(webviewContent.includes('data-action="clear-ai-session-selection"'));
+    assert.ok(!webviewContent.includes('data-action="cancel-ai-session-management"'));
+    assert.ok(!webviewProjectScripts.includes('cancelManagementAction'));
+    assert.ok(webviewContent.includes('data-action="archive-selected-ai-sessions"'));
     assert.ok(!webviewContent.includes('codex-session-meta-chip'));
     assert.ok(webviewContent.includes("join(' · ')"));
     assert.ok(styles.includes('.codex-session-actions'));
+    assert.ok(styles.includes('[data-ai-session-managing]'));
+    assert.ok(styles.includes('grid-template-columns: minmax(0, 1fr) 24px 24px;'));
+    assert.ok(styles.includes('.ai-session-manage-button[aria-pressed="true"]'));
+    assert.ok(styles.includes('.ai-session-batch-actions'));
+    assert.ok(compiledStyles.includes('.ai-session-batch-actions'));
     assert.ok(styles.includes('[data-session-pinned] .codex-session-actions'));
     assert.ok(styles.includes('&::before'));
     assert.ok(!styles.includes('.codex-session-meta-chip'));
@@ -611,6 +865,210 @@ function runFavoriteDndChecks() {
     ]);
 }
 
+function runBatchAiSessionWebviewChecks() {
+    const sourcePath = path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js');
+    const generatedPath = path.join(__dirname, '..', 'media', 'webviewProjectScripts.js');
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    assert.strictEqual(fs.readFileSync(generatedPath, 'utf8'), source);
+    const messages = [];
+    const eventListeners = {};
+    const windowEventListeners = {};
+    const createProject = (projectId, provider) => {
+        const attributes = new Set(['data-open-project']);
+        const manageButton = {
+            ariaPressed: 'false',
+            disabled: false,
+            setAttribute: (attribute, value) => {
+                if (attribute === 'aria-pressed') manageButton.ariaPressed = value;
+            },
+        };
+        const batchButtons = [
+            'select-unpinned-ai-sessions',
+            'clear-ai-session-selection',
+            'archive-selected-ai-sessions',
+        ].map(action => ({ action, disabled: false }));
+        return {
+            batchButtons,
+            manageButton,
+            getAttribute: attribute => attribute === 'data-id' ? projectId : null,
+            hasAttribute: attribute => attributes.has(attribute),
+            removeAttribute: attribute => attributes.delete(attribute),
+            toggleAttribute: (attribute, force) => {
+                if (force) {
+                    attributes.add(attribute);
+                } else {
+                    attributes.delete(attribute);
+                }
+            },
+            querySelector: selector => {
+                if (selector === 'select[data-action="select-ai-provider"]') {
+                    return { value: provider };
+                }
+                if (selector === '[data-action="archive-selected-ai-sessions"]') {
+                    return batchButtons.find(button => button.action === 'archive-selected-ai-sessions');
+                }
+                if (selector === '[data-action="manage-ai-sessions"]') {
+                    return manageButton;
+                }
+                return null;
+            },
+            querySelectorAll: selector => selector === '.ai-session-batch-actions button'
+                ? batchButtons
+                : [],
+        };
+    };
+    const projectA = createProject('project-a', 'codex');
+    const projectB = createProject('project-b', 'kimi');
+    const projects = [projectA, projectB];
+    const context = {
+        document: {
+            body: {
+                classList: { toggle: () => {} },
+                style: { setProperty: () => {} },
+            },
+            addEventListener: (event, listener) => { eventListeners[event] = listener; },
+            getElementById: () => null,
+            querySelector: () => null,
+            querySelectorAll: selector => {
+                if (selector === '.project[data-open-project][data-id]') {
+                    return projects;
+                }
+                if (selector === '.project[data-ai-session-managing], .project[data-ai-session-pending]') {
+                    return projects.filter(project => project.hasAttribute('data-ai-session-managing')
+                        || project.hasAttribute('data-ai-session-pending'));
+                }
+                return [];
+            },
+        },
+        window: {
+            addEventListener: (event, listener) => { windowEventListeners[event] = listener; },
+            requestAnimationFrame: callback => callback(),
+            vscode: { postMessage: message => messages.push(message) },
+        },
+    };
+
+    vm.runInNewContext(source, context);
+    context.initProjects();
+
+    const manager = context.window.__projectStewardBatchAiSessions;
+    manager.enter('project-a', 'codex');
+    manager.toggle('plain', false);
+    manager.selectUnpinned([
+        { id: 'plain', pinned: false },
+        { id: 'pinned', pinned: true },
+        { id: 'second', pinned: false },
+    ]);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(manager.snapshot())), {
+        projectId: 'project-a', provider: 'codex', selectedIds: ['plain', 'second'], pending: false,
+    });
+
+    manager.toggle('pinned', true);
+    manager.reconcile('project-a', 'codex', ['pinned', 'second']);
+    assert.deepStrictEqual(Array.from(manager.snapshot().selectedIds), ['pinned', 'second']);
+
+    manager.submit();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.pop())), {
+        type: 'archive-ai-sessions', projectId: 'project-a', provider: 'codex',
+        sessionIds: ['pinned', 'second'],
+    });
+    assert.strictEqual(manager.snapshot().pending, true);
+    const archiveProjectA = {
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') return projectA;
+            if (selector === '[data-action="archive-selected-ai-sessions"]') return archiveProjectA;
+            return null;
+        },
+    };
+    eventListeners.click({ button: 0, target: archiveProjectA });
+    assert.ok(projectA.batchButtons.every(button => button.disabled));
+    assert.strictEqual(projectA.manageButton.disabled, true);
+
+    const pendingSnapshot = JSON.parse(JSON.stringify(manager.snapshot()));
+    manager.enter('project-b', 'kimi');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(manager.snapshot())), pendingSnapshot);
+    manager.submit();
+    assert.strictEqual(messages.length, 0);
+
+    projectA.toggleAttribute('data-ai-session-managing', true);
+    projectA.toggleAttribute('data-ai-session-pending', true);
+    const manageProjectB = {
+        tagName: 'BUTTON',
+        getAttribute: attribute => attribute === 'data-provider' ? 'kimi' : null,
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') {
+                return projectB;
+            }
+            if (selector === '[data-action="manage-ai-sessions"][data-provider]') {
+                return manageProjectB;
+            }
+            return null;
+        },
+    };
+    eventListeners.click({ button: 0, target: manageProjectB });
+    assert.strictEqual(projectA.hasAttribute('data-ai-session-managing'), true);
+    assert.strictEqual(projectA.hasAttribute('data-ai-session-pending'), true);
+    assert.strictEqual(projectB.hasAttribute('data-ai-session-managing'), false);
+    assert.strictEqual(projectB.hasAttribute('data-ai-session-pending'), false);
+    assert.strictEqual(messages.length, 0);
+
+    windowEventListeners.message({ data: {
+        type: 'ai-session-batch-archive-completed',
+        projectId: 'project-a',
+        provider: 'codex',
+        status: 'cancelled',
+    } });
+    assert.strictEqual(manager.snapshot().pending, false);
+    assert.deepStrictEqual(Array.from(manager.snapshot().selectedIds), ['pinned', 'second']);
+    assert.ok(projectA.batchButtons.every(button => !button.disabled));
+    assert.strictEqual(projectA.manageButton.disabled, false);
+
+    manager.submit();
+    manager.toggle('plain');
+    manager.clear();
+    manager.selectUnpinned([{ id: 'plain', pinned: false }]);
+    assert.strictEqual(manager.snapshot().pending, true);
+    assert.deepStrictEqual(Array.from(manager.snapshot().selectedIds), ['pinned', 'second']);
+    manager.complete('rejected');
+    assert.strictEqual(manager.snapshot().pending, false);
+    assert.deepStrictEqual(Array.from(manager.snapshot().selectedIds), ['pinned', 'second']);
+
+    manager.complete('finished');
+    assert.strictEqual(manager.snapshot().projectId, null);
+
+    const manageProjectA = {
+        tagName: 'BUTTON',
+        getAttribute: attribute => attribute === 'data-provider' ? 'codex' : null,
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') {
+                return projectA;
+            }
+            if (selector === '[data-action="manage-ai-sessions"][data-provider]') {
+                return manageProjectA;
+            }
+            return null;
+        },
+    };
+    eventListeners.click({ button: 0, target: manageProjectA });
+    assert.strictEqual(manager.snapshot().projectId, 'project-a');
+    assert.strictEqual(projectA.manageButton.ariaPressed, 'true');
+    eventListeners.click({ button: 0, target: manageProjectA });
+    assert.strictEqual(manager.snapshot().projectId, null);
+    assert.strictEqual(projectA.manageButton.ariaPressed, 'false');
+
+    const providerChange = extractFunctionBody(source, 'selectAiSessionProvider');
+    const providerExitIndex = providerChange.indexOf('exitAiSessionBatchManagement()');
+    const providerMessageIndex = providerChange.indexOf("type: 'select-ai-session-provider'");
+    assert.notStrictEqual(providerExitIndex, -1);
+    assert.notStrictEqual(providerMessageIndex, -1);
+    assert.ok(providerExitIndex < providerMessageIndex);
+    const projectCollapse = extractFunctionBody(source, 'toggleCodexSessions');
+    const collapseExitIndex = projectCollapse.indexOf('exitAiSessionBatchManagement()');
+    const collapseMessageIndex = projectCollapse.indexOf("type: 'toggle-codex-sessions'");
+    assert.notStrictEqual(collapseExitIndex, -1);
+    assert.notStrictEqual(collapseMessageIndex, -1);
+    assert.ok(collapseExitIndex < collapseMessageIndex);
+}
+
 function extractFunctionBody(source, functionName) {
     const signature = `function ${functionName}(`;
     const signatureIndex = source.indexOf(signature);
@@ -828,22 +1286,32 @@ function runCommandBuilderChecks() {
     assert.strictEqual(commands.quotePowerShellArg("O'Brien"), "'O''Brien'");
 }
 
-runPathChecks();
-runAssignmentChecks();
-runCurrentWorkspaceStateChecks();
-runFavoriteProjectOrderChecks();
-runCurrentWorkspaceMatchingChecks();
-runCandidateFilterChecks();
-runDisplayChecks();
-runPinStoreChecks();
-runKeyChecks();
-runWebviewContentChecks();
-runCurrentWorkspaceRenderingChecks();
-runFavoriteRenderingChecks();
-runFavoriteDndChecks();
-runGitRepositoryDetectorChecks();
-runClaudeSessionChecks();
-runProviderChecks();
-runCommandBuilderChecks();
+async function main() {
+    runPathChecks();
+    runAssignmentChecks();
+    runCurrentWorkspaceStateChecks();
+    runFavoriteProjectOrderChecks();
+    runCurrentWorkspaceMatchingChecks();
+    runCandidateFilterChecks();
+    runDisplayChecks();
+    runPinStoreChecks();
+    runKeyChecks();
+    runBatchAiSessionArchiveChecks();
+    await runBatchAiSessionArchiveHostChecks();
+    runWebviewContentChecks();
+    runCurrentWorkspaceRenderingChecks();
+    runFavoriteRenderingChecks();
+    runFavoriteDndChecks();
+    runBatchAiSessionWebviewChecks();
+    runGitRepositoryDetectorChecks();
+    runClaudeSessionChecks();
+    runProviderChecks();
+    runCommandBuilderChecks();
 
-console.log('AI session safety checks passed.');
+    console.log('AI session safety checks passed.');
+}
+
+main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+});

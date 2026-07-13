@@ -17,7 +17,9 @@ import AiSessionPinStore from './aiSessions/pinStore';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
-import type { AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
+import { archiveBatchAiSessionItem as executeBatchAiSessionArchiveItem, executeBatchAiSessionArchiveRequest, formatBatchAiSessionArchiveSummary, formatBatchAiSessionIdForLog, hasBatchAiSessionArchiveIssues } from './aiSessions/archiveBatch';
+import type { BatchAiSessionArchiveAttemptStatus, BatchAiSessionArchiveResult, BatchAiSessionArchiveSelection } from './aiSessions/archiveBatch';
+import type { AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
 import { findSavedProjectForOpenProject, getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
 import { getLastPartOfPath, getOpenProjectUri as resolveOpenProjectUri, getOpenProjectsFromWorkspace, getWorkspaceUri as resolveWorkspaceUri, getWorkspaceUris as resolveWorkspaceUris, isUriString, parsePathAsUri } from './projects/openProjectService';
 import RemoteProjectResolver from './projects/remoteProjectResolver';
@@ -430,6 +432,12 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
+    function postBatchArchiveCompletion(message: AiSessionBatchArchiveCompletedMessage) {
+        provider.postMessage(message).then(undefined, error => {
+            logError('Failed to post batch AI session archive completion.', error);
+        });
+    }
+
     function invalidateAiSessionCache(providerId: AiSessionProviderId) {
         getRegisteredAiSessionProvider(providerId)?.service.invalidateCache();
     }
@@ -587,6 +595,13 @@ export function activate(context: vscode.ExtensionContext) {
             case 'resume-claude-session':
                 projectId = e.projectId as string;
                 await resumeProjectAiSession(projectId, getAiSessionProviderFromMessage(e, 'resume'), e.sessionId as string);
+                break;
+            case 'archive-ai-sessions':
+                await archiveAiSessions(
+                    e.projectId as string,
+                    e.provider as AiSessionProviderId,
+                    e.sessionIds
+                );
                 break;
             case 'archive-ai-session':
             case 'archive-codex-session':
@@ -1011,20 +1026,122 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        if (!sessionProvider.service.archiveSession(sessionId)) {
+        let status = archiveAiSessionItem(providerId, sessionId);
+        if (status === 'running') {
+            existingTerminal = aiSessionTerminalService.getById(providerId, sessionId);
+            vscode.window.showWarningMessage(`This ${sessionProvider.label} session is open in a terminal. Exit or close that terminal before archiving it.`);
+            existingTerminal?.terminal.show();
+            return;
+        }
+
+        if (status === 'failed') {
             vscode.window.showErrorMessage(`Could not archive ${sessionProvider.label} session.`);
             return;
         }
 
-        if (existingTerminal) {
-            aiSessionTerminalService.deleteEntryMarker(existingTerminal);
-        }
-
-        aiSessionTerminalService.untrack(providerId, sessionId);
-        deletePinnedAiSession(providerId, sessionId);
-        deleteAiSessionAlias(providerId, sessionId);
-        invalidateAiSessionCache(providerId);
         refreshAiSessionViewsIncrementally();
+    }
+
+    function archiveAiSessionItem(
+        providerId: AiSessionProviderId,
+        sessionId: string
+    ): BatchAiSessionArchiveAttemptStatus {
+        let sessionProvider = getRegisteredAiSessionProvider(providerId);
+        let existingTerminal = aiSessionTerminalService.getById(providerId, sessionId);
+        return executeBatchAiSessionArchiveItem(sessionId, {
+            isRunning: () => Boolean(existingTerminal && !aiSessionTerminalService.isComplete(existingTerminal)),
+            archiveSession: () => sessionProvider.service.archiveSession(sessionId),
+            deleteEntryMarker: () => {
+                if (existingTerminal) {
+                    aiSessionTerminalService.deleteEntryMarker(existingTerminal);
+                }
+            },
+            untrackTerminal: () => aiSessionTerminalService.untrack(providerId, sessionId),
+            deletePin: () => deletePinnedAiSession(providerId, sessionId),
+            deleteAlias: () => deleteAiSessionAlias(providerId, sessionId),
+        });
+    }
+
+    async function archiveAiSessions(projectId: string, providerId: AiSessionProviderId, sessionIds: unknown) {
+        await executeBatchAiSessionArchiveRequest({ projectId, provider: providerId, sessionIds }, {
+            resolveProject: requestedProjectId => isAiSessionProviderId(providerId)
+                ? getOpenProjects().find(candidate => candidate.id === requestedProjectId)
+                : null,
+            getProjectSessions: project => getProjectAiSessions(project as Project, providerId),
+            resolveCurrentSessions: () => {
+                let currentProject = getOpenProjects().find(candidate => candidate.id === projectId);
+                return currentProject && currentProject.activeAiSessionProvider === providerId
+                    ? getProjectAiSessions(currentProject, providerId)
+                    : [];
+            },
+            archiveSession: sessionId => archiveAiSessionItem(providerId, sessionId),
+            confirm: async confirmation => {
+                let providerLabel = getAiSessionProviderLabel(providerId);
+                let pinnedText = confirmation.pinnedCount
+                    ? ` ${confirmation.pinnedCount} selected ${confirmation.pinnedCount === 1 ? 'session is' : 'sessions are'} pinned.`
+                    : '';
+                let accepted = await vscode.window.showWarningMessage(
+                    `Archive ${confirmation.eligibleCount} selected ${providerLabel} ${confirmation.eligibleCount === 1 ? 'session' : 'sessions'}?${pinnedText}`,
+                    { modal: true },
+                    'Archive'
+                );
+                return Boolean(accepted);
+            },
+            reportScopeRejected: () => {
+                vscode.window.showWarningMessage('The selected AI sessions are no longer in the active project and provider.');
+            },
+            reportSelectionRejected: selection => {
+                logRejectedBatchAiSessionSelections(providerId, selection);
+                vscode.window.showWarningMessage('No eligible AI sessions were selected.');
+            },
+            reportResult: result => {
+                logBatchAiSessionArchiveResult(providerId, result);
+                let summary = formatBatchAiSessionArchiveSummary(result);
+                if (hasBatchAiSessionArchiveIssues(result)) {
+                    vscode.window.showWarningMessage(summary);
+                } else {
+                    vscode.window.showInformationMessage(summary);
+                }
+            },
+            logUnexpectedError: (operation, error, failedSessionId) => {
+                logError(`Batch AI session archive failed during ${operation}${failedSessionId ? ` (${failedSessionId})` : ''}.`, error);
+            },
+            postCompletion: completion => postBatchArchiveCompletion(completion as AiSessionBatchArchiveCompletedMessage),
+            refresh: () => refreshAiSessionViewsIncrementally(),
+        });
+    }
+
+    function logRejectedBatchAiSessionSelections(
+        providerId: AiSessionProviderId,
+        selection: Pick<BatchAiSessionArchiveSelection, 'rejectedIds' | 'rejectedIdCount' | 'malformedCount'>
+    ) {
+        let label = getAiSessionProviderLabel(providerId);
+        for (let sessionId of selection.rejectedIds) {
+            outputChannel.appendLine(`[Batch Archive] ${label} rejected out-of-scope session: ${formatBatchAiSessionIdForLog(sessionId)}`);
+        }
+        if (selection.rejectedIdCount > selection.rejectedIds.length) {
+            outputChannel.appendLine(`[Batch Archive] ${label} omitted ${selection.rejectedIdCount - selection.rejectedIds.length} additional out-of-scope session(s).`);
+        }
+        if (selection.malformedCount) {
+            outputChannel.appendLine(`[Batch Archive] ${label} rejected ${selection.malformedCount} malformed selection(s).`);
+        }
+    }
+
+    function logBatchAiSessionArchiveResult(
+        providerId: AiSessionProviderId,
+        result: BatchAiSessionArchiveResult
+    ) {
+        let label = getAiSessionProviderLabel(providerId);
+        logRejectedBatchAiSessionSelections(providerId, result);
+        for (let sessionId of result.runningIds) {
+            outputChannel.appendLine(`[Batch Archive] ${label} skipped running session: ${formatBatchAiSessionIdForLog(sessionId)}`);
+        }
+        for (let sessionId of result.missingIds) {
+            outputChannel.appendLine(`[Batch Archive] ${label} session no longer available: ${formatBatchAiSessionIdForLog(sessionId)}`);
+        }
+        for (let sessionId of result.failedIds) {
+            outputChannel.appendLine(`[Batch Archive] ${label} archive failed: ${formatBatchAiSessionIdForLog(sessionId)}`);
+        }
     }
 
     async function openProject(project: Project, projectOpenType: ProjectOpenType): Promise<void> {

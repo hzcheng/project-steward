@@ -1,6 +1,7 @@
 'use strict';
 
 import type { AiSessionProviderId, CodexSession } from '../models';
+import type { BatchAiSessionArchiveResult } from './archiveBatch';
 
 export interface AiSessionTerminalEntry<TTerminal = unknown> {
     terminal: TTerminal;
@@ -86,4 +87,12 @@ export interface AiSessionsUpdatedMessage {
 export interface AiSessionAssignmentCandidate<TProject = { id: string }> {
     project: TProject;
     path: string;
+}
+
+export interface AiSessionBatchArchiveCompletedMessage {
+    type: 'ai-session-batch-archive-completed';
+    projectId: string;
+    provider: AiSessionProviderId;
+    status: 'cancelled' | 'rejected' | 'finished';
+    result?: BatchAiSessionArchiveResult;
 }

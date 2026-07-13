@@ -1108,13 +1108,14 @@ body.steward-sidebar {
 
         .ai-session-provider-controls {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 24px;
+            grid-template-columns: minmax(0, 1fr) 24px 24px;
             gap: 5px;
             margin-left: 0;
         }
 
         .ai-session-provider-select,
-        .ai-session-create-button {
+        .ai-session-create-button,
+        .ai-session-manage-button {
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -1155,7 +1156,8 @@ body.steward-sidebar {
             appearance: auto;
         }
 
-        .ai-session-create-button {
+        .ai-session-create-button,
+        .ai-session-manage-button {
             padding: 0;
 
             svg {
@@ -1163,6 +1165,96 @@ body.steward-sidebar {
                 height: 10px;
                 fill: currentColor;
             }
+        }
+
+        .ai-session-manage-button[aria-pressed="true"] {
+            color: var(--steward-foreground);
+            border-color: var(--vscode-focusBorder);
+            background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-inactiveSelectionBackground));
+        }
+
+        .ai-session-batch-checkbox,
+        .ai-session-batch-actions {
+            display: none;
+        }
+
+        .ai-session-batch-checkbox {
+            width: 14px;
+            height: 14px;
+            margin: 0;
+            accent-color: var(--vscode-focusBorder);
+            cursor: pointer;
+        }
+
+        .ai-session-batch-actions {
+            align-items: center;
+            justify-content: space-between;
+            gap: 5px;
+            flex-wrap: wrap;
+            margin-top: 6px;
+            padding-top: 6px;
+            border-top: 1px solid var(--vscode-panel-border);
+        }
+
+        .ai-session-batch-selection-actions,
+        .ai-session-batch-submit-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .ai-session-batch-actions button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 0;
+            height: 22px;
+            padding: 0 7px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 999px;
+            color: var(--vscode-descriptionForeground);
+            background: var(--vscode-sideBar-background);
+            font-family: var(--vscode-font-family);
+            font-size: 9px;
+            font-weight: 650;
+            line-height: 1;
+            cursor: pointer;
+            transition:
+                background $defaultTransition,
+                border-color $defaultTransition,
+                color $defaultTransition,
+                opacity $defaultTransition;
+
+            &:hover,
+            &:focus {
+                color: var(--steward-foreground);
+                border-color: var(--vscode-focusBorder);
+                background: var(--vscode-list-hoverBackground);
+            }
+
+            &:disabled {
+                opacity: .5;
+                cursor: default;
+            }
+        }
+
+        .ai-session-batch-actions .ai-session-batch-archive {
+            color: var(--vscode-terminal-ansiYellow);
+            border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-terminal-ansiYellow));
+
+            &:hover:not(:disabled),
+            &:focus:not(:disabled) {
+                color: var(--vscode-inputValidation-warningForeground, var(--steward-foreground));
+                border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-terminal-ansiYellow));
+                background: var(--vscode-inputValidation-warningBackground, var(--vscode-list-hoverBackground));
+            }
+        }
+
+        .ai-session-batch-count {
+            color: var(--vscode-descriptionForeground);
+            font-size: 9px;
+            line-height: 1;
+            white-space: nowrap;
         }
 
         .codex-sessions-list {
@@ -1418,6 +1510,32 @@ body.steward-sidebar {
 
         .codex-sessions-empty {
             margin: 3px 0 1px 0;
+        }
+
+        &[data-ai-session-managing] {
+            .codex-session-row {
+                grid-template-columns: 18px 28px minmax(0, 1fr);
+                padding-right: 8px;
+            }
+
+            .ai-session-batch-checkbox,
+            .ai-session-batch-actions {
+                display: flex;
+            }
+
+            .codex-session-actions {
+                display: none;
+            }
+
+            .codex-session-row[data-ai-session-selected] {
+                border-color: var(--vscode-focusBorder);
+                background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-inactiveSelectionBackground));
+            }
+        }
+
+        &[data-ai-session-pending] .ai-session-batch-actions {
+            opacity: .65;
+            pointer-events: none;
         }
 
         .project-actions-wrapper {
