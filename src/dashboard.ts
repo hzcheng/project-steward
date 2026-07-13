@@ -14,7 +14,7 @@ import KimiSessionService from './services/kimiSessionService';
 import ClaudeSessionService from './services/claudeSessionService';
 import ProjectWindowColorService from './services/projectWindowColorService';
 import AiSessionPinStore from './aiSessions/pinStore';
-import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, getAiSessionProviderIdFromKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
+import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
 import type { AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
@@ -1943,7 +1943,7 @@ export function activate(context: vscode.ExtensionContext) {
         let activeProviders = getActiveAiSessionProviders();
         // Results are scoped to this window, so missing sessions cannot be used to prune persisted pins.
         let pinnedSessions = getPinnedAiSessionKeys();
-        let aliases = pruneAiSessionAliases(getAiSessionAliases(), sessionResults);
+        let aliases = getAiSessionAliases();
 
         return openProjects.map(project => {
             for (let providerId of AI_SESSION_PROVIDER_IDS) {
@@ -2132,19 +2132,6 @@ export function activate(context: vscode.ExtensionContext) {
             .sort((a, b) => compareAiSessionUpdatedAt(a.updatedAt, b.updatedAt))[0] || null;
     }
 
-    function addAvailableAiSessionKeys(sessionKeys: Set<string>, sessionResults: Record<AiSessionProviderId, AiSessionReadResult>) {
-        for (let providerId of AI_SESSION_PROVIDER_IDS) {
-            let sessionResult = sessionResults[providerId];
-            if (!sessionResult.available) {
-                continue;
-            }
-
-            for (let session of sessionResult.sessions) {
-                sessionKeys.add(getAiSessionPinKey(providerId, session.id));
-            }
-        }
-    }
-
     function getAiSessionPinKey(providerId: AiSessionProviderId, sessionId: string): string {
         return getAiSessionKey(providerId, sessionId);
     }
@@ -2177,30 +2164,6 @@ export function activate(context: vscode.ExtensionContext) {
             logError('Failed to read AI session aliases.', error);
             return {};
         }
-    }
-
-    function pruneAiSessionAliases(aliases: Record<string, string>, sessionResults: Record<AiSessionProviderId, AiSessionReadResult>): Record<string, string> {
-        if (!Object.keys(aliases).length) {
-            return aliases;
-        }
-
-        let availableSessionKeys = new Set<string>();
-        addAvailableAiSessionKeys(availableSessionKeys, sessionResults);
-
-        let prunedAliases: Record<string, string> = {};
-        for (let sessionKey of Object.keys(aliases)) {
-            let providerId = getProviderIdFromAiSessionPinKey(sessionKey);
-            let providerUnavailable = providerId ? !sessionResults[providerId]?.available : false;
-            if (providerUnavailable || availableSessionKeys.has(sessionKey)) {
-                prunedAliases[sessionKey] = aliases[sessionKey];
-            }
-        }
-
-        if (Object.keys(prunedAliases).length !== Object.keys(aliases).length) {
-            saveAiSessionAliases(prunedAliases);
-        }
-
-        return prunedAliases;
     }
 
     function saveAiSessionAliases(aliases: Record<string, string>) {
@@ -2244,10 +2207,6 @@ export function activate(context: vscode.ExtensionContext) {
 
     function sanitizeAiSessionAlias(value: string): string {
         return String(value || '').replace(/[\r\n]+/g, ' ').trim();
-    }
-
-    function getProviderIdFromAiSessionPinKey(sessionKey: string): AiSessionProviderId {
-        return getAiSessionProviderIdFromKey(sessionKey, isAiSessionProviderId);
     }
 
     function getActiveAiSessionProviders(): Record<string, AiSessionProviderId> {
