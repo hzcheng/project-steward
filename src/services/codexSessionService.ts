@@ -19,6 +19,7 @@ interface CodexSessionMeta {
     session_id?: string;
     cwd?: string;
     timestamp?: string;
+    isSubagent?: boolean;
 }
 
 export interface CodexSessionReadResult {
@@ -63,6 +64,10 @@ export default class CodexSessionService {
             }
 
             let meta = this.readSessionMeta(entry.id, sessionFiles);
+            if (meta?.isSubagent) {
+                continue;
+            }
+
             let previous = sessionsById.get(entry.id);
             let session: CodexSession = {
                 id: entry.id,
@@ -276,7 +281,7 @@ export default class CodexSessionService {
     private addSessionsFromFiles(sessionsById: Map<string, CodexSession>, sessionFiles: Map<string, string>) {
         for (let [sessionId] of sessionFiles) {
             let meta = this.readSessionMeta(sessionId, sessionFiles);
-            if (!meta) {
+            if (!meta || meta.isSubagent) {
                 continue;
             }
 
@@ -288,6 +293,14 @@ export default class CodexSessionService {
                 cwd: previous?.cwd || meta.cwd,
             });
         }
+    }
+
+    private isExplicitSubagentSource(source: unknown): boolean {
+        return Boolean(
+            source
+            && typeof source === 'object'
+            && Object.prototype.hasOwnProperty.call(source, 'subagent')
+        );
     }
 
     private readSessionMeta(sessionId: string, sessionFiles: Map<string, string>): CodexSessionMeta {
@@ -313,6 +326,7 @@ export default class CodexSessionService {
                 session_id: payload.session_id,
                 cwd: payload.cwd,
                 timestamp: payload.timestamp || event.timestamp,
+                isSubagent: this.isExplicitSubagentSource(payload.source),
             };
         } catch (e) {
             return null;

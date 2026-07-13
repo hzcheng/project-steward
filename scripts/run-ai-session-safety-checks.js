@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const Module = require('module');
 const os = require('os');
@@ -12,6 +13,8 @@ const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
+const CodexSessionService = require('../out/services/codexSessionService').default;
+const KimiSessionService = require('../out/services/kimiSessionService').default;
 const ClaudeSessionService = require('../out/services/claudeSessionService').default;
 const GitRepositoryDetector = require('../out/projects/gitRepositoryDetector').default;
 const projectPathUtils = require('../out/projects/projectPathUtils');
@@ -1453,6 +1456,133 @@ function hasGitAncestor(directory) {
     return false;
 }
 
+function writeCodexSessionMetaFile(sessionsDir, sessionId, payload) {
+    const sessionFile = path.join(sessionsDir, `${sessionId}.jsonl`);
+    fs.writeFileSync(sessionFile, JSON.stringify({
+        timestamp: payload.timestamp,
+        type: 'session_meta',
+        payload,
+    }) + '\n', 'utf8');
+    return sessionFile;
+}
+
+function runCodexSubagentSessionFilterChecks() {
+    const previousCodexHome = process.env.CODEX_HOME;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-codex-subagents-'));
+    const sessionsDir = path.join(tempRoot, 'sessions', '2026', '07', '13');
+    const indexedNormalId = '11111111-1111-4111-8111-111111111111';
+    const indexedSubagentId = '22222222-2222-4222-8222-222222222222';
+    const fileNormalId = '33333333-3333-4333-8333-333333333333';
+    const fileSubagentId = '44444444-4444-4444-8444-444444444444';
+    const parentOnlyId = '55555555-5555-4555-8555-555555555555';
+    const malformedIndexedId = '66666666-6666-4666-8666-666666666666';
+    try {
+        process.env.CODEX_HOME = tempRoot;
+        fs.mkdirSync(sessionsDir, { recursive: true });
+        const writeMeta = (sessionId, timestamp, extra = {}) => writeCodexSessionMetaFile(
+            sessionsDir,
+            sessionId,
+            { id: sessionId, session_id: sessionId, cwd: '/work/app', timestamp, ...extra }
+        );
+
+        writeMeta(indexedNormalId, '2026-07-13T01:00:00.000Z', { source: 'vscode' });
+        const indexedSubagentFile = writeMeta(indexedSubagentId, '2026-07-13T02:00:00.000Z', {
+            source: { subagent: { thread_spawn: { parent_thread_id: indexedNormalId, depth: 1 } } },
+            parent_thread_id: indexedNormalId,
+        });
+        writeMeta(fileNormalId, '2026-07-13T03:00:00.000Z', { source: 'vscode' });
+        const fileSubagentFile = writeMeta(fileSubagentId, '2026-07-13T04:00:00.000Z', {
+            source: { subagent: { thread_spawn: { parent_thread_id: indexedNormalId, depth: 1 } } },
+            parent_thread_id: indexedNormalId,
+        });
+        writeMeta(parentOnlyId, '2026-07-13T05:00:00.000Z', {
+            source: 'vscode',
+            parent_thread_id: indexedNormalId,
+        });
+        fs.writeFileSync(path.join(sessionsDir, `${malformedIndexedId}.jsonl`), 'not-json\n', 'utf8');
+        fs.writeFileSync(path.join(tempRoot, 'session_index.jsonl'), [
+            { id: indexedNormalId, thread_name: 'Parent', updated_at: '2026-07-13T01:00:00.000Z' },
+            { id: indexedSubagentId, thread_name: 'Worker', updated_at: '2026-07-13T02:00:00.000Z' },
+            { id: malformedIndexedId, thread_name: 'Index fallback', updated_at: '2026-07-13T06:00:00.000Z' },
+        ].map(entry => JSON.stringify(entry)).join('\n') + '\n', 'utf8');
+
+        const result = new CodexSessionService().getSessions();
+        assert.strictEqual(result.available, true);
+        assert.deepStrictEqual(new Set(result.sessions.map(session => session.id)), new Set([
+            indexedNormalId,
+            fileNormalId,
+            parentOnlyId,
+            malformedIndexedId,
+        ]));
+        assert.strictEqual(fs.existsSync(indexedSubagentFile), true);
+        assert.strictEqual(fs.existsSync(fileSubagentFile), true);
+
+        const assignments = helpers.assignAiSessionsToProjects(
+            [{ project: { id: 'app' }, path: '/work/app' }],
+            result.sessions,
+            session => session.cwd
+        );
+        assert.deepStrictEqual(
+            new Set((assignments.get('app') || []).map(session => session.id)),
+            new Set([indexedNormalId, fileNormalId, parentOnlyId])
+        );
+
+        const terminalService = new AiSessionTerminalService(
+            path.join(tempRoot, 'storage'),
+            providerId => providers.getAiSessionProviderDefinition(providerId),
+            0
+        );
+        const subagentTerminal = {
+            name: 'Codex restored',
+            creationOptions: { env: { PROJECT_STEWARD_CODEX_SESSION_ID: indexedSubagentId } },
+        };
+        assert.strictEqual(
+            terminalService.resolveTerminalSession(subagentTerminal, () => result.sessions),
+            null
+        );
+    } finally {
+        if (previousCodexHome === undefined) {
+            delete process.env.CODEX_HOME;
+        } else {
+            process.env.CODEX_HOME = previousCodexHome;
+        }
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
+function runKimiNestedSubagentBoundaryChecks() {
+    const previousKimiHome = process.env.KIMI_SHARE_DIR;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-kimi-subagents-'));
+    const workDir = '/work/app';
+    const sessionId = '77777777-7777-4777-8777-777777777777';
+    try {
+        process.env.KIMI_SHARE_DIR = tempRoot;
+        fs.writeFileSync(path.join(tempRoot, 'kimi.json'), JSON.stringify({
+            work_dirs: [{ path: workDir }],
+        }), 'utf8');
+        const workDirHash = crypto.createHash('md5').update(workDir, 'utf8').digest('hex');
+        const sessionDir = path.join(tempRoot, 'sessions', workDirHash, sessionId);
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(sessionDir, 'wire.jsonl'), '{}\n', 'utf8');
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), '{}', 'utf8');
+
+        const nestedSubagentDir = path.join(sessionDir, 'subagents', 'a12345678');
+        fs.mkdirSync(nestedSubagentDir, { recursive: true });
+        fs.writeFileSync(path.join(nestedSubagentDir, 'wire.jsonl'), '{}\n', 'utf8');
+
+        const result = new KimiSessionService().getSessions({ candidatePaths: [workDir] });
+        assert.strictEqual(result.available, true);
+        assert.deepStrictEqual(result.sessions.map(session => session.id), [sessionId]);
+    } finally {
+        if (previousKimiHome === undefined) {
+            delete process.env.KIMI_SHARE_DIR;
+        } else {
+            process.env.KIMI_SHARE_DIR = previousKimiHome;
+        }
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
 function runClaudeSessionChecks() {
     const previousClaudeHome = process.env.CLAUDE_HOME;
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-claude-'));
@@ -1468,6 +1598,14 @@ function runClaudeSessionChecks() {
         fs.writeFileSync(
             sessionFile,
             fillerLine.repeat(40) + cwdLine + fillerLine.repeat(40),
+            'utf8'
+        );
+
+        const nestedSubagentDir = path.join(sessionDir, sessionId, 'subagents');
+        fs.mkdirSync(nestedSubagentDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(nestedSubagentDir, 'agent-a1234567890abcdef.jsonl'),
+            cwdLine,
             'utf8'
         );
 
@@ -1560,6 +1698,8 @@ async function main() {
     runFavoriteDndChecks();
     runBatchAiSessionWebviewChecks();
     runGitRepositoryDetectorChecks();
+    runCodexSubagentSessionFilterChecks();
+    runKimiNestedSubagentBoundaryChecks();
     runClaudeSessionChecks();
     runProviderChecks();
     runCommandBuilderChecks();
