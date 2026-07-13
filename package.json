@@ -187,6 +187,7 @@
         "webpack-dev": "webpack --mode development --watch",
         "test-compile": "tsc -p ./",
         "test:safety": "npm run test-compile && node scripts/run-ai-session-safety-checks.js",
+        "test:release-notes": "node scripts/run-release-notes-checks.js",
         "lint": "tslint -p ./",
         "install-local": "./scripts/build-test-package-install.sh",
         "publish-marketplace": "./scripts/publish-marketplace.sh"
