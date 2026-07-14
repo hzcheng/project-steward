@@ -867,7 +867,7 @@ function initProjects() {
             projectDiv.setAttribute("data-name", projectUpdate.searchText);
         }
 
-        updateOpenProjectAiSessionBadge(projectDiv, projectUpdate.aiSessionCount || 0);
+        updateOpenProjectAiSessionBadge(projectDiv, projectUpdate.aiSessionCount || 0, projectUpdate.attentionCount || 0);
 
         var sessionSection = projectDiv.querySelector('.codex-sessions');
         if (sessionSection) {
@@ -891,7 +891,7 @@ function initProjects() {
         return true;
     }
 
-    function updateOpenProjectAiSessionBadge(projectDiv, aiSessionCount) {
+    function updateOpenProjectAiSessionBadge(projectDiv, aiSessionCount, attentionCount) {
         var badge = projectDiv.querySelector('.project-codex-badge');
         if (!aiSessionCount) {
             if (badge) {
@@ -911,6 +911,16 @@ function initProjects() {
         }
 
         badge.textContent = 'AI ' + aiSessionCount;
+        badge.classList.toggle('has-attention', !!attentionCount);
+        var attentionBadge = badge.querySelector('.ai-session-attention-count');
+        if (attentionCount && !attentionBadge) {
+            badge.insertAdjacentHTML('beforeend', ' <b class="ai-session-attention-count"></b>');
+            attentionBadge = badge.querySelector('.ai-session-attention-count');
+        }
+        if (attentionBadge) {
+            attentionBadge.textContent = attentionCount ? String(attentionCount) : '';
+            attentionBadge.hidden = !attentionCount;
+        }
     }
 
     function requestFullRefresh(reason) {

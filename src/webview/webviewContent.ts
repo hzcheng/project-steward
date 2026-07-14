@@ -352,8 +352,9 @@ function getProjectDiv(
         ? `<span data-action="save" class="project-save-badge" title="Save Current Project">${Icons.save}</span>`
         : '';
     var aiSessionCount = codexSessions.length + kimiSessions.length + claudeSessions.length;
+    var attentionCount = codexSessions.concat(kimiSessions).concat(claudeSessions).filter(session => session.attention?.unread).length;
     var aiSessionBadge = isReadOnlyProject && aiSessionCount
-        ? `<span class="project-codex-badge" title="AI Sessions">AI ${aiSessionCount}</span>`
+        ? `<span class="project-codex-badge${attentionCount ? ' has-attention' : ''}" title="AI Sessions">AI ${aiSessionCount}${attentionCount ? ` <b class="ai-session-attention-count">${attentionCount}</b>` : ''}</span>`
         : '';
     var codexSessionSection = isReadOnlyProject ? getAiSessionsDiv(project) : '';
 

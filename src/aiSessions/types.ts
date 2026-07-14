@@ -73,6 +73,7 @@ export interface OpenProjectAiSessionViewModel {
     unavailableProviders: AiSessionProviderId[];
     searchText?: string;
     aiSessionCount?: number;
+    attentionCount?: number;
     sessionSectionHtml?: string;
 }
 

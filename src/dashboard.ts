@@ -2193,6 +2193,10 @@ export function activate(context: vscode.ExtensionContext) {
                 let sessionProvider = getRegisteredAiSessionProvider(providerId);
                 return count + (project[sessionProvider.projectSessionsKey] || []).length;
             }, 0),
+            attentionCount: AI_SESSION_PROVIDER_IDS.reduce((count, providerId) => {
+                const sessionProvider = getRegisteredAiSessionProvider(providerId);
+                return count + (project[sessionProvider.projectSessionsKey] || []).filter(session => session.attention?.unread).length;
+            }, 0),
             sessionSectionHtml: getAiSessionsDiv(project),
         };
     }
