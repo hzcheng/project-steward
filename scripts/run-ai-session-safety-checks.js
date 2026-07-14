@@ -12,6 +12,7 @@ const helpers = require('../out/aiSessions/sessionHelpers');
 const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
 const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').default;
+const attentionPayload = require('../out/aiSessions/attentionPayload');
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
 const CodexSessionService = require('../out/services/codexSessionService').default;
@@ -1704,6 +1705,12 @@ function runAttentionMonitorChecks() {
     assert.strictEqual(monitor.evaluate([]).length, 0);
 }
 
+function runAttentionPayloadChecks() {
+    const payload = attentionPayload.createAttentionPayload([{ projectId: 'p', sessionKey: 'k', state: 'needsAttention', eventId: 'e', reason: 'quiet', observedAtMs: 10 }], 20);
+    assert.deepStrictEqual(attentionPayload.parseAttentionPayload(attentionPayload.serializeAttentionPayload(payload)), payload);
+    assert.throws(() => attentionPayload.parseAttentionPayload('{"version":1,"generatedAtMs":1,"items":[{"projectId":"p","sessionKey":"k","state":"bad","observedAtMs":1}]}'));
+}
+
 function runVsixPackagingChecks() {
     const vscodeIgnore = fs.readFileSync(path.join(__dirname, '..', '.vscodeignore'), 'utf8');
     assert.ok(
@@ -1738,6 +1745,7 @@ async function main() {
     runProviderChecks();
     runCommandBuilderChecks();
     runAttentionMonitorChecks();
+    runAttentionPayloadChecks();
     runVsixPackagingChecks();
 
     console.log('AI session safety checks passed.');
