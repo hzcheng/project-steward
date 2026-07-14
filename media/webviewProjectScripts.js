@@ -797,6 +797,14 @@ function initProjects() {
             return;
         }
 
+        if (message && message.type === 'ai-session-attention-state') {
+            window.__projectStewardAttentionEvents = window.__projectStewardAttentionEvents || {};
+            (message.eventIds || []).forEach(eventId => {
+                if (typeof eventId === 'string') window.__projectStewardAttentionEvents[eventId] = true;
+            });
+            return;
+        }
+
         if (message && message.type === 'ai-session-batch-archive-completed') {
             if (message.projectId === batchAiSessionState.projectId
                 && message.provider === batchAiSessionState.provider) {
@@ -1014,6 +1022,7 @@ function initProjects() {
 
     window.addEventListener('message', onWindowMessage);
     window.vscode.postMessage({ type: 'request-active-ai-session-terminal' });
+    window.vscode.postMessage({ type: 'request-ai-session-attention-state' });
 
     observeStickyGroupHeaderOffset();
 }

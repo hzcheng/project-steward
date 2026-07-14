@@ -655,6 +655,14 @@ export function activate(context: vscode.ExtensionContext) {
             case 'request-active-ai-session-terminal':
                 activeAiSessionTerminalHighlighter.request();
                 break;
+            case 'request-ai-session-attention-state':
+                provider.postMessage({
+                    type: 'ai-session-attention-state',
+                    eventIds: Object.values(aiSessionAttentionMonitor.getSnapshot())
+                        .map(snapshot => snapshot.event?.eventId)
+                        .filter((id): id is string => Boolean(id)),
+                });
+                break;
             case 'open-settings':
                 await showProjectStewardSettings();
                 break;

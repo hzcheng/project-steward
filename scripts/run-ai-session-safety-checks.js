@@ -1169,6 +1169,10 @@ function runBatchAiSessionWebviewChecks() {
     assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.shift())), {
         type: 'request-active-ai-session-terminal',
     });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.shift())), {
+        type: 'request-ai-session-attention-state',
+    });
+    messages.length = 0;
 
     windowEventListeners.message({ data: {
         type: 'active-ai-session-terminal-changed',
