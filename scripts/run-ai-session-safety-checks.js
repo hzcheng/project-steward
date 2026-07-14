@@ -13,6 +13,7 @@ const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
 const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').default;
 const attentionPayload = require('../out/aiSessions/attentionPayload');
+const attentionAggregate = require('../out/aiSessions/attentionAggregate');
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
 const CodexSessionService = require('../out/services/codexSessionService').default;
@@ -1709,6 +1710,12 @@ function runAttentionPayloadChecks() {
     const payload = attentionPayload.createAttentionPayload([{ projectId: 'p', sessionKey: 'k', state: 'needsAttention', eventId: 'e', reason: 'quiet', observedAtMs: 10 }], 20);
     assert.deepStrictEqual(attentionPayload.parseAttentionPayload(attentionPayload.serializeAttentionPayload(payload)), payload);
     assert.throws(() => attentionPayload.parseAttentionPayload('{"version":1,"generatedAtMs":1,"items":[{"projectId":"p","sessionKey":"k","state":"bad","observedAtMs":1}]}'));
+    const owner = attentionPayload.validateAttentionOwnerSnapshot({ ...payload, instanceId: 'a'.repeat(32), sequence: 1, leaseUpdatedAtMs: 20 });
+    const aggregate = attentionAggregate.aggregateAttentionSnapshots([owner], new Set(['e']), 21);
+    assert.strictEqual(aggregate.items.length, 1);
+    assert.strictEqual(aggregate.items[0].state, 'acknowledged');
+    assert.strictEqual(aggregate.revision.length, 64);
+    assert.deepStrictEqual(attentionAggregate.aggregateAttentionSnapshots([owner], new Set(), 100001, 10).items, []);
 }
 
 function runVsixPackagingChecks() {

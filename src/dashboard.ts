@@ -16,6 +16,9 @@ import ProjectWindowColorService from './services/projectWindowColorService';
 import AiSessionPinStore from './aiSessions/pinStore';
 import ActiveAiSessionTerminalHighlighter from './aiSessions/activeTerminalHighlight';
 import AiSessionAttentionMonitor from './aiSessions/attentionMonitor';
+import AttentionBridgeClient, { createAttentionWorkspaceIdentity } from './aiSessions/attentionBridgeClient';
+import type { AttentionAggregate } from './aiSessions/attentionAggregate';
+import type { AttentionPayloadItem } from './aiSessions/attentionPayload';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
@@ -120,7 +123,19 @@ export function activate(context: vscode.ExtensionContext) {
     let aiSessionWatcherDisposables: { dispose(): void }[] = [];
     let aiSessionUpdateSequence = 0;
     const aiSessionAttentionMonitor = new AiSessionAttentionMonitor();
-    const aiSessionAttentionInterval = setInterval(() => evaluateAiSessionAttention(), 10_000);
+    let aiSessionAttentionAggregate: AttentionAggregate | null = null;
+    const aiSessionAttentionBridgeClient = new AttentionBridgeClient(
+        createAttentionWorkspaceIdentity((vscode.workspace.workspaceFolders || []).map(folder => folder.uri.path)),
+        aggregate => {
+            if (aggregate.revision !== aiSessionAttentionAggregate?.revision) {
+                aiSessionAttentionAggregate = aggregate;
+                scheduleAiSessionRefresh();
+            }
+        },
+        error => logError('AI session attention bridge unavailable; using local-window monitoring.', error)
+    );
+    const aiSessionAttentionInterval = setInterval(() => { void evaluateAiSessionAttention(); }, 10_000);
+    setTimeout(() => { void evaluateAiSessionAttention(); }, 0);
 
     const provider = new SidebarStewardViewProvider();
     const activeAiSessionTerminalHighlighter = new ActiveAiSessionTerminalHighlighter<
@@ -150,6 +165,7 @@ export function activate(context: vscode.ExtensionContext) {
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
         }));
     context.subscriptions.push(activeAiSessionTerminalHighlighter);
+    context.subscriptions.push(aiSessionAttentionBridgeClient);
     context.subscriptions.push({
         dispose: () => {
             stopAiSessionWatchers();
@@ -411,9 +427,17 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
 
-    function evaluateAiSessionAttention() {
+    async function evaluateAiSessionAttention() {
+        if (getStewardConfiguration().get<boolean>('aiSessionAttention.enabled', true) === false) {
+            aiSessionAttentionMonitor.evaluate([]);
+            aiSessionAttentionAggregate = null;
+            await aiSessionAttentionBridgeClient.publish([], true);
+            scheduleAiSessionRefresh();
+            return;
+        }
         const inputs: Array<{ key: string; activityToken?: string; completed?: boolean }> = [];
-        for (const project of getOpenProjects()) {
+        const projects = getOpenProjects();
+        for (const project of projects) {
             for (const providerId of AI_SESSION_PROVIDER_IDS) {
                 const definition = getRegisteredAiSessionProvider(providerId);
                 for (const session of project[definition.projectSessionsKey] || []) {
@@ -430,6 +454,26 @@ export function activate(context: vscode.ExtensionContext) {
         if (aiSessionAttentionMonitor.evaluate(inputs).length) {
             scheduleAiSessionRefresh();
         }
+        const snapshot = aiSessionAttentionMonitor.getSnapshot();
+        const items: AttentionPayloadItem[] = [];
+        for (const project of projects) {
+            for (const providerId of AI_SESSION_PROVIDER_IDS) {
+                const definition = getRegisteredAiSessionProvider(providerId);
+                for (const session of project[definition.projectSessionsKey] || []) {
+                    const attention = snapshot[getAiSessionKey(providerId, session.id)];
+                    if (!attention?.event) continue;
+                    items.push({
+                        projectId: project.id,
+                        sessionKey: getAiSessionKey(providerId, session.id),
+                        state: attention.state === 'needsAttention' ? 'needsAttention' : 'acknowledged',
+                        eventId: attention.event.eventId,
+                        reason: attention.event.reason,
+                        observedAtMs: attention.event.detectedAt,
+                    });
+                }
+            }
+        }
+        await aiSessionAttentionBridgeClient.publish(items);
     }
 
     function startAiSessionWatchers() {
@@ -640,7 +684,9 @@ export function activate(context: vscode.ExtensionContext) {
                 await toggleAiSessionPin(e.provider as AiSessionProviderId, e.sessionId as string);
                 break;
             case 'acknowledge-ai-session-attention':
-                aiSessionAttentionMonitor.acknowledge(Array.isArray(e.eventIds) ? e.eventIds.filter((id: unknown): id is string => typeof id === 'string') : []);
+                const attentionEventIds = Array.isArray(e.eventIds) ? e.eventIds.filter((id: unknown): id is string => typeof id === 'string') : [];
+                aiSessionAttentionMonitor.acknowledge(attentionEventIds);
+                await aiSessionAttentionBridgeClient.acknowledge(attentionEventIds);
                 refreshAiSessionViewsIncrementally();
                 break;
             case 'rename-ai-session':
@@ -2148,12 +2194,18 @@ export function activate(context: vscode.ExtensionContext) {
                 let sessionResult = sessionResults[providerId];
                 project[sessionProvider.projectSessionsKey] = prepareAiSessionsForDisplay(assignments[providerId].get(project.id) || [], providerId, pinnedSessions, aliases).map(session => {
                     const attention = aiSessionAttentionMonitor.getSnapshot()[getAiSessionKey(providerId, session.id)];
-                    return attention?.event ? {
+                    const aggregateAttention = aiSessionAttentionAggregate?.items.find(item =>
+                        item.sessionKey === getAiSessionKey(providerId, session.id) && item.state === 'needsAttention');
+                    const event = aggregateAttention ? {
+                        eventId: aggregateAttention.eventId || `${aggregateAttention.sessionKey}:${aggregateAttention.observedAtMs}`,
+                        reason: aggregateAttention.reason || 'quiet' as const,
+                    } : attention?.event;
+                    return event ? {
                         ...session,
                         attention: {
-                            eventId: attention.event.eventId,
-                            reason: attention.event.reason,
-                            unread: attention.state === 'needsAttention',
+                            eventId: event.eventId,
+                            reason: event.reason,
+                            unread: Boolean(aggregateAttention || attention?.state === 'needsAttention'),
                         },
                     } : session;
                 });

@@ -8,7 +8,7 @@
     "extensionKind": ["workspace"],
     "activationEvents": ["*"],
     "main": "./dist/extension.js",
-    "extensionDependencies": ["hzcheng.project-steward-attention-ui-bridge-probe"],
+    "extensionDependencies": ["hzcheng.project-steward-attention-ui-bridge"],
     "contributes": {
         "commands": [
             { "command": "projectStewardAttentionSpike.startRouting", "title": "Project Steward Attention Spike: Start Routing Challenge" },

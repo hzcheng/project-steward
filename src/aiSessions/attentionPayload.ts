@@ -1,6 +1,8 @@
 'use strict';
 
 export const ATTENTION_PAYLOAD_VERSION = 1;
+export const MAX_ATTENTION_ITEMS = 1000;
+export const MAX_ATTENTION_ID_LENGTH = 512;
 
 export interface AttentionPayloadItem {
     projectId: string;
@@ -15,6 +17,12 @@ export interface AttentionPayload {
     version: 1;
     generatedAtMs: number;
     items: AttentionPayloadItem[];
+}
+
+export interface AttentionOwnerSnapshot extends AttentionPayload {
+    instanceId: string;
+    sequence: number;
+    leaseUpdatedAtMs: number;
 }
 
 export function createAttentionPayload(items: AttentionPayloadItem[], generatedAtMs = Date.now()): AttentionPayload {
@@ -39,11 +47,12 @@ export function validateAttentionPayload(value: unknown): AttentionPayload {
     if (payload.version !== ATTENTION_PAYLOAD_VERSION || typeof payload.generatedAtMs !== 'number' || !Number.isFinite(payload.generatedAtMs)) {
         throw new Error('invalid attention payload header');
     }
-    if (!Array.isArray(payload.items)) throw new Error('attention payload items must be an array');
+    if (!Array.isArray(payload.items) || payload.items.length > MAX_ATTENTION_ITEMS) throw new Error('attention payload items must be a bounded array');
     const items = payload.items.map(item => {
         if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('attention item must be an object');
         const record = item as Record<string, unknown>;
-        if (typeof record.projectId !== 'string' || !record.projectId || typeof record.sessionKey !== 'string' || !record.sessionKey) {
+        if (typeof record.projectId !== 'string' || !record.projectId || record.projectId.length > MAX_ATTENTION_ID_LENGTH
+            || typeof record.sessionKey !== 'string' || !record.sessionKey || record.sessionKey.length > MAX_ATTENTION_ID_LENGTH) {
             throw new Error('attention item identity is invalid');
         }
         if (record.state !== 'needsAttention' && record.state !== 'acknowledged') throw new Error('attention item state is invalid');
@@ -60,4 +69,13 @@ export function validateAttentionPayload(value: unknown): AttentionPayload {
         } as AttentionPayloadItem;
     });
     return { version: 1, generatedAtMs: payload.generatedAtMs, items };
+}
+
+export function validateAttentionOwnerSnapshot(value: unknown): AttentionOwnerSnapshot {
+    const payload = validateAttentionPayload(value);
+    const record = value as Record<string, unknown>;
+    if (typeof record.instanceId !== 'string' || !/^[a-f0-9]{32}$/.test(record.instanceId)) throw new Error('invalid attention owner instanceId');
+    if (typeof record.sequence !== 'number' || !Number.isSafeInteger(record.sequence) || record.sequence < 0) throw new Error('invalid attention owner sequence');
+    if (typeof record.leaseUpdatedAtMs !== 'number' || !Number.isFinite(record.leaseUpdatedAtMs) || record.leaseUpdatedAtMs < 0) throw new Error('invalid attention owner lease');
+    return { ...payload, instanceId: record.instanceId, sequence: record.sequence, leaseUpdatedAtMs: record.leaseUpdatedAtMs };
 }

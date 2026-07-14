@@ -2,7 +2,7 @@ export const STORE_PROTOCOL_VERSION = 1;
 export const LEASE_MS = 90_000;
 export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_WORKSPACE_IDENTITY_LENGTH = 8192;
-export const MAX_PAYLOAD_LENGTH = 1024;
+export const MAX_PAYLOAD_LENGTH = 200 * 1024;
 
 const ID_PATTERN = /^[a-f0-9]{32}$/;
 

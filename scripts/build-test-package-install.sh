@@ -26,6 +26,7 @@ fi
 EXT_NAME="$(node -p "require('./package.json').name")"
 EXT_VERSION="$(node -p "require('./package.json').version")"
 VSIX_FILE="${EXT_NAME}-${EXT_VERSION}.vsix"
+BRIDGE_VSIX="spikes/attention-local-bridge/artifacts/project-steward-attention-ui-bridge-0.1.0.vsix"
 
 run_step() {
     echo
@@ -43,10 +44,12 @@ fi
 run_step npm run test-compile
 run_step npm run lint
 run_step npm run vscode:prepublish
+run_step npm run spike:attention:package
 
 rm -f "$VSIX_FILE"
 run_step npx --yes @vscode/vsce package --allow-star-activation --out "$VSIX_FILE"
+run_step "$CODE_CMD" --install-extension "$BRIDGE_VSIX" --force
 run_step "$CODE_CMD" --install-extension "$VSIX_FILE" --force
 
 echo
-echo "Installed $VSIX_FILE with $CODE_CMD."
+echo "Installed $BRIDGE_VSIX and $VSIX_FILE with $CODE_CMD."

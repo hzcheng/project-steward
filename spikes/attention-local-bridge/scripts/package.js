@@ -9,7 +9,7 @@ const artifactsDirectory = path.join(spikeRoot, 'artifacts');
 const packages = [
     {
         extensionDirectory: path.join(spikeRoot, 'ui-bridge'),
-        artifactPath: 'artifacts/project-steward-attention-ui-bridge-probe-0.0.3.vsix',
+        artifactPath: 'artifacts/project-steward-attention-ui-bridge-0.1.0.vsix',
     },
     {
         extensionDirectory: path.join(spikeRoot, 'workspace'),

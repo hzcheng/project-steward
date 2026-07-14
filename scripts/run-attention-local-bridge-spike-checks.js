@@ -256,7 +256,7 @@ async function runLocalStoreChecks() {
         { ...validSnapshot, sentAtMs: Infinity },
         { ...validSnapshot, writtenAtMs: -1 },
         { ...validSnapshot, payload: '' },
-        { ...validSnapshot, payload: 'x'.repeat(1025) },
+        { ...validSnapshot, payload: 'x'.repeat(storeProtocol.MAX_PAYLOAD_LENGTH + 1) },
     ]) {
         assert.throws(() => storeProtocol.validateSnapshot(invalidSnapshot));
     }
@@ -327,7 +327,7 @@ function readText(relativePath) {
 function runArtifactContractChecks() {
     const packageScript = readText('spikes/attention-local-bridge/scripts/package.js');
     const expectedArtifactPaths = [
-        'artifacts/project-steward-attention-ui-bridge-probe-0.0.3.vsix',
+        'artifacts/project-steward-attention-ui-bridge-0.1.0.vsix',
         'artifacts/project-steward-attention-workspace-probe-0.0.5.vsix',
     ];
     const namedArtifactPaths = packageScript.match(/artifacts\/[^'"`\s]+\.vsix/g) || [];
@@ -394,11 +394,11 @@ function runManifestChecks() {
     const workspace = readJson('spikes/attention-local-bridge/workspace/package.json');
     const bridge = readJson('spikes/attention-local-bridge/ui-bridge/package.json');
     assert.strictEqual(workspace.version, '0.0.5');
-    assert.strictEqual(bridge.version, '0.0.3');
+    assert.strictEqual(bridge.version, '0.1.0');
     assert.deepStrictEqual(workspace.extensionKind, ['workspace']);
     assert.deepStrictEqual(bridge.extensionKind, ['ui']);
     assert.strictEqual(bridge.api, 'none');
-    assert.deepStrictEqual(workspace.extensionDependencies, ['hzcheng.project-steward-attention-ui-bridge-probe']);
+    assert.deepStrictEqual(workspace.extensionDependencies, ['hzcheng.project-steward-attention-ui-bridge']);
     assert.ok(workspace.contributes.commands.some(command => command.command === 'projectStewardAttentionSpike.startRouting'));
     assert.ok(workspace.contributes.commands.some(command => command.command === 'projectStewardAttentionSpike.startSameWorkspaceRouting'));
     assert.ok(workspace.contributes.commands.some(command => command.command === 'projectStewardAttentionSpike.showStatus'));

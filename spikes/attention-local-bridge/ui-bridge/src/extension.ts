@@ -15,6 +15,9 @@ const BRIDGE_STATUS = '_projectStewardAttentionSpike.bridge.status';
 const BRIDGE_SET_WATCHER = '_projectStewardAttentionSpike.bridge.setWatcher';
 const BRIDGE_CLEAR = '_projectStewardAttentionSpike.bridge.clear';
 const WORKSPACE_AGGREGATE = '_projectStewardAttentionSpike.workspace.aggregate';
+const PRODUCTION_BRIDGE_PUBLISH = '_projectStewardAttention.bridge.publish';
+const PRODUCTION_WORKSPACE_AGGREGATE = '_projectStewardAttention.workspace.aggregate';
+const PRODUCTION_BRIDGE_ACKNOWLEDGE = '_projectStewardAttention.bridge.acknowledge';
 
 interface AggregateState {
     bridgeProcessId: string;
@@ -38,17 +41,33 @@ export function activate(context: vscode.ExtensionContext): void {
     let fsWatcher: fs.FSWatcher | null = null;
     let lastAggregate = '';
     let scanTimer: NodeJS.Timeout | null = null;
+    const acknowledgedEventIds = new Set<string>();
+
+    function applyAcknowledgements(snapshots: ProbeSnapshot[]): ProbeSnapshot[] {
+        return snapshots.map(snapshot => {
+            try {
+                const owner = JSON.parse(snapshot.payload) as { items?: Array<Record<string, unknown>> };
+                if (!Array.isArray(owner.items)) return snapshot;
+                owner.items = owner.items.map(item => typeof item.eventId === 'string' && acknowledgedEventIds.has(item.eventId)
+                    ? { ...item, state: 'acknowledged' }
+                    : item);
+                return { ...snapshot, payload: JSON.stringify(owner) };
+            } catch (_error) {
+                return snapshot;
+            }
+        });
+    }
 
     async function scanAndNotify(): Promise<void> {
         if (store === null) {
             return;
         }
         const scan = await store.scan(Date.now());
-        const semantic = JSON.stringify(scan.snapshots.map(snapshot => ({
+        const semantic = `${JSON.stringify(scan.snapshots.map(snapshot => ({
             instanceId: snapshot.instanceId,
             sequence: snapshot.sequence,
             payload: snapshot.payload,
-        })));
+        })))}|${JSON.stringify(Array.from(acknowledgedEventIds).sort())}`;
         if (semantic === lastAggregate) {
             return;
         }
@@ -56,11 +75,15 @@ export function activate(context: vscode.ExtensionContext): void {
         const aggregate: AggregateState = {
             bridgeProcessId,
             workspaceIdentity,
-            snapshots: scan.snapshots,
+            snapshots: applyAcknowledgements(scan.snapshots),
             counters: scan.counters,
             observedAtMs: Date.now(),
         };
         await vscode.commands.executeCommand(WORKSPACE_AGGREGATE, aggregate);
+        await vscode.commands.executeCommand(PRODUCTION_WORKSPACE_AGGREGATE, {
+            snapshots: applyAcknowledgements(scan.snapshots),
+            observedAtMs: aggregate.observedAtMs,
+        });
     }
 
     const challengeDisposable = vscode.commands.registerCommand(BRIDGE_CHALLENGE, async (raw: unknown) => {
@@ -87,9 +110,28 @@ export function activate(context: vscode.ExtensionContext): void {
         if (store === null) {
             throw new Error(`globalStorageUri must use file scheme, got ${context.globalStorageUri.scheme}`);
         }
-        await store.write(raw as ProbeSnapshot);
+        await store.writeForeign(raw as ProbeSnapshot);
         await scanAndNotify();
         return { accepted: true, bridgeProcessId, instanceId };
+    });
+    const productionPublishDisposable = vscode.commands.registerCommand(PRODUCTION_BRIDGE_PUBLISH, async (raw: unknown) => {
+        if (store === null) throw new Error(`globalStorageUri must use file scheme, got ${context.globalStorageUri.scheme}`);
+        await store.writeForeign(raw as ProbeSnapshot);
+        const scan = await store.scan(Date.now());
+        await vscode.commands.executeCommand(PRODUCTION_WORKSPACE_AGGREGATE, {
+            snapshots: applyAcknowledgements(scan.snapshots),
+            observedAtMs: Date.now(),
+        });
+        return { accepted: true, bridgeProcessId, instanceId };
+    });
+    const productionAcknowledgeDisposable = vscode.commands.registerCommand(PRODUCTION_BRIDGE_ACKNOWLEDGE, async (raw: unknown) => {
+        const eventIds = (raw as { eventIds?: unknown })?.eventIds;
+        if (!Array.isArray(eventIds) || eventIds.some(id => typeof id !== 'string' || id.length === 0 || id.length > 1024)) {
+            throw new Error('attention acknowledgement eventIds are invalid');
+        }
+        eventIds.forEach(id => acknowledgedEventIds.add(id as string));
+        await scanAndNotify();
+        return { acknowledged: eventIds.length };
     });
     const statusDisposable = vscode.commands.registerCommand(BRIDGE_STATUS, async () => {
         const scan = store === null ? null : await store.scan(Date.now());
@@ -140,6 +182,8 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         challengeDisposable,
         publishDisposable,
+        productionPublishDisposable,
+        productionAcknowledgeDisposable,
         statusDisposable,
         watcherDisposable,
         clearDisposable,

@@ -13,6 +13,9 @@
         "workspace",
         "ui"
     ],
+    "extensionDependencies": [
+        "hzcheng.project-steward-attention-ui-bridge"
+    ],
     "categories": [
         "Other"
     ],
@@ -107,6 +110,11 @@
                     "default": 3,
                     "minimum": 1,
                     "markdownDescription": "Maximum number of AI session rows visible in an expanded project card before the session list scrolls."
+                },
+                "projectSteward.aiSessionAttention.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show attention indicators when Project Steward AI sessions finish or may need input."
                 },
                 "projectSteward.displayProjectPath": {
                     "type": "boolean",

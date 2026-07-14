@@ -35,6 +35,7 @@ export class LocalStore {
     private readonly instancesDirectory: string;
     private readonly cache = new Map<string, CachedSnapshot>();
     private lastWrittenSequence = -1;
+    private readonly foreignSequences = new Map<string, number>();
 
     public constructor(
         private readonly rootDirectory: string,
@@ -52,6 +53,19 @@ export class LocalStore {
         if (validated.sequence < this.lastWrittenSequence) {
             throw new Error('snapshot sequence decreased');
         }
+        await this.writeValidated(validated);
+        this.lastWrittenSequence = validated.sequence;
+    }
+
+    public async writeForeign(snapshot: ProbeSnapshot): Promise<void> {
+        const validated = validateSnapshot(snapshot);
+        const previous = this.foreignSequences.get(validated.instanceId) ?? -1;
+        if (validated.sequence < previous) throw new Error('snapshot sequence decreased');
+        await this.writeValidated(validated);
+        this.foreignSequences.set(validated.instanceId, validated.sequence);
+    }
+
+    private async writeValidated(validated: ProbeSnapshot): Promise<void> {
         await fs.promises.mkdir(this.instancesDirectory, { recursive: true, mode: 0o700 });
         const finalPath = path.join(this.instancesDirectory, createSnapshotFileName(validated.instanceId));
         const temporaryPath = path.join(
@@ -61,7 +75,6 @@ export class LocalStore {
         try {
             await fs.promises.writeFile(temporaryPath, `${JSON.stringify(validated)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
             await fs.promises.rename(temporaryPath, finalPath);
-            this.lastWrittenSequence = validated.sequence;
             this.cache.set(validated.instanceId, { snapshot: validated, seenAtMs: validated.sentAtMs });
         } catch (error) {
             try {
