@@ -23,7 +23,10 @@ export function aggregateAttentionSnapshots(
             const candidate: AttentionPayloadItem = acknowledged ? { ...item, state: 'acknowledged' } : { ...item };
             const previous = bySession.get(item.sessionKey);
             if (!previous || candidate.observedAtMs > previous.observedAtMs
-                || (candidate.observedAtMs === previous.observedAtMs && candidate.projectId < previous.projectId)) {
+                || (candidate.observedAtMs === previous.observedAtMs
+                    && candidate.state === 'acknowledged' && previous.state !== 'acknowledged')
+                || (candidate.observedAtMs === previous.observedAtMs
+                    && candidate.state === previous.state && candidate.projectId < previous.projectId)) {
                 bySession.set(item.sessionKey, candidate);
             }
         }

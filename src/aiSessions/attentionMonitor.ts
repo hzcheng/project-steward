@@ -63,7 +63,7 @@ export default class AiSessionAttentionMonitor {
             if (changed) {
                 entry.lastToken = input.activityToken;
                 entry.lastActivityAt = observedAt;
-                if (entry.state === 'pending' || entry.state === 'acknowledged') entry.state = 'running';
+                if (entry.state === 'pending' || entry.state === 'acknowledged' || entry.state === 'needsAttention') entry.state = 'running';
             }
             if (entry.state === 'running' && (input.completed || now - entry.lastActivityAt >= this.quietThresholdMs)) {
                 entry.state = 'needsAttention';

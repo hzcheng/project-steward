@@ -42,11 +42,11 @@ export function getAttentionProjectSummaries(aggregate: AttentionAggregate | nul
         .sort((left, right) => left.projectKey.localeCompare(right.projectKey));
 }
 
-export function withAttentionProject<TProject extends { path?: string }>(
+export function withAttentionProject<TProject extends { path?: string; attentionProjectPath?: string }>(
     project: TProject,
     aggregate: AttentionAggregate | null
 ): TProject & { aiSessionAttentionCount: number; aiSessionAttentionEventIds: string[] } {
-    const projectKey = getAttentionProjectKey(project.path);
+    const projectKey = getAttentionProjectKey(project.attentionProjectPath || project.path);
     const summary = getAttentionProjectSummaries(aggregate).find(candidate => candidate.projectKey === projectKey);
     return {
         ...project,

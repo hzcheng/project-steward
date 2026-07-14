@@ -355,7 +355,7 @@ function getProjectDiv(
     var aiSessionCount = codexSessions.length + kimiSessions.length + claudeSessions.length;
     var attentionCount = codexSessions.concat(kimiSessions).concat(claudeSessions).filter(session => session.attention?.unread).length;
     var projectAttentionCount = project.aiSessionAttentionCount ?? attentionCount;
-    var attentionProjectKey = getAttentionProjectKey(project.path);
+    var attentionProjectKey = getAttentionProjectKey(project.attentionProjectPath || project.path);
     var projectAttentionBadge = projectAttentionCount
         ? `<span class="project-ai-attention-badge" title="${projectAttentionCount} AI session${projectAttentionCount === 1 ? ' needs' : 's need'} attention">${projectAttentionCount}</span>`
         : '';
@@ -514,6 +514,9 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
     var providerLabel = getAiProviderLabel(provider);
     var pinned = !!session.pinned;
     var needsAttention = !!session.attention?.unread;
+    var attentionIndicator = needsAttention
+        ? '<span class="ai-session-attention-indicator" title="AI session needs attention" aria-label="AI session needs attention"></span>'
+        : '';
     var pinTitle = pinned ? 'Unpin Session' : 'Pin Session';
     var batchCheckbox = `<input type="checkbox" class="ai-session-batch-checkbox" aria-label="Select ${sessionName}">`;
     var pinAction = `<button type="button" class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}" aria-label="${pinTitle}">${Icons.pin}</button>`;
@@ -521,6 +524,7 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
 
     return `
 <div class="codex-session-row"${pinned ? ' data-session-pinned' : ''}${needsAttention ? ' data-ai-session-attention data-session-event-id="' + escapeAttribute(session.attention.eventId) + '"' : ''} data-session-id="${sessionId}" data-session-provider="${provider}" title="Resume ${providerLabel} Session">
+    ${attentionIndicator}
     ${batchCheckbox}
     <span class="codex-session-icon">${Icons.terminalLine}</span>
     <span class="codex-session-text">

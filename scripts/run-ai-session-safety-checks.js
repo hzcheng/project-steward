@@ -36,7 +36,9 @@ Module._load = function (request, parent, isMain) {
     return originalModuleLoad.call(this, request, parent, isMain);
 };
 const AiSessionTerminalService = require('../out/aiSessions/terminalService').default;
+const models = require('../out/models');
 const openProjectMatcher = require('../out/projects/openProjectMatcher');
+const openProjectService = require('../out/projects/openProjectService');
 const webviewContentModule = require('../out/webview/webviewContent');
 Module._load = originalModuleLoad;
 
@@ -228,6 +230,28 @@ function runCurrentWorkspaceMatchingChecks() {
     ], 'ssh-remote'), ['ssh']);
     assert.deepStrictEqual(resolveIds([createTestFileUri('/missing')]), []);
     assert.deepStrictEqual(resolveIds([]), []);
+}
+
+function runOpenProjectAttentionIdentityChecks() {
+    const savedRemotePath = 'vscode-remote://dev-container+fixture/work/app';
+    const openProjects = openProjectService.getOpenProjectsFromWorkspace(
+        null,
+        [{ uri: createTestFileUri('/work/app'), name: 'app' }],
+        {
+            savedProjects: [{
+                id: 'saved-remote',
+                name: 'App',
+                path: savedRemotePath,
+                remoteType: models.ProjectRemoteType.DevContainer,
+            }],
+            currentRemoteName: 'dev-container',
+            isFolderGitRepo: () => true,
+        }
+    );
+
+    assert.strictEqual(openProjects.length, 1);
+    assert.strictEqual(openProjects[0].path, '/work/app');
+    assert.strictEqual(openProjects[0].attentionProjectPath, savedRemotePath);
 }
 
 function runCandidateFilterChecks() {
@@ -687,7 +711,10 @@ function runWebviewContentChecks() {
     assert.ok(webviewProjectScripts.includes(".project[data-attention-project-key]"));
     assert.ok(webviewProjectScripts.includes("project-ai-attention-badge"));
     assert.ok(styles.includes('.project-ai-attention-badge'));
-    assert.ok(evaluateAttentionFunction.includes('getAttentionProjectKey(project.path)'));
+    assert.ok(webviewContent.includes('getAttentionProjectKey(project.attentionProjectPath || project.path)'));
+    assert.ok(webviewContent.includes('class="ai-session-attention-indicator"'));
+    assert.ok(styles.includes('.ai-session-attention-indicator'));
+    assert.ok(evaluateAttentionFunction.includes('getAttentionProjectKey(project.attentionProjectPath || project.path)'));
     assert.ok(evaluateAttentionFunction.includes('projectId: projectKey'));
     assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
     assert.ok(dashboard.includes("type: 'ai-session-attention-projects-updated'"));
@@ -1883,6 +1910,23 @@ function runAttentionMonitorChecks() {
     events = monitor.evaluate([{ key: 'codex:s1', activityToken: 'c', completed: true }]);
     assert.strictEqual(events[0].reason, 'completed');
     assert.strictEqual(monitor.evaluate([]).length, 0);
+
+    now = 100;
+    monitor = new AiSessionAttentionMonitor({ quietThresholdMs: 30, now: () => now });
+    monitor.evaluate([{ key: 'codex:resumes', activityToken: 'a' }]);
+    now = 101;
+    monitor.evaluate([{ key: 'codex:resumes', activityToken: 'b' }]);
+    now = 131;
+    events = monitor.evaluate([{ key: 'codex:resumes', activityToken: 'b' }]);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(monitor.getSnapshot()['codex:resumes'].state, 'needsAttention');
+    now = 132;
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:resumes', activityToken: 'c' }]), []);
+    assert.strictEqual(monitor.getSnapshot()['codex:resumes'].state, 'running');
+    now = 162;
+    events = monitor.evaluate([{ key: 'codex:resumes', activityToken: 'c' }]);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].generation, 2);
 }
 
 function runAttentionPayloadChecks() {
@@ -1895,6 +1939,15 @@ function runAttentionPayloadChecks() {
     assert.strictEqual(aggregate.items[0].state, 'acknowledged');
     assert.strictEqual(aggregate.revision.length, 64);
     assert.deepStrictEqual(attentionAggregate.aggregateAttentionSnapshots([owner], new Set(), 100001, 10).items, []);
+
+    const acknowledgedOwner = attentionPayload.validateAttentionOwnerSnapshot({
+        ...owner,
+        instanceId: 'b'.repeat(32),
+        items: owner.items.map(item => ({ ...item, state: 'acknowledged' })),
+    });
+    const deduplicated = attentionAggregate.aggregateAttentionSnapshots([owner, acknowledgedOwner], new Set(), 21);
+    assert.strictEqual(deduplicated.items.length, 1);
+    assert.strictEqual(deduplicated.items[0].state, 'acknowledged');
 }
 
 function runAttentionProjectChecks() {
@@ -1930,6 +1983,26 @@ function runAttentionProjectChecks() {
     assert.strictEqual(annotated.aiSessionAttentionCount, 1);
     assert.deepStrictEqual(annotated.aiSessionAttentionEventIds, ['event-1']);
     assert.strictEqual(project.aiSessionAttentionCount, undefined);
+
+    const remotePath = 'vscode-remote://dev-container+fixture/work/app';
+    const remoteKey = attentionProject.getAttentionProjectKey(remotePath);
+    const remoteOpenProject = attentionProject.withAttentionProject({
+        id: 'open-project',
+        path: '/work/app',
+        attentionProjectPath: remotePath,
+    }, {
+        revision: 'remote-revision',
+        generatedAtMs: 10,
+        items: [{
+            projectId: remoteKey,
+            sessionKey: 'codex:remote',
+            state: 'needsAttention',
+            eventId: 'event-remote',
+            reason: 'quiet',
+            observedAtMs: 2,
+        }],
+    });
+    assert.strictEqual(remoteOpenProject.aiSessionAttentionCount, 1);
 }
 
 function runVsixPackagingChecks() {
@@ -1946,6 +2019,7 @@ async function main() {
     runCurrentWorkspaceStateChecks();
     runFavoriteProjectOrderChecks();
     runCurrentWorkspaceMatchingChecks();
+    runOpenProjectAttentionIdentityChecks();
     runCandidateFilterChecks();
     runDisplayChecks();
     runPinStoreChecks();

@@ -489,7 +489,7 @@ export function activate(context: vscode.ExtensionContext) {
         const snapshot = aiSessionAttentionMonitor.getSnapshot();
         const items: AttentionPayloadItem[] = [];
         for (const project of projects) {
-            const projectKey = getAttentionProjectKey(project.path);
+            const projectKey = getAttentionProjectKey(project.attentionProjectPath || project.path);
             if (!projectKey) {
                 continue;
             }
@@ -2236,7 +2236,7 @@ export function activate(context: vscode.ExtensionContext) {
         let aliases = getAiSessionAliases();
 
         return openProjects.map(project => {
-            const projectKey = getAttentionProjectKey(project.path);
+            const projectKey = getAttentionProjectKey(project.attentionProjectPath || project.path);
             const aggregate = getEffectiveAiSessionAttentionAggregate();
             for (let providerId of AI_SESSION_PROVIDER_IDS) {
                 let sessionProvider = getRegisteredAiSessionProvider(providerId);
