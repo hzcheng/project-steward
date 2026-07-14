@@ -12,6 +12,7 @@ const workspaceIdentity = require('../spikes/attention-local-bridge/out/shared/a
 const autoRunControl = require(spikeOut + 'autoRunControl');
 const storeProtocol = require('../spikes/attention-local-bridge/out/shared/attention-bridge/storeProtocol');
 const localStore = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/localStore');
+const bridgeStorageRoot = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/bridgeStorageRoot');
 
 const AUTO_RUN_FIXTURE_A = '/tmp/project-steward-attention-fixture-a';
 const AUTO_RUN_FIXTURE_B = '/tmp/project-steward-attention-fixture-b';
@@ -327,6 +328,20 @@ function runPackagingChecks() {
     assert.match(ignore, /^shared\/\*\*$/m);
 }
 
+function runBridgeStorageRootChecks() {
+    const globalStoragePath = '/Users/test/Library/Application Support/Code/User/globalStorage/hzcheng.project-steward-attention-ui-bridge';
+    assert.strictEqual(
+        bridgeStorageRoot.resolveBridgeStorageRoot(globalStoragePath, 'vscode-userdata'),
+        path.join(globalStoragePath, 'attention-local-bridge-spike', 'v1')
+    );
+    assert.strictEqual(
+        bridgeStorageRoot.resolveBridgeStorageRoot('/tmp/project-steward-bridge', 'file'),
+        '/tmp/project-steward-bridge/attention-local-bridge-spike/v1'
+    );
+    assert.throws(() => bridgeStorageRoot.resolveBridgeStorageRoot('', 'vscode-userdata'), /absolute path/);
+    assert.throws(() => bridgeStorageRoot.resolveBridgeStorageRoot('relative/path', 'file'), /absolute path/);
+}
+
 function readText(relativePath) {
     const absolutePath = path.join(__dirname, '..', relativePath);
     assert.ok(fs.existsSync(absolutePath), `${relativePath} must exist`);
@@ -336,7 +351,7 @@ function readText(relativePath) {
 function runArtifactContractChecks() {
     const packageScript = readText('scripts/package-attention-extensions.js');
     const expectedArtifactPaths = [
-        'artifacts/project-steward-attention-ui-bridge-0.1.0.vsix',
+        'artifacts/project-steward-attention-ui-bridge-0.1.1.vsix',
         'artifacts/project-steward-attention-workspace-probe-0.0.5.vsix',
     ];
     const namedArtifactPaths = packageScript.match(/artifacts\/[^'"`\s]+\.vsix/g) || [];
@@ -351,7 +366,7 @@ function runArtifactContractChecks() {
         'same workspace',
         'different Profile',
         'Developer: Show Running Extensions',
-        'project-steward-attention-ui-bridge-0.1.0.vsix',
+        'project-steward-attention-ui-bridge-0.1.1.vsix',
         'project-steward-attention-workspace-probe-0.0.5.vsix',
     ]) {
         assert.ok(manualMatrix.includes(requiredText), `MANUAL-MATRIX.md must contain ${requiredText}`);
@@ -404,7 +419,7 @@ function runManifestChecks() {
     const workspace = readJson('spikes/attention-local-bridge/workspace/package.json');
     const bridge = readJson('extensions/attention-ui-bridge/package.json');
     assert.strictEqual(workspace.version, '0.0.5');
-    assert.strictEqual(bridge.version, '0.1.0');
+    assert.strictEqual(bridge.version, '0.1.1');
     assert.deepStrictEqual(workspace.extensionKind, ['workspace']);
     assert.deepStrictEqual(bridge.extensionKind, ['ui']);
     assert.strictEqual(bridge.api, 'none');
@@ -422,6 +437,7 @@ async function main() {
     await runBatchDrainChecks();
     runWorkspaceIdentityChecks();
     runAutoRunControlChecks();
+    runBridgeStorageRootChecks();
     await runLocalStoreChecks();
     runPackagingChecks();
     runArtifactContractChecks();

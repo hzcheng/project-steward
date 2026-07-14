@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
+import { resolveBridgeStorageRoot } from './bridgeStorageRoot';
 import { LocalStore } from './localStore';
 import { parseRoutingChallenge } from '../../../shared/attention-bridge/protocol';
 import { ProbeSnapshot } from '../../../shared/attention-bridge/storeProtocol';
@@ -32,16 +33,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const workspaceIdentity = createWorkspaceIdentity(
         (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.path)
     );
-    const bridgeRoot = context.globalStorageUri.scheme === 'file'
-        ? path.join(context.globalStorageUri.fsPath, 'attention-local-bridge-spike', 'v1')
-        : null;
+    const bridgeRoot = resolveBridgeStorageRoot(context.globalStoragePath, context.globalStorageUri.scheme);
     const instanceId = crypto.randomBytes(16).toString('hex');
-    const store = bridgeRoot === null ? null : new LocalStore(bridgeRoot, instanceId, bridgeProcessId);
+    const store = new LocalStore(bridgeRoot, instanceId, bridgeProcessId);
     let watcherEnabled = false;
     let fsWatcher: fs.FSWatcher | null = null;
     let lastAggregate = '';
     let scanTimer: NodeJS.Timeout | null = null;
-    const acknowledgedEventIds = store === null ? new Set<string>() : await store.readAcknowledgements();
+    const acknowledgedEventIds = await store.readAcknowledgements();
 
     function applyAcknowledgements(snapshots: ProbeSnapshot[]): ProbeSnapshot[] {
         return snapshots.map(snapshot => {
@@ -59,9 +58,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     async function scanAndNotify(): Promise<void> {
-        if (store === null) {
-            return;
-        }
         const persistedAcknowledgements = await store.readAcknowledgements(Date.now());
         acknowledgedEventIds.clear();
         persistedAcknowledgements.forEach(eventId => acknowledgedEventIds.add(eventId));
@@ -110,15 +106,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
 
     const publishDisposable = vscode.commands.registerCommand(BRIDGE_PUBLISH, async (raw: unknown) => {
-        if (store === null) {
-            throw new Error(`globalStorageUri must use file scheme, got ${context.globalStorageUri.scheme}`);
-        }
         await store.writeForeign(raw as ProbeSnapshot);
         await scanAndNotify();
         return { accepted: true, bridgeProcessId, instanceId };
     });
     const productionPublishDisposable = vscode.commands.registerCommand(PRODUCTION_BRIDGE_PUBLISH, async (raw: unknown) => {
-        if (store === null) throw new Error(`globalStorageUri must use file scheme, got ${context.globalStorageUri.scheme}`);
         await store.writeForeign(raw as ProbeSnapshot);
         const scan = await store.scan(Date.now());
         await vscode.commands.executeCommand(PRODUCTION_WORKSPACE_AGGREGATE, {
@@ -133,14 +125,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             || eventIds.some(id => typeof id !== 'string' || id.length === 0 || id.length > 1024)) {
             throw new Error('attention acknowledgement eventIds are invalid');
         }
-        if (store === null) throw new Error(`globalStorageUri must use file scheme, got ${context.globalStorageUri.scheme}`);
         await store.writeAcknowledgements(eventIds as string[]);
         eventIds.forEach(id => acknowledgedEventIds.add(id as string));
         await scanAndNotify();
         return { acknowledged: eventIds.length };
     });
     const statusDisposable = vscode.commands.registerCommand(BRIDGE_STATUS, async () => {
-        const scan = store === null ? null : await store.scan(Date.now());
+        const scan = await store.scan(Date.now());
         return {
             bridgeProcessId,
             instanceId,
@@ -156,7 +147,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             fsWatcher.close();
             fsWatcher = null;
         }
-        if (watcherEnabled && bridgeRoot !== null) {
+        if (watcherEnabled) {
             const instancesDirectory = path.join(bridgeRoot, 'instances');
             await fs.promises.mkdir(instancesDirectory, { recursive: true, mode: 0o700 });
             fsWatcher = fs.watch(instancesDirectory, () => {
@@ -167,9 +158,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return { watcherEnabled };
     });
     const clearDisposable = vscode.commands.registerCommand(BRIDGE_CLEAR, async () => {
-        if (store !== null) {
-            await store.removeOwnSnapshot();
-        }
+        await store.removeOwnSnapshot();
         lastAggregate = '';
         return { cleared: true, bridgeProcessId, instanceId };
     });
@@ -204,9 +193,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     fsWatcher.close();
                     fsWatcher = null;
                 }
-                if (store !== null) {
-                    void store.removeOwnSnapshot();
-                }
+                void store.removeOwnSnapshot();
             },
         },
     );
