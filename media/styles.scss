@@ -376,6 +376,27 @@ body .project {
         display: none;
     }
 
+    .project-ai-attention-badge {
+        position: absolute;
+        left: 4px;
+        top: 4px;
+        z-index: 65;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 16px;
+        height: 16px;
+        padding: 0 4px;
+        box-sizing: border-box;
+        border-radius: 999px;
+        color: var(--vscode-badge-foreground, #fff);
+        background: var(--vscode-errorForeground, var(--vscode-terminal-ansiRed));
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 1;
+    }
+
     &.no-projects {
         height: $projectCardMinHeight;
         background: none;
@@ -1604,6 +1625,8 @@ body.steward-sidebar {
 }
 body.steward-sidebar .project .codex-session-row.attention-animate{animation:steward-ai-attention 900ms ease-in-out 3}
 @keyframes steward-ai-attention{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.02);opacity:.65}}
+body.steward-sidebar .project.attention-animate{animation:steward-ai-attention 900ms ease-in-out 3}
+body.steward-sidebar .project .project-ai-attention-badge.attention-animate{animation:steward-ai-attention 900ms ease-in-out 3}
 body.steward-sidebar .project .project-codex-badge.has-attention{color:var(--vscode-errorForeground,var(--vscode-terminal-ansiRed));border-color:var(--vscode-inputValidation-errorBorder,var(--vscode-terminal-ansiRed))}
 body.steward-sidebar .project .project-codex-badge.attention-animate{animation:steward-ai-attention 900ms ease-in-out 3}
 body.steward-sidebar .project .ai-session-attention-count{display:inline-flex;align-items:center;justify-content:center;min-width:14px;height:14px;margin-left:3px;padding:0 3px;border-radius:999px;color:var(--vscode-badge-foreground,#fff);background:var(--vscode-errorForeground,var(--vscode-terminal-ansiRed));font-size:9px;line-height:1}

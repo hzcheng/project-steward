@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { getAttentionProjectKey } from '../aiSessions/attentionProject';
 import * as path from 'path';
 
 import {
@@ -353,6 +354,11 @@ function getProjectDiv(
         : '';
     var aiSessionCount = codexSessions.length + kimiSessions.length + claudeSessions.length;
     var attentionCount = codexSessions.concat(kimiSessions).concat(claudeSessions).filter(session => session.attention?.unread).length;
+    var projectAttentionCount = project.aiSessionAttentionCount ?? attentionCount;
+    var attentionProjectKey = getAttentionProjectKey(project.path);
+    var projectAttentionBadge = projectAttentionCount
+        ? `<span class="project-ai-attention-badge" title="${projectAttentionCount} AI session${projectAttentionCount === 1 ? ' needs' : 's need'} attention">${projectAttentionCount}</span>`
+        : '';
     var aiSessionBadge = isReadOnlyProject && aiSessionCount
         ? `<span class="project-codex-badge${attentionCount ? ' has-attention' : ''}" title="AI Sessions">AI ${aiSessionCount}${attentionCount ? ` <b class="ai-session-attention-count">${attentionCount}</b>` : ''}</span>`
         : '';
@@ -363,6 +369,7 @@ function getProjectDiv(
     return `
 <div class="project-container"${isVirtualProject && !isDraggableVirtualProject ? ' data-nodrag' : ''}>
     <div class="project" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
+        }${attentionProjectKey ? ` data-attention-project-key="${attentionProjectKey}"` : ''
         }${isVirtualProject ? ' data-virtual-project' : ''
         }${isReadOnlyProject ? ' data-readonly-project' : ''
         }${isReadOnlyProject ? ' data-open-project' : ''
@@ -374,6 +381,7 @@ function getProjectDiv(
         }>
         <div class="project-aura"></div>
         <div class="project-border" style="${borderStyle}"></div>
+        ${projectAttentionBadge}
         ${favoriteBadge}
         ${saveBadge}
         ${projectActionsWrapper}

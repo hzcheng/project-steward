@@ -14,6 +14,7 @@ const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlig
 const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').default;
 const attentionPayload = require('../out/aiSessions/attentionPayload');
 const attentionAggregate = require('../out/aiSessions/attentionAggregate');
+const attentionProject = require('../out/aiSessions/attentionProject');
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
 const CodexSessionService = require('../out/services/codexSessionService').default;
@@ -656,6 +657,7 @@ function runWebviewContentChecks() {
     const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
     const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const evaluateAttentionFunction = extractFunctionBody(dashboard, 'evaluateAiSessionAttention');
     const withAiSessionsFunction = extractFunctionBody(dashboard, 'withAiSessions');
     const singleArchiveFunction = extractFunctionBody(dashboard, 'archiveAiSession');
     const batchArchiveFunction = extractFunctionBody(dashboard, 'archiveAiSessions');
@@ -681,6 +683,14 @@ function runWebviewContentChecks() {
     assert.ok(!webviewContent.includes('function getAddProjectDiv'));
     assert.ok(webviewContent.includes('class="settings-button" data-action="open-settings"'));
     assert.ok(webviewProjectScripts.includes("type: 'open-settings'"));
+    assert.ok(webviewProjectScripts.includes("message.type === 'ai-session-attention-projects-updated'"));
+    assert.ok(webviewProjectScripts.includes(".project[data-attention-project-key]"));
+    assert.ok(webviewProjectScripts.includes("project-ai-attention-badge"));
+    assert.ok(styles.includes('.project-ai-attention-badge'));
+    assert.ok(evaluateAttentionFunction.includes('getAttentionProjectKey(project.path)'));
+    assert.ok(evaluateAttentionFunction.includes('projectId: projectKey'));
+    assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
+    assert.ok(dashboard.includes("type: 'ai-session-attention-projects-updated'"));
     assert.ok(dashboard.includes("case 'open-settings':"));
     assert.ok(settingsFunction.includes("executeCommand('workbench.action.openSettings', '@ext:hzcheng.project-steward')"));
     assert.ok(!settingsFunction.includes('showQuickPick'));
@@ -931,6 +941,73 @@ function runFavoriteRenderingChecks() {
     assert.ok(!favoriteContainer[1].includes('data-nodrag'));
 }
 
+function runAttentionProjectRenderingChecks() {
+    const config = {
+        get: (key, defaultValue) => defaultValue,
+        displayProjectPath: false,
+        searchIsActiveByDefault: false,
+        showAddGroupButtonTile: false,
+    };
+    const projectKey = attentionProject.getAttentionProjectKey('/work/remote-repo');
+    const html = webviewContentModule.getStewardContent(
+        { extensionPath: '/extension' },
+        {
+            cspSource: 'test-source',
+            asWebviewUri: uri => uri.toString(),
+        },
+        [{
+            id: 'group',
+            groupName: 'Work',
+            collapsed: false,
+            projects: [{
+                id: 'saved-remote',
+                name: 'Remote Repo',
+                path: '/work/remote-repo',
+                color: '#00aacc',
+                aiSessionAttentionCount: 2,
+                aiSessionAttentionEventIds: ['event-1', 'event-2'],
+            }],
+        }],
+        {
+            config,
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            otherStorageHasData: false,
+            openProjects: [],
+        },
+        true
+    );
+
+    assert.ok(html.includes(`data-attention-project-key="${projectKey}"`));
+    assert.ok(html.includes('class="project-ai-attention-badge"'));
+    assert.ok(html.includes('>2</span>'));
+    assert.ok(!html.includes('/work/remote-repo" data-attention-project-key'));
+
+    const acknowledgedHtml = webviewContentModule.getStewardContent(
+        { extensionPath: '/extension' },
+        { cspSource: 'test-source', asWebviewUri: uri => uri.toString() },
+        [],
+        {
+            config,
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            otherStorageHasData: false,
+            openProjects: [{
+                id: 'open-project',
+                name: 'Open Repo',
+                path: '/work/open-repo',
+                color: '#00aacc',
+                aiSessionAttentionCount: 0,
+                codexSessions: [{
+                    id: 'codex-one',
+                    name: 'Codex One',
+                    attention: { eventId: 'local-event', reason: 'quiet', unread: true },
+                }],
+            }],
+        },
+        true
+    );
+    assert.ok(!acknowledgedHtml.includes('class="project-ai-attention-badge"'));
+}
+
 function runFavoriteDndChecks() {
     const sourcePath = path.join(__dirname, '..', 'src', 'webview', 'webviewDnDScripts.js');
     const generatedPath = path.join(__dirname, '..', 'media', 'webviewDnDScripts.js');
@@ -1035,6 +1112,7 @@ function runBatchAiSessionWebviewChecks() {
     const messages = [];
     const eventListeners = {};
     const windowEventListeners = {};
+    const timeoutCallbacks = [];
     const createSessionRow = (provider, sessionId) => {
         const attributes = new Set();
         return {
@@ -1129,6 +1207,31 @@ function runBatchAiSessionWebviewChecks() {
     projectB.replaceRowsOnNextUpdate([sameIdOtherProviderRow]);
     projectB.querySelector('.codex-sessions').outerHTML = '';
     const projects = [projectA, projectB];
+    let attentionBadge = null;
+    const attentionProjectClasses = new Set();
+    const attentionProjectCard = {
+        getAttribute: attribute => attribute === 'data-attention-project-key' ? 'attention-project-a' : null,
+        classList: {
+            add: className => attentionProjectClasses.add(className),
+            remove: className => attentionProjectClasses.delete(className),
+        },
+        querySelector: selector => selector === '.project-ai-attention-badge' ? attentionBadge : null,
+        insertAdjacentHTML: () => {
+            const badgeClasses = new Set();
+            attentionBadge = {
+                textContent: '',
+                title: '',
+                classList: {
+                    add: className => badgeClasses.add(className),
+                    remove: className => badgeClasses.delete(className),
+                },
+                setAttribute: (attribute, value) => {
+                    if (attribute === 'title') attentionBadge.title = value;
+                },
+                remove: () => { attentionBadge = null; },
+            };
+        },
+    };
     const context = {
         document: {
             body: {
@@ -1149,12 +1252,16 @@ function runBatchAiSessionWebviewChecks() {
                 if (selector === '.codex-session-row[data-session-id]') {
                     return projects.flatMap(project => project.rows);
                 }
+                if (selector === '.project[data-attention-project-key]') {
+                    return [attentionProjectCard];
+                }
                 return [];
             },
         },
         window: {
             addEventListener: (event, listener) => { windowEventListeners[event] = listener; },
             requestAnimationFrame: callback => callback(),
+            setTimeout: callback => timeoutCallbacks.push(callback),
             vscode: { postMessage: message => messages.push(message) },
         },
     };
@@ -1175,6 +1282,38 @@ function runBatchAiSessionWebviewChecks() {
         type: 'request-ai-session-attention-state',
     });
     messages.length = 0;
+
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-state',
+        eventIds: ['existing-event'],
+    } });
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [{ projectKey: 'attention-project-a', attentionCount: 1, eventIds: ['existing-event'] }],
+    } });
+    assert.strictEqual(attentionBadge.textContent, '1');
+    assert.strictEqual(attentionBadge.title, '1 AI session needs attention');
+    assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
+
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [{ projectKey: 'attention-project-a', attentionCount: 2, eventIds: ['existing-event', 'new-event'] }],
+    } });
+    assert.strictEqual(attentionBadge.textContent, '2');
+    assert.strictEqual(attentionProjectClasses.has('attention-animate'), true);
+    timeoutCallbacks.splice(0).forEach(callback => callback());
+    assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
+
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [{ projectKey: 'attention-project-a', attentionCount: 2, eventIds: ['existing-event', 'new-event'] }],
+    } });
+    assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [],
+    } });
+    assert.strictEqual(attentionBadge, null);
 
     windowEventListeners.message({ data: {
         type: 'active-ai-session-terminal-changed',
@@ -1718,6 +1857,41 @@ function runAttentionPayloadChecks() {
     assert.deepStrictEqual(attentionAggregate.aggregateAttentionSnapshots([owner], new Set(), 100001, 10).items, []);
 }
 
+function runAttentionProjectChecks() {
+    const localKey = attentionProject.getAttentionProjectKey('/work/My%20Repo/');
+    assert.strictEqual(localKey, attentionProject.getAttentionProjectKey('/work/My Repo'));
+    assert.strictEqual(localKey.length, 64);
+    assert.ok(!localKey.includes('/work/My Repo'));
+    assert.notStrictEqual(
+        attentionProject.getAttentionProjectKey('vscode-remote://ssh-remote+host-a/work/repo'),
+        attentionProject.getAttentionProjectKey('vscode-remote://ssh-remote+host-b/work/repo')
+    );
+    assert.strictEqual(attentionProject.getAttentionProjectKey(''), '');
+
+    const summaries = attentionProject.getAttentionProjectSummaries({
+        revision: 'revision',
+        generatedAtMs: 10,
+        items: [
+            { projectId: localKey, sessionKey: 'codex:one', state: 'needsAttention', eventId: 'event-1', reason: 'quiet', observedAtMs: 1 },
+            { projectId: localKey, sessionKey: 'claude:two', state: 'needsAttention', eventId: 'event-2', reason: 'completed', observedAtMs: 2 },
+            { projectId: localKey, sessionKey: 'kimi:three', state: 'acknowledged', eventId: 'event-3', reason: 'quiet', observedAtMs: 3 },
+        ],
+    });
+    assert.deepStrictEqual(summaries, [{ projectKey: localKey, attentionCount: 2, eventIds: ['event-1', 'event-2'] }]);
+    const project = { id: 'saved', path: '/work/My Repo', name: 'Repo' };
+    const annotated = attentionProject.withAttentionProject(project, {
+        revision: 'revision',
+        generatedAtMs: 10,
+        items: [
+            { projectId: localKey, sessionKey: 'codex:one', state: 'needsAttention', eventId: 'event-1', reason: 'quiet', observedAtMs: 1 },
+        ],
+    });
+    assert.notStrictEqual(annotated, project);
+    assert.strictEqual(annotated.aiSessionAttentionCount, 1);
+    assert.deepStrictEqual(annotated.aiSessionAttentionEventIds, ['event-1']);
+    assert.strictEqual(project.aiSessionAttentionCount, undefined);
+}
+
 function runVsixPackagingChecks() {
     const vscodeIgnore = fs.readFileSync(path.join(__dirname, '..', '.vscodeignore'), 'utf8');
     assert.ok(
@@ -1743,6 +1917,7 @@ async function main() {
     runWebviewContentChecks();
     runCurrentWorkspaceRenderingChecks();
     runFavoriteRenderingChecks();
+    runAttentionProjectRenderingChecks();
     runFavoriteDndChecks();
     runBatchAiSessionWebviewChecks();
     runGitRepositoryDetectorChecks();
@@ -1753,6 +1928,7 @@ async function main() {
     runCommandBuilderChecks();
     runAttentionMonitorChecks();
     runAttentionPayloadChecks();
+    runAttentionProjectChecks();
     runVsixPackagingChecks();
 
     console.log('AI session safety checks passed.');

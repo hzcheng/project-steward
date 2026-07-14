@@ -171,7 +171,9 @@ monitored run. Ownership contains:
 
 - `instanceId`;
 - provider and session ID;
-- stable Project Steward `projectId`;
+- stable privacy-safe `projectKey`, computed as SHA-256 of the normalized
+  Project Steward project path/URI (the version 1 wire field remains named
+  `projectId` for compatibility, but carries this key rather than a card ID);
 - the owning `vscode.Terminal`;
 - the provider session's last observed activity token;
 - the existing command-completion marker;
@@ -325,7 +327,7 @@ type AttentionReason = 'quiet' | 'completed';
 interface WorkspaceAttentionSession {
   provider: 'codex' | 'kimi' | 'claude';
   sessionId: string;
-  projectId: string;
+  projectKey: string;
   state: OwnedSessionState;
   attentionGeneration: number;
   eventId?: string;
@@ -427,7 +429,7 @@ The aggregate returned to the main extension contains:
 interface AggregatedAttentionSession {
   provider: 'codex' | 'kimi' | 'claude';
   sessionId: string;
-  projectId: string;
+  projectKey: string;
   reasons: AttentionReason[];
   eventIds: string[];
 }
@@ -446,12 +448,14 @@ revision and cannot replay UI animation.
 
 ## UI Behavior
 
-The main extension maps aggregate `projectId` values to the existing
-`.project[data-id]` cards. It compares `getAttribute('data-id')` rather than
-querying a nonexistent `data-project-id` attribute. Session rows use the
-existing `.codex-session-row[data-session-id][data-session-provider]`
-attributes. An unknown project ID is ignored with a rate-limited diagnostic; it
-is applied automatically if that project later appears in the dashboard.
+The main extension maps aggregate project keys to
+`.project[data-attention-project-key]` cards. A dashboard-local `data-id` is not
+used for cross-window identity because open-project IDs such as
+`open-projects-0` are reused independently by every window. The key exposes no
+raw path, hostname, or remote authority. Session rows use the existing
+`.codex-session-row[data-session-id][data-session-provider]` attributes. An
+unknown project key is ignored; it is applied automatically if that project
+later appears in the dashboard.
 
 For a newly observed event ID:
 

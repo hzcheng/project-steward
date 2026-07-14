@@ -38,6 +38,8 @@ export class Project {
     kimiSessionsUnavailable?: boolean;
     claudeSessionsUnavailable?: boolean;
     activeAiSessionProvider?: AiSessionProviderId;
+    aiSessionAttentionCount?: number;
+    aiSessionAttentionEventIds?: string[];
     color: string;
     isGitRepo = false;
 
