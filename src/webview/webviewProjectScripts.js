@@ -944,7 +944,7 @@ function initProjects() {
         projects.forEach(project => {
             if (!project || typeof project.projectKey !== 'string'
                 || typeof project.attentionCount !== 'number' || project.attentionCount < 0
-                || !Array.isArray(project.eventIds)) {
+                || !Array.isArray(project.eventIds) || !Array.isArray(project.sessions)) {
                 return;
             }
             summaries[project.projectKey] = project;
@@ -952,14 +952,11 @@ function initProjects() {
                 animateProjectKeys[project.projectKey] = true;
             }
         });
-        Object.keys(summaries).forEach(projectKey => summaries[projectKey].eventIds.forEach(eventId => {
-            if (typeof eventId === 'string') window.__projectStewardAttentionEvents[eventId] = true;
-        }));
-
         document.querySelectorAll('.project[data-attention-project-key]').forEach(projectDiv => {
             var projectKey = projectDiv.getAttribute('data-attention-project-key');
             var summary = summaries[projectKey];
             var attentionCount = summary ? summary.attentionCount : 0;
+            syncAiSessionAttentionRows(projectDiv, summary ? summary.sessions : []);
             var badge = projectDiv.querySelector('.project-ai-attention-badge');
             if (!attentionCount) {
                 if (badge) badge.remove();
@@ -979,6 +976,46 @@ function initProjects() {
                     projectDiv.classList.remove('attention-animate');
                     badge.classList.remove('attention-animate');
                 }, 2800);
+            }
+        });
+        Object.keys(summaries).forEach(projectKey => summaries[projectKey].eventIds.forEach(eventId => {
+            if (typeof eventId === 'string') window.__projectStewardAttentionEvents[eventId] = true;
+        }));
+    }
+
+    function syncAiSessionAttentionRows(projectDiv, sessions) {
+        if (!projectDiv || typeof projectDiv.querySelectorAll !== 'function') return;
+        var bySessionKey = {};
+        (sessions || []).forEach(session => {
+            if (session && typeof session.sessionKey === 'string' && typeof session.eventId === 'string') {
+                bySessionKey[session.sessionKey] = session.eventId;
+            }
+        });
+
+        projectDiv.querySelectorAll('.codex-session-row[data-session-id]').forEach(row => {
+            var provider = row.getAttribute('data-session-provider') || 'codex';
+            var sessionId = row.getAttribute('data-session-id') || '';
+            var eventId = bySessionKey[provider + ':' + sessionId];
+            var indicator = row.querySelector('.ai-session-attention-indicator');
+            if (!eventId) {
+                row.removeAttribute('data-ai-session-attention');
+                row.removeAttribute('data-session-event-id');
+                if (indicator) indicator.remove();
+                return;
+            }
+
+            row.setAttribute('data-ai-session-attention', '');
+            row.setAttribute('data-session-event-id', eventId);
+            if (!indicator) {
+                indicator = document.createElement('span');
+                indicator.className = 'ai-session-attention-indicator';
+                indicator.title = 'AI session needs attention';
+                indicator.setAttribute('aria-label', 'AI session needs attention');
+                row.insertBefore(indicator, row.firstChild);
+            }
+            if (!window.__projectStewardAttentionEvents[eventId]) {
+                row.classList.add('attention-animate');
+                window.setTimeout(() => row.classList.remove('attention-animate'), 2800);
             }
         });
     }

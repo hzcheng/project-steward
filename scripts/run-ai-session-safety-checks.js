@@ -708,6 +708,7 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes('class="settings-button" data-action="open-settings"'));
     assert.ok(webviewProjectScripts.includes("type: 'open-settings'"));
     assert.ok(webviewProjectScripts.includes("message.type === 'ai-session-attention-projects-updated'"));
+    assert.ok(webviewProjectScripts.includes('syncAiSessionAttentionRows(projectDiv, summary ? summary.sessions : [])'));
     assert.ok(webviewProjectScripts.includes(".project[data-attention-project-key]"));
     assert.ok(webviewProjectScripts.includes("project-ai-attention-badge"));
     assert.ok(styles.includes('.project-ai-attention-badge'));
@@ -1143,16 +1144,35 @@ function runBatchAiSessionWebviewChecks() {
     const timeoutCallbacks = [];
     const createSessionRow = (provider, sessionId) => {
         const attributes = new Set();
+        const attributeValues = {};
+        const classes = new Set();
+        let attentionIndicator = null;
         return {
             provider,
             sessionId,
+            classList: {
+                add: className => classes.add(className),
+                remove: className => classes.delete(className),
+            },
             getAttribute: attribute => {
                 if (attribute === 'data-session-provider') return provider;
                 if (attribute === 'data-session-id') return sessionId;
-                return null;
+                return attributeValues[attribute] || null;
             },
             hasAttribute: attribute => attributes.has(attribute),
-            querySelector: () => null,
+            insertBefore: indicator => {
+                attentionIndicator = indicator;
+                indicator.remove = () => { attentionIndicator = null; };
+            },
+            querySelector: selector => selector === '.ai-session-attention-indicator' ? attentionIndicator : null,
+            removeAttribute: attribute => {
+                attributes.delete(attribute);
+                delete attributeValues[attribute];
+            },
+            setAttribute: (attribute, value) => {
+                attributes.add(attribute);
+                attributeValues[attribute] = value;
+            },
             toggleAttribute: (attribute, force) => {
                 if (force) {
                     attributes.add(attribute);
@@ -1237,6 +1257,7 @@ function runBatchAiSessionWebviewChecks() {
     const projects = [projectA, projectB];
     let attentionBadge = null;
     const attentionProjectClasses = new Set();
+    const attentionRow = createSessionRow('codex', 'attention-session');
     const attentionProjectCard = {
         getAttribute: attribute => attribute === 'data-attention-project-key' ? 'attention-project-a' : null,
         classList: {
@@ -1244,6 +1265,7 @@ function runBatchAiSessionWebviewChecks() {
             remove: className => attentionProjectClasses.delete(className),
         },
         querySelector: selector => selector === '.project-ai-attention-badge' ? attentionBadge : null,
+        querySelectorAll: selector => selector === '.codex-session-row[data-session-id]' ? [attentionRow] : [],
         insertAdjacentHTML: () => {
             const badgeClasses = new Set();
             attentionBadge = {
@@ -1268,6 +1290,12 @@ function runBatchAiSessionWebviewChecks() {
             },
             addEventListener: (event, listener) => { eventListeners[event] = listener; },
             getElementById: () => null,
+            createElement: () => ({
+                className: '',
+                title: '',
+                setAttribute: () => {},
+                remove: () => {},
+            }),
             querySelector: () => null,
             querySelectorAll: selector => {
                 if (selector === '.project[data-open-project][data-id]') {
@@ -1317,15 +1345,30 @@ function runBatchAiSessionWebviewChecks() {
     } });
     windowEventListeners.message({ data: {
         type: 'ai-session-attention-projects-updated',
-        projects: [{ projectKey: 'attention-project-a', attentionCount: 1, eventIds: ['existing-event'] }],
+        projects: [{
+            projectKey: 'attention-project-a',
+            attentionCount: 1,
+            eventIds: ['existing-event'],
+            sessions: [{ sessionKey: 'codex:attention-session', eventId: 'existing-event' }],
+        }],
     } });
     assert.strictEqual(attentionBadge.textContent, '1');
     assert.strictEqual(attentionBadge.title, '1 AI session needs attention');
+    assert.strictEqual(attentionRow.hasAttribute('data-ai-session-attention'), true);
+    assert.ok(attentionRow.querySelector('.ai-session-attention-indicator'));
     assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
 
     windowEventListeners.message({ data: {
         type: 'ai-session-attention-projects-updated',
-        projects: [{ projectKey: 'attention-project-a', attentionCount: 2, eventIds: ['existing-event', 'new-event'] }],
+        projects: [{
+            projectKey: 'attention-project-a',
+            attentionCount: 2,
+            eventIds: ['existing-event', 'new-event'],
+            sessions: [
+                { sessionKey: 'codex:attention-session', eventId: 'existing-event' },
+                { sessionKey: 'codex:not-rendered', eventId: 'new-event' },
+            ],
+        }],
     } });
     assert.strictEqual(attentionBadge.textContent, '2');
     assert.strictEqual(attentionProjectClasses.has('attention-animate'), true);
@@ -1334,7 +1377,15 @@ function runBatchAiSessionWebviewChecks() {
 
     windowEventListeners.message({ data: {
         type: 'ai-session-attention-projects-updated',
-        projects: [{ projectKey: 'attention-project-a', attentionCount: 2, eventIds: ['existing-event', 'new-event'] }],
+        projects: [{
+            projectKey: 'attention-project-a',
+            attentionCount: 2,
+            eventIds: ['existing-event', 'new-event'],
+            sessions: [
+                { sessionKey: 'codex:attention-session', eventId: 'existing-event' },
+                { sessionKey: 'codex:not-rendered', eventId: 'new-event' },
+            ],
+        }],
     } });
     assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
     windowEventListeners.message({ data: {
@@ -1342,6 +1393,8 @@ function runBatchAiSessionWebviewChecks() {
         projects: [],
     } });
     assert.strictEqual(attentionBadge, null);
+    assert.strictEqual(attentionRow.hasAttribute('data-ai-session-attention'), false);
+    assert.strictEqual(attentionRow.querySelector('.ai-session-attention-indicator'), null);
 
     windowEventListeners.message({ data: {
         type: 'active-ai-session-terminal-changed',
@@ -1972,7 +2025,15 @@ function runAttentionProjectChecks() {
             { projectId: localKey, sessionKey: 'kimi:three', state: 'acknowledged', eventId: 'event-3', reason: 'quiet', observedAtMs: 3 },
         ],
     });
-    assert.deepStrictEqual(summaries, [{ projectKey: localKey, attentionCount: 2, eventIds: ['event-1', 'event-2'] }]);
+    assert.deepStrictEqual(summaries, [{
+        projectKey: localKey,
+        attentionCount: 2,
+        eventIds: ['event-1', 'event-2'],
+        sessions: [
+            { sessionKey: 'claude:two', eventId: 'event-2' },
+            { sessionKey: 'codex:one', eventId: 'event-1' },
+        ],
+    }]);
     const project = { id: 'saved', path: '/work/My Repo', name: 'Repo' };
     const annotated = attentionProject.withAttentionProject(project, {
         revision: 'revision',

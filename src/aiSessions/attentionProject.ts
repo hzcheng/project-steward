@@ -8,6 +8,7 @@ export interface AttentionProjectSummary {
     projectKey: string;
     attentionCount: number;
     eventIds: string[];
+    sessions: Array<{ sessionKey: string; eventId: string }>;
 }
 
 export function getAttentionProjectKey(projectPath: string): string {
@@ -28,17 +29,25 @@ export function getAttentionProjectSummaries(aggregate: AttentionAggregate | nul
 
         let summary = summaries.get(item.projectId);
         if (!summary) {
-            summary = { projectKey: item.projectId, attentionCount: 0, eventIds: [] };
+            summary = { projectKey: item.projectId, attentionCount: 0, eventIds: [], sessions: [] };
             summaries.set(item.projectId, summary);
         }
         summary.attentionCount += 1;
         if (item.eventId) {
             summary.eventIds.push(item.eventId);
         }
+        summary.sessions.push({
+            sessionKey: item.sessionKey,
+            eventId: item.eventId || `${item.sessionKey}:${item.observedAtMs}`,
+        });
     }
 
     return Array.from(summaries.values())
-        .map(summary => ({ ...summary, eventIds: summary.eventIds.sort() }))
+        .map(summary => ({
+            ...summary,
+            eventIds: summary.eventIds.sort(),
+            sessions: summary.sessions.sort((left, right) => left.sessionKey.localeCompare(right.sessionKey)),
+        }))
         .sort((left, right) => left.projectKey.localeCompare(right.projectKey));
 }
 
