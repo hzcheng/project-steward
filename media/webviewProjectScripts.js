@@ -918,6 +918,11 @@ function initProjects() {
             if (!eventId || window.__projectStewardAttentionEvents[eventId]) return;
             window.__projectStewardAttentionEvents[eventId] = true;
             row.classList.add('attention-animate');
+            var badge = root.closest('.project')?.querySelector('.project-codex-badge.has-attention');
+            if (badge) {
+                badge.classList.add('attention-animate');
+                window.setTimeout(() => badge.classList.remove('attention-animate'), 2800);
+            }
             window.setTimeout(() => row.classList.remove('attention-animate'), 2800);
         });
     }
