@@ -1602,3 +1602,5 @@ body.steward-sidebar {
         }
     }
 }
+body.steward-sidebar .project .codex-session-row.attention-animate{animation:steward-ai-attention 900ms ease-in-out 3}
+@keyframes steward-ai-attention{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.02);opacity:.65}}

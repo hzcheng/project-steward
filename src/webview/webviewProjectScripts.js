@@ -897,8 +897,21 @@ function initProjects() {
         }
 
         syncActiveAiSessionTerminalDom();
+        animateNewAiSessionAttention(projectDiv);
 
         return true;
+    }
+
+    function animateNewAiSessionAttention(root) {
+        if (!root) return;
+        window.__projectStewardAttentionEvents = window.__projectStewardAttentionEvents || {};
+        root.querySelectorAll('.codex-session-row[data-ai-session-attention][data-session-event-id]').forEach(row => {
+            var eventId = row.getAttribute('data-session-event-id');
+            if (!eventId || window.__projectStewardAttentionEvents[eventId]) return;
+            window.__projectStewardAttentionEvents[eventId] = true;
+            row.classList.add('attention-animate');
+            window.setTimeout(() => row.classList.remove('attention-animate'), 2800);
+        });
     }
 
     function updateOpenProjectAiSessionBadge(projectDiv, aiSessionCount, attentionCount) {
