@@ -9,5 +9,8 @@
         "strict": true,
         "esModuleInterop": true
     },
-    "include": ["shared/**/*.ts", "workspace/src/**/*.ts", "../../shared/attention-bridge/**/*.ts"]
+    "include": [
+        "src/**/*.ts",
+        "../../shared/attention-bridge/**/*.ts"
+    ]
 }

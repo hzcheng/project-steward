@@ -16,3 +16,5 @@ webpack.config.json
 *.gif
 node_modules/**
 spikes/**
+extensions/**
+shared/**

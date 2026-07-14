@@ -17,11 +17,11 @@ import {
     parseRoutingResponse,
     PROCESS_ID_PATTERN,
     PROTOCOL_VERSION,
-} from '../../shared/protocol';
+} from '../../../../shared/attention-bridge/protocol';
 import { createSingleFlight } from '../../shared/singleFlight';
 import { summarizeLatencies } from '../../shared/metrics';
-import { ProbeSnapshot } from '../../shared/storeProtocol';
-import { createWorkspaceIdentity } from '../../shared/workspaceIdentity';
+import { ProbeSnapshot } from '../../../../shared/attention-bridge/storeProtocol';
+import { createWorkspaceIdentity } from '../../../../shared/attention-bridge/workspaceIdentity';
 
 const BRIDGE_CHALLENGE = '_projectStewardAttentionSpike.bridge.challenge';
 const WORKSPACE_CHALLENGE = '_projectStewardAttentionSpike.workspace.challenge';

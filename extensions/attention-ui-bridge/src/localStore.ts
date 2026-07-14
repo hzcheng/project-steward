@@ -10,9 +10,12 @@ import {
     ProbeSnapshot,
     StoreCounters,
     validateSnapshot,
-} from '../../shared/storeProtocol';
+} from '../../../shared/attention-bridge/storeProtocol';
 
 const INSTANCE_FILE_PATTERN = /^[a-f0-9]{32}\.json$/;
+const ACKNOWLEDGEMENT_FILE_PATTERN = /^[a-f0-9]{64}\.json$/;
+const ACKNOWLEDGEMENT_RETENTION_MS = 24 * 60 * 60 * 1000;
+const MAX_ACKNOWLEDGEMENT_BYTES = 4096;
 
 interface CachedSnapshot {
     snapshot: ProbeSnapshot;
@@ -33,6 +36,7 @@ function hasErrorCode(error: unknown, code: string): boolean {
 
 export class LocalStore {
     private readonly instancesDirectory: string;
+    private readonly acknowledgementsDirectory: string;
     private readonly cache = new Map<string, CachedSnapshot>();
     private lastWrittenSequence = -1;
     private readonly foreignSequences = new Map<string, number>();
@@ -43,6 +47,7 @@ export class LocalStore {
         private readonly bridgeProcessId: string,
     ) {
         this.instancesDirectory = path.join(rootDirectory, 'instances');
+        this.acknowledgementsDirectory = path.join(rootDirectory, 'acknowledgements');
     }
 
     public async write(snapshot: ProbeSnapshot): Promise<void> {
@@ -162,6 +167,63 @@ export class LocalStore {
             }
         }
         this.cache.delete(this.ownInstanceId);
+    }
+
+    public async writeAcknowledgements(eventIds: string[], acknowledgedAtMs = Date.now()): Promise<void> {
+        if (!Array.isArray(eventIds) || eventIds.length > 1000) {
+            throw new Error('too many attention acknowledgements');
+        }
+        await fs.promises.mkdir(this.acknowledgementsDirectory, { recursive: true, mode: 0o700 });
+        for (const eventId of eventIds) {
+            if (typeof eventId !== 'string' || eventId.length === 0 || eventId.length > 1024) {
+                throw new Error('attention acknowledgement eventId is invalid');
+            }
+            const hash = crypto.createHash('sha256').update(eventId).digest('hex');
+            const finalPath = path.join(this.acknowledgementsDirectory, `${hash}.json`);
+            const temporaryPath = path.join(this.acknowledgementsDirectory, `${hash}.${this.bridgeProcessId}.${crypto.randomBytes(8).toString('hex')}.tmp`);
+            const contents = `${JSON.stringify({ eventId, acknowledgedAtMs })}\n`;
+            try {
+                await fs.promises.writeFile(temporaryPath, contents, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+                await fs.promises.rename(temporaryPath, finalPath);
+            } finally {
+                try {
+                    await fs.promises.unlink(temporaryPath);
+                } catch (error) {
+                    if (!hasErrorCode(error, 'ENOENT')) throw error;
+                }
+            }
+        }
+    }
+
+    public async readAcknowledgements(nowMs = Date.now()): Promise<Set<string>> {
+        const result = new Set<string>();
+        let entries: fs.Dirent[];
+        try {
+            entries = await fs.promises.readdir(this.acknowledgementsDirectory, { withFileTypes: true });
+        } catch (error) {
+            if (hasErrorCode(error, 'ENOENT')) return result;
+            throw error;
+        }
+        for (const entry of entries.slice(0, 2000)) {
+            if (!ACKNOWLEDGEMENT_FILE_PATTERN.test(entry.name)) continue;
+            const filePath = path.join(this.acknowledgementsDirectory, entry.name);
+            try {
+                const stats = await fs.promises.lstat(filePath);
+                if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_ACKNOWLEDGEMENT_BYTES) continue;
+                const value = JSON.parse(await fs.promises.readFile(filePath, 'utf8')) as { eventId?: unknown; acknowledgedAtMs?: unknown };
+                if (typeof value.eventId !== 'string' || value.eventId.length === 0 || value.eventId.length > 1024
+                    || typeof value.acknowledgedAtMs !== 'number' || !Number.isFinite(value.acknowledgedAtMs)) continue;
+                if (nowMs - value.acknowledgedAtMs > ACKNOWLEDGEMENT_RETENTION_MS) {
+                    await fs.promises.unlink(filePath);
+                    continue;
+                }
+                const expectedName = `${crypto.createHash('sha256').update(value.eventId).digest('hex')}.json`;
+                if (entry.name === expectedName) result.add(value.eventId);
+            } catch (_error) {
+                // Ignore only the invalid acknowledgement file.
+            }
+        }
+        return result;
     }
 
     private activeCachedSnapshots(nowMs: number, seen: Set<string>, counters: StoreCounters): StoreScanResult {

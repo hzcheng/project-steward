@@ -4,9 +4,9 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { LocalStore } from './localStore';
-import { parseRoutingChallenge } from '../../shared/protocol';
-import { ProbeSnapshot } from '../../shared/storeProtocol';
-import { createWorkspaceIdentity } from '../../shared/workspaceIdentity';
+import { parseRoutingChallenge } from '../../../shared/attention-bridge/protocol';
+import { ProbeSnapshot } from '../../../shared/attention-bridge/storeProtocol';
+import { createWorkspaceIdentity } from '../../../shared/attention-bridge/workspaceIdentity';
 
 const BRIDGE_CHALLENGE = '_projectStewardAttentionSpike.bridge.challenge';
 const WORKSPACE_CHALLENGE = '_projectStewardAttentionSpike.workspace.challenge';
@@ -27,7 +27,7 @@ interface AggregateState {
     observedAtMs: number;
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const bridgeProcessId = crypto.randomBytes(16).toString('hex');
     const workspaceIdentity = createWorkspaceIdentity(
         (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.path)
@@ -41,7 +41,7 @@ export function activate(context: vscode.ExtensionContext): void {
     let fsWatcher: fs.FSWatcher | null = null;
     let lastAggregate = '';
     let scanTimer: NodeJS.Timeout | null = null;
-    const acknowledgedEventIds = new Set<string>();
+    const acknowledgedEventIds = store === null ? new Set<string>() : await store.readAcknowledgements();
 
     function applyAcknowledgements(snapshots: ProbeSnapshot[]): ProbeSnapshot[] {
         return snapshots.map(snapshot => {
@@ -62,6 +62,9 @@ export function activate(context: vscode.ExtensionContext): void {
         if (store === null) {
             return;
         }
+        const persistedAcknowledgements = await store.readAcknowledgements(Date.now());
+        acknowledgedEventIds.clear();
+        persistedAcknowledgements.forEach(eventId => acknowledgedEventIds.add(eventId));
         const scan = await store.scan(Date.now());
         const semantic = `${JSON.stringify(scan.snapshots.map(snapshot => ({
             instanceId: snapshot.instanceId,
@@ -126,9 +129,12 @@ export function activate(context: vscode.ExtensionContext): void {
     });
     const productionAcknowledgeDisposable = vscode.commands.registerCommand(PRODUCTION_BRIDGE_ACKNOWLEDGE, async (raw: unknown) => {
         const eventIds = (raw as { eventIds?: unknown })?.eventIds;
-        if (!Array.isArray(eventIds) || eventIds.some(id => typeof id !== 'string' || id.length === 0 || id.length > 1024)) {
+        if (!Array.isArray(eventIds) || eventIds.length > 1000
+            || eventIds.some(id => typeof id !== 'string' || id.length === 0 || id.length > 1024)) {
             throw new Error('attention acknowledgement eventIds are invalid');
         }
+        if (store === null) throw new Error(`globalStorageUri must use file scheme, got ${context.globalStorageUri.scheme}`);
+        await store.writeAcknowledgements(eventIds as string[]);
         eventIds.forEach(id => acknowledgedEventIds.add(id as string));
         await scanAndNotify();
         return { acknowledged: eventIds.length };

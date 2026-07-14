@@ -38,4 +38,4 @@ function createConfig(name) {
     };
 }
 
-module.exports = [createConfig('workspace'), createConfig('ui-bridge')];
+module.exports = [createConfig('workspace')];

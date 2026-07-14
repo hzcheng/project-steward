@@ -3,14 +3,15 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const protocol = require('../spikes/attention-local-bridge/out/shared/protocol');
-const metrics = require('../spikes/attention-local-bridge/out/shared/metrics');
-const singleFlight = require('../spikes/attention-local-bridge/out/shared/singleFlight');
-const batchDrain = require('../spikes/attention-local-bridge/out/shared/drainBatch');
-const workspaceIdentity = require('../spikes/attention-local-bridge/out/shared/workspaceIdentity');
-const autoRunControl = require('../spikes/attention-local-bridge/out/shared/autoRunControl');
-const storeProtocol = require('../spikes/attention-local-bridge/out/shared/storeProtocol');
-const localStore = require('../spikes/attention-local-bridge/out/ui-bridge/src/localStore');
+const spikeOut = '../spikes/attention-local-bridge/out/spikes/attention-local-bridge/shared/';
+const protocol = require('../spikes/attention-local-bridge/out/shared/attention-bridge/protocol');
+const metrics = require(spikeOut + 'metrics');
+const singleFlight = require(spikeOut + 'singleFlight');
+const batchDrain = require(spikeOut + 'drainBatch');
+const workspaceIdentity = require('../spikes/attention-local-bridge/out/shared/attention-bridge/workspaceIdentity');
+const autoRunControl = require(spikeOut + 'autoRunControl');
+const storeProtocol = require('../spikes/attention-local-bridge/out/shared/attention-bridge/storeProtocol');
+const localStore = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/localStore');
 
 const AUTO_RUN_FIXTURE_A = '/tmp/project-steward-attention-fixture-a';
 const AUTO_RUN_FIXTURE_B = '/tmp/project-steward-attention-fixture-b';
@@ -308,6 +309,12 @@ async function runLocalStoreChecks() {
     const finalScan = await first.scan(1_000_030);
     assert.strictEqual(finalScan.counters.oversizedFiles, 1);
     assert.strictEqual(finalScan.counters.symlinkFiles, 1);
+
+    await first.writeAcknowledgements(['event-1', 'event-2'], 2_000_000);
+    const reloadedStore = new localStore.LocalStore(root, validSnapshot.instanceId, validSnapshot.workspaceProcessId);
+    assert.deepStrictEqual(Array.from(await reloadedStore.readAcknowledgements(2_000_001)).sort(), ['event-1', 'event-2']);
+    await assert.rejects(first.writeAcknowledgements(['']));
+    assert.deepStrictEqual(Array.from(await reloadedStore.readAcknowledgements(2_000_000 + 24 * 60 * 60 * 1000 + 1)), []);
     await first.removeOwnSnapshot();
     assert.strictEqual(fs.existsSync(ownPath), false);
     fs.rmSync(root, { recursive: true, force: true });
@@ -316,6 +323,8 @@ async function runLocalStoreChecks() {
 function runPackagingChecks() {
     const ignore = fs.readFileSync(path.join(__dirname, '..', '.vscodeignore'), 'utf8');
     assert.match(ignore, /^spikes\/\*\*$/m);
+    assert.match(ignore, /^extensions\/\*\*$/m);
+    assert.match(ignore, /^shared\/\*\*$/m);
 }
 
 function readText(relativePath) {
@@ -325,7 +334,7 @@ function readText(relativePath) {
 }
 
 function runArtifactContractChecks() {
-    const packageScript = readText('spikes/attention-local-bridge/scripts/package.js');
+    const packageScript = readText('scripts/package-attention-extensions.js');
     const expectedArtifactPaths = [
         'artifacts/project-steward-attention-ui-bridge-0.1.0.vsix',
         'artifacts/project-steward-attention-workspace-probe-0.0.5.vsix',
@@ -342,7 +351,7 @@ function runArtifactContractChecks() {
         'same workspace',
         'different Profile',
         'Developer: Show Running Extensions',
-        'project-steward-attention-ui-bridge-probe-0.0.3.vsix',
+        'project-steward-attention-ui-bridge-0.1.0.vsix',
         'project-steward-attention-workspace-probe-0.0.5.vsix',
     ]) {
         assert.ok(manualMatrix.includes(requiredText), `MANUAL-MATRIX.md must contain ${requiredText}`);
@@ -391,14 +400,16 @@ function readJson(relativePath) {
 }
 
 function runManifestChecks() {
+    const main = readJson('package.json');
     const workspace = readJson('spikes/attention-local-bridge/workspace/package.json');
-    const bridge = readJson('spikes/attention-local-bridge/ui-bridge/package.json');
+    const bridge = readJson('extensions/attention-ui-bridge/package.json');
     assert.strictEqual(workspace.version, '0.0.5');
     assert.strictEqual(bridge.version, '0.1.0');
     assert.deepStrictEqual(workspace.extensionKind, ['workspace']);
     assert.deepStrictEqual(bridge.extensionKind, ['ui']);
     assert.strictEqual(bridge.api, 'none');
     assert.deepStrictEqual(workspace.extensionDependencies, ['hzcheng.project-steward-attention-ui-bridge']);
+    assert.ok(main.extensionDependencies.includes('hzcheng.project-steward-attention-ui-bridge'));
     assert.ok(workspace.contributes.commands.some(command => command.command === 'projectStewardAttentionSpike.startRouting'));
     assert.ok(workspace.contributes.commands.some(command => command.command === 'projectStewardAttentionSpike.startSameWorkspaceRouting'));
     assert.ok(workspace.contributes.commands.some(command => command.command === 'projectStewardAttentionSpike.showStatus'));
