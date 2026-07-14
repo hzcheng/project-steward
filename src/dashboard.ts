@@ -475,10 +475,13 @@ export function activate(context: vscode.ExtensionContext) {
                 for (const session of project[definition.projectSessionsKey] || []) {
                     const key = getAiSessionKey(providerId, session.id);
                     const terminal = aiSessionTerminalService.getById(providerId, session.id);
+                    if (!terminal) {
+                        continue;
+                    }
                     inputs.push({
                         key,
                         activityToken: [session.updatedAt || '', session.name || '', session.cwd || session.workDir || ''].join('|'),
-                        completed: Boolean(terminal && aiSessionTerminalService.isComplete(terminal)),
+                        completed: aiSessionTerminalService.isComplete(terminal),
                     });
                 }
             }

@@ -718,6 +718,7 @@ function runWebviewContentChecks() {
     assert.ok(evaluateAttentionFunction.includes('getAttentionProjectKey(project.attentionProjectPath || project.path)'));
     assert.ok(evaluateAttentionFunction.includes('projectId: projectKey'));
     assert.ok(evaluateAttentionFunction.includes('observedAtMs: attention.stateChangedAt'));
+    assert.ok(evaluateAttentionFunction.includes('if (!terminal)'));
     assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
     assert.ok(dashboard.includes("type: 'ai-session-attention-projects-updated'"));
     assert.ok(dashboard.includes("case 'open-settings':"));
