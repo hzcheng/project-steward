@@ -1696,6 +1696,46 @@ function runCodexSubagentSessionFilterChecks() {
     }
 }
 
+function runCodexSessionActivityTimestampChecks() {
+    const previousCodexHome = process.env.CODEX_HOME;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-codex-activity-'));
+    const sessionsDir = path.join(tempRoot, 'sessions', '2026', '07', '14');
+    const sessionId = '77777777-7777-4777-8777-777777777777';
+    try {
+        process.env.CODEX_HOME = tempRoot;
+        fs.mkdirSync(sessionsDir, { recursive: true });
+        const sessionFile = writeCodexSessionMetaFile(sessionsDir, sessionId, {
+            id: sessionId,
+            session_id: sessionId,
+            cwd: '/work/app',
+            timestamp: '2026-07-14T01:00:00.000Z',
+            source: 'vscode',
+        });
+        fs.writeFileSync(path.join(tempRoot, 'session_index.jsonl'), JSON.stringify({
+            id: sessionId,
+            thread_name: 'Active session',
+            updated_at: '2026-07-14T02:00:00.000Z',
+        }) + '\n', 'utf8');
+
+        const firstActivityAt = new Date('2026-07-14T03:00:00.000Z');
+        fs.utimesSync(sessionFile, firstActivityAt, firstActivityAt);
+        const service = new CodexSessionService();
+        assert.strictEqual(service.getSessions(true).sessions[0].updatedAt, firstActivityAt.toISOString());
+
+        fs.appendFileSync(sessionFile, '{"type":"event"}\n', 'utf8');
+        const secondActivityAt = new Date('2026-07-14T04:00:00.000Z');
+        fs.utimesSync(sessionFile, secondActivityAt, secondActivityAt);
+        assert.strictEqual(service.getSessions(true).sessions[0].updatedAt, secondActivityAt.toISOString());
+    } finally {
+        if (previousCodexHome === undefined) {
+            delete process.env.CODEX_HOME;
+        } else {
+            process.env.CODEX_HOME = previousCodexHome;
+        }
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
 function runKimiNestedSubagentBoundaryChecks() {
     const previousKimiHome = process.env.KIMI_SHARE_DIR;
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-kimi-subagents-'));
@@ -1922,6 +1962,7 @@ async function main() {
     runBatchAiSessionWebviewChecks();
     runGitRepositoryDetectorChecks();
     runCodexSubagentSessionFilterChecks();
+    runCodexSessionActivityTimestampChecks();
     runKimiNestedSubagentBoundaryChecks();
     runClaudeSessionChecks();
     runProviderChecks();

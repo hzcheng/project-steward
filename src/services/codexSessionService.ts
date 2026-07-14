@@ -72,7 +72,12 @@ export default class CodexSessionService {
             let session: CodexSession = {
                 id: entry.id,
                 name: entry.thread_name || previous?.name || entry.id,
-                updatedAt: entry.updated_at || meta?.timestamp || previous?.updatedAt,
+                updatedAt: this.getMostRecentTimestamp(
+                    entry.updated_at,
+                    meta?.timestamp,
+                    this.getSessionFileUpdatedAt(entry.id, sessionFiles),
+                    previous?.updatedAt
+                ),
                 cwd: meta?.cwd,
             };
 
@@ -289,10 +294,45 @@ export default class CodexSessionService {
             sessionsById.set(sessionId, {
                 id: sessionId,
                 name: previous?.name || sessionId,
-                updatedAt: previous?.updatedAt || meta.timestamp,
+                updatedAt: this.getMostRecentTimestamp(
+                    previous?.updatedAt,
+                    meta.timestamp,
+                    this.getSessionFileUpdatedAt(sessionId, sessionFiles)
+                ),
                 cwd: previous?.cwd || meta.cwd,
             });
         }
+    }
+
+    private getSessionFileUpdatedAt(sessionId: string, sessionFiles: Map<string, string>): string {
+        let sessionFile = sessionFiles.get(sessionId);
+        if (!sessionFile) {
+            return null;
+        }
+
+        try {
+            return fs.statSync(sessionFile).mtime.toISOString();
+        } catch (e) {
+            return null;
+        }
+    }
+
+    private getMostRecentTimestamp(...timestamps: string[]): string {
+        let mostRecent: string = null;
+        let mostRecentTime = -Infinity;
+        for (let timestamp of timestamps) {
+            if (!timestamp) {
+                continue;
+            }
+
+            let parsed = Date.parse(timestamp);
+            if (!isNaN(parsed) && parsed > mostRecentTime) {
+                mostRecent = timestamp;
+                mostRecentTime = parsed;
+            }
+        }
+
+        return mostRecent || timestamps.find(timestamp => Boolean(timestamp)) || null;
     }
 
     private isExplicitSubagentSource(source: unknown): boolean {
