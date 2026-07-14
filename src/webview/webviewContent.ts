@@ -356,7 +356,7 @@ function getProjectDiv(
     var attentionCount = codexSessions.concat(kimiSessions).concat(claudeSessions).filter(session => session.attention?.unread).length;
     var projectAttentionCount = project.aiSessionAttentionCount ?? attentionCount;
     var attentionProjectKey = getAttentionProjectKey(project.attentionProjectPath || project.path);
-    var projectAttentionBadge = projectAttentionCount
+    var projectAttentionBadge = !isReadOnlyProject && projectAttentionCount
         ? `<span class="project-ai-attention-badge" title="${projectAttentionCount} AI session${projectAttentionCount === 1 ? ' needs' : 's need'} attention">${projectAttentionCount}</span>`
         : '';
     var aiSessionBadge = isReadOnlyProject && aiSessionCount

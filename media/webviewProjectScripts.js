@@ -958,6 +958,10 @@ function initProjects() {
             var attentionCount = summary ? summary.attentionCount : 0;
             syncAiSessionAttentionRows(projectDiv, summary ? summary.sessions : []);
             var badge = projectDiv.querySelector('.project-ai-attention-badge');
+            if (projectDiv.hasAttribute('data-open-project')) {
+                if (badge) badge.remove();
+                return;
+            }
             if (!attentionCount) {
                 if (badge) badge.remove();
                 return;

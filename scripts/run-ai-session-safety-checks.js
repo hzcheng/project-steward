@@ -1012,7 +1012,7 @@ function runAttentionProjectRenderingChecks() {
     assert.ok(html.includes('>2</span>'));
     assert.ok(!html.includes('/work/remote-repo" data-attention-project-key'));
 
-    const acknowledgedHtml = webviewContentModule.getStewardContent(
+    const openProjectHtml = webviewContentModule.getStewardContent(
         { extensionPath: '/extension' },
         { cspSource: 'test-source', asWebviewUri: uri => uri.toString() },
         [],
@@ -1025,7 +1025,7 @@ function runAttentionProjectRenderingChecks() {
                 name: 'Open Repo',
                 path: '/work/open-repo',
                 color: '#00aacc',
-                aiSessionAttentionCount: 0,
+                aiSessionAttentionCount: 2,
                 codexSessions: [{
                     id: 'codex-one',
                     name: 'Codex One',
@@ -1035,7 +1035,9 @@ function runAttentionProjectRenderingChecks() {
         },
         true
     );
-    assert.ok(!acknowledgedHtml.includes('class="project-ai-attention-badge"'));
+    assert.ok(!openProjectHtml.includes('class="project-ai-attention-badge"'));
+    assert.ok(openProjectHtml.includes('class="project-codex-badge has-attention"'));
+    assert.ok(openProjectHtml.includes('class="ai-session-attention-count">1</b>'));
 }
 
 function runFavoriteDndChecks() {
@@ -1259,8 +1261,11 @@ function runBatchAiSessionWebviewChecks() {
     let attentionBadge = null;
     const attentionProjectClasses = new Set();
     const attentionRow = createSessionRow('codex', 'attention-session');
+    let openAttentionBadge = { remove: () => { openAttentionBadge = null; } };
+    let openAttentionBadgeInsertions = 0;
     const attentionProjectCard = {
         getAttribute: attribute => attribute === 'data-attention-project-key' ? 'attention-project-a' : null,
+        hasAttribute: () => false,
         classList: {
             add: className => attentionProjectClasses.add(className),
             remove: className => attentionProjectClasses.delete(className),
@@ -1282,6 +1287,14 @@ function runBatchAiSessionWebviewChecks() {
                 remove: () => { attentionBadge = null; },
             };
         },
+    };
+    const openAttentionProjectCard = {
+        getAttribute: attribute => attribute === 'data-attention-project-key' ? 'attention-project-a' : null,
+        hasAttribute: attribute => attribute === 'data-open-project',
+        classList: { add: () => {}, remove: () => {} },
+        querySelector: selector => selector === '.project-ai-attention-badge' ? openAttentionBadge : null,
+        querySelectorAll: () => [],
+        insertAdjacentHTML: () => { openAttentionBadgeInsertions++; },
     };
     const context = {
         document: {
@@ -1310,7 +1323,7 @@ function runBatchAiSessionWebviewChecks() {
                     return projects.flatMap(project => project.rows);
                 }
                 if (selector === '.project[data-attention-project-key]') {
-                    return [attentionProjectCard];
+                    return [attentionProjectCard, openAttentionProjectCard];
                 }
                 return [];
             },
@@ -1355,6 +1368,8 @@ function runBatchAiSessionWebviewChecks() {
     } });
     assert.strictEqual(attentionBadge.textContent, '1');
     assert.strictEqual(attentionBadge.title, '1 AI session needs attention');
+    assert.strictEqual(openAttentionBadge, null);
+    assert.strictEqual(openAttentionBadgeInsertions, 0);
     assert.strictEqual(attentionRow.hasAttribute('data-ai-session-attention'), true);
     assert.ok(attentionRow.querySelector('.ai-session-attention-indicator'));
     assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
