@@ -1604,3 +1604,5 @@ body.steward-sidebar {
 }
 body.steward-sidebar .project .codex-session-row.attention-animate{animation:steward-ai-attention 900ms ease-in-out 3}
 @keyframes steward-ai-attention{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.02);opacity:.65}}
+body.steward-sidebar .project .project-codex-badge.has-attention{color:var(--vscode-errorForeground,var(--vscode-terminal-ansiRed));border-color:var(--vscode-inputValidation-errorBorder,var(--vscode-terminal-ansiRed))}
+body.steward-sidebar .project .ai-session-attention-count{display:inline-flex;align-items:center;justify-content:center;min-width:14px;height:14px;margin-left:3px;padding:0 3px;border-radius:999px;color:var(--vscode-badge-foreground,#fff);background:var(--vscode-errorForeground,var(--vscode-terminal-ansiRed));font-size:9px;line-height:1}
