@@ -20,6 +20,7 @@ export interface AiSessionAttentionEvent {
 
 export interface AiSessionAttentionSnapshot {
     state: AiSessionAttentionState;
+    stateChangedAt: number;
     event?: AiSessionAttentionEvent;
 }
 
@@ -55,7 +56,14 @@ export default class AiSessionAttentionMonitor {
             const observedAt = input.observedAt ?? now;
             let entry = this.entries.get(input.key);
             if (!entry) {
-                entry = { state: 'pending', baselineToken: input.activityToken, lastToken: input.activityToken, lastActivityAt: observedAt, generation: 0 };
+                entry = {
+                    state: 'pending',
+                    stateChangedAt: observedAt,
+                    baselineToken: input.activityToken,
+                    lastToken: input.activityToken,
+                    lastActivityAt: observedAt,
+                    generation: 0,
+                };
                 this.entries.set(input.key, entry);
                 continue;
             }
@@ -63,10 +71,12 @@ export default class AiSessionAttentionMonitor {
             if (changed) {
                 entry.lastToken = input.activityToken;
                 entry.lastActivityAt = observedAt;
+                entry.stateChangedAt = observedAt;
                 if (entry.state === 'pending' || entry.state === 'acknowledged' || entry.state === 'needsAttention') entry.state = 'running';
             }
             if (entry.state === 'running' && (input.completed || now - entry.lastActivityAt >= this.quietThresholdMs)) {
                 entry.state = 'needsAttention';
+                entry.stateChangedAt = now;
                 entry.generation += 1;
                 const event: AiSessionAttentionEvent = {
                     eventId: `${input.key}:${entry.generation}:${input.completed ? 'completed' : 'quiet'}`,
@@ -88,13 +98,18 @@ export default class AiSessionAttentionMonitor {
     acknowledge(eventIds: string[]): void {
         const ids = new Set(eventIds || []);
         for (const entry of this.entries.values()) {
-            if (entry.event && ids.has(entry.event.eventId) && entry.state === 'needsAttention') entry.state = 'acknowledged';
+            if (entry.event && ids.has(entry.event.eventId) && entry.state === 'needsAttention') {
+                entry.state = 'acknowledged';
+                entry.stateChangedAt = this.now();
+            }
         }
     }
 
     getSnapshot(): Record<string, AiSessionAttentionSnapshot> {
         const result: Record<string, AiSessionAttentionSnapshot> = {};
-        for (const [key, entry] of this.entries) result[key] = { state: entry.state, event: entry.event };
+        for (const [key, entry] of this.entries) {
+            result[key] = { state: entry.state, stateChangedAt: entry.stateChangedAt, event: entry.event };
+        }
         return result;
     }
 }

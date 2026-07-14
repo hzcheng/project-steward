@@ -716,6 +716,7 @@ function runWebviewContentChecks() {
     assert.ok(styles.includes('.ai-session-attention-indicator'));
     assert.ok(evaluateAttentionFunction.includes('getAttentionProjectKey(project.attentionProjectPath || project.path)'));
     assert.ok(evaluateAttentionFunction.includes('projectId: projectKey'));
+    assert.ok(evaluateAttentionFunction.includes('observedAtMs: attention.stateChangedAt'));
     assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
     assert.ok(dashboard.includes("type: 'ai-session-attention-projects-updated'"));
     assert.ok(dashboard.includes("case 'open-settings':"));
@@ -1923,6 +1924,7 @@ function runAttentionMonitorChecks() {
     now = 132;
     assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:resumes', activityToken: 'c' }]), []);
     assert.strictEqual(monitor.getSnapshot()['codex:resumes'].state, 'running');
+    assert.strictEqual(monitor.getSnapshot()['codex:resumes'].stateChangedAt, 132);
     now = 162;
     events = monitor.evaluate([{ key: 'codex:resumes', activityToken: 'c' }]);
     assert.strictEqual(events.length, 1);

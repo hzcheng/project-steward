@@ -506,7 +506,7 @@ export function activate(context: vscode.ExtensionContext) {
                         state: attention.state === 'needsAttention' ? 'needsAttention' : 'acknowledged',
                         eventId: attention.event.eventId,
                         reason: attention.event.reason,
-                        observedAtMs: attention.event.detectedAt,
+                        observedAtMs: attention.stateChangedAt,
                     });
                 }
             }
