@@ -285,6 +285,16 @@ function initProjects() {
             return true;
         var sessionProvider = sessionRow.getAttribute("data-session-provider") || "codex";
 
+        if (sessionRow.hasAttribute('data-ai-session-attention')) {
+            var attentionEventId = sessionRow.getAttribute('data-ai-session-event-id');
+            if (attentionEventId) {
+                window.vscode.postMessage({
+                    type: 'acknowledge-ai-session-attention',
+                    eventIds: [attentionEventId],
+                });
+            }
+        }
+
         if (isAiSessionProvider(sessionProvider)) {
             window.vscode.postMessage({
                 type: getResumeAiSessionMessageType(sessionProvider),

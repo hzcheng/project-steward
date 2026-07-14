@@ -639,6 +639,10 @@ export function activate(context: vscode.ExtensionContext) {
             case 'toggle-ai-session-pin':
                 await toggleAiSessionPin(e.provider as AiSessionProviderId, e.sessionId as string);
                 break;
+            case 'acknowledge-ai-session-attention':
+                aiSessionAttentionMonitor.acknowledge(Array.isArray(e.eventIds) ? e.eventIds.filter((id: unknown): id is string => typeof id === 'string') : []);
+                refreshAiSessionViewsIncrementally();
+                break;
             case 'rename-ai-session':
                 await renameAiSession(e.provider as AiSessionProviderId, e.sessionId as string);
                 break;
