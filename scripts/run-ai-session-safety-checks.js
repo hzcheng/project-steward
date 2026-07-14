@@ -11,6 +11,7 @@ const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
 const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
+const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').default;
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
 const CodexSessionService = require('../out/services/codexSessionService').default;
@@ -1678,6 +1679,27 @@ function runCommandBuilderChecks() {
     assert.strictEqual(commands.quotePowerShellArg("O'Brien"), "'O''Brien'");
 }
 
+function runAttentionMonitorChecks() {
+    let now = 0;
+    let monitor = new AiSessionAttentionMonitor({ quietThresholdMs: 30, now: () => now });
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', activityToken: 'a' }]), []);
+    now = 1;
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', activityToken: 'b' }]), []);
+    now = 31;
+    let events = monitor.evaluate([{ key: 'codex:s1', activityToken: 'b' }]);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].reason, 'quiet');
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'needsAttention');
+    monitor.acknowledge([events[0].eventId]);
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'acknowledged');
+    now = 32;
+    monitor.evaluate([{ key: 'codex:s1', activityToken: 'c' }]);
+    now = 33;
+    events = monitor.evaluate([{ key: 'codex:s1', activityToken: 'c', completed: true }]);
+    assert.strictEqual(events[0].reason, 'completed');
+    assert.strictEqual(monitor.evaluate([]).length, 0);
+}
+
 function runVsixPackagingChecks() {
     const vscodeIgnore = fs.readFileSync(path.join(__dirname, '..', '.vscodeignore'), 'utf8');
     assert.ok(
@@ -1711,6 +1733,7 @@ async function main() {
     runClaudeSessionChecks();
     runProviderChecks();
     runCommandBuilderChecks();
+    runAttentionMonitorChecks();
     runVsixPackagingChecks();
 
     console.log('AI session safety checks passed.');

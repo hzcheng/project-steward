@@ -504,13 +504,14 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
     var metadata = [updatedAt, shortId].filter(value => !!value).join(' · ');
     var providerLabel = getAiProviderLabel(provider);
     var pinned = !!session.pinned;
+    var needsAttention = !!session.attention?.unread;
     var pinTitle = pinned ? 'Unpin Session' : 'Pin Session';
     var batchCheckbox = `<input type="checkbox" class="ai-session-batch-checkbox" aria-label="Select ${sessionName}">`;
     var pinAction = `<button type="button" class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}" aria-label="${pinTitle}">${Icons.pin}</button>`;
     var archiveAction = `<button type="button" class="codex-session-archive" data-action="archive-${provider}-session" title="Archive Session" aria-label="Archive Session">${Icons.archive}</button>`;
 
     return `
-<div class="codex-session-row"${pinned ? ' data-session-pinned' : ''} data-session-id="${sessionId}" data-session-provider="${provider}" title="Resume ${providerLabel} Session">
+<div class="codex-session-row"${pinned ? ' data-session-pinned' : ''}${needsAttention ? ' data-ai-session-attention' : ''} data-session-id="${sessionId}" data-session-provider="${provider}" title="Resume ${providerLabel} Session">
     ${batchCheckbox}
     <span class="codex-session-icon">${Icons.terminalLine}</span>
     <span class="codex-session-text">

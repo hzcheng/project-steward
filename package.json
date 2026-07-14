@@ -188,6 +188,10 @@
         "test-compile": "tsc -p ./",
         "test:safety": "npm run test-compile && node scripts/run-ai-session-safety-checks.js",
         "test:release-notes": "node scripts/run-release-notes-checks.js",
+        "spike:attention:compile": "tsc -p spikes/attention-local-bridge/tsconfig.json",
+        "spike:attention:test": "npm run spike:attention:compile && node scripts/run-attention-local-bridge-spike-checks.js",
+        "spike:attention:bundle": "webpack --config spikes/attention-local-bridge/webpack.config.js --mode production",
+        "spike:attention:package": "npm run spike:attention:test && npm run spike:attention:bundle && node spikes/attention-local-bridge/scripts/package.js",
         "lint": "tslint -p ./",
         "install-local": "./scripts/build-test-package-install.sh",
         "publish-marketplace": "./scripts/publish-marketplace.sh"

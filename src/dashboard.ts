@@ -15,6 +15,7 @@ import ClaudeSessionService from './services/claudeSessionService';
 import ProjectWindowColorService from './services/projectWindowColorService';
 import AiSessionPinStore from './aiSessions/pinStore';
 import ActiveAiSessionTerminalHighlighter from './aiSessions/activeTerminalHighlight';
+import AiSessionAttentionMonitor from './aiSessions/attentionMonitor';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
@@ -118,6 +119,8 @@ export function activate(context: vscode.ExtensionContext) {
     let aiSessionRefreshTimeout: NodeJS.Timeout = null;
     let aiSessionWatcherDisposables: { dispose(): void }[] = [];
     let aiSessionUpdateSequence = 0;
+    const aiSessionAttentionMonitor = new AiSessionAttentionMonitor();
+    const aiSessionAttentionInterval = setInterval(() => evaluateAiSessionAttention(), 10_000);
 
     const provider = new SidebarStewardViewProvider();
     const activeAiSessionTerminalHighlighter = new ActiveAiSessionTerminalHighlighter<
@@ -150,6 +153,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push({
         dispose: () => {
             stopAiSessionWatchers();
+            clearInterval(aiSessionAttentionInterval);
         }
     });
 
@@ -404,6 +408,27 @@ export function activate(context: vscode.ExtensionContext) {
             startAiSessionWatchers();
         } else {
             stopAiSessionWatchers();
+        }
+    }
+
+    function evaluateAiSessionAttention() {
+        const inputs: Array<{ key: string; activityToken?: string; completed?: boolean }> = [];
+        for (const project of getOpenProjects()) {
+            for (const providerId of AI_SESSION_PROVIDER_IDS) {
+                const definition = getRegisteredAiSessionProvider(providerId);
+                for (const session of project[definition.projectSessionsKey] || []) {
+                    const key = getAiSessionKey(providerId, session.id);
+                    const terminal = aiSessionTerminalService.getById(providerId, session.id);
+                    inputs.push({
+                        key,
+                        activityToken: [session.updatedAt || '', session.name || '', session.cwd || session.workDir || ''].join('|'),
+                        completed: Boolean(terminal && aiSessionTerminalService.isComplete(terminal)),
+                    });
+                }
+            }
+        }
+        if (aiSessionAttentionMonitor.evaluate(inputs).length) {
+            scheduleAiSessionRefresh();
         }
     }
 
@@ -2109,7 +2134,17 @@ export function activate(context: vscode.ExtensionContext) {
             for (let providerId of AI_SESSION_PROVIDER_IDS) {
                 let sessionProvider = getRegisteredAiSessionProvider(providerId);
                 let sessionResult = sessionResults[providerId];
-                project[sessionProvider.projectSessionsKey] = prepareAiSessionsForDisplay(assignments[providerId].get(project.id) || [], providerId, pinnedSessions, aliases);
+                project[sessionProvider.projectSessionsKey] = prepareAiSessionsForDisplay(assignments[providerId].get(project.id) || [], providerId, pinnedSessions, aliases).map(session => {
+                    const attention = aiSessionAttentionMonitor.getSnapshot()[getAiSessionKey(providerId, session.id)];
+                    return attention?.event ? {
+                        ...session,
+                        attention: {
+                            eventId: attention.event.eventId,
+                            reason: attention.event.reason,
+                            unread: attention.state === 'needsAttention',
+                        },
+                    } : session;
+                });
                 project[sessionProvider.projectSessionsUnavailableKey] = !sessionResult.available;
             }
             project.codexSessionsExpanded = expandedProjects.has(getOpenProjectCodexExpansionKey(project));

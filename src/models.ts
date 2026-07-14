@@ -160,6 +160,7 @@ export interface CodexSession {
     workDir?: string;
     provider?: AiSessionProviderId;
     pinned?: boolean;
+    attention?: { eventId: string; reason: 'quiet' | 'completed'; unread: boolean };
 }
 
 export interface StewardInfos {

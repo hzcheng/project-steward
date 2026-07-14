@@ -1,0 +1,12 @@
+{
+    "name": "project-steward-attention-ui-bridge-probe",
+    "displayName": "Project Steward Attention UI Bridge Probe",
+    "description": "Disposable local UI bridge feasibility probe for Project Steward.",
+    "version": "0.0.3",
+    "publisher": "hzcheng",
+    "engines": { "vscode": "^1.51.0" },
+    "extensionKind": ["ui"],
+    "api": "none",
+    "activationEvents": ["*"],
+    "main": "./dist/extension.js"
+}
