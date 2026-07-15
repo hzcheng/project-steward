@@ -1,7 +1,10 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
 const Module = require('module');
+const os = require('os');
+const path = require('path');
 
 const originalModuleLoad = Module._load;
 Module._load = function (request, parent, isMain) {
@@ -13,6 +16,7 @@ Module._load = function (request, parent, isMain) {
 const protocol = require('../out/openProjects/protocol');
 const projection = require('../out/openProjects/projection');
 const models = require('../out/models');
+const { OpenProjectStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectStore');
 Module._load = originalModuleLoad;
 
 const SELF = '1'.repeat(32);
@@ -389,8 +393,105 @@ function runProjectionChecks() {
     assert.deepStrictEqual(duplicateReverse, duplicateForward);
 }
 
-runProtocolChecks();
-runIdentityChecks();
-runRecordChecks();
-runProjectionChecks();
-console.log('Open project safety checks passed.');
+async function runStoreChecks() {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-projects-'));
+    const ownInstanceId = 'b'.repeat(32);
+    const instancesDirectory = path.join(tempRoot, 'open-projects', 'v1', 'instances');
+    const registration = makeRegistration(ownInstanceId, 900, '/work/owned', {
+        sequence: 1,
+        leaseUpdatedAtMs: 1000,
+    });
+    const filePath = path.join(instancesDirectory, `${ownInstanceId}.json`);
+    const writeRegistration = async (instanceId, value) => {
+        await fs.promises.writeFile(path.join(instancesDirectory, `${instanceId}.json`), `${JSON.stringify(value)}\n`);
+    };
+
+    try {
+        const highWaterRoot = path.join(tempRoot, 'high-water');
+        const highWaterDirectory = path.join(highWaterRoot, 'open-projects', 'v1', 'instances');
+        const highWaterInstanceId = 'c'.repeat(32);
+        const highWaterPath = path.join(highWaterDirectory, `${highWaterInstanceId}.json`);
+        const highWaterStore = new OpenProjectStore(highWaterRoot, ownInstanceId);
+        await fs.promises.mkdir(highWaterDirectory, { recursive: true });
+        await fs.promises.writeFile(highWaterPath, `${JSON.stringify(makeRegistration(
+            highWaterInstanceId,
+            900,
+            '/work/high-water',
+            { sequence: 5, leaseUpdatedAtMs: 1000 }
+        ))}\n`);
+        assert.deepStrictEqual((await highWaterStore.scan(1000)).registrations.map(value => value.sequence), [5]);
+        assert.deepStrictEqual((await highWaterStore.scan(31_001)).registrations, []);
+        await fs.promises.writeFile(highWaterPath, `${JSON.stringify(makeRegistration(
+            highWaterInstanceId,
+            900,
+            '/work/high-water',
+            { sequence: 4, leaseUpdatedAtMs: 31_001 }
+        ))}\n`);
+        const highWaterRollback = await highWaterStore.scan(31_001);
+        assert.deepStrictEqual(highWaterRollback.registrations, []);
+        assert.strictEqual(highWaterRollback.counters.rollbackCount, 1);
+
+        const store = new OpenProjectStore(tempRoot, ownInstanceId);
+        await store.write(registration);
+        assert.deepStrictEqual((await store.scan(1200)).registrations, [registration]);
+        await assert.rejects(
+            store.write({ ...registration, sequence: registration.sequence - 1 }),
+            /sequence/
+        );
+        assert.deepStrictEqual(await store.read(registration.instanceId, 1200), registration);
+        assert.strictEqual((await fs.promises.stat(instancesDirectory)).mode & 0o777, 0o700);
+        assert.strictEqual((await fs.promises.stat(filePath)).mode & 0o777, 0o600);
+
+        const malformedId = '5'.repeat(32);
+        const oversizedId = '6'.repeat(32);
+        const symlinkId = '7'.repeat(32);
+        const directoryId = '8'.repeat(32);
+        const mismatchId = '9'.repeat(32);
+        const expiredId = 'a'.repeat(32);
+
+        await fs.promises.writeFile(path.join(instancesDirectory, `${malformedId}.json`), '{not json');
+        await fs.promises.writeFile(path.join(instancesDirectory, `${oversizedId}.json`), Buffer.alloc(256 * 1024 + 1));
+        await fs.promises.symlink(filePath, path.join(instancesDirectory, `${symlinkId}.json`));
+        await fs.promises.mkdir(path.join(instancesDirectory, `${directoryId}.json`));
+        await writeRegistration(mismatchId, makeRegistration(OTHER, 900, '/work/mismatch', {
+            leaseUpdatedAtMs: 1000,
+        }));
+        await writeRegistration(ownInstanceId, { ...registration, sequence: 0 });
+        await writeRegistration(expiredId, makeRegistration(expiredId, 800, '/work/expired', {
+            leaseUpdatedAtMs: 0,
+        }));
+
+        const scan = await store.scan(31_000);
+        assert.deepStrictEqual(scan.registrations, [registration]);
+        assert.deepStrictEqual(scan.counters, {
+            active: 1,
+            parseErrors: 2,
+            oversizedFiles: 1,
+            symlinkFiles: 1,
+            readErrors: 1,
+            rollbackCount: 1,
+            expired: 1,
+        });
+        assert.deepStrictEqual(await store.read(registration.instanceId, 31_000), registration);
+
+        await store.remove(registration.instanceId);
+        assert.deepStrictEqual((await store.scan(31_000)).registrations, []);
+        assert.strictEqual(await store.read(registration.instanceId, 31_000), undefined);
+    } finally {
+        await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+}
+
+async function main() {
+    runProtocolChecks();
+    runIdentityChecks();
+    runRecordChecks();
+    runProjectionChecks();
+    await runStoreChecks();
+    console.log('Open project safety checks passed.');
+}
+
+main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+});
