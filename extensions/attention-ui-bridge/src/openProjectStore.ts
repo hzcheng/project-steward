@@ -42,6 +42,7 @@ export class OpenProjectStore {
     private readonly instancesDirectory: string;
     private readonly cache = new Map<string, OpenProjectRegistration>();
     private readonly highestSequences = new Map<string, number>();
+    private mutationQueue: Promise<void> = Promise.resolve();
 
     public constructor(rootDirectory: string, private readonly ownInstanceId: string) {
         requireInstanceId(ownInstanceId);
@@ -53,36 +54,43 @@ export class OpenProjectStore {
         if (validated.instanceId !== this.ownInstanceId) {
             throw new Error('registration instanceId does not belong to this store');
         }
-        const previousSequence = this.highestSequences.get(validated.instanceId) ?? -1;
-        if (validated.sequence < previousSequence) {
-            throw new Error('registration sequence decreased');
+        const contents = `${JSON.stringify(validated)}\n`;
+        if (Buffer.byteLength(contents, 'utf8') > MAX_FILE_BYTES) {
+            throw new Error('registration exceeds the 256 KiB file limit');
         }
 
-        await fs.promises.mkdir(this.instancesDirectory, { recursive: true, mode: 0o700 });
-        const finalPath = this.instancePath(validated.instanceId);
-        const temporaryPath = path.join(
-            this.instancesDirectory,
-            `${validated.instanceId}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`,
-        );
-        try {
-            await fs.promises.writeFile(temporaryPath, `${JSON.stringify(validated)}\n`, {
-                encoding: 'utf8',
-                mode: 0o600,
-                flag: 'wx',
-            });
-            await fs.promises.rename(temporaryPath, finalPath);
-            this.cache.set(validated.instanceId, validated);
-            this.highestSequences.set(validated.instanceId, validated.sequence);
-        } catch (error) {
-            try {
-                await fs.promises.unlink(temporaryPath);
-            } catch (cleanupError) {
-                if (!hasErrorCode(cleanupError, 'ENOENT')) {
-                    // Preserve the original write error.
-                }
+        await this.enqueueMutation(async () => {
+            const previousSequence = this.highestSequences.get(validated.instanceId) ?? -1;
+            if (validated.sequence < previousSequence) {
+                throw new Error('registration sequence decreased');
             }
-            throw error;
-        }
+
+            await fs.promises.mkdir(this.instancesDirectory, { recursive: true, mode: 0o700 });
+            const finalPath = this.instancePath(validated.instanceId);
+            const temporaryPath = path.join(
+                this.instancesDirectory,
+                `${validated.instanceId}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`,
+            );
+            try {
+                await fs.promises.writeFile(temporaryPath, contents, {
+                    encoding: 'utf8',
+                    mode: 0o600,
+                    flag: 'wx',
+                });
+                await fs.promises.rename(temporaryPath, finalPath);
+                this.cache.set(validated.instanceId, validated);
+                this.highestSequences.set(validated.instanceId, validated.sequence);
+            } catch (error) {
+                try {
+                    await fs.promises.unlink(temporaryPath);
+                } catch (cleanupError) {
+                    if (!hasErrorCode(cleanupError, 'ENOENT')) {
+                        // Preserve the original write error.
+                    }
+                }
+                throw error;
+            }
+        });
     }
 
     public async remove(instanceId: string): Promise<void> {
@@ -90,14 +98,16 @@ export class OpenProjectStore {
         if (instanceId !== this.ownInstanceId) {
             throw new Error('registration instanceId does not belong to this store');
         }
-        try {
-            await fs.promises.unlink(this.instancePath(instanceId));
-        } catch (error) {
-            if (!hasErrorCode(error, 'ENOENT')) {
-                throw error;
+        await this.enqueueMutation(async () => {
+            try {
+                await fs.promises.unlink(this.instancePath(instanceId));
+            } catch (error) {
+                if (!hasErrorCode(error, 'ENOENT')) {
+                    throw error;
+                }
             }
-        }
-        this.cache.delete(instanceId);
+            this.cache.delete(instanceId);
+        });
     }
 
     public async read(instanceId: string, nowMs: number): Promise<OpenProjectRegistration | undefined> {
@@ -122,16 +132,19 @@ export class OpenProjectStore {
             entries = await fs.promises.readdir(this.instancesDirectory, { withFileTypes: true });
         } catch (error) {
             if (hasErrorCode(error, 'ENOENT')) {
+                this.reconcileCache(new Set<string>());
                 return this.activeCachedRegistrations(nowMs, counters);
             }
             throw error;
         }
 
+        const seenInstanceIds = new Set<string>();
         for (const entry of entries) {
             if (!INSTANCE_FILE_PATTERN.test(entry.name)) {
                 continue;
             }
             const instanceId = entry.name.slice(0, -'.json'.length);
+            seenInstanceIds.add(instanceId);
             const filePath = path.join(this.instancesDirectory, entry.name);
             let stats: fs.Stats;
             try {
@@ -177,6 +190,7 @@ export class OpenProjectStore {
             }
         }
 
+        this.reconcileCache(seenInstanceIds);
         return this.activeCachedRegistrations(nowMs, counters);
     }
 
@@ -198,5 +212,19 @@ export class OpenProjectStore {
 
     private instancePath(instanceId: string): string {
         return path.join(this.instancesDirectory, `${instanceId}.json`);
+    }
+
+    private reconcileCache(seenInstanceIds: Set<string>): void {
+        for (const instanceId of this.cache.keys()) {
+            if (!seenInstanceIds.has(instanceId)) {
+                this.cache.delete(instanceId);
+            }
+        }
+    }
+
+    private enqueueMutation<T>(mutation: () => Promise<T>): Promise<T> {
+        const result = this.mutationQueue.then(mutation);
+        this.mutationQueue = result.then(() => undefined, () => undefined);
+        return result;
     }
 }

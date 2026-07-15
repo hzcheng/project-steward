@@ -407,6 +407,151 @@ async function runStoreChecks() {
     };
 
     try {
+        const oversizedWriteRoot = path.join(tempRoot, 'oversized-write');
+        const oversizedWriteStore = new OpenProjectStore(oversizedWriteRoot, ownInstanceId);
+        const oversizedWrite = {
+            ...registration,
+            projects: Array.from({ length: 100 }, (_, ordinal) => makeRecord({
+                localProjectId: `oversized-${ordinal}`,
+                ordinal,
+                description: 'x'.repeat(4000),
+                uri: `/work/oversized/${ordinal}`,
+            })),
+        };
+        assert.ok(Buffer.byteLength(`${JSON.stringify(oversizedWrite)}\n`, 'utf8') > 256 * 1024);
+        await assert.rejects(oversizedWriteStore.write(oversizedWrite), /256 KiB/);
+        assert.deepStrictEqual((await oversizedWriteStore.scan(1200)).registrations, []);
+        await assert.rejects(
+            fs.promises.access(path.join(oversizedWriteRoot, 'open-projects', 'v1', 'instances')),
+            /ENOENT/
+        );
+
+        const concurrentRoot = path.join(tempRoot, 'concurrent');
+        const concurrentStore = new OpenProjectStore(concurrentRoot, ownInstanceId);
+        const originalRename = fs.promises.rename;
+        let releaseLowerRename;
+        let lowerRenameReachedResolve;
+        const lowerRenameReached = new Promise(resolve => {
+            lowerRenameReachedResolve = resolve;
+        });
+        fs.promises.rename = async (source, destination) => {
+            const pending = JSON.parse(await fs.promises.readFile(source, 'utf8'));
+            if (pending.sequence === 1) {
+                lowerRenameReachedResolve();
+                await new Promise(resolve => {
+                    const fallback = setTimeout(resolve, 100);
+                    releaseLowerRename = () => {
+                        clearTimeout(fallback);
+                        resolve();
+                    };
+                });
+            }
+            const result = await originalRename(source, destination);
+            if (pending.sequence === 2 && releaseLowerRename) {
+                releaseLowerRename();
+            }
+            return result;
+        };
+        try {
+            const lowerWrite = concurrentStore.write({ ...registration, sequence: 1 });
+            await lowerRenameReached;
+            const higherWrite = concurrentStore.write({ ...registration, sequence: 2 });
+            assert.deepStrictEqual(
+                (await Promise.allSettled([lowerWrite, higherWrite])).map(result => result.status),
+                ['fulfilled', 'fulfilled']
+            );
+        } finally {
+            fs.promises.rename = originalRename;
+        }
+        assert.strictEqual((await concurrentStore.read(ownInstanceId, 1200)).sequence, 2);
+
+        fs.promises.rename = async (source, destination) => {
+            const pending = JSON.parse(await fs.promises.readFile(source, 'utf8'));
+            if (pending.sequence === 4) {
+                throw new Error('forced higher write failure');
+            }
+            return originalRename(source, destination);
+        };
+        try {
+            await assert.rejects(
+                concurrentStore.write({ ...registration, sequence: 4 }),
+                /forced higher write failure/
+            );
+        } finally {
+            fs.promises.rename = originalRename;
+        }
+        await concurrentStore.write({ ...registration, sequence: 3 });
+        assert.strictEqual((await concurrentStore.read(ownInstanceId, 1200)).sequence, 3);
+
+        const removalRoot = path.join(tempRoot, 'cross-store-removal');
+        const producerInstanceId = 'd'.repeat(32);
+        const observerInstanceId = 'e'.repeat(32);
+        const removalDirectory = path.join(removalRoot, 'open-projects', 'v1', 'instances');
+        const producerRegistration = makeRegistration(producerInstanceId, 900, '/work/producer', {
+            sequence: 5,
+            leaseUpdatedAtMs: 1000,
+        });
+        const producerStore = new OpenProjectStore(removalRoot, producerInstanceId);
+        const observerStore = new OpenProjectStore(removalRoot, observerInstanceId);
+        await producerStore.write(producerRegistration);
+        assert.deepStrictEqual((await observerStore.scan(1200)).registrations, [producerRegistration]);
+        await producerStore.remove(producerInstanceId);
+        assert.deepStrictEqual((await observerStore.scan(1200)).registrations, []);
+        await fs.promises.writeFile(
+            path.join(removalDirectory, `${producerInstanceId}.json`),
+            `${JSON.stringify({ ...producerRegistration, sequence: 4, leaseUpdatedAtMs: 1200 })}\n`
+        );
+        const removedRollback = await observerStore.scan(1200);
+        assert.deepStrictEqual(removedRollback.registrations, []);
+        assert.strictEqual(removedRollback.counters.rollbackCount, 1);
+
+        const isolationRoot = path.join(tempRoot, 'cache-isolation');
+        const isolationDirectory = path.join(isolationRoot, 'open-projects', 'v1', 'instances');
+        const isolationInstanceId = 'f'.repeat(32);
+        const isolationPath = path.join(isolationDirectory, `${isolationInstanceId}.json`);
+        const isolationRegistration = makeRegistration(isolationInstanceId, 900, '/work/isolation', {
+            sequence: 10,
+            leaseUpdatedAtMs: 1000,
+        });
+        const isolationStore = new OpenProjectStore(isolationRoot, '0'.repeat(32));
+        const assertIsolatedCache = async (counter) => {
+            const isolated = await isolationStore.scan(1200);
+            assert.deepStrictEqual(isolated.registrations, [isolationRegistration]);
+            assert.strictEqual(isolated.counters[counter], 1);
+        };
+        await fs.promises.mkdir(isolationDirectory, { recursive: true });
+        await fs.promises.writeFile(isolationPath, `${JSON.stringify(isolationRegistration)}\n`);
+        assert.deepStrictEqual((await isolationStore.scan(1200)).registrations, [isolationRegistration]);
+
+        await fs.promises.writeFile(isolationPath, '{malformed');
+        await assertIsolatedCache('parseErrors');
+
+        await fs.promises.writeFile(isolationPath, Buffer.alloc(256 * 1024 + 1));
+        await assertIsolatedCache('oversizedFiles');
+
+        const isolationTarget = path.join(isolationRoot, 'symlink-target.json');
+        await fs.promises.writeFile(isolationTarget, `${JSON.stringify(isolationRegistration)}\n`);
+        await fs.promises.unlink(isolationPath);
+        await fs.promises.symlink(isolationTarget, isolationPath);
+        await assertIsolatedCache('symlinkFiles');
+
+        await fs.promises.unlink(isolationPath);
+        await fs.promises.mkdir(isolationPath);
+        await assertIsolatedCache('readErrors');
+
+        await fs.promises.rmdir(isolationPath);
+        await fs.promises.writeFile(isolationPath, `${JSON.stringify({
+            ...isolationRegistration,
+            instanceId: OTHER,
+        })}\n`);
+        await assertIsolatedCache('parseErrors');
+
+        await fs.promises.writeFile(isolationPath, `${JSON.stringify({
+            ...isolationRegistration,
+            sequence: 9,
+        })}\n`);
+        await assertIsolatedCache('rollbackCount');
+
         const highWaterRoot = path.join(tempRoot, 'high-water');
         const highWaterDirectory = path.join(highWaterRoot, 'open-projects', 'v1', 'instances');
         const highWaterInstanceId = 'c'.repeat(32);
