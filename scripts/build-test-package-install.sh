@@ -26,7 +26,10 @@ fi
 EXT_NAME="$(node -p "require('./package.json').name")"
 EXT_VERSION="$(node -p "require('./package.json').version")"
 VSIX_FILE="${EXT_NAME}-${EXT_VERSION}.vsix"
-BRIDGE_VSIX="artifacts/project-steward-attention-ui-bridge-0.1.2.vsix"
+BRIDGE_NAME="$(node -p "require('./extensions/attention-ui-bridge/package.json').name")"
+BRIDGE_VERSION="$(node -p "require('./extensions/attention-ui-bridge/package.json').version")"
+BRIDGE_VSIX="artifacts/${BRIDGE_NAME}-${BRIDGE_VERSION}.vsix"
+MAIN_VSIX="artifacts/${VSIX_FILE}"
 
 run_step() {
     echo
@@ -43,13 +46,9 @@ fi
 
 run_step npm run test-compile
 run_step npm run lint
-run_step npm run vscode:prepublish
-run_step npm run attention:package
-
-rm -f "$VSIX_FILE"
-run_step npx --yes @vscode/vsce package --allow-star-activation --out "$VSIX_FILE"
+run_step npm run package:release
 run_step "$CODE_CMD" --install-extension "$BRIDGE_VSIX" --force
-run_step "$CODE_CMD" --install-extension "$VSIX_FILE" --force
+run_step "$CODE_CMD" --install-extension "$MAIN_VSIX" --force
 
 echo
-echo "Installed $BRIDGE_VSIX and $VSIX_FILE with $CODE_CMD."
+echo "Installed $BRIDGE_VSIX and $MAIN_VSIX with $CODE_CMD."

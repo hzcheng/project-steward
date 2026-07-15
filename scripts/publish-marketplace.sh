@@ -46,9 +46,14 @@ fi
 EXT_NAME="$(node -p "require('./package.json').name")"
 EXT_VERSION="$(node -p "require('./package.json').version")"
 PUBLISHER="$(node -p "require('./package.json').publisher")"
-VSIX_FILE="${EXT_NAME}-${EXT_VERSION}.vsix"
+BRIDGE_NAME="$(node -p "require('./extensions/attention-ui-bridge/package.json').name")"
+BRIDGE_VERSION="$(node -p "require('./extensions/attention-ui-bridge/package.json').version")"
+BRIDGE_PUBLISHER="$(node -p "require('./extensions/attention-ui-bridge/package.json').publisher")"
+VSIX_FILE="artifacts/${EXT_NAME}-${EXT_VERSION}.vsix"
+BRIDGE_VSIX_FILE="artifacts/${BRIDGE_NAME}-${BRIDGE_VERSION}.vsix"
 
 echo
+echo "Publishing ${BRIDGE_PUBLISHER}.${BRIDGE_NAME} ${BRIDGE_VERSION}"
 echo "Publishing ${PUBLISHER}.${EXT_NAME} ${EXT_VERSION}"
 
 if [[ "$SKIP_NPM_CI" != "1" ]]; then
@@ -59,6 +64,7 @@ else
 fi
 
 run_step npm run test-compile
+run_step npm run test:release-packaging
 
 if [[ "$SKIP_LINT" != "1" ]]; then
     run_step npm run lint
@@ -67,21 +73,26 @@ else
     echo "==> skipping npm run lint because SKIP_LINT=1"
 fi
 
-rm -f "$VSIX_FILE"
-run_vsce package --allow-star-activation --out "$VSIX_FILE"
+run_step npm run package:release
 
 if [[ "$DRY_RUN" == "1" ]]; then
     echo
-    echo "Dry run complete. Built $VSIX_FILE but did not publish."
+    echo "Dry run complete. Built $BRIDGE_VSIX_FILE and $VSIX_FILE but did not publish."
+    echo "Would publish ${BRIDGE_PUBLISHER}.${BRIDGE_NAME} from $BRIDGE_VSIX_FILE."
+    echo "Would publish ${PUBLISHER}.${EXT_NAME} from $VSIX_FILE."
     exit 0
 fi
 
+BRIDGE_PUBLISH_ARGS=(publish --packagePath "$BRIDGE_VSIX_FILE" --allow-star-activation)
 PUBLISH_ARGS=(publish --packagePath "$VSIX_FILE" --allow-star-activation)
 if [[ -n "${VSCE_PAT:-}" ]]; then
+    BRIDGE_PUBLISH_ARGS+=(--pat "$VSCE_PAT")
     PUBLISH_ARGS+=(--pat "$VSCE_PAT")
 fi
 
+run_vsce "${BRIDGE_PUBLISH_ARGS[@]}"
 run_vsce "${PUBLISH_ARGS[@]}"
 
 echo
+echo "Published ${BRIDGE_PUBLISHER}.${BRIDGE_NAME} ${BRIDGE_VERSION} from $BRIDGE_VSIX_FILE."
 echo "Published ${PUBLISHER}.${EXT_NAME} ${EXT_VERSION} from $VSIX_FILE."
