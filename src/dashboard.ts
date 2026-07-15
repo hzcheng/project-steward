@@ -276,6 +276,7 @@ export function activate(context: vscode.ExtensionContext) {
     async function checkDataMigration(openStewardAfterMigrate: boolean = false) {
         let migrated = await projectService.migrateDataIfNeeded();
         if (migrated) {
+            publishOpenProjects();
             vscode.window.showInformationMessage("Migrated Project Steward projects after changing settings.");
 
             if (openStewardAfterMigrate) {

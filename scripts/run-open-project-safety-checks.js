@@ -550,6 +550,35 @@ async function runBridgeClientChecks() {
     assert.doesNotThrow(() => failingClient.dispose());
     await new Promise(resolve => setImmediate(resolve));
 
+    const asynchronousUnregisterFailure = new Error('forced asynchronous unregister failure');
+    const asynchronousUnregisterErrors = [];
+    const unhandledRejections = [];
+    const onUnhandledRejection = error => unhandledRejections.push(error);
+    process.on('unhandledRejection', onUnhandledRejection);
+    try {
+        const asynchronouslyFailingClient = new OpenProjectBridgeClient(
+            records,
+            () => undefined,
+            error => asynchronousUnregisterErrors.push(error),
+            {
+                instanceId: 'd'.repeat(32),
+                now: () => currentNow,
+                registerCommand: () => ({ dispose: () => undefined }),
+                executeCommand: command => command === '_projectStewardOpenProjects.bridge.unregister'
+                    ? Promise.reject(asynchronousUnregisterFailure)
+                    : Promise.resolve(),
+                setInterval: () => 'asynchronous-failure-heartbeat',
+                clearInterval: () => undefined,
+            }
+        );
+        assert.doesNotThrow(() => asynchronouslyFailingClient.dispose());
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepStrictEqual(asynchronousUnregisterErrors, [asynchronousUnregisterFailure]);
+        assert.deepStrictEqual(unhandledRejections, []);
+    } finally {
+        process.removeListener('unhandledRejection', onUnhandledRejection);
+    }
+
     const publishErrors = [];
     const publishFailure = new Error('forced publish failure');
     const failingPublishClient = new OpenProjectBridgeClient(
@@ -605,6 +634,51 @@ function runDashboardBridgeLifecycleChecks() {
         showSteward.includes('publishOpenProjects();'),
         'legacy metadata mutation paths that reveal the steward must also republish'
     );
+}
+
+async function runDashboardMigrationPublicationChecks() {
+    const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const checkDataMigrationBody = extractFunctionBody(dashboard, 'checkDataMigration');
+    const publications = [];
+    const informationMessages = [];
+    let currentMetadata = 'before-migration';
+    let migrated = true;
+    let showStewardCalls = 0;
+    const checkDataMigration = new Function(
+        'projectService',
+        'publishOpenProjects',
+        'vscode',
+        'showSteward',
+        `return async function checkDataMigration(openStewardAfterMigrate = false) {${checkDataMigrationBody}};`
+    )(
+        {
+            migrateDataIfNeeded: async () => {
+                if (migrated) {
+                    currentMetadata = 'after-migration';
+                }
+                return migrated;
+            },
+        },
+        () => publications.push(currentMetadata),
+        { window: { showInformationMessage: message => informationMessages.push(message) } },
+        () => { showStewardCalls += 1; }
+    );
+
+    await checkDataMigration();
+    assert.deepStrictEqual(publications, ['after-migration']);
+    assert.strictEqual(showStewardCalls, 0, 'default startup migration must not require revealing the steward');
+    assert.strictEqual(informationMessages.length, 1);
+
+    migrated = false;
+    currentMetadata = 'unchanged-without-migration';
+    await checkDataMigration();
+    assert.deepStrictEqual(publications, ['after-migration'], 'no migration must not trigger a redundant publish');
+
+    migrated = true;
+    currentMetadata = 'before-explicit-migration';
+    await checkDataMigration(true);
+    assert.deepStrictEqual(publications, ['after-migration', 'after-migration']);
+    assert.strictEqual(showStewardCalls, 1);
 }
 
 async function runStoreChecks() {
@@ -1228,6 +1302,7 @@ async function main() {
     runProjectionChecks();
     await runBridgeClientChecks();
     runDashboardBridgeLifecycleChecks();
+    await runDashboardMigrationPublicationChecks();
     await runStoreChecks();
     await runCoordinatorChecks();
     await runCoordinatorAggregateBoundaryChecks();
