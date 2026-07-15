@@ -1,69 +1,69 @@
-# AI Session Terminal Ownership Persistence Design
+# AI Session Terminal 归属持久化设计
 
-## Problem
+## 问题
 
-Project Steward can create a new AI session before the provider has assigned its final session ID. The terminal is initially tracked as pending and is later bound to the discovered session only in extension-host memory.
+Project Steward 创建新的 AI session 时，provider 还没有分配最终的 session ID。此时 terminal 会先以“待匹配”状态被跟踪，等发现新 session 后，再在扩展进程内存中把 terminal 与 session 绑定。
 
-After a VS Code window reload, that in-memory binding is lost. The original terminal has neither the final session ID in its creation environment nor the normal `[session-id-prefix]` resume-terminal name, so Project Steward cannot recognize it. This causes two visible failures:
+VS Code 窗口重新加载后，这个仅存在于内存中的绑定会丢失。原 terminal 的创建环境中没有最终 session ID，名称也不是恢复 session 时使用的 `[session-id-prefix]` 格式，因此 Project Steward 无法再次识别它。这会造成两个用户可见的问题：
 
-- session attention is not attributed to the original session;
-- clicking the session card opens a duplicate terminal instead of focusing the existing one.
+- session 提醒无法归属到原 session；
+- 再次点击 session 卡片时会打开重复 terminal，而不是聚焦已有 terminal。
 
-## Scope
+## 范围
 
-Persist ownership only for terminals created by Project Steward. Do not change provider lifecycle parsing, attention payloads, UI rendering, or terminals opened outside Project Steward.
+只持久化由 Project Steward 创建的 terminal 归属关系。不修改 provider 生命周期解析、attention payload、UI 渲染，也不接管在 Project Steward 之外打开的 terminal。
 
-## Design
+## 设计
 
-### Stable terminal instance identity
+### 稳定的 terminal 实例标识
 
-Every Project Steward-created AI terminal receives a random, privacy-safe instance ID in its terminal creation environment. The instance ID identifies the terminal, not the provider session, and remains available through VS Code terminal persistence and window reloads.
+Project Steward 创建每个 AI terminal 时，都在 terminal 创建环境中写入一个随机且不包含隐私信息的实例 ID。这个 ID 标识 terminal，而不是 provider session，并且会随 VS Code 的 terminal 持久化机制跨窗口重载保留。
 
-### Workspace-scoped binding registry
+### Workspace 级绑定注册表
 
-The extension stores a bounded registry in `context.workspaceState`, keyed by terminal instance ID. A record is either:
+扩展在 `context.workspaceState` 中保存一个有大小限制的注册表，以 terminal 实例 ID 为键。记录分为两种状态：
 
-- `pending`: provider, cwd, creation time, marker path, excluded session IDs, and optional title;
-- `bound`: provider, final session ID, marker path, and run start time.
+- `pending`：保存 provider、cwd、创建时间、marker 路径、创建前已有的 session ID，以及可选标题；
+- `bound`：保存 provider、最终 session ID、marker 路径和本轮运行开始时间。
 
-The terminal instance ID is random and records remain local to the workspace extension host. The registry does not contain prompts or transcript content.
+terminal 实例 ID 为随机值，记录只保存在当前 workspace 的扩展环境中。注册表不保存 prompt 或 transcript 内容。
 
-### Restore flow
+### 恢复流程
 
-On activation, the terminal service reads the registry and enumerates the terminals visible in the current window:
+扩展激活时，terminal service 读取注册表，并枚举当前窗口可见的 terminal：
 
-1. Read the terminal instance ID from each terminal's creation environment.
-2. Restore matching `bound` records directly into the tracked-terminal map.
-3. Restore matching `pending` records into the pending reconciliation queue.
-4. Ignore records whose terminal is not visible in this window. They are retained so another window using the same workspace state cannot be accidentally erased.
+1. 从每个 terminal 的创建环境中读取实例 ID。
+2. 将匹配的 `bound` 记录直接恢复到已跟踪 terminal 映射中。
+3. 将匹配的 `pending` 记录恢复到待匹配队列中。
+4. 当前窗口中不存在对应 terminal 的记录暂时忽略但不删除，避免误删同一 workspace 另一个窗口仍在使用的记录。
 
-When pending reconciliation discovers the provider session, the record is atomically promoted from `pending` to `bound` before subsequent refreshes use it.
+待匹配流程发现 provider session 后，先把记录从 `pending` 原子升级为 `bound`，后续刷新再使用最终 session ID。
 
-### Lifecycle and cleanup
+### 生命周期与清理
 
-- A resumed session terminal is persisted as `bound` immediately.
-- A newly created session terminal is persisted as `pending` immediately.
-- Closing or explicitly untracking the terminal removes its registry record.
-- Writes are serialized and merge with the latest stored registry so rapid state changes do not let an older write overwrite a newer binding.
-- Invalid, oversized, or malformed stored records are ignored. The registry has explicit record and string bounds.
+- 恢复已有 session 时，新 terminal 立即以 `bound` 状态持久化。
+- 新建 session 时，新 terminal 立即以 `pending` 状态持久化。
+- terminal 被关闭或显式取消跟踪时，删除对应注册表记录。
+- 持久化写入串行执行，并在写入前与最新注册表合并，避免快速连续更新时旧写入覆盖新绑定。
+- 无效、超限或格式错误的持久化记录会被忽略。注册表对记录数量和字符串长度设置明确上限。
 
-## Failure handling
+## 错误处理
 
-Persistence is best effort. If `workspaceState.update` fails, current-window in-memory tracking continues to work and the error is logged once through the existing Project Steward output channel. No provider command is blocked by persistence failure.
+持久化采用尽力而为策略。如果 `workspaceState.update` 失败，当前窗口中的内存跟踪仍然继续工作，并通过现有 Project Steward 输出通道记录一次错误。持久化失败不会阻止 provider 命令执行。
 
-## Testing
+## 测试
 
-Regression tests must prove:
+回归测试必须证明：
 
-1. A pending new-session terminal can be reconstructed after creating a new terminal-service instance.
-2. After pending reconciliation, a second terminal-service instance restores the exact final session ID and `getById` returns the original terminal.
-3. Clicking/resuming therefore reuses the restored terminal instead of creating another one.
-4. Closing a terminal removes its persistent binding.
-5. Malformed persisted records are ignored without affecting valid records.
-6. Existing AI session safety, explicit lifecycle attention, and Open Project tests remain green.
+1. 创建新的 terminal 并进入 `pending` 状态后，新建 terminal-service 实例可以恢复它。
+2. `pending` terminal 匹配到 provider session 后，再次新建 terminal-service 实例可以恢复准确的最终 session ID，并且 `getById` 返回原 terminal。
+3. 点击或恢复该 session 时会复用已恢复的 terminal，而不是再创建一个。
+4. 关闭 terminal 后会删除持久化绑定。
+5. 格式错误的持久化记录会被忽略，不影响有效记录恢复。
+6. 现有 AI session 安全测试、显式生命周期提醒测试和 Open Project 测试继续通过。
 
-## Non-goals
+## 非目标
 
-- Recovering terminals created before the instance-ID mechanism exists.
-- Guessing ownership from cwd or recent transcript timestamps.
-- Sharing terminal ownership across different machines or VS Code remote authorities.
+- 恢复实例 ID 机制上线前已经创建的 terminal。
+- 根据 cwd 或最近 transcript 时间猜测 terminal 归属。
+- 在不同机器或不同 VS Code remote authority 之间共享 terminal 归属。
