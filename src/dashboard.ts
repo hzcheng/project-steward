@@ -632,7 +632,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return {
                 key,
                 signal,
-                ownerVisible: vscode.window.state.focused && vscode.window.activeTerminal === owned.terminal.terminal,
                 observedAt: signal?.occurredAtMs,
             };
         });

@@ -8,7 +8,6 @@ export type AiSessionAttentionState = 'pending' | 'running' | 'needsAttention' |
 export interface AiSessionAttentionInput {
     key: string;
     signal?: AiSessionLifecycleSignal;
-    ownerVisible?: boolean;
     observedAt?: number;
 }
 
@@ -59,12 +58,6 @@ export default class AiSessionAttentionMonitor {
                 this.entries.set(input.key, entry);
             }
 
-            if (entry.state === 'needsAttention' && input.ownerVisible && entry.event) {
-                entry.state = 'acknowledged';
-                entry.stateChangedAt = now;
-                events.push(entry.event);
-            }
-
             let signal = input.signal;
             if (!signal?.token || signal.token === entry.lastSignalToken) {
                 continue;
@@ -82,7 +75,7 @@ export default class AiSessionAttentionMonitor {
             }
 
             entry.generation += 1;
-            entry.state = input.ownerVisible ? 'acknowledged' : 'needsAttention';
+            entry.state = 'needsAttention';
             const event: AiSessionAttentionEvent = {
                 eventId: `${input.key}:${entry.generation}:${signal.reason}`,
                 key: input.key,

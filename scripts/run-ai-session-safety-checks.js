@@ -2668,9 +2668,10 @@ function runAttentionMonitorChecks() {
     monitor = new AiSessionAttentionMonitor({ now: () => now });
     events = monitor.evaluate([{ key: 'claude:visible', signal: signal('failed-1', 'needsAttention', 'failed'), ownerVisible: true }]);
     assert.strictEqual(events.length, 1);
-    assert.strictEqual(monitor.getSnapshot()['claude:visible'].state, 'acknowledged', 'visible attention is already seen');
+    assert.strictEqual(monitor.getSnapshot()['claude:visible'].state, 'needsAttention', 'active terminal attention remains unread until explicit handling');
     now++;
-    assert.deepStrictEqual(monitor.evaluate([{ key: 'claude:visible', signal: signal('failed-1', 'needsAttention', 'failed'), ownerVisible: false }]), [], 'seen event is never replayed');
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'claude:visible', signal: signal('failed-1', 'needsAttention', 'failed'), ownerVisible: true }]), [], 'the same active-terminal event is never duplicated');
+    assert.strictEqual(monitor.getSnapshot()['claude:visible'].state, 'needsAttention', 'remaining on the active terminal does not auto-acknowledge attention');
 
     now = 200;
     monitor = new AiSessionAttentionMonitor({ now: () => now });
@@ -2684,9 +2685,9 @@ function runAttentionMonitorChecks() {
     assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'needsAttention');
     now++;
     events = monitor.evaluate([{ key: 'codex:return-visible', signal: signal('complete-visible', 'needsAttention', 'completed'), ownerVisible: true }]);
-    assert.strictEqual(events.length, 1, 'returning to the owning terminal must republish the changed snapshot');
-    assert.strictEqual(events[0].eventId, hiddenEventId, 'visibility acknowledgement retains the exact event');
-    assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'acknowledged');
+    assert.strictEqual(events.length, 0, 'returning to the owning terminal does not acknowledge or replay the event');
+    assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].event.eventId, hiddenEventId);
+    assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'needsAttention');
 }
 
 function runAttentionPayloadChecks() {
