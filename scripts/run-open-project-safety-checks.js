@@ -17,6 +17,7 @@ const protocol = require('../out/openProjects/protocol');
 const projection = require('../out/openProjects/projection');
 const models = require('../out/models');
 const { OpenProjectStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectStore');
+const { OpenProjectCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectCoordinator');
 Module._load = originalModuleLoad;
 
 const SELF = '1'.repeat(32);
@@ -627,12 +628,299 @@ async function runStoreChecks() {
     }
 }
 
+async function runCoordinatorChecks() {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-project-coordinator-'));
+    let currentNow = 1000;
+    let watcherCallback;
+    let watcherClosed = false;
+    let intervalCallback;
+    let intervalMs;
+    let clearedInterval;
+    const intervalHandle = { kind: 'coordinator-interval' };
+    const delivered = [];
+    const coordinator = new OpenProjectCoordinator(tempRoot, {
+        now: () => currentNow,
+        setInterval: (callback, milliseconds) => {
+            intervalCallback = callback;
+            intervalMs = milliseconds;
+            return intervalHandle;
+        },
+        clearInterval: handle => {
+            clearedInterval = handle;
+        },
+        createWatcher: (directory, callback) => {
+            assert.strictEqual(directory, path.join(tempRoot, 'open-projects', 'v1', 'instances'));
+            watcherCallback = callback;
+            return { close: () => { watcherClosed = true; } };
+        },
+        deliverAggregate: async aggregate => {
+            delivered.push(aggregate);
+        },
+    });
+    const observer = new OpenProjectStore(tempRoot, OTHER);
+
+    try {
+        assert.strictEqual(intervalMs, 5000);
+        assert.strictEqual(typeof watcherCallback, 'function');
+        assert.strictEqual(typeof intervalCallback, 'function');
+
+        await assert.rejects(
+            coordinator.publish({ ...makePublication(), leaseUpdatedAtMs: 1000 }),
+            /unexpected fields/
+        );
+        assert.deepStrictEqual((await observer.scan(currentNow)).registrations, []);
+
+        await coordinator.publish(makePublication());
+        const initialHeartbeat = (await observer.scan(currentNow)).registrations[0];
+        assert.strictEqual(initialHeartbeat.lastFocusedAtMs, 0);
+        assert.strictEqual(initialHeartbeat.leaseUpdatedAtMs, 1000);
+        assert.strictEqual(delivered.length, 1);
+        assert.strictEqual(delivered[0].observedAtMs, 1000);
+
+        currentNow = 2000;
+        await coordinator.publish(makePublication({ sequence: 2, followsFocusEvent: true }));
+        const firstFocus = (await observer.scan(currentNow)).registrations[0];
+        assert.strictEqual(firstFocus.lastFocusedAtMs, 2000);
+        assert.strictEqual(firstFocus.leaseUpdatedAtMs, 2000);
+        assert.strictEqual(delivered.length, 2);
+
+        currentNow = 3000;
+        await coordinator.publish(makePublication({ sequence: 3, followsFocusEvent: false }));
+        const heartbeat = (await observer.scan(currentNow)).registrations[0];
+        assert.strictEqual(heartbeat.lastFocusedAtMs, 2000);
+        assert.strictEqual(heartbeat.leaseUpdatedAtMs, 3000);
+        assert.strictEqual(delivered.length, 2);
+
+        await assert.rejects(
+            coordinator.publish(makePublication({ instanceId: OLDER, sequence: 4 })),
+            /different instanceId/
+        );
+
+        currentNow = 4000;
+        await coordinator.publish(makePublication({
+            sequence: 4,
+            projects: [makeRecord({ name: 'Changed' })],
+        }));
+        assert.strictEqual(delivered.length, 3);
+
+        currentNow = 5000;
+        await coordinator.publish(makePublication({
+            sequence: 5,
+            followsFocusEvent: true,
+            projects: [makeRecord({ name: 'Changed' })],
+        }));
+        assert.strictEqual(delivered.length, 4);
+        assert.strictEqual(delivered[3].observedAtMs, 5000);
+
+        currentNow = 36_001;
+        await coordinator.scanAndDeliver();
+        assert.strictEqual(delivered.length, 5);
+        assert.deepStrictEqual(delivered[4].registrations, []);
+
+        currentNow = 37_000;
+        await coordinator.unregister({ protocolVersion: 1, instanceId: SELF });
+        assert.deepStrictEqual((await observer.scan(currentNow)).registrations, []);
+        await assert.rejects(
+            coordinator.unregister({ protocolVersion: 1, instanceId: OLDER }),
+            /different instanceId/
+        );
+    } finally {
+        coordinator.dispose();
+        assert.strictEqual(watcherClosed, true);
+        assert.strictEqual(clearedInterval, intervalHandle);
+        await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+
+    let releaseFocusWrite;
+    let focusWriteEnteredResolve;
+    const focusWriteEntered = new Promise(resolve => { focusWriteEnteredResolve = resolve; });
+    const focusWriteGate = new Promise(resolve => { releaseFocusWrite = resolve; });
+    let mutationQueue = Promise.resolve();
+    let persistedRegistration;
+    const concurrentStore = {
+        write: registration => {
+            const write = mutationQueue.then(async () => {
+                if (registration.sequence === 1) {
+                    focusWriteEnteredResolve();
+                    await focusWriteGate;
+                }
+                persistedRegistration = registration;
+            });
+            mutationQueue = write.then(() => undefined, () => undefined);
+            return write;
+        },
+        remove: async () => { persistedRegistration = undefined; },
+        scan: async () => {
+            await mutationQueue;
+            return {
+                registrations: persistedRegistration ? [persistedRegistration] : [],
+                counters: {},
+            };
+        },
+    };
+    const concurrentCoordinator = new OpenProjectCoordinator('/unused-concurrent-root', {
+        now: () => 1000,
+        setInterval: () => 'concurrent-interval',
+        clearInterval: () => undefined,
+        createWatcher: () => ({ close: () => undefined }),
+        deliverAggregate: async () => undefined,
+        createStore: () => concurrentStore,
+    });
+    try {
+        const focusPublish = concurrentCoordinator.publish(makePublication({ followsFocusEvent: true }));
+        await focusWriteEntered;
+        const heartbeatPublish = concurrentCoordinator.publish(makePublication({
+            sequence: 2,
+            followsFocusEvent: false,
+        }));
+        await new Promise(resolve => setImmediate(resolve));
+        releaseFocusWrite();
+        await Promise.all([focusPublish, heartbeatPublish]);
+        assert.strictEqual(
+            persistedRegistration.lastFocusedAtMs,
+            1000,
+            'an overlapping heartbeat must preserve the pending focus publication timestamp'
+        );
+    } finally {
+        concurrentCoordinator.dispose();
+    }
+
+    const eventRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-project-events-'));
+    let eventNow = 1000;
+    let fireWatcher;
+    let fireInterval;
+    let coordinatorStore;
+    let scanCalls = 0;
+    let blockNextScan = false;
+    const scanBlocked = { promise: undefined, resolve: undefined };
+    scanBlocked.promise = new Promise(resolve => { scanBlocked.resolve = resolve; });
+    const eventDeliveries = [];
+    const eventCoordinator = new OpenProjectCoordinator(eventRoot, {
+        now: () => eventNow,
+        setInterval: callback => {
+            fireInterval = callback;
+            return 'event-interval';
+        },
+        clearInterval: () => undefined,
+        createWatcher: (_directory, callback) => {
+            fireWatcher = callback;
+            return { close: () => undefined };
+        },
+        deliverAggregate: async aggregate => {
+            eventDeliveries.push(aggregate);
+        },
+        createStore: (rootDirectory, instanceId) => {
+            coordinatorStore = new OpenProjectStore(rootDirectory, instanceId);
+            const originalScan = coordinatorStore.scan.bind(coordinatorStore);
+            coordinatorStore.scan = async nowMs => {
+                scanCalls += 1;
+                if (blockNextScan) {
+                    blockNextScan = false;
+                    await scanBlocked.promise;
+                }
+                return originalScan(nowMs);
+            };
+            return coordinatorStore;
+        },
+    });
+
+    try {
+        await eventCoordinator.publish(makePublication());
+        const baselineScans = scanCalls;
+        blockNextScan = true;
+        const inFlight = eventCoordinator.scanAndDeliver();
+        await new Promise(resolve => setImmediate(resolve));
+        fireWatcher();
+        fireWatcher();
+        fireWatcher();
+        scanBlocked.resolve();
+        await inFlight;
+        assert.strictEqual(scanCalls, baselineScans + 2, 'watcher events should coalesce into one follow-up scan');
+
+        const peerStore = new OpenProjectStore(eventRoot, OTHER);
+        eventNow = 2000;
+        await peerStore.write(makeRegistration(OTHER, 1900, '/work/peer', {
+            sequence: 1,
+            leaseUpdatedAtMs: 2000,
+        }));
+        const beforePolling = eventDeliveries.length;
+        fireInterval();
+        for (let attempt = 0; attempt < 50 && eventDeliveries.length === beforePolling; attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.strictEqual(eventDeliveries.length, beforePolling + 1, 'fallback polling should recover a missed watcher event');
+        assert.deepStrictEqual(
+            eventDeliveries[eventDeliveries.length - 1].registrations.map(value => value.instanceId),
+            [SELF, OTHER].sort()
+        );
+    } finally {
+        eventCoordinator.dispose();
+        await fs.promises.rm(eventRoot, { recursive: true, force: true });
+    }
+}
+
+async function runCoordinatorWiringChecks() {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-project-wiring-'));
+    const registeredCommands = new Map();
+    const executedCommands = [];
+    const vscode = {
+        workspace: { workspaceFolders: [] },
+        commands: {
+            registerCommand: (command, callback) => {
+                registeredCommands.set(command, callback);
+                return { dispose: () => registeredCommands.delete(command) };
+            },
+            executeCommand: async (command, argument) => {
+                executedCommands.push({ command, argument });
+                return undefined;
+            },
+        },
+    };
+    const previousModuleLoad = Module._load;
+    Module._load = function (request, parent, isMain) {
+        if (request === 'vscode') {
+            return vscode;
+        }
+        return previousModuleLoad.call(this, request, parent, isMain);
+    };
+
+    const context = {
+        globalStoragePath: tempRoot,
+        globalStorageUri: { scheme: 'file' },
+        subscriptions: [],
+    };
+    try {
+        const extension = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/extension');
+        await extension.activate(context);
+        const publish = registeredCommands.get('_projectStewardOpenProjects.bridge.publish');
+        const unregister = registeredCommands.get('_projectStewardOpenProjects.bridge.unregister');
+        assert.strictEqual(typeof publish, 'function');
+        assert.strictEqual(typeof unregister, 'function');
+
+        await publish(makePublication({ followsFocusEvent: true }));
+        const aggregateDelivery = executedCommands.filter(
+            value => value.command === '_projectStewardOpenProjects.workspace.aggregate'
+        ).pop();
+        assert.ok(aggregateDelivery, 'production wiring should deliver an open-project aggregate');
+        assert.strictEqual(aggregateDelivery.argument.registrations[0].instanceId, SELF);
+        await unregister({ protocolVersion: 1, instanceId: SELF });
+    } finally {
+        Module._load = previousModuleLoad;
+        for (const disposable of context.subscriptions.slice().reverse()) {
+            disposable.dispose();
+        }
+        await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+}
+
 async function main() {
     runProtocolChecks();
     runIdentityChecks();
     runRecordChecks();
     runProjectionChecks();
     await runStoreChecks();
+    await runCoordinatorChecks();
+    await runCoordinatorWiringChecks();
     console.log('Open project safety checks passed.');
 }
 

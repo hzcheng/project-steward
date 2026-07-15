@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 
 import { resolveBridgeStorageRoot } from './bridgeStorageRoot';
 import { LocalStore } from './localStore';
+import { OpenProjectCoordinator } from './openProjectCoordinator';
 import { parseRoutingChallenge } from '../../../shared/attention-bridge/protocol';
 import { ProbeSnapshot } from '../../../shared/attention-bridge/storeProtocol';
 import { createWorkspaceIdentity } from '../../../shared/attention-bridge/workspaceIdentity';
@@ -19,6 +20,9 @@ const WORKSPACE_AGGREGATE = '_projectStewardAttentionSpike.workspace.aggregate';
 const PRODUCTION_BRIDGE_PUBLISH = '_projectStewardAttention.bridge.publish';
 const PRODUCTION_WORKSPACE_AGGREGATE = '_projectStewardAttention.workspace.aggregate';
 const PRODUCTION_BRIDGE_ACKNOWLEDGE = '_projectStewardAttention.bridge.acknowledge';
+const OPEN_PROJECT_BRIDGE_PUBLISH = '_projectStewardOpenProjects.bridge.publish';
+const OPEN_PROJECT_BRIDGE_UNREGISTER = '_projectStewardOpenProjects.bridge.unregister';
+const OPEN_PROJECT_WORKSPACE_AGGREGATE = '_projectStewardOpenProjects.workspace.aggregate';
 
 interface AggregateState {
     bridgeProcessId: string;
@@ -41,6 +45,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     let lastAggregate = '';
     let scanTimer: NodeJS.Timeout | null = null;
     const acknowledgedEventIds = await store.readAcknowledgements();
+    const openProjectCoordinator = new OpenProjectCoordinator(bridgeRoot, {
+        now: () => Date.now(),
+        setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
+        clearInterval: handle => clearInterval(handle as NodeJS.Timeout),
+        createWatcher: (directory, onDidChange) => {
+            fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+            return fs.watch(directory, onDidChange);
+        },
+        deliverAggregate: aggregate => vscode.commands.executeCommand(
+            OPEN_PROJECT_WORKSPACE_AGGREGATE,
+            aggregate,
+        ),
+    });
 
     function applyAcknowledgements(snapshots: ProbeSnapshot[]): ProbeSnapshot[] {
         return snapshots.map(snapshot => {
@@ -130,6 +147,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await scanAndNotify();
         return { acknowledged: eventIds.length };
     });
+    const openProjectPublishDisposable = vscode.commands.registerCommand(
+        OPEN_PROJECT_BRIDGE_PUBLISH,
+        (raw: unknown) => openProjectCoordinator.publish(raw),
+    );
+    const openProjectUnregisterDisposable = vscode.commands.registerCommand(
+        OPEN_PROJECT_BRIDGE_UNREGISTER,
+        (raw: unknown) => openProjectCoordinator.unregister(raw),
+    );
     const statusDisposable = vscode.commands.registerCommand(BRIDGE_STATUS, async () => {
         const scan = await store.scan(Date.now());
         return {
@@ -179,10 +204,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         publishDisposable,
         productionPublishDisposable,
         productionAcknowledgeDisposable,
+        openProjectPublishDisposable,
+        openProjectUnregisterDisposable,
         statusDisposable,
         watcherDisposable,
         clearDisposable,
         scanRegistration,
+        openProjectCoordinator,
         {
             dispose: () => {
                 if (scanTimer !== null) {
