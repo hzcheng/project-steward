@@ -42,7 +42,7 @@ export function withCurrentWorkspaceState(
     } as Group));
     let decoratedOpenProjects = (openProjects || []).map(project => ({
         ...project,
-        isCurrentWorkspace: true,
+        isCurrentWorkspace: project.openProjectCardKind !== 'projectNavigation',
     } as Project));
 
     return { groups: decoratedGroups, openProjects: decoratedOpenProjects };

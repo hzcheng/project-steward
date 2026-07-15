@@ -613,16 +613,32 @@ function runDashboardBridgeLifecycleChecks() {
     const openProjects = extractFunctionBody(dashboard, 'getOpenProjects');
     const refreshAfterMutation = extractFunctionBody(dashboard, 'refreshAfterMutation');
     const showSteward = extractFunctionBody(dashboard, 'showSteward');
+    const projectedOpenProjects = extractFunctionBody(dashboard, 'getOpenProjectCards');
+    const selectedProjectCase = dashboard.slice(
+        dashboard.indexOf("case 'selected-project':"),
+        dashboard.indexOf("case 'add-project':")
+    );
 
     assert.ok(rawOpenProjects.includes('getOpenProjectsFromWorkspace('));
     assert.ok(!rawOpenProjects.includes('withAiSessions('));
     assert.ok(openProjects.includes('withAiSessions(getRawOpenProjects())'));
     assert.ok(dashboard.includes("import OpenProjectBridgeClient from './openProjects/bridgeClient';"));
-    assert.ok(dashboard.includes("import { createOpenProjectRecords } from './openProjects/projection';"));
+    assert.ok(dashboard.includes("import { createOpenProjectRecords, projectOpenProjectCards } from './openProjects/projection';"));
     assert.ok(dashboard.includes('let openProjectAggregate: OpenProjectAggregate | null = null;'));
     assert.ok(dashboard.includes('new OpenProjectBridgeClient('));
     assert.ok(dashboard.includes('createOpenProjectRecords(getRawOpenProjects())'));
     assert.ok(dashboard.includes('context.subscriptions.push(openProjectBridgeClient);'));
+    assert.ok(dashboard.includes('get openProjects() { return getOpenProjectCards() }'));
+    assert.ok(projectedOpenProjects.includes('projectOpenProjectCards(getOpenProjects(), openProjectAggregate, openProjectBridgeClient.instanceId)'));
+    assert.ok(projectedOpenProjects.includes("card.openProjectCardKind === 'projectNavigation'"));
+    assert.ok(projectedOpenProjects.includes('openProjectNavigationCardsById = new Map('));
+    assert.ok(selectedProjectCase.includes('getOpenProjectCards();'));
+    assert.ok(selectedProjectCase.includes('openProjectNavigationCardsById.get(projectId)'));
+    assert.ok(selectedProjectCase.indexOf('projectService.getProject(projectId)') < selectedProjectCase.indexOf('getOpenProjects().find'));
+    assert.ok(selectedProjectCase.indexOf('getOpenProjects().find') < selectedProjectCase.indexOf('openProjectNavigationCardsById.get(projectId)'));
+    assert.ok(selectedProjectCase.includes('await openProject(project, isProjectNavigation ? ProjectOpenType.Default : projectOpenType);'));
+    assert.ok(!selectedProjectCase.includes('e.uri'));
+    assert.ok(!selectedProjectCase.includes('projectUri'));
     assert.ok(dashboard.includes('vscode.window.onDidChangeWindowState(windowState =>'));
     assert.ok(dashboard.includes('if (windowState.focused)'));
     assert.ok(dashboard.includes('publishOpenProjects(true);'));

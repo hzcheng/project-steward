@@ -148,6 +148,11 @@ function initProjects() {
             return;
         }
 
+        if (projectDiv.hasAttribute("data-project-navigation")) {
+            openProject(dataId, ProjectOpenType.Default);
+            return;
+        }
+
         var currentWindow = e.ctrlKey || e.metaKey;
         var newWindow = e.button === 1;
         openProject(dataId, currentWindow ? ProjectOpenType.CurrentWindow : newWindow ? ProjectOpenType.NewWindow : ProjectOpenType.Default);

@@ -109,13 +109,17 @@ function runCurrentWorkspaceStateChecks() {
     const saved = { id: 'saved', name: 'Saved', path: '/work/saved' };
     const other = { id: 'other', name: 'Other', path: '/work/other' };
     const groups = [{ id: 'group', groupName: 'Work', projects: [saved, other] }];
-    const openProjects = [{ id: '__openProjects-0', name: 'Saved', path: '/work/saved' }];
+    const openProjects = [
+        { id: '__openProjects-0', name: 'Saved', path: '/work/saved', openProjectCardKind: 'current' },
+        { id: '__openProjectNavigation-other', name: 'Other Window', path: '/work/navigation', openProjectCardKind: 'projectNavigation' },
+    ];
 
     const result = currentWorkspaceState.withCurrentWorkspaceState(groups, openProjects, ['saved']);
 
     assert.strictEqual(result.groups[0].projects[0].isCurrentWorkspace, true);
     assert.strictEqual(result.groups[0].projects[1].isCurrentWorkspace, false);
     assert.strictEqual(result.openProjects[0].isCurrentWorkspace, true);
+    assert.strictEqual(result.openProjects[1].isCurrentWorkspace, false);
     assert.strictEqual(saved.isCurrentWorkspace, undefined);
     assert.strictEqual(openProjects[0].isCurrentWorkspace, undefined);
     assert.notStrictEqual(result.groups[0], groups[0]);
@@ -681,6 +685,7 @@ function runWebviewContentChecks() {
     const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
     const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const insideProjectClick = extractFunctionBody(webviewProjectScripts, 'onInsideProjectClick');
     const evaluateAttentionFunction = extractFunctionBody(dashboard, 'evaluateAiSessionAttention');
     const withAiSessionsFunction = extractFunctionBody(dashboard, 'withAiSessions');
     const singleArchiveFunction = extractFunctionBody(dashboard, 'archiveAiSession');
@@ -707,6 +712,14 @@ function runWebviewContentChecks() {
     assert.ok(!webviewContent.includes('function getAddProjectDiv'));
     assert.ok(webviewContent.includes('class="settings-button" data-action="open-settings"'));
     assert.ok(webviewProjectScripts.includes("type: 'open-settings'"));
+    assert.ok(webviewProjectScripts.includes('projectId,'));
+    assert.ok(!webviewProjectScripts.includes('projectUri'));
+    assert.ok(insideProjectClick.includes('projectDiv.hasAttribute("data-project-navigation")'));
+    assert.ok(insideProjectClick.includes('openProject(dataId, ProjectOpenType.Default)'));
+    assert.ok(
+        insideProjectClick.indexOf('projectDiv.hasAttribute("data-project-navigation")')
+            < insideProjectClick.indexOf('var currentWindow = e.ctrlKey || e.metaKey')
+    );
     assert.ok(webviewProjectScripts.includes("message.type === 'ai-session-attention-projects-updated'"));
     assert.ok(webviewProjectScripts.includes('syncAiSessionAttentionRows(projectDiv, summary ? summary.sessions : [])'));
     assert.ok(webviewProjectScripts.includes(".project[data-attention-project-key]"));
@@ -848,6 +861,7 @@ function runWebviewContentChecks() {
     assert.ok(projectWindowColorService.includes("'commandCenter.activeBorder': auraPalette.commandBorder"));
     assert.ok(!extractMethodBody(projectWindowColorService, 'getWindowColorCustomizations').includes("'activityBar.background'"));
     assert.ok(webviewContent.includes('style="${projectStyle}"'));
+    assert.ok(webviewContent.includes("isReadOnlyProject || isProjectNavigation ? ' data-readonly-project' : ''"));
     assert.ok(webviewContent.includes("project.isCurrentWorkspace ? ' data-current-workspace' : ''"));
     assert.ok(styles.includes('--project-color'));
     assert.ok(styles.includes('.project-aura'));
@@ -907,7 +921,17 @@ function runCurrentWorkspaceRenderingChecks() {
             otherStorageHasData: false,
             currentWorkspaceProjectIds: ['saved'],
             openProjects: [
-                { id: '__openProjects-0', name: 'Saved', path: '/work/saved', color: '#00aacc' },
+                {
+                    id: '__openProjects-0', name: 'Saved', path: '/work/saved', color: '#00aacc',
+                    openProjectCardKind: 'current', codexSessions: [{ id: 'session', name: 'Session' }],
+                },
+                {
+                    id: '__openProjectNavigation-other', name: 'Other Window', path: '/work/other-window',
+                    description: 'Other workspace', remoteType: models.ProjectRemoteType.SSH,
+                    color: '#cc00aa', openProjectCardKind: 'projectNavigation', showSaveAction: true,
+                    favorite: true, aiSessionAttentionCount: 2,
+                    codexSessions: [{ id: 'leaked-session', name: 'Leaked Session' }],
+                },
             ],
         },
         true
@@ -916,6 +940,7 @@ function runCurrentWorkspaceRenderingChecks() {
     const savedTags = getCardTags('saved');
     const otherTags = getCardTags('other');
     const openTags = getCardTags('__openProjects-0');
+    const navigationTags = getCardTags('__openProjectNavigation-other');
 
     assert.strictEqual(savedTags.length, 2);
     assert.ok(savedTags.every(tag => tag.includes('data-current-workspace')));
@@ -923,6 +948,31 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.ok(!otherTags[0].includes('data-current-workspace'));
     assert.strictEqual(openTags.length, 1);
     assert.ok(openTags[0].includes('data-current-workspace'));
+    assert.strictEqual(navigationTags.length, 1);
+    assert.ok(!navigationTags[0].includes('data-current-workspace'));
+    assert.ok(!navigationTags[0].includes('data-open-project'));
+    assert.ok(navigationTags[0].includes('data-project-navigation'));
+    assert.ok(navigationTags[0].includes('data-readonly-project'));
+    assert.ok(navigationTags[0].includes('title="Switch to this project"'));
+    assert.match(html, /data-open-project/);
+    assert.match(html, /data-project-navigation/);
+    assert.match(html, /title="Switch to this project"/);
+    assert.strictEqual((html.match(/class="codex-sessions"/g) || []).length, 1);
+    assert.ok(!navigationTags[0].includes('data-attention-project-key'));
+    assert.ok(!navigationTags[0].includes('data-has-favorite-toggle'));
+    assert.ok(!navigationTags[0].includes('data-has-save-action'));
+    const navigationCardStart = html.indexOf(navigationTags[0]);
+    const navigationCardEnd = html.indexOf('</div>\n</div>', navigationCardStart);
+    const navigationHtml = html.slice(navigationCardStart, navigationCardEnd);
+    assert.ok(!navigationHtml.includes('project-save-badge'));
+    assert.ok(!navigationHtml.includes('project-favorite-badge'));
+    assert.ok(!navigationHtml.includes('project-actions-wrapper'));
+    assert.ok(!navigationHtml.includes('project-ai-attention-badge'));
+    assert.ok(!navigationHtml.includes('project-codex-badge'));
+    assert.ok(!navigationHtml.includes('class="codex-sessions"'));
+    assert.ok(!navigationHtml.includes('Leaked Session'));
+    assert.ok(navigationHtml.includes('title="SSH Project"'));
+    assert.match(navigationHtml, /class="project-description" title="Other workspace">\s*Other workspace\s*<\/p>/);
 }
 
 function runFavoriteRenderingChecks() {
@@ -1351,6 +1401,38 @@ function runBatchAiSessionWebviewChecks() {
     assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.shift())), {
         type: 'request-ai-session-attention-state',
     });
+    messages.length = 0;
+
+    const navigationProject = {
+        getAttribute: attribute => attribute === 'data-id' ? '__openProjectNavigation-other' : null,
+        hasAttribute: attribute => attribute === 'data-project-navigation' || attribute === 'data-readonly-project',
+    };
+    const navigationTarget = {
+        closest: selector => selector === '.project' || selector === '.project[data-id]'
+            ? navigationProject
+            : null,
+    };
+    eventListeners.click({ button: 0, ctrlKey: true, metaKey: false, target: navigationTarget });
+    eventListeners.click({ button: 0, ctrlKey: false, metaKey: true, target: navigationTarget });
+    eventListeners.mousedown({ button: 1, ctrlKey: false, metaKey: false, target: navigationTarget });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [
+        {
+            type: 'selected-project',
+            projectId: '__openProjectNavigation-other',
+            projectOpenType: 0,
+        },
+        {
+            type: 'selected-project',
+            projectId: '__openProjectNavigation-other',
+            projectOpenType: 0,
+        },
+        {
+            type: 'selected-project',
+            projectId: '__openProjectNavigation-other',
+            projectOpenType: 0,
+        },
+    ]);
+    assert.ok(messages.every(message => !Object.prototype.hasOwnProperty.call(message, 'uri')));
     messages.length = 0;
 
     windowEventListeners.message({ data: {

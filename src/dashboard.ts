@@ -35,7 +35,7 @@ import { getCurrentWorkspaceProjectIds as resolveCurrentWorkspaceProjectIds } fr
 import { withFavoriteProjectOrder, withToggledProjectFavorite } from './projects/favoriteProjectOrder';
 import OpenProjectBridgeClient from './openProjects/bridgeClient';
 import type { OpenProjectAggregate } from './openProjects/protocol';
-import { createOpenProjectRecords } from './openProjects/projection';
+import { createOpenProjectRecords, projectOpenProjectCards } from './openProjects/projection';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -145,6 +145,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     const provider = new SidebarStewardViewProvider();
     let openProjectAggregate: OpenProjectAggregate | null = null;
+    let openProjectNavigationCardsById = new Map<string, Project>();
     const openProjectBridgeClient = new OpenProjectBridgeClient(
         createOpenProjectRecords(getRawOpenProjects()),
         aggregate => {
@@ -199,7 +200,7 @@ export function activate(context: vscode.ExtensionContext) {
         get config() { return getStewardConfiguration() },
         get otherStorageHasData() { return projectService.otherStorageHasData() },
         get favoritesGroupCollapsed() { return context.globalState.get(FAVORITES_GROUP_COLLAPSED_KEY) as boolean },
-        get openProjects() { return getOpenProjects() },
+        get openProjects() { return getOpenProjectCards() },
         get openProjectsGroupCollapsed() { return context.globalState.get(OPEN_PROJECTS_GROUP_COLLAPSED_KEY) as boolean },
         get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() },
     };
@@ -697,12 +698,18 @@ export function activate(context: vscode.ExtensionContext) {
                 let projectOpenType = e.projectOpenType as ProjectOpenType;
 
                 let project = projectService.getProject(projectId) || getOpenProjects().find(p => p.id === projectId);
+                let isProjectNavigation = false;
+                if (project === null || project === undefined) {
+                    getOpenProjectCards();
+                    project = openProjectNavigationCardsById.get(projectId);
+                    isProjectNavigation = project !== null && project !== undefined;
+                }
                 if (project == null) {
                     vscode.window.showWarningMessage("Selected Project not found.");
                     break;
                 }
 
-                await openProject(project, projectOpenType);
+                await openProject(project, isProjectNavigation ? ProjectOpenType.Default : projectOpenType);
                 break;
             case 'add-project':
                 groupId = e.groupId as string;
@@ -2238,6 +2245,16 @@ export function activate(context: vscode.ExtensionContext) {
 
     function getOpenProjects(): Project[] {
         return withAiSessions(getRawOpenProjects());
+    }
+
+    function getOpenProjectCards(): Project[] {
+        let cards = projectOpenProjectCards(getOpenProjects(), openProjectAggregate, openProjectBridgeClient.instanceId);
+        openProjectNavigationCardsById = new Map(
+            cards
+                .filter(card => card.openProjectCardKind === 'projectNavigation')
+                .map(card => [card.id, card] as [string, Project])
+        );
+        return cards;
     }
 
     function publishOpenProjects(followsFocusEvent = false): void {

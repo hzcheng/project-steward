@@ -317,6 +317,8 @@ function getProjectDiv(
     isReadOnlyProject: boolean = false,
     isDraggableVirtualProject: boolean = false
 ) {
+    var isProjectNavigation = project.openProjectCardKind === 'projectNavigation';
+    var isCurrentOpenProject = isReadOnlyProject && !isProjectNavigation;
     var borderStyle = `background: ${project.color};`;
     var projectStyle = project.color ? `--project-color: ${escapeStyleValue(project.color)};` : '';
     var remoteType = getRemoteType(project);
@@ -325,12 +327,14 @@ function getProjectDiv(
     var codexSessions = project.codexSessions || [];
     var kimiSessions = project.kimiSessions || [];
     var claudeSessions = project.claudeSessions || [];
-    var searchText = escapeAttribute(getProjectSearchText(project));
+    var searchText = escapeAttribute(isProjectNavigation
+        ? `${project.name || ''} ${description}`.toLowerCase()
+        : getProjectSearchText(project));
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
     var favoriteTitle = project.favorite ? 'Remove From Favorites' : 'Add To Favorites';
-    var projectActions = isReadOnlyProject
+    var projectActions = isReadOnlyProject || isProjectNavigation
         ? ''
         : `<span data-action="color" title="Edit Color">${Icons.palette
         }</span>
@@ -346,37 +350,38 @@ function getProjectDiv(
         </div>`
         : '';
     var favoriteBadgeIcon = project.favorite ? Icons.starFilled : Icons.star;
-    var favoriteBadge = isReadOnlyProject
+    var favoriteBadge = isReadOnlyProject || isProjectNavigation
         ? ''
         : `<span data-action="favorite" class="project-favorite-badge ${project.favorite ? 'active' : ''}" title="${favoriteTitle}">${favoriteBadgeIcon}</span>`;
-    var saveBadge = project.showSaveAction
+    var saveBadge = !isProjectNavigation && project.showSaveAction
         ? `<span data-action="save" class="project-save-badge" title="Save Current Project">${Icons.save}</span>`
         : '';
     var aiSessionCount = codexSessions.length + kimiSessions.length + claudeSessions.length;
     var attentionCount = codexSessions.concat(kimiSessions).concat(claudeSessions).filter(session => session.attention?.unread).length;
     var projectAttentionCount = project.aiSessionAttentionCount ?? attentionCount;
     var attentionProjectKey = getAttentionProjectKey(project.attentionProjectPath || project.path);
-    var projectAttentionBadge = !isReadOnlyProject && projectAttentionCount
+    var projectAttentionBadge = !isReadOnlyProject && !isProjectNavigation && projectAttentionCount
         ? `<span class="project-ai-attention-badge" title="${projectAttentionCount} AI session${projectAttentionCount === 1 ? ' needs' : 's need'} attention">${projectAttentionCount}</span>`
         : '';
-    var aiSessionBadge = isReadOnlyProject && aiSessionCount
+    var aiSessionBadge = isCurrentOpenProject && aiSessionCount
         ? `<span class="project-codex-badge${attentionCount ? ' has-attention' : ''}" title="AI Sessions">AI ${aiSessionCount}${attentionCount ? ` <b class="ai-session-attention-count">${attentionCount}</b>` : ''}</span>`
         : '';
-    var codexSessionSection = isReadOnlyProject ? getAiSessionsDiv(project) : '';
+    var codexSessionSection = isCurrentOpenProject ? getAiSessionsDiv(project) : '';
 
     var isRemote = remoteType !== ProjectRemoteType.None;
 
     return `
 <div class="project-container"${isVirtualProject && !isDraggableVirtualProject ? ' data-nodrag' : ''}>
     <div class="project" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
-        }${attentionProjectKey ? ` data-attention-project-key="${attentionProjectKey}"` : ''
+        }${attentionProjectKey && !isProjectNavigation ? ` data-attention-project-key="${attentionProjectKey}"` : ''
         }${isVirtualProject ? ' data-virtual-project' : ''
-        }${isReadOnlyProject ? ' data-readonly-project' : ''
-        }${isReadOnlyProject ? ' data-open-project' : ''
-        }${project.codexSessionsExpanded ? ' data-codex-expanded' : ''
-        }${!isReadOnlyProject ? ' data-has-favorite-toggle' : ''
-        }${project.showSaveAction ? ' data-has-save-action' : ''
-        }${project.favorite ? ' data-favorite-project' : ''
+        }${isReadOnlyProject || isProjectNavigation ? ' data-readonly-project' : ''
+        }${isCurrentOpenProject ? ' data-open-project' : ''
+        }${isProjectNavigation ? ' data-project-navigation title="Switch to this project"' : ''
+        }${!isProjectNavigation && project.codexSessionsExpanded ? ' data-codex-expanded' : ''
+        }${!isReadOnlyProject && !isProjectNavigation ? ' data-has-favorite-toggle' : ''
+        }${!isProjectNavigation && project.showSaveAction ? ' data-has-save-action' : ''
+        }${!isProjectNavigation && project.favorite ? ' data-favorite-project' : ''
         }${project.isCurrentWorkspace ? ' data-current-workspace' : ''
         }>
         <div class="project-aura"></div>
