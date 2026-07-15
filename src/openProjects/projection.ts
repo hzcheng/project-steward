@@ -30,10 +30,13 @@ function normalizeUriAuthority(authority: string): string {
 }
 
 export function normalizeOpenProjectIdentity(uri: string): string {
-    const normalized = (uri || '').trim().replace(/\\/g, '/');
-    const uriMatch = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/]*)(.*)$/.exec(normalized);
+    const value = uri || '';
+    const uriMatch = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/]*)(.*)$/.exec(value);
     if (!uriMatch) {
-        return removeTrailingSeparators(normalized);
+        if (/^[A-Za-z]:[\\/]/.test(value)) {
+            return removeTrailingSeparators(value.replace(/\\/g, '/'));
+        }
+        return removeTrailingSeparators(value);
     }
     const scheme = uriMatch[1].toLowerCase();
     const authority = normalizeUriAuthority(uriMatch[2]);
@@ -107,17 +110,39 @@ export function createOpenProjectRecords(projects: Project[]): OpenProjectRecord
 }
 
 function candidateWins(candidate: NavigationCandidate, previous: NavigationCandidate): boolean {
-    return candidate.lastFocusedAtMs > previous.lastFocusedAtMs
-        || (candidate.lastFocusedAtMs === previous.lastFocusedAtMs
-            && (candidate.project.ordinal < previous.project.ordinal
-                || (candidate.project.ordinal === previous.project.ordinal
-                    && candidate.instanceId.localeCompare(previous.instanceId) < 0)));
+    if (candidate.lastFocusedAtMs !== previous.lastFocusedAtMs) {
+        return candidate.lastFocusedAtMs > previous.lastFocusedAtMs;
+    }
+    if (candidate.project.ordinal !== previous.project.ordinal) {
+        return candidate.project.ordinal < previous.project.ordinal;
+    }
+    const instanceComparison = compareText(candidate.instanceId, previous.instanceId);
+    if (instanceComparison !== 0) {
+        return instanceComparison < 0;
+    }
+    return compareText(createProjectDescriptorKey(candidate.project), createProjectDescriptorKey(previous.project)) < 0;
 }
 
 function compareCandidates(left: NavigationCandidate, right: NavigationCandidate): number {
     return right.lastFocusedAtMs - left.lastFocusedAtMs
         || left.project.ordinal - right.project.ordinal
-        || left.identity.localeCompare(right.identity);
+        || compareText(left.identity, right.identity);
+}
+
+function createProjectDescriptorKey(project: OpenProjectRecord): string {
+    return JSON.stringify([
+        project.localProjectId,
+        project.ordinal,
+        project.name,
+        project.description,
+        project.uri,
+        project.remoteType,
+        project.color || '',
+    ]);
+}
+
+function compareText(left: string, right: string): number {
+    return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function createNavigationCard(candidate: NavigationCandidate): Project {

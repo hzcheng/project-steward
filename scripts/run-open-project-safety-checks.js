@@ -181,6 +181,13 @@ function runProtocolChecks() {
         () => protocol.validateOpenProjectAggregate({ ...aggregate, semanticRevision: '' }),
         /semanticRevision/
     );
+    assertRejectsValidation(
+        () => protocol.validateOpenProjectAggregate({
+            ...aggregate,
+            registrations: [registration, { ...registration, sequence: registration.sequence + 1 }],
+        }),
+        /duplicate instanceId/
+    );
 
     const baseRevision = protocol.createOpenProjectSemanticRevision([registration]);
     assert.strictEqual(
@@ -208,11 +215,39 @@ function runProtocolChecks() {
             makeRegistration(OLDER, 2000),
         ])
     );
+    const tiedProjectAlpha = makeRecord({
+        name: 'Alpha',
+        description: 'First',
+        remoteType: 'ssh',
+        color: '#111',
+    });
+    const tiedProjectBeta = makeRecord({
+        name: 'Beta',
+        description: 'Second',
+        remoteType: 'remote',
+        color: '#222',
+    });
+    assert.strictEqual(
+        protocol.createOpenProjectSemanticRevision([makeRegistration(SELF, 4000, '/work/shared', {
+            projects: [tiedProjectAlpha, tiedProjectBeta],
+        })]),
+        protocol.createOpenProjectSemanticRevision([makeRegistration(SELF, 4000, '/work/shared', {
+            projects: [tiedProjectBeta, tiedProjectAlpha],
+        })])
+    );
 }
 
 function runIdentityChecks() {
     assert.strictEqual(projection.normalizeOpenProjectIdentity('/work/shared/'), '/work/shared');
     assert.strictEqual(projection.normalizeOpenProjectIdentity('C:\\work\\shared\\'), 'C:/work/shared');
+    assert.notStrictEqual(
+        projection.normalizeOpenProjectIdentity('/work/project '),
+        projection.normalizeOpenProjectIdentity('/work/project')
+    );
+    assert.notStrictEqual(
+        projection.normalizeOpenProjectIdentity('/work/a\\b'),
+        projection.normalizeOpenProjectIdentity('/work/a/b')
+    );
     assert.strictEqual(
         projection.normalizeOpenProjectIdentity('vscode-remote://ssh-remote+one/work/shared/'),
         'vscode-remote://ssh-remote+one/work/shared'
@@ -333,6 +368,25 @@ function runProjectionChecks() {
         projection.projectOpenProjectCards(current, null, SELF).map(card => card.name),
         ['Current']
     );
+
+    const duplicateAlpha = makeRegistration(OLDER, 2000, '/work/duplicate', {
+        projects: [makeRecord({ name: 'Alpha', uri: '/work/duplicate' })],
+    });
+    const duplicateBeta = makeRegistration(OLDER, 2000, '/work/duplicate', {
+        projects: [makeRecord({ name: 'Beta', uri: '/work/duplicate' })],
+    });
+    const duplicateForward = projection.projectOpenProjectCards(
+        [],
+        makeAggregate([duplicateAlpha, duplicateBeta]),
+        SELF
+    );
+    const duplicateReverse = projection.projectOpenProjectCards(
+        [],
+        makeAggregate([duplicateBeta, duplicateAlpha]),
+        SELF
+    );
+    assert.deepStrictEqual(duplicateForward.map(card => card.name), ['Alpha']);
+    assert.deepStrictEqual(duplicateReverse, duplicateForward);
 }
 
 runProtocolChecks();

@@ -192,26 +192,29 @@ export function validateOpenProjectAggregate(value: unknown): OpenProjectAggrega
     if (!Array.isArray(aggregate.registrations) || aggregate.registrations.length > MAX_OPEN_PROJECT_RECORDS) {
         throw new Error(`registrations must be an array containing at most ${MAX_OPEN_PROJECT_RECORDS} records`);
     }
+    const registrations = Array.from(aggregate.registrations, validateOpenProjectRegistration);
+    const instanceIds = new Set<string>();
+    for (const registration of registrations) {
+        if (instanceIds.has(registration.instanceId)) {
+            throw new Error('registrations contain a duplicate instanceId');
+        }
+        instanceIds.add(registration.instanceId);
+    }
     return {
         protocolVersion: OPEN_PROJECT_PROTOCOL_VERSION,
         semanticRevision: requireBoundedString(aggregate.semanticRevision, 'semanticRevision'),
         observedAtMs: requireFiniteNonNegativeNumber(aggregate.observedAtMs, 'observedAtMs'),
-        registrations: Array.from(aggregate.registrations, validateOpenProjectRegistration),
+        registrations,
     };
 }
 
 export function createOpenProjectSemanticRevision(registrations: OpenProjectRegistration[]): string {
     const semanticRegistrations = (registrations || [])
         .map(validateOpenProjectRegistration)
-        .sort((left, right) => left.instanceId.localeCompare(right.instanceId))
         .map(registration => [
             registration.instanceId,
             registration.lastFocusedAtMs,
             registration.projects
-                .slice()
-                .sort((left, right) => left.ordinal - right.ordinal
-                    || left.localProjectId.localeCompare(right.localProjectId)
-                    || left.uri.localeCompare(right.uri))
                 .map(project => [
                     project.localProjectId,
                     project.ordinal,
@@ -220,7 +223,15 @@ export function createOpenProjectSemanticRevision(registrations: OpenProjectRegi
                     project.uri,
                     project.remoteType,
                     project.color || '',
-                ]),
-        ]);
+                ])
+                .sort(compareSemanticDescriptors),
+        ])
+        .sort(compareSemanticDescriptors);
     return crypto.createHash('sha256').update(JSON.stringify(semanticRegistrations)).digest('hex');
+}
+
+function compareSemanticDescriptors(left: unknown[], right: unknown[]): number {
+    const leftSerialized = JSON.stringify(left);
+    const rightSerialized = JSON.stringify(right);
+    return leftSerialized < rightSerialized ? -1 : leftSerialized > rightSerialized ? 1 : 0;
 }
