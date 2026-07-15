@@ -2,9 +2,17 @@
 
 Date: 2026-07-15
 
-Status: **BLOCKED — mandatory desktop-window matrix not executed**
+Status: **FAIL — exact-window focus command is unavailable**
 
-The hard gate is not PASS. The spike protocol, cross-window relay, automated checks, bundles, and packages are complete, but this execution environment exposes only a remote VS Code Server shell. It cannot install the UI-kind bridge into the desktop client, invoke the Command Palette/Quick Pick, observe foreground focus, or count desktop windows. No focus result below is inferred from compilation or automated tests.
+The hard gate failed during the first real desktop execution. The Profile-local relay delivered the request to the exact requested Workspace Extension instance, but that instance could not focus its window because VS Code reported `command 'workbench.action.focusWindow' not found`.
+
+Observed evidence:
+
+```text
+OPEN_WINDOW_FOCUS_SPIKE {"requestId":"a74b76a118e68bc1b05ef9e69d25bc4b","sourceInstanceId":"5db060ce0014d4f8d159a7dac8fb0bf1","targetInstanceId":"80d0bc3eeaa4ba442fc49cc8102891c9","handlingInstanceId":"80d0bc3eeaa4ba442fc49cc8102891c9","focused":false,"latencyMs":253,"registrationCountBefore":2,"registrationCountAfter":2,"error":"command 'workbench.action.focusWindow' not found"}
+```
+
+The equal target and handling IDs prove exact request routing. The unchanged registration count proves the request did not create a window. `focused: false` and the missing-command error disprove the required focus capability.
 
 ## Implementation
 
@@ -78,30 +86,21 @@ Fresh artifacts:
 
 ## Mandatory Matrix
 
-Every row is explicitly unexecuted. A dash means no observation was made.
+The first real request is sufficient to fail the gate. A dash means no further
+observation was needed after the required focus primitive failed.
 
 | Case | Source ID | Target ID | Handling ID | `focused` | Latency | Registrations before/after | Evidence status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| local -> local | — | — | — | — | — | — | UNEXECUTED |
+| first live cross-window request | `5db060ce0014d4f8d159a7dac8fb0bf1` | `80d0bc3eeaa4ba442fc49cc8102891c9` | `80d0bc3eeaa4ba442fc49cc8102891c9` | `false` | 253 ms | 2 / 2 | FAIL: command unavailable |
 | local -> SSH | — | — | — | — | — | — | UNEXECUTED |
 | local -> Dev Container | — | — | — | — | — | — | UNEXECUTED |
 | same project window A -> same project window B | — | — | — | — | — | — | UNEXECUTED |
 | 20 alternating requests between two targets | — | — | — | — | — | — | UNEXECUTED (all 20 requests) |
 | request after target close | — | — | — | — | — | — | UNEXECUTED |
 
-## Remaining Manual Commands and Artifacts
-
-1. In the desktop VS Code client, install `artifacts/project-steward-attention-ui-bridge-0.1.1.vsix` into the client/UI side of every test window.
-2. Install `artifacts/project-steward-attention-workspace-probe-0.0.5.vsix` into each applicable local, SSH, and Dev Container Workspace Extension Host. `artifacts/project-steward-1.1.8.vsix` is also available if the main extension needs refreshing.
-3. Run `Developer: Reload Window` in every participating window and wait at least two seconds for registrations to heartbeat.
-4. Run `Project Steward: Run Open Window Focus Spike` from the source window for each live-target row. For the alternating row, invoke it 20 times and alternate the selected target.
-5. For the closed-target row, open the picker while the target is live, close the target window, then select its still-listed ID; verify a missing/timeout result and no reopened window.
-6. Copy every `OPEN_WINDOW_FOCUS_SPIKE` line from the `Project Steward Attention Spike Routing` output channel into this report and independently record the desktop live-window count before and after each request.
-7. Mark PASS only if every live result has `focused: true`, `handlingInstanceId === targetInstanceId`, and unchanged registration/window counts, and the closed target is not reopened. Mark FAIL if any required topology violates those conditions.
-
 ## Gate Decision
 
-**BLOCKED.** Task 2 must not start until the mandatory matrix is measured and this report is changed to PASS or FAIL from real observations.
+**FAIL.** The remaining exact-focus rows are unnecessary because the required primitive is absent in the first real target. Production must not use the target-instance focus relay. The approved replacement design discovers live projects through the Profile-local registry and reuses Project Steward's existing `openProject` / `vscode.openFolder` navigation behavior.
 
 ## Final Review Ledger
 
@@ -110,4 +109,9 @@ Independent review found and the implementation resolved two Important issues be
 - Fresh requests from skewed SSH/remote clocks are now restamped and TTL-validated in the shared desktop UI Bridge clock domain. The target Workspace validates request shape and exact target without reapplying a remote wall-clock TTL.
 - Malformed JSON is now isolated and removed per file, allowing later registrations and requests to continue scanning.
 
-Two Minor review findings are intentionally deferred because this is disposable spike code and the mandatory matrix remains the decisive proof: result records have only bounded structural checks rather than a standalone exhaustive runtime parser, and the integration contract tests supplement but do not replace real filesystem/concurrency and desktop-window tests. Production Task 2 must add exhaustive protocol/result parsers and behavioral store/coordinator tests if the hard gate later passes.
+Two Minor review findings require no spike fix because this code is disposable:
+result records have only bounded structural checks rather than a standalone
+exhaustive runtime parser, and the integration contract tests supplement but
+do not replace real filesystem/concurrency tests. The replacement production
+registry must use exhaustive registration/aggregate validators and behavioral
+store tests.

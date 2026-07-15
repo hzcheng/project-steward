@@ -1,207 +1,178 @@
-# OPEN PROJECT Cross-Window Switching Design
+# OPEN PROJECT Cross-Window Project Discovery Design
 
 Date: 2026-07-15
 Status: Approved
 
 ## Decision
 
-`OPEN PROJECT` will show projects from every live Project Steward window opened
-by the same desktop VS Code client and VS Code Profile. The current window's
-project cards remain pinned at the top and retain all AI session functionality.
-Cards owned by other windows are navigation-only and switch to the exact
-existing window when clicked.
+`OPEN PROJECT` will show the distinct projects published by every live Project
+Steward window in the same desktop VS Code client and VS Code Profile. The
+current window's project cards remain pinned first and retain all AI-session
+functionality. Projects that exist only in other windows are navigation-only.
 
-Cross-window discovery and switching will extend the existing Project Steward
-Local Bridge. It will not call `vscode.openFolder` when a navigation card is
-clicked, so switching cannot create a duplicate project window.
+Navigation reuses Project Steward's existing project-opening path:
 
-The feature is not yet released. The main extension and Local Bridge will be
-updated together, with no compatibility layer, old-protocol fallback, or data
-migration.
+```text
+selected-project -> openProject() -> vscode.openFolder
+```
+
+VS Code therefore performs the same existing-window reuse that already occurs
+when a saved repository card is clicked. The feature does not target a VS Code
+window instance and does not use a private focus command.
+
+The failed exact-window-focus spike proved that cross-window routing reached
+the requested Workspace Extension Host, but VS Code rejected
+`workbench.action.focusWindow` because that command is not registered. That
+mechanism is not part of the production design.
+
+## Product Semantics
+
+- A card represents a project, not a VS Code window.
+- Project identity is the normalized canonical workspace URI.
+- The same project published by multiple windows produces one card.
+- If the current window contains that project, its current card wins and no
+  navigation duplicate is rendered.
+- Otherwise the most recently focused live publisher supplies display metadata
+  and ordering for the navigation card.
+- Clicking a navigation card asks VS Code to open the project's canonical URI
+  with the same logic used by existing saved project cards. VS Code may focus
+  an existing window; if no reusable window remains, it may open the project.
+- The design intentionally does not distinguish two windows that contain the
+  same project.
 
 ## Goals
 
-- Show all projects open in live VS Code windows within the current Profile.
-- Cover local, Remote SSH, WSL, Dev Container, and other remote windows.
-- Keep the current window's cards first and fully session-capable.
-- Make every other card a simple, exact window-switch target.
-- Preserve separate cards when the same project is open in multiple windows.
-- Sort other windows by most recent focus time.
-- Never open a new window as a fallback for a failed switch.
-- Reuse the existing two-extension installation and local file coordination
-  model.
+- Show all distinct projects open in live Project Steward windows within the
+  current Profile.
+- Cover local, Remote SSH, WSL, Dev Container, and other remote workspaces.
+- Keep current-window cards first and fully session-capable.
+- Make other cards lightweight project-switch shortcuts.
+- Reuse the already working `openProject` and `vscode.openFolder` path.
+- Keep installation and operation equivalent to the existing main-extension
+  plus UI-Bridge architecture.
+- Avoid heartbeat-only Webview refreshes.
 
 ## Non-goals
 
-- Discovering windows from another VS Code Profile.
-- Discovering windows on another physical machine.
-- Showing or managing sessions from a non-current window card.
-- Showing session counts, attention counts, save controls, favorite controls,
-  or context menus on navigation-only cards.
-- Opening a closed project when its former window is no longer available.
-- Supporting a mixed old/new main-extension and Local-Bridge installation.
-- Using OS-specific automation such as AppleScript, PowerShell, `wmctrl`, or
-  window-title matching.
-
-## Existing Context
-
-The current `OPEN PROJECT` list is built only from
-`vscode.workspace.workspaceFile` and `vscode.workspace.workspaceFolders` in
-the current Extension Host. A current-window card is rendered with
-`data-open-project`; clicking it toggles its AI session section.
-
-The Local Bridge already provides Profile-local file coordination between
-local, SSH, WSL, and Dev Container windows. Its owner snapshots and leases are
-used for attention aggregation. Open-window discovery will use a separate
-registry so project-card lifecycle does not alter attention lifecycle.
-
-VS Code does not expose a public API for enumerating or targeting arbitrary
-desktop windows. Current VS Code source registers
-`workbench.action.focusWindow`, which force-focuses the window in which the
-command executes. The design therefore sends a request to the target window's
-own Workspace Extension and lets that instance focus itself.
-
-## Product Boundary
-
-The coordination boundary is one desktop VS Code client and one VS Code
-Profile. Every participating window must have the Project Steward main
-extension active and its Local Bridge dependency active. The main extension's
-current `*` activation makes every Project Steward-enabled workspace window a
-publisher without requiring the sidebar to be opened.
-
-Empty windows publish no project cards and are omitted from `OPEN PROJECT`.
+- Discovering windows from another VS Code Profile or physical machine.
+- Focusing an exact VS Code window instance.
+- Keeping duplicate cards for the same canonical project URI.
+- Showing or managing sessions from navigation-only cards.
+- Showing attention, Save, Favorite, provider, or context-menu controls on a
+  navigation-only card.
+- Adding OS-specific window automation, a VS Code CLI relay, or private
+  workbench commands.
+- Supporting mixed old/new protocol versions before the feature's first public
+  release.
 
 ## Architecture
 
-### 1. Workspace Registry Publisher
+### 1. Workspace Publisher
 
-Every main-extension instance owns a cryptographically random `instanceId` for
-its activation lifetime. It builds project descriptors from the same
-current-workspace inputs and matching rules used by the existing
-`getOpenProjectsFromWorkspace` path.
+Every Project Steward Workspace Extension instance owns a random activation
+`instanceId`. It publishes the projects returned by the same current-workspace
+logic that already builds `OPEN PROJECT`.
 
-The publisher registers immediately and republishes when:
+The publisher writes immediately on activation and again when:
 
-- the extension activates;
 - workspace folders or the workspace file change;
-- the window gains focus;
-- rendered project metadata changes;
+- project display metadata changes;
+- the window becomes focused;
 - the ten-second heartbeat is due.
 
-When `vscode.window.onDidChangeWindowState` reports `focused: true`, the
-publisher records a new `lastFocusedAtMs`. A heartbeat updates only the lease;
-it does not change the recent-focus order.
+`lastFocusedAtMs` changes only when the window becomes focused. Heartbeats
+update only `leaseUpdatedAtMs`. Normal deactivation performs a best-effort
+unregister; a thirty-second lease removes registrations left by crashes or
+lost remote connections.
 
-On normal deactivation the publisher sends a best-effort unregister request.
-A thirty-second lease removes registrations left by crashes, lost remote
-connections, or failed cleanup.
+Empty windows publish an empty project list and produce no cards.
 
-### 2. Local Bridge Open-Window Store
+### 2. Profile-Local Registry
 
-The Local Bridge stores window registry and focus relay data under its existing
-Profile-local storage root:
+The UI-kind Local Bridge stores one validated registration per Workspace
+Extension under its existing Profile-local storage root:
 
 ```text
-open-windows/v1/
-  instances/
-    <instanceId>.json
-  focus-requests/
-    <requestId>.json
-  focus-results/
-    <requestId>.json
+open-projects/v1/instances/<instanceId>.json
 ```
 
-Open-window files are independent from the existing attention instance files.
-The store reuses the existing safety properties:
+The registry reuses the existing bridge-store safety properties:
 
-- owner-specific files;
 - atomic temporary-file replacement;
-- bounded file and field sizes;
+- owner-specific files and monotonic sequence values;
+- bounded file, array, and string sizes;
 - regular-file and symlink checks;
 - restrictive local permissions;
-- monotonic per-owner sequence numbers;
-- lease-based stale cleanup.
+- lease validation and stale cleanup;
+- malformed-file isolation.
 
-Each Local Bridge instance remembers the Workspace Extension `instanceId`
-bound to its window when it handles that window's registration command. This
-binding is used both to deliver aggregate registry updates back to the correct
-Workspace Extension and to decide whether a focus request targets this window.
+There are no focus-request or focus-result files.
 
-### 3. Registry Aggregation
+### 3. Aggregation
 
-Every Local Bridge instance watches the registry directory and performs a
-periodic fallback scan. It validates all live registrations and creates a
-semantic aggregate that omits sequence and lease-only changes.
+Each Local Bridge watches the shared registry directory and also performs a
+bounded periodic fallback scan. It publishes a semantic aggregate to the
+Workspace Extension in its own window.
 
-The aggregate is sent to the Workspace Extension in the same VS Code window
-only when one of these values changes:
-
-- the live window set;
-- a project descriptor;
-- a window's `lastFocusedAtMs`;
-- a window expires or unregisters.
-
-Heartbeat writes therefore do not trigger Webview rendering.
+The semantic revision includes instance identity, project descriptors, and
+`lastFocusedAtMs`; it excludes sequence and lease-only timestamps. A heartbeat
+therefore does not refresh the dashboard.
 
 ### 4. Dashboard Projection
 
-The current window's cards continue to come from the existing local
-`getOpenProjects()` path. They are not reconstructed from registry data, so
-their provider sessions, active provider, expansion state, terminal state,
-attention state, and management controls remain unchanged.
+The current window's cards continue to come directly from `getOpenProjects()`.
+They are never reconstructed from cross-window data, so their sessions,
+provider state, expansion state, terminal highlighting, attention state, and
+management controls remain unchanged.
 
-Other live registrations are projected into a new navigation-only view model.
-The renderer must model current cards and navigation cards explicitly rather
-than overloading the existing `isReadOnlyProject` flag:
+The projection then:
+
+1. normalizes every current and published project URI;
+2. reserves all current-window project identities;
+3. groups remaining records by canonical project identity;
+4. chooses the record from the most recently focused publisher in each group;
+5. sorts navigation records by descending `lastFocusedAtMs`, then stable
+   project ordinal and canonical identity;
+6. appends navigation-only cards after all current cards.
+
+The renderer models behavior explicitly:
 
 ```ts
-type OpenProjectCardKind = 'current' | 'windowNavigation';
+type OpenProjectCardKind = 'current' | 'projectNavigation';
 ```
 
-A navigation card carries its target window `instanceId` and never carries AI
-session view models.
+A navigation card contains no AI-session view models.
 
-### 5. Targeted Focus Relay
+### 5. Navigation
 
-Clicking a navigation card follows this flow:
+Clicking a navigation card follows the existing project-selection path:
 
-1. The Webview posts the target window `instanceId` to its Workspace
-   Extension.
-2. The Workspace Extension verifies that the target exists in its latest live
-   registry aggregate.
-3. It invokes a private Local Bridge focus command with a random request ID,
-   source instance ID, target instance ID, and creation time.
-4. The source Local Bridge scans the registry again. It returns
-   `target-missing` immediately if the target lease is no longer live;
-   otherwise it atomically writes the request and waits up to three seconds for
-   its result.
-5. All bridge instances may observe the request, but only the bridge whose
-   bound Workspace Extension ID equals the target ID may handle it.
-6. The target bridge invokes a private command in its own Workspace Extension.
-7. The target Workspace Extension validates that the requested target ID is
-   its own activation ID and executes `workbench.action.focusWindow`.
-8. The target bridge writes the result and removes the request.
-9. The source bridge returns the result to the source Workspace Extension and
-   removes the result file.
+1. The Webview sends the navigation card ID through `selected-project`.
+2. The Workspace Extension resolves that ID from its latest projected
+   navigation map; it does not accept an arbitrary URI from the Webview.
+3. The latest registry aggregate is checked to reject a card that has already
+   disappeared locally.
+4. The resulting transient `Project` is passed to the existing `openProject`.
+5. `openProject` preserves current Local, SSH, WSL, Dev Container, and generic
+   remote handling and invokes `vscode.openFolder` or the existing remote
+   opening branch.
 
-No focus failure path invokes `vscode.openFolder`, `vscode.newWindow`, a CLI,
-or an operating-system automation command.
+Ctrl/Cmd click and middle click do not add special behavior to a navigation
+card. Its single action is project switching.
 
 ## Data Contracts
 
-### Window Registration
-
 ```ts
-interface OpenWindowRegistration {
+interface OpenProjectRegistration {
   protocolVersion: 1;
   instanceId: string;
   sequence: number;
   lastFocusedAtMs: number;
   leaseUpdatedAtMs: number;
-  projects: OpenWindowProject[];
+  projects: OpenProjectRecord[];
 }
 
-interface OpenWindowProject {
+interface OpenProjectRecord {
   localProjectId: string;
   ordinal: number;
   name: string;
@@ -210,221 +181,89 @@ interface OpenWindowProject {
   remoteType: 'local' | 'ssh' | 'wsl' | 'devContainer' | 'remote';
   color?: string;
 }
-```
 
-`uri` is the canonical URI or Project Steward path already resolved by the
-owning Workspace Extension. Remote credentials or secrets must not be added to
-the descriptor. The local Profile storage may contain remote authorities and
-workspace paths because they are required to identify and display an open
-project.
-
-The maximum registration contains 100 project descriptors. Strings and total
-file size use explicit bounds aligned with the Local Bridge store limits.
-
-### Aggregate
-
-```ts
-interface OpenWindowAggregate {
+interface OpenProjectAggregate {
   protocolVersion: 1;
   semanticRevision: string;
   observedAtMs: number;
-  windows: OpenWindowRegistration[];
+  registrations: OpenProjectRegistration[];
 }
 ```
 
-`semanticRevision` hashes project data and focus ordering fields, excluding
-sequence and lease timestamps.
+Registration IDs are fixed-length random hexadecimal strings. A registration
+contains at most 100 project records. Validators reject unknown keys, invalid
+remote types, non-finite timestamps, oversized strings/files, malformed JSON,
+and non-regular files.
 
-### Focus Request and Result
-
-```ts
-interface WindowFocusRequest {
-  protocolVersion: 1;
-  requestId: string;
-  sourceInstanceId: string;
-  targetInstanceId: string;
-  createdAtMs: number;
-}
-
-interface WindowFocusResult {
-  protocolVersion: 1;
-  requestId: string;
-  sourceInstanceId: string;
-  targetInstanceId: string;
-  completedAtMs: number;
-  success: boolean;
-  errorCode?: 'target-missing' | 'focus-failed' | 'expired';
-}
-```
-
-Only a live registered target may process a request. Request IDs and instance
-IDs are validated fixed-length random hexadecimal identifiers. Focus requests
-expire after ten seconds; result files expire after thirty seconds.
-
-## Ordering and Identity
-
-The dashboard constructs the group in this order:
-
-1. all current-window cards, in their existing workspace order;
-2. other windows by descending `lastFocusedAtMs`;
-3. projects within each other window by their published `ordinal`.
-
-Cards are never deduplicated across window instances. Two windows containing
-the same URI produce two cards and remain separately targetable.
-
-A cross-window DOM identity combines the target `instanceId` and the published
-`localProjectId`; it must not reuse another window's `__openProjects-N` ID
-without namespacing.
-
-If multiple navigation cards have the same project name and URI, the UI adds a
-deterministic `Window 1`, `Window 2`, and so on suffix based on lexical
-`instanceId` ordering. The suffix remains stable for the lifetime of those
-window instances even if recent-focus sorting changes.
+`uri` is the canonical Project Steward path already resolved by the owning
+Workspace Extension. Remote authorities and workspace paths are allowed in
+Profile-local storage because they are required for project identity and
+navigation; credentials and unrelated environment data are not published.
 
 ## User Interface
 
 `OPEN PROJECT` remains a sticky system group.
 
-### Current-Window Cards
+Current-window cards:
 
-- Stay at the top.
-- Keep the existing current-workspace highlight.
-- Toggle AI sessions when clicked.
-- Retain provider selection, New Session, Manage, session actions, terminal
-  highlighting, and session attention rendering.
-- In a multi-root window, every locally generated current card remains
-  session-capable.
+- remain first and retain the current-workspace highlight;
+- toggle AI sessions when clicked;
+- retain provider selection, New Session, Manage, session actions, terminal
+  highlighting, and attention rendering;
+- remain session-capable for every root in a multi-root workspace.
 
-### Navigation-Only Cards
+Navigation-only cards:
 
-- Use the project-card visual language.
-- Show only the project name and Local, SSH, WSL, Dev Container, or Remote
-  environment information.
-- Use a dedicated DOM marker such as `data-window-navigation-project` and a
-  target-instance attribute.
-- Show `Switch to this window` on hover.
-- Send only a focus request when clicked.
-- Do not render session counts, attention counts, provider controls, session
-  rows, Save, Favorite, project actions, or context menus.
-- Ignore Ctrl/Cmd modifiers and middle-click window-opening behavior.
-
-Switching does not automatically expand a session list or otherwise mutate the
-target window's persisted dashboard UI state.
+- use the existing project-card visual language;
+- show project name and Local, SSH, WSL, Dev Container, or Remote environment;
+- expose a dedicated `data-project-navigation` marker;
+- show a `Switch to this project` hover affordance;
+- do not render sessions, counts, attention, provider controls, Save,
+  Favorite, project actions, or context menus.
 
 ## Failure Handling
 
-- A missing target is rejected by both the source Workspace Extension's latest
-  aggregate and the source bridge's fresh registry scan. It removes or
-  refreshes the stale card and shows
-  `Target window is no longer available.`
-- A request that has no result after three seconds reports a switch timeout.
-- A rejected `workbench.action.focusWindow` call reports a focus failure.
-- The source window permits only one outstanding focus request at a time.
-- Repeated target handling is prevented by request ID and result-file
-  idempotency.
-- No failure reopens the project.
-- Bridge or registry runtime failures are logged to the Project Steward output
-  channel while the current window's existing cards remain usable. This is
-  failure isolation, not an old-version compatibility path.
+- A card absent from the latest aggregate is rejected and the view refreshes.
+- `vscode.openFolder` and remote-opening failures are logged and shown through
+  the existing Project Steward error path.
+- Normal window closure unregisters immediately; crash cleanup is lease-based.
+- A narrow close/click race may reopen a project because navigation is
+  deliberately project-based. Exact closed-window detection is impossible
+  without a public window-targeting API.
+- Registry or bridge failures never remove the current window's own cards.
 
 ## Performance
 
 Each active window writes one small registration at most once per ten-second
-heartbeat, plus immediate writes for real workspace or focus changes. Normal
-window counts produce negligible disk throughput.
+heartbeat, plus immediate writes for workspace or focus changes. Semantic
+comparison prevents lease-only writes from refreshing the Webview.
 
-Registry aggregation uses semantic comparison so lease-only writes do not
-refresh the Webview. Filesystem watching supplies low-latency discovery and
-focus request handling; bounded periodic scanning supplies recovery from lost
-watch events.
+Navigation-only cards never scan provider session histories. Only the current
+window's existing project path loads session data.
 
-The feature never scans provider session histories for navigation-only cards.
-Only the current window's existing `getOpenProjects()` path loads session data.
+## Testing
 
-## Mandatory Feasibility Spike
+Automated checks cover:
 
-Implementation must begin with the smallest possible targeted-focus spike. Do
-not implement registry UI or production storage until the spike passes.
+- strict protocol validation and semantic revision behavior;
+- atomic registry writes, malformed data, symlinks, bounds, leases, and
+  monotonic sequences;
+- canonical project identity and cross-window deduplication;
+- current-card precedence and current-first ordering;
+- recent-focus ordering for navigation cards;
+- navigation cards containing no session or attention state;
+- Webview click routing through `selected-project` and the existing
+  `openProject` path;
+- build, lint, bridge bundling, packaging, and existing AI-session regressions.
 
-The spike must prove:
+Manual verification covers Local, SSH, and Dev Container projects, confirms
+that clicking a navigation card switches through the same behavior as a saved
+repository card, and checks that the visible project list converges after a
+window closes.
 
-1. local window A can cause local window B to execute
-   `workbench.action.focusWindow` and reach the foreground;
-2. a local window can focus an SSH window;
-3. a local window can focus a Dev Container window;
-4. two windows opening the same project can be targeted separately by instance
-   ID;
-5. repeated switching does not increase the VS Code desktop window count;
-6. closing the target produces a bounded failure and never reopens it.
+## Delivery
 
-The result must record environment, request target, handling instance, focus
-result, latency, and before/after window count. If exact targeting or forced
-foreground focus fails in any required topology, stop implementation and
-return to design rather than weakening the no-duplicate requirement.
-
-## Automated Testing
-
-### Registry Store
-
-- registration validation and field bounds;
-- atomic owner writes and monotonic sequences;
-- ten-second heartbeat without semantic UI revision changes;
-- thirty-second lease expiry;
-- explicit unregister;
-- malformed, oversized, symlink, and stale file handling.
-
-### Aggregation and Projection
-
-- current-window cards always precede navigation cards;
-- other windows sort by descending focus time;
-- projects within one window preserve ordinal order;
-- identical projects in two windows remain separate;
-- duplicate display suffixes are deterministic;
-- navigation view models contain no session or attention data;
-- empty-window registrations create no cards.
-
-### Focus Relay
-
-- only the exact target instance handles a request;
-- the target Workspace Extension rejects a mismatched target ID;
-- successful focus produces one result and cleans its request;
-- missing, expired, duplicate, and timed-out requests fail safely;
-- only one request per source is outstanding;
-- no error path calls project-opening commands.
-
-### Webview
-
-- current-card clicks still toggle sessions;
-- navigation-card clicks emit only a target focus message;
-- navigation cards omit session, attention, save, favorite, and management
-  markup;
-- modifier keys and middle click do not open projects;
-- registry updates preserve existing current-card expansion state.
-
-### Regression
-
-- existing OPEN PROJECT session behavior;
-- attention aggregation and acknowledgement;
-- batch session management;
-- active terminal highlighting;
-- saved-project and Favorites navigation;
-- TypeScript compilation, lint safety checks, and Webpack builds for both
-  extensions.
-
-## Acceptance Criteria
-
-1. Every live Project Steward workspace in the current Profile appears in
-   every window's `OPEN PROJECT` group within the registry update interval.
-2. Current-window cards are first and remain the only cards that expose AI
-   sessions.
-3. Other cards are ordered by recently focused window and act only as switch
-   targets.
-4. The same project open in two windows produces two independently targetable
-   cards.
-5. Clicking a navigation card focuses the exact existing window in local, SSH,
-   and Dev Container topologies.
-6. Successful and failed switching never creates another VS Code window.
-7. Closed or crashed windows disappear after explicit unregister or at most one
-   thirty-second lease.
-8. Session scanning cost does not increase with the number of navigation-only
-   cards.
+The main extension and UI Bridge are updated together. The disposable exact
+focus spike code is removed after its failed result is retained in the
+feasibility report. No compatibility or migration layer is added before the
+feature's first public release.
