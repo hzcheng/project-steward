@@ -569,10 +569,12 @@ Expected: every command exits 0; lint may retain only its documented pre-existin
 - [ ] **Step 2: Verify the failed mechanism is absent**
 
 ```bash
-! rg -n "workbench\.action\.focusWindow|open-window-focus-spike|_projectStewardOpenWindowSpike" src shared extensions spikes scripts
+! rg -n "workbench\.action\.focusWindow|open-window-focus-spike|_projectStewardOpenWindowSpike" src shared extensions spikes
 ```
 
-Expected: exit 0 with no matches.
+Expected: exit 0 with no runtime-code matches. The safety script intentionally
+retains these strings only as negative source assertions and is not part of
+this runtime scan.
 
 - [ ] **Step 3: Package fresh artifacts**
 
