@@ -195,6 +195,10 @@ export default class AiSessionTerminalService {
                 continue;
             }
             if (binding?.state === 'pending') {
+                if (Date.parse(binding.createdAt) < Date.now() - this.pendingTerminalTtlMs) {
+                    this.bindingStore?.remove(instanceId);
+                    continue;
+                }
                 this.trackPending({
                     provider: binding.providerId,
                     terminal,

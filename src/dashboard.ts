@@ -24,6 +24,7 @@ import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTermina
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
+import AiSessionTerminalBindingStore from './aiSessions/terminalBindingStore';
 import { archiveBatchAiSessionItem as executeBatchAiSessionArchiveItem, executeBatchAiSessionArchiveRequest, formatBatchAiSessionArchiveSummary, formatBatchAiSessionIdForLog, hasBatchAiSessionArchiveIssues } from './aiSessions/archiveBatch';
 import type { BatchAiSessionArchiveAttemptStatus, BatchAiSessionArchiveResult, BatchAiSessionArchiveSelection } from './aiSessions/archiveBatch';
 import type { AiSessionActiveTerminalChangedMessage, AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
@@ -122,7 +123,17 @@ export function activate(context: vscode.ExtensionContext) {
         kimi: kimiSessionService,
         claude: claudeSessionService,
     };
-    const aiSessionTerminalService = new AiSessionTerminalService(context.globalStoragePath, providerId => getRegisteredAiSessionProvider(providerId));
+    const aiSessionTerminalBindingStore = new AiSessionTerminalBindingStore(context.workspaceState, error =>
+        logError('Failed to persist AI session terminal ownership.', error)
+    );
+    const aiSessionTerminalService = new AiSessionTerminalService(
+        context.globalStoragePath,
+        providerId => getRegisteredAiSessionProvider(providerId),
+        undefined,
+        undefined,
+        aiSessionTerminalBindingStore
+    );
+    aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals);
     const aiSessionPinStore = new AiSessionPinStore(context.globalStoragePath);
     migrateLegacyPinnedAiSessions();
     let aiSessionRefreshTimeout: NodeJS.Timeout = null;
@@ -187,7 +198,6 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(terminal => {
             aiSessionTerminalService.handleClosedTerminal(terminal);
-            aiSessionTerminalService.removePendingForTerminal(terminal);
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
         }));
     context.subscriptions.push(activeAiSessionTerminalHighlighter);

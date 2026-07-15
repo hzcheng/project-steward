@@ -2,10 +2,9 @@
 
 import type { AiSessionProviderId } from '../models';
 
-export const AI_SESSION_TERMINAL_BINDINGS_KEY = 'aiSessionTerminalBindings.v1';
+export const AI_SESSION_TERMINAL_BINDING_KEY_PREFIX = 'aiSessionTerminalBinding.v1.';
 export const AI_SESSION_TERMINAL_INSTANCE_ENV_KEY = 'PROJECT_STEWARD_AI_TERMINAL_INSTANCE_ID';
 
-const MAX_BINDINGS = 512;
 const MAX_ID_LENGTH = 512;
 const MAX_PATH_LENGTH = 4096;
 const MAX_TITLE_LENGTH = 200;
@@ -50,23 +49,26 @@ export type BoundAiSessionTerminalBindingInput = Omit<
 >;
 
 export default class AiSessionTerminalBindingStore {
-    private readonly records: Map<string, AiSessionTerminalBinding>;
     private writeQueue: Promise<void> = Promise.resolve();
+    private errorReported = false;
 
     constructor(
         private readonly state: AiSessionTerminalBindingState,
         private readonly onError: (error: unknown) => void = () => undefined,
         private readonly now: () => number = () => Date.now()
-    ) {
-        this.records = this.readRegistry();
-    }
+    ) { }
 
     get(instanceId: string): AiSessionTerminalBinding | null {
         if (!isInstanceId(instanceId)) {
             return null;
         }
-        let record = this.records.get(instanceId);
-        return record ? cloneRecord(record) : null;
+        try {
+            let record = validateRecord(this.state?.get(getBindingKey(instanceId), null as unknown));
+            return record ? cloneRecord(record) : null;
+        } catch (error) {
+            this.reportErrorOnce(error);
+            return null;
+        }
     }
 
     setPending(instanceId: string, input: PendingAiSessionTerminalBindingInput): void {
@@ -79,7 +81,6 @@ export default class AiSessionTerminalBindingStore {
         if (!isInstanceId(instanceId) || !record || record.state !== 'pending') {
             return;
         }
-        this.records.set(instanceId, record);
         this.enqueueWrite(instanceId, record);
     }
 
@@ -93,16 +94,13 @@ export default class AiSessionTerminalBindingStore {
         if (!isInstanceId(instanceId) || !record || record.state !== 'bound') {
             return;
         }
-        this.records.set(instanceId, record);
         this.enqueueWrite(instanceId, record);
     }
 
     remove(instanceId: string): void {
-        if (!isInstanceId(instanceId)) {
-            return;
+        if (isInstanceId(instanceId)) {
+            this.enqueueWrite(instanceId, null);
         }
-        this.records.delete(instanceId);
-        this.enqueueWrite(instanceId, null);
     }
 
     flush(): Promise<void> {
@@ -110,44 +108,24 @@ export default class AiSessionTerminalBindingStore {
     }
 
     private enqueueWrite(instanceId: string, record: AiSessionTerminalBinding | null): void {
-        this.writeQueue = this.writeQueue.then(async () => {
-            let latest = this.readRegistry();
-            if (record) {
-                latest.set(instanceId, cloneRecord(record));
-            } else {
-                latest.delete(instanceId);
-            }
-            latest = new Map(Array.from(latest.entries())
-                .sort((left, right) => right[1].updatedAtMs - left[1].updatedAtMs)
-                .slice(0, MAX_BINDINGS));
-            let serialized = Array.from(latest.entries()).reduce((result, [key, value]) => {
-                result[key] = cloneRecord(value);
-                return result;
-            }, {} as Record<string, AiSessionTerminalBinding>);
-            await this.state.update(AI_SESSION_TERMINAL_BINDINGS_KEY, serialized);
-        }).catch(error => {
-            this.onError(error);
+        this.writeQueue = this.writeQueue.then(() => this.state.update(
+            getBindingKey(instanceId),
+            record ? cloneRecord(record) : undefined
+        )).catch(error => {
+            this.reportErrorOnce(error);
         });
     }
 
-    private readRegistry(): Map<string, AiSessionTerminalBinding> {
-        let raw: unknown;
-        try {
-            raw = this.state?.get(AI_SESSION_TERMINAL_BINDINGS_KEY, {} as Record<string, unknown>);
-        } catch (error) {
+    private reportErrorOnce(error: unknown): void {
+        if (!this.errorReported) {
+            this.errorReported = true;
             this.onError(error);
-            return new Map();
         }
-        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-            return new Map();
-        }
-        return new Map(Object.entries(raw as Record<string, unknown>)
-            .filter(([instanceId]) => isInstanceId(instanceId))
-            .map(([instanceId, value]) => [instanceId, validateRecord(value)] as const)
-            .filter((entry): entry is readonly [string, AiSessionTerminalBinding] => !!entry[1])
-            .sort((left, right) => right[1].updatedAtMs - left[1].updatedAtMs)
-            .slice(0, MAX_BINDINGS));
     }
+}
+
+function getBindingKey(instanceId: string): string {
+    return `${AI_SESSION_TERMINAL_BINDING_KEY_PREFIX}${instanceId}`;
 }
 
 function validateRecord(value: unknown): AiSessionTerminalBinding | null {
