@@ -12,13 +12,32 @@ import {
     AiSessionProviderId,
     CodexSession,
 } from '../models';
-import { FAVORITES_GROUP_ID, FITTY_OPTIONS, INBUILT_COLOR_DEFAULTS, OPEN_PROJECTS_GROUP_ID } from '../constants';
-import { withCurrentWorkspaceState } from '../projects/currentWorkspaceState';
+import {
+    FAVORITES_GROUP_ID,
+    FITTY_OPTIONS,
+    INBUILT_COLOR_DEFAULTS,
+    OPEN_CURRENT_WORKSPACE_GROUP_ID,
+    OPEN_PROJECTS_GROUP_ID,
+} from '../constants';
 import { getFavoriteProjectsInOrder } from '../projects/favoriteProjectOrder';
+import { buildDashboardSearchCatalog, serializeDashboardSearchCatalog } from './dashboardViewModel';
 import * as Icons from './webviewIcons';
 
 const FAVORITES_GROUP_NAME = 'FAVORITES';
-const OPEN_PROJECTS_GROUP_NAME = 'OPEN PROJECT';
+const OPEN_CURRENT_WORKSPACE_GROUP_NAME = 'CURRENT WORKSPACE';
+const OPEN_OTHER_WINDOWS_GROUP_NAME = 'OTHER WINDOWS';
+
+type ProjectAttentionMode = 'current' | 'navigation' | 'none';
+
+interface GroupSectionOptions {
+    virtual: boolean;
+    readOnlyProjects: boolean;
+    draggableVirtualProjects: boolean;
+    collapsible: boolean;
+    className: string;
+    systemBadge: string;
+    projectAttentionMode: ProjectAttentionMode;
+}
 
 export function getStewardContent(
     context: vscode.ExtensionContext,
@@ -42,39 +61,22 @@ export function getStewardContent(
         webview,
         'webviewDnDScripts.js'
     );
+    var dashboardScriptsPath = getMediaResource(
+        context,
+        webview,
+        'webviewDashboardScripts.js'
+    );
     var filterScriptsPath = getMediaResource(
         context,
         webview,
         'webviewFilterScripts.js'
     );
 
-    var workspaceState = withCurrentWorkspaceState(
-        groups,
-        infos.openProjects || [],
-        infos.currentWorkspaceProjectIds || []
-    );
-    groups = workspaceState.groups;
-    var openProjects = workspaceState.openProjects;
+    var openProjects = infos.openProjects || [];
     var customCss = infos.config.get('customCss') || '';
-    var favoriteProjects = getFavoriteProjectsInOrder(
-        groups.reduce((projects, group) => projects.concat(group.projects || []), [] as Project[])
-    );
-    var favoritesGroupCollapsed = infos.favoritesGroupCollapsed !== undefined
-        ? infos.favoritesGroupCollapsed
-        : groups.every(group => group.collapsed);
-    var openProjectsGroup = openProjects.length
-        ? getOpenProjectsGroup(openProjects, infos.openProjectsGroupCollapsed)
-        : null;
-    var mainGroups = [
-        ...(groups.length ? [getFavoritesGroup(favoriteProjects, favoritesGroupCollapsed)] : []),
-        ...groups,
-    ];
-    var allGroups = [
-        ...(openProjectsGroup ? [openProjectsGroup] : []),
-        ...mainGroups,
-    ];
-
-    var allGroupsCollapsed = allGroups.length && allGroups.every(group => group.collapsed);
+    var allGroupsCollapsed = !!infos.openProjectsGroupCollapsed;
+    var searchCatalog = serializeDashboardSearchCatalog(buildDashboardSearchCatalog(groups, openProjects));
+    var openProjectsContent = getOpenProjectsGroupContent(openProjects, infos.openProjectsGroupCollapsed, infos);
 
     return `
 <!DOCTYPE html>
@@ -113,24 +115,23 @@ export function getStewardContent(
                     ${Icons.settings}
                 </button>
             </div>
-            <div class="sticky-groups-wrapper">
-                ${openProjectsGroup ? getGroupSection(openProjectsGroup, allGroups.length, infos) : ''}
+            <div class="dashboard-tab-list" role="tablist" aria-label="Project views">
+                <button type="button" id="dashboard-tab-open-button" class="dashboard-tab-button active" role="tab" aria-selected="true" aria-controls="dashboard-tab-open" tabindex="0" data-dashboard-tab="open">OPEN</button>
+                <button type="button" id="dashboard-tab-projects-button" class="dashboard-tab-button" role="tab" aria-selected="false" aria-controls="dashboard-tab-projects" tabindex="-1" data-dashboard-tab="projects">PROJECTS</button>
             </div>
         </div>
-        <div class="">
-            <div class="groups-wrapper ${!infos.config.displayProjectPath ? 'hide-project-path' : ''
-        }">
-        ${mainGroups.length
-            ? mainGroups
-                .map((group) => getGroupSection(group, allGroups.length, infos))
-                .join('\n')
-            : (infos.otherStorageHasData ? getImportDiv() : getNoProjectsDiv())
-        }
-        
-            </div>
-
-            ${infos.config.showAddGroupButtonTile ? getTempGroupSection(allGroups.length) : ''}
-        </div>
+        <main class="dashboard-content">
+            <section id="dashboard-tab-open" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-open-button">
+                <div class="sticky-groups-wrapper">
+                    ${openProjectsContent}
+                </div>
+            </section>
+            <section id="dashboard-tab-projects" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-projects-button" hidden>
+                <div class="dashboard-projects-loading" role="status" hidden>Loading projects…</div>
+            </section>
+            <section id="dashboard-search-results" class="dashboard-search-results" aria-label="Search results" hidden></section>
+        </main>
+        <script id="dashboard-search-catalog" type="application/json">${searchCatalog}</script>
 
         ${getProjectContextMenu()}
         ${getGroupContextMenu()}
@@ -141,22 +142,43 @@ export function getStewardContent(
     <script src="${dragulaPath}"></script>
     <script src="${autoScrollerPath}"></script>
     <script src="${projectScriptsPath}"></script>
+    <script src="${dashboardScriptsPath}"></script>
     <script src="${dndScriptsPath}"></script>
     <script src="${filterScriptsPath}"></script>
 
     <script>
         (function() {
-            if (!document.body.classList.contains('steward-sidebar')) {
-                fitty('.project-header', ${JSON.stringify(FITTY_OPTIONS)});
+            window.vscode = acquireVsCodeApi();
+
+            function fitProjectHeaders(root) {
+                if (!root || document.body.classList.contains('steward-sidebar')) {
+                    return;
+                }
+                Array.from(root.querySelectorAll('.project-header')).forEach(element =>
+                    fitty(element, ${JSON.stringify(FITTY_OPTIONS)})
+                );
             }
 
-            window.vscode = acquireVsCodeApi();      
-            
             window.onload = () => {
                 initProjects();
-                initDnD();
-                initFiltering(${infos.config.searchIsActiveByDefault});
-            }
+                const storedFilter = sessionStorage.getItem('filterValue') || '';
+                let filtering;
+                const dashboard = initDashboard({
+                    initialSearchQuery: storedFilter,
+                    clearSearch: () => filtering && filtering.clear(),
+                    postMessage: message => window.vscode.postMessage(message),
+                    onProjectsMounted: panel => {
+                        fitProjectHeaders(panel);
+                        initDnD(panel);
+                        window.__projectStewardSyncCollapseButton();
+                    },
+                    onActiveTabChanged: activeTab => window.__projectStewardSyncCollapseButton(activeTab),
+                });
+                window.__projectStewardDashboard = dashboard;
+                fitProjectHeaders(document.getElementById('dashboard-tab-open'));
+                filtering = initFiltering(${infos.config.searchIsActiveByDefault}, dashboard);
+                filtering.apply();
+            };
         })();
     </script>
 
@@ -167,23 +189,88 @@ export function getStewardContent(
 export function getOpenProjectsGroupContent(
     openProjects: Project[],
     collapsed: boolean,
-    currentWorkspaceProjectIds: string[],
     infos: StewardInfos,
 ): string {
-    const workspaceState = withCurrentWorkspaceState(
-        [],
-        openProjects || [],
-        currentWorkspaceProjectIds || [],
-    );
-    if (!workspaceState.openProjects.length) {
-        return '';
+    var currentProjects = (openProjects || []).filter(project => project.openProjectCardKind !== 'projectNavigation');
+    var navigationProjects = (openProjects || []).filter(project => project.openProjectCardKind === 'projectNavigation');
+    var currentGroup = new Group(OPEN_CURRENT_WORKSPACE_GROUP_NAME, currentProjects);
+    currentGroup.id = OPEN_CURRENT_WORKSPACE_GROUP_ID;
+    currentGroup.collapsed = false;
+    var currentSection = getGroupSection(currentGroup, {
+        virtual: true,
+        readOnlyProjects: true,
+        draggableVirtualProjects: false,
+        collapsible: false,
+        className: 'open-current-workspace-group',
+        systemBadge: 'Live',
+        projectAttentionMode: 'current',
+    }, currentProjects.length
+        ? ''
+        : getOpenCurrentWorkspaceEmptyState(navigationProjects.length > 0));
+
+    if (!navigationProjects.length) {
+        return currentSection;
     }
 
-    return getGroupSection(
-        getOpenProjectsGroup(workspaceState.openProjects, collapsed),
-        1,
-        infos,
+    var navigationGroup = new Group(OPEN_OTHER_WINDOWS_GROUP_NAME, navigationProjects);
+    navigationGroup.id = OPEN_PROJECTS_GROUP_ID;
+    navigationGroup.collapsed = collapsed;
+    return `${currentSection}\n${getGroupSection(navigationGroup, {
+        virtual: true,
+        readOnlyProjects: true,
+        draggableVirtualProjects: false,
+        collapsible: true,
+        className: 'open-other-windows-group',
+        systemBadge: 'Live',
+        projectAttentionMode: 'navigation',
+    })}`;
+}
+
+export function getProjectsPanelContent(groups: Group[], infos: StewardInfos): string {
+    var favoriteProjects = getFavoriteProjectsInOrder(
+        (groups || []).reduce((projects, group) => projects.concat(group.projects || []), [] as Project[])
     );
+    var favoritesGroupCollapsed = infos.favoritesGroupCollapsed !== undefined
+        ? infos.favoritesGroupCollapsed
+        : (groups || []).every(group => group.collapsed);
+    var mainGroups = [
+        ...(groups.length ? [getFavoritesGroup(favoriteProjects, favoritesGroupCollapsed)] : []),
+        ...groups,
+    ];
+    var favoriteOptions: GroupSectionOptions = {
+        virtual: true,
+        readOnlyProjects: false,
+        draggableVirtualProjects: true,
+        collapsible: true,
+        className: 'favorites-group',
+        systemBadge: 'Pinned',
+        projectAttentionMode: 'none',
+    };
+    var projectOptions: GroupSectionOptions = {
+        virtual: false,
+        readOnlyProjects: false,
+        draggableVirtualProjects: false,
+        collapsible: true,
+        className: 'saved-project-group',
+        systemBadge: '',
+        projectAttentionMode: 'none',
+    };
+
+    return `<div class="groups-wrapper ${!infos.config.displayProjectPath ? 'hide-project-path' : ''}">
+        ${mainGroups.length
+            ? mainGroups.map(group => getGroupSection(
+                group,
+                group.id === FAVORITES_GROUP_ID ? favoriteOptions : projectOptions
+            )).join('\n')
+            : (infos.otherStorageHasData ? getImportDiv() : getNoProjectsDiv())}
+    </div>
+    ${infos.config.showAddGroupButtonTile ? getTempGroupSection() : ''}`;
+}
+
+function getOpenCurrentWorkspaceEmptyState(hasOtherWindows: boolean): string {
+    return `<div class="open-current-workspace-empty">${hasOtherWindows
+        ? 'No folder is open in this window.'
+        : 'Open a folder to see running projects.'}</div>`;
 }
 
 function criticalStartupStyle(): string {
@@ -256,14 +343,12 @@ function criticalStartupStyle(): string {
 
 function getGroupSection(
     group: Group,
-    totalGroupCount: number,
-    infos: StewardInfos
+    options: GroupSectionOptions,
+    emptyContent: string = ''
 ) {
     // Apply changes to HTML here also to getTempGroupSection
 
-    var isVirtualGroup = isVirtualGroupId(group.id);
-    var isFavoritesGroup = group.id === FAVORITES_GROUP_ID;
-    var groupActions = isVirtualGroup
+    var groupActions = options.virtual
         ? ''
         : `<div class="group-actions right">
             <span data-action="add" title="Add Project">${Icons.add}</span>
@@ -271,30 +356,29 @@ function getGroupSection(
             <span data-action="remove" title="Remove Group">${Icons.remove
         }</span>
         </div>`;
-    var dragAttribute = isVirtualGroup ? '' : 'data-drag-group';
+    var dragAttribute = options.virtual ? '' : 'data-drag-group';
     var groupName = escapeAttribute(group.groupName || 'Unnamed Group');
-    var systemGroupAttribute = isVirtualGroup ? ` data-system-group="${group.id}"` : '';
-    var systemGroupBadge = group.id === OPEN_PROJECTS_GROUP_ID
-        ? 'Live'
-        : group.id === FAVORITES_GROUP_ID
-            ? 'Pinned'
-            : '';
+    var systemGroupAttribute = options.virtual ? ` data-system-group="${group.id}"` : '';
+    var groupTitleText = options.collapsible
+        ? `<span class="group-title-text" data-action="collapse" ${dragAttribute}>
+            <span class="collapse-icon" title="Open/Collapse Group">${Icons.collapse}</span>
+            ${groupName}
+        </span>`
+        : `<span class="group-title-text">${groupName}</span>`;
 
     return `
-<div class="group ${group.collapsed ? 'collapsed' : ''} ${group.projects.length === 0 ? 'no-projects' : ''
-        }" data-group-id="${group.id}"${isVirtualGroup ? ' data-virtual-group' : ''}${systemGroupAttribute}>
+<div class="group ${options.className} ${group.collapsed ? 'collapsed' : ''} ${group.projects.length === 0 ? 'no-projects' : ''
+        }" data-group-id="${group.id}"${options.virtual ? ' data-virtual-group' : ''}${systemGroupAttribute}>
     <div class="group-title">
-        <span class="group-title-text" data-action="collapse" ${dragAttribute}>
-            <span class="collapse-icon" title="Open/Collapse Group">${Icons.collapse
-        }</span>
-            ${groupName}
-        </span>
-        ${systemGroupBadge ? `<span class="group-title-badge">${systemGroupBadge}</span>` : ''}
+        ${groupTitleText}
+        ${options.systemBadge ? `<span class="group-title-badge">${options.systemBadge}</span>` : ''}
         ${groupActions}
     </div>
     <div class="group-list">
         <div class="drop-signal"></div>
-        ${group.projects.map((p) => getProjectDiv(p, isVirtualGroup, group.id === OPEN_PROJECTS_GROUP_ID, isFavoritesGroup)).join('\n')}
+        ${group.projects.length
+            ? group.projects.map(project => getProjectDiv(project, options)).join('\n')
+            : emptyContent}
     </div>       
 </div>`;
 }
@@ -307,19 +391,7 @@ function getFavoritesGroup(favoriteProjects: Project[], collapsed: boolean = fal
     return group;
 }
 
-function getOpenProjectsGroup(openProjects: Project[], collapsed: boolean = false): Group {
-    var group = new Group(OPEN_PROJECTS_GROUP_NAME, openProjects);
-    group.id = OPEN_PROJECTS_GROUP_ID;
-    group.collapsed = collapsed;
-
-    return group;
-}
-
-function isVirtualGroupId(groupId: string): boolean {
-    return groupId === FAVORITES_GROUP_ID || groupId === OPEN_PROJECTS_GROUP_ID;
-}
-
-function getTempGroupSection(totalGroupCount: number) {
+function getTempGroupSection() {
     return `
 <div class="group" id="tempGroup">
     <div class="group-title" data-action="add-group">
@@ -328,19 +400,16 @@ function getTempGroupSection(totalGroupCount: number) {
     <div class="group-list">
         <div class="drop-signal"></div>
     </div>       
-</div>     
-    </div>       
 </div>`;
 }
 
 function getProjectDiv(
     project: Project,
-    isVirtualProject: boolean = false,
-    isReadOnlyProject: boolean = false,
-    isDraggableVirtualProject: boolean = false
+    options: GroupSectionOptions
 ) {
     var isProjectNavigation = project.openProjectCardKind === 'projectNavigation';
-    var isCurrentOpenProject = isReadOnlyProject && !isProjectNavigation;
+    var showCurrentAttention = options.projectAttentionMode === 'current';
+    var showNavigationAttention = options.projectAttentionMode === 'navigation';
     var rawProjectColor = (project.color || '').trim();
     var projectColor = escapeStyleValue(rawProjectColor);
     projectColor = projectColor === rawProjectColor ? projectColor : '';
@@ -359,7 +428,7 @@ function getProjectDiv(
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
     var favoriteTitle = project.favorite ? 'Remove From Favorites' : 'Add To Favorites';
-    var projectActions = isReadOnlyProject || isProjectNavigation
+    var projectActions = options.readOnlyProjects || isProjectNavigation
         ? ''
         : `<span data-action="color" title="Edit Color">${Icons.palette
         }</span>
@@ -375,7 +444,7 @@ function getProjectDiv(
         </div>`
         : '';
     var favoriteBadgeIcon = project.favorite ? Icons.starFilled : Icons.star;
-    var favoriteBadge = isReadOnlyProject || isProjectNavigation
+    var favoriteBadge = options.readOnlyProjects || isProjectNavigation
         ? ''
         : `<span data-action="favorite" class="project-favorite-badge ${project.favorite ? 'active' : ''}" title="${favoriteTitle}">${favoriteBadgeIcon}</span>`;
     var saveBadge = !isProjectNavigation && project.showSaveAction
@@ -384,30 +453,32 @@ function getProjectDiv(
     var aiSessionCount = codexSessions.length + kimiSessions.length + claudeSessions.length;
     var attentionCount = codexSessions.concat(kimiSessions).concat(claudeSessions).filter(session => session.attention?.unread).length;
     var projectAttentionCount = project.aiSessionAttentionCount ?? attentionCount;
-    var attentionProjectKey = getAttentionProjectKey(project.attentionProjectPath || project.path);
-    var projectAttentionBadge = !isReadOnlyProject && !isProjectNavigation && projectAttentionCount
+    var attentionProjectKey = options.projectAttentionMode === 'none'
+        ? ''
+        : getAttentionProjectKey(project.path);
+    var projectAttentionBadge = showNavigationAttention && projectAttentionCount
         ? `<span class="project-ai-attention-badge" title="${projectAttentionCount} AI session${projectAttentionCount === 1 ? ' needs' : 's need'} attention">${projectAttentionCount}</span>`
         : '';
-    var aiSessionBadge = isCurrentOpenProject && aiSessionCount
+    var aiSessionBadge = showCurrentAttention && aiSessionCount
         ? `<span class="project-codex-badge${attentionCount ? ' has-attention' : ''}" title="AI Sessions">AI ${aiSessionCount}${attentionCount ? ` <b class="ai-session-attention-count">${attentionCount}</b>` : ''}</span>`
         : '';
-    var codexSessionSection = isCurrentOpenProject ? getAiSessionsDiv(project) : '';
+    var codexSessionSection = showCurrentAttention ? getAiSessionsDiv(project) : '';
 
     var isRemote = remoteType !== ProjectRemoteType.None;
 
     return `
-<div class="project-container"${isVirtualProject && !isDraggableVirtualProject ? ' data-nodrag' : ''}>
+<div class="project-container"${options.virtual && !options.draggableVirtualProjects ? ' data-nodrag' : ''}>
     <div class="project" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
-        }${attentionProjectKey && !isProjectNavigation ? ` data-attention-project-key="${attentionProjectKey}"` : ''
-        }${isVirtualProject ? ' data-virtual-project' : ''
-        }${isReadOnlyProject || isProjectNavigation ? ' data-readonly-project' : ''
-        }${isCurrentOpenProject ? ' data-open-project' : ''
+        }${attentionProjectKey ? ` data-attention-project-key="${attentionProjectKey}"` : ''
+        }${options.virtual ? ' data-virtual-project' : ''
+        }${options.readOnlyProjects || isProjectNavigation ? ' data-readonly-project' : ''
+        }${showCurrentAttention ? ' data-open-project' : ''
         }${isProjectNavigation ? ' data-project-navigation title="Switch to this project"' : ''
         }${!isProjectNavigation && project.codexSessionsExpanded ? ' data-codex-expanded' : ''
-        }${!isReadOnlyProject && !isProjectNavigation ? ' data-has-favorite-toggle' : ''
+        }${!options.readOnlyProjects && !isProjectNavigation ? ' data-has-favorite-toggle' : ''
         }${!isProjectNavigation && project.showSaveAction ? ' data-has-save-action' : ''
         }${!isProjectNavigation && project.favorite ? ' data-favorite-project' : ''
-        }${project.isCurrentWorkspace ? ' data-current-workspace' : ''
+        }${showCurrentAttention ? ' data-current-workspace' : ''
         }>
         <div class="project-aura"></div>
         <div class="project-border" style="${borderStyle}"></div>

@@ -28,7 +28,6 @@ const KimiSessionService = require('../out/services/kimiSessionService').default
 const ClaudeSessionService = require('../out/services/claudeSessionService').default;
 const GitRepositoryDetector = require('../out/projects/gitRepositoryDetector').default;
 const projectPathUtils = require('../out/projects/projectPathUtils');
-const currentWorkspaceState = require('../out/projects/currentWorkspaceState');
 const favoriteProjectOrder = require('../out/projects/favoriteProjectOrder');
 const originalModuleLoad = Module._load;
 const vscodeTestState = { terminals: [], nextTerminalProcessId: 42000 };
@@ -56,9 +55,9 @@ Module._load = function (request, parent, isMain) {
 };
 const AiSessionTerminalService = require('../out/aiSessions/terminalService').default;
 const models = require('../out/models');
-const openProjectMatcher = require('../out/projects/openProjectMatcher');
 const openProjectService = require('../out/projects/openProjectService');
 const webviewContentModule = require('../out/webview/webviewContent');
+const dashboardViewModel = require('../out/webview/dashboardViewModel');
 Module._load = originalModuleLoad;
 
 function createTestUri(value) {
@@ -124,24 +123,64 @@ function runAssignmentChecks() {
     assert.strictEqual(assignments.has('root'), false);
 }
 
-function runCurrentWorkspaceStateChecks() {
-    const saved = { id: 'saved', name: 'Saved', path: '/work/saved' };
-    const other = { id: 'other', name: 'Other', path: '/work/other' };
-    const groups = [{ id: 'group', groupName: 'Work', projects: [saved, other] }];
-    const openProjects = [
-        { id: '__openProjects-0', name: 'Saved', path: '/work/saved', openProjectCardKind: 'current' },
-        { id: '__openProjectNavigation-other', name: 'Other Window', path: '/work/navigation', openProjectCardKind: 'projectNavigation' },
-    ];
+function runDashboardSearchCatalogChecks() {
+    const groups = [{
+        id: 'tools', groupName: 'TOOLS', collapsed: false,
+        projects: [
+            { id: 'saved', name: 'Dashboard', description: 'Saved', path: '/work/dashboard', favorite: true },
+            { id: 'duplicate', name: 'Dashboard copy', description: 'Duplicate', path: '/work/dashboard/' },
+            { id: 'other', name: 'Other', description: 'Other', path: '/work/other' },
+        ],
+    }];
+    const openProjects = [{
+        id: '__openProjects-0', name: 'Dashboard', description: 'Current', path: '/work/dashboard',
+        openProjectCardKind: 'current',
+        codexSessions: [{ id: 'c1', name: 'Fix dashboard', updatedAt: '2026-07-15T10:00:00Z' }],
+        kimiSessions: [{ id: 'k1', name: 'Review layout', updatedAt: '2026-07-15T09:00:00Z' }],
+        claudeSessions: [],
+    }, {
+        id: '__openProjectNavigation-remote', name: 'Remote Dashboard', description: 'Remote',
+        path: 'vscode-remote://ssh-remote+host/work/dashboard-api',
+        openProjectCardKind: 'projectNavigation', openProjectEnvironmentLabel: 'SSH',
+    }];
 
-    const result = currentWorkspaceState.withCurrentWorkspaceState(groups, openProjects, ['saved']);
+    const catalog = dashboardViewModel.buildDashboardSearchCatalog(groups, openProjects);
+    assert.deepStrictEqual(catalog.sessions.map(item => item.key), ['codex:c1', 'kimi:k1']);
+    assert.deepStrictEqual(catalog.openProjects.map(item => item.action), ['open-current', 'switch-open']);
+    assert.strictEqual(catalog.savedProjects.length, 2);
+    assert.deepStrictEqual(catalog.savedProjects[0].groupLabels, ['FAVORITES', 'TOOLS']);
+    assert.strictEqual(catalog.savedProjects[0].identity, '/work/dashboard');
+    assert.strictEqual(catalog.openProjects[1].environmentLabel, 'SSH');
 
-    assert.strictEqual(result.groups[0].projects[0].isCurrentWorkspace, true);
-    assert.strictEqual(result.groups[0].projects[1].isCurrentWorkspace, false);
-    assert.strictEqual(result.openProjects[0].isCurrentWorkspace, true);
-    assert.strictEqual(result.openProjects[1].isCurrentWorkspace, false);
-    assert.strictEqual(saved.isCurrentWorkspace, undefined);
-    assert.strictEqual(openProjects[0].isCurrentWorkspace, undefined);
-    assert.notStrictEqual(result.groups[0], groups[0]);
+    const serialized = dashboardViewModel.serializeDashboardSearchCatalog({
+        ...catalog,
+        savedProjects: [{ ...catalog.savedProjects[0], name: '</script><script>bad()</script>' }],
+    });
+    assert.strictEqual(serialized.includes('</script>'), false);
+    assert.deepStrictEqual(JSON.parse(serialized).savedProjects[0].name, '</script><script>bad()</script>');
+}
+
+function runAttentionProjectionChecks() {
+    const aggregate = {
+        protocolVersion: 1,
+        aggregateRevision: '0'.repeat(64),
+        generatedAtMs: 1,
+        sessions: [
+            { projectId: attentionProject.getAttentionProjectKey('/work/current'), sessionKey: 'codex:c1', reasons: ['completed'], eventIds: ['e1'], observedAtMs: 1 },
+            { projectId: attentionProject.getAttentionProjectKey('/work/current'), sessionKey: 'kimi:k1', reasons: ['input-required'], eventIds: ['e2'], observedAtMs: 2 },
+            { projectId: attentionProject.getAttentionProjectKey('/work/other'), sessionKey: 'claude:x1', reasons: ['failed'], eventIds: ['e3'], observedAtMs: 3 },
+        ],
+    };
+    const input = [{ path: '/work/current' }, { path: '/work/other' }];
+    const projected = attentionProject.withAttentionProjects(input, aggregate);
+    assert.deepStrictEqual(projected.map(item => item.aiSessionAttentionCount), [2, 1]);
+    assert.deepStrictEqual(projected[0].aiSessionAttentionEventIds, ['e1', 'e2']);
+    assert.strictEqual(input[0].aiSessionAttentionCount, undefined);
+
+    const index = attentionProject.buildAttentionSessionIndex(aggregate);
+    assert.strictEqual(index.get(attentionProject.getAttentionSessionLookupKey(
+        attentionProject.getAttentionProjectKey('/work/current'), 'kimi:k1'
+    )).eventIds[0], 'e2');
 }
 
 function runFavoriteProjectOrderChecks() {
@@ -221,41 +260,7 @@ function runFavoriteProjectOrderChecks() {
     assert.strictEqual(toggleGroups[0].projects[2].favoriteOrder, 9);
 }
 
-function runCurrentWorkspaceMatchingChecks() {
-    const savedProjects = [
-        { id: 'local', name: 'Same Name', path: '/work/local' },
-        { id: 'other', name: 'Same Name', path: '/work/other' },
-        { id: 'workspace', name: 'Workspace', path: '/work/team.code-workspace' },
-        { id: 'ssh', name: 'SSH', path: 'vscode-remote://ssh-remote+server/work/ssh' },
-        { id: 'container', name: 'Container', path: 'vscode-remote://dev-container+abc/work/container' },
-    ];
-    const resolveIds = (workspaceUris, remoteName = null) => currentWorkspaceState.getCurrentWorkspaceProjectIds(
-        savedProjects,
-        workspaceUris,
-        remoteName,
-        openProjectMatcher.findSavedProjectForOpenProject
-    );
-
-    assert.deepStrictEqual(resolveIds([createTestFileUri('/work/local')]), ['local']);
-    assert.deepStrictEqual(resolveIds([createTestFileUri('/work/team.code-workspace')]), ['workspace']);
-    assert.deepStrictEqual(resolveIds([
-        createTestFileUri('/work/local'),
-        createTestFileUri('/work/other'),
-    ]), ['local', 'other']);
-    assert.deepStrictEqual(resolveIds([
-        createTestUri('vscode-remote://ssh-remote+server/work/ssh'),
-    ], 'ssh-remote'), ['ssh']);
-    assert.deepStrictEqual(resolveIds([
-        createTestUri('vscode-remote://dev-container+abc/work/container'),
-    ], 'dev-container'), ['container']);
-    assert.deepStrictEqual(resolveIds([
-        createTestFileUri('/work/ssh'),
-    ], 'ssh-remote'), ['ssh']);
-    assert.deepStrictEqual(resolveIds([createTestFileUri('/missing')]), []);
-    assert.deepStrictEqual(resolveIds([]), []);
-}
-
-function runOpenProjectAttentionIdentityChecks() {
+function runOpenProjectRuntimeIdentityChecks() {
     const savedRemotePath = 'vscode-remote://dev-container+fixture/work/app';
     const openProjects = openProjectService.getOpenProjectsFromWorkspace(
         null,
@@ -274,7 +279,7 @@ function runOpenProjectAttentionIdentityChecks() {
 
     assert.strictEqual(openProjects.length, 1);
     assert.strictEqual(openProjects[0].path, '/work/app');
-    assert.strictEqual(openProjects[0].attentionProjectPath, savedRemotePath);
+    assert.strictEqual(openProjects[0].attentionProjectPath, undefined);
 }
 
 function runCandidateFilterChecks() {
@@ -1102,10 +1107,10 @@ function runWebviewContentChecks() {
     assert.ok(webviewProjectScripts.includes(".project[data-attention-project-key]"));
     assert.ok(webviewProjectScripts.includes("project-ai-attention-badge"));
     assert.ok(styles.includes('.project-ai-attention-badge'));
-    assert.ok(webviewContent.includes('getAttentionProjectKey(project.attentionProjectPath || project.path)'));
+    assert.ok(webviewContent.includes('getAttentionProjectKey(project.path)'));
     assert.ok(webviewContent.includes('class="ai-session-attention-indicator"'));
     assert.ok(styles.includes('.ai-session-attention-indicator'));
-    assert.ok(evaluateAttentionFunction.includes('getAttentionProjectKey(project.attentionProjectPath || project.path)'));
+    assert.ok(evaluateAttentionFunction.includes('getAttentionProjectKey(project.path)'));
     assert.ok(evaluateAttentionFunction.includes('projectId: projectKey'));
     assert.ok(evaluateAttentionFunction.includes('observedAtMs: attention.stateChangedAt'));
     assert.ok(evaluateAttentionFunction.includes('if (!terminal ||'));
@@ -1218,11 +1223,12 @@ function runWebviewContentChecks() {
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].default, 3);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].minimum, 1);
     assert.ok(dashboard.includes("ProjectWindowColorService"));
-    assert.ok(dashboard.includes('resolveCurrentWorkspaceProjectIds('));
-    assert.ok(dashboard.includes('findSavedProjectForOpenProject'));
-    assert.ok(dashboard.includes('get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() }'));
-    assert.ok(webviewContent.includes('withCurrentWorkspaceState('));
-    assert.ok(webviewContent.includes('infos.currentWorkspaceProjectIds || []'));
+    assert.ok(!dashboard.includes('resolveCurrentWorkspaceProjectIds('));
+    assert.ok(!dashboard.includes('get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() }'));
+    assert.ok(!dashboard.includes('function getGroupsWithAiSessionAttention('));
+    assert.ok(!dashboard.includes('withAttentionProject(project, aggregate)'));
+    assert.ok(!webviewContent.includes('withCurrentWorkspaceState('));
+    assert.ok(!webviewContent.includes('infos.currentWorkspaceProjectIds || []'));
     assert.ok(webviewContent.includes('getFavoriteProjectsInOrder('));
     assert.ok(dashboard.includes("case 'reordered-favorites':"));
     assert.ok(dashboard.includes('withFavoriteProjectOrder(groups, projectIds)'));
@@ -1250,8 +1256,9 @@ function runWebviewContentChecks() {
     assert.ok(projectWindowColorService.includes("'commandCenter.activeBorder': auraPalette.commandBorder"));
     assert.ok(!extractMethodBody(projectWindowColorService, 'getWindowColorCustomizations').includes("'activityBar.background'"));
     assert.ok(webviewContent.includes('style="${projectStyle}"'));
-    assert.ok(webviewContent.includes("isReadOnlyProject || isProjectNavigation ? ' data-readonly-project' : ''"));
-    assert.ok(webviewContent.includes("project.isCurrentWorkspace ? ' data-current-workspace' : ''"));
+    assert.ok(webviewContent.includes("options.readOnlyProjects || isProjectNavigation ? ' data-readonly-project' : ''"));
+    assert.ok(webviewContent.includes("showCurrentAttention ? ' data-current-workspace' : ''"));
+    assert.ok(webviewContent.includes("options.projectAttentionMode === 'none'"));
     assert.ok(styles.includes('--project-color'));
     assert.ok(styles.includes('.project-aura'));
     assert.ok(currentProjectStyleBlock.includes('--vscode-list-inactiveSelectionBackground'));
@@ -1308,7 +1315,6 @@ function runCurrentWorkspaceRenderingChecks() {
             config,
             relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
             otherStorageHasData: false,
-            currentWorkspaceProjectIds: ['saved'],
             openProjects: [
                 {
                     id: '__openProjects-0', name: 'Saved', path: '/work/saved', color: '#00aacc',
@@ -1325,16 +1331,14 @@ function runCurrentWorkspaceRenderingChecks() {
         },
         true
     );
-    const getCardTags = projectId => html.match(new RegExp(`<div class="project"[^>]*data-id="${projectId}"[^>]*>`, 'g')) || [];
-    const savedTags = getCardTags('saved');
-    const otherTags = getCardTags('other');
-    const openTags = getCardTags('__openProjects-0');
-    const navigationTags = getCardTags('__openProjectNavigation-other');
+    const getCardTags = (content, projectId) => content.match(new RegExp(`<div class="project"[^>]*data-id="${projectId}"[^>]*>`, 'g')) || [];
+    const savedTags = getCardTags(html, 'saved');
+    const otherTags = getCardTags(html, 'other');
+    const openTags = getCardTags(html, '__openProjects-0');
+    const navigationTags = getCardTags(html, '__openProjectNavigation-other');
 
-    assert.strictEqual(savedTags.length, 2);
-    assert.ok(savedTags.every(tag => tag.includes('data-current-workspace')));
-    assert.strictEqual(otherTags.length, 1);
-    assert.ok(!otherTags[0].includes('data-current-workspace'));
+    assert.strictEqual(savedTags.length, 0);
+    assert.strictEqual(otherTags.length, 0);
     assert.strictEqual(openTags.length, 1);
     assert.ok(openTags[0].includes('data-current-workspace'));
     assert.strictEqual(navigationTags.length, 1);
@@ -1347,7 +1351,7 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.match(html, /data-project-navigation/);
     assert.match(html, /title="Switch to this project"/);
     assert.strictEqual((html.match(/class="codex-sessions"/g) || []).length, 1);
-    assert.ok(!navigationTags[0].includes('data-attention-project-key'));
+    assert.ok(navigationTags[0].includes('data-attention-project-key'));
     assert.ok(!navigationTags[0].includes('data-has-favorite-toggle'));
     assert.ok(!navigationTags[0].includes('data-has-save-action'));
     const navigationCardStart = html.indexOf(navigationTags[0]);
@@ -1356,7 +1360,7 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.ok(!navigationHtml.includes('project-save-badge'));
     assert.ok(!navigationHtml.includes('project-favorite-badge'));
     assert.ok(!navigationHtml.includes('project-actions-wrapper'));
-    assert.ok(!navigationHtml.includes('project-ai-attention-badge'));
+    assert.ok(navigationHtml.includes('project-ai-attention-badge'));
     assert.ok(!navigationHtml.includes('project-codex-badge'));
     assert.ok(!navigationHtml.includes('class="codex-sessions"'));
     assert.ok(!navigationHtml.includes('Leaked Session'));
@@ -1367,6 +1371,58 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.ok(html.includes('<div class="project-border" style="background: #00aacc;"></div>'));
     assert.ok(navigationHtml.includes('title="SSH Project"'));
     assert.match(navigationHtml, /class="project-description" title="Other workspace">\s*Other workspace\s*<\/p>/);
+
+    assert.ok(html.includes('role="tablist"'));
+    assert.ok(html.includes('data-dashboard-tab="open"'));
+    assert.ok(html.includes('data-dashboard-tab="projects"'));
+    assert.ok(html.includes('id="dashboard-tab-open"'));
+    assert.ok(html.includes('id="dashboard-tab-projects"'));
+    assert.ok(html.includes('aria-controls="dashboard-tab-open"'));
+    assert.ok(html.includes('aria-controls="dashboard-tab-projects"'));
+    assert.ok(html.includes('aria-labelledby="dashboard-tab-open-button"'));
+    assert.ok(html.includes('aria-labelledby="dashboard-tab-projects-button"'));
+    assert.ok(html.includes('id="dashboard-search-results"'));
+    assert.ok(html.includes('id="dashboard-search-catalog"'));
+    assert.strictEqual(html.includes('dashboard-projects-template'), false);
+    assert.strictEqual(html.includes('class="groups-wrapper"'), false);
+
+    const currentOnly = webviewContentModule.getOpenProjectsGroupContent([
+        { id: 'current-only', name: 'Current', path: '/work/current', openProjectCardKind: 'current' },
+    ], false, { config });
+    const currentAndOther = webviewContentModule.getOpenProjectsGroupContent([
+        { id: 'current-both', name: 'Current', path: '/work/current', openProjectCardKind: 'current' },
+        { id: 'other-both', name: 'Other', path: '/work/other', openProjectCardKind: 'projectNavigation', aiSessionAttentionCount: 2 },
+    ], false, { config });
+    const navigationOnly = webviewContentModule.getOpenProjectsGroupContent([
+        { id: 'other-only', name: 'Other', path: '/work/other', openProjectCardKind: 'projectNavigation', aiSessionAttentionCount: 2 },
+    ], false, { config });
+    const noCards = webviewContentModule.getOpenProjectsGroupContent([], false, { config });
+
+    assert.ok(currentOnly.includes('CURRENT WORKSPACE'));
+    assert.strictEqual(currentOnly.includes('OTHER WINDOWS'), false);
+    assert.ok(currentAndOther.includes('CURRENT WORKSPACE'));
+    assert.ok(currentAndOther.includes('OTHER WINDOWS'));
+    assert.ok(navigationOnly.includes('No folder is open in this window.'));
+    assert.ok(navigationOnly.includes('OTHER WINDOWS'));
+    assert.ok(noCards.includes('Open a folder to see running projects.'));
+    assert.strictEqual(noCards.includes('OTHER WINDOWS'), false);
+    assert.strictEqual((currentOnly.match(/data-action="collapse"/g) || []).length, 0);
+
+    const projectsHtml = webviewContentModule.getProjectsPanelContent([{
+        id: 'group', groupName: 'Work', collapsed: false,
+        projects: [{
+            id: 'static-project', name: 'Static', path: '/work/static',
+            aiSessionAttentionCount: 3,
+            codexSessions: [{ id: 'must-not-render', name: 'Must Not Render' }],
+        }],
+    }], { config, otherStorageHasData: false });
+    assert.ok(projectsHtml.includes('data-id="static-project"'));
+    assert.ok(!projectsHtml.includes('data-current-workspace'));
+    assert.ok(!projectsHtml.includes('data-attention-project-key'));
+    assert.ok(!projectsHtml.includes('project-ai-attention-badge'));
+    assert.ok(!projectsHtml.includes('project-codex-badge'));
+    assert.ok(!projectsHtml.includes('class="codex-sessions"'));
+    assert.ok(!projectsHtml.includes('Must Not Render'));
 }
 
 function runFavoriteRenderingChecks() {
@@ -1376,12 +1432,7 @@ function runFavoriteRenderingChecks() {
         searchIsActiveByDefault: false,
         showAddGroupButtonTile: false,
     };
-    const html = webviewContentModule.getStewardContent(
-        { extensionPath: '/extension' },
-        {
-            cspSource: 'test-source',
-            asWebviewUri: uri => uri.toString(),
-        },
+    const html = webviewContentModule.getProjectsPanelContent(
         [{
             id: 'group',
             groupName: 'Work',
@@ -1394,11 +1445,8 @@ function runFavoriteRenderingChecks() {
         }],
         {
             config,
-            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
             otherStorageHasData: false,
-            openProjects: [],
-        },
-        true
+        }
     );
     const renderedProjectIds = Array.from(html.matchAll(/<div class="project"[^>]*data-id="([^"]+)"[^>]*>/g))
         .map(match => match[1]);
@@ -1423,12 +1471,7 @@ function runAttentionProjectRenderingChecks() {
         showAddGroupButtonTile: false,
     };
     const projectKey = attentionProject.getAttentionProjectKey('/work/remote-repo');
-    const html = webviewContentModule.getStewardContent(
-        { extensionPath: '/extension' },
-        {
-            cspSource: 'test-source',
-            asWebviewUri: uri => uri.toString(),
-        },
+    const html = webviewContentModule.getProjectsPanelContent(
         [{
             id: 'group',
             groupName: 'Work',
@@ -1444,16 +1487,12 @@ function runAttentionProjectRenderingChecks() {
         }],
         {
             config,
-            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
             otherStorageHasData: false,
-            openProjects: [],
-        },
-        true
+        }
     );
 
-    assert.ok(html.includes(`data-attention-project-key="${projectKey}"`));
-    assert.ok(html.includes('class="project-ai-attention-badge"'));
-    assert.ok(html.includes('>2</span>'));
+    assert.ok(!html.includes(`data-attention-project-key="${projectKey}"`));
+    assert.ok(!html.includes('class="project-ai-attention-badge"'));
     assert.ok(!html.includes('/work/remote-repo" data-attention-project-key'));
 
     const openProjectHtml = webviewContentModule.getStewardContent(
@@ -1558,9 +1597,20 @@ function runFavoriteDndChecks() {
         autoScroll: () => ({}),
     };
     vm.runInNewContext(source, runtimeContext);
-    runtimeContext.initDnD();
+    const dndRoot = {
+        querySelector: () => null,
+        querySelectorAll: selector => {
+            if (selector === '.group-list') return [favorites, ordinary];
+            if (selector === '.groups-wrapper') return [{}];
+            if (selector.startsWith('.groups-wrapper >')) return [ordinaryGroup];
+            return [];
+        },
+    };
+    runtimeContext.initDnD(dndRoot);
+    runtimeContext.initDnD(dndRoot);
 
     assert.strictEqual(drakes.length, 2);
+    assert.strictEqual(dndRoot.__projectStewardDnDInitialized, true);
     const favoriteSource = {
         closest: selector => selector === '[data-system-group="__favorites"]' ? {} : null,
         querySelectorAll: () => [
@@ -1749,6 +1799,12 @@ function runBatchAiSessionWebviewChecks() {
         insertAdjacentHTML: () => { openAttentionBadgeInsertions++; },
     };
     const context = {
+        normalizeDashboardSearchCatalog: value => value
+            && Array.isArray(value.sessions)
+            && Array.isArray(value.openProjects)
+            && Array.isArray(value.savedProjects)
+            ? value
+            : { sessions: [], openProjects: [], savedProjects: [] },
         document: {
             body: {
                 classList: { toggle: () => {} },
@@ -1785,6 +1841,7 @@ function runBatchAiSessionWebviewChecks() {
             requestAnimationFrame: callback => callback(),
             setTimeout: callback => timeoutCallbacks.push(callback),
             vscode: { postMessage: message => messages.push(message) },
+            __projectStewardDashboard: { replaceSearchCatalog: () => undefined },
         },
     };
 
@@ -1968,6 +2025,7 @@ function runBatchAiSessionWebviewChecks() {
         type: 'ai-sessions-updated',
         version: 1,
         sequence: 1,
+        searchCatalog: { sessions: [], openProjects: [], savedProjects: [] },
         openProjects: [{
             projectId: 'project-a',
             expanded: true,
@@ -3432,24 +3490,29 @@ function runAttentionProjectChecks() {
     assert.strictEqual(project.aiSessionAttentionCount, undefined);
 
     const remotePath = 'vscode-remote://dev-container+fixture/work/app';
-    const remoteKey = attentionProject.getAttentionProjectKey(remotePath);
+    const openPath = '/work/app';
+    const openKey = attentionProject.getAttentionProjectKey(openPath);
     const remoteOpenProject = attentionProject.withAttentionProject({
         id: 'open-project',
-        path: '/work/app',
+        path: openPath,
         attentionProjectPath: remotePath,
     }, {
         protocolVersion: 1,
         aggregateRevision: 'remote-revision',
         generatedAtMs: 10,
         sessions: [{
-            projectId: remoteKey,
+            projectId: openKey,
             sessionKey: 'codex:remote',
             eventIds: ['event-remote'],
             reasons: ['input-required'],
             observedAtMs: 2,
         }],
     });
-    assert.strictEqual(remoteOpenProject.aiSessionAttentionCount, 1);
+    assert.strictEqual(
+        remoteOpenProject.aiSessionAttentionCount,
+        1,
+        'OPEN attention identity must use the actual open path shared by OTHER WINDOWS cards'
+    );
 }
 
 function runVsixPackagingChecks() {
@@ -3463,10 +3526,10 @@ function runVsixPackagingChecks() {
 async function main() {
     runPathChecks();
     runAssignmentChecks();
-    runCurrentWorkspaceStateChecks();
+    runDashboardSearchCatalogChecks();
+    runAttentionProjectionChecks();
     runFavoriteProjectOrderChecks();
-    runCurrentWorkspaceMatchingChecks();
-    runOpenProjectAttentionIdentityChecks();
+    runOpenProjectRuntimeIdentityChecks();
     runCandidateFilterChecks();
     runDisplayChecks();
     runPinStoreChecks();

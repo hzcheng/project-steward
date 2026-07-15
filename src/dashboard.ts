@@ -2,7 +2,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession, AiSessionProviderId, isAiSessionProviderId } from './models';
-import { getAiSessionsDiv, getOpenProjectsGroupContent, getProjectSearchText, getStewardContent } from './webview/webviewContent';
+import { getAiSessionsDiv, getOpenProjectsGroupContent, getProjectSearchText, getProjectsPanelContent, getStewardContent } from './webview/webviewContent';
 import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 
@@ -19,7 +19,7 @@ import AiSessionAttentionMonitor from './aiSessions/attentionMonitor';
 import AttentionBridgeClient from './aiSessions/attentionBridgeClient';
 import { aggregateAttentionSnapshots, AttentionAggregate } from './aiSessions/attentionAggregate';
 import type { AttentionPayloadItem } from './aiSessions/attentionPayload';
-import { getAttentionProjectKey, getAttentionProjectSummaries, withAttentionProject } from './aiSessions/attentionProject';
+import { buildAttentionSessionIndex, getAttentionProjectKey, getAttentionProjectSummaries, getAttentionSessionLookupKey, withAttentionProjects } from './aiSessions/attentionProject';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
@@ -29,15 +29,15 @@ import { archiveBatchAiSessionItem as executeBatchAiSessionArchiveItem, executeB
 import type { BatchAiSessionArchiveAttemptStatus, BatchAiSessionArchiveResult, BatchAiSessionArchiveSelection } from './aiSessions/archiveBatch';
 import type { AiSessionActiveTerminalChangedMessage, AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
 import type { AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './aiSessions/lifecycle';
-import { findSavedProjectForOpenProject, getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
+import { getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
 import { getLastPartOfPath, getOpenProjectUri as resolveOpenProjectUri, getOpenProjectsFromWorkspace, getWorkspaceUri as resolveWorkspaceUri, getWorkspaceUris as resolveWorkspaceUris, isUriString, parsePathAsUri } from './projects/openProjectService';
 import RemoteProjectResolver from './projects/remoteProjectResolver';
 import GitRepositoryDetector from './projects/gitRepositoryDetector';
-import { getCurrentWorkspaceProjectIds as resolveCurrentWorkspaceProjectIds } from './projects/currentWorkspaceState';
 import { withFavoriteProjectOrder, withToggledProjectFavorite } from './projects/favoriteProjectOrder';
 import OpenProjectBridgeClient from './openProjects/bridgeClient';
 import type { OpenProjectAggregate } from './openProjects/protocol';
 import { createOpenProjectRecords, projectOpenProjectCards } from './openProjects/projection';
+import { buildDashboardSearchCatalog } from './webview/dashboardViewModel';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -89,7 +89,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     this._view.webview.html = getStewardContent(
                         context,
                         this._view.webview,
-                        getGroupsWithAiSessionAttention(projectService.getGroups()),
+                        projectService.getGroups(),
                         stewardInfos,
                         true
                     );
@@ -220,7 +220,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         get favoritesGroupCollapsed() { return context.globalState.get(FAVORITES_GROUP_COLLAPSED_KEY) as boolean },
         get openProjects() { return getOpenProjectCards() },
         get openProjectsGroupCollapsed() { return context.globalState.get(OPEN_PROJECTS_GROUP_COLLAPSED_KEY) as boolean },
-        get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() },
     };
 
     const openCommand = vscode.commands.registerCommand('projectSteward.open', () => {
@@ -463,10 +462,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             version: 1,
             semanticRevision: openProjectAggregate.semanticRevision,
             projectCount: cards.length,
+            searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), cards),
             html: getOpenProjectsGroupContent(
                 cards,
                 stewardInfos.openProjectsGroupCollapsed,
-                getCurrentWorkspaceProjectIds(),
                 stewardInfos,
             ),
         };
@@ -527,14 +526,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
             .slice(0, 1000)
             .map(([sessionKey, eventIds]) => ({ sessionKey, eventIds: Array.from(eventIds).slice(0, 1000) }));
-    }
-
-    function getGroupsWithAiSessionAttention(groups: Group[]): Group[] {
-        const aggregate = getEffectiveAiSessionAttentionAggregate();
-        return (groups || []).map(group => ({
-            ...group,
-            projects: (group.projects || []).map(project => withAttentionProject(project, aggregate)),
-        }));
     }
 
     function postAiSessionAttentionProjectsUpdated() {
@@ -641,7 +632,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const snapshot = aiSessionAttentionMonitor.getSnapshot();
         const items: AttentionPayloadItem[] = [];
         for (const project of projects) {
-            const projectKey = getAttentionProjectKey(project.attentionProjectPath || project.path);
+            const projectKey = getAttentionProjectKey(project.path);
             if (!projectKey) {
                 continue;
             }
@@ -845,6 +836,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     async function handleStewardMessage(e: any) {
         let projectId: string, groupId: string;
         switch (e.type) {
+            case 'request-projects-panel':
+                if (e.version !== 1 || !Number.isSafeInteger(e.requestId) || e.requestId < 1) {
+                    break;
+                }
+                await provider.postMessage({
+                    type: 'projects-panel-content',
+                    version: 1,
+                    requestId: e.requestId,
+                    html: getProjectsPanelContent(projectService.getGroups(), stewardInfos),
+                });
+                break;
             case 'selected-project':
                 projectId = e.projectId as string;
                 let projectOpenType = e.projectOpenType as ProjectOpenType;
@@ -2424,7 +2426,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function getOpenProjectCards(): Project[] {
-        let cards = projectOpenProjectCards(getOpenProjects(), openProjectAggregate, openProjectBridgeClient.instanceId);
+        const cards = withAttentionProjects(
+            projectOpenProjectCards(getOpenProjects(), openProjectAggregate, openProjectBridgeClient.instanceId),
+            getEffectiveAiSessionAttentionAggregate()
+        );
         openProjectNavigationCardsById = new Map(
             cards
                 .filter(card => card.openProjectCardKind === 'projectNavigation')
@@ -2437,15 +2442,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void openProjectBridgeClient.publish(
             createOpenProjectRecords(getRawOpenProjects()),
             followsFocusEvent
-        );
-    }
-
-    function getCurrentWorkspaceProjectIds(): string[] {
-        return resolveCurrentWorkspaceProjectIds(
-            projectService.getProjectsFlat(),
-            resolveWorkspaceUris(vscode.workspace.workspaceFile, vscode.workspace.workspaceFolders),
-            vscode.env.remoteName,
-            findSavedProjectForOpenProject
         );
     }
 
@@ -2466,18 +2462,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // Results are scoped to this window, so missing sessions cannot be used to prune persisted pins.
         let pinnedSessions = getPinnedAiSessionKeys();
         let aliases = getAiSessionAliases();
+        const aggregate = getEffectiveAiSessionAttentionAggregate();
+        const aggregateByProjectAndSession = buildAttentionSessionIndex(aggregate);
+        const localAttentionBySession = aiSessionAttentionMonitor.getSnapshot();
 
         return openProjects.map(project => {
-            const projectKey = getAttentionProjectKey(project.attentionProjectPath || project.path);
-            const aggregate = getEffectiveAiSessionAttentionAggregate();
+            const projectKey = getAttentionProjectKey(project.path);
             for (let providerId of AI_SESSION_PROVIDER_IDS) {
                 let sessionProvider = getRegisteredAiSessionProvider(providerId);
                 let sessionResult = sessionResults[providerId];
                 project[sessionProvider.projectSessionsKey] = prepareAiSessionsForDisplay(assignments[providerId].get(project.id) || [], providerId, pinnedSessions, aliases).map(session => {
-                    const attention = aiSessionAttentionMonitor.getSnapshot()[getAiSessionKey(providerId, session.id)];
-                    const aggregateAttention = aggregate.sessions.find(item =>
-                        item.projectId === projectKey
-                        && item.sessionKey === getAiSessionKey(providerId, session.id));
+                    const sessionKey = getAiSessionKey(providerId, session.id);
+                    const attention = localAttentionBySession[sessionKey];
+                    const aggregateAttention = aggregateByProjectAndSession.get(
+                        getAttentionSessionLookupKey(projectKey, sessionKey)
+                    );
                     const localAttention = aiSessionAttentionAggregate ? null : attention;
                     const event = aggregateAttention ? {
                         eventId: aggregateAttention.eventIds[0] || `${aggregateAttention.sessionKey}:${aggregateAttention.observedAtMs}`,
@@ -2496,17 +2495,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
             project.codexSessionsExpanded = expandedProjects.has(getOpenProjectCodexExpansionKey(project));
             project.activeAiSessionProvider = getActiveAiSessionProvider(project, activeProviders);
-            return withAttentionProject(project, aggregate);
+            return project;
         });
     }
 
     function getAiSessionsUpdatedMessage(): AiSessionsUpdatedMessage {
+        const cards = getOpenProjectCards();
+        const openProjects = cards
+            .filter(project => project.openProjectCardKind !== 'projectNavigation');
         return {
             type: 'ai-sessions-updated',
             version: 1,
             sequence: ++aiSessionUpdateSequence,
             generatedAt: new Date().toISOString(),
-            openProjects: getOpenProjects().map(project => getOpenProjectAiSessionViewModel(project)),
+            openProjects: openProjects.map(project => getOpenProjectAiSessionViewModel(project)),
+            searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), cards),
         };
     }
 

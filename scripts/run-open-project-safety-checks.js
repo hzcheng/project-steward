@@ -699,14 +699,16 @@ function runWebviewRefreshFocusChecks() {
         'window',
         'sessionStorage',
         'requestAnimationFrame',
-        `return function initFiltering(activeByDefault) {${extractFunctionBody(source, 'initFiltering')}};`
+        `return function initFiltering(activeByDefault, dashboard) {${extractFunctionBody(source, 'initFiltering')}};`
     );
     let focusCalls = 0;
     let blurCalls = 0;
+    let selectCalls = 0;
     const classList = {
         add: () => undefined,
         remove: () => undefined,
         contains: () => false,
+        toggle: () => undefined,
     };
     const filterWrapper = { classList };
     const filterInput = {
@@ -714,8 +716,10 @@ function runWebviewRefreshFocusChecks() {
         parentElement: filterWrapper,
         focus: () => { focusCalls += 1; },
         blur: () => { blurCalls += 1; },
+        select: () => { selectCalls += 1; },
+        addEventListener: () => undefined,
     };
-    const clearSearchElement = {};
+    const clearSearchElement = { addEventListener: () => undefined };
     const document = {
         body: { classList },
         getElementById: id => id === 'filter' ? filterInput : clearSearchElement,
@@ -728,15 +732,20 @@ function runWebviewRefreshFocusChecks() {
     const window = {
         addEventListener: () => undefined,
     };
+    const dashboard = {
+        isSearchActive: () => false,
+        setSearchQuery: () => undefined,
+    };
 
     initFiltering(
         document,
         window,
         sessionStorage,
         callback => callback()
-    )(true);
+    )(true, dashboard);
 
-    assert.strictEqual(focusCalls, 0, 'reloading a visible Webview must not steal editor focus');
+    assert.strictEqual(focusCalls, 1, 'active-by-default search must focus after initialization');
+    assert.strictEqual(selectCalls, 1, 'active-by-default search must select the current query');
     assert.strictEqual(blurCalls, 0, 'reloading a visible Webview must not alter editor focus');
 }
 
@@ -751,6 +760,7 @@ function runOpenProjectIncrementalRenderingChecks() {
 
     const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts'), 'utf8');
     assert.ok(content.includes('export function getOpenProjectsGroupContent('));
+    assert.ok(content.includes('export function getProjectsPanelContent('));
     assert.ok(content.includes('<div class="sticky-groups-wrapper">'));
 
     const webviewScript = fs.readFileSync(
@@ -758,14 +768,18 @@ function runOpenProjectIncrementalRenderingChecks() {
         'utf8'
     );
     const wrapper = { innerHTML: '<div>old</div>' };
-    let filterApplications = 0;
+    let catalogReplacements = 0;
     const applyOpenProjectsUpdate = new Function(
         'document',
         'window',
+        'normalizeDashboardSearchCatalog',
         `return function applyOpenProjectsUpdate(message) {${extractFunctionBody(webviewScript, 'applyOpenProjectsUpdate')}};`
     )(
         { querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null },
-        { __projectStewardApplyFilter: () => { filterApplications += 1; } }
+        { __projectStewardDashboard: { replaceSearchCatalog: () => { catalogReplacements += 1; } } },
+        value => value && Array.isArray(value.sessions) && Array.isArray(value.openProjects) && Array.isArray(value.savedProjects)
+            ? value
+            : { sessions: [], openProjects: [], savedProjects: [] }
     );
     assert.strictEqual(applyOpenProjectsUpdate({
         type: 'open-projects-updated',
@@ -773,9 +787,10 @@ function runOpenProjectIncrementalRenderingChecks() {
         semanticRevision: 'revision-2',
         projectCount: 3,
         html: '<div data-group-id="__openProjects">new</div>',
+        searchCatalog: { sessions: [], openProjects: [], savedProjects: [] },
     }), true);
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
-    assert.strictEqual(filterApplications, 1);
+    assert.strictEqual(catalogReplacements, 1);
     assert.strictEqual(applyOpenProjectsUpdate({ version: 2, html: '<div>bad</div>' }), false);
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.ok(webviewScript.includes("type: 'open-projects-rendered'"));

@@ -1,7 +1,7 @@
 'use strict';
 
 import * as crypto from 'crypto';
-import type { AttentionAggregate } from './attentionAggregate';
+import type { AggregatedAttentionSession, AttentionAggregate } from './attentionAggregate';
 import { normalizeAiSessionComparablePath } from './sessionHelpers';
 
 export interface AttentionProjectSummary {
@@ -46,11 +46,41 @@ export function getAttentionProjectSummaries(aggregate: AttentionAggregate | nul
         .sort((left, right) => left.projectKey.localeCompare(right.projectKey));
 }
 
-export function withAttentionProject<TProject extends { path?: string; attentionProjectPath?: string }>(
+export function getAttentionSessionLookupKey(projectKey: string, sessionKey: string): string {
+    return `${projectKey}\n${sessionKey}`;
+}
+
+export function buildAttentionSessionIndex(
+    aggregate: AttentionAggregate | null
+): Map<string, AggregatedAttentionSession> {
+    return new Map((aggregate?.sessions || []).map(session => [
+        getAttentionSessionLookupKey(session.projectId, session.sessionKey),
+        session,
+    ] as [string, AggregatedAttentionSession]));
+}
+
+export function withAttentionProjects<TProject extends { path?: string }>(
+    projects: TProject[],
+    aggregate: AttentionAggregate | null
+): Array<TProject & { aiSessionAttentionCount: number; aiSessionAttentionEventIds: string[] }> {
+    const summaries = new Map(
+        getAttentionProjectSummaries(aggregate).map(summary => [summary.projectKey, summary] as const)
+    );
+    return (projects || []).map(project => {
+        const summary = summaries.get(getAttentionProjectKey(project.path));
+        return {
+            ...project,
+            aiSessionAttentionCount: summary?.attentionCount || 0,
+            aiSessionAttentionEventIds: summary?.eventIds.slice() || [],
+        };
+    });
+}
+
+export function withAttentionProject<TProject extends { path?: string }>(
     project: TProject,
     aggregate: AttentionAggregate | null
 ): TProject & { aiSessionAttentionCount: number; aiSessionAttentionEventIds: string[] } {
-    const projectKey = getAttentionProjectKey(project.attentionProjectPath || project.path);
+    const projectKey = getAttentionProjectKey(project.path);
     const summary = getAttentionProjectSummaries(aggregate).find(candidate => candidate.projectKey === projectKey);
     return {
         ...project,

@@ -98,7 +98,6 @@ function buildOpenProject(
     let projectName = savedProject?.name || name || getLastPartOfPath(projectPath).replace(/\.code-workspace$/g, '') || "Workspace";
     let projectDescription = savedProject ? savedProject.description : description;
     let project = new Project(projectName, projectPath, projectDescription);
-    project.attentionProjectPath = savedProject?.path || projectPath;
     project.id = `${OPEN_PROJECTS_GROUP_ID}-${index}`;
     project.color = savedProject?.color || "var(--vscode-focusBorder)";
     project.favorite = savedProject?.favorite;

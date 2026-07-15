@@ -3,6 +3,7 @@
 import type { AiSessionProviderId, CodexSession } from '../models';
 import type { BatchAiSessionArchiveResult } from './archiveBatch';
 import type { AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
+import type { DashboardSearchCatalog } from '../webview/dashboardViewModel';
 
 export interface AiSessionTerminalEntry<TTerminal = unknown> {
     terminal: TTerminal;
@@ -86,6 +87,7 @@ export interface AiSessionsUpdatedMessage {
     sequence: number;
     generatedAt: string;
     openProjects: OpenProjectAiSessionViewModel[];
+    searchCatalog: DashboardSearchCatalog;
 }
 
 export interface AiSessionActiveTerminalChangedMessage {

@@ -519,10 +519,11 @@ body .project {
 // FILTERING
 .steward-sticky-header {
     transition: top $defaultTransition;
-    top: -$filter-offset;
-    position: absolute;
+    top: 0;
+    position: sticky;
     width: calc(100% - #{2 * $defaultPadding});
     z-index: 200;
+    padding-bottom: math.div($defaultPadding, 2);
     background: var(--vscode-editor-background);
 }
 
@@ -640,6 +641,163 @@ body .project {
     input[type="search"]::-webkit-search-results-button,
     input[type="search"]::-webkit-search-results-decoration {
         display: none;
+    }
+}
+
+.dashboard-tab-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    width: 100%;
+    margin-top: 6px;
+    padding: 0 2px;
+    box-sizing: border-box;
+}
+
+.dashboard-tab-button {
+    min-width: 0;
+    min-height: 30px;
+    padding: 5px 10px;
+    overflow: hidden;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--vscode-descriptionForeground);
+    background: transparent;
+    font-family: var(--vscode-font-family);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: .04em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+
+    &[aria-selected="true"] {
+        border-color: var(--vscode-panel-border);
+        color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+        background: var(--vscode-list-activeSelectionBackground);
+        font-weight: 700;
+    }
+
+    &:hover {
+        color: var(--vscode-foreground);
+        background: var(--vscode-list-hoverBackground);
+    }
+}
+
+.dashboard-tab-button:focus-visible,
+.dashboard-search-result:focus-visible,
+.filter-wrapper button:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+}
+
+.dashboard-tab-panel,
+.dashboard-search-results {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.dashboard-search-results {
+    padding-top: 8px;
+}
+
+.dashboard-search-section {
+    display: grid;
+    gap: 5px;
+    margin: 0 0 12px;
+}
+
+.dashboard-search-section-title {
+    margin: 0;
+    padding: 2px 5px;
+    color: var(--vscode-descriptionForeground);
+    font-family: var(--vscode-font-family);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .06em;
+}
+
+.dashboard-search-result {
+    display: grid;
+    gap: 2px;
+    width: 100%;
+    min-height: 44px;
+    padding: 7px 9px;
+    overflow: hidden;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 7px;
+    color: var(--vscode-foreground);
+    background: var(--vscode-list-inactiveSelectionBackground);
+    text-align: left;
+    cursor: pointer;
+
+    &:hover {
+        background: var(--vscode-list-hoverBackground);
+    }
+}
+
+.dashboard-search-result-title,
+.dashboard-search-result-meta {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dashboard-search-result-title {
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.dashboard-search-result-meta,
+.dashboard-search-empty,
+.dashboard-projects-loading,
+.open-current-workspace-empty {
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+}
+
+.dashboard-search-empty,
+.dashboard-projects-loading,
+.open-current-workspace-empty {
+    padding: 14px 8px;
+    text-align: center;
+}
+
+.open-current-workspace-group {
+    .group-title-text {
+        cursor: default !important;
+    }
+
+    .collapse-icon {
+        display: none;
+    }
+}
+
+.open-other-windows-group .project-ai-attention-badge.attention-animate {
+    animation: steward-ai-attention 900ms ease-in-out 3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .open-other-windows-group .project-ai-attention-badge.attention-animate {
+        animation: none;
+    }
+}
+
+@media (max-width: 240px) {
+    .dashboard-tab-button {
+        min-height: 32px;
+        padding-right: 6px;
+        padding-left: 6px;
+    }
+
+    .dashboard-search-result-meta,
+    .project-description,
+    .group-title-badge {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 }
 

@@ -2,6 +2,19 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
+## [Unreleased]
+
+### Added
+
+-   Add `OPEN` and `PROJECTS` tabs plus grouped global search for AI sessions, open projects, and saved projects.
+-   Show unread AI session counts on `OTHER WINDOWS` navigation cards in the live `OPEN` view.
+
+### Changed
+
+-   Load the static saved-project `PROJECTS` panel only when it is first opened, reducing initial Webview work.
+-   Keep runtime attention and current-workspace highlighting in `OPEN`; `PROJECTS`, tabs, and search results remain static.
+-   Move the live groups below the tab row; custom CSS targeting `.steward-sticky-header > .sticky-groups-wrapper` must target `#dashboard-tab-open .sticky-groups-wrapper` instead.
+
 ## [1.1.8] 2026-07-13
 
 ### Added

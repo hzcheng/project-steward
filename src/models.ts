@@ -26,12 +26,10 @@ export class Project {
     name: string;
     description: string;
     path: string;
-    attentionProjectPath?: string;
     remoteType?: ProjectRemoteType;
     favorite?: boolean;
     favoriteOrder?: number;
     showSaveAction?: boolean;
-    isCurrentWorkspace?: boolean;
     codexSessions?: CodexSession[];
     kimiSessions?: CodexSession[];
     claudeSessions?: CodexSession[];
@@ -177,7 +175,6 @@ export interface StewardInfos {
     favoritesGroupCollapsed?: boolean;
     openProjects?: Project[];
     openProjectsGroupCollapsed?: boolean;
-    currentWorkspaceProjectIds?: string[];
 }
 
 export enum ProjectPathType {

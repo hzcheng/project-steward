@@ -6,7 +6,9 @@ function applyOpenProjectsUpdate(message) {
         || !message.semanticRevision
         || !Number.isSafeInteger(message.projectCount)
         || message.projectCount < 0
-        || typeof message.html !== 'string') {
+        || typeof message.html !== 'string'
+        || typeof normalizeDashboardSearchCatalog !== 'function'
+        || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog) {
         return false;
     }
 
@@ -16,10 +18,35 @@ function applyOpenProjectsUpdate(message) {
     }
 
     wrapper.innerHTML = message.html;
-    if (typeof window.__projectStewardApplyFilter === 'function') {
-        window.__projectStewardApplyFilter();
+    if (window.__projectStewardDashboard) {
+        window.__projectStewardDashboard.replaceSearchCatalog(message.searchCatalog);
+    }
+    if (typeof window.__projectStewardSyncCollapseButton === 'function') {
+        window.__projectStewardSyncCollapseButton();
     }
     return true;
+}
+
+function getCollapseButtonState(tab, collapsedStates) {
+    tab = tab === 'projects' ? 'projects' : 'open';
+    if (!collapsedStates.length) {
+        return {
+            disabled: true,
+            collapsed: false,
+            title: tab === 'open'
+                ? 'No other windows to collapse'
+                : 'No project groups to collapse',
+        };
+    }
+
+    var collapsed = collapsedStates.every(Boolean);
+    return {
+        disabled: false,
+        collapsed,
+        title: tab === 'open'
+            ? (collapsed ? 'Expand Other Windows' : 'Collapse Other Windows')
+            : (collapsed ? 'Expand All Groups' : 'Collapse All Groups'),
+    };
 }
 
 function initProjects() {
@@ -332,18 +359,28 @@ function initProjects() {
         if (!sessionRow || !sessionRow.hasAttribute('data-ai-session-attention')) return;
         var provider = sessionRow.getAttribute('data-session-provider') || 'codex';
         var sessionId = sessionRow.getAttribute('data-session-id') || '';
+        var fallback = sessionRow.getAttribute('data-session-event-id') || sessionRow.getAttribute('data-ai-session-event-id');
+        acknowledgeAiSession(provider, sessionId, fallback);
+    }
+
+    function acknowledgeAiSession(provider, sessionId, fallbackEventId) {
         var sessionKey = provider + ':' + sessionId;
         window.__projectStewardAttentionSessionEvents = window.__projectStewardAttentionSessionEvents || {};
         var eventIds = window.__projectStewardAttentionSessionEvents[sessionKey] || [];
-        if (!eventIds.length) {
-            var fallback = sessionRow.getAttribute('data-session-event-id') || sessionRow.getAttribute('data-ai-session-event-id');
-            if (fallback) eventIds = [fallback];
+        if (!eventIds.length && fallbackEventId) {
+            eventIds = [fallbackEventId];
         }
         eventIds = Array.from(new Set(eventIds.filter(eventId => typeof eventId === 'string' && !!eventId)));
         if (eventIds.length) {
             window.vscode.postMessage({ type: 'acknowledge-ai-session-attention', eventIds: eventIds });
         }
     }
+
+    window.__projectStewardAcknowledgeSession = (provider, sessionId) => {
+        if (isAiSessionProvider(provider) && sessionId) {
+            acknowledgeAiSession(provider, sessionId);
+        }
+    };
 
     function selectAiSessionProvider(projectId, provider) {
         if (!projectId || !isAiSessionProvider(provider))
@@ -510,6 +547,7 @@ function initProjects() {
             groupId: groupId,
             collapsed,
         });
+        syncCollapseButton();
     }
 
     function onTriggerProjectAction(target, projectId) {
@@ -730,25 +768,61 @@ function initProjects() {
         );
     }
 
-    function updateToggleAllGroupsButton(collapsed) {
-        document.body.classList.toggle("steward-all-collapsed", collapsed);
-
+    function updateToggleAllGroupsButton(state) {
+        document.body.classList.toggle("steward-all-collapsed", state.collapsed);
         var button = document.querySelector('[data-action="toggle-all-groups"]');
         if (!button)
             return;
 
-        var label = collapsed ? "Expand All Groups" : "Collapse All Groups";
-        button.setAttribute("title", label);
-        button.setAttribute("aria-label", label);
+        button.disabled = state.disabled;
+        button.setAttribute('aria-disabled', state.disabled ? 'true' : 'false');
+        button.setAttribute("title", state.title);
+        button.setAttribute("aria-label", state.title);
+    }
+
+    function getActiveCollapsibleGroups(activeTab) {
+        var dashboard = window.__projectStewardDashboard;
+        activeTab = activeTab || (dashboard && typeof dashboard.getActiveTab === 'function'
+            ? dashboard.getActiveTab()
+            : 'open');
+        var selector = activeTab === 'projects'
+            ? '#dashboard-tab-projects .group[data-group-id]'
+            : '#dashboard-tab-open .open-other-windows-group[data-group-id]';
+        return [...document.querySelectorAll(selector)];
+    }
+
+    function setGroupCollapsed(group, collapsed, persist) {
+        group.classList.toggle('collapsed', collapsed);
+        if (persist) {
+            window.vscode.postMessage({
+                type: 'collapse-group',
+                groupId: group.getAttribute('data-group-id'),
+                collapsed,
+            });
+        }
+    }
+
+    function syncCollapseButton(activeTab) {
+        var dashboard = window.__projectStewardDashboard;
+        activeTab = activeTab || (dashboard && typeof dashboard.getActiveTab === 'function'
+            ? dashboard.getActiveTab()
+            : 'open');
+        var groups = getActiveCollapsibleGroups(activeTab);
+        updateToggleAllGroupsButton(getCollapseButtonState(
+            activeTab,
+            groups.map(group => group.classList.contains('collapsed'))
+        ));
     }
 
     function toggleAllGroups() {
-        var groups = [...document.querySelectorAll('.groups-wrapper > .group[data-group-id]')];
+        var groups = getActiveCollapsibleGroups();
         var shouldCollapse = groups.some(group => !group.classList.contains("collapsed"));
 
-        groups.forEach(group => group.classList.toggle("collapsed", shouldCollapse));
-        updateToggleAllGroupsButton(shouldCollapse);
+        groups.forEach(group => setGroupCollapsed(group, shouldCollapse, true));
+        syncCollapseButton();
     }
+
+    window.__projectStewardSyncCollapseButton = syncCollapseButton;
 
     function onMouseEvent(e) {
         if (!e.target || e.target.closest(".disabled"))
@@ -790,6 +864,16 @@ function initProjects() {
             window.vscode.postMessage({
                 type: 'add-group'
             });
+            return;
+        }
+
+        if (e.target.closest('[data-action="add-project"]')) {
+            onAddProjectClicked(e);
+            return;
+        }
+
+        if (e.target.closest('[data-action="import-from-other-storage"]')) {
+            onImportFromOtherStorageClicked(e);
             return;
         }
 
@@ -894,7 +978,11 @@ function initProjects() {
     }
 
     function applyAiSessionsUpdate(message) {
-        if (message.version !== 1 || typeof message.sequence !== 'number' || !Array.isArray(message.openProjects)) {
+        if (message.version !== 1
+            || typeof message.sequence !== 'number'
+            || !Array.isArray(message.openProjects)
+            || typeof normalizeDashboardSearchCatalog !== 'function'
+            || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog) {
             requestFullRefresh('unsupported-ai-session-message');
             return;
         }
@@ -925,8 +1013,8 @@ function initProjects() {
         }
 
         updateStickyGroupHeaderOffset();
-        if (typeof window.__projectStewardApplyFilter === 'function') {
-            window.__projectStewardApplyFilter();
+        if (window.__projectStewardDashboard) {
+            window.__projectStewardDashboard.replaceSearchCatalog(message.searchCatalog);
         }
     }
 
@@ -944,6 +1032,21 @@ function initProjects() {
 
         return null;
     }
+
+    window.__projectStewardShowCurrentProject = projectId => {
+        var projectDiv = findOpenProjectDiv(projectId);
+        if (!projectDiv) {
+            return false;
+        }
+        if (!projectDiv.hasAttribute('data-codex-expanded')) {
+            toggleCodexSessions(projectDiv, projectId);
+        }
+        projectDiv.setAttribute('tabindex', '-1');
+        projectDiv.focus();
+        projectDiv.scrollIntoView({ block: 'nearest' });
+        projectDiv.addEventListener('blur', () => projectDiv.removeAttribute('tabindex'), { once: true });
+        return true;
+    };
 
     function updateOpenProjectAiSessions(projectDiv, projectUpdate) {
         if (typeof projectUpdate.sessionSectionHtml !== 'string') {
@@ -1168,18 +1271,6 @@ function initProjects() {
             onMouseEvent(e);
         }
     });
-
-    document
-        .querySelectorAll('[data-action="add-project"]')
-        .forEach(element =>
-            element.addEventListener("click", onAddProjectClicked)
-        );
-
-    document
-        .querySelectorAll('[data-action="import-from-other-storage"]')
-        .forEach(element =>
-            element.addEventListener("click", onImportFromOtherStorageClicked)
-        );
 
     document.addEventListener('contextmenu', (e) => {
         if (!e.target)
