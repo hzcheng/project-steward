@@ -113,9 +113,9 @@ export function getStewardContent(
                     ${Icons.settings}
                 </button>
             </div>
-            ${openProjectsGroup ? `<div class="sticky-groups-wrapper">
-                ${getGroupSection(openProjectsGroup, allGroups.length, infos)}
-            </div>` : ''}
+            <div class="sticky-groups-wrapper">
+                ${openProjectsGroup ? getGroupSection(openProjectsGroup, allGroups.length, infos) : ''}
+            </div>
         </div>
         <div class="">
             <div class="groups-wrapper ${!infos.config.displayProjectPath ? 'hide-project-path' : ''
@@ -162,6 +162,28 @@ export function getStewardContent(
 
 
 </html>`;
+}
+
+export function getOpenProjectsGroupContent(
+    openProjects: Project[],
+    collapsed: boolean,
+    currentWorkspaceProjectIds: string[],
+    infos: StewardInfos,
+): string {
+    const workspaceState = withCurrentWorkspaceState(
+        [],
+        openProjects || [],
+        currentWorkspaceProjectIds || [],
+    );
+    if (!workspaceState.openProjects.length) {
+        return '';
+    }
+
+    return getGroupSection(
+        getOpenProjectsGroup(workspaceState.openProjects, collapsed),
+        1,
+        infos,
+    );
 }
 
 function criticalStartupStyle(): string {

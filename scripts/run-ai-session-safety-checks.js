@@ -2580,6 +2580,12 @@ async function runProductionAttentionBridgeIntegrationChecks() {
     const registered = new Map();
     const executed = [];
     const vscode = {
+        window: {
+            createOutputChannel: () => ({
+                appendLine: () => undefined,
+                dispose: () => undefined,
+            }),
+        },
         workspace: { workspaceFolders: [] },
         commands: {
             registerCommand: (command, callback) => {

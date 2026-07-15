@@ -38,26 +38,24 @@ function initFiltering(activeByDefault) {
     if (openInitially) {
         requestAnimationFrame(() => {
             filterInput.value = storedFilter;
-            toggleFiltering(true);
+            toggleFiltering(true, false);
 
             // Do not animate slide-in if state is restored
             document.body.classList.add(noInitialTransitionClass);
         });
     }
 
-    // Workaround for focusing the webview's body after opening/switching. Otherwise, ctrl+f does not work.
-    filterInput.focus();
-    filterInput.blur();
-
     // Functions
-    function toggleFiltering(val) {
+    function toggleFiltering(val, focusInput = true) {
         document.body.classList.remove(noInitialTransitionClass);
 
         filteringActive = val !== undefined ? val : !filteringActive;
 
         if (filteringActive) {
             document.body.classList.add(filteringClass);
-            filterInput.focus();
+            if (focusInput) {
+                filterInput.focus();
+            }
         } else {
             document.body.classList.remove(filteringClass);
         }

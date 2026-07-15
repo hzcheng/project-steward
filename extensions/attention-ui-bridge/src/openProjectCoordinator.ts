@@ -3,6 +3,7 @@ import * as path from 'path';
 import {
     createOpenProjectSemanticRevision,
     MAX_OPEN_PROJECT_RECORDS,
+    OPEN_PROJECT_HEARTBEAT_MS,
     OPEN_PROJECT_PROTOCOL_VERSION,
     OpenProjectAggregate,
     OpenProjectPublication,
@@ -30,7 +31,28 @@ export interface OpenProjectCoordinatorDependencies {
     clearInterval(handle: unknown): void;
     createWatcher(directory: string, onDidChange: () => void): OpenProjectWatcher;
     deliverAggregate(aggregate: OpenProjectAggregate): PromiseLike<unknown> | unknown;
+    reportDiagnostic?(event: OpenProjectDiagnosticEvent): void;
     createStore?(rootDirectory: string, instanceId: string): OpenProjectStoreLike;
+}
+
+export interface OpenProjectDiagnosticEvent {
+    event: 'publish' | 'renew' | 'unregister' | 'scan' | 'deliver' | 'error';
+    atMs: number;
+    instanceId?: string;
+    sequence?: number;
+    projectCount?: number;
+    registrationCount?: number;
+    semanticRevision?: string;
+    operation?: string;
+    error?: string;
+    registrations?: Array<{
+        instanceId: string;
+        sequence: number;
+        projectCount: number;
+        lastFocusedAtMs: number;
+        leaseAgeMs: number;
+    }>;
+    counters?: OpenProjectStoreScan['counters'];
 }
 
 function validateTimestamp(timestamp: number): number {
@@ -74,11 +96,14 @@ export class OpenProjectCoordinator {
     private readonly intervalHandle: unknown;
     private boundInstanceId: string | undefined;
     private store: OpenProjectStoreLike | undefined;
+    private currentRegistration: OpenProjectRegistration | undefined;
     private lastFocusedAtMs: number | undefined;
     private lastDeliveredRevision: string | undefined;
     private mutationQueue: Promise<void> = Promise.resolve();
     private scanPromise: Promise<void> | undefined;
     private scanRequested = false;
+    private lastScanDiagnostic = '';
+    private lastScanDiagnosticAtMs = Number.NEGATIVE_INFINITY;
     private disposed = false;
 
     public constructor(
@@ -87,15 +112,15 @@ export class OpenProjectCoordinator {
     ) {
         const instancesDirectory = path.join(rootDirectory, 'open-projects', 'v1', 'instances');
         this.watcher = dependencies.createWatcher(instancesDirectory, () => {
-            void this.scanAndDeliver().catch(() => undefined);
+            void this.scanAndDeliver().catch(error => this.reportError('watcher', error));
         });
         this.intervalHandle = dependencies.setInterval(() => {
-            void this.scanAndDeliver().catch(() => undefined);
+            void this.renewLeaseAndScan().catch(error => this.reportError('interval', error));
         }, FALLBACK_SCAN_INTERVAL_MS);
     }
 
     public publish(raw: unknown): Promise<void> {
-        return this.enqueueMutation(async () => {
+        const mutation = this.enqueueMutation(async () => {
             this.ensureActive();
             const publication = validateOpenProjectPublication(raw);
             const store = this.bind(publication);
@@ -112,13 +137,24 @@ export class OpenProjectCoordinator {
                 projects: publication.projects,
             };
             await store.write(registration);
+            this.currentRegistration = registration;
             this.lastFocusedAtMs = lastFocusedAtMs;
-            await this.scanAndDeliver();
+            this.reportDiagnostic({
+                event: 'publish',
+                instanceId: registration.instanceId,
+                sequence: registration.sequence,
+                projectCount: registration.projects.length,
+            });
+        });
+        const result = mutation.then(() => this.scanAndDeliver());
+        return result.catch(error => {
+            this.reportError('publish', error);
+            throw error;
         });
     }
 
     public unregister(raw: unknown): Promise<void> {
-        return this.enqueueMutation(async () => {
+        const mutation = this.enqueueMutation(async () => {
             this.ensureActive();
             const instanceId = validateUnregisterRequest(raw);
             if (this.boundInstanceId === undefined || this.store === undefined) {
@@ -128,7 +164,13 @@ export class OpenProjectCoordinator {
                 throw new Error('open project coordinator received a different instanceId');
             }
             await this.store.remove(instanceId);
-            await this.scanAndDeliver();
+            this.currentRegistration = undefined;
+            this.reportDiagnostic({ event: 'unregister', instanceId });
+        });
+        const result = mutation.then(() => this.scanAndDeliver());
+        return result.catch(error => {
+            this.reportError('unregister', error);
+            throw error;
         });
     }
 
@@ -197,6 +239,33 @@ export class OpenProjectCoordinator {
             .slice()
             .sort(compareRegistrationPriority)
             .slice(0, MAX_OPEN_PROJECT_RECORDS);
+        const registrationSummaries = registrations.map(registration => ({
+            instanceId: registration.instanceId,
+            sequence: registration.sequence,
+            projectCount: registration.projects.length,
+            lastFocusedAtMs: registration.lastFocusedAtMs,
+            leaseAgeMs: Math.max(0, observedAtMs - registration.leaseUpdatedAtMs),
+        }));
+        const scanDiagnostic = JSON.stringify({
+            registrations: registrationSummaries.map(registration => ({
+                instanceId: registration.instanceId,
+                sequence: registration.sequence,
+                projectCount: registration.projectCount,
+                lastFocusedAtMs: registration.lastFocusedAtMs,
+            })),
+            counters: scan.counters,
+        });
+        if (scanDiagnostic !== this.lastScanDiagnostic
+            || observedAtMs - this.lastScanDiagnosticAtMs >= 30_000) {
+            this.reportDiagnostic({
+                event: 'scan',
+                registrationCount: registrations.length,
+                registrations: registrationSummaries,
+                counters: scan.counters,
+            }, observedAtMs);
+            this.lastScanDiagnostic = scanDiagnostic;
+            this.lastScanDiagnosticAtMs = observedAtMs;
+        }
         const semanticRevision = createOpenProjectSemanticRevision(registrations);
         if (semanticRevision === this.lastDeliveredRevision) {
             return;
@@ -208,7 +277,38 @@ export class OpenProjectCoordinator {
             registrations,
         });
         await this.dependencies.deliverAggregate(aggregate);
+        this.reportDiagnostic({
+            event: 'deliver',
+            registrationCount: registrations.length,
+            semanticRevision,
+        }, observedAtMs);
         this.lastDeliveredRevision = semanticRevision;
+    }
+
+    private renewLeaseAndScan(): Promise<void> {
+        const mutation = this.enqueueMutation(async () => {
+            if (this.disposed) {
+                return;
+            }
+            if (this.store !== undefined && this.currentRegistration !== undefined) {
+                const timestamp = validateTimestamp(this.dependencies.now());
+                if (timestamp - this.currentRegistration.leaseUpdatedAtMs >= OPEN_PROJECT_HEARTBEAT_MS) {
+                    const registration = {
+                        ...this.currentRegistration,
+                        leaseUpdatedAtMs: timestamp,
+                    };
+                    await this.store.write(registration);
+                    this.currentRegistration = registration;
+                    this.reportDiagnostic({
+                        event: 'renew',
+                        instanceId: registration.instanceId,
+                        sequence: registration.sequence,
+                        projectCount: registration.projects.length,
+                    }, timestamp);
+                }
+            }
+        });
+        return mutation.then(() => this.scanAndDeliver());
     }
 
     private enqueueMutation(mutation: () => Promise<void>): Promise<void> {
@@ -220,6 +320,34 @@ export class OpenProjectCoordinator {
     private ensureActive(): void {
         if (this.disposed) {
             throw new Error('open project coordinator is disposed');
+        }
+    }
+
+    private reportError(operation: string, error: unknown): void {
+        this.reportDiagnostic({
+            event: 'error',
+            operation,
+            error: (error instanceof Error ? error.stack || error.message : String(error)).slice(0, 4096),
+        });
+    }
+
+    private reportDiagnostic(
+        event: Omit<OpenProjectDiagnosticEvent, 'atMs'>,
+        atMs: number = this.safeNow(),
+    ): void {
+        try {
+            this.dependencies.reportDiagnostic?.({ ...event, atMs });
+        } catch (_error) {
+            // Diagnostics must never change registry behavior.
+        }
+    }
+
+    private safeNow(): number {
+        try {
+            const timestamp = this.dependencies.now();
+            return Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : Date.now();
+        } catch (_error) {
+            return Date.now();
         }
     }
 }

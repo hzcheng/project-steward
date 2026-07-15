@@ -423,6 +423,8 @@ async function runBridgeClientChecks() {
     const executions = [];
     const aggregates = [];
     const errors = [];
+    const clientDiagnostics = [];
+    const forwardedBridgeDiagnostics = [];
     const instanceId = 'a'.repeat(32);
     const records = [makeRecord()];
     const client = new OpenProjectBridgeClient(
@@ -447,6 +449,8 @@ async function runBridgeClientChecks() {
             clearInterval: handle => {
                 clearedHeartbeat = handle;
             },
+            reportDiagnostic: event => clientDiagnostics.push(event),
+            reportBridgeDiagnostic: event => forwardedBridgeDiagnostics.push(event),
         }
     );
 
@@ -455,6 +459,10 @@ async function runBridgeClientChecks() {
     assert.strictEqual(typeof heartbeatCallback, 'function');
     assert.strictEqual(
         typeof registeredCommands.get('_projectStewardOpenProjects.workspace.aggregate'),
+        'function'
+    );
+    assert.strictEqual(
+        typeof registeredCommands.get('_projectStewardOpenProjects.workspace.diagnostic'),
         'function'
     );
     assert.deepStrictEqual(executions, [{
@@ -470,6 +478,21 @@ async function runBridgeClientChecks() {
     assert.ok(!Object.prototype.hasOwnProperty.call(executions[0].argument, 'leaseUpdatedAtMs'));
     assert.ok(!Object.prototype.hasOwnProperty.call(executions[0].argument, 'lastFocusedAtMs'));
     assert.ok(!Object.prototype.hasOwnProperty.call(executions[0].argument, 'observedAtMs'));
+    assert.ok(clientDiagnostics.some(event =>
+        event.event === 'activate'
+        && event.instanceId === instanceId
+        && event.projectCount === 1
+    ));
+    registeredCommands.get('_projectStewardOpenProjects.workspace.diagnostic')({
+        event: 'scan',
+        atMs: 1000,
+        registrationCount: 3,
+    });
+    assert.deepStrictEqual(forwardedBridgeDiagnostics, [{
+        event: 'scan',
+        atMs: 1000,
+        registrationCount: 3,
+    }]);
 
     await client.publish(records);
     assert.strictEqual(executions.length, 1, 'unchanged metadata should be suppressed between heartbeats');
@@ -478,6 +501,11 @@ async function runBridgeClientChecks() {
     assert.strictEqual(executions.length, 2);
     assert.strictEqual(executions[1].argument.sequence, 2);
     assert.strictEqual(executions[1].argument.followsFocusEvent, false);
+    assert.ok(clientDiagnostics.some(event =>
+        event.event === 'publish-success'
+        && event.sequence === 2
+        && event.reason === 'heartbeat'
+    ));
 
     await client.publish(records, true);
     assert.strictEqual(executions.length, 3);
@@ -503,6 +531,11 @@ async function runBridgeClientChecks() {
     const aggregate = makeAggregate([makeRegistration()]);
     receiveAggregate(aggregate);
     assert.deepStrictEqual(aggregates, [aggregate]);
+    assert.ok(clientDiagnostics.some(event =>
+        event.event === 'aggregate'
+        && event.registrationCount === 1
+        && event.registrations[0].instanceId === SELF
+    ));
     receiveAggregate({
         ...aggregate,
         observedAtMs: aggregate.observedAtMs + 1,
@@ -626,6 +659,10 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes("import { createOpenProjectRecords, projectOpenProjectCards } from './openProjects/projection';"));
     assert.ok(dashboard.includes('let openProjectAggregate: OpenProjectAggregate | null = null;'));
     assert.ok(dashboard.includes('new OpenProjectBridgeClient('));
+    assert.ok(dashboard.includes("reportDiagnostic: event => logOpenProjectDiagnostic('Workspace', event)"));
+    assert.ok(dashboard.includes("reportBridgeDiagnostic: event => logOpenProjectDiagnostic('Bridge', event)"));
+    assert.ok(dashboard.includes("'open-project-diagnostics.jsonl'"));
+    assert.ok(dashboard.includes('function logOpenProjectDiagnostic('));
     assert.ok(dashboard.includes('createOpenProjectRecords(getRawOpenProjects())'));
     assert.ok(dashboard.includes('context.subscriptions.push(openProjectBridgeClient);'));
     assert.ok(dashboard.includes('get openProjects() { return getOpenProjectCards() }'));
@@ -650,6 +687,98 @@ function runDashboardBridgeLifecycleChecks() {
         showSteward.includes('publishOpenProjects();'),
         'legacy metadata mutation paths that reveal the steward must also republish'
     );
+}
+
+function runWebviewRefreshFocusChecks() {
+    const source = fs.readFileSync(
+        path.join(__dirname, '..', 'src', 'webview', 'webviewFilterScripts.js'),
+        'utf8'
+    );
+    const initFiltering = new Function(
+        'document',
+        'window',
+        'sessionStorage',
+        'requestAnimationFrame',
+        `return function initFiltering(activeByDefault) {${extractFunctionBody(source, 'initFiltering')}};`
+    );
+    let focusCalls = 0;
+    let blurCalls = 0;
+    const classList = {
+        add: () => undefined,
+        remove: () => undefined,
+        contains: () => false,
+    };
+    const filterWrapper = { classList };
+    const filterInput = {
+        value: '',
+        parentElement: filterWrapper,
+        focus: () => { focusCalls += 1; },
+        blur: () => { blurCalls += 1; },
+    };
+    const clearSearchElement = {};
+    const document = {
+        body: { classList },
+        getElementById: id => id === 'filter' ? filterInput : clearSearchElement,
+        querySelectorAll: () => [],
+    };
+    const sessionStorage = {
+        getItem: () => '',
+        setItem: () => undefined,
+    };
+    const window = {
+        addEventListener: () => undefined,
+    };
+
+    initFiltering(
+        document,
+        window,
+        sessionStorage,
+        callback => callback()
+    )(true);
+
+    assert.strictEqual(focusCalls, 0, 'reloading a visible Webview must not steal editor focus');
+    assert.strictEqual(blurCalls, 0, 'reloading a visible Webview must not alter editor focus');
+}
+
+function runOpenProjectIncrementalRenderingChecks() {
+    const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const bridgeCallback = dashboard.slice(
+        dashboard.indexOf('const openProjectBridgeClient = new OpenProjectBridgeClient('),
+        dashboard.indexOf('const activeAiSessionTerminalHighlighter')
+    );
+    assert.ok(bridgeCallback.includes('postOpenProjectsUpdated();'));
+    assert.ok(!bridgeCallback.includes('refreshStewardViews();'));
+
+    const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts'), 'utf8');
+    assert.ok(content.includes('export function getOpenProjectsGroupContent('));
+    assert.ok(content.includes('<div class="sticky-groups-wrapper">'));
+
+    const webviewScript = fs.readFileSync(
+        path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'),
+        'utf8'
+    );
+    const wrapper = { innerHTML: '<div>old</div>' };
+    let filterApplications = 0;
+    const applyOpenProjectsUpdate = new Function(
+        'document',
+        'window',
+        `return function applyOpenProjectsUpdate(message) {${extractFunctionBody(webviewScript, 'applyOpenProjectsUpdate')}};`
+    )(
+        { querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null },
+        { __projectStewardApplyFilter: () => { filterApplications += 1; } }
+    );
+    assert.strictEqual(applyOpenProjectsUpdate({
+        type: 'open-projects-updated',
+        version: 1,
+        semanticRevision: 'revision-2',
+        projectCount: 3,
+        html: '<div data-group-id="__openProjects">new</div>',
+    }), true);
+    assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
+    assert.strictEqual(filterApplications, 1);
+    assert.strictEqual(applyOpenProjectsUpdate({ version: 2, html: '<div>bad</div>' }), false);
+    assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
+    assert.ok(webviewScript.includes("type: 'open-projects-rendered'"));
 }
 
 async function runDashboardMigrationPublicationChecks() {
@@ -941,6 +1070,7 @@ async function runCoordinatorChecks() {
     let clearedInterval;
     const intervalHandle = { kind: 'coordinator-interval' };
     const delivered = [];
+    const diagnostics = [];
     const coordinator = new OpenProjectCoordinator(tempRoot, {
         now: () => currentNow,
         setInterval: (callback, milliseconds) => {
@@ -959,6 +1089,7 @@ async function runCoordinatorChecks() {
         deliverAggregate: async aggregate => {
             delivered.push(aggregate);
         },
+        reportDiagnostic: event => diagnostics.push(event),
     });
     const observer = new OpenProjectStore(tempRoot, OTHER);
 
@@ -979,6 +1110,9 @@ async function runCoordinatorChecks() {
         assert.strictEqual(initialHeartbeat.leaseUpdatedAtMs, 1000);
         assert.strictEqual(delivered.length, 1);
         assert.strictEqual(delivered[0].observedAtMs, 1000);
+        assert.ok(diagnostics.some(event => event.event === 'publish' && event.instanceId === SELF));
+        assert.ok(diagnostics.some(event => event.event === 'scan' && event.registrationCount === 1));
+        assert.ok(diagnostics.some(event => event.event === 'deliver' && event.registrationCount === 1));
 
         currentNow = 2000;
         await coordinator.publish(makePublication({ sequence: 2, followsFocusEvent: true }));
@@ -1016,9 +1150,23 @@ async function runCoordinatorChecks() {
         assert.strictEqual(delivered[3].observedAtMs, 5000);
 
         currentNow = 36_001;
-        await coordinator.scanAndDeliver();
-        assert.strictEqual(delivered.length, 5);
-        assert.deepStrictEqual(delivered[4].registrations, []);
+        intervalCallback();
+        let locallyRenewed;
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+            locallyRenewed = (await observer.scan(currentNow)).registrations[0];
+            if (locallyRenewed?.leaseUpdatedAtMs === currentNow) {
+                break;
+            }
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.ok(locallyRenewed, 'the local UI Bridge must keep an open window registered');
+        assert.strictEqual(locallyRenewed.leaseUpdatedAtMs, currentNow);
+        assert.ok(diagnostics.some(event => event.event === 'renew' && event.instanceId === SELF));
+        assert.strictEqual(
+            delivered.length,
+            4,
+            'a Bridge-owned lease renewal must not refresh the dashboard'
+        );
 
         currentNow = 37_000;
         await coordinator.unregister({ protocolVersion: 1, instanceId: SELF });
@@ -1086,6 +1234,51 @@ async function runCoordinatorChecks() {
         );
     } finally {
         concurrentCoordinator.dispose();
+    }
+
+    let stalledIntervalCallback;
+    let stalledRegistration;
+    let deliveryEnteredResolve;
+    const deliveryEntered = new Promise(resolve => { deliveryEnteredResolve = resolve; });
+    const stalledDelivery = new Promise(() => undefined);
+    const stalledCoordinator = new OpenProjectCoordinator('/unused-stalled-delivery-root', {
+        now: () => currentNow,
+        setInterval: callback => {
+            stalledIntervalCallback = callback;
+            return 'stalled-delivery-interval';
+        },
+        clearInterval: () => undefined,
+        createWatcher: () => ({ close: () => undefined }),
+        deliverAggregate: () => {
+            deliveryEnteredResolve();
+            return stalledDelivery;
+        },
+        createStore: () => ({
+            write: async registration => { stalledRegistration = registration; },
+            remove: async () => { stalledRegistration = undefined; },
+            scan: async () => ({
+                registrations: stalledRegistration ? [stalledRegistration] : [],
+                counters: {},
+            }),
+        }),
+    });
+    try {
+        currentNow = 1000;
+        void stalledCoordinator.publish(makePublication());
+        await deliveryEntered;
+
+        currentNow = 12_000;
+        stalledIntervalCallback();
+        for (let attempt = 0; attempt < 50 && stalledRegistration?.leaseUpdatedAtMs !== currentNow; attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.strictEqual(
+            stalledRegistration.leaseUpdatedAtMs,
+            currentNow,
+            'a stalled aggregate delivery must not block the local Bridge lease renewal'
+        );
+    } finally {
+        stalledCoordinator.dispose();
     }
 
     const eventRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-project-events-'));
@@ -1214,6 +1407,7 @@ async function runCoordinatorAggregateBoundaryChecks() {
     let deliveryAttempts = 0;
     const attemptedRevisions = [];
     const successfulDeliveries = [];
+    const retryDiagnostics = [];
     const retryCoordinator = new OpenProjectCoordinator('/unused-retry-root', {
         now: () => 6000,
         setInterval: () => 'retry-interval',
@@ -1230,6 +1424,7 @@ async function runCoordinatorAggregateBoundaryChecks() {
             }
             successfulDeliveries.push(aggregate);
         },
+        reportDiagnostic: event => retryDiagnostics.push(event),
         createStore: () => ({
             write: async () => undefined,
             remove: async () => undefined,
@@ -1241,6 +1436,11 @@ async function runCoordinatorAggregateBoundaryChecks() {
             retryCoordinator.publish(makePublication()),
             /forced aggregate delivery failure/
         );
+        assert.ok(retryDiagnostics.some(event =>
+            event.event === 'error'
+            && event.operation === 'publish'
+            && /forced aggregate delivery failure/.test(event.error)
+        ));
         fireWatcher();
         for (let attempt = 0; attempt < 50 && successfulDeliveries.length === 0; attempt += 1) {
             await new Promise(resolve => setImmediate(resolve));
@@ -1261,7 +1461,17 @@ async function runCoordinatorWiringChecks() {
     const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-project-wiring-'));
     const registeredCommands = new Map();
     const executedCommands = [];
+    const bridgeOutputLines = [];
     const vscode = {
+        window: {
+            createOutputChannel: name => {
+                assert.strictEqual(name, 'Project Steward UI Bridge');
+                return {
+                    appendLine: line => bridgeOutputLines.push(line),
+                    dispose: () => undefined,
+                };
+            },
+        },
         workspace: { workspaceFolders: [] },
         commands: {
             registerCommand: (command, callback) => {
@@ -1301,6 +1511,15 @@ async function runCoordinatorWiringChecks() {
         ).pop();
         assert.ok(aggregateDelivery, 'production wiring should deliver an open-project aggregate');
         assert.strictEqual(aggregateDelivery.argument.registrations[0].instanceId, SELF);
+        assert.ok(bridgeOutputLines.some(line =>
+            line.startsWith('[OpenProjects] ')
+            && line.includes('"event":"publish"')
+            && line.includes(SELF)
+        ));
+        assert.ok(executedCommands.some(value =>
+            value.command === '_projectStewardOpenProjects.workspace.diagnostic'
+            && value.argument.event === 'publish'
+        ));
         await unregister({ protocolVersion: 1, instanceId: SELF });
     } finally {
         Module._load = previousModuleLoad;
@@ -1318,6 +1537,8 @@ async function main() {
     runProjectionChecks();
     await runBridgeClientChecks();
     runDashboardBridgeLifecycleChecks();
+    runWebviewRefreshFocusChecks();
+    runOpenProjectIncrementalRenderingChecks();
     await runDashboardMigrationPublicationChecks();
     await runStoreChecks();
     await runCoordinatorChecks();

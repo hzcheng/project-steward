@@ -32,6 +32,7 @@ const PRODUCTION_BRIDGE_UNREGISTER = '_projectStewardAttention.bridge.unregister
 const OPEN_PROJECT_BRIDGE_PUBLISH = '_projectStewardOpenProjects.bridge.publish';
 const OPEN_PROJECT_BRIDGE_UNREGISTER = '_projectStewardOpenProjects.bridge.unregister';
 const OPEN_PROJECT_WORKSPACE_AGGREGATE = '_projectStewardOpenProjects.workspace.aggregate';
+const OPEN_PROJECT_WORKSPACE_DIAGNOSTIC = '_projectStewardOpenProjects.workspace.diagnostic';
 
 interface AggregateState {
     bridgeProcessId: string;
@@ -42,6 +43,8 @@ interface AggregateState {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+    const outputChannel = vscode.window.createOutputChannel('Project Steward UI Bridge');
+    context.subscriptions.push(outputChannel);
     const bridgeExtensionVersion = readBridgeExtensionVersion(context);
     const bridgeProcessId = crypto.randomBytes(16).toString('hex');
     const workspaceIdentity = createWorkspaceIdentity(
@@ -69,6 +72,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             OPEN_PROJECT_WORKSPACE_AGGREGATE,
             aggregate,
         ),
+        reportDiagnostic: event => {
+            outputChannel.appendLine(`[OpenProjects] ${JSON.stringify(event)}`);
+            void vscode.commands.executeCommand(OPEN_PROJECT_WORKSPACE_DIAGNOSTIC, event).then(
+                () => undefined,
+                () => undefined,
+            );
+        },
     });
 
     function applyAcknowledgements(snapshots: ProbeSnapshot[]): ProbeSnapshot[] {

@@ -1,3 +1,27 @@
+function applyOpenProjectsUpdate(message) {
+    if (!message
+        || message.type !== 'open-projects-updated'
+        || message.version !== 1
+        || typeof message.semanticRevision !== 'string'
+        || !message.semanticRevision
+        || !Number.isSafeInteger(message.projectCount)
+        || message.projectCount < 0
+        || typeof message.html !== 'string') {
+        return false;
+    }
+
+    var wrapper = document.querySelector('.sticky-groups-wrapper');
+    if (!wrapper) {
+        return false;
+    }
+
+    wrapper.innerHTML = message.html;
+    if (typeof window.__projectStewardApplyFilter === 'function') {
+        window.__projectStewardApplyFilter();
+    }
+    return true;
+}
+
 function initProjects() {
 
     const ProjectOpenType = {
@@ -805,6 +829,24 @@ function initProjects() {
 
     function onWindowMessage(e) {
         var message = e && e.data;
+        if (message && message.type === 'open-projects-updated') {
+            if (!applyOpenProjectsUpdate(message)) {
+                requestFullRefresh('invalid-open-projects-update');
+                return;
+            }
+            if (batchAiSessionState.projectId) {
+                syncAiSessionBatchManagementDom(findOpenProjectDiv(batchAiSessionState.projectId));
+            }
+            syncActiveAiSessionTerminalDom();
+            updateStickyGroupHeaderOffset();
+            window.vscode.postMessage({
+                type: 'open-projects-rendered',
+                semanticRevision: message.semanticRevision,
+                projectCount: message.projectCount,
+            });
+            return;
+        }
+
         if (message && message.type === 'active-ai-session-terminal-changed') {
             activeAiSessionTerminalState.provider = isAiSessionProvider(message.provider) ? message.provider : null;
             activeAiSessionTerminalState.sessionId = typeof message.sessionId === 'string' ? message.sessionId : null;

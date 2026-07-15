@@ -14,7 +14,9 @@ import {
 const PUBLISH_COMMAND = '_projectStewardOpenProjects.bridge.publish';
 const UNREGISTER_COMMAND = '_projectStewardOpenProjects.bridge.unregister';
 const AGGREGATE_COMMAND = '_projectStewardOpenProjects.workspace.aggregate';
+const DIAGNOSTIC_COMMAND = '_projectStewardOpenProjects.workspace.diagnostic';
 const ERROR_THROTTLE_MS = 60_000;
+const MAX_FORWARDED_DIAGNOSTIC_BYTES = 64 * 1024;
 
 interface DisposableLike {
     dispose(): void;
@@ -27,6 +29,26 @@ interface OpenProjectBridgeClientDependencies {
     executeCommand?: (command: string, argument: unknown) => PromiseLike<unknown>;
     setInterval?: (callback: () => void, intervalMs: number) => unknown;
     clearInterval?: (handle: unknown) => void;
+    reportDiagnostic?: (event: OpenProjectClientDiagnosticEvent) => void;
+    reportBridgeDiagnostic?: (event: unknown) => void;
+}
+
+export interface OpenProjectClientDiagnosticEvent {
+    event: 'activate' | 'publish-success' | 'publish-failure' | 'aggregate' | 'dispose';
+    atMs: number;
+    instanceId: string;
+    sequence?: number;
+    reason?: 'change' | 'focus' | 'heartbeat';
+    projectCount?: number;
+    registrationCount?: number;
+    semanticRevision?: string;
+    error?: string;
+    registrations?: Array<{
+        instanceId: string;
+        sequence: number;
+        projectCount: number;
+        leaseAgeMs: number;
+    }>;
 }
 
 export default class OpenProjectBridgeClient implements vscode.Disposable {
@@ -42,7 +64,10 @@ export default class OpenProjectBridgeClient implements vscode.Disposable {
     private readonly now: () => number;
     private readonly executeCommand: (command: string, argument: unknown) => PromiseLike<unknown>;
     private readonly clearInterval: (handle: unknown) => void;
+    private readonly reportDiagnostic: (event: OpenProjectClientDiagnosticEvent) => void;
+    private readonly reportBridgeDiagnostic: (event: unknown) => void;
     private readonly aggregateRegistration: DisposableLike;
+    private readonly diagnosticRegistration: DisposableLike;
     private readonly heartbeatHandle: unknown;
 
     constructor(
@@ -61,12 +86,19 @@ export default class OpenProjectBridgeClient implements vscode.Disposable {
             || ((callback, intervalMs) => setInterval(callback, intervalMs));
         this.clearInterval = dependencies.clearInterval
             || (handle => clearInterval(handle as NodeJS.Timeout));
+        this.reportDiagnostic = dependencies.reportDiagnostic || (() => undefined);
+        this.reportBridgeDiagnostic = dependencies.reportBridgeDiagnostic || (() => undefined);
 
         this.aggregateRegistration = registerCommand(AGGREGATE_COMMAND, raw => this.receiveAggregate(raw));
+        this.diagnosticRegistration = registerCommand(DIAGNOSTIC_COMMAND, raw => this.receiveBridgeDiagnostic(raw));
         this.heartbeatHandle = setHeartbeat(
             () => { void this.publishInternal(this.projects, false, true); },
             OPEN_PROJECT_HEARTBEAT_MS
         );
+        this.emitDiagnostic({
+            event: 'activate',
+            projectCount: initialProjects.length,
+        });
         void this.publish(initialProjects);
     }
 
@@ -81,6 +113,18 @@ export default class OpenProjectBridgeClient implements vscode.Disposable {
                 return;
             }
             this.lastAggregateRevision = aggregate.semanticRevision;
+            const now = this.safeNow();
+            this.emitDiagnostic({
+                event: 'aggregate',
+                registrationCount: aggregate.registrations.length,
+                semanticRevision: aggregate.semanticRevision,
+                registrations: aggregate.registrations.map(registration => ({
+                    instanceId: registration.instanceId,
+                    sequence: registration.sequence,
+                    projectCount: registration.projects.length,
+                    leaseAgeMs: Math.max(0, now - registration.leaseUpdatedAtMs),
+                })),
+            }, now);
             this.onAggregate(aggregate);
         } catch (error) {
             this.reportError(error);
@@ -93,7 +137,9 @@ export default class OpenProjectBridgeClient implements vscode.Disposable {
         }
         this.disposed = true;
         this.aggregateRegistration.dispose();
+        this.diagnosticRegistration.dispose();
         this.clearInterval(this.heartbeatHandle);
+        this.emitDiagnostic({ event: 'dispose', sequence: this.sequence });
         try {
             Promise.resolve(this.executeCommand(UNREGISTER_COMMAND, {
                 protocolVersion: 1,
@@ -141,11 +187,25 @@ export default class OpenProjectBridgeClient implements vscode.Disposable {
 
         this.sequence = publication.sequence;
         this.pendingSemantic = semantic;
+        const reason = forceHeartbeat ? 'heartbeat' : followsFocusEvent ? 'focus' : 'change';
         try {
             await this.executeCommand(PUBLISH_COMMAND, publication);
             this.lastPublishedSemantic = semantic;
+            this.emitDiagnostic({
+                event: 'publish-success',
+                sequence: publication.sequence,
+                reason,
+                projectCount: publication.projects.length,
+            });
             return true;
         } catch (error) {
+            this.emitDiagnostic({
+                event: 'publish-failure',
+                sequence: publication.sequence,
+                reason,
+                projectCount: publication.projects.length,
+                error: (error instanceof Error ? error.stack || error.message : String(error)).slice(0, 4096),
+            });
             this.reportError(error);
             return false;
         } finally {
@@ -162,5 +222,44 @@ export default class OpenProjectBridgeClient implements vscode.Disposable {
         }
         this.lastErrorAt = now;
         this.onError(error);
+    }
+
+    private receiveBridgeDiagnostic(raw: unknown): void {
+        try {
+            if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+                throw new Error('open project diagnostic must be an object');
+            }
+            const serialized = JSON.stringify(raw);
+            if (Buffer.byteLength(serialized, 'utf8') > MAX_FORWARDED_DIAGNOSTIC_BYTES) {
+                throw new Error('open project diagnostic exceeds 64 KiB');
+            }
+            this.reportBridgeDiagnostic(JSON.parse(serialized));
+        } catch (error) {
+            this.reportError(error);
+        }
+    }
+
+    private emitDiagnostic(
+        event: Omit<OpenProjectClientDiagnosticEvent, 'atMs' | 'instanceId'>,
+        atMs?: number,
+    ): void {
+        try {
+            this.reportDiagnostic({
+                ...event,
+                atMs: atMs === undefined ? this.safeNow() : atMs,
+                instanceId: this.instanceId,
+            });
+        } catch (_error) {
+            // Diagnostics must never change publication behavior.
+        }
+    }
+
+    private safeNow(): number {
+        try {
+            const timestamp = this.now();
+            return Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : Date.now();
+        } catch (_error) {
+            return Date.now();
+        }
     }
 }

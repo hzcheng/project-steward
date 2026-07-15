@@ -2,9 +2,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession, AiSessionProviderId, isAiSessionProviderId } from './models';
-import { getAiSessionsDiv, getProjectSearchText, getStewardContent } from './webview/webviewContent';
+import { getAiSessionsDiv, getOpenProjectsGroupContent, getProjectSearchText, getStewardContent } from './webview/webviewContent';
 import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
@@ -50,6 +50,7 @@ const AI_SESSION_ALIASES_FILE_NAME = 'ai-session-aliases.json';
 export function activate(context: vscode.ExtensionContext) {
     const outputChannel = vscode.window.createOutputChannel('Project Steward');
     context.subscriptions.push(outputChannel);
+    const openProjectDiagnosticPath = path.join(context.globalStoragePath, 'open-project-diagnostics.jsonl');
 
     class SidebarStewardViewProvider implements vscode.WebviewViewProvider {
 
@@ -150,10 +151,14 @@ export function activate(context: vscode.ExtensionContext) {
         aggregate => {
             if (aggregate.semanticRevision !== openProjectAggregate?.semanticRevision) {
                 openProjectAggregate = aggregate;
-                refreshStewardViews();
+                postOpenProjectsUpdated();
             }
         },
-        error => logError('Open project bridge unavailable; showing current-window projects only.', error)
+        error => logError('Open project bridge unavailable; showing current-window projects only.', error),
+        {
+            reportDiagnostic: event => logOpenProjectDiagnostic('Workspace', event),
+            reportBridgeDiagnostic: event => logOpenProjectDiagnostic('Bridge', event),
+        }
     );
     const activeAiSessionTerminalHighlighter = new ActiveAiSessionTerminalHighlighter<
         vscode.Terminal,
@@ -436,6 +441,47 @@ export function activate(context: vscode.ExtensionContext) {
         provider.refresh();
     }
 
+    function postOpenProjectsUpdated() {
+        if (!provider.visible || !openProjectAggregate) {
+            return;
+        }
+
+        const cards = getOpenProjectCards();
+        const message = {
+            type: 'open-projects-updated',
+            version: 1,
+            semanticRevision: openProjectAggregate.semanticRevision,
+            projectCount: cards.length,
+            html: getOpenProjectsGroupContent(
+                cards,
+                stewardInfos.openProjectsGroupCollapsed,
+                getCurrentWorkspaceProjectIds(),
+                stewardInfos,
+            ),
+        };
+        logOpenProjectDiagnostic('Renderer', {
+            event: 'post-update',
+            semanticRevision: message.semanticRevision,
+            projectCount: message.projectCount,
+        });
+        provider.postMessage(message).then(delivered => {
+            logOpenProjectDiagnostic('Renderer', {
+                event: 'post-update-result',
+                semanticRevision: message.semanticRevision,
+                projectCount: message.projectCount,
+                delivered,
+            });
+            if (!delivered && provider.visible) {
+                provider.refresh();
+            }
+        }, error => {
+            logError('Failed to post OPEN PROJECT update message.', error);
+            if (provider.visible) {
+                provider.refresh();
+            }
+        });
+    }
+
     function getEffectiveAiSessionAttentionAggregate(): AttentionAggregate {
         const now = Date.now();
         return aiSessionAttentionAggregate || aggregateAttentionSnapshots([{
@@ -656,6 +702,35 @@ export function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine(error instanceof Error ? `${error.stack || error.message}` : String(error));
     }
 
+    function logOpenProjectDiagnostic(component: string, event: unknown) {
+        let line: string;
+        try {
+            line = `${JSON.stringify({
+                loggedAt: new Date().toISOString(),
+                component,
+                event,
+            })}\n`;
+        } catch (error) {
+            outputChannel.appendLine(`[OpenProjects][${component}] Failed to serialize diagnostic: ${String(error)}`);
+            return;
+        }
+
+        outputChannel.appendLine(`[OpenProjects][${component}] ${JSON.stringify(event)}`);
+        try {
+            mkdirSync(context.globalStoragePath, { recursive: true });
+            const existingBytes = existsSync(openProjectDiagnosticPath)
+                ? statSync(openProjectDiagnosticPath).size
+                : 0;
+            if (existingBytes + Buffer.byteLength(line, 'utf8') > 2 * 1024 * 1024) {
+                writeFileSync(openProjectDiagnosticPath, line, 'utf8');
+            } else {
+                appendFileSync(openProjectDiagnosticPath, line, 'utf8');
+            }
+        } catch (error) {
+            outputChannel.appendLine(`[OpenProjects][${component}] Failed to persist diagnostic: ${String(error)}`);
+        }
+    }
+
     function getErrorContent(error: unknown): string {
         let message = error instanceof Error ? error.message : String(error);
         return `<!DOCTYPE html>
@@ -806,7 +881,22 @@ export function activate(context: vscode.ExtensionContext) {
                 await copyAiSessionId(e.sessionId as string);
                 break;
             case 'request-full-refresh':
+                logOpenProjectDiagnostic('Renderer', {
+                    event: 'full-refresh-requested',
+                    reason: typeof e.reason === 'string' ? e.reason.slice(0, 256) : 'unknown',
+                });
                 refreshStewardViews();
+                break;
+            case 'open-projects-rendered':
+                logOpenProjectDiagnostic('Renderer', {
+                    event: 'rendered',
+                    semanticRevision: typeof e.semanticRevision === 'string'
+                        ? e.semanticRevision.slice(0, 128)
+                        : 'invalid',
+                    projectCount: Number.isSafeInteger(e.projectCount) && e.projectCount >= 0
+                        ? e.projectCount
+                        : -1,
+                });
                 break;
             case 'request-active-ai-session-terminal':
                 activeAiSessionTerminalHighlighter.request();
