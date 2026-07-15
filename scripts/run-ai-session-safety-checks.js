@@ -2429,6 +2429,42 @@ async function runProductionAttentionStoreUnregisterPropagationChecks() {
     }
 }
 
+async function runProductionAttentionStoreTombstoneReactivationRaceChecks() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-reactivation-race-'));
+    const instanceId = '8'.repeat(32);
+    const removalPath = path.join(root, 'removals', `${instanceId}.json`);
+    const storeA = new ProductionAttentionStore(root, 'a'.repeat(32));
+    const storeB = new ProductionAttentionStore(root, 'b'.repeat(32));
+    const snapshot = sequence => attentionPayload.validateAttentionOwnerSnapshot({
+        ...attentionPayload.createAttentionPayload([], sequence),
+        instanceId,
+        sequence,
+        heartbeat: sequence,
+    });
+    try {
+        await storeA.write(snapshot(6), 1000);
+        await storeA.scan(1001);
+        assert.deepStrictEqual((await storeB.scan(1001)).snapshots.map(value => value.sequence), [6]);
+
+        await storeA.remove(instanceId, 1002);
+        await storeA.write(snapshot(1), 1003);
+        assert.deepStrictEqual((await storeB.scan(1003)).snapshots.map(value => value.sequence), [1],
+            'a peer that missed unregister must use the retained tombstone to accept reactivation sequence 1');
+        assert.strictEqual(fs.existsSync(removalPath), true,
+            'reactivation must retain the shared tombstone for peers that have not scanned yet');
+
+        await storeA.write(snapshot(2), 1004);
+        assert.deepStrictEqual((await storeB.scan(1004)).snapshots.map(value => value.sequence), [2],
+            'a retained tombstone must not block later heartbeats from the reactivated owner');
+        assert.strictEqual(fs.existsSync(removalPath), true);
+
+        await storeB.scan(1002 + 24 * 60 * 60 * 1000 + 1);
+        assert.strictEqual(fs.existsSync(removalPath), false, 'retained tombstones still expire after bounded retention');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
 async function runAttentionBridgeClientPrivacyChecks() {
     const executed = [];
     const registered = new Map();
@@ -2919,6 +2955,7 @@ async function main() {
     await runProductionAttentionStoreClockChecks();
     await runProductionAttentionStoreLifecycleChecks();
     await runProductionAttentionStoreUnregisterPropagationChecks();
+    await runProductionAttentionStoreTombstoneReactivationRaceChecks();
     await runAttentionBridgeClientPrivacyChecks();
     await runProductionAttentionBridgeIntegrationChecks();
     await runAttentionBridgeClientLifecycleChecks();

@@ -115,11 +115,6 @@ export class ProductionAttentionStore {
                 }
                 this.highWater.set(validated.instanceId, validated.sequence);
                 this.cache.set(validated.instanceId, envelope);
-                if (latestRemoval) {
-                    await fs.promises.unlink(this.removalPath(validated.instanceId)).catch(error => {
-                        if (!hasErrorCode(error, 'ENOENT')) throw error;
-                    });
-                }
             } finally {
                 try {
                     await fs.promises.unlink(temporaryPath);
@@ -195,10 +190,6 @@ export class ProductionAttentionStore {
                 if (envelope.snapshot.sequence < previous) throw new Error('attention snapshot sequence decreased');
                 this.highWater.set(instanceId, envelope.snapshot.sequence);
                 this.cache.set(instanceId, envelope);
-                if (removal) {
-                    removals.delete(instanceId);
-                    await fs.promises.unlink(this.removalPath(instanceId)).catch(() => undefined);
-                }
                 if (nowMs - envelope.receivedAtMs > RETENTION_MS) await fs.promises.unlink(filePath).catch(() => undefined);
             } catch (_error) {
                 if (stats && nowMs - stats.mtimeMs > RETENTION_MS) await fs.promises.unlink(filePath).catch(() => undefined);
