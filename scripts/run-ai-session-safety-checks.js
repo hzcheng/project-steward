@@ -2712,6 +2712,23 @@ function runAttentionMonitorChecks() {
     assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: signal('complete-1', 'needsAttention', 'completed') }]), [], 'same token is idempotent');
     monitor.acknowledge([events[0].eventId]);
     assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'acknowledged');
+
+    const beforeReload = new AiSessionAttentionMonitor({ now: () => now });
+    const acknowledgedBeforeReload = beforeReload.evaluate([{
+        key: 'codex:reloaded',
+        signal: signal('turn-before-reload', 'needsAttention', 'completed'),
+    }])[0];
+    const afterReload = new AiSessionAttentionMonitor({ now: () => now + 1 });
+    const newTurnAfterReload = afterReload.evaluate([{
+        key: 'codex:reloaded',
+        signal: signal('turn-after-reload', 'needsAttention', 'completed', now + 1),
+    }])[0];
+    assert.notStrictEqual(
+        newTurnAfterReload.eventId,
+        acknowledgedBeforeReload.eventId,
+        'a new lifecycle event must not collide with an acknowledgement after Extension Host reload'
+    );
+
     now++;
     monitor.evaluate([{ key: 'codex:s1', signal: signal('run-2', 'running') }]);
     assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'running');
