@@ -11,6 +11,7 @@ import {
     shouldStartAutoRun,
 } from '../../shared/autoRunControl';
 import { drainBatch } from '../../shared/drainBatch';
+import { FocusSpikeRequest, parseFocusSpikeRequest } from '../../shared/focusRelay';
 import {
     assertMatchingRoutingResponse,
     assertStableBridgeProcessId,
@@ -30,6 +31,10 @@ const BRIDGE_STATUS = '_projectStewardAttentionSpike.bridge.status';
 const BRIDGE_SET_WATCHER = '_projectStewardAttentionSpike.bridge.setWatcher';
 const BRIDGE_CLEAR = '_projectStewardAttentionSpike.bridge.clear';
 const WORKSPACE_AGGREGATE = '_projectStewardAttentionSpike.workspace.aggregate';
+const FOCUS_WORKSPACE = '_projectStewardOpenWindowSpike.workspace.focus';
+const FOCUS_BRIDGE_LIST = '_projectStewardOpenWindowSpike.bridge.list';
+const FOCUS_BRIDGE_REQUEST = '_projectStewardOpenWindowSpike.bridge.request';
+const RUN_FOCUS_SPIKE = 'projectSteward.openWindowFocusSpike';
 const STATUS_PREFIX = 'ATTENTION_SPIKE_ROUTING_STATUS ';
 const AUTO_RUN_CONTROL_PATH = '/tmp/project-steward-attention-routing-control.json';
 const AUTO_RUN_RESULT_ROOT = '/tmp/project-steward-attention-routing-results';
@@ -63,6 +68,20 @@ interface FileStressStatus {
     error: string | null;
 }
 
+interface FocusSpikeTargetList {
+    targetInstanceIds: string[];
+    registrationCount: number;
+}
+
+interface FocusSpikeResult {
+    requestId: string;
+    targetInstanceId: string;
+    handlingInstanceId: string;
+    focused: boolean;
+    latencyMs: number;
+    error?: string;
+}
+
 function withTimeout<T>(promise: Thenable<T>, timeoutMs: number, label: string): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
@@ -81,6 +100,13 @@ function withTimeout<T>(promise: Thenable<T>, timeoutMs: number, label: string):
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+function requireCommandResult<T>(value: T | undefined, label: string): T {
+    if (value === undefined) {
+        throw new Error(`${label} returned no result`);
+    }
+    return value;
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -213,6 +239,101 @@ export function activate(context: vscode.ExtensionContext): void {
         };
         await withTimeout(vscode.commands.executeCommand(BRIDGE_PUBLISH, snapshot), 5000, 'snapshot publish');
     }
+
+    const focusWorkspaceDisposable = vscode.commands.registerCommand(FOCUS_WORKSPACE, async (raw: unknown) => {
+        const requestCreatedAtMs = raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? (raw as Record<string, unknown>).createdAtMs
+            : undefined;
+        if (typeof requestCreatedAtMs !== 'number' || !Number.isFinite(requestCreatedAtMs)) {
+            throw new Error('focus request createdAtMs is invalid');
+        }
+        const request = parseFocusSpikeRequest(raw, requestCreatedAtMs);
+        if (request.targetInstanceId !== workspaceProcessId) throw new Error('focus target mismatch');
+        const startedAtMs = Date.now();
+        await vscode.commands.executeCommand('workbench.action.focusWindow');
+        return {
+            requestId: request.requestId,
+            targetInstanceId: workspaceProcessId,
+            focused: vscode.window.state.focused,
+            latencyMs: Date.now() - startedAtMs,
+        };
+    });
+
+    const runFocusSpikeDisposable = vscode.commands.registerCommand(RUN_FOCUS_SPIKE, async () => {
+        await publishFileSnapshot();
+        const before = requireCommandResult(
+            await withTimeout(
+                vscode.commands.executeCommand<FocusSpikeTargetList>(FOCUS_BRIDGE_LIST),
+                3000,
+                'focus target scan'
+            ),
+            'focus target scan'
+        );
+        const selected = await vscode.window.showQuickPick(
+            before.targetInstanceIds.map(targetInstanceId => ({
+                label: targetInstanceId,
+                description: targetInstanceId === workspaceProcessId ? 'current window' : 'existing window',
+                targetInstanceId,
+            })),
+            { placeHolder: 'Choose the exact existing VS Code window to focus' }
+        );
+        if (!selected) {
+            return;
+        }
+
+        const request: FocusSpikeRequest = {
+            protocolVersion: 1,
+            requestId: crypto.randomBytes(16).toString('hex'),
+            sourceInstanceId: workspaceProcessId,
+            targetInstanceId: selected.targetInstanceId,
+            createdAtMs: Date.now(),
+        };
+        let result: FocusSpikeResult | null = null;
+        let error: string | null = null;
+        try {
+            result = requireCommandResult(
+                await withTimeout(
+                    vscode.commands.executeCommand<FocusSpikeResult>(FOCUS_BRIDGE_REQUEST, request),
+                    4000,
+                    `focus request ${request.requestId}`
+                ),
+                `focus request ${request.requestId}`
+            );
+            if (result.error) {
+                error = result.error;
+            }
+        } catch (focusError) {
+            error = errorMessage(focusError);
+        }
+
+        let registrationCountAfter = before.registrationCount;
+        try {
+            const after = requireCommandResult(
+                await withTimeout(
+                    vscode.commands.executeCommand<FocusSpikeTargetList>(FOCUS_BRIDGE_LIST),
+                    3000,
+                    'post-focus target scan'
+                ),
+                'post-focus target scan'
+            );
+            registrationCountAfter = after.registrationCount;
+        } catch (scanError) {
+            error = error || errorMessage(scanError);
+        }
+
+        outputChannel.appendLine(`OPEN_WINDOW_FOCUS_SPIKE ${JSON.stringify({
+            requestId: request.requestId,
+            sourceInstanceId: request.sourceInstanceId,
+            targetInstanceId: request.targetInstanceId,
+            handlingInstanceId: result ? result.handlingInstanceId : null,
+            focused: result ? result.focused : false,
+            latencyMs: result ? result.latencyMs : null,
+            registrationCountBefore: before.registrationCount,
+            registrationCountAfter,
+            error,
+        })}`);
+        outputChannel.show(true);
+    });
 
     const aggregateDisposable = vscode.commands.registerCommand(WORKSPACE_AGGREGATE, (raw: unknown) => {
         const aggregate = raw as {
@@ -404,6 +525,11 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     }
 
+    let initialFocusRegistrationTimer: NodeJS.Timeout | null = setTimeout(() => {
+        initialFocusRegistrationTimer = null;
+        void publishFileSnapshot().catch(logAutomationError);
+    }, 0);
+
     let autoRunTimer: NodeJS.Timeout | null = setTimeout(() => {
         autoRunTimer = null;
         void maybeRunRoutingFromControl().catch(logAutomationError);
@@ -424,10 +550,16 @@ export function activate(context: vscode.ExtensionContext): void {
         outputChannel,
         reverseDisposable,
         aggregateDisposable,
+        focusWorkspaceDisposable,
+        runFocusSpikeDisposable,
         showStatusDisposable,
         showFileStatusDisposable,
         {
             dispose: () => {
+                if (initialFocusRegistrationTimer !== null) {
+                    clearTimeout(initialFocusRegistrationTimer);
+                    initialFocusRegistrationTimer = null;
+                }
                 if (autoRunTimer !== null) {
                     clearTimeout(autoRunTimer);
                     autoRunTimer = null;
