@@ -1360,17 +1360,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
         try {
             if (!terminal) {
-                let createResult = aiSessionTerminalService.createTerminal({
-                    name: terminalName,
-                    cwd,
-                    env: terminalEnv,
-                    cwdFailureMessage: `Failed to create ${sessionProvider.label} terminal with cwd.`,
-                    cwdWarningMessage: `Could not open the ${sessionProvider.label} terminal at the session directory. Resuming without a working directory.`,
-                    logError,
-                });
-                terminal = createResult.terminal;
-                if (!createResult.cwdAccepted) {
-                    cwd = null;
+                let sessionCwd = normalizeCodexComparablePath(getAiSessionComparableCwd(providerId, session));
+                let pendingTerminal = sessionCwd
+                    ? aiSessionTerminalService.findPendingTerminalForSession(providerId, session.id, sessionCwd, session.updatedAt)
+                    : null;
+                if (pendingTerminal) {
+                    terminal = pendingTerminal.terminal;
+                    markerPath = pendingTerminal.markerPath;
+                } else {
+                    let createResult = aiSessionTerminalService.createTerminal({
+                        name: terminalName,
+                        cwd,
+                        env: terminalEnv,
+                        cwdFailureMessage: `Failed to create ${sessionProvider.label} terminal with cwd.`,
+                        cwdWarningMessage: `Could not open the ${sessionProvider.label} terminal at the session directory. Resuming without a working directory.`,
+                        logError,
+                    });
+                    terminal = createResult.terminal;
+                    if (!createResult.cwdAccepted) {
+                        cwd = null;
+                    }
                 }
             }
 

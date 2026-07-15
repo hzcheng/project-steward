@@ -171,6 +171,31 @@ export default class AiSessionTerminalService {
         return [...this.pendingTerminals];
     }
 
+    findPendingTerminalForSession(
+        providerId: AiSessionProviderId,
+        sessionId: string,
+        sessionCwd: string,
+        sessionUpdatedAt: string
+    ): PendingAiSessionTerminal | null {
+        this.pendingTerminals = this.trimPendingTerminals(this.pendingTerminals);
+        let updatedAt = sessionUpdatedAt ? Date.parse(sessionUpdatedAt) : NaN;
+        if (isNaN(updatedAt)) {
+            return null;
+        }
+        return this.pendingTerminals.find(entry => {
+            if (entry.provider !== providerId) {
+                return false;
+            }
+            if (entry.excludedSessionIds.indexOf(sessionId) !== -1) {
+                return false;
+            }
+            if (entry.cwd !== sessionCwd) {
+                return false;
+            }
+            return updatedAt >= Date.parse(entry.createdAt);
+        }) || null;
+    }
+
     replacePendingTerminals(entries: PendingAiSessionTerminal[]) {
         this.pendingTerminals = this.trimPendingTerminals(entries || []);
     }
