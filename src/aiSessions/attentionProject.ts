@@ -8,7 +8,7 @@ export interface AttentionProjectSummary {
     projectKey: string;
     attentionCount: number;
     eventIds: string[];
-    sessions: Array<{ sessionKey: string; eventId: string }>;
+    sessions: Array<{ sessionKey: string; eventId: string; eventIds: string[] }>;
 }
 
 export function getAttentionProjectKey(projectPath: string): string {
@@ -22,23 +22,18 @@ export function getAttentionProjectKey(projectPath: string): string {
 
 export function getAttentionProjectSummaries(aggregate: AttentionAggregate | null): AttentionProjectSummary[] {
     const summaries = new Map<string, AttentionProjectSummary>();
-    for (const item of aggregate?.items || []) {
-        if (item.state !== 'needsAttention') {
-            continue;
-        }
-
+    for (const item of aggregate?.sessions || []) {
         let summary = summaries.get(item.projectId);
         if (!summary) {
             summary = { projectKey: item.projectId, attentionCount: 0, eventIds: [], sessions: [] };
             summaries.set(item.projectId, summary);
         }
         summary.attentionCount += 1;
-        if (item.eventId) {
-            summary.eventIds.push(item.eventId);
-        }
+        summary.eventIds.push(...item.eventIds);
         summary.sessions.push({
             sessionKey: item.sessionKey,
-            eventId: item.eventId || `${item.sessionKey}:${item.observedAtMs}`,
+            eventId: item.eventIds[0] || `${item.sessionKey}:${item.observedAtMs}`,
+            eventIds: item.eventIds.slice().sort(),
         });
     }
 

@@ -15,6 +15,7 @@ const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').
 const attentionPayload = require('../out/aiSessions/attentionPayload');
 const attentionAggregate = require('../out/aiSessions/attentionAggregate');
 const attentionProject = require('../out/aiSessions/attentionProject');
+const ProductionAttentionStore = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/productionAttentionStore').ProductionAttentionStore;
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
 const CodexSessionService = require('../out/services/codexSessionService').default;
@@ -741,6 +742,8 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('new AiSessionPinStore(context.globalStoragePath)'));
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
+    assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);
+    assert.match(dashboard, /onDidChangeWindowState\(windowState => \{[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);
     assert.ok(dashboard.includes("case 'request-active-ai-session-terminal':"));
     assert.ok(dashboard.includes("type: 'active-ai-session-terminal-changed'"));
     assert.ok(webviewProjectScripts.includes("type: 'request-active-ai-session-terminal'"));
@@ -2085,27 +2088,276 @@ function runAttentionMonitorChecks() {
     events = monitor.evaluate([{ key: 'codex:resumes', activityToken: 'c' }]);
     assert.strictEqual(events.length, 1);
     assert.strictEqual(events[0].generation, 2);
+
+    now = 200;
+    monitor = new AiSessionAttentionMonitor({ quietThresholdMs: 30, now: () => now });
+    events = monitor.evaluate([{ key: 'codex:fast-complete', activityToken: 'initial', completed: true }]);
+    assert.strictEqual(events.length, 1, 'a resolved terminal first observed as complete must raise attention');
+    assert.strictEqual(events[0].reason, 'completed');
+    assert.strictEqual(monitor.getSnapshot()['codex:fast-complete'].state, 'needsAttention');
+
+    now = 300;
+    monitor = new AiSessionAttentionMonitor({ quietThresholdMs: 30, now: () => now });
+    events = monitor.evaluate([{ key: 'codex:visible-complete', activityToken: 'initial', completed: true, ownerVisible: true }]);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(monitor.getSnapshot()['codex:visible-complete'].state, 'acknowledged', 'visible completion is already seen');
+
+    monitor.evaluate([{ key: 'codex:visible-quiet', activityToken: 'a' }]);
+    now = 301;
+    monitor.evaluate([{ key: 'codex:visible-quiet', activityToken: 'b' }]);
+    now = 331;
+    events = monitor.evaluate([{ key: 'codex:visible-quiet', activityToken: 'b', ownerVisible: true }]);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(monitor.getSnapshot()['codex:visible-quiet'].state, 'acknowledged', 'visible quiet event is already seen');
 }
 
 function runAttentionPayloadChecks() {
-    const payload = attentionPayload.createAttentionPayload([{ projectId: 'p', sessionKey: 'k', state: 'needsAttention', eventId: 'e', reason: 'quiet', observedAtMs: 10 }], 20);
+    const payload = attentionPayload.createAttentionPayload([{ projectId: 'a'.repeat(64), sessionKey: 'k', state: 'needsAttention', eventId: 'e', reason: 'quiet', observedAtMs: 10 }], 20);
     assert.deepStrictEqual(attentionPayload.parseAttentionPayload(attentionPayload.serializeAttentionPayload(payload)), payload);
     assert.throws(() => attentionPayload.parseAttentionPayload('{"version":1,"generatedAtMs":1,"items":[{"projectId":"p","sessionKey":"k","state":"bad","observedAtMs":1}]}'));
-    const owner = attentionPayload.validateAttentionOwnerSnapshot({ ...payload, instanceId: 'a'.repeat(32), sequence: 1, leaseUpdatedAtMs: 20 });
+    const owner = attentionPayload.validateAttentionOwnerSnapshot({ ...payload, instanceId: 'a'.repeat(32), sequence: 1, heartbeat: 1 });
     const aggregate = attentionAggregate.aggregateAttentionSnapshots([owner], new Set(['e']), 21);
-    assert.strictEqual(aggregate.items.length, 1);
-    assert.strictEqual(aggregate.items[0].state, 'acknowledged');
-    assert.strictEqual(aggregate.revision.length, 64);
-    assert.deepStrictEqual(attentionAggregate.aggregateAttentionSnapshots([owner], new Set(), 100001, 10).items, []);
+    assert.deepStrictEqual(aggregate.sessions, []);
+    assert.strictEqual(aggregate.aggregateRevision.length, 64);
 
-    const acknowledgedOwner = attentionPayload.validateAttentionOwnerSnapshot({
+    const secondOwner = attentionPayload.validateAttentionOwnerSnapshot({
         ...owner,
         instanceId: 'b'.repeat(32),
-        items: owner.items.map(item => ({ ...item, state: 'acknowledged' })),
+        items: owner.items.map(item => ({ ...item, eventId: 'e-2', reason: 'completed', observedAtMs: 10 })),
     });
-    const deduplicated = attentionAggregate.aggregateAttentionSnapshots([owner, acknowledgedOwner], new Set(), 21);
-    assert.strictEqual(deduplicated.items.length, 1);
-    assert.strictEqual(deduplicated.items[0].state, 'acknowledged');
+    const partial = attentionAggregate.aggregateAttentionSnapshots([owner, secondOwner], new Set(['e']), 21);
+    assert.strictEqual(partial.sessions.length, 1, 'duplicate owners count as one logical session');
+    assert.deepStrictEqual(partial.sessions[0].eventIds, ['e-2'], 'only the exact acknowledged event is removed');
+    assert.deepStrictEqual(partial.sessions[0].reasons, ['completed']);
+
+    const newerAcknowledgedOwner = attentionPayload.validateAttentionOwnerSnapshot({
+        ...secondOwner,
+        items: secondOwner.items.map(item => ({ ...item, state: 'acknowledged', observedAtMs: 20 })),
+    });
+    const differentTimes = attentionAggregate.aggregateAttentionSnapshots([owner, newerAcknowledgedOwner], new Set(), 21);
+    assert.strictEqual(differentTimes.sessions.length, 1, 'a newer acknowledged duplicate must not hide an older unread event');
+    assert.deepStrictEqual(differentTimes.sessions[0].eventIds, ['e']);
+
+    assert.throws(() => attentionPayload.validateAttentionPayload({ ...payload, unexpected: true }), /unexpected fields/);
+    assert.throws(() => attentionPayload.validateAttentionPayload({
+        ...payload,
+        items: [{ projectId: 'a'.repeat(64), sessionKey: 'k', state: 'needsAttention', eventId: undefined, reason: undefined, observedAtMs: 1 }],
+    }), /eventId.*reason|combination/);
+    assert.throws(() => attentionPayload.validateAttentionPayload({
+        ...payload,
+        items: [{ ...payload.items[0], eventId: 'x'.repeat(1025) }],
+    }), /eventId/);
+    assert.throws(() => attentionPayload.validateAttentionPayload({
+        ...payload,
+        items: [{ ...payload.items[0], projectId: '/home/alice/private-repo' }],
+    }), /projectId|privacy-safe/);
+    assert.throws(() => attentionPayload.validateAttentionOwnerSnapshot({ ...owner, unexpected: true }), /unexpected fields/);
+    assert.throws(() => attentionAggregate.validateAttentionAggregate({
+        protocolVersion: 1,
+        aggregateRevision: 'x'.repeat(64),
+        generatedAtMs: 1,
+        sessions: [],
+        unexpected: true,
+    }), /unexpected fields/);
+    assert.throws(() => attentionAggregate.validateAttentionAggregate({
+        protocolVersion: 2,
+        aggregateRevision: 'x'.repeat(64),
+        generatedAtMs: 1,
+        sessions: [],
+    }), /protocol/);
+}
+
+async function runProductionAttentionStoreClockChecks() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-clock-'));
+    const store = new ProductionAttentionStore(root, 'f'.repeat(32));
+    const snapshot = attentionPayload.validateAttentionOwnerSnapshot({
+        ...attentionPayload.createAttentionPayload([], 1),
+        instanceId: 'a'.repeat(32),
+        sequence: 1,
+        heartbeat: 1,
+    });
+    try {
+        await store.write(snapshot, 1_000_000);
+        let scan = await store.scan(1_000_000 + 89_999);
+        assert.strictEqual(scan.snapshots.length, 1, 'far-past Workspace clock must not expire a fresh UI-host receipt');
+        const persisted = fs.readFileSync(path.join(root, 'instances', `${snapshot.instanceId}.json`), 'utf8');
+        assert.ok(persisted.includes('"receivedAtMs":1000000'));
+
+        await store.write({ ...snapshot, generatedAtMs: 9_999_999_999_999, sequence: 2, heartbeat: 2 }, 2_000_000);
+        scan = await store.scan(2_000_000 + 90_001);
+        assert.strictEqual(scan.snapshots.length, 0, 'far-future Workspace clock must not extend a UI-host lease');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
+async function runAttentionBridgeClientPrivacyChecks() {
+    const executed = [];
+    const registered = new Map();
+    let handshakeMode = 'accepted';
+    const vscode = {
+        commands: {
+            registerCommand: (command, callback) => {
+                registered.set(command, callback);
+                return { dispose() { registered.delete(command); } };
+            },
+            executeCommand: async (command, argument) => {
+                executed.push({ command, argument });
+                if (command === '_projectStewardAttention.bridge.handshake') {
+                    if (handshakeMode === 'missing') throw new Error('command not found');
+                    return {
+                        accepted: true,
+                        protocolVersion: handshakeMode === 'mismatch' ? 2 : 1,
+                        bridgeExtensionVersion: '0.1.1',
+                        capabilities: { snapshots: true, acknowledgements: true, atomicReplace: true },
+                    };
+                }
+                return undefined;
+            },
+        },
+    };
+    const currentModuleLoad = Module._load;
+    Module._load = function (request, parent, isMain) {
+        if (request === 'vscode') return vscode;
+        return currentModuleLoad.call(this, request, parent, isMain);
+    };
+    const modulePath = require.resolve('../out/aiSessions/attentionBridgeClient');
+    delete require.cache[modulePath];
+    try {
+        const AttentionBridgeClient = require(modulePath).default;
+        const secretIdentity = 'vscode-remote://ssh-remote+secret.example.com/home/alice/private-repo';
+        const errors = [];
+        const receivedAggregates = [];
+        const client = new AttentionBridgeClient(aggregate => receivedAggregates.push(aggregate), error => errors.push(error));
+        assert.strictEqual(await client.publish([]), true);
+        assert.strictEqual(executed[0].command, '_projectStewardAttention.bridge.handshake');
+        const productionPublish = executed.find(entry => entry.command === '_projectStewardAttention.bridge.publish');
+        assert.ok(productionPublish);
+        const serialized = JSON.stringify(productionPublish.argument);
+        assert.ok(!serialized.includes('/home/alice/private-repo'));
+        assert.ok(!serialized.includes('secret.example.com'));
+        assert.ok(!serialized.includes('ssh-remote'));
+        assert.ok(!Object.prototype.hasOwnProperty.call(productionPublish.argument, 'workspaceIdentity'));
+
+        const aggregateReceiver = registered.get('_projectStewardAttention.workspace.aggregate');
+        aggregateReceiver({
+            protocolVersion: 1,
+            aggregateRevision: 'b'.repeat(64),
+            generatedAtMs: 1,
+            sessions: [{
+                projectId: 'a'.repeat(64),
+                sessionKey: 'codex:peer',
+                reasons: ['quiet'],
+                eventIds: ['peer-event'],
+                observedAtMs: 1,
+            }],
+        });
+        assert.strictEqual(receivedAggregates.length, 1);
+        const errorCountBeforeMalformedAggregate = errors.length;
+        aggregateReceiver({ protocolVersion: 1, sessions: new Array(1001).fill({}) });
+        assert.strictEqual(errors.length, errorCountBeforeMalformedAggregate + 1, 'malformed aggregate must fail closed');
+        await client.acknowledge(['peer-event']);
+        assert.strictEqual(
+            executed.some(entry => entry.command === '_projectStewardAttention.bridge.acknowledge'
+                && entry.argument.eventIds[0] === 'peer-event'),
+            true,
+            'a window must acknowledge an exact event even when it does not own that event'
+        );
+        client.dispose();
+
+        const publishCount = executed.filter(entry => entry.command === '_projectStewardAttention.bridge.publish').length;
+        handshakeMode = 'mismatch';
+        const mismatch = new AttentionBridgeClient(() => undefined, error => errors.push(error));
+        assert.strictEqual(await mismatch.publish([]), false, 'incompatible bridge must keep window-local fallback');
+        mismatch.dispose();
+        assert.strictEqual(executed.filter(entry => entry.command === '_projectStewardAttention.bridge.publish').length, publishCount);
+
+        handshakeMode = 'missing';
+        const missing = new AttentionBridgeClient(() => undefined, error => errors.push(error));
+        assert.strictEqual(await missing.publish([]), false, 'missing bridge must keep window-local fallback');
+        missing.dispose();
+        assert.ok(errors.length >= 2);
+    } finally {
+        Module._load = currentModuleLoad;
+        delete require.cache[modulePath];
+    }
+}
+
+async function runProductionAttentionBridgeIntegrationChecks() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-integration-'));
+    const registered = new Map();
+    const executed = [];
+    const vscode = {
+        workspace: { workspaceFolders: [] },
+        commands: {
+            registerCommand: (command, callback) => {
+                registered.set(command, callback);
+                return { dispose() { registered.delete(command); } };
+            },
+            executeCommand: async (command, argument) => {
+                executed.push({ command, argument });
+                const callback = registered.get(command);
+                return callback ? callback(argument) : undefined;
+            },
+        },
+    };
+    const currentModuleLoad = Module._load;
+    Module._load = function (request, parent, isMain) {
+        if (request === 'vscode') return vscode;
+        return currentModuleLoad.call(this, request, parent, isMain);
+    };
+    const extensionPath = require.resolve('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/extension');
+    const clientPath = require.resolve('../out/aiSessions/attentionBridgeClient');
+    delete require.cache[extensionPath];
+    delete require.cache[clientPath];
+    const context = { globalStoragePath: root, globalStorageUri: { scheme: 'file' }, subscriptions: [] };
+    try {
+        const extension = require(extensionPath);
+        await extension.activate(context);
+        assert.strictEqual(typeof registered.get('_projectStewardAttention.bridge.handshake'), 'function');
+        const aggregates = [];
+        const errors = [];
+        const AttentionBridgeClient = require(clientPath).default;
+        const client = new AttentionBridgeClient(aggregate => aggregates.push(aggregate), error => errors.push(error));
+        assert.strictEqual(await client.publish([{
+            projectId: 'a'.repeat(64),
+            sessionKey: 'codex:integration',
+            state: 'needsAttention',
+            eventId: 'integration-event',
+            reason: 'completed',
+            observedAtMs: 1,
+        }]), true);
+        assert.strictEqual(errors.length, 0);
+        assert.strictEqual(aggregates.length > 0, true);
+        assert.deepStrictEqual(aggregates[aggregates.length - 1].sessions[0].eventIds, ['integration-event']);
+
+        const publish = registered.get('_projectStewardAttention.bridge.publish');
+        const handshake = registered.get('_projectStewardAttention.bridge.handshake');
+        await assert.rejects(handshake({ protocolVersion: 2, mainExtensionVersion: '1.1.8', instanceId: 'a'.repeat(32) }), /protocol/);
+        const validPublishedSnapshot = executed.find(entry => entry.command === '_projectStewardAttention.bridge.publish').argument;
+        await assert.rejects(publish({ ...validPublishedSnapshot, unexpected: true }), /unexpected fields/);
+        await assert.rejects(publish({ ...validPublishedSnapshot, version: 2 }), /header|version|protocol/);
+        await assert.rejects(publish({
+            ...validPublishedSnapshot,
+            items: [{ ...validPublishedSnapshot.items[0], eventId: 'x'.repeat(1025) }],
+        }), /eventId/);
+
+        const productionRoot = path.join(root, 'attention-local-bridge-spike', 'v1', 'production-attention', 'v1', 'instances');
+        const storedText = fs.readdirSync(productionRoot)
+            .filter(name => name.endsWith('.json'))
+            .map(name => fs.readFileSync(path.join(productionRoot, name), 'utf8'))
+            .join('\n');
+        assert.ok(!storedText.includes('/home/'));
+        assert.ok(!storedText.includes('ssh-remote'));
+        assert.ok(!storedText.includes('workspaceIdentity'));
+        client.dispose();
+    } finally {
+        Module._load = currentModuleLoad;
+        delete require.cache[extensionPath];
+        delete require.cache[clientPath];
+        for (const disposable of context.subscriptions.slice().reverse()) disposable.dispose();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 }
 
 function runAttentionProjectChecks() {
@@ -2120,12 +2372,12 @@ function runAttentionProjectChecks() {
     assert.strictEqual(attentionProject.getAttentionProjectKey(''), '');
 
     const summaries = attentionProject.getAttentionProjectSummaries({
-        revision: 'revision',
+        protocolVersion: 1,
+        aggregateRevision: 'revision',
         generatedAtMs: 10,
-        items: [
-            { projectId: localKey, sessionKey: 'codex:one', state: 'needsAttention', eventId: 'event-1', reason: 'quiet', observedAtMs: 1 },
-            { projectId: localKey, sessionKey: 'claude:two', state: 'needsAttention', eventId: 'event-2', reason: 'completed', observedAtMs: 2 },
-            { projectId: localKey, sessionKey: 'kimi:three', state: 'acknowledged', eventId: 'event-3', reason: 'quiet', observedAtMs: 3 },
+        sessions: [
+            { projectId: localKey, sessionKey: 'codex:one', eventIds: ['event-1'], reasons: ['quiet'], observedAtMs: 1 },
+            { projectId: localKey, sessionKey: 'claude:two', eventIds: ['event-2'], reasons: ['completed'], observedAtMs: 2 },
         ],
     });
     assert.deepStrictEqual(summaries, [{
@@ -2133,16 +2385,30 @@ function runAttentionProjectChecks() {
         attentionCount: 2,
         eventIds: ['event-1', 'event-2'],
         sessions: [
-            { sessionKey: 'claude:two', eventId: 'event-2' },
-            { sessionKey: 'codex:one', eventId: 'event-1' },
+            { sessionKey: 'claude:two', eventId: 'event-2', eventIds: ['event-2'] },
+            { sessionKey: 'codex:one', eventId: 'event-1', eventIds: ['event-1'] },
         ],
     }]);
+    const multiEventSummary = attentionProject.getAttentionProjectSummaries({
+        protocolVersion: 1,
+        aggregateRevision: 'c'.repeat(64),
+        generatedAtMs: 10,
+        sessions: [{
+            projectId: localKey,
+            sessionKey: 'codex:one',
+            eventIds: ['event-old', 'event-new'],
+            reasons: ['quiet', 'completed'],
+            observedAtMs: 2,
+        }],
+    });
+    assert.deepStrictEqual(multiEventSummary[0].sessions[0].eventIds, ['event-new', 'event-old']);
     const project = { id: 'saved', path: '/work/My Repo', name: 'Repo' };
     const annotated = attentionProject.withAttentionProject(project, {
-        revision: 'revision',
+        protocolVersion: 1,
+        aggregateRevision: 'revision',
         generatedAtMs: 10,
-        items: [
-            { projectId: localKey, sessionKey: 'codex:one', state: 'needsAttention', eventId: 'event-1', reason: 'quiet', observedAtMs: 1 },
+        sessions: [
+            { projectId: localKey, sessionKey: 'codex:one', eventIds: ['event-1'], reasons: ['quiet'], observedAtMs: 1 },
         ],
     });
     assert.notStrictEqual(annotated, project);
@@ -2157,14 +2423,14 @@ function runAttentionProjectChecks() {
         path: '/work/app',
         attentionProjectPath: remotePath,
     }, {
-        revision: 'remote-revision',
+        protocolVersion: 1,
+        aggregateRevision: 'remote-revision',
         generatedAtMs: 10,
-        items: [{
+        sessions: [{
             projectId: remoteKey,
             sessionKey: 'codex:remote',
-            state: 'needsAttention',
-            eventId: 'event-remote',
-            reason: 'quiet',
+            eventIds: ['event-remote'],
+            reasons: ['quiet'],
             observedAtMs: 2,
         }],
     });
@@ -2209,6 +2475,9 @@ async function main() {
     runCommandBuilderChecks();
     runAttentionMonitorChecks();
     runAttentionPayloadChecks();
+    await runProductionAttentionStoreClockChecks();
+    await runAttentionBridgeClientPrivacyChecks();
+    await runProductionAttentionBridgeIntegrationChecks();
     runAttentionProjectChecks();
     runVsixPackagingChecks();
 

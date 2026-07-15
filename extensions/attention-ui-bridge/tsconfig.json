@@ -11,6 +11,8 @@
     },
     "include": [
         "src/**/*.ts",
+        "../../src/aiSessions/attentionPayload.ts",
+        "../../src/aiSessions/attentionAggregate.ts",
         "../../src/openProjects/protocol.ts",
         "../../shared/attention-bridge/**/*.ts"
     ]

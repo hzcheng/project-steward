@@ -16,8 +16,8 @@ import ProjectWindowColorService from './services/projectWindowColorService';
 import AiSessionPinStore from './aiSessions/pinStore';
 import ActiveAiSessionTerminalHighlighter from './aiSessions/activeTerminalHighlight';
 import AiSessionAttentionMonitor from './aiSessions/attentionMonitor';
-import AttentionBridgeClient, { createAttentionWorkspaceIdentity } from './aiSessions/attentionBridgeClient';
-import type { AttentionAggregate } from './aiSessions/attentionAggregate';
+import AttentionBridgeClient from './aiSessions/attentionBridgeClient';
+import { aggregateAttentionSnapshots, AttentionAggregate } from './aiSessions/attentionAggregate';
 import type { AttentionPayloadItem } from './aiSessions/attentionPayload';
 import { getAttentionProjectKey, getAttentionProjectSummaries, withAttentionProject } from './aiSessions/attentionProject';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
@@ -130,9 +130,8 @@ export function activate(context: vscode.ExtensionContext) {
     let aiSessionAttentionAggregate: AttentionAggregate | null = null;
     let aiSessionAttentionLocalItems: AttentionPayloadItem[] = [];
     const aiSessionAttentionBridgeClient = new AttentionBridgeClient(
-        createAttentionWorkspaceIdentity((vscode.workspace.workspaceFolders || []).map(folder => folder.uri.path)),
         aggregate => {
-            if (aggregate.revision !== aiSessionAttentionAggregate?.revision) {
+            if (aggregate.aggregateRevision !== aiSessionAttentionAggregate?.aggregateRevision) {
                 aiSessionAttentionAggregate = aggregate;
                 scheduleAiSessionRefresh();
                 postAiSessionAttentionProjectsUpdated();
@@ -175,7 +174,10 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(SidebarStewardViewProvider.viewType, provider));
     context.subscriptions.push(
-        vscode.window.onDidChangeActiveTerminal(() => activeAiSessionTerminalHighlighter.sync()));
+        vscode.window.onDidChangeActiveTerminal(() => {
+            activeAiSessionTerminalHighlighter.sync();
+            void evaluateAiSessionAttention();
+        }));
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(terminal => {
             aiSessionTerminalService.handleClosedTerminal(terminal);
@@ -269,6 +271,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (windowState.focused) {
             publishOpenProjects(true);
         }
+        void evaluateAiSessionAttention();
     }));
 
     startUp();
@@ -434,11 +437,15 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function getEffectiveAiSessionAttentionAggregate(): AttentionAggregate {
-        return aiSessionAttentionAggregate || {
-            revision: 'local-window',
-            generatedAtMs: Date.now(),
+        const now = Date.now();
+        return aiSessionAttentionAggregate || aggregateAttentionSnapshots([{
+            version: 1,
+            generatedAtMs: now,
             items: aiSessionAttentionLocalItems,
-        };
+            instanceId: '00000000000000000000000000000000',
+            sequence: 0,
+            heartbeat: 0,
+        }], new Set<string>(), now);
     }
 
     function getGroupsWithAiSessionAttention(groups: Group[]): Group[] {
@@ -493,7 +500,7 @@ export function activate(context: vscode.ExtensionContext) {
             postAiSessionAttentionProjectsUpdated();
             return;
         }
-        const inputs: Array<{ key: string; activityToken?: string; completed?: boolean }> = [];
+        const inputs: Array<{ key: string; activityToken?: string; completed?: boolean; ownerVisible?: boolean }> = [];
         const projects = getOpenProjects();
         for (const project of projects) {
             for (const providerId of AI_SESSION_PROVIDER_IDS) {
@@ -508,6 +515,7 @@ export function activate(context: vscode.ExtensionContext) {
                         key,
                         activityToken: [session.updatedAt || '', session.name || '', session.cwd || session.workDir || ''].join('|'),
                         completed: aiSessionTerminalService.isComplete(terminal),
+                        ownerVisible: vscode.window.state.focused && vscode.window.activeTerminal === terminal.terminal,
                     });
                 }
             }
@@ -786,9 +794,8 @@ export function activate(context: vscode.ExtensionContext) {
                         ...Object.values(aiSessionAttentionMonitor.getSnapshot())
                             .map(snapshot => snapshot.event?.eventId)
                             .filter((id): id is string => Boolean(id)),
-                        ...getEffectiveAiSessionAttentionAggregate().items
-                            .map(item => item.eventId)
-                            .filter((id): id is string => Boolean(id)),
+                        ...getEffectiveAiSessionAttentionAggregate().sessions
+                            .reduce((eventIds, item) => eventIds.concat(item.eventIds), [] as string[]),
                     ])),
                 });
                 break;
@@ -2299,22 +2306,20 @@ export function activate(context: vscode.ExtensionContext) {
                 let sessionResult = sessionResults[providerId];
                 project[sessionProvider.projectSessionsKey] = prepareAiSessionsForDisplay(assignments[providerId].get(project.id) || [], providerId, pinnedSessions, aliases).map(session => {
                     const attention = aiSessionAttentionMonitor.getSnapshot()[getAiSessionKey(providerId, session.id)];
-                    const aggregateAttention = aggregate.items.find(item =>
+                    const aggregateAttention = aggregate.sessions.find(item =>
                         item.projectId === projectKey
                         && item.sessionKey === getAiSessionKey(providerId, session.id));
                     const localAttention = aiSessionAttentionAggregate ? null : attention;
                     const event = aggregateAttention ? {
-                        eventId: aggregateAttention.eventId || `${aggregateAttention.sessionKey}:${aggregateAttention.observedAtMs}`,
-                        reason: aggregateAttention.reason || 'quiet' as const,
+                        eventId: aggregateAttention.eventIds[0] || `${aggregateAttention.sessionKey}:${aggregateAttention.observedAtMs}`,
+                        reason: aggregateAttention.reasons[0] || 'quiet' as const,
                     } : localAttention?.event;
                     return event ? {
                         ...session,
                         attention: {
                             eventId: event.eventId,
                             reason: event.reason,
-                            unread: aggregateAttention
-                                ? aggregateAttention.state === 'needsAttention'
-                                : localAttention?.state === 'needsAttention',
+                            unread: aggregateAttention ? true : localAttention?.state === 'needsAttention',
                         },
                     } : session;
                 });

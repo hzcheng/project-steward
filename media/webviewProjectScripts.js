@@ -996,8 +996,13 @@ function initProjects() {
         if (!projectDiv || typeof projectDiv.querySelectorAll !== 'function') return;
         var bySessionKey = {};
         (sessions || []).forEach(session => {
-            if (session && typeof session.sessionKey === 'string' && typeof session.eventId === 'string') {
-                bySessionKey[session.sessionKey] = session.eventId;
+            if (session && typeof session.sessionKey === 'string') {
+                var eventIds = Array.isArray(session.eventIds)
+                    ? session.eventIds.filter(eventId => typeof eventId === 'string' && !!eventId)
+                    : (typeof session.eventId === 'string' ? [session.eventId] : []);
+                if (eventIds.length) {
+                    bySessionKey[session.sessionKey] = eventIds.find(eventId => !window.__projectStewardAttentionEvents[eventId]) || eventIds[0];
+                }
             }
         });
 

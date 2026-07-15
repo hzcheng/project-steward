@@ -7,6 +7,7 @@ export interface AiSessionAttentionInput {
     key: string;
     activityToken?: string;
     completed?: boolean;
+    ownerVisible?: boolean;
     observedAt?: number;
 }
 
@@ -65,6 +66,18 @@ export default class AiSessionAttentionMonitor {
                     generation: 0,
                 };
                 this.entries.set(input.key, entry);
+                if (!input.completed) continue;
+                entry.state = input.ownerVisible ? 'acknowledged' : 'needsAttention';
+                entry.stateChangedAt = now;
+                entry.generation = 1;
+                entry.event = {
+                    eventId: `${input.key}:1:completed`,
+                    key: input.key,
+                    reason: 'completed',
+                    generation: 1,
+                    detectedAt: now,
+                };
+                events.push(entry.event);
                 continue;
             }
             const changed = input.activityToken !== undefined && input.activityToken !== entry.lastToken;
@@ -75,7 +88,7 @@ export default class AiSessionAttentionMonitor {
                 if (entry.state === 'pending' || entry.state === 'acknowledged' || entry.state === 'needsAttention') entry.state = 'running';
             }
             if (entry.state === 'running' && (input.completed || now - entry.lastActivityAt >= this.quietThresholdMs)) {
-                entry.state = 'needsAttention';
+                entry.state = input.ownerVisible ? 'acknowledged' : 'needsAttention';
                 entry.stateChangedAt = now;
                 entry.generation += 1;
                 const event: AiSessionAttentionEvent = {
