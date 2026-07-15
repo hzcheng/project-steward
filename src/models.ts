@@ -41,6 +41,9 @@ export class Project {
     activeAiSessionProvider?: AiSessionProviderId;
     aiSessionAttentionCount?: number;
     aiSessionAttentionEventIds?: string[];
+    openProjectCardKind?: 'current' | 'projectNavigation';
+    openProjectSourceInstanceId?: string;
+    openProjectEnvironmentLabel?: string;
     color: string;
     isGitRepo = false;
 
