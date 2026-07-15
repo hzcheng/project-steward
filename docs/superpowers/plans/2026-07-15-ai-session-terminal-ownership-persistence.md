@@ -1,277 +1,224 @@
-# AI Session Terminal 归属持久化实施计划
+# AI Session Terminal Process-ID 归属恢复实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**目标：** 让 Project Steward 创建的 AI terminal 在 VS Code 窗口重载后仍能恢复准确的 session 归属，从而正确复用 terminal 并把 attention 标记到对应 session 卡片。
+**Goal:** 使用 VS Code 重载后仍可获得的 `Terminal.processId` 恢复 Project Steward terminal 与 AI session 的归属，避免点击 session 卡片重复打开 terminal。
 
-**架构：** 新增一个只负责校验和持久化 terminal 绑定的 `AiSessionTerminalBindingStore`，通过 `context.workspaceState` 为每个 terminal 实例 ID 使用独立 key 保存 `pending`/`bound` 记录。`AiSessionTerminalService` 为每个新 terminal 注入稳定实例 ID，所有内存跟踪变化同步到 store，并在扩展激活时根据当前窗口的 terminal 恢复绑定。
+**Architecture:** `AiSessionTerminalBindingStore` 使用 `aiSessionTerminalProcessBinding.v2.<pid>` 独立 key 保存 `pending`/`bound` 记录，并把带 2 秒上限的 PID Promise 解析纳入自身串行写队列。`AiSessionTerminalService` 不再依赖创建环境中的随机实例 ID；激活时异步读取每个 terminal 的 process ID，并用 provider terminal 名称前缀防止 PID 重用误绑定，恢复完成后 dashboard 才继续注册视图、首次刷新和 attention interval。
 
-**技术栈：** TypeScript、VS Code Extension API `Memento`/`Terminal`、Node.js `crypto`、现有 `scripts/run-ai-session-safety-checks.js` 回归测试。
+**Tech Stack:** TypeScript、VS Code Extension API `Terminal.processId`/`Memento`、现有 Node.js 安全回归脚本、Webpack、VSCE。
 
-## 全局约束
+## Global Constraints
 
 - 只跟踪由 Project Steward 创建的 AI terminal。
+- 保证 `Developer: Reload Window` 且原 terminal 进程仍存活的恢复场景。
+- 不保证完整退出后 terminal 进程以不同 PID 重建的恢复场景。
+- 不读取 `/proc`，保持本地、SSH 和 DevContainer 的统一实现。
 - 不修改 provider 生命周期解析、attention payload 或 Webview UI。
-- 不根据 cwd 或 transcript 时间猜测 terminal 归属。
 - 持久化失败不得阻止 provider 命令执行。
-- 不恢复实例 ID 机制上线前已经创建的 terminal。
 - 保留用户未提交的 `.vscode/settings.json`、`docs/assets/` 和 `docs/running-projects-tabs-prd.md`。
 
 ---
 
-### 任务 1：实现有边界的 terminal 绑定存储
+### Task 1: 将绑定存储改为 process-ID v2 key
 
-**文件：**
-- 新建：`src/aiSessions/terminalBindingStore.ts`
-- 修改测试：`scripts/run-ai-session-safety-checks.js`
+**Files:**
+- Modify: `src/aiSessions/terminalBindingStore.ts`
+- Test: `scripts/run-ai-session-safety-checks.js`
 
-**接口：**
-- 输入：实现 `get<T>(key, defaultValue)` 和 `update(key, value)` 的 workspace state 适配器。
-- 输出：`AiSessionTerminalBindingStore.get(instanceId)`、`setPending(instanceId, record)`、`setBound(instanceId, record)`、`remove(instanceId)`、`flush()`。
-- 输出记录：`PendingAiSessionTerminalBinding` 与 `BoundAiSessionTerminalBinding` 联合类型。
+**Interfaces:**
+- Consumes: VS Code `Memento` 兼容的 `AiSessionTerminalBindingState`。
+- Produces: `AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX`、`get(processId)`、`setPending(processIdOrPromise, record)`、`setBound(processIdOrPromise, record)`、`remove(processIdOrPromise)`、`flush()`。
 
-- [x] **步骤 1：先写失败测试**
+- [x] **Step 1: Write the failing process-ID store test**
 
-在 `runAiSessionTerminalBindingStoreChecks()` 中使用内存 state，覆盖 pending 写入、重新实例化读取、bound 升级、删除和非法记录过滤：
+把 store 测试的随机 32 位 ID 替换为 PID，并断言 v2 key：
 
 ```js
-const stateData = {};
-const state = {
-    get: (key, fallback) => key in stateData ? stateData[key] : fallback,
-    update: async (key, value) => { stateData[key] = value; },
-};
-const first = new AiSessionTerminalBindingStore(state);
-first.setPending('a'.repeat(32), {
-    providerId: 'codex', markerPath: '/tmp/pending.done', cwd: '/work/app',
-    createdAt: '2026-07-15T08:00:00.000Z', excludedSessionIds: ['old'], title: 'New chat',
-});
+const processId = 42001;
+first.setPending(Promise.resolve(processId), pendingRecord);
 await first.flush();
-const restoredPending = new AiSessionTerminalBindingStore(state).get('a'.repeat(32));
-assert.strictEqual(restoredPending.state, 'pending');
-
-const second = new AiSessionTerminalBindingStore(state);
-second.setBound('a'.repeat(32), {
-    providerId: 'codex', sessionId: 'session-new',
-    markerPath: '/tmp/session-new.done', runStartedAtMs: 1784102400000,
-});
-await second.flush();
-assert.strictEqual(new AiSessionTerminalBindingStore(state).get('a'.repeat(32)).sessionId, 'session-new');
+assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId).state, 'pending');
+assert.ok(stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + processId]);
 ```
 
-同时注入一个 provider 非法的记录，断言 `get()` 返回 `null` 且有效记录仍可读取；再让两个 store 的 `update` Promise 交错完成，证明不同 terminal 的独立 key 不会互相覆盖。
+并保留两个 store 的并发写测试，分别使用 `42002` 和 `42003`，证明不同 PID key 不会覆盖。
 
-- [x] **步骤 2：运行测试确认 RED**
+- [x] **Step 2: Run the store test and verify RED**
 
-执行：`npm run test-compile && node scripts/run-ai-session-safety-checks.js`
+Run: `npm run test-compile && node scripts/run-ai-session-safety-checks.js`
 
-预期：编译或 require 失败，明确指出 `terminalBindingStore`/`AiSessionTerminalBindingStore` 尚不存在。
+Expected: FAIL，因为当前 store 只接受 32 位十六进制实例 ID，process-ID 记录无法写入或读取。
 
-- [x] **步骤 3：写最小存储实现**
+- [x] **Step 3: Implement the v2 process-ID store**
 
-在 `terminalBindingStore.ts` 中定义版本化独立绑定项和严格校验：
+在 `terminalBindingStore.ts` 中改为：
 
 ```ts
-export const AI_SESSION_TERMINAL_BINDING_KEY_PREFIX = 'aiSessionTerminalBinding.v1.';
-export const AI_SESSION_TERMINAL_INSTANCE_ENV_KEY = 'PROJECT_STEWARD_AI_TERMINAL_INSTANCE_ID';
+export const AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX = 'aiSessionTerminalProcessBinding.v2.';
+export type AiSessionTerminalProcessId = number | PromiseLike<number | undefined>;
 
-export type AiSessionTerminalBinding = PendingAiSessionTerminalBinding | BoundAiSessionTerminalBinding;
-
-export default class AiSessionTerminalBindingStore {
-    get(instanceId: string): AiSessionTerminalBinding | null;
-    setPending(instanceId: string, record: Omit<PendingAiSessionTerminalBinding, 'version' | 'state' | 'updatedAtMs'>): void;
-    setBound(instanceId: string, record: Omit<BoundAiSessionTerminalBinding, 'version' | 'state' | 'updatedAtMs'>): void;
-    remove(instanceId: string): void;
-    flush(): Promise<void>;
-}
+get(processId: number): AiSessionTerminalBinding | null;
+setPending(processId: AiSessionTerminalProcessId, input: PendingAiSessionTerminalBindingInput): void;
+setBound(processId: AiSessionTerminalProcessId, input: BoundAiSessionTerminalBindingInput): void;
+remove(processId: AiSessionTerminalProcessId): void;
 ```
 
-每次写入进入同一个 Promise 队列，并直接更新 `aiSessionTerminalBinding.v1.<instance-id>`；不同 terminal 使用不同 key，避免跨窗口丢更新。`update` 连续失败时只调用一次注入的 `onError`，且不向调用方抛出。
+`enqueueWrite()` 必须先进入现有 `writeQueue`，再 `await processId` 并校验 `Number.isSafeInteger(pid) && pid > 0`，最后更新 `aiSessionTerminalProcessBinding.v2.<pid>`。这样即使多个调用共享一个尚未 resolve 的 Promise，`pending → bound → remove` 仍按调用顺序执行。
 
-- [x] **步骤 4：运行测试确认 GREEN**
+PID Promise 从调用时就并行启动 2 秒 timeout；timeout 后该操作跳过，不能永久卡住后续写入。测试还要使用 deferred PID 验证 `pending → bound → remove` 的实际 update 顺序。
 
-执行：`npm run test-compile && node scripts/run-ai-session-safety-checks.js`
+- [x] **Step 4: Run the store test and verify GREEN**
 
-预期：`AI session safety checks passed.`
+Run: `npm run test-compile && node scripts/run-ai-session-safety-checks.js`
 
-- [x] **步骤 5：提交独立存储单元**
-
-```bash
-git add src/aiSessions/terminalBindingStore.ts scripts/run-ai-session-safety-checks.js
-git commit -m "feat: persist AI terminal bindings"
-```
+Expected: `AI session safety checks passed.`
 
 ---
 
-### 任务 2：让 terminal service 跨重载恢复 pending 与 bound 归属
+### Task 2: 通过相同 process ID 恢复无 env 的 terminal
 
-**文件：**
-- 修改：`src/aiSessions/terminalService.ts`
-- 修改测试：`scripts/run-ai-session-safety-checks.js`
+**Files:**
+- Modify: `src/aiSessions/terminalService.ts`
+- Test: `scripts/run-ai-session-safety-checks.js`
 
-**接口：**
-- 输入：任务 1 的 `AiSessionTerminalBindingStore`。
-- 输出：`AiSessionTerminalService.restorePersistedTerminals(terminals)`。
-- 行为：`createTerminal()` 自动注入实例 ID；`trackPending()`、`track()`、`untrack()`、`removePendingForTerminal()`、`handleClosedTerminal()` 同步持久化状态。
+**Interfaces:**
+- Consumes: Task 1 的 process-ID store API、`vscode.Terminal.processId`。
+- Produces: `restorePersistedTerminals(terminals): Promise<void>`；现有 `track`、`trackPending`、`untrack`、`handleClosedTerminal` 使用 `terminal.processId` 持久化。
 
-- [x] **步骤 1：先写跨重载失败测试**
+- [x] **Step 1: Write the real reload regression test**
 
-扩展 `runAiSessionTerminalResolutionChecks()`：用同一个内存 workspace state 创建三个 service 实例，模拟 `pending → bound → reload`：
+创建 terminal 后持久化 `pending`，再构造一个新的 terminal wrapper。新 wrapper 不含创建时 env，但返回相同 PID：
 
 ```js
-const firstStore = new AiSessionTerminalBindingStore(state);
-const firstService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, firstStore);
-const created = firstService.createTerminal({ name: 'Codex: App', cwd: '/work/app', logError() {}, cwdFailureMessage: '', cwdWarningMessage: '' }).terminal;
-firstService.trackPending({
-    provider: 'codex', terminal: created, markerPath: '/tmp/pending.done', cwd: '/work/app',
-    createdAt: new Date().toISOString(), excludedSessionIds: [], title: 'App',
-});
-await firstStore.flush();
-
-const secondStore = new AiSessionTerminalBindingStore(state);
-const secondService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, secondStore);
-secondService.restorePersistedTerminals([created]);
-assert.strictEqual(secondService.getPendingTerminals()[0].terminal, created);
-
-secondService.track('codex', 'session-new', {
-    terminal: created, markerPath: '/tmp/session-new.done', runStartedAtMs: 1784102400000,
-});
-await secondStore.flush();
-
-const thirdService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, new AiSessionTerminalBindingStore(state));
-thirdService.restorePersistedTerminals([created]);
-assert.strictEqual(thirdService.getById('codex', 'session-new').terminal, created);
-```
-
-再调用 `handleClosedTerminal(created)`、等待 `flush()`，断言第四个 store 不再读取到该实例绑定。
-
-- [x] **步骤 2：运行测试确认 RED**
-
-执行：`npm run test-compile && node scripts/run-ai-session-safety-checks.js`
-
-预期：失败于 terminal 没有实例 ID、`restorePersistedTerminals` 不存在或重载后 `getById` 返回 `null`。
-
-- [x] **步骤 3：实现 terminal service 集成**
-
-在 `createTerminal()` 中合并调用方 env，并始终覆盖内部实例 ID：
-
-```ts
-const terminalInstanceId = crypto.randomBytes(16).toString('hex');
-const env = {
-    ...(options.env || {}),
-    [AI_SESSION_TERMINAL_INSTANCE_ENV_KEY]: terminalInstanceId,
+const processId = await created.processId;
+const restoredPendingTerminal = {
+    name: created.name,
+    creationOptions: { name: created.name, cwd: '/work/app' },
+    processId: Promise.resolve(processId),
+    sendText() {},
 };
+await secondService.restorePersistedTerminals([restoredPendingTerminal]);
+assert.strictEqual(secondService.getPendingTerminals()[0].terminal, restoredPendingTerminal);
 ```
 
-新增辅助方法从 `terminal.creationOptions.env` 读取实例 ID，并实现恢复：
+随后把记录升级为 `bound`，用第三个无 env wrapper 再次恢复，断言 `getById('codex', 'session-new').terminal` 是第三个 wrapper。关闭 terminal 后按 PID 删除记录。另保留过期 pending 清理测试。
+
+再增加两个边界测试：永不完成的 `processId` 不能阻塞另一个有效 terminal 恢复；普通 `bash` terminal 重用历史 Codex PID 时不得恢复旧 session，并删除该陈旧绑定。
+
+- [x] **Step 2: Run the reload test and verify RED**
+
+Run: `npm run test-compile && node scripts/run-ai-session-safety-checks.js`
+
+Expected: FAIL；当前 `restorePersistedTerminals()` 从 `creationOptions.env` 读取实例 ID，无 env wrapper 无法恢复。
+
+- [x] **Step 3: Implement process-ID persistence and async restore**
+
+删除 `crypto` 和 `AI_SESSION_TERMINAL_INSTANCE_ENV_KEY`，`createTerminal()` 只合并调用方 env。把所有持久化调用改成直接传递 `terminal.processId`：
 
 ```ts
-restorePersistedTerminals(terminals: readonly vscode.Terminal[]) {
-    for (const terminal of terminals || []) {
-        const instanceId = this.getTerminalInstanceId(terminal);
-        const binding = instanceId ? this.bindingStore?.get(instanceId) : null;
-        if (binding?.state === 'bound') {
-            this.trackInMemory(binding.providerId, binding.sessionId, {
-                terminal, markerPath: binding.markerPath, runStartedAtMs: binding.runStartedAtMs,
-            });
-        } else if (binding?.state === 'pending') {
-            this.trackPendingInMemory({ ...binding, provider: binding.providerId, terminal });
+this.bindingStore?.setBound(normalizedEntry.terminal.processId, binding);
+this.bindingStore?.setPending(entry.terminal.processId, binding);
+this.bindingStore?.remove(terminal.processId);
+```
+
+恢复方法改为：
+
+```ts
+async restorePersistedTerminals(terminals: readonly vscode.Terminal[]): Promise<void> {
+    await Promise.all((terminals || []).map(async terminal => {
+        let processId: number;
+        try {
+            processId = await terminal.processId;
+        } catch {
+            return;
         }
-    }
+        let binding = this.bindingStore?.get(processId);
+        // 名称不符合 provider 前缀时删除 stale binding；否则按 bound/pending 分支恢复内存。
+    }));
 }
 ```
 
-把现有 `track()`/`trackPending()` 分成“更新内存”和“更新 store”两层，恢复时只更新内存，正常创建或匹配时更新两者。关闭或取消跟踪时根据实例 ID 删除 store 记录。
+- [x] **Step 4: Run the reload test and verify GREEN**
 
-- [x] **步骤 4：运行测试确认 GREEN**
+Run: `npm run test-compile && node scripts/run-ai-session-safety-checks.js`
 
-执行：`npm run test-compile && node scripts/run-ai-session-safety-checks.js`
-
-预期：`AI session safety checks passed.`
-
-- [x] **步骤 5：提交 terminal service 集成**
-
-```bash
-git add src/aiSessions/terminalService.ts scripts/run-ai-session-safety-checks.js
-git commit -m "fix: restore AI terminal ownership after reload"
-```
+Expected: `AI session safety checks passed.`
 
 ---
 
-### 任务 3：接入扩展激活流程并完成回归验证
+### Task 3: 阻断 dashboard 激活恢复竞态并完成交付
 
-**文件：**
-- 修改：`src/dashboard.ts`
-- 修改测试：`scripts/run-ai-session-safety-checks.js`
-- 更新：`docs/superpowers/plans/2026-07-15-ai-session-terminal-ownership-persistence.md`
+**Files:**
+- Modify: `src/dashboard.ts`
+- Modify: `scripts/run-ai-session-safety-checks.js`
+- Modify: `docs/superpowers/plans/2026-07-15-ai-session-terminal-ownership-persistence.md`
 
-**接口：**
-- 输入：`context.workspaceState`、现有 `logError`、`vscode.window.terminals`。
-- 输出：扩展启动后、首次 attention evaluation 之前恢复 terminal ownership。
+**Interfaces:**
+- Consumes: Task 2 的 `restorePersistedTerminals(...): Promise<void>`。
+- Produces: `activate(context): Promise<void>`，在注册视图、刷新 watcher 和 attention interval 之前完成 terminal ownership 恢复。
 
-- [x] **步骤 1：先写 wiring 失败测试**
+- [x] **Step 1: Write the activation ordering assertion**
 
-在 dashboard 源码安全检查中增加以下断言：
+在 dashboard 源码检查中增加：
 
 ```js
-assert.ok(dashboard.includes('new AiSessionTerminalBindingStore(context.workspaceState'));
-assert.ok(dashboard.includes('restorePersistedTerminals(vscode.window.terminals)'));
+assert.ok(dashboard.includes('export async function activate(context: vscode.ExtensionContext)'));
+assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
 ```
 
-- [x] **步骤 2：运行测试确认 RED**
+- [x] **Step 2: Run the ordering test and verify RED**
 
-执行：`npm run test-compile && node scripts/run-ai-session-safety-checks.js`
+Run: `npm run test-compile && node scripts/run-ai-session-safety-checks.js`
 
-预期：失败于 dashboard 尚未创建 store 或尚未调用恢复方法。
+Expected: FAIL，因为当前 `activate` 和恢复调用都是同步形式。
 
-- [x] **步骤 3：完成 dashboard wiring**
+- [x] **Step 3: Await restoration during activation**
 
-在创建 terminal service 时注入 store，并在创建 attention timer 前恢复：
+在 `src/dashboard.ts` 中修改：
 
 ```ts
-const aiSessionTerminalBindingStore = new AiSessionTerminalBindingStore(
-    context.workspaceState,
-    error => logError('Failed to persist AI session terminal ownership.', error)
-);
-const aiSessionTerminalService = new AiSessionTerminalService(
-    context.globalStoragePath,
-    providerId => getRegisteredAiSessionProvider(providerId),
-    undefined,
-    undefined,
-    aiSessionTerminalBindingStore
-);
-aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals);
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
+    // 创建 store 与 terminal service
+    await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals);
+    // 后续 pin store、attention monitor、interval、view provider 注册保持现有顺序
+}
 ```
 
-- [x] **步骤 4：运行全部验证**
+- [x] **Step 4: Run full verification**
 
-依次执行：
+Run:
 
 ```bash
 npm run test:safety
 npm run webpack
 npm run lint
 npm run vscode:prepublish
-npx --yes @vscode/vsce package --allow-star-activation --out artifacts/project-steward-1.1.8-terminal-ownership.vsix
+npx --yes @vscode/vsce package --allow-star-activation --out artifacts/project-steward-1.1.8-terminal-process-ownership.vsix
 git diff --check
 ```
 
-预期：安全测试、TypeScript、Webpack 和 VSIX 打包全部成功；lint 退出码为 0，仅允许项目已有 warning；`git diff --check` 无输出。
+Expected: 安全测试、AI/Bridge TypeScript、Open Project 回归、Webpack、VSIX 打包全部退出 0；lint 只允许项目已有 warning。
 
-- [x] **步骤 5：安装到当前 DevContainer 并检查 bundle**
+- [x] **Step 5: Install and inspect the DevContainer bundle**
+
+Run:
 
 ```bash
-code --install-extension artifacts/project-steward-1.1.8-terminal-ownership.vsix --force
-rg -o "restorePersistedTerminals|PROJECT_STEWARD_AI_TERMINAL_INSTANCE_ID" /home/hzcheng/.vscode-server/extensions/hzcheng.project-steward-1.1.8/dist/dashboard.js | sort -u
+code --install-extension artifacts/project-steward-1.1.8-terminal-process-ownership.vsix --force
+rg -o "aiSessionTerminalProcessBinding.v2.|restorePersistedTerminals" /home/hzcheng/.vscode-server/extensions/hzcheng.project-steward-1.1.8/dist/dashboard.js | sort -u
 ```
 
-预期：安装成功，并输出两个新标识。随后只要求用户重载窗口并新建一次 session 进行最终实测。
+Expected: 安装成功，bundle 同时包含 v2 process key 和恢复方法。
 
-- [x] **步骤 6：复审、提交并推送**
+- [x] **Step 6: Review, commit, and push only scoped files**
+
+Review the complete diff, fix all Critical/Important findings, then run fresh verification. Stage only:
 
 ```bash
 git add src/aiSessions/terminalBindingStore.ts src/aiSessions/terminalService.ts src/dashboard.ts scripts/run-ai-session-safety-checks.js docs/superpowers/plans/2026-07-15-ai-session-terminal-ownership-persistence.md
-git commit -m "fix: persist AI terminal ownership across reloads"
+git commit -m "fix: restore AI terminal ownership by process id"
 git push origin feat/ai-session-attention-monitor
 ```
 
-只提交上述功能文件，保留用户自己的未提交文件。
+Do not stage `.vscode/settings.json`, `docs/assets/`, or `docs/running-projects-tabs-prd.md`.

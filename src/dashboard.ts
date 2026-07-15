@@ -49,7 +49,7 @@ const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
 const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
 const AI_SESSION_ALIASES_FILE_NAME = 'ai-session-aliases.json';
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const outputChannel = vscode.window.createOutputChannel('Project Steward');
     context.subscriptions.push(outputChannel);
     const openProjectDiagnosticPath = path.join(context.globalStoragePath, 'open-project-diagnostics.jsonl');
@@ -133,7 +133,7 @@ export function activate(context: vscode.ExtensionContext) {
         undefined,
         aiSessionTerminalBindingStore
     );
-    aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals);
+    await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals);
     const aiSessionPinStore = new AiSessionPinStore(context.globalStoragePath);
     migrateLegacyPinnedAiSessions();
     let aiSessionRefreshTimeout: NodeJS.Timeout = null;

@@ -2,8 +2,7 @@
 
 import type { AiSessionProviderId } from '../models';
 
-export const AI_SESSION_TERMINAL_BINDING_KEY_PREFIX = 'aiSessionTerminalBinding.v1.';
-export const AI_SESSION_TERMINAL_INSTANCE_ENV_KEY = 'PROJECT_STEWARD_AI_TERMINAL_INSTANCE_ID';
+export const AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX = 'aiSessionTerminalProcessBinding.v2.';
 
 const MAX_ID_LENGTH = 512;
 const MAX_PATH_LENGTH = 4096;
@@ -16,7 +15,7 @@ export interface AiSessionTerminalBindingState {
 }
 
 interface AiSessionTerminalBindingBase {
-    version: 1;
+    version: 2;
     providerId: AiSessionProviderId;
     markerPath: string;
     updatedAtMs: number;
@@ -48,6 +47,8 @@ export type BoundAiSessionTerminalBindingInput = Omit<
     'version' | 'state' | 'updatedAtMs'
 >;
 
+export type AiSessionTerminalProcessId = number | PromiseLike<number | undefined>;
+
 export default class AiSessionTerminalBindingStore {
     private writeQueue: Promise<void> = Promise.resolve();
     private errorReported = false;
@@ -55,15 +56,16 @@ export default class AiSessionTerminalBindingStore {
     constructor(
         private readonly state: AiSessionTerminalBindingState,
         private readonly onError: (error: unknown) => void = () => undefined,
-        private readonly now: () => number = () => Date.now()
+        private readonly now: () => number = () => Date.now(),
+        private readonly processIdTimeoutMs = 2000
     ) { }
 
-    get(instanceId: string): AiSessionTerminalBinding | null {
-        if (!isInstanceId(instanceId)) {
+    get(processId: number): AiSessionTerminalBinding | null {
+        if (!isProcessId(processId)) {
             return null;
         }
         try {
-            let record = validateRecord(this.state?.get(getBindingKey(instanceId), null as unknown));
+            let record = validateRecord(this.state?.get(getBindingKey(processId), null as unknown));
             return record ? cloneRecord(record) : null;
         } catch (error) {
             this.reportErrorOnce(error);
@@ -71,48 +73,75 @@ export default class AiSessionTerminalBindingStore {
         }
     }
 
-    setPending(instanceId: string, input: PendingAiSessionTerminalBindingInput): void {
+    setPending(processId: AiSessionTerminalProcessId, input: PendingAiSessionTerminalBindingInput): void {
         let record = validateRecord({
             ...input,
-            version: 1,
+            version: 2,
             state: 'pending',
             updatedAtMs: this.now(),
         });
-        if (!isInstanceId(instanceId) || !record || record.state !== 'pending') {
+        if (!record || record.state !== 'pending') {
             return;
         }
-        this.enqueueWrite(instanceId, record);
+        this.enqueueWrite(processId, record);
     }
 
-    setBound(instanceId: string, input: BoundAiSessionTerminalBindingInput): void {
+    setBound(processId: AiSessionTerminalProcessId, input: BoundAiSessionTerminalBindingInput): void {
         let record = validateRecord({
             ...input,
-            version: 1,
+            version: 2,
             state: 'bound',
             updatedAtMs: this.now(),
         });
-        if (!isInstanceId(instanceId) || !record || record.state !== 'bound') {
+        if (!record || record.state !== 'bound') {
             return;
         }
-        this.enqueueWrite(instanceId, record);
+        this.enqueueWrite(processId, record);
     }
 
-    remove(instanceId: string): void {
-        if (isInstanceId(instanceId)) {
-            this.enqueueWrite(instanceId, null);
-        }
+    remove(processId: AiSessionTerminalProcessId): void {
+        this.enqueueWrite(processId, null);
     }
 
     flush(): Promise<void> {
         return this.writeQueue;
     }
 
-    private enqueueWrite(instanceId: string, record: AiSessionTerminalBinding | null): void {
-        this.writeQueue = this.writeQueue.then(() => this.state.update(
-            getBindingKey(instanceId),
-            record ? cloneRecord(record) : undefined
-        )).catch(error => {
+    private enqueueWrite(processId: AiSessionTerminalProcessId, record: AiSessionTerminalBinding | null): void {
+        let resolvedProcessId = this.resolveProcessId(processId);
+        this.writeQueue = this.writeQueue.then(async () => {
+            let pid = await resolvedProcessId;
+            if (!isProcessId(pid)) {
+                return;
+            }
+            await this.state.update(
+                getBindingKey(pid),
+                record ? cloneRecord(record) : undefined
+            );
+        }).catch(error => {
             this.reportErrorOnce(error);
+        });
+    }
+
+    private resolveProcessId(processId: AiSessionTerminalProcessId): Promise<number | undefined> {
+        if (typeof processId === 'number') {
+            return Promise.resolve(isProcessId(processId) ? processId : undefined);
+        }
+        return new Promise(resolve => {
+            let settled = false;
+            let settle = (value: number | undefined) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                clearTimeout(timeout);
+                resolve(isProcessId(value) ? value : undefined);
+            };
+            let timeout = setTimeout(() => settle(undefined), this.processIdTimeoutMs);
+            Promise.resolve(processId).then(settle, error => {
+                this.reportErrorOnce(error);
+                settle(undefined);
+            });
         });
     }
 
@@ -124,8 +153,8 @@ export default class AiSessionTerminalBindingStore {
     }
 }
 
-function getBindingKey(instanceId: string): string {
-    return `${AI_SESSION_TERMINAL_BINDING_KEY_PREFIX}${instanceId}`;
+function getBindingKey(processId: number): string {
+    return `${AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX}${processId}`;
 }
 
 function validateRecord(value: unknown): AiSessionTerminalBinding | null {
@@ -133,7 +162,7 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         return null;
     }
     let record = value as Record<string, unknown>;
-    if (record.version !== 1 || (record.state !== 'pending' && record.state !== 'bound')
+    if (record.version !== 2 || (record.state !== 'pending' && record.state !== 'bound')
         || !isProviderId(record.providerId) || !isBoundedString(record.markerPath, MAX_PATH_LENGTH)
         || !isFiniteNonNegative(record.updatedAtMs)) {
         return null;
@@ -143,7 +172,7 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
             return null;
         }
         return {
-            version: 1,
+            version: 2,
             state: 'bound',
             providerId: record.providerId,
             sessionId: record.sessionId,
@@ -160,7 +189,7 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         return null;
     }
     return {
-        version: 1,
+        version: 2,
         state: 'pending',
         providerId: record.providerId,
         markerPath: record.markerPath,
@@ -178,8 +207,8 @@ function cloneRecord(record: AiSessionTerminalBinding): AiSessionTerminalBinding
         : { ...record };
 }
 
-function isInstanceId(value: unknown): value is string {
-    return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
+function isProcessId(value: unknown): value is number {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
 function isProviderId(value: unknown): value is AiSessionProviderId {

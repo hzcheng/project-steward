@@ -15,8 +15,7 @@ const lifecycle = require('../out/aiSessions/lifecycle');
 const jsonlTail = require('../out/aiSessions/jsonlTail');
 const terminalBindingStore = require('../out/aiSessions/terminalBindingStore');
 const AiSessionTerminalBindingStore = terminalBindingStore.default;
-const AI_SESSION_TERMINAL_BINDING_KEY_PREFIX = terminalBindingStore.AI_SESSION_TERMINAL_BINDING_KEY_PREFIX;
-const AI_SESSION_TERMINAL_INSTANCE_ENV_KEY = terminalBindingStore.AI_SESSION_TERMINAL_INSTANCE_ENV_KEY;
+const AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX = terminalBindingStore.AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX;
 const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').default;
 const attentionPayload = require('../out/aiSessions/attentionPayload');
 const attentionAggregate = require('../out/aiSessions/attentionAggregate');
@@ -32,7 +31,7 @@ const projectPathUtils = require('../out/projects/projectPathUtils');
 const currentWorkspaceState = require('../out/projects/currentWorkspaceState');
 const favoriteProjectOrder = require('../out/projects/favoriteProjectOrder');
 const originalModuleLoad = Module._load;
-const vscodeTestState = { terminals: [] };
+const vscodeTestState = { terminals: [], nextTerminalProcessId: 42000 };
 Module._load = function (request, parent, isMain) {
     if (request === 'vscode') {
         return {
@@ -43,7 +42,7 @@ Module._load = function (request, parent, isMain) {
                     const terminal = {
                         name: options.name,
                         creationOptions: options,
-                        processId: Promise.resolve(1),
+                        processId: Promise.resolve(vscodeTestState.nextTerminalProcessId++),
                         sendText() {},
                     };
                     vscodeTestState.terminals.push(terminal);
@@ -492,9 +491,9 @@ async function runAiSessionTerminalBindingStoreChecks() {
         get: (key, fallback) => Object.prototype.hasOwnProperty.call(stateData, key) ? stateData[key] : fallback,
         update: async (key, value) => { stateData[key] = value; },
     };
-    const instanceId = 'a'.repeat(32);
+    const processId = 42001;
     const first = new AiSessionTerminalBindingStore(state);
-    first.setPending(instanceId, {
+    first.setPending(Promise.resolve(processId), {
         providerId: 'codex',
         markerPath: '/tmp/pending.done',
         cwd: '/work/app',
@@ -504,23 +503,25 @@ async function runAiSessionTerminalBindingStoreChecks() {
     });
     await first.flush();
 
-    const restoredPending = new AiSessionTerminalBindingStore(state).get(instanceId);
+    const restoredPending = new AiSessionTerminalBindingStore(state).get(processId);
     assert.strictEqual(restoredPending.state, 'pending');
     assert.strictEqual(restoredPending.providerId, 'codex');
     assert.deepStrictEqual(restoredPending.excludedSessionIds, ['old']);
+    assert.ok(stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + processId]);
 
     const second = new AiSessionTerminalBindingStore(state);
-    second.setBound(instanceId, {
+    second.setBound(processId, {
         providerId: 'codex',
         sessionId: 'session-new',
         markerPath: '/tmp/session-new.done',
         runStartedAtMs: 1784102400000,
     });
     await second.flush();
-    assert.strictEqual(new AiSessionTerminalBindingStore(state).get(instanceId).sessionId, 'session-new');
+    assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId).sessionId, 'session-new');
 
-    stateData[AI_SESSION_TERMINAL_BINDING_KEY_PREFIX + 'b'.repeat(32)] = {
-        version: 1,
+    const invalidProcessId = 42009;
+    stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + invalidProcessId] = {
+        version: 2,
         state: 'bound',
         providerId: 'invalid',
         sessionId: 'bad',
@@ -529,12 +530,12 @@ async function runAiSessionTerminalBindingStoreChecks() {
         updatedAtMs: 1,
     };
     const withInvalid = new AiSessionTerminalBindingStore(state);
-    assert.strictEqual(withInvalid.get('b'.repeat(32)), null);
-    assert.strictEqual(withInvalid.get(instanceId).sessionId, 'session-new');
+    assert.strictEqual(withInvalid.get(invalidProcessId), null);
+    assert.strictEqual(withInvalid.get(processId).sessionId, 'session-new');
 
-    withInvalid.remove(instanceId);
+    withInvalid.remove(Promise.resolve(processId));
     await withInvalid.flush();
-    assert.strictEqual(new AiSessionTerminalBindingStore(state).get(instanceId), null);
+    assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId), null);
 
     const concurrentData = {};
     const pendingUpdates = [];
@@ -542,16 +543,17 @@ async function runAiSessionTerminalBindingStoreChecks() {
         get: (key, fallback) => Object.prototype.hasOwnProperty.call(concurrentData, key) ? concurrentData[key] : fallback,
         update: (key, value) => new Promise(resolve => pendingUpdates.push({ key, value, resolve })),
     };
-    const leftId = 'c'.repeat(32);
-    const rightId = 'd'.repeat(32);
+    const leftProcessId = 42002;
+    const rightProcessId = 42003;
     const leftStore = new AiSessionTerminalBindingStore(concurrentState);
     const rightStore = new AiSessionTerminalBindingStore(concurrentState);
-    leftStore.setBound(leftId, {
+    leftStore.setBound(Promise.resolve(leftProcessId), {
         providerId: 'codex', sessionId: 'left', markerPath: '/tmp/left.done', runStartedAtMs: 1,
     });
-    rightStore.setBound(rightId, {
+    rightStore.setBound(Promise.resolve(rightProcessId), {
         providerId: 'codex', sessionId: 'right', markerPath: '/tmp/right.done', runStartedAtMs: 2,
     });
+    await Promise.resolve();
     await Promise.resolve();
     assert.strictEqual(pendingUpdates.length, 2, 'both windows must reach workspaceState.update concurrently');
     pendingUpdates.forEach(update => {
@@ -560,22 +562,65 @@ async function runAiSessionTerminalBindingStoreChecks() {
     });
     await Promise.all([leftStore.flush(), rightStore.flush()]);
     const concurrentRestored = new AiSessionTerminalBindingStore(concurrentState);
-    assert.strictEqual(concurrentRestored.get(leftId).sessionId, 'left');
-    assert.strictEqual(concurrentRestored.get(rightId).sessionId, 'right');
+    assert.strictEqual(concurrentRestored.get(leftProcessId).sessionId, 'left');
+    assert.strictEqual(concurrentRestored.get(rightProcessId).sessionId, 'right');
 
     let persistenceErrors = 0;
     const failingStore = new AiSessionTerminalBindingStore({
         get: (_key, fallback) => fallback,
         update: async () => { throw new Error('workspaceState unavailable'); },
     }, () => { persistenceErrors++; });
-    failingStore.setBound('e'.repeat(32), {
+    failingStore.setBound(42004, {
         providerId: 'codex', sessionId: 'first', markerPath: '/tmp/first.done', runStartedAtMs: 1,
     });
-    failingStore.setBound('f'.repeat(32), {
+    failingStore.setBound(42005, {
         providerId: 'codex', sessionId: 'second', markerPath: '/tmp/second.done', runStartedAtMs: 2,
     });
     await failingStore.flush();
     assert.strictEqual(persistenceErrors, 1, 'persistent workspaceState failures are logged once per store');
+
+    const orderedData = {};
+    const orderedUpdates = [];
+    let resolveDeferredProcessId;
+    const deferredProcessId = new Promise(resolve => { resolveDeferredProcessId = resolve; });
+    const orderedStore = new AiSessionTerminalBindingStore({
+        get: (key, fallback) => Object.prototype.hasOwnProperty.call(orderedData, key) ? orderedData[key] : fallback,
+        update: async (key, value) => {
+            orderedUpdates.push(value?.state || 'removed');
+            orderedData[key] = value;
+        },
+    });
+    orderedStore.setPending(deferredProcessId, {
+        providerId: 'codex', markerPath: '/tmp/deferred.done', cwd: '/work/app',
+        createdAt: new Date().toISOString(), excludedSessionIds: [],
+    });
+    orderedStore.setBound(deferredProcessId, {
+        providerId: 'codex', sessionId: 'deferred-session', markerPath: '/tmp/deferred.done', runStartedAtMs: 4,
+    });
+    orderedStore.remove(deferredProcessId);
+    resolveDeferredProcessId(42007);
+    await orderedStore.flush();
+    assert.deepStrictEqual(orderedUpdates, ['pending', 'bound', 'removed']);
+    assert.strictEqual(orderedStore.get(42007), null);
+
+    const stalledData = {};
+    const stalledStore = new AiSessionTerminalBindingStore({
+        get: (key, fallback) => Object.prototype.hasOwnProperty.call(stalledData, key) ? stalledData[key] : fallback,
+        update: async (key, value) => { stalledData[key] = value; },
+    }, undefined, undefined, 5);
+    stalledStore.setPending(new Promise(() => {}), {
+        providerId: 'codex', markerPath: '/tmp/stalled.done', cwd: '/work/app',
+        createdAt: new Date().toISOString(), excludedSessionIds: [],
+    });
+    stalledStore.setBound(42006, {
+        providerId: 'codex', sessionId: 'after-stall', markerPath: '/tmp/after-stall.done', runStartedAtMs: 3,
+    });
+    const stalledFlushCompleted = await Promise.race([
+        stalledStore.flush().then(() => true),
+        new Promise(resolve => setTimeout(() => resolve(false), 50)),
+    ]);
+    assert.strictEqual(stalledFlushCompleted, true, 'an unresolved processId must not block later binding writes');
+    assert.strictEqual(stalledStore.get(42006).sessionId, 'after-stall');
 }
 
 async function runAiSessionTerminalPersistenceChecks() {
@@ -597,8 +642,8 @@ async function runAiSessionTerminalPersistenceChecks() {
             cwdFailureMessage: '',
             cwdWarningMessage: '',
         }).terminal;
-        const instanceId = created.creationOptions.env[AI_SESSION_TERMINAL_INSTANCE_ENV_KEY];
-        assert.match(instanceId, /^[a-f0-9]{32}$/);
+        const processId = await created.processId;
+        assert.strictEqual(Number.isSafeInteger(processId), true);
         firstService.trackPending({
             provider: 'codex',
             terminal: created,
@@ -612,11 +657,12 @@ async function runAiSessionTerminalPersistenceChecks() {
 
         const restoredPendingTerminal = {
             ...created,
-            creationOptions: { ...created.creationOptions, env: { ...created.creationOptions.env } },
+            creationOptions: { name: created.name, cwd: '/work/app' },
+            processId: Promise.resolve(processId),
         };
         const secondStore = new AiSessionTerminalBindingStore(state);
         const secondService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, secondStore);
-        secondService.restorePersistedTerminals([restoredPendingTerminal]);
+        await secondService.restorePersistedTerminals([restoredPendingTerminal]);
         assert.strictEqual(secondService.getPendingTerminals().length, 1);
         assert.strictEqual(secondService.getPendingTerminals()[0].terminal, restoredPendingTerminal);
 
@@ -629,23 +675,21 @@ async function runAiSessionTerminalPersistenceChecks() {
 
         const restoredBoundTerminal = {
             ...restoredPendingTerminal,
-            creationOptions: {
-                ...restoredPendingTerminal.creationOptions,
-                env: { ...restoredPendingTerminal.creationOptions.env },
-            },
+            creationOptions: { name: restoredPendingTerminal.name, cwd: '/work/app' },
+            processId: Promise.resolve(processId),
         };
         const thirdStore = new AiSessionTerminalBindingStore(state);
         const thirdService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, thirdStore);
-        thirdService.restorePersistedTerminals([restoredBoundTerminal]);
+        await thirdService.restorePersistedTerminals([restoredBoundTerminal]);
         assert.strictEqual(thirdService.getById('codex', 'session-new').terminal, restoredBoundTerminal);
 
         thirdService.handleClosedTerminal(restoredBoundTerminal);
         await thirdStore.flush();
-        assert.strictEqual(new AiSessionTerminalBindingStore(state).get(instanceId), null);
+        assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId), null);
 
-        const expiredId = '9'.repeat(32);
+        const expiredProcessId = 49999;
         const expiredStore = new AiSessionTerminalBindingStore(state);
-        expiredStore.setPending(expiredId, {
+        expiredStore.setPending(expiredProcessId, {
             providerId: 'codex',
             markerPath: path.join(tempRoot, 'expired.done'),
             cwd: '/work/app',
@@ -655,16 +699,67 @@ async function runAiSessionTerminalPersistenceChecks() {
         await expiredStore.flush();
         const expiredTerminal = {
             ...created,
-            creationOptions: {
-                ...created.creationOptions,
-                env: { ...created.creationOptions.env, [AI_SESSION_TERMINAL_INSTANCE_ENV_KEY]: expiredId },
-            },
+            creationOptions: { name: created.name, cwd: '/work/app' },
+            processId: Promise.resolve(expiredProcessId),
         };
         const expiredService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, expiredStore);
-        expiredService.restorePersistedTerminals([expiredTerminal]);
+        await expiredService.restorePersistedTerminals([expiredTerminal]);
         assert.strictEqual(expiredService.getPendingTerminals().length, 0);
         await expiredStore.flush();
-        assert.strictEqual(new AiSessionTerminalBindingStore(state).get(expiredId), null);
+        assert.strictEqual(new AiSessionTerminalBindingStore(state).get(expiredProcessId), null);
+
+        const recoverableProcessId = 50001;
+        const timeoutStore = new AiSessionTerminalBindingStore(state);
+        timeoutStore.setBound(recoverableProcessId, {
+            providerId: 'codex',
+            sessionId: 'session-after-stalled-terminal',
+            markerPath: path.join(tempRoot, 'session-after-stalled-terminal.done'),
+            runStartedAtMs: 1784102400000,
+        });
+        await timeoutStore.flush();
+        const stalledTerminal = {
+            name: 'Stalled terminal',
+            creationOptions: { name: 'Stalled terminal' },
+            processId: new Promise(() => {}),
+            sendText() {},
+        };
+        const recoverableTerminal = {
+            name: 'Codex: Recoverable',
+            creationOptions: { name: 'Codex: Recoverable' },
+            processId: Promise.resolve(recoverableProcessId),
+            sendText() {},
+        };
+        const timeoutService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, timeoutStore, 5);
+        const restoreCompleted = await Promise.race([
+            timeoutService.restorePersistedTerminals([stalledTerminal, recoverableTerminal]).then(() => true),
+            new Promise(resolve => setTimeout(() => resolve(false), 50)),
+        ]);
+        assert.strictEqual(restoreCompleted, true, 'one unresolved terminal processId must not block extension activation');
+        assert.strictEqual(
+            timeoutService.getById('codex', 'session-after-stalled-terminal').terminal,
+            recoverableTerminal
+        );
+
+        const reusedProcessId = 50002;
+        const reusedProcessStore = new AiSessionTerminalBindingStore(state);
+        reusedProcessStore.setBound(reusedProcessId, {
+            providerId: 'codex',
+            sessionId: 'stale-session',
+            markerPath: path.join(tempRoot, 'stale-session.done'),
+            runStartedAtMs: 1784102400000,
+        });
+        await reusedProcessStore.flush();
+        const ordinaryTerminalWithReusedPid = {
+            name: 'bash',
+            creationOptions: { name: 'bash' },
+            processId: Promise.resolve(reusedProcessId),
+            sendText() {},
+        };
+        const reusedProcessService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, reusedProcessStore);
+        await reusedProcessService.restorePersistedTerminals([ordinaryTerminalWithReusedPid]);
+        assert.strictEqual(reusedProcessService.getById('codex', 'stale-session'), null);
+        await reusedProcessStore.flush();
+        assert.strictEqual(reusedProcessStore.get(reusedProcessId), null, 'a reused PID must clear its stale binding');
     } finally {
         vscodeTestState.terminals.length = 0;
         fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -962,7 +1057,8 @@ function runWebviewContentChecks() {
     assert.ok(!settingsFunction.includes('ai-session-terminal-mode-planned'));
     assert.ok(dashboard.includes('new AiSessionPinStore(context.globalStoragePath)'));
     assert.ok(dashboard.includes('new AiSessionTerminalBindingStore(context.workspaceState'));
-    assert.ok(dashboard.includes('restorePersistedTerminals(vscode.window.terminals)'));
+    assert.ok(dashboard.includes('export async function activate(context: vscode.ExtensionContext)'));
+    assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
     assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);

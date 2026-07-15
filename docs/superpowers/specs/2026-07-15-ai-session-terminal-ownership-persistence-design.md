@@ -38,11 +38,12 @@ VS Code 窗口重新加载后，这个仅存在于内存中的绑定会丢失。
 
 扩展激活时，terminal service 并行枚举当前窗口可见的 terminal，并按 process ID 分别读取绑定项：
 
-1. 等待每个 terminal 的 `processId`；无法取得有效 PID 的 terminal 跳过恢复。
-2. 将匹配的 `bound` 记录直接恢复到已跟踪 terminal 映射中。
-3. 将匹配的 `pending` 记录恢复到待匹配队列中。
-4. 首次 session 刷新和 attention 计算必须在异步恢复完成后开始，避免用户在恢复竞态窗口内点击卡片又创建 terminal。
-5. 当前窗口中不存在对应 terminal 时，不枚举或删除其他 PID 的绑定项，避免误删同一 workspace 另一个窗口仍在使用的记录。
+1. 每个 terminal 最多等待 2 秒取得 `processId`；无法取得有效 PID 的 terminal 跳过恢复，不能阻塞扩展激活或其他 terminal 的写入。
+2. PID 命中后，terminal 名称还必须以对应 provider 的 `Codex: `、`Kimi: ` 或 `Claude: ` 前缀开头；不匹配表示 PID 可能被普通 terminal 重用，删除陈旧绑定且不恢复。
+3. 将匹配的 `bound` 记录直接恢复到已跟踪 terminal 映射中。
+4. 将匹配的 `pending` 记录恢复到待匹配队列中。
+5. 首次 session 刷新和 attention 计算必须在异步恢复完成后开始，避免用户在恢复竞态窗口内点击卡片又创建 terminal。
+6. 当前窗口中不存在对应 terminal 时，不枚举或删除其他 PID 的绑定项，避免误删同一 workspace 另一个窗口仍在使用的记录。
 
 待匹配流程发现 provider session 后，先把记录从 `pending` 原子升级为 `bound`，后续刷新再使用最终 session ID。
 
@@ -59,7 +60,7 @@ VS Code 窗口重新加载后，这个仅存在于内存中的绑定会丢失。
 
 ## 错误处理
 
-持久化采用尽力而为策略。如果 `Terminal.processId` 返回 `undefined`、Promise 失败或 `workspaceState.update` 失败，当前窗口中的内存跟踪仍然继续工作，并通过现有 Project Steward 输出通道为该 service/store 实例记录一次错误。持久化失败不会阻止 provider 命令执行。
+持久化采用尽力而为策略。`Terminal.processId` 返回 `undefined` 或超过 2 秒未完成时静默跳过；Promise 失败或 `workspaceState.update` 失败时，通过现有 Project Steward 输出通道为该 store 实例记录一次错误。当前窗口中的内存跟踪仍然继续工作，持久化失败不会阻止 provider 命令执行。
 
 ## 测试
 
@@ -74,11 +75,15 @@ VS Code 窗口重新加载后，这个仅存在于内存中的绑定会丢失。
 7. 两个窗口交错写入不同 process ID 绑定时，两条记录都会保留。
 8. 超过 24 小时的 `pending` 绑定在恢复时被清除。
 9. 恢复流程完成前不进入首次 attention 计算或响应 session 卡片操作。
-10. 现有 AI session 安全测试、显式生命周期提醒测试和 Open Project 测试继续通过。
+10. 一个永不完成的 process-ID Promise 不会阻塞其他绑定写入或扩展激活。
+11. 普通 terminal 重用历史 PID 时不会恢复旧 session，并会清理陈旧绑定。
+12. deferred PID 下的 `pending → bound → remove` 仍保持调用顺序。
+13. 现有 AI session 安全测试、显式生命周期提醒测试和 Open Project 测试继续通过。
 
 ## 非目标
 
 - 恢复本修复安装前已经创建、没有 process-ID 绑定记录的 terminal。
 - 恢复已经退出并被操作系统重新创建为不同 PID 的 terminal。
+- 恢复被用户手动重命名且不再保留 provider 前缀的 terminal；这是避免 PID 重用误绑定普通 terminal 的安全取舍。
 - 根据 cwd 或最近 transcript 时间猜测 terminal 归属。
 - 在不同机器或不同 VS Code remote authority 之间共享 terminal 归属。
