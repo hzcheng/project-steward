@@ -33,6 +33,9 @@ import RemoteProjectResolver from './projects/remoteProjectResolver';
 import GitRepositoryDetector from './projects/gitRepositoryDetector';
 import { getCurrentWorkspaceProjectIds as resolveCurrentWorkspaceProjectIds } from './projects/currentWorkspaceState';
 import { withFavoriteProjectOrder, withToggledProjectFavorite } from './projects/favoriteProjectOrder';
+import OpenProjectBridgeClient from './openProjects/bridgeClient';
+import type { OpenProjectAggregate } from './openProjects/protocol';
+import { createOpenProjectRecords } from './openProjects/projection';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -141,6 +144,17 @@ export function activate(context: vscode.ExtensionContext) {
     setTimeout(() => { void evaluateAiSessionAttention(); }, 0);
 
     const provider = new SidebarStewardViewProvider();
+    let openProjectAggregate: OpenProjectAggregate | null = null;
+    const openProjectBridgeClient = new OpenProjectBridgeClient(
+        createOpenProjectRecords(getRawOpenProjects()),
+        aggregate => {
+            if (aggregate.semanticRevision !== openProjectAggregate?.semanticRevision) {
+                openProjectAggregate = aggregate;
+                refreshStewardViews();
+            }
+        },
+        error => logError('Open project bridge unavailable; showing current-window projects only.', error)
+    );
     const activeAiSessionTerminalHighlighter = new ActiveAiSessionTerminalHighlighter<
         vscode.Terminal,
         AiSessionTerminalEntry<vscode.Terminal>
@@ -168,6 +182,7 @@ export function activate(context: vscode.ExtensionContext) {
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
         }));
     context.subscriptions.push(activeAiSessionTerminalHighlighter);
+    context.subscriptions.push(openProjectBridgeClient);
     context.subscriptions.push(aiSessionAttentionBridgeClient);
     context.subscriptions.push({
         dispose: () => {
@@ -229,7 +244,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(removeGroupCommand);
     context.subscriptions.push(addProjectsFromFolderCommand);
 
-    vscode.workspace.onDidChangeConfiguration(async event => {
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(async event => {
         if (event.affectsConfiguration("projectSteward.storeProjectsInSettings")
             || event.affectsConfiguration("dashboard.storeProjectsInSettings")) {
             await checkDataMigration(false);
@@ -239,13 +254,21 @@ export function activate(context: vscode.ExtensionContext) {
             || event.affectsConfiguration("dashboard")) {
             applyProjectColorToCurrentWindow();
             refreshStewardViews();
+            publishOpenProjects();
         }
-    });
+    }));
 
-    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+    context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
         applyProjectColorToCurrentWindow();
         refreshStewardViews();
-    });
+        publishOpenProjects();
+    }));
+
+    context.subscriptions.push(vscode.window.onDidChangeWindowState(windowState => {
+        if (windowState.focused) {
+            publishOpenProjects(true);
+        }
+    }));
 
     startUp();
 
@@ -307,6 +330,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     async function showSteward() {
+        publishOpenProjects();
         await revealSidebarSteward();
         refreshStewardViews();
     }
@@ -651,6 +675,7 @@ export function activate(context: vscode.ExtensionContext) {
     function refreshAfterMutation() {
         applyProjectColorToCurrentWindow();
         refreshStewardViews();
+        publishOpenProjects();
     }
 
     function applyProjectColorToCurrentWindow(project: Project = null) {
@@ -2198,8 +2223,8 @@ export function activate(context: vscode.ExtensionContext) {
         return `${savePath}/Project Steward Projects.json`;
     }
 
-    function getOpenProjects(): Project[] {
-        let openProjects = getOpenProjectsFromWorkspace(
+    function getRawOpenProjects(): Project[] {
+        return getOpenProjectsFromWorkspace(
             vscode.workspace.workspaceFile,
             vscode.workspace.workspaceFolders,
             {
@@ -2208,7 +2233,17 @@ export function activate(context: vscode.ExtensionContext) {
                 isFolderGitRepo,
             }
         );
-        return withAiSessions(openProjects);
+    }
+
+    function getOpenProjects(): Project[] {
+        return withAiSessions(getRawOpenProjects());
+    }
+
+    function publishOpenProjects(followsFocusEvent = false): void {
+        void openProjectBridgeClient.publish(
+            createOpenProjectRecords(getRawOpenProjects()),
+            followsFocusEvent
+        );
     }
 
     function getCurrentWorkspaceProjectIds(): string[] {

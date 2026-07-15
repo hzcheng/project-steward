@@ -15,6 +15,7 @@ Module._load = function (request, parent, isMain) {
 };
 const protocol = require('../out/openProjects/protocol');
 const projection = require('../out/openProjects/projection');
+const { default: OpenProjectBridgeClient } = require('../out/openProjects/bridgeClient');
 const models = require('../out/models');
 const { OpenProjectStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectStore');
 const { OpenProjectCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectCoordinator');
@@ -73,6 +74,24 @@ function makeAggregate(registrations, overrides = {}) {
 
 function assertRejectsValidation(callback, pattern) {
     assert.throws(callback, pattern);
+}
+
+function extractFunctionBody(source, functionName) {
+    const signatureIndex = source.indexOf(`function ${functionName}(`);
+    assert.notStrictEqual(signatureIndex, -1, `missing function ${functionName}`);
+    const openingBraceIndex = source.indexOf('{', signatureIndex);
+    let depth = 0;
+    for (let index = openingBraceIndex; index < source.length; index += 1) {
+        if (source[index] === '{') {
+            depth += 1;
+        } else if (source[index] === '}') {
+            depth -= 1;
+            if (depth === 0) {
+                return source.slice(openingBraceIndex + 1, index);
+            }
+        }
+    }
+    assert.fail(`could not extract function ${functionName}`);
 }
 
 function runProtocolChecks() {
@@ -392,6 +411,200 @@ function runProjectionChecks() {
     );
     assert.deepStrictEqual(duplicateForward.map(card => card.name), ['Alpha']);
     assert.deepStrictEqual(duplicateReverse, duplicateForward);
+}
+
+async function runBridgeClientChecks() {
+    let currentNow = 1000;
+    let heartbeatCallback;
+    let heartbeatIntervalMs;
+    let clearedHeartbeat;
+    const heartbeatHandle = { kind: 'open-project-heartbeat' };
+    const registeredCommands = new Map();
+    const executions = [];
+    const aggregates = [];
+    const errors = [];
+    const instanceId = 'a'.repeat(32);
+    const records = [makeRecord()];
+    const client = new OpenProjectBridgeClient(
+        records,
+        aggregate => aggregates.push(aggregate),
+        error => errors.push(error),
+        {
+            instanceId,
+            now: () => currentNow,
+            registerCommand: (command, callback) => {
+                registeredCommands.set(command, callback);
+                return { dispose: () => registeredCommands.delete(command) };
+            },
+            executeCommand: async (command, argument) => {
+                executions.push({ command, argument });
+            },
+            setInterval: (callback, milliseconds) => {
+                heartbeatCallback = callback;
+                heartbeatIntervalMs = milliseconds;
+                return heartbeatHandle;
+            },
+            clearInterval: handle => {
+                clearedHeartbeat = handle;
+            },
+        }
+    );
+
+    assert.strictEqual(client.instanceId, instanceId);
+    assert.strictEqual(heartbeatIntervalMs, 10_000);
+    assert.strictEqual(typeof heartbeatCallback, 'function');
+    assert.strictEqual(
+        typeof registeredCommands.get('_projectStewardOpenProjects.workspace.aggregate'),
+        'function'
+    );
+    assert.deepStrictEqual(executions, [{
+        command: '_projectStewardOpenProjects.bridge.publish',
+        argument: {
+            protocolVersion: 1,
+            instanceId,
+            sequence: 1,
+            followsFocusEvent: false,
+            projects: records,
+        },
+    }]);
+    assert.ok(!Object.prototype.hasOwnProperty.call(executions[0].argument, 'leaseUpdatedAtMs'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(executions[0].argument, 'lastFocusedAtMs'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(executions[0].argument, 'observedAtMs'));
+
+    await client.publish(records);
+    assert.strictEqual(executions.length, 1, 'unchanged metadata should be suppressed between heartbeats');
+
+    await heartbeatCallback();
+    assert.strictEqual(executions.length, 2);
+    assert.strictEqual(executions[1].argument.sequence, 2);
+    assert.strictEqual(executions[1].argument.followsFocusEvent, false);
+
+    await client.publish(records, true);
+    assert.strictEqual(executions.length, 3);
+    assert.deepStrictEqual(executions[2], {
+        command: '_projectStewardOpenProjects.bridge.publish',
+        argument: {
+            protocolVersion: 1,
+            instanceId,
+            sequence: 3,
+            followsFocusEvent: true,
+            projects: records,
+        },
+    });
+
+    const changedRecords = [makeRecord({ name: 'Changed' })];
+    await client.publish(changedRecords);
+    assert.strictEqual(executions.length, 4);
+    assert.strictEqual(executions[3].argument.sequence, 4);
+    await client.publish(changedRecords);
+    assert.strictEqual(executions.length, 4);
+
+    const receiveAggregate = registeredCommands.get('_projectStewardOpenProjects.workspace.aggregate');
+    const aggregate = makeAggregate([makeRegistration()]);
+    receiveAggregate(aggregate);
+    assert.deepStrictEqual(aggregates, [aggregate]);
+    receiveAggregate({
+        ...aggregate,
+        observedAtMs: aggregate.observedAtMs + 1,
+        registrations: [{ ...aggregate.registrations[0], sequence: 2, leaseUpdatedAtMs: 5001 }],
+    });
+    assert.strictEqual(aggregates.length, 1, 'lease-only aggregate changes should not invoke the callback');
+    const changedAggregate = { ...aggregate, semanticRevision: 'changed-revision' };
+    client.receiveAggregate(changedAggregate);
+    assert.deepStrictEqual(aggregates, [aggregate, changedAggregate]);
+
+    client.receiveAggregate({ ...aggregate, unexpected: true });
+    client.receiveAggregate({ ...aggregate, unexpected: true });
+    assert.strictEqual(errors.length, 1, 'aggregate errors should be throttled');
+    currentNow += 60_000;
+    client.receiveAggregate({ ...aggregate, unexpected: true });
+    assert.strictEqual(errors.length, 2);
+
+    client.dispose();
+    assert.strictEqual(clearedHeartbeat, heartbeatHandle);
+    assert.strictEqual(registeredCommands.has('_projectStewardOpenProjects.workspace.aggregate'), false);
+    assert.deepStrictEqual(executions[executions.length - 1], {
+        command: '_projectStewardOpenProjects.bridge.unregister',
+        argument: { protocolVersion: 1, instanceId },
+    });
+
+    const unregisterFailure = new Error('forced unregister failure');
+    const failingClient = new OpenProjectBridgeClient(
+        records,
+        () => undefined,
+        () => undefined,
+        {
+            instanceId: 'b'.repeat(32),
+            now: () => currentNow,
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: command => {
+                if (command === '_projectStewardOpenProjects.bridge.unregister') {
+                    throw unregisterFailure;
+                }
+                return Promise.resolve();
+            },
+            setInterval: () => 'failing-heartbeat',
+            clearInterval: () => undefined,
+        }
+    );
+    assert.doesNotThrow(() => failingClient.dispose());
+    await new Promise(resolve => setImmediate(resolve));
+
+    const publishErrors = [];
+    const publishFailure = new Error('forced publish failure');
+    const failingPublishClient = new OpenProjectBridgeClient(
+        records,
+        () => undefined,
+        error => publishErrors.push(error),
+        {
+            instanceId: 'c'.repeat(32),
+            now: () => currentNow,
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: async command => {
+                if (command === '_projectStewardOpenProjects.bridge.publish') {
+                    throw publishFailure;
+                }
+            },
+            setInterval: () => 'publish-failure-heartbeat',
+            clearInterval: () => undefined,
+        }
+    );
+    await new Promise(resolve => setImmediate(resolve));
+    await failingPublishClient.publish([makeRecord({ name: 'Second failure' })]);
+    assert.deepStrictEqual(publishErrors, [publishFailure]);
+    currentNow += 60_000;
+    await failingPublishClient.publish([makeRecord({ name: 'Third failure' })]);
+    assert.deepStrictEqual(publishErrors, [publishFailure, publishFailure]);
+    failingPublishClient.dispose();
+}
+
+function runDashboardBridgeLifecycleChecks() {
+    const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const rawOpenProjects = extractFunctionBody(dashboard, 'getRawOpenProjects');
+    const openProjects = extractFunctionBody(dashboard, 'getOpenProjects');
+    const refreshAfterMutation = extractFunctionBody(dashboard, 'refreshAfterMutation');
+    const showSteward = extractFunctionBody(dashboard, 'showSteward');
+
+    assert.ok(rawOpenProjects.includes('getOpenProjectsFromWorkspace('));
+    assert.ok(!rawOpenProjects.includes('withAiSessions('));
+    assert.ok(openProjects.includes('withAiSessions(getRawOpenProjects())'));
+    assert.ok(dashboard.includes("import OpenProjectBridgeClient from './openProjects/bridgeClient';"));
+    assert.ok(dashboard.includes("import { createOpenProjectRecords } from './openProjects/projection';"));
+    assert.ok(dashboard.includes('let openProjectAggregate: OpenProjectAggregate | null = null;'));
+    assert.ok(dashboard.includes('new OpenProjectBridgeClient('));
+    assert.ok(dashboard.includes('createOpenProjectRecords(getRawOpenProjects())'));
+    assert.ok(dashboard.includes('context.subscriptions.push(openProjectBridgeClient);'));
+    assert.ok(dashboard.includes('vscode.window.onDidChangeWindowState(windowState =>'));
+    assert.ok(dashboard.includes('if (windowState.focused)'));
+    assert.ok(dashboard.includes('publishOpenProjects(true);'));
+    assert.ok(
+        refreshAfterMutation.includes('publishOpenProjects();'),
+        'saved project metadata mutations must republish even when configuration storage is disabled'
+    );
+    assert.ok(
+        showSteward.includes('publishOpenProjects();'),
+        'legacy metadata mutation paths that reveal the steward must also republish'
+    );
 }
 
 async function runStoreChecks() {
@@ -1013,6 +1226,8 @@ async function main() {
     runIdentityChecks();
     runRecordChecks();
     runProjectionChecks();
+    await runBridgeClientChecks();
+    runDashboardBridgeLifecycleChecks();
     await runStoreChecks();
     await runCoordinatorChecks();
     await runCoordinatorAggregateBoundaryChecks();
