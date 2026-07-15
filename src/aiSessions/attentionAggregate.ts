@@ -2,11 +2,12 @@
 
 import * as crypto from 'crypto';
 import type { AttentionOwnerSnapshot } from './attentionPayload';
+import type { AiSessionAttentionReason } from './lifecycle';
 
 export interface AggregatedAttentionSession {
     projectId: string;
     sessionKey: string;
-    reasons: Array<'quiet' | 'completed'>;
+    reasons: AiSessionAttentionReason[];
     eventIds: string[];
     observedAtMs: number;
 }
@@ -42,8 +43,9 @@ export function validateAttentionAggregate(value: unknown): AttentionAggregate {
             || typeof session.sessionKey !== 'string' || !session.sessionKey || session.sessionKey.length > MAX_AGGREGATE_ID_LENGTH) {
             throw new Error('attention aggregate session identity is invalid');
         }
-        if (!Array.isArray(session.reasons) || session.reasons.length < 1 || session.reasons.length > 2
-            || session.reasons.some(reason => reason !== 'quiet' && reason !== 'completed')) throw new Error('attention aggregate reasons are invalid');
+        if (!Array.isArray(session.reasons) || session.reasons.length < 1 || session.reasons.length > 4
+            || session.reasons.some(reason => reason !== 'completed' && reason !== 'aborted'
+                && reason !== 'failed' && reason !== 'input-required')) throw new Error('attention aggregate reasons are invalid');
         if (!Array.isArray(session.eventIds) || session.eventIds.length < 1 || session.eventIds.length > MAX_AGGREGATE_EVENTS_PER_SESSION
             || session.eventIds.some(eventId => typeof eventId !== 'string' || !eventId || eventId.length > MAX_AGGREGATE_ID_LENGTH)) {
             throw new Error('attention aggregate eventIds are invalid');
@@ -52,7 +54,7 @@ export function validateAttentionAggregate(value: unknown): AttentionAggregate {
         return {
             projectId: session.projectId,
             sessionKey: session.sessionKey,
-            reasons: Array.from(new Set(session.reasons as Array<'quiet' | 'completed'>)).sort(),
+            reasons: Array.from(new Set(session.reasons as AiSessionAttentionReason[])).sort(),
             eventIds: Array.from(new Set(session.eventIds as string[])).sort(),
             observedAtMs: session.observedAtMs,
         };
@@ -69,7 +71,7 @@ export function aggregateAttentionSnapshots(
         projectId: string;
         projectObservedAtMs: number;
         observedAtMs: number;
-        events: Map<string, 'quiet' | 'completed'>;
+        events: Map<string, AiSessionAttentionReason>;
     }>();
     for (const snapshot of snapshots || []) {
         for (const item of snapshot.items) {

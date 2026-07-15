@@ -2,7 +2,7 @@
 
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { existsSync, mkdirSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, statSync, unlinkSync } from 'fs';
 
 import type { AiSessionProviderId, CodexSession } from '../models';
 import type { ActiveAiSessionTerminalResolution } from './activeTerminalHighlight';
@@ -93,13 +93,16 @@ export default class AiSessionTerminalService {
 
     async sendResumeCommand(providerId: AiSessionProviderId, terminal: vscode.Terminal, sessionId: string, cwd: string, markerPath: string) {
         let provider = this.getProvider(providerId);
-        this.deleteEntryMarker({ terminal, markerPath });
+        this.deleteEntryMarker({ markerPath });
         await this.waitForReady(terminal);
         terminal.sendText(provider.buildResumeCommand(sessionId, cwd, markerPath));
     }
 
     track(providerId: AiSessionProviderId, sessionId: string, entry: AiSessionTerminalEntry<vscode.Terminal>) {
-        this.terminals[providerId].set(sessionId, entry);
+        this.terminals[providerId].set(sessionId, {
+            ...entry,
+            runStartedAtMs: Number.isFinite(entry?.runStartedAtMs) ? entry.runStartedAtMs : Date.now(),
+        });
     }
 
     untrack(providerId: AiSessionProviderId, sessionId: string) {
@@ -170,6 +173,7 @@ export default class AiSessionTerminalService {
         let entry = {
             terminal,
             markerPath: this.getMarkerPath(providerId, sessionId),
+            runStartedAtMs: Date.now(),
         };
         this.track(providerId, sessionId, entry);
 
@@ -201,7 +205,7 @@ export default class AiSessionTerminalService {
             if (!this.terminalMatchesSession(providerId, terminal, session.id)) {
                 continue;
             }
-            let entry = { terminal, markerPath: this.getMarkerPath(providerId, session.id) };
+            let entry = { terminal, markerPath: this.getMarkerPath(providerId, session.id), runStartedAtMs: Date.now() };
             this.track(providerId, session.id, entry);
             return { provider: providerId, sessionId: session.id, terminal, entry };
         }
@@ -249,10 +253,19 @@ export default class AiSessionTerminalService {
     }
 
     isComplete(entry: AiSessionTerminalEntry<vscode.Terminal>): boolean {
-        return existsSync(entry.markerPath);
+        try {
+            if (!entry?.markerPath || !existsSync(entry.markerPath)) {
+                return false;
+            }
+            let stat = statSync(entry.markerPath);
+            return stat.isFile()
+                && (!Number.isFinite(entry.runStartedAtMs) || stat.mtimeMs >= entry.runStartedAtMs);
+        } catch (e) {
+            return false;
+        }
     }
 
-    deleteEntryMarker(entry: AiSessionTerminalEntry<vscode.Terminal>) {
+    deleteEntryMarker(entry: Pick<AiSessionTerminalEntry<vscode.Terminal>, 'markerPath'>) {
         this.deleteMarker(entry.markerPath);
     }
 

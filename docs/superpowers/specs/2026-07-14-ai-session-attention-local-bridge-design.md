@@ -3,6 +3,13 @@
 Date: 2026-07-14
 Status: Approved for feasibility planning
 
+> **Lifecycle update (2026-07-15):** The provider activity token, quiet-time
+> inference, and related state-machine/timing rules in this document are
+> superseded by
+> `2026-07-15-ai-session-explicit-lifecycle-attention-design.md`. The bridge,
+> aggregation, lease, acknowledgement, and rendering architecture below remains
+> in force.
+
 ## Decision
 
 Project Steward will monitor AI sessions that it creates or resumes and will

@@ -27,6 +27,7 @@ import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions
 import { archiveBatchAiSessionItem as executeBatchAiSessionArchiveItem, executeBatchAiSessionArchiveRequest, formatBatchAiSessionArchiveSummary, formatBatchAiSessionIdForLog, hasBatchAiSessionArchiveIssues } from './aiSessions/archiveBatch';
 import type { BatchAiSessionArchiveAttemptStatus, BatchAiSessionArchiveResult, BatchAiSessionArchiveSelection } from './aiSessions/archiveBatch';
 import type { AiSessionActiveTerminalChangedMessage, AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
+import type { AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './aiSessions/lifecycle';
 import { findSavedProjectForOpenProject, getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
 import { getLastPartOfPath, getOpenProjectUri as resolveOpenProjectUri, getOpenProjectsFromWorkspace, getWorkspaceUri as resolveWorkspaceUri, getWorkspaceUris as resolveWorkspaceUris, isUriString, parsePathAsUri } from './projects/openProjectService';
 import RemoteProjectResolver from './projects/remoteProjectResolver';
@@ -570,26 +571,61 @@ export function activate(context: vscode.ExtensionContext) {
             postAiSessionAttentionProjectsUpdated();
             return;
         }
-        const inputs: Array<{ key: string; activityToken?: string; completed?: boolean; ownerVisible?: boolean }> = [];
         const projects = getOpenProjects();
+        const ownedSessions = new Map<string, {
+            providerId: AiSessionProviderId;
+            session: CodexSession;
+            terminal: TerminalEntry;
+        }>();
         for (const project of projects) {
             for (const providerId of AI_SESSION_PROVIDER_IDS) {
                 const definition = getRegisteredAiSessionProvider(providerId);
                 for (const session of project[definition.projectSessionsKey] || []) {
                     const key = getAiSessionKey(providerId, session.id);
                     const terminal = aiSessionTerminalService.getById(providerId, session.id);
-                    if (!terminal) {
+                    if (!terminal || ownedSessions.has(key)) {
                         continue;
                     }
-                    inputs.push({
-                        key,
-                        activityToken: [session.updatedAt || '', session.name || '', session.cwd || session.workDir || ''].join('|'),
-                        completed: aiSessionTerminalService.isComplete(terminal),
-                        ownerVisible: vscode.window.state.focused && vscode.window.activeTerminal === terminal.terminal,
-                    });
+                    ownedSessions.set(key, { providerId, session, terminal });
                 }
             }
         }
+
+        const requestsByProvider = AI_SESSION_PROVIDER_IDS.reduce((result, providerId) => {
+            result[providerId] = [];
+            return result;
+        }, {} as Record<AiSessionProviderId, AiSessionLifecycleRequest[]>);
+        for (const owned of ownedSessions.values()) {
+            requestsByProvider[owned.providerId].push({
+                sessionId: owned.session.id,
+                runStartedAtMs: owned.terminal.runStartedAtMs,
+            });
+        }
+
+        const signalsByProvider = AI_SESSION_PROVIDER_IDS.reduce((result, providerId) => {
+            const requests = requestsByProvider[providerId];
+            result[providerId] = requests.length
+                ? getRegisteredAiSessionProvider(providerId).service.getLifecycleSignals(requests)
+                : {};
+            return result;
+        }, {} as Record<AiSessionProviderId, Record<string, AiSessionLifecycleSignal>>);
+
+        const inputs = Array.from(ownedSessions, ([key, owned]) => {
+            const signal = aiSessionTerminalService.isComplete(owned.terminal)
+                ? {
+                    token: `terminal-exit:${owned.terminal.runStartedAtMs}`,
+                    phase: 'needsAttention' as const,
+                    reason: 'completed' as const,
+                    occurredAtMs: owned.terminal.runStartedAtMs,
+                }
+                : signalsByProvider[owned.providerId][owned.session.id];
+            return {
+                key,
+                signal,
+                ownerVisible: vscode.window.state.focused && vscode.window.activeTerminal === owned.terminal.terminal,
+                observedAt: signal?.occurredAtMs,
+            };
+        });
         if (aiSessionAttentionMonitor.evaluate(inputs).length) {
             scheduleAiSessionRefresh();
         }
@@ -1328,7 +1364,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
             }
 
-            aiSessionTerminalService.track(providerId, session.id, { terminal, markerPath });
+            aiSessionTerminalService.track(providerId, session.id, { terminal, markerPath, runStartedAtMs: Date.now() });
             terminal.show();
             await aiSessionTerminalService.sendResumeCommand(providerId, terminal, session.id, cwd, markerPath);
             activeAiSessionTerminalHighlighter.sync();
@@ -2427,7 +2463,7 @@ export function activate(context: vscode.ExtensionContext) {
                     const localAttention = aiSessionAttentionAggregate ? null : attention;
                     const event = aggregateAttention ? {
                         eventId: aggregateAttention.eventIds[0] || `${aggregateAttention.sessionKey}:${aggregateAttention.observedAtMs}`,
-                        reason: aggregateAttention.reasons[0] || 'quiet' as const,
+                        reason: aggregateAttention.reasons[0] || 'input-required' as const,
                     } : localAttention?.event;
                     return event ? {
                         ...session,
@@ -2592,6 +2628,7 @@ export function activate(context: vscode.ExtensionContext) {
             let entry = {
                 terminal: pendingTerminal.terminal,
                 markerPath: pendingTerminal.markerPath,
+                runStartedAtMs: Date.parse(pendingTerminal.createdAt),
             };
             aiSessionTerminalService.track(pendingTerminal.provider, session.id, entry);
             setAiSessionAlias(pendingTerminal.provider, session.id, pendingTerminal.title);

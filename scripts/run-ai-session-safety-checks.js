@@ -11,6 +11,8 @@ const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
 const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
+const lifecycle = require('../out/aiSessions/lifecycle');
+const jsonlTail = require('../out/aiSessions/jsonlTail');
 const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').default;
 const attentionPayload = require('../out/aiSessions/attentionPayload');
 const attentionAggregate = require('../out/aiSessions/attentionAggregate');
@@ -428,6 +430,10 @@ function runAiSessionTerminalResolutionChecks() {
         };
         const byName = { name: 'Kimi: Named [named-12]', creationOptions: {} };
         const ordinary = { name: 'bash', creationOptions: {} };
+        const recoveredMarkerPath = service.getMarkerPath('codex', 'session-env');
+        fs.writeFileSync(recoveredMarkerPath, '', 'utf8');
+        const oldMarkerAt = new Date(Date.now() - 60_000);
+        fs.utimesSync(recoveredMarkerPath, oldMarkerAt, oldMarkerAt);
         vscodeTestState.terminals.splice(
             0,
             vscodeTestState.terminals.length,
@@ -437,7 +443,13 @@ function runAiSessionTerminalResolutionChecks() {
             ordinary
         );
 
-        assert.strictEqual(service.resolveTerminalSession(byEnv, getCandidates).sessionId, 'session-env');
+        const recoveredByEnv = service.resolveTerminalSession(byEnv, getCandidates);
+        assert.strictEqual(recoveredByEnv.sessionId, 'session-env');
+        assert.strictEqual(Number.isFinite(recoveredByEnv.entry.runStartedAtMs), true);
+        assert.strictEqual(service.isComplete(recoveredByEnv.entry), false, 'marker older than recovered run is ignored');
+        const currentMarkerAt = new Date(recoveredByEnv.entry.runStartedAtMs + 1000);
+        fs.utimesSync(recoveredMarkerPath, currentMarkerAt, currentMarkerAt);
+        assert.strictEqual(service.isComplete(recoveredByEnv.entry), true, 'marker written during current run completes it');
         assert.deepStrictEqual(candidateCalls, ['codex']);
 
         candidateCalls.length = 0;
@@ -732,8 +744,13 @@ function runWebviewContentChecks() {
     assert.ok(evaluateAttentionFunction.includes('getAttentionProjectKey(project.attentionProjectPath || project.path)'));
     assert.ok(evaluateAttentionFunction.includes('projectId: projectKey'));
     assert.ok(evaluateAttentionFunction.includes('observedAtMs: attention.stateChangedAt'));
-    assert.ok(evaluateAttentionFunction.includes('if (!terminal)'));
+    assert.ok(evaluateAttentionFunction.includes('if (!terminal ||'));
+    assert.ok(evaluateAttentionFunction.includes('getLifecycleSignals'));
+    assert.ok(evaluateAttentionFunction.includes('terminal-exit:'));
+    assert.ok(!evaluateAttentionFunction.includes('activityToken'));
     assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
+    assert.ok(dashboard.includes('runStartedAtMs: Date.parse(pendingTerminal.createdAt)'));
+    assert.ok(dashboard.includes('runStartedAtMs: Date.now()'));
     assert.ok(dashboard.includes("type: 'ai-session-attention-projects-updated'"));
     assert.ok(dashboard.includes('sessionEvents: getAiSessionAttentionRecoverySessionEvents()'));
     assert.ok(webviewProjectScripts.includes('message.sessionEvents'));
@@ -1089,7 +1106,7 @@ function runAttentionProjectRenderingChecks() {
                 codexSessions: [{
                     id: 'codex-one',
                     name: 'Codex One',
-                    attention: { eventId: 'local-event', reason: 'quiet', unread: true },
+                    attention: { eventId: 'local-event', reason: 'input-required', unread: true },
                 }],
             }],
         },
@@ -2073,6 +2090,84 @@ function runProviderChecks() {
     );
 }
 
+function runProviderLifecycleServiceChecks() {
+    const runStartedAtMs = Date.parse('2026-07-15T00:00:00.000Z');
+    const previousCodexHome = process.env.CODEX_HOME;
+    const codexRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-codex-lifecycle-'));
+    const codexId = '88888888-8888-4888-8888-888888888888';
+    try {
+        process.env.CODEX_HOME = codexRoot;
+        const sessionDir = path.join(codexRoot, 'sessions', '2026', '07', '15');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        const sessionFile = writeCodexSessionMetaFile(sessionDir, codexId, {
+            id: codexId, session_id: codexId, cwd: '/work/app', timestamp: '2026-07-14T23:00:00.000Z', source: 'vscode',
+        });
+        fs.appendFileSync(sessionFile, [
+            { timestamp: '2026-07-14T23:59:59.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'old' } },
+            { timestamp: '2026-07-15T00:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'new' } },
+        ].map(JSON.stringify).join('\n') + '\n');
+        const service = new CodexSessionService();
+        let signals = service.getLifecycleSignals([
+            { sessionId: codexId, runStartedAtMs },
+            { sessionId: 'missing', runStartedAtMs },
+        ]);
+        assert.strictEqual(signals[codexId].reason, 'completed');
+        assert.strictEqual(signals.missing, undefined);
+        fs.appendFileSync(sessionFile, JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'next' } }) + '\n');
+        const originalReaddirSync = fs.readdirSync;
+        fs.readdirSync = () => { throw new Error('cached lifecycle lookup must not rescan provider roots'); };
+        try {
+            signals = service.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs }]);
+        } finally {
+            fs.readdirSync = originalReaddirSync;
+        }
+        assert.strictEqual(signals[codexId].phase, 'running');
+        assert.deepStrictEqual(service.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs: Date.parse('2026-07-16T00:00:00Z') }]), {});
+    } finally {
+        previousCodexHome === undefined ? delete process.env.CODEX_HOME : process.env.CODEX_HOME = previousCodexHome;
+        fs.rmSync(codexRoot, { recursive: true, force: true });
+    }
+
+    const previousKimiHome = process.env.KIMI_SHARE_DIR;
+    const kimiRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-kimi-lifecycle-'));
+    const kimiId = '99999999-9999-4999-8999-999999999999';
+    try {
+        process.env.KIMI_SHARE_DIR = kimiRoot;
+        const workDir = '/work/app';
+        fs.writeFileSync(path.join(kimiRoot, 'kimi.json'), JSON.stringify({ work_dirs: [{ path: workDir }] }));
+        const workDirHash = crypto.createHash('md5').update(workDir, 'utf8').digest('hex');
+        const sessionDir = path.join(kimiRoot, 'sessions', workDirHash, kimiId);
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), '{}');
+        fs.writeFileSync(path.join(sessionDir, 'wire.jsonl'), JSON.stringify({
+            timestamp: runStartedAtMs / 1000 + 2, message: { type: 'TurnEnd', payload: {} },
+        }) + '\n');
+        const signals = new KimiSessionService().getLifecycleSignals([{ sessionId: kimiId, runStartedAtMs }]);
+        assert.strictEqual(signals[kimiId].reason, 'completed');
+    } finally {
+        previousKimiHome === undefined ? delete process.env.KIMI_SHARE_DIR : process.env.KIMI_SHARE_DIR = previousKimiHome;
+        fs.rmSync(kimiRoot, { recursive: true, force: true });
+    }
+
+    const previousClaudeHome = process.env.CLAUDE_HOME;
+    const claudeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-claude-lifecycle-'));
+    const claudeId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    try {
+        process.env.CLAUDE_HOME = claudeRoot;
+        const sessionDir = path.join(claudeRoot, 'projects', '-work-app');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(sessionDir, `${claudeId}.jsonl`), JSON.stringify({
+            timestamp: '2026-07-15T00:00:02.000Z', type: 'assistant',
+            message: { role: 'assistant', stop_reason: 'end_turn', content: [] },
+        }) + '\n');
+        const signals = new ClaudeSessionService().getLifecycleSignals([{ sessionId: claudeId, runStartedAtMs }]);
+        assert.strictEqual(signals[claudeId].reason, 'completed');
+    } finally {
+        previousClaudeHome === undefined ? delete process.env.CLAUDE_HOME : process.env.CLAUDE_HOME = previousClaudeHome;
+        fs.rmSync(claudeRoot, { recursive: true, force: true });
+    }
+}
+
 function runCommandBuilderChecks() {
     assert.strictEqual(
         commands.buildCodexResumeCommand('abc123', '/work/My App', null, 'linux'),
@@ -2105,83 +2200,130 @@ function runCommandBuilderChecks() {
     assert.strictEqual(commands.quotePowerShellArg("O'Brien"), "'O''Brien'");
 }
 
+function runLifecycleParserChecks() {
+    const runStartedAtMs = Date.parse('2026-07-15T00:00:00.000Z');
+    const codexSignal = lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-14T23:59:59.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'old' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:01.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } }),
+        '{bad json',
+        JSON.stringify({ timestamp: '2026-07-15T00:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } }),
+    ], runStartedAtMs);
+    assert.strictEqual(codexSignal.phase, 'needsAttention');
+    assert.strictEqual(codexSignal.reason, 'completed');
+    assert.ok(codexSignal.token.includes('task_complete'));
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'event_msg', payload: { type: 'turn_aborted', turn_id: 'turn-2' } }),
+    ], runStartedAtMs).reason, 'aborted');
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'call-1' } }),
+    ], runStartedAtMs).reason, 'input-required');
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'call-1' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'other-call' } }),
+    ], runStartedAtMs).reason, 'input-required', 'unrelated Codex output does not answer the pending request');
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'call-1' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call-1' } }),
+    ], runStartedAtMs).phase, 'running', 'matching Codex output resumes the turn');
+
+    const kimiSignal = lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073601, message: { type: 'TurnBegin', payload: {} } }),
+        JSON.stringify({ timestamp: 1784073602, message: { type: 'QuestionRequest', payload: { id: 'question-1' } } }),
+    ], runStartedAtMs);
+    assert.strictEqual(kimiSignal.reason, 'input-required');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073603, message: { type: 'StepInterrupted', payload: {} } }),
+    ], runStartedAtMs).reason, 'aborted');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073604, message: { type: 'TurnEnd', payload: {} } }),
+    ], runStartedAtMs).reason, 'completed');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073605, message: { type: 'ApprovalRequest', payload: { id: 'approval-1' } } }),
+    ], runStartedAtMs).reason, 'input-required');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073606, message: { type: 'QuestionRequest', payload: { id: 'question-2' } } }),
+        JSON.stringify({ timestamp: 1784073607, message: { type: 'StatusUpdate', payload: { message_id: 'status-2' } } }),
+    ], runStartedAtMs).reason, 'input-required', 'Kimi status updates do not answer a pending question');
+
+    const claudeSignal = lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:01.000Z', type: 'user', message: { role: 'user' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:02.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn', content: [] } }),
+    ], runStartedAtMs);
+    assert.strictEqual(claudeSignal.reason, 'completed');
+    assert.strictEqual(lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'stop_sequence', content: [] } }),
+    ], runStartedAtMs).reason, 'completed');
+    assert.strictEqual(lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:04.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'tool_use', name: 'AskUserQuestion', id: 'ask-1' }] } }),
+    ], runStartedAtMs).reason, 'input-required');
+    assert.strictEqual(lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:05.000Z', type: 'system', subtype: 'api_error' }),
+    ], runStartedAtMs).reason, 'failed');
+    assert.strictEqual(lifecycle.parseClaudeLifecycleLines(['{}', 'not-json'], runStartedAtMs), null);
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-jsonl-tail-'));
+    try {
+        const filePath = path.join(tempRoot, 'events.jsonl');
+        fs.writeFileSync(filePath, `${'x'.repeat(40)}\nsecond\nthird\n`, 'utf8');
+        assert.deepStrictEqual(jsonlTail.readJsonlTailLines(filePath, 14), ['second', 'third']);
+        assert.deepStrictEqual(jsonlTail.readJsonlTailLines(path.join(tempRoot, 'missing.jsonl'), 14), []);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
 function runAttentionMonitorChecks() {
     let now = 0;
-    let monitor = new AiSessionAttentionMonitor({ quietThresholdMs: 30, now: () => now });
-    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', activityToken: 'a' }]), []);
-    now = 1;
-    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', activityToken: 'b' }]), []);
-    now = 31;
-    let events = monitor.evaluate([{ key: 'codex:s1', activityToken: 'b' }]);
+    const signal = (token, phase, reason, occurredAtMs = now) => ({ token, phase, reason, occurredAtMs });
+    let monitor = new AiSessionAttentionMonitor({ now: () => now });
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1' }]), []);
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: signal('run-1', 'running') }]), []);
+    now = 60_000;
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: signal('run-1', 'running', undefined, 0) }]), [], 'running never becomes attention merely with time');
+    let events = monitor.evaluate([{ key: 'codex:s1', signal: signal('complete-1', 'needsAttention', 'completed') }]);
     assert.strictEqual(events.length, 1);
-    assert.strictEqual(events[0].reason, 'quiet');
+    assert.strictEqual(events[0].reason, 'completed');
     assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'needsAttention');
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: signal('complete-1', 'needsAttention', 'completed') }]), [], 'same token is idempotent');
     monitor.acknowledge([events[0].eventId]);
     assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'acknowledged');
-    now = 32;
-    monitor.evaluate([{ key: 'codex:s1', activityToken: 'c' }]);
-    now = 33;
-    events = monitor.evaluate([{ key: 'codex:s1', activityToken: 'c', completed: true }]);
-    assert.strictEqual(events[0].reason, 'completed');
+    now++;
+    monitor.evaluate([{ key: 'codex:s1', signal: signal('run-2', 'running') }]);
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'running');
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].event, undefined);
+    now++;
+    events = monitor.evaluate([{ key: 'codex:s1', signal: signal('input-2', 'needsAttention', 'input-required') }]);
+    assert.strictEqual(events[0].generation, 2);
+    assert.strictEqual(events[0].reason, 'input-required');
     assert.strictEqual(monitor.evaluate([]).length, 0);
 
     now = 100;
-    monitor = new AiSessionAttentionMonitor({ quietThresholdMs: 30, now: () => now });
-    monitor.evaluate([{ key: 'codex:resumes', activityToken: 'a' }]);
-    now = 101;
-    monitor.evaluate([{ key: 'codex:resumes', activityToken: 'b' }]);
-    now = 131;
-    events = monitor.evaluate([{ key: 'codex:resumes', activityToken: 'b' }]);
+    monitor = new AiSessionAttentionMonitor({ now: () => now });
+    events = monitor.evaluate([{ key: 'claude:visible', signal: signal('failed-1', 'needsAttention', 'failed'), ownerVisible: true }]);
     assert.strictEqual(events.length, 1);
-    assert.strictEqual(monitor.getSnapshot()['codex:resumes'].state, 'needsAttention');
-    now = 132;
-    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:resumes', activityToken: 'c' }]), []);
-    assert.strictEqual(monitor.getSnapshot()['codex:resumes'].state, 'running');
-    assert.strictEqual(monitor.getSnapshot()['codex:resumes'].stateChangedAt, 132);
-    now = 162;
-    events = monitor.evaluate([{ key: 'codex:resumes', activityToken: 'c' }]);
-    assert.strictEqual(events.length, 1);
-    assert.strictEqual(events[0].generation, 2);
+    assert.strictEqual(monitor.getSnapshot()['claude:visible'].state, 'acknowledged', 'visible attention is already seen');
+    now++;
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'claude:visible', signal: signal('failed-1', 'needsAttention', 'failed'), ownerVisible: false }]), [], 'seen event is never replayed');
 
     now = 200;
-    monitor = new AiSessionAttentionMonitor({ quietThresholdMs: 30, now: () => now });
-    events = monitor.evaluate([{ key: 'codex:fast-complete', activityToken: 'initial', completed: true }]);
-    assert.strictEqual(events.length, 1, 'a resolved terminal first observed as complete must raise attention');
-    assert.strictEqual(events[0].reason, 'completed');
-    assert.strictEqual(monitor.getSnapshot()['codex:fast-complete'].state, 'needsAttention');
+    monitor = new AiSessionAttentionMonitor({ now: () => now });
+    events = monitor.evaluate([{ key: 'kimi:aborted', signal: signal('aborted-1', 'needsAttention', 'aborted') }]);
+    assert.strictEqual(events[0].reason, 'aborted');
 
     now = 300;
-    monitor = new AiSessionAttentionMonitor({ quietThresholdMs: 30, now: () => now });
-    events = monitor.evaluate([{ key: 'codex:visible-complete', activityToken: 'initial', completed: true, ownerVisible: true }]);
-    assert.strictEqual(events.length, 1);
-    assert.strictEqual(monitor.getSnapshot()['codex:visible-complete'].state, 'acknowledged', 'visible completion is already seen');
-
-    monitor.evaluate([{ key: 'codex:visible-quiet', activityToken: 'a' }]);
-    now = 301;
-    monitor.evaluate([{ key: 'codex:visible-quiet', activityToken: 'b' }]);
-    now = 331;
-    events = monitor.evaluate([{ key: 'codex:visible-quiet', activityToken: 'b', ownerVisible: true }]);
-    assert.strictEqual(events.length, 1);
-    assert.strictEqual(monitor.getSnapshot()['codex:visible-quiet'].state, 'acknowledged', 'visible quiet event is already seen');
-
-    now = 400;
-    monitor = new AiSessionAttentionMonitor({ quietThresholdMs: 30, now: () => now });
-    monitor.evaluate([{ key: 'codex:return-visible', activityToken: 'a' }]);
-    now = 401;
-    monitor.evaluate([{ key: 'codex:return-visible', activityToken: 'b' }]);
-    now = 431;
-    events = monitor.evaluate([{ key: 'codex:return-visible', activityToken: 'b' }]);
+    monitor = new AiSessionAttentionMonitor({ now: () => now });
+    events = monitor.evaluate([{ key: 'codex:return-visible', signal: signal('complete-visible', 'needsAttention', 'completed') }]);
     const hiddenEventId = events[0].eventId;
     assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'needsAttention');
-    now = 432;
-    events = monitor.evaluate([{ key: 'codex:return-visible', activityToken: 'b', ownerVisible: true }]);
+    now++;
+    events = monitor.evaluate([{ key: 'codex:return-visible', signal: signal('complete-visible', 'needsAttention', 'completed'), ownerVisible: true }]);
     assert.strictEqual(events.length, 1, 'returning to the owning terminal must republish the changed snapshot');
     assert.strictEqual(events[0].eventId, hiddenEventId, 'visibility acknowledgement retains the exact event');
     assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'acknowledged');
 }
 
 function runAttentionPayloadChecks() {
-    const payload = attentionPayload.createAttentionPayload([{ projectId: 'a'.repeat(64), sessionKey: 'k', state: 'needsAttention', eventId: 'e', reason: 'quiet', observedAtMs: 10 }], 20);
+    const payload = attentionPayload.createAttentionPayload([{ projectId: 'a'.repeat(64), sessionKey: 'k', state: 'needsAttention', eventId: 'e', reason: 'input-required', observedAtMs: 10 }], 20);
     assert.deepStrictEqual(attentionPayload.parseAttentionPayload(attentionPayload.serializeAttentionPayload(payload)), payload);
     assert.throws(() => attentionPayload.parseAttentionPayload('{"version":1,"generatedAtMs":1,"items":[{"projectId":"p","sessionKey":"k","state":"bad","observedAtMs":1}]}'));
     const owner = attentionPayload.validateAttentionOwnerSnapshot({ ...payload, instanceId: 'a'.repeat(32), sequence: 1, heartbeat: 1 });
@@ -2220,6 +2362,10 @@ function runAttentionPayloadChecks() {
         ...payload,
         items: [{ ...payload.items[0], projectId: '/home/alice/private-repo' }],
     }), /projectId|privacy-safe/);
+    assert.throws(() => attentionPayload.validateAttentionPayload({
+        ...payload,
+        items: [{ ...payload.items[0], reason: 'quiet' }],
+    }), /reason|combination/);
     assert.throws(() => attentionPayload.validateAttentionOwnerSnapshot({ ...owner, unexpected: true }), /unexpected fields/);
     assert.throws(() => attentionAggregate.validateAttentionAggregate({
         protocolVersion: 1,
@@ -2539,7 +2685,7 @@ async function runAttentionBridgeClientPrivacyChecks() {
             sessions: [{
                 projectId: 'a'.repeat(64),
                 sessionKey: 'codex:peer',
-                reasons: ['quiet'],
+                reasons: ['input-required'],
                 eventIds: ['peer-event'],
                 observedAtMs: 1,
             }],
@@ -2738,7 +2884,7 @@ async function runAttentionBridgeClientLifecycleChecks() {
     };
     const item = eventId => ({
         projectId: 'a'.repeat(64), sessionKey: 'codex:lifecycle', state: 'needsAttention',
-        eventId, reason: 'quiet', observedAtMs: now,
+        eventId, reason: 'input-required', observedAtMs: now,
     });
     try {
         const Client = require(modulePath).default;
@@ -2877,7 +3023,7 @@ function runAttentionProjectChecks() {
         aggregateRevision: 'revision',
         generatedAtMs: 10,
         sessions: [
-            { projectId: localKey, sessionKey: 'codex:one', eventIds: ['event-1'], reasons: ['quiet'], observedAtMs: 1 },
+            { projectId: localKey, sessionKey: 'codex:one', eventIds: ['event-1'], reasons: ['input-required'], observedAtMs: 1 },
             { projectId: localKey, sessionKey: 'claude:two', eventIds: ['event-2'], reasons: ['completed'], observedAtMs: 2 },
         ],
     });
@@ -2898,7 +3044,7 @@ function runAttentionProjectChecks() {
             projectId: localKey,
             sessionKey: 'codex:one',
             eventIds: ['event-old', 'event-new'],
-            reasons: ['quiet', 'completed'],
+            reasons: ['completed', 'input-required'],
             observedAtMs: 2,
         }],
     });
@@ -2909,7 +3055,7 @@ function runAttentionProjectChecks() {
         aggregateRevision: 'revision',
         generatedAtMs: 10,
         sessions: [
-            { projectId: localKey, sessionKey: 'codex:one', eventIds: ['event-1'], reasons: ['quiet'], observedAtMs: 1 },
+            { projectId: localKey, sessionKey: 'codex:one', eventIds: ['event-1'], reasons: ['input-required'], observedAtMs: 1 },
         ],
     });
     assert.notStrictEqual(annotated, project);
@@ -2931,7 +3077,7 @@ function runAttentionProjectChecks() {
             projectId: remoteKey,
             sessionKey: 'codex:remote',
             eventIds: ['event-remote'],
-            reasons: ['quiet'],
+            reasons: ['input-required'],
             observedAtMs: 2,
         }],
     });
@@ -2973,7 +3119,9 @@ async function main() {
     runKimiNestedSubagentBoundaryChecks();
     runClaudeSessionChecks();
     runProviderChecks();
+    runProviderLifecycleServiceChecks();
     runCommandBuilderChecks();
+    runLifecycleParserChecks();
     runAttentionMonitorChecks();
     runAttentionPayloadChecks();
     await runProductionAttentionStoreClockChecks();

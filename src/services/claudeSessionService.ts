@@ -7,6 +7,8 @@ import * as path from 'path';
 import { CodexSession } from '../models';
 import { filterAiSessionsByCandidatePaths, normalizeAiSessionCandidatePaths } from '../aiSessions/sessionHelpers';
 import type { AiSessionQueryOptions } from '../aiSessions/types';
+import { parseClaudeLifecycleLines, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from '../aiSessions/lifecycle';
+import { readJsonlTailLines } from '../aiSessions/jsonlTail';
 import { Disposable } from './codexSessionService';
 
 interface ClaudeSessionEvent {
@@ -32,6 +34,7 @@ export default class ClaudeSessionService {
     private cachedResult: ClaudeSessionReadResult = null;
     private cachedAt = 0;
     private sessionCache = new Map<string, { signature: string; session: CodexSession }>();
+    private readonly sessionFilesById = new Map<string, string>();
     private readonly cacheTtlMs = 5000;
     private readonly changePollIntervalMs = 3000;
     private readonly cwdScanChunkBytes = 64 * 1024;
@@ -63,6 +66,39 @@ export default class ClaudeSessionService {
         return this.filterResult(this.cacheResult({ available: true, sessions }), candidatePaths);
     }
 
+    getLifecycleSignals(requests: readonly AiSessionLifecycleRequest[]): Record<string, AiSessionLifecycleSignal> {
+        let claudeHome = this.getClaudeHome();
+        if (!claudeHome) {
+            return {};
+        }
+        let projectRoot = path.join(claudeHome, 'projects');
+        let signals: Record<string, AiSessionLifecycleSignal> = {};
+        let discovered = false;
+        for (let request of requests || []) {
+            if (!request?.sessionId || !Number.isFinite(request.runStartedAtMs) || signals[request.sessionId]) {
+                continue;
+            }
+            let sessionFile = this.sessionFilesById.get(request.sessionId);
+            if (sessionFile && !fs.existsSync(sessionFile)) {
+                this.sessionFilesById.delete(request.sessionId);
+                sessionFile = null;
+            }
+            if (!sessionFile && !discovered) {
+                this.getSessionFiles(projectRoot);
+                discovered = true;
+                sessionFile = this.sessionFilesById.get(request.sessionId);
+            }
+            if (!sessionFile) {
+                continue;
+            }
+            let signal = parseClaudeLifecycleLines(readJsonlTailLines(sessionFile), request.runStartedAtMs);
+            if (signal) {
+                signals[request.sessionId] = signal;
+            }
+        }
+        return signals;
+    }
+
     archiveSession(sessionId: string): boolean {
         if (!sessionId || !this.isSessionId(sessionId)) {
             return false;
@@ -83,6 +119,7 @@ export default class ClaudeSessionService {
             let archivePath = path.join(claudeHome, 'archived_projects', projectDirName);
             fs.mkdirSync(archivePath, { recursive: true });
             fs.renameSync(sessionFile, this.getAvailableArchivePath(archivePath, path.basename(sessionFile)));
+            this.sessionFilesById.delete(sessionId);
             this.invalidateCache();
             return true;
         } catch (e) {
@@ -168,10 +205,21 @@ export default class ClaudeSessionService {
             return [];
         }
 
+        for (let filePath of files) {
+            let sessionId = this.getSessionIdFromFileName(path.basename(filePath));
+            if (sessionId) {
+                this.sessionFilesById.set(sessionId, filePath);
+            }
+        }
+
         return files;
     }
 
     private findSessionFile(projectRoot: string, sessionId: string): string {
+        let cached = this.sessionFilesById.get(sessionId);
+        if (cached && fs.existsSync(cached)) {
+            return cached;
+        }
         let fileName = `${sessionId}.jsonl`;
         return this.getSessionFiles(projectRoot).find(filePath => path.basename(filePath) === fileName) || null;
     }

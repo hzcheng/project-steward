@@ -26,7 +26,7 @@ fi
 EXT_NAME="$(node -p "require('./package.json').name")"
 EXT_VERSION="$(node -p "require('./package.json').version")"
 VSIX_FILE="${EXT_NAME}-${EXT_VERSION}.vsix"
-BRIDGE_VSIX="artifacts/project-steward-attention-ui-bridge-0.1.1.vsix"
+BRIDGE_VSIX="artifacts/project-steward-attention-ui-bridge-0.1.2.vsix"
 
 run_step() {
     echo

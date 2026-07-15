@@ -2,6 +2,7 @@
 
 import * as vscode from 'vscode';
 import { StorageOption, VSCODE_REMOTE_PREFIX, WSL_DEFAULT_REGEX } from "./constants";
+import type { AiSessionAttentionReason } from './aiSessions/lifecycle';
 
 export class Group {
     id: string;
@@ -166,7 +167,7 @@ export interface CodexSession {
     workDir?: string;
     provider?: AiSessionProviderId;
     pinned?: boolean;
-    attention?: { eventId: string; reason: 'quiet' | 'completed'; unread: boolean };
+    attention?: { eventId: string; reason: AiSessionAttentionReason; unread: boolean };
 }
 
 export interface StewardInfos {

@@ -1,12 +1,13 @@
 'use strict';
 
-export type AiSessionAttentionReason = 'quiet' | 'completed';
+import type { AiSessionAttentionReason, AiSessionLifecycleSignal } from './lifecycle';
+
+export { AiSessionAttentionReason } from './lifecycle';
 export type AiSessionAttentionState = 'pending' | 'running' | 'needsAttention' | 'acknowledged';
 
 export interface AiSessionAttentionInput {
     key: string;
-    activityToken?: string;
-    completed?: boolean;
+    signal?: AiSessionLifecycleSignal;
     ownerVisible?: boolean;
     observedAt?: number;
 }
@@ -26,24 +27,19 @@ export interface AiSessionAttentionSnapshot {
 }
 
 interface Entry extends AiSessionAttentionSnapshot {
-    baselineToken?: string;
-    lastToken?: string;
-    lastActivityAt: number;
+    lastSignalToken?: string;
     generation: number;
 }
 
 export interface AiSessionAttentionMonitorOptions {
-    quietThresholdMs?: number;
     now?: () => number;
 }
 
 export default class AiSessionAttentionMonitor {
     private readonly entries = new Map<string, Entry>();
-    private readonly quietThresholdMs: number;
     private readonly now: () => number;
 
     constructor(options: AiSessionAttentionMonitorOptions = {}) {
-        this.quietThresholdMs = options.quietThresholdMs ?? 30_000;
         this.now = options.now ?? (() => Date.now());
     }
 
@@ -52,63 +48,56 @@ export default class AiSessionAttentionMonitor {
         const seen = new Set<string>();
         const events: AiSessionAttentionEvent[] = [];
         for (const input of inputs || []) {
-            if (!input?.key) continue;
-            seen.add(input.key);
-            const observedAt = input.observedAt ?? now;
-            let entry = this.entries.get(input.key);
-            if (!entry) {
-                entry = {
-                    state: 'pending',
-                    stateChangedAt: observedAt,
-                    baselineToken: input.activityToken,
-                    lastToken: input.activityToken,
-                    lastActivityAt: observedAt,
-                    generation: 0,
-                };
-                this.entries.set(input.key, entry);
-                if (!input.completed) continue;
-                entry.state = input.ownerVisible ? 'acknowledged' : 'needsAttention';
-                entry.stateChangedAt = now;
-                entry.generation = 1;
-                entry.event = {
-                    eventId: `${input.key}:1:completed`,
-                    key: input.key,
-                    reason: 'completed',
-                    generation: 1,
-                    detectedAt: now,
-                };
-                events.push(entry.event);
+            if (!input?.key) {
                 continue;
             }
+            seen.add(input.key);
+            let observedAt = input.observedAt ?? now;
+            let entry = this.entries.get(input.key);
+            if (!entry) {
+                entry = { state: 'pending', stateChangedAt: observedAt, generation: 0 };
+                this.entries.set(input.key, entry);
+            }
+
             if (entry.state === 'needsAttention' && input.ownerVisible && entry.event) {
                 entry.state = 'acknowledged';
                 entry.stateChangedAt = now;
                 events.push(entry.event);
             }
-            const changed = input.activityToken !== undefined && input.activityToken !== entry.lastToken;
-            if (changed) {
-                entry.lastToken = input.activityToken;
-                entry.lastActivityAt = observedAt;
-                entry.stateChangedAt = observedAt;
-                if (entry.state === 'pending' || entry.state === 'acknowledged' || entry.state === 'needsAttention') entry.state = 'running';
+
+            let signal = input.signal;
+            if (!signal?.token || signal.token === entry.lastSignalToken) {
+                continue;
             }
-            if (entry.state === 'running' && (input.completed || now - entry.lastActivityAt >= this.quietThresholdMs)) {
-                entry.state = input.ownerVisible ? 'acknowledged' : 'needsAttention';
-                entry.stateChangedAt = now;
-                entry.generation += 1;
-                const event: AiSessionAttentionEvent = {
-                    eventId: `${input.key}:${entry.generation}:${input.completed ? 'completed' : 'quiet'}`,
-                    key: input.key,
-                    reason: input.completed ? 'completed' : 'quiet',
-                    generation: entry.generation,
-                    detectedAt: now,
-                };
-                entry.event = event;
-                events.push(event);
+            entry.lastSignalToken = signal.token;
+            entry.stateChangedAt = observedAt;
+
+            if (signal.phase === 'running') {
+                entry.state = 'running';
+                entry.event = undefined;
+                continue;
             }
+            if (signal.phase !== 'needsAttention' || !signal.reason) {
+                continue;
+            }
+
+            entry.generation += 1;
+            entry.state = input.ownerVisible ? 'acknowledged' : 'needsAttention';
+            const event: AiSessionAttentionEvent = {
+                eventId: `${input.key}:${entry.generation}:${signal.reason}`,
+                key: input.key,
+                reason: signal.reason,
+                generation: entry.generation,
+                detectedAt: now,
+            };
+            entry.event = event;
+            events.push(event);
         }
+
         for (const key of this.entries.keys()) {
-            if (!seen.has(key)) this.entries.delete(key);
+            if (!seen.has(key)) {
+                this.entries.delete(key);
+            }
         }
         return events;
     }

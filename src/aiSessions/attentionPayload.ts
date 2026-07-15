@@ -1,5 +1,7 @@
 'use strict';
 
+import type { AiSessionAttentionReason } from './lifecycle';
+
 export const ATTENTION_PAYLOAD_VERSION = 1;
 export const MAX_ATTENTION_ITEMS = 1000;
 export const MAX_ATTENTION_ID_LENGTH = 512;
@@ -16,7 +18,7 @@ export interface AttentionPayloadItem {
     sessionKey: string;
     state: 'needsAttention' | 'acknowledged';
     eventId?: string;
-    reason?: 'quiet' | 'completed';
+    reason?: AiSessionAttentionReason;
     observedAtMs: number;
 }
 
@@ -90,7 +92,10 @@ export function validateAttentionPayload(value: unknown): AttentionPayload {
         if (typeof record.eventId !== 'string' || !record.eventId || record.eventId.length > MAX_ATTENTION_EVENT_ID_LENGTH) {
             throw new Error('attention item eventId and reason combination is invalid');
         }
-        if (record.reason !== 'quiet' && record.reason !== 'completed') throw new Error('attention item eventId and reason combination is invalid');
+        if (record.reason !== 'completed' && record.reason !== 'aborted'
+            && record.reason !== 'failed' && record.reason !== 'input-required') {
+            throw new Error('attention item eventId and reason combination is invalid');
+        }
         return {
             projectId: record.projectId,
             sessionKey: record.sessionKey,
