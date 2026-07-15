@@ -1,3 +1,54 @@
+function applyOpenProjectsUpdate(message) {
+    if (!message
+        || message.type !== 'open-projects-updated'
+        || message.version !== 1
+        || typeof message.semanticRevision !== 'string'
+        || !message.semanticRevision
+        || !Number.isSafeInteger(message.projectCount)
+        || message.projectCount < 0
+        || typeof message.html !== 'string'
+        || typeof normalizeDashboardSearchCatalog !== 'function'
+        || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog) {
+        return false;
+    }
+
+    var wrapper = document.querySelector('.sticky-groups-wrapper');
+    if (!wrapper) {
+        return false;
+    }
+
+    wrapper.innerHTML = message.html;
+    if (window.__projectStewardDashboard) {
+        window.__projectStewardDashboard.replaceSearchCatalog(message.searchCatalog);
+    }
+    if (typeof window.__projectStewardSyncCollapseButton === 'function') {
+        window.__projectStewardSyncCollapseButton();
+    }
+    return true;
+}
+
+function getCollapseButtonState(tab, collapsedStates) {
+    tab = tab === 'projects' ? 'projects' : 'open';
+    if (!collapsedStates.length) {
+        return {
+            disabled: true,
+            collapsed: false,
+            title: tab === 'open'
+                ? 'No other windows to collapse'
+                : 'No project groups to collapse',
+        };
+    }
+
+    var collapsed = collapsedStates.every(Boolean);
+    return {
+        disabled: false,
+        collapsed,
+        title: tab === 'open'
+            ? (collapsed ? 'Expand Other Windows' : 'Collapse Other Windows')
+            : (collapsed ? 'Expand All Groups' : 'Collapse All Groups'),
+    };
+}
+
 function initProjects() {
 
     const ProjectOpenType = {
@@ -148,6 +199,11 @@ function initProjects() {
             return;
         }
 
+        if (projectDiv.hasAttribute("data-project-navigation")) {
+            openProject(dataId, ProjectOpenType.Default);
+            return;
+        }
+
         var currentWindow = e.ctrlKey || e.metaKey;
         var newWindow = e.button === 1;
         openProject(dataId, currentWindow ? ProjectOpenType.CurrentWindow : newWindow ? ProjectOpenType.NewWindow : ProjectOpenType.Default);
@@ -266,6 +322,7 @@ function initProjects() {
             var archiveSessionId = archiveRow && archiveRow.getAttribute("data-session-id");
             var archiveProvider = archiveRow && archiveRow.getAttribute("data-session-provider") || "codex";
             if (archiveSessionId && isAiSessionProvider(archiveProvider)) {
+                acknowledgeAiSessionRow(archiveRow);
                 window.vscode.postMessage({
                     type: getArchiveAiSessionMessageType(archiveProvider),
                     projectId,
@@ -285,6 +342,8 @@ function initProjects() {
             return true;
         var sessionProvider = sessionRow.getAttribute("data-session-provider") || "codex";
 
+        acknowledgeAiSessionRow(sessionRow);
+
         if (isAiSessionProvider(sessionProvider)) {
             window.vscode.postMessage({
                 type: getResumeAiSessionMessageType(sessionProvider),
@@ -295,6 +354,33 @@ function initProjects() {
 
         return true;
     }
+
+    function acknowledgeAiSessionRow(sessionRow) {
+        if (!sessionRow || !sessionRow.hasAttribute('data-ai-session-attention')) return;
+        var provider = sessionRow.getAttribute('data-session-provider') || 'codex';
+        var sessionId = sessionRow.getAttribute('data-session-id') || '';
+        var fallback = sessionRow.getAttribute('data-session-event-id') || sessionRow.getAttribute('data-ai-session-event-id');
+        acknowledgeAiSession(provider, sessionId, fallback);
+    }
+
+    function acknowledgeAiSession(provider, sessionId, fallbackEventId) {
+        var sessionKey = provider + ':' + sessionId;
+        window.__projectStewardAttentionSessionEvents = window.__projectStewardAttentionSessionEvents || {};
+        var eventIds = window.__projectStewardAttentionSessionEvents[sessionKey] || [];
+        if (!eventIds.length && fallbackEventId) {
+            eventIds = [fallbackEventId];
+        }
+        eventIds = Array.from(new Set(eventIds.filter(eventId => typeof eventId === 'string' && !!eventId)));
+        if (eventIds.length) {
+            window.vscode.postMessage({ type: 'acknowledge-ai-session-attention', eventIds: eventIds });
+        }
+    }
+
+    window.__projectStewardAcknowledgeSession = (provider, sessionId) => {
+        if (isAiSessionProvider(provider) && sessionId) {
+            acknowledgeAiSession(provider, sessionId);
+        }
+    };
 
     function selectAiSessionProvider(projectId, provider) {
         if (!projectId || !isAiSessionProvider(provider))
@@ -461,6 +547,7 @@ function initProjects() {
             groupId: groupId,
             collapsed,
         });
+        syncCollapseButton();
     }
 
     function onTriggerProjectAction(target, projectId) {
@@ -681,25 +768,61 @@ function initProjects() {
         );
     }
 
-    function updateToggleAllGroupsButton(collapsed) {
-        document.body.classList.toggle("steward-all-collapsed", collapsed);
-
+    function updateToggleAllGroupsButton(state) {
+        document.body.classList.toggle("steward-all-collapsed", state.collapsed);
         var button = document.querySelector('[data-action="toggle-all-groups"]');
         if (!button)
             return;
 
-        var label = collapsed ? "Expand All Groups" : "Collapse All Groups";
-        button.setAttribute("title", label);
-        button.setAttribute("aria-label", label);
+        button.disabled = state.disabled;
+        button.setAttribute('aria-disabled', state.disabled ? 'true' : 'false');
+        button.setAttribute("title", state.title);
+        button.setAttribute("aria-label", state.title);
+    }
+
+    function getActiveCollapsibleGroups(activeTab) {
+        var dashboard = window.__projectStewardDashboard;
+        activeTab = activeTab || (dashboard && typeof dashboard.getActiveTab === 'function'
+            ? dashboard.getActiveTab()
+            : 'open');
+        var selector = activeTab === 'projects'
+            ? '#dashboard-tab-projects .group[data-group-id]'
+            : '#dashboard-tab-open .open-other-windows-group[data-group-id]';
+        return [...document.querySelectorAll(selector)];
+    }
+
+    function setGroupCollapsed(group, collapsed, persist) {
+        group.classList.toggle('collapsed', collapsed);
+        if (persist) {
+            window.vscode.postMessage({
+                type: 'collapse-group',
+                groupId: group.getAttribute('data-group-id'),
+                collapsed,
+            });
+        }
+    }
+
+    function syncCollapseButton(activeTab) {
+        var dashboard = window.__projectStewardDashboard;
+        activeTab = activeTab || (dashboard && typeof dashboard.getActiveTab === 'function'
+            ? dashboard.getActiveTab()
+            : 'open');
+        var groups = getActiveCollapsibleGroups(activeTab);
+        updateToggleAllGroupsButton(getCollapseButtonState(
+            activeTab,
+            groups.map(group => group.classList.contains('collapsed'))
+        ));
     }
 
     function toggleAllGroups() {
-        var groups = [...document.querySelectorAll('.groups-wrapper > .group[data-group-id]')];
+        var groups = getActiveCollapsibleGroups();
         var shouldCollapse = groups.some(group => !group.classList.contains("collapsed"));
 
-        groups.forEach(group => group.classList.toggle("collapsed", shouldCollapse));
-        updateToggleAllGroupsButton(shouldCollapse);
+        groups.forEach(group => setGroupCollapsed(group, shouldCollapse, true));
+        syncCollapseButton();
     }
+
+    window.__projectStewardSyncCollapseButton = syncCollapseButton;
 
     function onMouseEvent(e) {
         if (!e.target || e.target.closest(".disabled"))
@@ -744,6 +867,16 @@ function initProjects() {
             return;
         }
 
+        if (e.target.closest('[data-action="add-project"]')) {
+            onAddProjectClicked(e);
+            return;
+        }
+
+        if (e.target.closest('[data-action="import-from-other-storage"]')) {
+            onImportFromOtherStorageClicked(e);
+            return;
+        }
+
         var projectDiv = e.target.closest('.project');
         if (projectDiv) {
             onInsideProjectClick(e, projectDiv);
@@ -780,10 +913,51 @@ function initProjects() {
 
     function onWindowMessage(e) {
         var message = e && e.data;
+        if (message && message.type === 'open-projects-updated') {
+            if (!applyOpenProjectsUpdate(message)) {
+                requestFullRefresh('invalid-open-projects-update');
+                return;
+            }
+            if (batchAiSessionState.projectId) {
+                syncAiSessionBatchManagementDom(findOpenProjectDiv(batchAiSessionState.projectId));
+            }
+            syncActiveAiSessionTerminalDom();
+            updateStickyGroupHeaderOffset();
+            window.vscode.postMessage({
+                type: 'open-projects-rendered',
+                semanticRevision: message.semanticRevision,
+                projectCount: message.projectCount,
+            });
+            return;
+        }
+
         if (message && message.type === 'active-ai-session-terminal-changed') {
             activeAiSessionTerminalState.provider = isAiSessionProvider(message.provider) ? message.provider : null;
             activeAiSessionTerminalState.sessionId = typeof message.sessionId === 'string' ? message.sessionId : null;
             syncActiveAiSessionTerminalDom();
+            return;
+        }
+
+        if (message && message.type === 'ai-session-attention-state') {
+            window.__projectStewardAttentionEvents = window.__projectStewardAttentionEvents || {};
+            window.__projectStewardAttentionSessionEvents = {};
+            (Array.isArray(message.sessionEvents) ? message.sessionEvents.slice(0, 1000) : []).forEach(session => {
+                if (!session || typeof session.sessionKey !== 'string' || !Array.isArray(session.eventIds)) return;
+                var separator = session.sessionKey.indexOf(':');
+                if (separator <= 0 || !isAiSessionProvider(session.sessionKey.slice(0, separator))) return;
+                var eventIds = Array.from(new Set(session.eventIds
+                    .slice(0, 1000)
+                    .filter(eventId => typeof eventId === 'string' && !!eventId)));
+                if (eventIds.length) window.__projectStewardAttentionSessionEvents[session.sessionKey] = eventIds;
+            });
+            (message.eventIds || []).forEach(eventId => {
+                if (typeof eventId === 'string') window.__projectStewardAttentionEvents[eventId] = true;
+            });
+            return;
+        }
+
+        if (message && message.type === 'ai-session-attention-projects-updated') {
+            updateAiSessionAttentionProjects(message.projects);
             return;
         }
 
@@ -804,7 +978,11 @@ function initProjects() {
     }
 
     function applyAiSessionsUpdate(message) {
-        if (message.version !== 1 || typeof message.sequence !== 'number' || !Array.isArray(message.openProjects)) {
+        if (message.version !== 1
+            || typeof message.sequence !== 'number'
+            || !Array.isArray(message.openProjects)
+            || typeof normalizeDashboardSearchCatalog !== 'function'
+            || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog) {
             requestFullRefresh('unsupported-ai-session-message');
             return;
         }
@@ -835,8 +1013,8 @@ function initProjects() {
         }
 
         updateStickyGroupHeaderOffset();
-        if (typeof window.__projectStewardApplyFilter === 'function') {
-            window.__projectStewardApplyFilter();
+        if (window.__projectStewardDashboard) {
+            window.__projectStewardDashboard.replaceSearchCatalog(message.searchCatalog);
         }
     }
 
@@ -855,6 +1033,21 @@ function initProjects() {
         return null;
     }
 
+    window.__projectStewardShowCurrentProject = projectId => {
+        var projectDiv = findOpenProjectDiv(projectId);
+        if (!projectDiv) {
+            return false;
+        }
+        if (!projectDiv.hasAttribute('data-codex-expanded')) {
+            toggleCodexSessions(projectDiv, projectId);
+        }
+        projectDiv.setAttribute('tabindex', '-1');
+        projectDiv.focus();
+        projectDiv.scrollIntoView({ block: 'nearest' });
+        projectDiv.addEventListener('blur', () => projectDiv.removeAttribute('tabindex'), { once: true });
+        return true;
+    };
+
     function updateOpenProjectAiSessions(projectDiv, projectUpdate) {
         if (typeof projectUpdate.sessionSectionHtml !== 'string') {
             requestFullRefresh('invalid-ai-session-html');
@@ -867,7 +1060,7 @@ function initProjects() {
             projectDiv.setAttribute("data-name", projectUpdate.searchText);
         }
 
-        updateOpenProjectAiSessionBadge(projectDiv, projectUpdate.aiSessionCount || 0);
+        updateOpenProjectAiSessionBadge(projectDiv, projectUpdate.aiSessionCount || 0, projectUpdate.attentionCount || 0);
 
         var sessionSection = projectDiv.querySelector('.codex-sessions');
         if (sessionSection) {
@@ -887,11 +1080,129 @@ function initProjects() {
         }
 
         syncActiveAiSessionTerminalDom();
+        animateNewAiSessionAttention(projectDiv);
 
         return true;
     }
 
-    function updateOpenProjectAiSessionBadge(projectDiv, aiSessionCount) {
+    function animateNewAiSessionAttention(root) {
+        if (!root) return;
+        window.__projectStewardAttentionEvents = window.__projectStewardAttentionEvents || {};
+        root.querySelectorAll('.codex-session-row[data-ai-session-attention][data-session-event-id]').forEach(row => {
+            var eventId = row.getAttribute('data-session-event-id');
+            if (!eventId || window.__projectStewardAttentionEvents[eventId]) return;
+            window.__projectStewardAttentionEvents[eventId] = true;
+            row.classList.add('attention-animate');
+            var badge = root.closest('.project')?.querySelector('.project-codex-badge.has-attention');
+            if (badge) {
+                badge.classList.add('attention-animate');
+                window.setTimeout(() => badge.classList.remove('attention-animate'), 2800);
+            }
+            window.setTimeout(() => row.classList.remove('attention-animate'), 2800);
+        });
+    }
+
+    function updateAiSessionAttentionProjects(projects) {
+        if (!Array.isArray(projects)) {
+            requestFullRefresh('invalid-ai-session-attention-projects');
+            return;
+        }
+
+        window.__projectStewardAttentionEvents = window.__projectStewardAttentionEvents || {};
+        var summaries = {};
+        var animateProjectKeys = {};
+        projects.forEach(project => {
+            if (!project || typeof project.projectKey !== 'string'
+                || typeof project.attentionCount !== 'number' || project.attentionCount < 0
+                || !Array.isArray(project.eventIds) || !Array.isArray(project.sessions)) {
+                return;
+            }
+            summaries[project.projectKey] = project;
+            if (project.eventIds.some(eventId => typeof eventId === 'string' && !window.__projectStewardAttentionEvents[eventId])) {
+                animateProjectKeys[project.projectKey] = true;
+            }
+        });
+        document.querySelectorAll('.project[data-attention-project-key]').forEach(projectDiv => {
+            var projectKey = projectDiv.getAttribute('data-attention-project-key');
+            var summary = summaries[projectKey];
+            var attentionCount = summary ? summary.attentionCount : 0;
+            syncAiSessionAttentionRows(projectDiv, summary ? summary.sessions : []);
+            var badge = projectDiv.querySelector('.project-ai-attention-badge');
+            if (projectDiv.hasAttribute('data-open-project')) {
+                if (badge) badge.remove();
+                return;
+            }
+            if (!attentionCount) {
+                if (badge) badge.remove();
+                return;
+            }
+
+            if (!badge) {
+                projectDiv.insertAdjacentHTML('afterbegin', '<span class="project-ai-attention-badge"></span>');
+                badge = projectDiv.querySelector('.project-ai-attention-badge');
+            }
+            badge.textContent = String(attentionCount);
+            badge.setAttribute('title', attentionCount + ' AI session' + (attentionCount === 1 ? ' needs' : 's need') + ' attention');
+            if (animateProjectKeys[projectKey]) {
+                projectDiv.classList.add('attention-animate');
+                badge.classList.add('attention-animate');
+                window.setTimeout(() => {
+                    projectDiv.classList.remove('attention-animate');
+                    badge.classList.remove('attention-animate');
+                }, 2800);
+            }
+        });
+        Object.keys(summaries).forEach(projectKey => summaries[projectKey].eventIds.forEach(eventId => {
+            if (typeof eventId === 'string') window.__projectStewardAttentionEvents[eventId] = true;
+        }));
+    }
+
+    function syncAiSessionAttentionRows(projectDiv, sessions) {
+        if (!projectDiv || typeof projectDiv.querySelectorAll !== 'function') return;
+        var bySessionKey = {};
+        window.__projectStewardAttentionSessionEvents = window.__projectStewardAttentionSessionEvents || {};
+        (sessions || []).forEach(session => {
+            if (session && typeof session.sessionKey === 'string') {
+                var eventIds = Array.isArray(session.eventIds)
+                    ? session.eventIds.filter(eventId => typeof eventId === 'string' && !!eventId)
+                    : (typeof session.eventId === 'string' ? [session.eventId] : []);
+                if (eventIds.length) {
+                    bySessionKey[session.sessionKey] = eventIds.find(eventId => !window.__projectStewardAttentionEvents[eventId]) || eventIds[0];
+                    window.__projectStewardAttentionSessionEvents[session.sessionKey] = eventIds.slice();
+                }
+            }
+        });
+
+        projectDiv.querySelectorAll('.codex-session-row[data-session-id]').forEach(row => {
+            var provider = row.getAttribute('data-session-provider') || 'codex';
+            var sessionId = row.getAttribute('data-session-id') || '';
+            var eventId = bySessionKey[provider + ':' + sessionId];
+            var indicator = row.querySelector('.ai-session-attention-indicator');
+            if (!eventId) {
+                delete window.__projectStewardAttentionSessionEvents[provider + ':' + sessionId];
+                row.removeAttribute('data-ai-session-attention');
+                row.removeAttribute('data-session-event-id');
+                if (indicator) indicator.remove();
+                return;
+            }
+
+            row.setAttribute('data-ai-session-attention', '');
+            row.setAttribute('data-session-event-id', eventId);
+            if (!indicator) {
+                indicator = document.createElement('span');
+                indicator.className = 'ai-session-attention-indicator';
+                indicator.title = 'AI session needs attention';
+                indicator.setAttribute('aria-label', 'AI session needs attention');
+                row.insertBefore(indicator, row.firstChild);
+            }
+            if (!window.__projectStewardAttentionEvents[eventId]) {
+                row.classList.add('attention-animate');
+                window.setTimeout(() => row.classList.remove('attention-animate'), 2800);
+            }
+        });
+    }
+
+    function updateOpenProjectAiSessionBadge(projectDiv, aiSessionCount, attentionCount) {
         var badge = projectDiv.querySelector('.project-codex-badge');
         if (!aiSessionCount) {
             if (badge) {
@@ -911,6 +1222,16 @@ function initProjects() {
         }
 
         badge.textContent = 'AI ' + aiSessionCount;
+        badge.classList.toggle('has-attention', !!attentionCount);
+        var attentionBadge = badge.querySelector('.ai-session-attention-count');
+        if (attentionCount && !attentionBadge) {
+            badge.insertAdjacentHTML('beforeend', ' <b class="ai-session-attention-count"></b>');
+            attentionBadge = badge.querySelector('.ai-session-attention-count');
+        }
+        if (attentionBadge) {
+            attentionBadge.textContent = attentionCount ? String(attentionCount) : '';
+            attentionBadge.hidden = !attentionCount;
+        }
     }
 
     function requestFullRefresh(reason) {
@@ -951,18 +1272,6 @@ function initProjects() {
         }
     });
 
-    document
-        .querySelectorAll('[data-action="add-project"]')
-        .forEach(element =>
-            element.addEventListener("click", onAddProjectClicked)
-        );
-
-    document
-        .querySelectorAll('[data-action="import-from-other-storage"]')
-        .forEach(element =>
-            element.addEventListener("click", onImportFromOtherStorageClicked)
-        );
-
     document.addEventListener('contextmenu', (e) => {
         if (!e.target)
             return;
@@ -981,6 +1290,7 @@ function initProjects() {
 
     window.addEventListener('message', onWindowMessage);
     window.vscode.postMessage({ type: 'request-active-ai-session-terminal' });
+    window.vscode.postMessage({ type: 'request-ai-session-attention-state' });
 
     observeStickyGroupHeaderOffset();
 }

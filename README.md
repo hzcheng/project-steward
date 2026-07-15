@@ -17,7 +17,7 @@ Project Steward turns those entries into a persistent project catalog.
 - Save local folders, files, workspaces, SSH projects, WSL projects, and Dev Container projects.
 - Keep projects organized with groups, descriptions, colors, and favorites.
 - Use the sidebar panel instead of taking over the editor area.
-- See the projects currently open in this VS Code window.
+- See the current workspace and projects open in other VS Code windows.
 - Reopen a saved project in the current window or a new window.
 - Resume Codex, Kimi, and Claude sessions associated with the current open project.
 - Sync saved project data through VS Code Settings Sync when desired.
@@ -40,9 +40,18 @@ Use `Project Steward: Save Project` to save the current workspace automatically.
 
 You can choose a group while saving, then edit the name, description, and color later.
 
-### Open Projects
+### OPEN and PROJECTS Views
 
-The `OPEN PROJECT` group shows the project currently open in the active VS Code window. When the open project matches a saved card, Project Steward reuses the saved card metadata instead of showing a raw folder name.
+The sidebar has two focused views:
+
+- `OPEN` is the live workspace view. `CURRENT WORKSPACE` shows the active window and its Codex, Kimi, or Claude sessions, while `OTHER WINDOWS` provides navigation cards for projects open elsewhere on the machine.
+- `PROJECTS` is the static saved-project library for Favorites, groups, editing, and drag-and-drop organization. It is loaded only when first opened, keeping the initial sidebar render small.
+
+When an AI session in another window needs attention, its `OTHER WINDOWS` navigation card shows the unread session count. Runtime attention and current-workspace highlighting stay in `OPEN`; saved cards in `PROJECTS` remain static.
+
+### Global Search
+
+The search bar searches all three useful sources at once: AI sessions in the current workspace, currently open projects across windows, and saved projects. Search uses the lightweight initial catalog, so searching does not load the `PROJECTS` view. Results are grouped into `AI SESSIONS`, `OPEN PROJECTS`, and `SAVED PROJECTS`.
 
 ### Favorites
 
@@ -73,7 +82,7 @@ You can also use the `+` button in a group and choose `Save Current Project`.
 - Click a project card to open it.
 - `Ctrl` + click, or `Cmd` + click on macOS, opens the project in a new window.
 - Hover a card to access edit, color, and remove actions.
-- Use the search bar to filter projects by name, description, path, group, and AI session text.
+- Use the search bar to find current AI sessions, open-window projects, and saved projects by their names, descriptions, environments, and groups.
 
 ## Remote and Dev Container Notes
 

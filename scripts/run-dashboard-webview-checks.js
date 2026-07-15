@@ -1,0 +1,295 @@
+'use strict';
+
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const root = path.join(__dirname, '..');
+const dashboardScriptPath = path.join(root, 'src', 'webview', 'webviewDashboardScripts.js');
+const projectScriptPath = path.join(root, 'src', 'webview', 'webviewProjectScripts.js');
+const extensionHostPath = path.join(root, 'src', 'dashboard.ts');
+
+function extractFunctionBody(source, functionName) {
+    const start = source.indexOf(`function ${functionName}(`);
+    assert.ok(start >= 0, `Missing function ${functionName}`);
+    const braceStart = source.indexOf('{', start);
+    let depth = 0;
+    for (let index = braceStart; index < source.length; index += 1) {
+        if (source[index] === '{') depth += 1;
+        if (source[index] === '}') depth -= 1;
+        if (depth === 0) return source.slice(braceStart + 1, index);
+    }
+    throw new Error(`Unterminated function ${functionName}`);
+}
+
+function makeDashboardCatalog() {
+    return {
+        sessions: [{
+            key: 'codex:c1', searchText: 'fix dashboard codex c1', projectId: 'current',
+            projectName: 'Dashboard', provider: 'codex', sessionId: 'c1', name: 'Fix dashboard',
+        }],
+        openProjects: [{
+            key: 'open:/work/dashboard', identity: '/work/dashboard', searchText: 'dashboard current',
+            projectId: 'current', name: 'Dashboard', description: 'Current',
+            action: 'open-current', groupLabels: [],
+        }],
+        savedProjects: [{
+            key: 'saved:/work/dashboard', identity: '/work/dashboard', searchText: 'dashboard tools',
+            projectId: 'saved', name: 'Dashboard', description: 'Saved',
+            action: 'open-saved', groupLabels: ['FAVORITES', 'TOOLS'],
+        }],
+    };
+}
+
+function makeUpdatedDashboardCatalog() {
+    const catalog = makeDashboardCatalog();
+    return {
+        ...catalog,
+        sessions: catalog.sessions.concat({
+            key: 'kimi:k1', searchText: 'review dashboard kimi k1', projectId: 'current',
+            projectName: 'Dashboard', provider: 'kimi', sessionId: 'k1', name: 'Review dashboard',
+        }),
+    };
+}
+
+function createClassList() {
+    const values = new Set();
+    return {
+        add: value => values.add(value),
+        remove: value => values.delete(value),
+        toggle: (value, force) => force === undefined
+            ? (values.has(value) ? (values.delete(value), false) : (values.add(value), true))
+            : (force ? values.add(value) : values.delete(value), force),
+        contains: value => values.has(value),
+    };
+}
+
+function createElement(id) {
+    const attributes = new Map();
+    const listeners = {};
+    return {
+        id,
+        hidden: false,
+        innerHTML: '',
+        classList: createClassList(),
+        addEventListener: (type, listener) => { listeners[type] = listener; },
+        dispatch: (type, event = {}) => listeners[type] && listeners[type](event),
+        focus: () => undefined,
+        getAttribute: name => attributes.get(name) || null,
+        setAttribute: (name, value) => attributes.set(name, String(value)),
+    };
+}
+
+function runControllerChecks(source) {
+    const openButton = createElement('dashboard-tab-open-button');
+    openButton.setAttribute('data-dashboard-tab', 'open');
+    const projectsButton = createElement('dashboard-tab-projects-button');
+    projectsButton.setAttribute('data-dashboard-tab', 'projects');
+    const openPanel = createElement('dashboard-tab-open');
+    const projectsPanel = createElement('dashboard-tab-projects');
+    const elements = {
+        'dashboard-tab-open': openPanel,
+        'dashboard-tab-projects': projectsPanel,
+    };
+    const messages = [];
+    const storage = new Map([['projectSteward.activeDashboardTab', 'open']]);
+    const windowListeners = {};
+    const context = {
+        document: {
+            body: { classList: createClassList() },
+            getElementById: id => elements[id] || null,
+            querySelectorAll: selector => selector === '[data-dashboard-tab]'
+                ? [openButton, projectsButton]
+                : [],
+        },
+        sessionStorage: {
+            getItem: key => storage.get(key) || null,
+            setItem: (key, value) => storage.set(key, value),
+        },
+        window: {
+            scrollY: 11,
+            scrollTo: (_x, y) => { context.window.scrollY = y; },
+            addEventListener: (type, listener) => { windowListeners[type] = listener; },
+        },
+        requestAnimationFrame: callback => callback(),
+    };
+    vm.runInNewContext(source, context);
+
+    assert.strictEqual(context.normalizeDashboardTab('projects'), 'projects');
+    assert.strictEqual(context.normalizeDashboardTab('invalid'), 'open');
+    assert.strictEqual(context.getAdjacentDashboardTab('open', 'ArrowRight'), 'projects');
+    assert.strictEqual(context.getAdjacentDashboardTab('projects', 'ArrowLeft'), 'open');
+    assert.strictEqual(context.validateProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 2, html: '<div></div>',
+    }), true);
+    assert.strictEqual(context.validateProjectsPanelMessage({
+        type: 'projects-panel-content', version: 2, requestId: 2, html: '<div></div>',
+    }), false);
+    assert.strictEqual(context.globToDashboardRegex('dash*').test('dashboard'), true);
+    assert.strictEqual(context.globToDashboardRegex('data?').test('data1'), true);
+    const sections = context.filterDashboardCatalog(makeDashboardCatalog(), 'dashboard');
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(sections.map(section => section.id))),
+        ['ai-sessions', 'open-projects', 'saved-projects']
+    );
+    assert.strictEqual(context.filterDashboardCatalog(makeDashboardCatalog(), 'missing').length, 0);
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(context.normalizeDashboardSearchCatalog(null))),
+        { sessions: [], openProjects: [], savedProjects: [] }
+    );
+    const state = {
+        activeTab: 'projects',
+        searchQuery: 'dash',
+        scrollPositions: { open: 12, projects: 34 },
+        catalog: makeDashboardCatalog(),
+    };
+    const nextState = context.replaceDashboardSearchCatalogState(state, makeUpdatedDashboardCatalog());
+    assert.strictEqual(nextState.activeTab, 'projects');
+    assert.strictEqual(nextState.searchQuery, 'dash');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(nextState.scrollPositions)), { open: 12, projects: 34 });
+    assert.notStrictEqual(nextState.catalog, state.catalog);
+
+    let mounted = 0;
+    const controller = context.initDashboard({
+        postMessage: message => messages.push(message),
+        onProjectsMounted: panel => {
+            assert.strictEqual(panel, projectsPanel);
+            mounted += 1;
+        },
+    });
+    assert.strictEqual(controller.getActiveTab(), 'open');
+    assert.strictEqual(openPanel.hidden, false);
+    assert.strictEqual(projectsPanel.hidden, true);
+    assert.strictEqual(openButton.getAttribute('aria-selected'), 'true');
+    assert.strictEqual(projectsButton.getAttribute('tabindex'), '-1');
+
+    context.window.scrollY = 37;
+    controller.activateTab('projects');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [
+        { type: 'request-projects-panel', version: 1, requestId: 1 },
+    ]);
+    assert.strictEqual(controller.getProjectsState(), 'loading');
+    assert.strictEqual(controller.getScrollPosition('open'), 37);
+    controller.ensureProjectsPanel();
+    assert.strictEqual(messages.length, 1, 'PROJECTS must be requested only once while loading');
+    assert.strictEqual(controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 0, html: '<div>stale</div>',
+    }), false);
+    assert.strictEqual(projectsPanel.innerHTML, '');
+    controller.activateTab('open');
+    const openScrollBeforeResponse = context.window.scrollY;
+    assert.strictEqual(controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '<div>projects</div>',
+    }), true);
+    assert.strictEqual(context.window.scrollY, openScrollBeforeResponse, 'background PROJECTS mount must not move OPEN scroll');
+    assert.strictEqual(projectsPanel.innerHTML, '<div>projects</div>');
+    assert.strictEqual(controller.getProjectsState(), 'mounted');
+    assert.strictEqual(mounted, 1);
+    controller.ensureProjectsPanel();
+    assert.strictEqual(messages.length, 1, 'mounted PROJECTS must not be requested again');
+    assert.strictEqual(typeof windowListeners.message, 'function');
+
+    storage.set('projectSteward.activeDashboardTab', 'projects');
+    const searchMessages = [];
+    const searchController = context.initDashboard({
+        initialSearchQuery: 'dashboard',
+        postMessage: message => searchMessages.push(message),
+    });
+    assert.strictEqual(searchController.getActiveTab(), 'projects');
+    assert.strictEqual(searchController.isSearchActive(), true);
+    assert.strictEqual(searchController.getProjectsState(), 'unloaded');
+    assert.strictEqual(searchMessages.length, 0, 'restored search must not load PROJECTS');
+    searchController.setSearchQuery('');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(searchMessages)), [
+        { type: 'request-projects-panel', version: 1, requestId: 1 },
+    ]);
+    context.window.scrollY = 88;
+    searchController.setSearchQuery('dashboard');
+    context.window.scrollY = 15;
+    assert.strictEqual(searchController.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '<div>projects while searching</div>',
+    }), true);
+    assert.strictEqual(context.window.scrollY, 15, 'background PROJECTS mount must not move search results');
+}
+
+function runSourceContractChecks(source) {
+    const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
+    const dndSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewDnDScripts.js'), 'utf8');
+    const filterSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewFilterScripts.js'), 'utf8');
+    const extensionHostSource = fs.readFileSync(extensionHostPath, 'utf8');
+    const styles = fs.readFileSync(path.join(root, 'media', 'styles.scss'), 'utf8');
+
+    assert.ok(source.includes("projectSteward.activeDashboardTab"));
+    assert.ok(source.includes("setAttribute('aria-selected'"));
+    assert.ok(source.includes("setAttribute('tabindex'"));
+    assert.ok(source.includes('scrollPositions'));
+    assert.ok(source.includes('acceptedProjectsRequestId'));
+    assert.ok(source.includes('pendingScrollRestoreTab'));
+    assert.ok(extensionHostSource.includes("case 'request-projects-panel':"));
+    assert.ok(extensionHostSource.includes("type: 'projects-panel-content'"));
+    assert.ok(extensionHostSource.includes('getProjectsPanelContent(projectService.getGroups(), stewardInfos)'));
+    assert.ok(projectSource.includes("e.target.closest('[data-action=\"add-project\"]')"));
+    assert.ok(projectSource.includes("e.target.closest('[data-action=\"import-from-other-storage\"]')"));
+    assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"add-project\"]')"), false);
+    assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"import-from-other-storage\"]')"), false);
+    assert.ok(dndSource.includes('function initDnD(root)'));
+    assert.ok(dndSource.includes('root.__projectStewardDnDInitialized'));
+    assert.strictEqual(dndSource.includes('document.querySelectorAll(`${groupsContainerSelector}'), false);
+    assert.ok(projectSource.includes("type: 'collapse-group'"));
+    assert.ok(projectSource.includes('Collapse Other Windows'));
+    assert.ok(projectSource.includes('Expand Other Windows'));
+    assert.ok(projectSource.includes('aria-disabled'));
+
+    const projectContext = {};
+    vm.runInNewContext(projectSource, projectContext);
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(projectContext.getCollapseButtonState('open', []))),
+        { disabled: true, collapsed: false, title: 'No other windows to collapse' }
+    );
+    assert.strictEqual(projectContext.getCollapseButtonState('open', [false]).title, 'Collapse Other Windows');
+    assert.strictEqual(projectContext.getCollapseButtonState('open', [true]).title, 'Expand Other Windows');
+    assert.strictEqual(projectContext.getCollapseButtonState('projects', [false, true]).title, 'Collapse All Groups');
+    assert.strictEqual(projectContext.getCollapseButtonState('projects', [true, true]).title, 'Expand All Groups');
+
+    const renderSearchBody = extractFunctionBody(source, 'renderDashboardSearchResults');
+    assert.ok(renderSearchBody.includes('textContent'));
+    assert.ok(renderSearchBody.includes("createElement('button')"));
+    assert.strictEqual(renderSearchBody.includes('innerHTML'), false);
+    assert.strictEqual(renderSearchBody.includes('project-ai-attention-badge'), false);
+    assert.strictEqual(renderSearchBody.includes('data-current-workspace'), false);
+    assert.ok(filterSource.includes('ctrlKey'));
+    assert.ok(filterSource.includes('metaKey'));
+    assert.ok(filterSource.includes('Escape'));
+    assert.ok(source.includes('initialSearchQuery'));
+    assert.ok(source.includes('replaceSearchCatalog'));
+    assert.ok(source.includes('isSearchActive'));
+    assert.ok(projectSource.includes('__projectStewardAcknowledgeSession'));
+    assert.ok(projectSource.includes('__projectStewardShowCurrentProject'));
+    const aiSessionsMessageBody = extractFunctionBody(extensionHostSource, 'getAiSessionsUpdatedMessage');
+    const openProjectsMessageBody = extractFunctionBody(extensionHostSource, 'postOpenProjectsUpdated');
+    assert.ok(aiSessionsMessageBody.includes('searchCatalog: buildDashboardSearchCatalog('));
+    assert.ok(openProjectsMessageBody.includes('searchCatalog: buildDashboardSearchCatalog('));
+    assert.ok(projectSource.includes('replaceSearchCatalog(message.searchCatalog)'));
+    assert.strictEqual(projectSource.includes("sessionStorage.setItem('projectSteward.activeDashboardTab', 'open')"), false);
+    for (const selector of [
+        '.dashboard-tab-list', '.dashboard-tab-button', '.dashboard-tab-panel',
+        '.dashboard-search-results', '.dashboard-search-section', '.dashboard-search-result',
+        '.open-current-workspace-group', '.open-other-windows-group', '.dashboard-projects-loading',
+    ]) {
+        assert.ok(styles.includes(selector), `missing ${selector}`);
+    }
+    assert.strictEqual((source.match(/type: 'request-projects-panel'/g) || []).length, 1);
+    assert.ok(extractFunctionBody(source, 'ensureProjectsPanel').includes("type: 'request-projects-panel'"));
+    assert.strictEqual(extractFunctionBody(source, 'renderSearchMode').includes('ensureProjectsPanel()'), false);
+    assert.ok(source.includes("document.body.classList.toggle('dashboard-search-active'"));
+}
+
+function main() {
+    const source = fs.readFileSync(dashboardScriptPath, 'utf8');
+    runControllerChecks(source);
+    runSourceContractChecks(source);
+    console.log('Dashboard Webview checks passed.');
+}
+
+main();

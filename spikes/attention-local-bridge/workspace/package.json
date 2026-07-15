@@ -1,0 +1,25 @@
+{
+    "name": "project-steward-attention-workspace-probe",
+    "displayName": "Project Steward Attention Workspace Probe",
+    "description": "Disposable feasibility probe for Project Steward Local Bridge.",
+    "version": "0.0.5",
+    "publisher": "hzcheng",
+    "engines": { "vscode": "^1.51.0" },
+    "extensionKind": ["workspace"],
+    "activationEvents": ["*"],
+    "main": "./dist/extension.js",
+    "extensionDependencies": ["hzcheng.project-steward-attention-ui-bridge"],
+    "contributes": {
+        "commands": [
+            { "command": "projectStewardAttentionSpike.startRouting", "title": "Project Steward Attention Spike: Start Routing Challenge" },
+            { "command": "projectStewardAttentionSpike.startSameWorkspaceRouting", "title": "Project Steward Attention Spike: Start Same-Workspace Routing Challenge" },
+            { "command": "projectStewardAttentionSpike.startFileStress", "title": "Project Steward Attention Spike: Start File Stress" },
+            { "command": "projectStewardAttentionSpike.stopFileStress", "title": "Project Steward Attention Spike: Stop File Stress" },
+            { "command": "projectStewardAttentionSpike.enableWatcher", "title": "Project Steward Attention Spike: Enable Watcher" },
+            { "command": "projectStewardAttentionSpike.disableWatcher", "title": "Project Steward Attention Spike: Disable Watcher" },
+            { "command": "projectStewardAttentionSpike.showFileStatus", "title": "Project Steward Attention Spike: Show File Status" },
+            { "command": "projectStewardAttentionSpike.clearLocalState", "title": "Project Steward Attention Spike: Clear Local State" },
+            { "command": "projectStewardAttentionSpike.showStatus", "title": "Project Steward Attention Spike: Show Status" }
+        ]
+    }
+}

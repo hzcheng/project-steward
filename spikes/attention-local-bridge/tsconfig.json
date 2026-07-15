@@ -1,0 +1,13 @@
+{
+    "compilerOptions": {
+        "module": "commonjs",
+        "target": "es6",
+        "outDir": "out",
+        "rootDir": "../..",
+        "lib": ["es6"],
+        "sourceMap": true,
+        "strict": true,
+        "esModuleInterop": true
+    },
+    "include": ["shared/**/*.ts", "workspace/src/**/*.ts", "../../shared/attention-bridge/**/*.ts"]
+}

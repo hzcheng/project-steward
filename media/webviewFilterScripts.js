@@ -1,140 +1,52 @@
-function initFiltering(activeByDefault) {
-    const filteringClass = 'filtering-active';
-    const filteredClass = 'filtered';
+function initFiltering(activeByDefault, dashboard) {
     const storageKey = 'filterValue';
-    const noInitialTransitionClass = 'no-initial-transition';
     const hasFilterValueClass = 'has-filter-value';
-
-    var filteringActive = false;
-    var prevFilterValue = null;
-
     const filterInput = document.getElementById('filter');
-    filterInput.onchange = onChangeFilter;
-    filterInput.onkeyup = onChangeFilter;
-    filterInput.onreset = onChangeFilter;
-    filterInput.onblur = onChangeFilter;
-
     const clearSearchElement = document.getElementById('clear');
-    clearSearchElement.onclick = clearFilter;
-
     const filterWrapper = filterInput.parentElement;
 
-    window.addEventListener("keydown", function (e) {
-        // ctrl + f
-        if (e.key === "f" && e.ctrlKey) {
-            filterInput.value = '';
-            toggleFiltering();
-        } else if (filteringActive && e.key === "Escape") {
-            clearFilter();
-            if (!activeByDefault) {
-                toggleFiltering(false);
-            }
+    function apply() {
+        var filterValue = filterInput.value || '';
+        filterWrapper.classList.toggle(hasFilterValueClass, filterValue.length > 0);
+        sessionStorage.setItem(storageKey, filterValue);
+        dashboard.setSearchQuery(filterValue);
+    }
+
+    function clear() {
+        filterInput.value = '';
+        sessionStorage.setItem(storageKey, '');
+        filterWrapper.classList.remove(hasFilterValueClass);
+        dashboard.setSearchQuery('');
+        filterInput.focus();
+    }
+
+    function focus() {
+        filterInput.focus();
+        filterInput.select();
+    }
+
+    filterInput.addEventListener('input', apply);
+    filterInput.addEventListener('change', apply);
+    clearSearchElement.addEventListener('click', clear);
+    window.addEventListener('keydown', event => {
+        if (event.key.toLowerCase() === 'f' && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            focus();
+            return;
+        }
+        if (event.key === 'Escape' && (filterInput.value || dashboard.isSearchActive())) {
+            event.preventDefault();
+            clear();
         }
     });
 
-    // Restore previous state (VSCode drops webview contents if the webview is not visible)
-    let storedFilter = sessionStorage.getItem(storageKey) || '';
-    let openInitially = activeByDefault || storedFilter;
-    if (openInitially) {
-        requestAnimationFrame(() => {
-            filterInput.value = storedFilter;
-            toggleFiltering(true);
-
-            // Do not animate slide-in if state is restored
-            document.body.classList.add(noInitialTransitionClass);
-        });
+    var storedFilter = sessionStorage.getItem(storageKey) || '';
+    filterInput.value = storedFilter;
+    filterWrapper.classList.toggle(hasFilterValueClass, storedFilter.length > 0);
+    document.body.classList.add('filtering-active');
+    if (activeByDefault && !storedFilter) {
+        requestAnimationFrame(focus);
     }
 
-    // Workaround for focusing the webview's body after opening/switching. Otherwise, ctrl+f does not work.
-    filterInput.focus();
-    filterInput.blur();
-
-    // Functions
-    function toggleFiltering(val) {
-        document.body.classList.remove(noInitialTransitionClass);
-
-        filteringActive = val !== undefined ? val : !filteringActive;
-
-        if (filteringActive) {
-            document.body.classList.add(filteringClass);
-            filterInput.focus();
-        } else {
-            document.body.classList.remove(filteringClass);
-        }
-
-        onChangeFilter();
-    }
-
-    function onChangeFilter(e) {
-        let filterValue = filterInput.value.toLowerCase();
-
-        if (filterValue === prevFilterValue) {
-            return;
-        }
-
-        prevFilterValue = filterValue;
-
-        if (filterValue) {
-            filterWrapper.classList.add(hasFilterValueClass);
-        } else {
-            filterWrapper.classList.remove(hasFilterValueClass);
-        }
-
-        sessionStorage.setItem(storageKey, filterValue);
-
-        var matchFunc;
-        try {
-            if (filterValue === '*') {
-                filterValue = '.+';
-            }
-
-            let regexSearch = globToRegexSimple(filterValue);
-            matchFunc = (v) => !filterValue.length || regexSearch.test(v);
-        } catch (error) {
-            matchFunc = (v) => !filterValue.length || v && v.contains(filterValue);
-        }
-
-        let projects = [...document.querySelectorAll('.project[data-id]')];
-        for (let p of projects) {
-            let name = p.getAttribute('data-name') || '';
-            let matches = matchFunc(name);
-
-            if (matches) {
-                p.parentNode.classList.remove(filteredClass);
-            } else {
-                p.parentNode.classList.add(filteredClass);
-            }
-        }
-
-        let groups = document.querySelectorAll('.group[data-group-id]');
-        for (let g of groups) {
-            let groupProjects = [...g.querySelectorAll('.project[data-id]')].map(p => p.parentNode);
-            let noneMatches = filterValue && !groupProjects.some(p => !p.classList.contains(filteredClass));
-            if (noneMatches) {
-                g.classList.add(filteredClass);
-            } else {
-                g.classList.remove(filteredClass);
-            }
-        }
-    }
-
-    window.__projectStewardApplyFilter = onChangeFilter;
-
-    function clearFilter() {
-        filterInput.value = '';
-        filterInput.focus();
-        onChangeFilter();
-    }
-
-    function globToRegexSimple(globLike) {
-        try {
-            let rx = globLike
-                .replaceAll('\.', '\\.')
-                .replaceAll('*', '.*')
-                .replaceAll('?', '.');
-            return new RegExp(rx)
-        } catch (e) {
-            return new RegExp(globLike);
-        }
-    }
+    return { clear, focus, apply };
 }

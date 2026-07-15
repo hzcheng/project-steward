@@ -1,0 +1,19 @@
+{
+    "compilerOptions": {
+        "module": "commonjs",
+        "target": "es6",
+        "outDir": "out",
+        "rootDir": "../..",
+        "lib": ["es6"],
+        "sourceMap": true,
+        "strict": true,
+        "esModuleInterop": true
+    },
+    "include": [
+        "src/**/*.ts",
+        "../../src/aiSessions/attentionPayload.ts",
+        "../../src/aiSessions/attentionAggregate.ts",
+        "../../src/openProjects/protocol.ts",
+        "../../shared/attention-bridge/**/*.ts"
+    ]
+}

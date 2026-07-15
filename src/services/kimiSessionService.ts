@@ -8,6 +8,8 @@ import * as path from 'path';
 import { CodexSession } from '../models';
 import { aiSessionPathContains, filterAiSessionsByCandidatePaths, normalizeAiSessionCandidatePaths } from '../aiSessions/sessionHelpers';
 import type { AiSessionQueryOptions } from '../aiSessions/types';
+import { parseKimiLifecycleLines, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from '../aiSessions/lifecycle';
+import { readJsonlTailLines } from '../aiSessions/jsonlTail';
 import { Disposable } from './codexSessionService';
 
 interface KimiWorkDirEntry {
@@ -35,6 +37,7 @@ export interface KimiSessionReadResult {
 export default class KimiSessionService {
     private cachedResult: KimiSessionReadResult = null;
     private cachedAt = 0;
+    private readonly sessionDirsById = new Map<string, string>();
     private readonly cacheTtlMs = 5000;
     private readonly changePollIntervalMs = 3000;
 
@@ -70,6 +73,31 @@ export default class KimiSessionService {
         sessions.sort((a, b) => this.compareUpdatedAt(b.updatedAt, a.updatedAt));
         let result = { available: true, sessions };
         return candidatePaths.length ? this.filterResult(result, candidatePaths) : this.cacheResult(result);
+    }
+
+    getLifecycleSignals(requests: readonly AiSessionLifecycleRequest[]): Record<string, AiSessionLifecycleSignal> {
+        let kimiHome = this.getKimiHome();
+        if (!kimiHome) {
+            return {};
+        }
+        let signals: Record<string, AiSessionLifecycleSignal> = {};
+        for (let request of requests || []) {
+            if (!request?.sessionId || !Number.isFinite(request.runStartedAtMs) || signals[request.sessionId]) {
+                continue;
+            }
+            let sessionDir = this.findSessionDir(kimiHome, request.sessionId);
+            if (!sessionDir) {
+                continue;
+            }
+            let signal = parseKimiLifecycleLines(
+                readJsonlTailLines(path.join(sessionDir, 'wire.jsonl')),
+                request.runStartedAtMs
+            );
+            if (signal) {
+                signals[request.sessionId] = signal;
+            }
+        }
+        return signals;
     }
 
     archiveSession(sessionId: string): boolean {
@@ -191,6 +219,7 @@ export default class KimiSessionService {
                 }
 
                 let sessionDir = path.join(sessionsDir, entry.name);
+                this.sessionDirsById.set(entry.name, sessionDir);
                 let session = this.readSession(workDir, entry.name, sessionDir);
                 if (session) {
                     sessions.push(session);
@@ -208,6 +237,12 @@ export default class KimiSessionService {
             return null;
         }
 
+        let cached = this.sessionDirsById.get(sessionId);
+        if (cached && fs.existsSync(cached)) {
+            return cached;
+        }
+        this.sessionDirsById.delete(sessionId);
+
         let sessionsRoot = path.join(kimiHome, 'sessions');
         if (!fs.existsSync(sessionsRoot)) {
             return null;
@@ -221,6 +256,7 @@ export default class KimiSessionService {
 
                 let sessionDir = path.join(sessionsRoot, workDirEntry.name, sessionId);
                 if (fs.existsSync(sessionDir)) {
+                    this.sessionDirsById.set(sessionId, sessionDir);
                     return sessionDir;
                 }
             }

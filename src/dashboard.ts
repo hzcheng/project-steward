@@ -2,9 +2,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession, AiSessionProviderId, isAiSessionProviderId } from './models';
-import { getAiSessionsDiv, getProjectSearchText, getStewardContent } from './webview/webviewContent';
+import { getAiSessionsDiv, getOpenProjectsGroupContent, getProjectSearchText, getProjectsPanelContent, getStewardContent } from './webview/webviewContent';
 import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
@@ -15,19 +15,29 @@ import ClaudeSessionService from './services/claudeSessionService';
 import ProjectWindowColorService from './services/projectWindowColorService';
 import AiSessionPinStore from './aiSessions/pinStore';
 import ActiveAiSessionTerminalHighlighter from './aiSessions/activeTerminalHighlight';
+import AiSessionAttentionMonitor from './aiSessions/attentionMonitor';
+import AttentionBridgeClient from './aiSessions/attentionBridgeClient';
+import { aggregateAttentionSnapshots, AttentionAggregate } from './aiSessions/attentionAggregate';
+import type { AttentionPayloadItem } from './aiSessions/attentionPayload';
+import { buildAttentionSessionIndex, getAttentionProjectKey, getAttentionProjectSummaries, getAttentionSessionLookupKey, withAttentionProjects } from './aiSessions/attentionProject';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
+import AiSessionTerminalBindingStore from './aiSessions/terminalBindingStore';
 import { archiveBatchAiSessionItem as executeBatchAiSessionArchiveItem, executeBatchAiSessionArchiveRequest, formatBatchAiSessionArchiveSummary, formatBatchAiSessionIdForLog, hasBatchAiSessionArchiveIssues } from './aiSessions/archiveBatch';
 import type { BatchAiSessionArchiveAttemptStatus, BatchAiSessionArchiveResult, BatchAiSessionArchiveSelection } from './aiSessions/archiveBatch';
 import type { AiSessionActiveTerminalChangedMessage, AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
-import { findSavedProjectForOpenProject, getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
+import type { AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './aiSessions/lifecycle';
+import { getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
 import { getLastPartOfPath, getOpenProjectUri as resolveOpenProjectUri, getOpenProjectsFromWorkspace, getWorkspaceUri as resolveWorkspaceUri, getWorkspaceUris as resolveWorkspaceUris, isUriString, parsePathAsUri } from './projects/openProjectService';
 import RemoteProjectResolver from './projects/remoteProjectResolver';
 import GitRepositoryDetector from './projects/gitRepositoryDetector';
-import { getCurrentWorkspaceProjectIds as resolveCurrentWorkspaceProjectIds } from './projects/currentWorkspaceState';
 import { withFavoriteProjectOrder, withToggledProjectFavorite } from './projects/favoriteProjectOrder';
+import OpenProjectBridgeClient from './openProjects/bridgeClient';
+import type { OpenProjectAggregate } from './openProjects/protocol';
+import { createOpenProjectRecords, projectOpenProjectCards } from './openProjects/projection';
+import { buildDashboardSearchCatalog } from './webview/dashboardViewModel';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -39,9 +49,10 @@ const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
 const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
 const AI_SESSION_ALIASES_FILE_NAME = 'ai-session-aliases.json';
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const outputChannel = vscode.window.createOutputChannel('Project Steward');
     context.subscriptions.push(outputChannel);
+    const openProjectDiagnosticPath = path.join(context.globalStoragePath, 'open-project-diagnostics.jsonl');
 
     class SidebarStewardViewProvider implements vscode.WebviewViewProvider {
 
@@ -112,14 +123,55 @@ export function activate(context: vscode.ExtensionContext) {
         kimi: kimiSessionService,
         claude: claudeSessionService,
     };
-    const aiSessionTerminalService = new AiSessionTerminalService(context.globalStoragePath, providerId => getRegisteredAiSessionProvider(providerId));
+    const aiSessionTerminalBindingStore = new AiSessionTerminalBindingStore(context.workspaceState, error =>
+        logError('Failed to persist AI session terminal ownership.', error)
+    );
+    const aiSessionTerminalService = new AiSessionTerminalService(
+        context.globalStoragePath,
+        providerId => getRegisteredAiSessionProvider(providerId),
+        undefined,
+        undefined,
+        aiSessionTerminalBindingStore
+    );
+    await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals);
     const aiSessionPinStore = new AiSessionPinStore(context.globalStoragePath);
     migrateLegacyPinnedAiSessions();
     let aiSessionRefreshTimeout: NodeJS.Timeout = null;
     let aiSessionWatcherDisposables: { dispose(): void }[] = [];
     let aiSessionUpdateSequence = 0;
+    const aiSessionAttentionMonitor = new AiSessionAttentionMonitor();
+    let aiSessionAttentionAggregate: AttentionAggregate | null = null;
+    let aiSessionAttentionLocalItems: AttentionPayloadItem[] = [];
+    const aiSessionAttentionBridgeClient = new AttentionBridgeClient(
+        aggregate => {
+            if (aggregate.aggregateRevision !== aiSessionAttentionAggregate?.aggregateRevision) {
+                aiSessionAttentionAggregate = aggregate;
+                scheduleAiSessionRefresh();
+                postAiSessionAttentionProjectsUpdated();
+            }
+        },
+        error => logError('AI session attention bridge unavailable; using local-window monitoring.', error)
+    );
+    const aiSessionAttentionInterval = setInterval(() => { void evaluateAiSessionAttention(); }, 10_000);
+    setTimeout(() => { void evaluateAiSessionAttention(); }, 0);
 
     const provider = new SidebarStewardViewProvider();
+    let openProjectAggregate: OpenProjectAggregate | null = null;
+    let openProjectNavigationCardsById = new Map<string, Project>();
+    const openProjectBridgeClient = new OpenProjectBridgeClient(
+        createOpenProjectRecords(getRawOpenProjects()),
+        aggregate => {
+            if (aggregate.semanticRevision !== openProjectAggregate?.semanticRevision) {
+                openProjectAggregate = aggregate;
+                postOpenProjectsUpdated();
+            }
+        },
+        error => logError('Open project bridge unavailable; showing current-window projects only.', error),
+        {
+            reportDiagnostic: event => logOpenProjectDiagnostic('Workspace', event),
+            reportBridgeDiagnostic: event => logOpenProjectDiagnostic('Bridge', event),
+        }
+    );
     const activeAiSessionTerminalHighlighter = new ActiveAiSessionTerminalHighlighter<
         vscode.Terminal,
         AiSessionTerminalEntry<vscode.Terminal>
@@ -139,17 +191,22 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(SidebarStewardViewProvider.viewType, provider));
     context.subscriptions.push(
-        vscode.window.onDidChangeActiveTerminal(() => activeAiSessionTerminalHighlighter.sync()));
+        vscode.window.onDidChangeActiveTerminal(() => {
+            activeAiSessionTerminalHighlighter.sync();
+            void evaluateAiSessionAttention();
+        }));
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(terminal => {
             aiSessionTerminalService.handleClosedTerminal(terminal);
-            aiSessionTerminalService.removePendingForTerminal(terminal);
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
         }));
     context.subscriptions.push(activeAiSessionTerminalHighlighter);
+    context.subscriptions.push(openProjectBridgeClient);
+    context.subscriptions.push(aiSessionAttentionBridgeClient);
     context.subscriptions.push({
         dispose: () => {
             stopAiSessionWatchers();
+            clearInterval(aiSessionAttentionInterval);
         }
     });
 
@@ -161,9 +218,8 @@ export function activate(context: vscode.ExtensionContext) {
         get config() { return getStewardConfiguration() },
         get otherStorageHasData() { return projectService.otherStorageHasData() },
         get favoritesGroupCollapsed() { return context.globalState.get(FAVORITES_GROUP_COLLAPSED_KEY) as boolean },
-        get openProjects() { return getOpenProjects() },
+        get openProjects() { return getOpenProjectCards() },
         get openProjectsGroupCollapsed() { return context.globalState.get(OPEN_PROJECTS_GROUP_COLLAPSED_KEY) as boolean },
-        get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() },
     };
 
     const openCommand = vscode.commands.registerCommand('projectSteward.open', () => {
@@ -206,7 +262,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(removeGroupCommand);
     context.subscriptions.push(addProjectsFromFolderCommand);
 
-    vscode.workspace.onDidChangeConfiguration(async event => {
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(async event => {
         if (event.affectsConfiguration("projectSteward.storeProjectsInSettings")
             || event.affectsConfiguration("dashboard.storeProjectsInSettings")) {
             await checkDataMigration(false);
@@ -216,13 +272,22 @@ export function activate(context: vscode.ExtensionContext) {
             || event.affectsConfiguration("dashboard")) {
             applyProjectColorToCurrentWindow();
             refreshStewardViews();
+            publishOpenProjects();
         }
-    });
+    }));
 
-    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+    context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
         applyProjectColorToCurrentWindow();
         refreshStewardViews();
-    });
+        publishOpenProjects();
+    }));
+
+    context.subscriptions.push(vscode.window.onDidChangeWindowState(windowState => {
+        if (windowState.focused) {
+            publishOpenProjects(true);
+        }
+        void evaluateAiSessionAttention();
+    }));
 
     startUp();
 
@@ -230,6 +295,7 @@ export function activate(context: vscode.ExtensionContext) {
     async function checkDataMigration(openStewardAfterMigrate: boolean = false) {
         let migrated = await projectService.migrateDataIfNeeded();
         if (migrated) {
+            publishOpenProjects();
             vscode.window.showInformationMessage("Migrated Project Steward projects after changing settings.");
 
             if (openStewardAfterMigrate) {
@@ -284,6 +350,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     async function showSteward() {
+        publishOpenProjects();
         await revealSidebarSteward();
         refreshStewardViews();
     }
@@ -384,6 +451,94 @@ export function activate(context: vscode.ExtensionContext) {
         provider.refresh();
     }
 
+    function postOpenProjectsUpdated() {
+        if (!provider.visible || !openProjectAggregate) {
+            return;
+        }
+
+        const cards = getOpenProjectCards();
+        const message = {
+            type: 'open-projects-updated',
+            version: 1,
+            semanticRevision: openProjectAggregate.semanticRevision,
+            projectCount: cards.length,
+            searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), cards),
+            html: getOpenProjectsGroupContent(
+                cards,
+                stewardInfos.openProjectsGroupCollapsed,
+                stewardInfos,
+            ),
+        };
+        logOpenProjectDiagnostic('Renderer', {
+            event: 'post-update',
+            semanticRevision: message.semanticRevision,
+            projectCount: message.projectCount,
+        });
+        provider.postMessage(message).then(delivered => {
+            logOpenProjectDiagnostic('Renderer', {
+                event: 'post-update-result',
+                semanticRevision: message.semanticRevision,
+                projectCount: message.projectCount,
+                delivered,
+            });
+            if (!delivered && provider.visible) {
+                provider.refresh();
+            }
+        }, error => {
+            logError('Failed to post OPEN PROJECT update message.', error);
+            if (provider.visible) {
+                provider.refresh();
+            }
+        });
+    }
+
+    function getEffectiveAiSessionAttentionAggregate(): AttentionAggregate {
+        const now = Date.now();
+        return aiSessionAttentionAggregate || aggregateAttentionSnapshots([{
+            version: 1,
+            generatedAtMs: now,
+            items: aiSessionAttentionLocalItems,
+            instanceId: '00000000000000000000000000000000',
+            sequence: 0,
+            heartbeat: 0,
+        }], new Set<string>(), now);
+    }
+
+    function getAiSessionAttentionRecoverySessionEvents(): Array<{ sessionKey: string; eventIds: string[] }> {
+        const bySession = new Map<string, Set<string>>();
+        const addEvent = (sessionKey: string, eventId: string) => {
+            if (!sessionKey || !eventId) {
+                return;
+            }
+            const eventIds = bySession.get(sessionKey) || new Set<string>();
+            eventIds.add(eventId);
+            bySession.set(sessionKey, eventIds);
+        };
+        Object.entries(aiSessionAttentionMonitor.getSnapshot()).forEach(([sessionKey, snapshot]) => {
+            if (snapshot.event?.eventId) {
+                addEvent(sessionKey, snapshot.event.eventId);
+            }
+        });
+        getEffectiveAiSessionAttentionAggregate().sessions.forEach(session => {
+            session.eventIds.forEach(eventId => addEvent(session.sessionKey, eventId));
+        });
+        return Array.from(bySession.entries())
+            .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+            .slice(0, 1000)
+            .map(([sessionKey, eventIds]) => ({ sessionKey, eventIds: Array.from(eventIds).slice(0, 1000) }));
+    }
+
+    function postAiSessionAttentionProjectsUpdated() {
+        if (!provider.visible) {
+            return;
+        }
+
+        void provider.postMessage({
+            type: 'ai-session-attention-projects-updated',
+            projects: getAttentionProjectSummaries(getEffectiveAiSessionAttentionAggregate()),
+        });
+    }
+
     function scheduleAiSessionRefresh() {
         if (!provider.visible) {
             return;
@@ -405,6 +560,105 @@ export function activate(context: vscode.ExtensionContext) {
         } else {
             stopAiSessionWatchers();
         }
+    }
+
+    async function evaluateAiSessionAttention() {
+        if (getStewardConfiguration().get<boolean>('aiSessionAttention.enabled', true) === false) {
+            aiSessionAttentionMonitor.evaluate([]);
+            aiSessionAttentionAggregate = null;
+            aiSessionAttentionLocalItems = [];
+            await aiSessionAttentionBridgeClient.publish([], true);
+            scheduleAiSessionRefresh();
+            postAiSessionAttentionProjectsUpdated();
+            return;
+        }
+        const projects = getOpenProjects();
+        const ownedSessions = new Map<string, {
+            providerId: AiSessionProviderId;
+            session: CodexSession;
+            terminal: TerminalEntry;
+        }>();
+        for (const project of projects) {
+            for (const providerId of AI_SESSION_PROVIDER_IDS) {
+                const definition = getRegisteredAiSessionProvider(providerId);
+                for (const session of project[definition.projectSessionsKey] || []) {
+                    const key = getAiSessionKey(providerId, session.id);
+                    const terminal = aiSessionTerminalService.getById(providerId, session.id);
+                    if (!terminal || ownedSessions.has(key)) {
+                        continue;
+                    }
+                    ownedSessions.set(key, { providerId, session, terminal });
+                }
+            }
+        }
+
+        const requestsByProvider = AI_SESSION_PROVIDER_IDS.reduce((result, providerId) => {
+            result[providerId] = [];
+            return result;
+        }, {} as Record<AiSessionProviderId, AiSessionLifecycleRequest[]>);
+        for (const owned of ownedSessions.values()) {
+            requestsByProvider[owned.providerId].push({
+                sessionId: owned.session.id,
+                runStartedAtMs: owned.terminal.runStartedAtMs,
+            });
+        }
+
+        const signalsByProvider = AI_SESSION_PROVIDER_IDS.reduce((result, providerId) => {
+            const requests = requestsByProvider[providerId];
+            result[providerId] = requests.length
+                ? getRegisteredAiSessionProvider(providerId).service.getLifecycleSignals(requests)
+                : {};
+            return result;
+        }, {} as Record<AiSessionProviderId, Record<string, AiSessionLifecycleSignal>>);
+
+        const inputs = Array.from(ownedSessions, ([key, owned]) => {
+            const signal = aiSessionTerminalService.isComplete(owned.terminal)
+                ? {
+                    token: `terminal-exit:${owned.terminal.runStartedAtMs}`,
+                    phase: 'needsAttention' as const,
+                    reason: 'completed' as const,
+                    occurredAtMs: owned.terminal.runStartedAtMs,
+                }
+                : signalsByProvider[owned.providerId][owned.session.id];
+            return {
+                key,
+                signal,
+                observedAt: signal?.occurredAtMs,
+            };
+        });
+        if (aiSessionAttentionMonitor.evaluate(inputs).length) {
+            scheduleAiSessionRefresh();
+        }
+        const snapshot = aiSessionAttentionMonitor.getSnapshot();
+        const items: AttentionPayloadItem[] = [];
+        for (const project of projects) {
+            const projectKey = getAttentionProjectKey(project.path);
+            if (!projectKey) {
+                continue;
+            }
+            for (const providerId of AI_SESSION_PROVIDER_IDS) {
+                const definition = getRegisteredAiSessionProvider(providerId);
+                for (const session of project[definition.projectSessionsKey] || []) {
+                    const attention = snapshot[getAiSessionKey(providerId, session.id)];
+                    if (!attention?.event) {
+                        continue;
+                    }
+                    items.push({
+                        projectId: projectKey,
+                        sessionKey: getAiSessionKey(providerId, session.id),
+                        state: attention.state === 'needsAttention' ? 'needsAttention' : 'acknowledged',
+                        eventId: attention.event.eventId,
+                        reason: attention.event.reason,
+                        observedAtMs: attention.stateChangedAt,
+                    });
+                }
+            }
+        }
+        aiSessionAttentionLocalItems = items;
+        if (!aiSessionAttentionAggregate) {
+            postAiSessionAttentionProjectsUpdated();
+        }
+        await aiSessionAttentionBridgeClient.publish(items);
     }
 
     function startAiSessionWatchers() {
@@ -484,6 +738,35 @@ export function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine(error instanceof Error ? `${error.stack || error.message}` : String(error));
     }
 
+    function logOpenProjectDiagnostic(component: string, event: unknown) {
+        let line: string;
+        try {
+            line = `${JSON.stringify({
+                loggedAt: new Date().toISOString(),
+                component,
+                event,
+            })}\n`;
+        } catch (error) {
+            outputChannel.appendLine(`[OpenProjects][${component}] Failed to serialize diagnostic: ${String(error)}`);
+            return;
+        }
+
+        outputChannel.appendLine(`[OpenProjects][${component}] ${JSON.stringify(event)}`);
+        try {
+            mkdirSync(context.globalStoragePath, { recursive: true });
+            const existingBytes = existsSync(openProjectDiagnosticPath)
+                ? statSync(openProjectDiagnosticPath).size
+                : 0;
+            if (existingBytes + Buffer.byteLength(line, 'utf8') > 2 * 1024 * 1024) {
+                writeFileSync(openProjectDiagnosticPath, line, 'utf8');
+            } else {
+                appendFileSync(openProjectDiagnosticPath, line, 'utf8');
+            }
+        } catch (error) {
+            outputChannel.appendLine(`[OpenProjects][${component}] Failed to persist diagnostic: ${String(error)}`);
+        }
+    }
+
     function getErrorContent(error: unknown): string {
         let message = error instanceof Error ? error.message : String(error);
         return `<!DOCTYPE html>
@@ -537,6 +820,7 @@ export function activate(context: vscode.ExtensionContext) {
     function refreshAfterMutation() {
         applyProjectColorToCurrentWindow();
         refreshStewardViews();
+        publishOpenProjects();
     }
 
     function applyProjectColorToCurrentWindow(project: Project = null) {
@@ -552,17 +836,34 @@ export function activate(context: vscode.ExtensionContext) {
     async function handleStewardMessage(e: any) {
         let projectId: string, groupId: string;
         switch (e.type) {
+            case 'request-projects-panel':
+                if (e.version !== 1 || !Number.isSafeInteger(e.requestId) || e.requestId < 1) {
+                    break;
+                }
+                await provider.postMessage({
+                    type: 'projects-panel-content',
+                    version: 1,
+                    requestId: e.requestId,
+                    html: getProjectsPanelContent(projectService.getGroups(), stewardInfos),
+                });
+                break;
             case 'selected-project':
                 projectId = e.projectId as string;
                 let projectOpenType = e.projectOpenType as ProjectOpenType;
 
                 let project = projectService.getProject(projectId) || getOpenProjects().find(p => p.id === projectId);
+                let isProjectNavigation = false;
+                if (project === null || project === undefined) {
+                    getOpenProjectCards();
+                    project = openProjectNavigationCardsById.get(projectId);
+                    isProjectNavigation = project !== null && project !== undefined;
+                }
                 if (project == null) {
                     vscode.window.showWarningMessage("Selected Project not found.");
                     break;
                 }
 
-                await openProject(project, projectOpenType);
+                await openProject(project, isProjectNavigation ? ProjectOpenType.Default : projectOpenType);
                 break;
             case 'add-project':
                 groupId = e.groupId as string;
@@ -614,6 +915,12 @@ export function activate(context: vscode.ExtensionContext) {
             case 'toggle-ai-session-pin':
                 await toggleAiSessionPin(e.provider as AiSessionProviderId, e.sessionId as string);
                 break;
+            case 'acknowledge-ai-session-attention':
+                const attentionEventIds = Array.isArray(e.eventIds) ? e.eventIds.filter((id: unknown): id is string => typeof id === 'string') : [];
+                aiSessionAttentionMonitor.acknowledge(attentionEventIds);
+                await aiSessionAttentionBridgeClient.acknowledge(attentionEventIds);
+                refreshAiSessionViewsIncrementally();
+                break;
             case 'rename-ai-session':
                 await renameAiSession(e.provider as AiSessionProviderId, e.sessionId as string);
                 break;
@@ -621,10 +928,38 @@ export function activate(context: vscode.ExtensionContext) {
                 await copyAiSessionId(e.sessionId as string);
                 break;
             case 'request-full-refresh':
+                logOpenProjectDiagnostic('Renderer', {
+                    event: 'full-refresh-requested',
+                    reason: typeof e.reason === 'string' ? e.reason.slice(0, 256) : 'unknown',
+                });
                 refreshStewardViews();
+                break;
+            case 'open-projects-rendered':
+                logOpenProjectDiagnostic('Renderer', {
+                    event: 'rendered',
+                    semanticRevision: typeof e.semanticRevision === 'string'
+                        ? e.semanticRevision.slice(0, 128)
+                        : 'invalid',
+                    projectCount: Number.isSafeInteger(e.projectCount) && e.projectCount >= 0
+                        ? e.projectCount
+                        : -1,
+                });
                 break;
             case 'request-active-ai-session-terminal':
                 activeAiSessionTerminalHighlighter.request();
+                break;
+            case 'request-ai-session-attention-state':
+                provider.postMessage({
+                    type: 'ai-session-attention-state',
+                    sessionEvents: getAiSessionAttentionRecoverySessionEvents(),
+                    eventIds: Array.from(new Set([
+                        ...Object.values(aiSessionAttentionMonitor.getSnapshot())
+                            .map(snapshot => snapshot.event?.eventId)
+                            .filter((id): id is string => Boolean(id)),
+                        ...getEffectiveAiSessionAttentionAggregate().sessions
+                            .reduce((eventIds, item) => eventIds.concat(item.eventIds), [] as string[]),
+                    ])),
+                });
                 break;
             case 'open-settings':
                 await showProjectStewardSettings();
@@ -1026,21 +1361,30 @@ export function activate(context: vscode.ExtensionContext) {
 
         try {
             if (!terminal) {
-                let createResult = aiSessionTerminalService.createTerminal({
-                    name: terminalName,
-                    cwd,
-                    env: terminalEnv,
-                    cwdFailureMessage: `Failed to create ${sessionProvider.label} terminal with cwd.`,
-                    cwdWarningMessage: `Could not open the ${sessionProvider.label} terminal at the session directory. Resuming without a working directory.`,
-                    logError,
-                });
-                terminal = createResult.terminal;
-                if (!createResult.cwdAccepted) {
-                    cwd = null;
+                let sessionCwd = normalizeCodexComparablePath(getAiSessionComparableCwd(providerId, session));
+                let pendingTerminal = sessionCwd
+                    ? aiSessionTerminalService.findPendingTerminalForSession(providerId, session.id, sessionCwd, session.updatedAt)
+                    : null;
+                if (pendingTerminal) {
+                    terminal = pendingTerminal.terminal;
+                    markerPath = pendingTerminal.markerPath;
+                } else {
+                    let createResult = aiSessionTerminalService.createTerminal({
+                        name: terminalName,
+                        cwd,
+                        env: terminalEnv,
+                        cwdFailureMessage: `Failed to create ${sessionProvider.label} terminal with cwd.`,
+                        cwdWarningMessage: `Could not open the ${sessionProvider.label} terminal at the session directory. Resuming without a working directory.`,
+                        logError,
+                    });
+                    terminal = createResult.terminal;
+                    if (!createResult.cwdAccepted) {
+                        cwd = null;
+                    }
                 }
             }
 
-            aiSessionTerminalService.track(providerId, session.id, { terminal, markerPath });
+            aiSessionTerminalService.track(providerId, session.id, { terminal, markerPath, runStartedAtMs: Date.now() });
             terminal.show();
             await aiSessionTerminalService.sendResumeCommand(providerId, terminal, session.id, cwd, markerPath);
             activeAiSessionTerminalHighlighter.sync();
@@ -2065,8 +2409,8 @@ export function activate(context: vscode.ExtensionContext) {
         return `${savePath}/Project Steward Projects.json`;
     }
 
-    function getOpenProjects(): Project[] {
-        let openProjects = getOpenProjectsFromWorkspace(
+    function getRawOpenProjects(): Project[] {
+        return getOpenProjectsFromWorkspace(
             vscode.workspace.workspaceFile,
             vscode.workspace.workspaceFolders,
             {
@@ -2075,15 +2419,29 @@ export function activate(context: vscode.ExtensionContext) {
                 isFolderGitRepo,
             }
         );
-        return withAiSessions(openProjects);
     }
 
-    function getCurrentWorkspaceProjectIds(): string[] {
-        return resolveCurrentWorkspaceProjectIds(
-            projectService.getProjectsFlat(),
-            resolveWorkspaceUris(vscode.workspace.workspaceFile, vscode.workspace.workspaceFolders),
-            vscode.env.remoteName,
-            findSavedProjectForOpenProject
+    function getOpenProjects(): Project[] {
+        return withAiSessions(getRawOpenProjects());
+    }
+
+    function getOpenProjectCards(): Project[] {
+        const cards = withAttentionProjects(
+            projectOpenProjectCards(getOpenProjects(), openProjectAggregate, openProjectBridgeClient.instanceId),
+            getEffectiveAiSessionAttentionAggregate()
+        );
+        openProjectNavigationCardsById = new Map(
+            cards
+                .filter(card => card.openProjectCardKind === 'projectNavigation')
+                .map(card => [card.id, card] as [string, Project])
+        );
+        return cards;
+    }
+
+    function publishOpenProjects(followsFocusEvent = false): void {
+        void openProjectBridgeClient.publish(
+            createOpenProjectRecords(getRawOpenProjects()),
+            followsFocusEvent
         );
     }
 
@@ -2104,12 +2462,35 @@ export function activate(context: vscode.ExtensionContext) {
         // Results are scoped to this window, so missing sessions cannot be used to prune persisted pins.
         let pinnedSessions = getPinnedAiSessionKeys();
         let aliases = getAiSessionAliases();
+        const aggregate = getEffectiveAiSessionAttentionAggregate();
+        const aggregateByProjectAndSession = buildAttentionSessionIndex(aggregate);
+        const localAttentionBySession = aiSessionAttentionMonitor.getSnapshot();
 
         return openProjects.map(project => {
+            const projectKey = getAttentionProjectKey(project.path);
             for (let providerId of AI_SESSION_PROVIDER_IDS) {
                 let sessionProvider = getRegisteredAiSessionProvider(providerId);
                 let sessionResult = sessionResults[providerId];
-                project[sessionProvider.projectSessionsKey] = prepareAiSessionsForDisplay(assignments[providerId].get(project.id) || [], providerId, pinnedSessions, aliases);
+                project[sessionProvider.projectSessionsKey] = prepareAiSessionsForDisplay(assignments[providerId].get(project.id) || [], providerId, pinnedSessions, aliases).map(session => {
+                    const sessionKey = getAiSessionKey(providerId, session.id);
+                    const attention = localAttentionBySession[sessionKey];
+                    const aggregateAttention = aggregateByProjectAndSession.get(
+                        getAttentionSessionLookupKey(projectKey, sessionKey)
+                    );
+                    const localAttention = aiSessionAttentionAggregate ? null : attention;
+                    const event = aggregateAttention ? {
+                        eventId: aggregateAttention.eventIds[0] || `${aggregateAttention.sessionKey}:${aggregateAttention.observedAtMs}`,
+                        reason: aggregateAttention.reasons[0] || 'input-required' as const,
+                    } : localAttention?.event;
+                    return event ? {
+                        ...session,
+                        attention: {
+                            eventId: event.eventId,
+                            reason: event.reason,
+                            unread: aggregateAttention ? true : localAttention?.state === 'needsAttention',
+                        },
+                    } : session;
+                });
                 project[sessionProvider.projectSessionsUnavailableKey] = !sessionResult.available;
             }
             project.codexSessionsExpanded = expandedProjects.has(getOpenProjectCodexExpansionKey(project));
@@ -2119,12 +2500,16 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     function getAiSessionsUpdatedMessage(): AiSessionsUpdatedMessage {
+        const cards = getOpenProjectCards();
+        const openProjects = cards
+            .filter(project => project.openProjectCardKind !== 'projectNavigation');
         return {
             type: 'ai-sessions-updated',
             version: 1,
             sequence: ++aiSessionUpdateSequence,
             generatedAt: new Date().toISOString(),
-            openProjects: getOpenProjects().map(project => getOpenProjectAiSessionViewModel(project)),
+            openProjects: openProjects.map(project => getOpenProjectAiSessionViewModel(project)),
+            searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), cards),
         };
     }
 
@@ -2157,6 +2542,10 @@ export function activate(context: vscode.ExtensionContext) {
             aiSessionCount: AI_SESSION_PROVIDER_IDS.reduce((count, providerId) => {
                 let sessionProvider = getRegisteredAiSessionProvider(providerId);
                 return count + (project[sessionProvider.projectSessionsKey] || []).length;
+            }, 0),
+            attentionCount: project.aiSessionAttentionCount ?? AI_SESSION_PROVIDER_IDS.reduce((count, providerId) => {
+                const sessionProvider = getRegisteredAiSessionProvider(providerId);
+                return count + (project[sessionProvider.projectSessionsKey] || []).filter(session => session.attention?.unread).length;
             }, 0),
             sessionSectionHtml: getAiSessionsDiv(project),
         };
@@ -2260,6 +2649,7 @@ export function activate(context: vscode.ExtensionContext) {
             let entry = {
                 terminal: pendingTerminal.terminal,
                 markerPath: pendingTerminal.markerPath,
+                runStartedAtMs: Date.parse(pendingTerminal.createdAt),
             };
             aiSessionTerminalService.track(pendingTerminal.provider, session.id, entry);
             setAiSessionAlias(pendingTerminal.provider, session.id, pendingTerminal.title);

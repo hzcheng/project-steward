@@ -21,13 +21,17 @@ function canAcceptProject(target, source) {
     return !isFavoritesProjectContainer(target) && !target.closest('[data-virtual-group]');
 }
 
-function initDnD() {
+function initDnD(root) {
+    if (!root || root.__projectStewardDnDInitialized) {
+        return root && root.__projectStewardDnD;
+    }
+
     const projectsContainerSelector = ".group-list";
     const groupsContainerSelector = ".groups-wrapper";
 
-    document.body.classList.remove("preload");
+    root.__projectStewardDnDInitialized = true;
 
-    var projectsContainers = document.querySelectorAll(projectsContainerSelector);
+    var projectsContainers = root.querySelectorAll(projectsContainerSelector);
     var projectDrake = dragula([].slice.call(projectsContainers), {
         moves: function (el, source, handle, sibling) {
             return canMoveProject(el, source);
@@ -46,7 +50,7 @@ function initDnD() {
     projectDrake.on('drag', () => document.body.classList.add('project-dragging'));
     projectDrake.on('dragend', () => document.body.classList.remove('project-dragging'));
 
-    var groupsContainers = document.querySelectorAll(groupsContainerSelector);
+    var groupsContainers = root.querySelectorAll(groupsContainerSelector);
     var groupsDrake = dragula([].slice.call(groupsContainers), {
         moves: function (el, source, handle, sibling) {
             return handle.hasAttribute("data-drag-group");
@@ -61,18 +65,19 @@ function initDnD() {
         }
     });
 
-    window.addEventListener("keydown", function (e) {
+    var onKeyDown = function (e) {
         if (e.key === "Escape") {
             projectDrake.cancel(true);
             groupsDrake.cancel(true);
         }
-    });
+    };
+    window.addEventListener("keydown", onKeyDown);
 
     function onReordered() {
         // Build reordering object
-        let groupElements = [...document.querySelectorAll(`${groupsContainerSelector} > [data-group-id]:not([data-virtual-group])`)];
+        let groupElements = [...root.querySelectorAll(`${groupsContainerSelector} > [data-group-id]:not([data-virtual-group])`)];
         // If a project was dropped on the Create New Group element...
-        let tempGroupElement = document.querySelector('#tempGroup');
+        let tempGroupElement = root.querySelector('#tempGroup');
         if (tempGroupElement && tempGroupElement.querySelector("[data-id]")) {
             // ... Handle it as a new group
             groupElements.push(tempGroupElement);
@@ -102,4 +107,12 @@ function initDnD() {
             projectIds,
         });
     }
+
+    root.__projectStewardDnD = {
+        projectDrake,
+        groupsDrake,
+        scroll,
+        onKeyDown,
+    };
+    return root.__projectStewardDnD;
 };

@@ -11,6 +11,16 @@ const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
 const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
+const lifecycle = require('../out/aiSessions/lifecycle');
+const jsonlTail = require('../out/aiSessions/jsonlTail');
+const terminalBindingStore = require('../out/aiSessions/terminalBindingStore');
+const AiSessionTerminalBindingStore = terminalBindingStore.default;
+const AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX = terminalBindingStore.AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX;
+const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').default;
+const attentionPayload = require('../out/aiSessions/attentionPayload');
+const attentionAggregate = require('../out/aiSessions/attentionAggregate');
+const attentionProject = require('../out/aiSessions/attentionProject');
+const ProductionAttentionStore = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/productionAttentionStore').ProductionAttentionStore;
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const providers = require('../out/aiSessions/providers');
 const CodexSessionService = require('../out/services/codexSessionService').default;
@@ -18,22 +28,36 @@ const KimiSessionService = require('../out/services/kimiSessionService').default
 const ClaudeSessionService = require('../out/services/claudeSessionService').default;
 const GitRepositoryDetector = require('../out/projects/gitRepositoryDetector').default;
 const projectPathUtils = require('../out/projects/projectPathUtils');
-const currentWorkspaceState = require('../out/projects/currentWorkspaceState');
 const favoriteProjectOrder = require('../out/projects/favoriteProjectOrder');
 const originalModuleLoad = Module._load;
-const vscodeTestState = { terminals: [] };
+const vscodeTestState = { terminals: [], nextTerminalProcessId: 42000 };
 Module._load = function (request, parent, isMain) {
     if (request === 'vscode') {
         return {
             Uri: { parse: createTestUri, file: createTestFileUri },
-            window: { terminals: vscodeTestState.terminals },
+            window: {
+                terminals: vscodeTestState.terminals,
+                createTerminal: options => {
+                    const terminal = {
+                        name: options.name,
+                        creationOptions: options,
+                        processId: Promise.resolve(vscodeTestState.nextTerminalProcessId++),
+                        sendText() {},
+                    };
+                    vscodeTestState.terminals.push(terminal);
+                    return terminal;
+                },
+                showWarningMessage() {},
+            },
         };
     }
     return originalModuleLoad.call(this, request, parent, isMain);
 };
 const AiSessionTerminalService = require('../out/aiSessions/terminalService').default;
-const openProjectMatcher = require('../out/projects/openProjectMatcher');
+const models = require('../out/models');
+const openProjectService = require('../out/projects/openProjectService');
 const webviewContentModule = require('../out/webview/webviewContent');
+const dashboardViewModel = require('../out/webview/dashboardViewModel');
 Module._load = originalModuleLoad;
 
 function createTestUri(value) {
@@ -99,20 +123,64 @@ function runAssignmentChecks() {
     assert.strictEqual(assignments.has('root'), false);
 }
 
-function runCurrentWorkspaceStateChecks() {
-    const saved = { id: 'saved', name: 'Saved', path: '/work/saved' };
-    const other = { id: 'other', name: 'Other', path: '/work/other' };
-    const groups = [{ id: 'group', groupName: 'Work', projects: [saved, other] }];
-    const openProjects = [{ id: '__openProjects-0', name: 'Saved', path: '/work/saved' }];
+function runDashboardSearchCatalogChecks() {
+    const groups = [{
+        id: 'tools', groupName: 'TOOLS', collapsed: false,
+        projects: [
+            { id: 'saved', name: 'Dashboard', description: 'Saved', path: '/work/dashboard', favorite: true },
+            { id: 'duplicate', name: 'Dashboard copy', description: 'Duplicate', path: '/work/dashboard/' },
+            { id: 'other', name: 'Other', description: 'Other', path: '/work/other' },
+        ],
+    }];
+    const openProjects = [{
+        id: '__openProjects-0', name: 'Dashboard', description: 'Current', path: '/work/dashboard',
+        openProjectCardKind: 'current',
+        codexSessions: [{ id: 'c1', name: 'Fix dashboard', updatedAt: '2026-07-15T10:00:00Z' }],
+        kimiSessions: [{ id: 'k1', name: 'Review layout', updatedAt: '2026-07-15T09:00:00Z' }],
+        claudeSessions: [],
+    }, {
+        id: '__openProjectNavigation-remote', name: 'Remote Dashboard', description: 'Remote',
+        path: 'vscode-remote://ssh-remote+host/work/dashboard-api',
+        openProjectCardKind: 'projectNavigation', openProjectEnvironmentLabel: 'SSH',
+    }];
 
-    const result = currentWorkspaceState.withCurrentWorkspaceState(groups, openProjects, ['saved']);
+    const catalog = dashboardViewModel.buildDashboardSearchCatalog(groups, openProjects);
+    assert.deepStrictEqual(catalog.sessions.map(item => item.key), ['codex:c1', 'kimi:k1']);
+    assert.deepStrictEqual(catalog.openProjects.map(item => item.action), ['open-current', 'switch-open']);
+    assert.strictEqual(catalog.savedProjects.length, 2);
+    assert.deepStrictEqual(catalog.savedProjects[0].groupLabels, ['FAVORITES', 'TOOLS']);
+    assert.strictEqual(catalog.savedProjects[0].identity, '/work/dashboard');
+    assert.strictEqual(catalog.openProjects[1].environmentLabel, 'SSH');
 
-    assert.strictEqual(result.groups[0].projects[0].isCurrentWorkspace, true);
-    assert.strictEqual(result.groups[0].projects[1].isCurrentWorkspace, false);
-    assert.strictEqual(result.openProjects[0].isCurrentWorkspace, true);
-    assert.strictEqual(saved.isCurrentWorkspace, undefined);
-    assert.strictEqual(openProjects[0].isCurrentWorkspace, undefined);
-    assert.notStrictEqual(result.groups[0], groups[0]);
+    const serialized = dashboardViewModel.serializeDashboardSearchCatalog({
+        ...catalog,
+        savedProjects: [{ ...catalog.savedProjects[0], name: '</script><script>bad()</script>' }],
+    });
+    assert.strictEqual(serialized.includes('</script>'), false);
+    assert.deepStrictEqual(JSON.parse(serialized).savedProjects[0].name, '</script><script>bad()</script>');
+}
+
+function runAttentionProjectionChecks() {
+    const aggregate = {
+        protocolVersion: 1,
+        aggregateRevision: '0'.repeat(64),
+        generatedAtMs: 1,
+        sessions: [
+            { projectId: attentionProject.getAttentionProjectKey('/work/current'), sessionKey: 'codex:c1', reasons: ['completed'], eventIds: ['e1'], observedAtMs: 1 },
+            { projectId: attentionProject.getAttentionProjectKey('/work/current'), sessionKey: 'kimi:k1', reasons: ['input-required'], eventIds: ['e2'], observedAtMs: 2 },
+            { projectId: attentionProject.getAttentionProjectKey('/work/other'), sessionKey: 'claude:x1', reasons: ['failed'], eventIds: ['e3'], observedAtMs: 3 },
+        ],
+    };
+    const input = [{ path: '/work/current' }, { path: '/work/other' }];
+    const projected = attentionProject.withAttentionProjects(input, aggregate);
+    assert.deepStrictEqual(projected.map(item => item.aiSessionAttentionCount), [2, 1]);
+    assert.deepStrictEqual(projected[0].aiSessionAttentionEventIds, ['e1', 'e2']);
+    assert.strictEqual(input[0].aiSessionAttentionCount, undefined);
+
+    const index = attentionProject.buildAttentionSessionIndex(aggregate);
+    assert.strictEqual(index.get(attentionProject.getAttentionSessionLookupKey(
+        attentionProject.getAttentionProjectKey('/work/current'), 'kimi:k1'
+    )).eventIds[0], 'e2');
 }
 
 function runFavoriteProjectOrderChecks() {
@@ -192,38 +260,26 @@ function runFavoriteProjectOrderChecks() {
     assert.strictEqual(toggleGroups[0].projects[2].favoriteOrder, 9);
 }
 
-function runCurrentWorkspaceMatchingChecks() {
-    const savedProjects = [
-        { id: 'local', name: 'Same Name', path: '/work/local' },
-        { id: 'other', name: 'Same Name', path: '/work/other' },
-        { id: 'workspace', name: 'Workspace', path: '/work/team.code-workspace' },
-        { id: 'ssh', name: 'SSH', path: 'vscode-remote://ssh-remote+server/work/ssh' },
-        { id: 'container', name: 'Container', path: 'vscode-remote://dev-container+abc/work/container' },
-    ];
-    const resolveIds = (workspaceUris, remoteName = null) => currentWorkspaceState.getCurrentWorkspaceProjectIds(
-        savedProjects,
-        workspaceUris,
-        remoteName,
-        openProjectMatcher.findSavedProjectForOpenProject
+function runOpenProjectRuntimeIdentityChecks() {
+    const savedRemotePath = 'vscode-remote://dev-container+fixture/work/app';
+    const openProjects = openProjectService.getOpenProjectsFromWorkspace(
+        null,
+        [{ uri: createTestFileUri('/work/app'), name: 'app' }],
+        {
+            savedProjects: [{
+                id: 'saved-remote',
+                name: 'App',
+                path: savedRemotePath,
+                remoteType: models.ProjectRemoteType.DevContainer,
+            }],
+            currentRemoteName: 'dev-container',
+            isFolderGitRepo: () => true,
+        }
     );
 
-    assert.deepStrictEqual(resolveIds([createTestFileUri('/work/local')]), ['local']);
-    assert.deepStrictEqual(resolveIds([createTestFileUri('/work/team.code-workspace')]), ['workspace']);
-    assert.deepStrictEqual(resolveIds([
-        createTestFileUri('/work/local'),
-        createTestFileUri('/work/other'),
-    ]), ['local', 'other']);
-    assert.deepStrictEqual(resolveIds([
-        createTestUri('vscode-remote://ssh-remote+server/work/ssh'),
-    ], 'ssh-remote'), ['ssh']);
-    assert.deepStrictEqual(resolveIds([
-        createTestUri('vscode-remote://dev-container+abc/work/container'),
-    ], 'dev-container'), ['container']);
-    assert.deepStrictEqual(resolveIds([
-        createTestFileUri('/work/ssh'),
-    ], 'ssh-remote'), ['ssh']);
-    assert.deepStrictEqual(resolveIds([createTestFileUri('/missing')]), []);
-    assert.deepStrictEqual(resolveIds([]), []);
+    assert.strictEqual(openProjects.length, 1);
+    assert.strictEqual(openProjects[0].path, '/work/app');
+    assert.strictEqual(openProjects[0].attentionProjectPath, undefined);
 }
 
 function runCandidateFilterChecks() {
@@ -395,6 +451,10 @@ function runAiSessionTerminalResolutionChecks() {
         };
         const byName = { name: 'Kimi: Named [named-12]', creationOptions: {} };
         const ordinary = { name: 'bash', creationOptions: {} };
+        const recoveredMarkerPath = service.getMarkerPath('codex', 'session-env');
+        fs.writeFileSync(recoveredMarkerPath, '', 'utf8');
+        const oldMarkerAt = new Date(Date.now() - 60_000);
+        fs.utimesSync(recoveredMarkerPath, oldMarkerAt, oldMarkerAt);
         vscodeTestState.terminals.splice(
             0,
             vscodeTestState.terminals.length,
@@ -404,7 +464,13 @@ function runAiSessionTerminalResolutionChecks() {
             ordinary
         );
 
-        assert.strictEqual(service.resolveTerminalSession(byEnv, getCandidates).sessionId, 'session-env');
+        const recoveredByEnv = service.resolveTerminalSession(byEnv, getCandidates);
+        assert.strictEqual(recoveredByEnv.sessionId, 'session-env');
+        assert.strictEqual(Number.isFinite(recoveredByEnv.entry.runStartedAtMs), true);
+        assert.strictEqual(service.isComplete(recoveredByEnv.entry), false, 'marker older than recovered run is ignored');
+        const currentMarkerAt = new Date(recoveredByEnv.entry.runStartedAtMs + 1000);
+        fs.utimesSync(recoveredMarkerPath, currentMarkerAt, currentMarkerAt);
+        assert.strictEqual(service.isComplete(recoveredByEnv.entry), true, 'marker written during current run completes it');
         assert.deepStrictEqual(candidateCalls, ['codex']);
 
         candidateCalls.length = 0;
@@ -418,6 +484,354 @@ function runAiSessionTerminalResolutionChecks() {
         candidateCalls.length = 0;
         assert.strictEqual(service.resolveTerminalSession(ordinary, getCandidates), null);
         assert.deepStrictEqual(candidateCalls, []);
+    } finally {
+        vscodeTestState.terminals.length = 0;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
+async function runAiSessionTerminalBindingStoreChecks() {
+    const stateData = {};
+    const state = {
+        get: (key, fallback) => Object.prototype.hasOwnProperty.call(stateData, key) ? stateData[key] : fallback,
+        update: async (key, value) => { stateData[key] = value; },
+    };
+    const processId = 42001;
+    const first = new AiSessionTerminalBindingStore(state);
+    first.setPending(Promise.resolve(processId), {
+        providerId: 'codex',
+        markerPath: '/tmp/pending.done',
+        cwd: '/work/app',
+        createdAt: '2026-07-15T08:00:00.000Z',
+        excludedSessionIds: ['old'],
+        title: 'New chat',
+    });
+    await first.flush();
+
+    const restoredPending = new AiSessionTerminalBindingStore(state).get(processId);
+    assert.strictEqual(restoredPending.state, 'pending');
+    assert.strictEqual(restoredPending.providerId, 'codex');
+    assert.deepStrictEqual(restoredPending.excludedSessionIds, ['old']);
+    assert.ok(stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + processId]);
+
+    const second = new AiSessionTerminalBindingStore(state);
+    second.setBound(processId, {
+        providerId: 'codex',
+        sessionId: 'session-new',
+        markerPath: '/tmp/session-new.done',
+        runStartedAtMs: 1784102400000,
+    });
+    await second.flush();
+    assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId).sessionId, 'session-new');
+
+    const invalidProcessId = 42009;
+    stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + invalidProcessId] = {
+        version: 2,
+        state: 'bound',
+        providerId: 'invalid',
+        sessionId: 'bad',
+        markerPath: '/tmp/bad.done',
+        runStartedAtMs: 1,
+        updatedAtMs: 1,
+    };
+    const withInvalid = new AiSessionTerminalBindingStore(state);
+    assert.strictEqual(withInvalid.get(invalidProcessId), null);
+    assert.strictEqual(withInvalid.get(processId).sessionId, 'session-new');
+
+    withInvalid.remove(Promise.resolve(processId));
+    await withInvalid.flush();
+    assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId), null);
+
+    const concurrentData = {};
+    const pendingUpdates = [];
+    const concurrentState = {
+        get: (key, fallback) => Object.prototype.hasOwnProperty.call(concurrentData, key) ? concurrentData[key] : fallback,
+        update: (key, value) => new Promise(resolve => pendingUpdates.push({ key, value, resolve })),
+    };
+    const leftProcessId = 42002;
+    const rightProcessId = 42003;
+    const leftStore = new AiSessionTerminalBindingStore(concurrentState);
+    const rightStore = new AiSessionTerminalBindingStore(concurrentState);
+    leftStore.setBound(Promise.resolve(leftProcessId), {
+        providerId: 'codex', sessionId: 'left', markerPath: '/tmp/left.done', runStartedAtMs: 1,
+    });
+    rightStore.setBound(Promise.resolve(rightProcessId), {
+        providerId: 'codex', sessionId: 'right', markerPath: '/tmp/right.done', runStartedAtMs: 2,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(pendingUpdates.length, 2, 'both windows must reach workspaceState.update concurrently');
+    pendingUpdates.forEach(update => {
+        concurrentData[update.key] = update.value;
+        update.resolve();
+    });
+    await Promise.all([leftStore.flush(), rightStore.flush()]);
+    const concurrentRestored = new AiSessionTerminalBindingStore(concurrentState);
+    assert.strictEqual(concurrentRestored.get(leftProcessId).sessionId, 'left');
+    assert.strictEqual(concurrentRestored.get(rightProcessId).sessionId, 'right');
+
+    let persistenceErrors = 0;
+    const failingStore = new AiSessionTerminalBindingStore({
+        get: (_key, fallback) => fallback,
+        update: async () => { throw new Error('workspaceState unavailable'); },
+    }, () => { persistenceErrors++; });
+    failingStore.setBound(42004, {
+        providerId: 'codex', sessionId: 'first', markerPath: '/tmp/first.done', runStartedAtMs: 1,
+    });
+    failingStore.setBound(42005, {
+        providerId: 'codex', sessionId: 'second', markerPath: '/tmp/second.done', runStartedAtMs: 2,
+    });
+    await failingStore.flush();
+    assert.strictEqual(persistenceErrors, 1, 'persistent workspaceState failures are logged once per store');
+
+    const orderedData = {};
+    const orderedUpdates = [];
+    let resolveDeferredProcessId;
+    const deferredProcessId = new Promise(resolve => { resolveDeferredProcessId = resolve; });
+    const orderedStore = new AiSessionTerminalBindingStore({
+        get: (key, fallback) => Object.prototype.hasOwnProperty.call(orderedData, key) ? orderedData[key] : fallback,
+        update: async (key, value) => {
+            orderedUpdates.push(value?.state || 'removed');
+            orderedData[key] = value;
+        },
+    });
+    orderedStore.setPending(deferredProcessId, {
+        providerId: 'codex', markerPath: '/tmp/deferred.done', cwd: '/work/app',
+        createdAt: new Date().toISOString(), excludedSessionIds: [],
+    });
+    orderedStore.setBound(deferredProcessId, {
+        providerId: 'codex', sessionId: 'deferred-session', markerPath: '/tmp/deferred.done', runStartedAtMs: 4,
+    });
+    orderedStore.remove(deferredProcessId);
+    resolveDeferredProcessId(42007);
+    await orderedStore.flush();
+    assert.deepStrictEqual(orderedUpdates, ['pending', 'bound', 'removed']);
+    assert.strictEqual(orderedStore.get(42007), null);
+
+    const stalledData = {};
+    const stalledStore = new AiSessionTerminalBindingStore({
+        get: (key, fallback) => Object.prototype.hasOwnProperty.call(stalledData, key) ? stalledData[key] : fallback,
+        update: async (key, value) => { stalledData[key] = value; },
+    }, undefined, undefined, 5);
+    stalledStore.setPending(new Promise(() => {}), {
+        providerId: 'codex', markerPath: '/tmp/stalled.done', cwd: '/work/app',
+        createdAt: new Date().toISOString(), excludedSessionIds: [],
+    });
+    stalledStore.setBound(42006, {
+        providerId: 'codex', sessionId: 'after-stall', markerPath: '/tmp/after-stall.done', runStartedAtMs: 3,
+    });
+    const stalledFlushCompleted = await Promise.race([
+        stalledStore.flush().then(() => true),
+        new Promise(resolve => setTimeout(() => resolve(false), 50)),
+    ]);
+    assert.strictEqual(stalledFlushCompleted, true, 'an unresolved processId must not block later binding writes');
+    assert.strictEqual(stalledStore.get(42006).sessionId, 'after-stall');
+}
+
+async function runAiSessionTerminalPersistenceChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-terminal-persistence-'));
+    const stateData = {};
+    const state = {
+        get: (key, fallback) => Object.prototype.hasOwnProperty.call(stateData, key) ? stateData[key] : fallback,
+        update: async (key, value) => { stateData[key] = value; },
+    };
+    const getProvider = providerId => providers.getAiSessionProviderDefinition(providerId);
+    const createdAt = new Date().toISOString();
+    try {
+        const readyRetryProcessId = 42008;
+        let readyRetryProcessIdReads = 0;
+        const readyRetryCommands = [];
+        const readyRetryEvents = [];
+        const readyRetryState = {
+            get: (key, fallback) => Object.prototype.hasOwnProperty.call(stateData, key) ? stateData[key] : fallback,
+            update: async (key, value) => {
+                stateData[key] = value;
+                readyRetryEvents.push('persisted');
+            },
+        };
+        const readyRetryTerminal = {
+            name: 'Codex: Retry after ready',
+            creationOptions: { name: 'Codex: Retry after ready', cwd: '/work/app' },
+            get processId() {
+                readyRetryProcessIdReads++;
+                return readyRetryProcessIdReads === 1
+                    ? new Promise(() => {})
+                    : Promise.resolve(readyRetryProcessId);
+            },
+            sendText(command) {
+                readyRetryCommands.push(command);
+                readyRetryEvents.push('sent');
+            },
+        };
+        const readyRetryStore = new AiSessionTerminalBindingStore(readyRetryState, undefined, undefined, 5);
+        const readyRetryService = new AiSessionTerminalService(
+            tempRoot,
+            getProvider,
+            0,
+            undefined,
+            readyRetryStore,
+            5
+        );
+        readyRetryService.trackPending({
+            provider: 'codex',
+            terminal: readyRetryTerminal,
+            markerPath: path.join(tempRoot, 'retry-after-ready.done'),
+            cwd: '/work/app',
+            createdAt,
+            excludedSessionIds: [],
+            title: 'Retry after ready',
+        });
+        await new Promise(resolve => setTimeout(resolve, 10));
+        await readyRetryStore.flush();
+        assert.strictEqual(
+            readyRetryStore.get(readyRetryProcessId),
+            null,
+            'the fixture must reproduce the initial unresolved PID write'
+        );
+
+        await readyRetryService.sendNewSessionCommand(
+            'codex',
+            readyRetryTerminal,
+            '/work/app',
+            'Retry after ready',
+            path.join(tempRoot, 'retry-after-ready.done')
+        );
+        await readyRetryStore.flush();
+        assert.strictEqual(
+            readyRetryStore.get(readyRetryProcessId)?.state,
+            'pending',
+            'a ready terminal must retry and persist its pending binding before sending the provider command'
+        );
+        assert.strictEqual(readyRetryCommands.length, 1);
+        assert.deepStrictEqual(readyRetryEvents, ['persisted', 'sent']);
+
+        const firstStore = new AiSessionTerminalBindingStore(state);
+        const firstService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, firstStore);
+        const created = firstService.createTerminal({
+            name: 'Codex: App',
+            cwd: '/work/app',
+            logError() {},
+            cwdFailureMessage: '',
+            cwdWarningMessage: '',
+        }).terminal;
+        const processId = await created.processId;
+        assert.strictEqual(Number.isSafeInteger(processId), true);
+        firstService.trackPending({
+            provider: 'codex',
+            terminal: created,
+            markerPath: path.join(tempRoot, 'pending.done'),
+            cwd: '/work/app',
+            createdAt,
+            excludedSessionIds: [],
+            title: 'App',
+        });
+        await firstStore.flush();
+
+        const restoredPendingTerminal = {
+            ...created,
+            creationOptions: { name: created.name, cwd: '/work/app' },
+            processId: Promise.resolve(processId),
+        };
+        const secondStore = new AiSessionTerminalBindingStore(state);
+        const secondService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, secondStore);
+        await secondService.restorePersistedTerminals([restoredPendingTerminal]);
+        assert.strictEqual(secondService.getPendingTerminals().length, 1);
+        assert.strictEqual(secondService.getPendingTerminals()[0].terminal, restoredPendingTerminal);
+
+        secondService.track('codex', 'session-new', {
+            terminal: restoredPendingTerminal,
+            markerPath: path.join(tempRoot, 'session-new.done'),
+            runStartedAtMs: 1784102400000,
+        });
+        await secondStore.flush();
+
+        const restoredBoundTerminal = {
+            ...restoredPendingTerminal,
+            creationOptions: { name: restoredPendingTerminal.name, cwd: '/work/app' },
+            processId: Promise.resolve(processId),
+        };
+        const thirdStore = new AiSessionTerminalBindingStore(state);
+        const thirdService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, thirdStore);
+        await thirdService.restorePersistedTerminals([restoredBoundTerminal]);
+        assert.strictEqual(thirdService.getById('codex', 'session-new').terminal, restoredBoundTerminal);
+
+        thirdService.handleClosedTerminal(restoredBoundTerminal);
+        await thirdStore.flush();
+        assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId), null);
+
+        const expiredProcessId = 49999;
+        const expiredStore = new AiSessionTerminalBindingStore(state);
+        expiredStore.setPending(expiredProcessId, {
+            providerId: 'codex',
+            markerPath: path.join(tempRoot, 'expired.done'),
+            cwd: '/work/app',
+            createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+            excludedSessionIds: [],
+        });
+        await expiredStore.flush();
+        const expiredTerminal = {
+            ...created,
+            creationOptions: { name: created.name, cwd: '/work/app' },
+            processId: Promise.resolve(expiredProcessId),
+        };
+        const expiredService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, expiredStore);
+        await expiredService.restorePersistedTerminals([expiredTerminal]);
+        assert.strictEqual(expiredService.getPendingTerminals().length, 0);
+        await expiredStore.flush();
+        assert.strictEqual(new AiSessionTerminalBindingStore(state).get(expiredProcessId), null);
+
+        const recoverableProcessId = 50001;
+        const timeoutStore = new AiSessionTerminalBindingStore(state);
+        timeoutStore.setBound(recoverableProcessId, {
+            providerId: 'codex',
+            sessionId: 'session-after-stalled-terminal',
+            markerPath: path.join(tempRoot, 'session-after-stalled-terminal.done'),
+            runStartedAtMs: 1784102400000,
+        });
+        await timeoutStore.flush();
+        const stalledTerminal = {
+            name: 'Stalled terminal',
+            creationOptions: { name: 'Stalled terminal' },
+            processId: new Promise(() => {}),
+            sendText() {},
+        };
+        const recoverableTerminal = {
+            name: 'Codex: Recoverable',
+            creationOptions: { name: 'Codex: Recoverable' },
+            processId: Promise.resolve(recoverableProcessId),
+            sendText() {},
+        };
+        const timeoutService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, timeoutStore, 5);
+        const restoreCompleted = await Promise.race([
+            timeoutService.restorePersistedTerminals([stalledTerminal, recoverableTerminal]).then(() => true),
+            new Promise(resolve => setTimeout(() => resolve(false), 50)),
+        ]);
+        assert.strictEqual(restoreCompleted, true, 'one unresolved terminal processId must not block extension activation');
+        assert.strictEqual(
+            timeoutService.getById('codex', 'session-after-stalled-terminal').terminal,
+            recoverableTerminal
+        );
+
+        const reusedProcessId = 50002;
+        const reusedProcessStore = new AiSessionTerminalBindingStore(state);
+        reusedProcessStore.setBound(reusedProcessId, {
+            providerId: 'codex',
+            sessionId: 'stale-session',
+            markerPath: path.join(tempRoot, 'stale-session.done'),
+            runStartedAtMs: 1784102400000,
+        });
+        await reusedProcessStore.flush();
+        const ordinaryTerminalWithReusedPid = {
+            name: 'bash',
+            creationOptions: { name: 'bash' },
+            processId: Promise.resolve(reusedProcessId),
+            sendText() {},
+        };
+        const reusedProcessService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, reusedProcessStore);
+        await reusedProcessService.restorePersistedTerminals([ordinaryTerminalWithReusedPid]);
+        assert.strictEqual(reusedProcessService.getById('codex', 'stale-session'), null);
+        await reusedProcessStore.flush();
+        assert.strictEqual(reusedProcessStore.get(reusedProcessId), null, 'a reused PID must clear its stale binding');
     } finally {
         vscodeTestState.terminals.length = 0;
         fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -653,6 +1067,8 @@ function runWebviewContentChecks() {
     const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
     const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const insideProjectClick = extractFunctionBody(webviewProjectScripts, 'onInsideProjectClick');
+    const evaluateAttentionFunction = extractFunctionBody(dashboard, 'evaluateAiSessionAttention');
     const withAiSessionsFunction = extractFunctionBody(dashboard, 'withAiSessions');
     const singleArchiveFunction = extractFunctionBody(dashboard, 'archiveAiSession');
     const batchArchiveFunction = extractFunctionBody(dashboard, 'archiveAiSessions');
@@ -678,13 +1094,47 @@ function runWebviewContentChecks() {
     assert.ok(!webviewContent.includes('function getAddProjectDiv'));
     assert.ok(webviewContent.includes('class="settings-button" data-action="open-settings"'));
     assert.ok(webviewProjectScripts.includes("type: 'open-settings'"));
+    assert.ok(webviewProjectScripts.includes('projectId,'));
+    assert.ok(!webviewProjectScripts.includes('projectUri'));
+    assert.ok(insideProjectClick.includes('projectDiv.hasAttribute("data-project-navigation")'));
+    assert.ok(insideProjectClick.includes('openProject(dataId, ProjectOpenType.Default)'));
+    assert.ok(
+        insideProjectClick.indexOf('projectDiv.hasAttribute("data-project-navigation")')
+            < insideProjectClick.indexOf('var currentWindow = e.ctrlKey || e.metaKey')
+    );
+    assert.ok(webviewProjectScripts.includes("message.type === 'ai-session-attention-projects-updated'"));
+    assert.ok(webviewProjectScripts.includes('syncAiSessionAttentionRows(projectDiv, summary ? summary.sessions : [])'));
+    assert.ok(webviewProjectScripts.includes(".project[data-attention-project-key]"));
+    assert.ok(webviewProjectScripts.includes("project-ai-attention-badge"));
+    assert.ok(styles.includes('.project-ai-attention-badge'));
+    assert.ok(webviewContent.includes('getAttentionProjectKey(project.path)'));
+    assert.ok(webviewContent.includes('class="ai-session-attention-indicator"'));
+    assert.ok(styles.includes('.ai-session-attention-indicator'));
+    assert.ok(evaluateAttentionFunction.includes('getAttentionProjectKey(project.path)'));
+    assert.ok(evaluateAttentionFunction.includes('projectId: projectKey'));
+    assert.ok(evaluateAttentionFunction.includes('observedAtMs: attention.stateChangedAt'));
+    assert.ok(evaluateAttentionFunction.includes('if (!terminal ||'));
+    assert.ok(evaluateAttentionFunction.includes('getLifecycleSignals'));
+    assert.ok(evaluateAttentionFunction.includes('terminal-exit:'));
+    assert.ok(!evaluateAttentionFunction.includes('activityToken'));
+    assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
+    assert.ok(dashboard.includes('runStartedAtMs: Date.parse(pendingTerminal.createdAt)'));
+    assert.ok(dashboard.includes('runStartedAtMs: Date.now()'));
+    assert.ok(dashboard.includes("type: 'ai-session-attention-projects-updated'"));
+    assert.ok(dashboard.includes('sessionEvents: getAiSessionAttentionRecoverySessionEvents()'));
+    assert.ok(webviewProjectScripts.includes('message.sessionEvents'));
     assert.ok(dashboard.includes("case 'open-settings':"));
     assert.ok(settingsFunction.includes("executeCommand('workbench.action.openSettings', '@ext:hzcheng.project-steward')"));
     assert.ok(!settingsFunction.includes('showQuickPick'));
     assert.ok(!settingsFunction.includes('ai-session-terminal-mode-planned'));
     assert.ok(dashboard.includes('new AiSessionPinStore(context.globalStoragePath)'));
+    assert.ok(dashboard.includes('new AiSessionTerminalBindingStore(context.workspaceState'));
+    assert.ok(dashboard.includes('export async function activate(context: vscode.ExtensionContext)'));
+    assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
+    assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);
+    assert.match(dashboard, /onDidChangeWindowState\(windowState => \{[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);
     assert.ok(dashboard.includes("case 'request-active-ai-session-terminal':"));
     assert.ok(dashboard.includes("type: 'active-ai-session-terminal-changed'"));
     assert.ok(webviewProjectScripts.includes("type: 'request-active-ai-session-terminal'"));
@@ -773,11 +1223,12 @@ function runWebviewContentChecks() {
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].default, 3);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].minimum, 1);
     assert.ok(dashboard.includes("ProjectWindowColorService"));
-    assert.ok(dashboard.includes('resolveCurrentWorkspaceProjectIds('));
-    assert.ok(dashboard.includes('findSavedProjectForOpenProject'));
-    assert.ok(dashboard.includes('get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() }'));
-    assert.ok(webviewContent.includes('withCurrentWorkspaceState('));
-    assert.ok(webviewContent.includes('infos.currentWorkspaceProjectIds || []'));
+    assert.ok(!dashboard.includes('resolveCurrentWorkspaceProjectIds('));
+    assert.ok(!dashboard.includes('get currentWorkspaceProjectIds() { return getCurrentWorkspaceProjectIds() }'));
+    assert.ok(!dashboard.includes('function getGroupsWithAiSessionAttention('));
+    assert.ok(!dashboard.includes('withAttentionProject(project, aggregate)'));
+    assert.ok(!webviewContent.includes('withCurrentWorkspaceState('));
+    assert.ok(!webviewContent.includes('infos.currentWorkspaceProjectIds || []'));
     assert.ok(webviewContent.includes('getFavoriteProjectsInOrder('));
     assert.ok(dashboard.includes("case 'reordered-favorites':"));
     assert.ok(dashboard.includes('withFavoriteProjectOrder(groups, projectIds)'));
@@ -805,7 +1256,9 @@ function runWebviewContentChecks() {
     assert.ok(projectWindowColorService.includes("'commandCenter.activeBorder': auraPalette.commandBorder"));
     assert.ok(!extractMethodBody(projectWindowColorService, 'getWindowColorCustomizations').includes("'activityBar.background'"));
     assert.ok(webviewContent.includes('style="${projectStyle}"'));
-    assert.ok(webviewContent.includes("project.isCurrentWorkspace ? ' data-current-workspace' : ''"));
+    assert.ok(webviewContent.includes("options.readOnlyProjects || isProjectNavigation ? ' data-readonly-project' : ''"));
+    assert.ok(webviewContent.includes("showCurrentAttention ? ' data-current-workspace' : ''"));
+    assert.ok(webviewContent.includes("options.projectAttentionMode === 'none'"));
     assert.ok(styles.includes('--project-color'));
     assert.ok(styles.includes('.project-aura'));
     assert.ok(currentProjectStyleBlock.includes('--vscode-list-inactiveSelectionBackground'));
@@ -862,24 +1315,114 @@ function runCurrentWorkspaceRenderingChecks() {
             config,
             relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
             otherStorageHasData: false,
-            currentWorkspaceProjectIds: ['saved'],
             openProjects: [
-                { id: '__openProjects-0', name: 'Saved', path: '/work/saved', color: '#00aacc' },
+                {
+                    id: '__openProjects-0', name: 'Saved', path: '/work/saved', color: '#00aacc',
+                    openProjectCardKind: 'current', codexSessions: [{ id: 'session', name: 'Session' }],
+                },
+                {
+                    id: '__openProjectNavigation-other', name: 'Other Window', path: '/work/other-window',
+                    description: 'Other workspace', remoteType: models.ProjectRemoteType.SSH,
+                    color: 'red;" data-injected="yes', openProjectCardKind: 'projectNavigation', showSaveAction: true,
+                    favorite: true, aiSessionAttentionCount: 2,
+                    codexSessions: [{ id: 'leaked-session', name: 'Leaked Session' }],
+                },
             ],
         },
         true
     );
-    const getCardTags = projectId => html.match(new RegExp(`<div class="project"[^>]*data-id="${projectId}"[^>]*>`, 'g')) || [];
-    const savedTags = getCardTags('saved');
-    const otherTags = getCardTags('other');
-    const openTags = getCardTags('__openProjects-0');
+    const getCardTags = (content, projectId) => content.match(new RegExp(`<div class="project"[^>]*data-id="${projectId}"[^>]*>`, 'g')) || [];
+    const savedTags = getCardTags(html, 'saved');
+    const otherTags = getCardTags(html, 'other');
+    const openTags = getCardTags(html, '__openProjects-0');
+    const navigationTags = getCardTags(html, '__openProjectNavigation-other');
 
-    assert.strictEqual(savedTags.length, 2);
-    assert.ok(savedTags.every(tag => tag.includes('data-current-workspace')));
-    assert.strictEqual(otherTags.length, 1);
-    assert.ok(!otherTags[0].includes('data-current-workspace'));
+    assert.strictEqual(savedTags.length, 0);
+    assert.strictEqual(otherTags.length, 0);
     assert.strictEqual(openTags.length, 1);
     assert.ok(openTags[0].includes('data-current-workspace'));
+    assert.strictEqual(navigationTags.length, 1);
+    assert.ok(!navigationTags[0].includes('data-current-workspace'));
+    assert.ok(!navigationTags[0].includes('data-open-project'));
+    assert.ok(navigationTags[0].includes('data-project-navigation'));
+    assert.ok(navigationTags[0].includes('data-readonly-project'));
+    assert.ok(navigationTags[0].includes('title="Switch to this project"'));
+    assert.match(html, /data-open-project/);
+    assert.match(html, /data-project-navigation/);
+    assert.match(html, /title="Switch to this project"/);
+    assert.strictEqual((html.match(/class="codex-sessions"/g) || []).length, 1);
+    assert.ok(navigationTags[0].includes('data-attention-project-key'));
+    assert.ok(!navigationTags[0].includes('data-has-favorite-toggle'));
+    assert.ok(!navigationTags[0].includes('data-has-save-action'));
+    const navigationCardStart = html.indexOf(navigationTags[0]);
+    const navigationCardEnd = html.indexOf('</div>\n</div>', navigationCardStart);
+    const navigationHtml = html.slice(navigationCardStart, navigationCardEnd);
+    assert.ok(!navigationHtml.includes('project-save-badge'));
+    assert.ok(!navigationHtml.includes('project-favorite-badge'));
+    assert.ok(!navigationHtml.includes('project-actions-wrapper'));
+    assert.ok(navigationHtml.includes('project-ai-attention-badge'));
+    assert.ok(!navigationHtml.includes('project-codex-badge'));
+    assert.ok(!navigationHtml.includes('class="codex-sessions"'));
+    assert.ok(!navigationHtml.includes('Leaked Session'));
+    assert.ok(!html.includes('data-injected'));
+    assert.ok(!navigationHtml.includes('red;'));
+    assert.ok(navigationHtml.includes('<div class="project-border" style=""></div>'));
+    assert.ok(openTags[0].includes('style="--project-color: #00aacc;"'));
+    assert.ok(html.includes('<div class="project-border" style="background: #00aacc;"></div>'));
+    assert.ok(navigationHtml.includes('title="SSH Project"'));
+    assert.match(navigationHtml, /class="project-description" title="Other workspace">\s*Other workspace\s*<\/p>/);
+
+    assert.ok(html.includes('role="tablist"'));
+    assert.ok(html.includes('data-dashboard-tab="open"'));
+    assert.ok(html.includes('data-dashboard-tab="projects"'));
+    assert.ok(html.includes('id="dashboard-tab-open"'));
+    assert.ok(html.includes('id="dashboard-tab-projects"'));
+    assert.ok(html.includes('aria-controls="dashboard-tab-open"'));
+    assert.ok(html.includes('aria-controls="dashboard-tab-projects"'));
+    assert.ok(html.includes('aria-labelledby="dashboard-tab-open-button"'));
+    assert.ok(html.includes('aria-labelledby="dashboard-tab-projects-button"'));
+    assert.ok(html.includes('id="dashboard-search-results"'));
+    assert.ok(html.includes('id="dashboard-search-catalog"'));
+    assert.strictEqual(html.includes('dashboard-projects-template'), false);
+    assert.strictEqual(html.includes('class="groups-wrapper"'), false);
+
+    const currentOnly = webviewContentModule.getOpenProjectsGroupContent([
+        { id: 'current-only', name: 'Current', path: '/work/current', openProjectCardKind: 'current' },
+    ], false, { config });
+    const currentAndOther = webviewContentModule.getOpenProjectsGroupContent([
+        { id: 'current-both', name: 'Current', path: '/work/current', openProjectCardKind: 'current' },
+        { id: 'other-both', name: 'Other', path: '/work/other', openProjectCardKind: 'projectNavigation', aiSessionAttentionCount: 2 },
+    ], false, { config });
+    const navigationOnly = webviewContentModule.getOpenProjectsGroupContent([
+        { id: 'other-only', name: 'Other', path: '/work/other', openProjectCardKind: 'projectNavigation', aiSessionAttentionCount: 2 },
+    ], false, { config });
+    const noCards = webviewContentModule.getOpenProjectsGroupContent([], false, { config });
+
+    assert.ok(currentOnly.includes('CURRENT WORKSPACE'));
+    assert.strictEqual(currentOnly.includes('OTHER WINDOWS'), false);
+    assert.ok(currentAndOther.includes('CURRENT WORKSPACE'));
+    assert.ok(currentAndOther.includes('OTHER WINDOWS'));
+    assert.ok(navigationOnly.includes('No folder is open in this window.'));
+    assert.ok(navigationOnly.includes('OTHER WINDOWS'));
+    assert.ok(noCards.includes('Open a folder to see running projects.'));
+    assert.strictEqual(noCards.includes('OTHER WINDOWS'), false);
+    assert.strictEqual((currentOnly.match(/data-action="collapse"/g) || []).length, 0);
+
+    const projectsHtml = webviewContentModule.getProjectsPanelContent([{
+        id: 'group', groupName: 'Work', collapsed: false,
+        projects: [{
+            id: 'static-project', name: 'Static', path: '/work/static',
+            aiSessionAttentionCount: 3,
+            codexSessions: [{ id: 'must-not-render', name: 'Must Not Render' }],
+        }],
+    }], { config, otherStorageHasData: false });
+    assert.ok(projectsHtml.includes('data-id="static-project"'));
+    assert.ok(!projectsHtml.includes('data-current-workspace'));
+    assert.ok(!projectsHtml.includes('data-attention-project-key'));
+    assert.ok(!projectsHtml.includes('project-ai-attention-badge'));
+    assert.ok(!projectsHtml.includes('project-codex-badge'));
+    assert.ok(!projectsHtml.includes('class="codex-sessions"'));
+    assert.ok(!projectsHtml.includes('Must Not Render'));
 }
 
 function runFavoriteRenderingChecks() {
@@ -889,12 +1432,7 @@ function runFavoriteRenderingChecks() {
         searchIsActiveByDefault: false,
         showAddGroupButtonTile: false,
     };
-    const html = webviewContentModule.getStewardContent(
-        { extensionPath: '/extension' },
-        {
-            cspSource: 'test-source',
-            asWebviewUri: uri => uri.toString(),
-        },
+    const html = webviewContentModule.getProjectsPanelContent(
         [{
             id: 'group',
             groupName: 'Work',
@@ -907,11 +1445,8 @@ function runFavoriteRenderingChecks() {
         }],
         {
             config,
-            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
             otherStorageHasData: false,
-            openProjects: [],
-        },
-        true
+        }
     );
     const renderedProjectIds = Array.from(html.matchAll(/<div class="project"[^>]*data-id="([^"]+)"[^>]*>/g))
         .map(match => match[1]);
@@ -926,6 +1461,66 @@ function runFavoriteRenderingChecks() {
     const favoriteContainer = html.match(/<div class="project-container"([^>]*)>\s*<div class="project"[^>]*data-id="favorite-b"/);
     assert.ok(favoriteContainer);
     assert.ok(!favoriteContainer[1].includes('data-nodrag'));
+}
+
+function runAttentionProjectRenderingChecks() {
+    const config = {
+        get: (key, defaultValue) => defaultValue,
+        displayProjectPath: false,
+        searchIsActiveByDefault: false,
+        showAddGroupButtonTile: false,
+    };
+    const projectKey = attentionProject.getAttentionProjectKey('/work/remote-repo');
+    const html = webviewContentModule.getProjectsPanelContent(
+        [{
+            id: 'group',
+            groupName: 'Work',
+            collapsed: false,
+            projects: [{
+                id: 'saved-remote',
+                name: 'Remote Repo',
+                path: '/work/remote-repo',
+                color: '#00aacc',
+                aiSessionAttentionCount: 2,
+                aiSessionAttentionEventIds: ['event-1', 'event-2'],
+            }],
+        }],
+        {
+            config,
+            otherStorageHasData: false,
+        }
+    );
+
+    assert.ok(!html.includes(`data-attention-project-key="${projectKey}"`));
+    assert.ok(!html.includes('class="project-ai-attention-badge"'));
+    assert.ok(!html.includes('/work/remote-repo" data-attention-project-key'));
+
+    const openProjectHtml = webviewContentModule.getStewardContent(
+        { extensionPath: '/extension' },
+        { cspSource: 'test-source', asWebviewUri: uri => uri.toString() },
+        [],
+        {
+            config,
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            otherStorageHasData: false,
+            openProjects: [{
+                id: 'open-project',
+                name: 'Open Repo',
+                path: '/work/open-repo',
+                color: '#00aacc',
+                aiSessionAttentionCount: 2,
+                codexSessions: [{
+                    id: 'codex-one',
+                    name: 'Codex One',
+                    attention: { eventId: 'local-event', reason: 'input-required', unread: true },
+                }],
+            }],
+        },
+        true
+    );
+    assert.ok(!openProjectHtml.includes('class="project-ai-attention-badge"'));
+    assert.ok(openProjectHtml.includes('class="project-codex-badge has-attention"'));
+    assert.ok(openProjectHtml.includes('class="ai-session-attention-count">1</b>'));
 }
 
 function runFavoriteDndChecks() {
@@ -1002,9 +1597,20 @@ function runFavoriteDndChecks() {
         autoScroll: () => ({}),
     };
     vm.runInNewContext(source, runtimeContext);
-    runtimeContext.initDnD();
+    const dndRoot = {
+        querySelector: () => null,
+        querySelectorAll: selector => {
+            if (selector === '.group-list') return [favorites, ordinary];
+            if (selector === '.groups-wrapper') return [{}];
+            if (selector.startsWith('.groups-wrapper >')) return [ordinaryGroup];
+            return [];
+        },
+    };
+    runtimeContext.initDnD(dndRoot);
+    runtimeContext.initDnD(dndRoot);
 
     assert.strictEqual(drakes.length, 2);
+    assert.strictEqual(dndRoot.__projectStewardDnDInitialized, true);
     const favoriteSource = {
         closest: selector => selector === '[data-system-group="__favorites"]' ? {} : null,
         querySelectorAll: () => [
@@ -1032,18 +1638,39 @@ function runBatchAiSessionWebviewChecks() {
     const messages = [];
     const eventListeners = {};
     const windowEventListeners = {};
+    const timeoutCallbacks = [];
     const createSessionRow = (provider, sessionId) => {
         const attributes = new Set();
-        return {
+        const attributeValues = {};
+        const classes = new Set();
+        let attentionIndicator = null;
+        const row = {
             provider,
             sessionId,
+            project: null,
+            classList: {
+                add: className => classes.add(className),
+                remove: className => classes.delete(className),
+            },
             getAttribute: attribute => {
                 if (attribute === 'data-session-provider') return provider;
                 if (attribute === 'data-session-id') return sessionId;
-                return null;
+                return attributeValues[attribute] || null;
             },
             hasAttribute: attribute => attributes.has(attribute),
-            querySelector: () => null,
+            insertBefore: indicator => {
+                attentionIndicator = indicator;
+                indicator.remove = () => { attentionIndicator = null; };
+            },
+            querySelector: selector => selector === '.ai-session-attention-indicator' ? attentionIndicator : null,
+            removeAttribute: attribute => {
+                attributes.delete(attribute);
+                delete attributeValues[attribute];
+            },
+            setAttribute: (attribute, value) => {
+                attributes.add(attribute);
+                attributeValues[attribute] = value;
+            },
             toggleAttribute: (attribute, force) => {
                 if (force) {
                     attributes.add(attribute);
@@ -1051,7 +1678,13 @@ function runBatchAiSessionWebviewChecks() {
                     attributes.delete(attribute);
                 }
             },
+            closest: selector => {
+                if (selector === '.codex-session-row[data-session-id]') return row;
+                if (selector === '.project' || selector === '.project[data-id]') return row.project;
+                return null;
+            },
         };
+        return row;
     };
     const createProject = (projectId, provider) => {
         const attributes = new Set(['data-open-project']);
@@ -1126,7 +1759,52 @@ function runBatchAiSessionWebviewChecks() {
     projectB.replaceRowsOnNextUpdate([sameIdOtherProviderRow]);
     projectB.querySelector('.codex-sessions').outerHTML = '';
     const projects = [projectA, projectB];
+    let attentionBadge = null;
+    const attentionProjectClasses = new Set();
+    const attentionRow = createSessionRow('codex', 'attention-session');
+    attentionRow.project = projectA;
+    let openAttentionBadge = { remove: () => { openAttentionBadge = null; } };
+    let openAttentionBadgeInsertions = 0;
+    const attentionProjectCard = {
+        getAttribute: attribute => attribute === 'data-attention-project-key' ? 'attention-project-a' : null,
+        hasAttribute: () => false,
+        classList: {
+            add: className => attentionProjectClasses.add(className),
+            remove: className => attentionProjectClasses.delete(className),
+        },
+        querySelector: selector => selector === '.project-ai-attention-badge' ? attentionBadge : null,
+        querySelectorAll: selector => selector === '.codex-session-row[data-session-id]' ? [attentionRow] : [],
+        insertAdjacentHTML: () => {
+            const badgeClasses = new Set();
+            attentionBadge = {
+                textContent: '',
+                title: '',
+                classList: {
+                    add: className => badgeClasses.add(className),
+                    remove: className => badgeClasses.delete(className),
+                },
+                setAttribute: (attribute, value) => {
+                    if (attribute === 'title') attentionBadge.title = value;
+                },
+                remove: () => { attentionBadge = null; },
+            };
+        },
+    };
+    const openAttentionProjectCard = {
+        getAttribute: attribute => attribute === 'data-attention-project-key' ? 'attention-project-a' : null,
+        hasAttribute: attribute => attribute === 'data-open-project',
+        classList: { add: () => {}, remove: () => {} },
+        querySelector: selector => selector === '.project-ai-attention-badge' ? openAttentionBadge : null,
+        querySelectorAll: () => [],
+        insertAdjacentHTML: () => { openAttentionBadgeInsertions++; },
+    };
     const context = {
+        normalizeDashboardSearchCatalog: value => value
+            && Array.isArray(value.sessions)
+            && Array.isArray(value.openProjects)
+            && Array.isArray(value.savedProjects)
+            ? value
+            : { sessions: [], openProjects: [], savedProjects: [] },
         document: {
             body: {
                 classList: { toggle: () => {} },
@@ -1134,6 +1812,12 @@ function runBatchAiSessionWebviewChecks() {
             },
             addEventListener: (event, listener) => { eventListeners[event] = listener; },
             getElementById: () => null,
+            createElement: () => ({
+                className: '',
+                title: '',
+                setAttribute: () => {},
+                remove: () => {},
+            }),
             querySelector: () => null,
             querySelectorAll: selector => {
                 if (selector === '.project[data-open-project][data-id]') {
@@ -1146,13 +1830,18 @@ function runBatchAiSessionWebviewChecks() {
                 if (selector === '.codex-session-row[data-session-id]') {
                     return projects.flatMap(project => project.rows);
                 }
+                if (selector === '.project[data-attention-project-key]') {
+                    return [attentionProjectCard, openAttentionProjectCard];
+                }
                 return [];
             },
         },
         window: {
             addEventListener: (event, listener) => { windowEventListeners[event] = listener; },
             requestAnimationFrame: callback => callback(),
+            setTimeout: callback => timeoutCallbacks.push(callback),
             vscode: { postMessage: message => messages.push(message) },
+            __projectStewardDashboard: { replaceSearchCatalog: () => undefined },
         },
     };
 
@@ -1168,6 +1857,145 @@ function runBatchAiSessionWebviewChecks() {
     assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.shift())), {
         type: 'request-active-ai-session-terminal',
     });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.shift())), {
+        type: 'request-ai-session-attention-state',
+    });
+    messages.length = 0;
+
+    const navigationProject = {
+        getAttribute: attribute => attribute === 'data-id' ? '__openProjectNavigation-other' : null,
+        hasAttribute: attribute => attribute === 'data-project-navigation' || attribute === 'data-readonly-project',
+    };
+    const navigationTarget = {
+        closest: selector => selector === '.project' || selector === '.project[data-id]'
+            ? navigationProject
+            : null,
+    };
+    eventListeners.click({ button: 0, ctrlKey: true, metaKey: false, target: navigationTarget });
+    eventListeners.click({ button: 0, ctrlKey: false, metaKey: true, target: navigationTarget });
+    eventListeners.mousedown({ button: 1, ctrlKey: false, metaKey: false, target: navigationTarget });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [
+        {
+            type: 'selected-project',
+            projectId: '__openProjectNavigation-other',
+            projectOpenType: 0,
+        },
+        {
+            type: 'selected-project',
+            projectId: '__openProjectNavigation-other',
+            projectOpenType: 0,
+        },
+        {
+            type: 'selected-project',
+            projectId: '__openProjectNavigation-other',
+            projectOpenType: 0,
+        },
+    ]);
+    assert.ok(messages.every(message => !Object.prototype.hasOwnProperty.call(message, 'uri')));
+    messages.length = 0;
+
+    attentionRow.setAttribute('data-ai-session-attention', '');
+    attentionRow.setAttribute('data-session-event-id', 'full-owner-event-a');
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-state',
+        eventIds: ['full-owner-event-a', 'full-owner-event-b', 'existing-event'],
+        sessionEvents: [{
+            sessionKey: 'codex:attention-session',
+            eventIds: ['full-owner-event-a', 'full-owner-event-b'],
+        }],
+    } });
+    messages.length = 0;
+    eventListeners.click({ button: 0, target: attentionRow });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0])), {
+        type: 'acknowledge-ai-session-attention',
+        eventIds: ['full-owner-event-a', 'full-owner-event-b'],
+    }, 'a fresh full render must acknowledge every current owner event before an incremental update');
+    messages.length = 0;
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [{
+            projectKey: 'attention-project-a',
+            attentionCount: 1,
+            eventIds: ['existing-event'],
+            sessions: [{ sessionKey: 'codex:attention-session', eventId: 'existing-event' }],
+        }],
+    } });
+    assert.strictEqual(attentionBadge.textContent, '1');
+    assert.strictEqual(attentionBadge.title, '1 AI session needs attention');
+    assert.strictEqual(openAttentionBadge, null);
+    assert.strictEqual(openAttentionBadgeInsertions, 0);
+    assert.strictEqual(attentionRow.hasAttribute('data-ai-session-attention'), true);
+    assert.ok(attentionRow.querySelector('.ai-session-attention-indicator'));
+    assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
+
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [{
+            projectKey: 'attention-project-a',
+            attentionCount: 2,
+            eventIds: ['existing-event', 'new-event'],
+            sessions: [
+                { sessionKey: 'codex:attention-session', eventId: 'existing-event' },
+                { sessionKey: 'codex:not-rendered', eventId: 'new-event' },
+            ],
+        }],
+    } });
+    assert.strictEqual(attentionBadge.textContent, '2');
+    assert.strictEqual(attentionProjectClasses.has('attention-animate'), true);
+    timeoutCallbacks.splice(0).forEach(callback => callback());
+    assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
+
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [{
+            projectKey: 'attention-project-a',
+            attentionCount: 2,
+            eventIds: ['existing-event', 'new-event'],
+            sessions: [
+                { sessionKey: 'codex:attention-session', eventId: 'existing-event' },
+                { sessionKey: 'codex:not-rendered', eventId: 'new-event' },
+            ],
+        }],
+    } });
+    assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [],
+    } });
+    assert.strictEqual(attentionBadge, null);
+    assert.strictEqual(attentionRow.hasAttribute('data-ai-session-attention'), false);
+    assert.strictEqual(attentionRow.querySelector('.ai-session-attention-indicator'), null);
+
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [{
+            projectKey: 'attention-project-a', attentionCount: 1,
+            eventIds: ['owner-event-a', 'owner-event-b'],
+            sessions: [{
+                sessionKey: 'codex:attention-session',
+                eventId: 'owner-event-a',
+                eventIds: ['owner-event-a', 'owner-event-b'],
+            }],
+        }],
+    } });
+    messages.length = 0;
+    eventListeners.click({ button: 0, target: attentionRow });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0])), {
+        type: 'acknowledge-ai-session-attention',
+        eventIds: ['owner-event-a', 'owner-event-b'],
+    });
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [{
+            projectKey: 'attention-project-a', attentionCount: 1,
+            eventIds: ['later-generation'],
+            sessions: [{ sessionKey: 'codex:attention-session', eventId: 'later-generation', eventIds: ['later-generation'] }],
+        }],
+    } });
+    messages.length = 0;
+    eventListeners.click({ button: 0, target: attentionRow });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0].eventIds)), ['later-generation']);
+    messages.length = 0;
 
     windowEventListeners.message({ data: {
         type: 'active-ai-session-terminal-changed',
@@ -1197,6 +2025,7 @@ function runBatchAiSessionWebviewChecks() {
         type: 'ai-sessions-updated',
         version: 1,
         sequence: 1,
+        searchCatalog: { sessions: [], openProjects: [], savedProjects: [] },
         openProjects: [{
             projectId: 'project-a',
             expanded: true,
@@ -1550,6 +2379,46 @@ function runCodexSubagentSessionFilterChecks() {
     }
 }
 
+function runCodexSessionActivityTimestampChecks() {
+    const previousCodexHome = process.env.CODEX_HOME;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-codex-activity-'));
+    const sessionsDir = path.join(tempRoot, 'sessions', '2026', '07', '14');
+    const sessionId = '77777777-7777-4777-8777-777777777777';
+    try {
+        process.env.CODEX_HOME = tempRoot;
+        fs.mkdirSync(sessionsDir, { recursive: true });
+        const sessionFile = writeCodexSessionMetaFile(sessionsDir, sessionId, {
+            id: sessionId,
+            session_id: sessionId,
+            cwd: '/work/app',
+            timestamp: '2026-07-14T01:00:00.000Z',
+            source: 'vscode',
+        });
+        fs.writeFileSync(path.join(tempRoot, 'session_index.jsonl'), JSON.stringify({
+            id: sessionId,
+            thread_name: 'Active session',
+            updated_at: '2026-07-14T02:00:00.000Z',
+        }) + '\n', 'utf8');
+
+        const firstActivityAt = new Date('2026-07-14T03:00:00.000Z');
+        fs.utimesSync(sessionFile, firstActivityAt, firstActivityAt);
+        const service = new CodexSessionService();
+        assert.strictEqual(service.getSessions(true).sessions[0].updatedAt, firstActivityAt.toISOString());
+
+        fs.appendFileSync(sessionFile, '{"type":"event"}\n', 'utf8');
+        const secondActivityAt = new Date('2026-07-14T04:00:00.000Z');
+        fs.utimesSync(sessionFile, secondActivityAt, secondActivityAt);
+        assert.strictEqual(service.getSessions(true).sessions[0].updatedAt, secondActivityAt.toISOString());
+    } finally {
+        if (previousCodexHome === undefined) {
+            delete process.env.CODEX_HOME;
+        } else {
+            process.env.CODEX_HOME = previousCodexHome;
+        }
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
 function runKimiNestedSubagentBoundaryChecks() {
     const previousKimiHome = process.env.KIMI_SHARE_DIR;
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-kimi-subagents-'));
@@ -1646,6 +2515,84 @@ function runProviderChecks() {
     );
 }
 
+function runProviderLifecycleServiceChecks() {
+    const runStartedAtMs = Date.parse('2026-07-15T00:00:00.000Z');
+    const previousCodexHome = process.env.CODEX_HOME;
+    const codexRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-codex-lifecycle-'));
+    const codexId = '88888888-8888-4888-8888-888888888888';
+    try {
+        process.env.CODEX_HOME = codexRoot;
+        const sessionDir = path.join(codexRoot, 'sessions', '2026', '07', '15');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        const sessionFile = writeCodexSessionMetaFile(sessionDir, codexId, {
+            id: codexId, session_id: codexId, cwd: '/work/app', timestamp: '2026-07-14T23:00:00.000Z', source: 'vscode',
+        });
+        fs.appendFileSync(sessionFile, [
+            { timestamp: '2026-07-14T23:59:59.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'old' } },
+            { timestamp: '2026-07-15T00:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'new' } },
+        ].map(JSON.stringify).join('\n') + '\n');
+        const service = new CodexSessionService();
+        let signals = service.getLifecycleSignals([
+            { sessionId: codexId, runStartedAtMs },
+            { sessionId: 'missing', runStartedAtMs },
+        ]);
+        assert.strictEqual(signals[codexId].reason, 'completed');
+        assert.strictEqual(signals.missing, undefined);
+        fs.appendFileSync(sessionFile, JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'next' } }) + '\n');
+        const originalReaddirSync = fs.readdirSync;
+        fs.readdirSync = () => { throw new Error('cached lifecycle lookup must not rescan provider roots'); };
+        try {
+            signals = service.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs }]);
+        } finally {
+            fs.readdirSync = originalReaddirSync;
+        }
+        assert.strictEqual(signals[codexId].phase, 'running');
+        assert.deepStrictEqual(service.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs: Date.parse('2026-07-16T00:00:00Z') }]), {});
+    } finally {
+        previousCodexHome === undefined ? delete process.env.CODEX_HOME : process.env.CODEX_HOME = previousCodexHome;
+        fs.rmSync(codexRoot, { recursive: true, force: true });
+    }
+
+    const previousKimiHome = process.env.KIMI_SHARE_DIR;
+    const kimiRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-kimi-lifecycle-'));
+    const kimiId = '99999999-9999-4999-8999-999999999999';
+    try {
+        process.env.KIMI_SHARE_DIR = kimiRoot;
+        const workDir = '/work/app';
+        fs.writeFileSync(path.join(kimiRoot, 'kimi.json'), JSON.stringify({ work_dirs: [{ path: workDir }] }));
+        const workDirHash = crypto.createHash('md5').update(workDir, 'utf8').digest('hex');
+        const sessionDir = path.join(kimiRoot, 'sessions', workDirHash, kimiId);
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), '{}');
+        fs.writeFileSync(path.join(sessionDir, 'wire.jsonl'), JSON.stringify({
+            timestamp: runStartedAtMs / 1000 + 2, message: { type: 'TurnEnd', payload: {} },
+        }) + '\n');
+        const signals = new KimiSessionService().getLifecycleSignals([{ sessionId: kimiId, runStartedAtMs }]);
+        assert.strictEqual(signals[kimiId].reason, 'completed');
+    } finally {
+        previousKimiHome === undefined ? delete process.env.KIMI_SHARE_DIR : process.env.KIMI_SHARE_DIR = previousKimiHome;
+        fs.rmSync(kimiRoot, { recursive: true, force: true });
+    }
+
+    const previousClaudeHome = process.env.CLAUDE_HOME;
+    const claudeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-claude-lifecycle-'));
+    const claudeId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    try {
+        process.env.CLAUDE_HOME = claudeRoot;
+        const sessionDir = path.join(claudeRoot, 'projects', '-work-app');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(path.join(sessionDir, `${claudeId}.jsonl`), JSON.stringify({
+            timestamp: '2026-07-15T00:00:02.000Z', type: 'assistant',
+            message: { role: 'assistant', stop_reason: 'end_turn', content: [] },
+        }) + '\n');
+        const signals = new ClaudeSessionService().getLifecycleSignals([{ sessionId: claudeId, runStartedAtMs }]);
+        assert.strictEqual(signals[claudeId].reason, 'completed');
+    } finally {
+        previousClaudeHome === undefined ? delete process.env.CLAUDE_HOME : process.env.CLAUDE_HOME = previousClaudeHome;
+        fs.rmSync(claudeRoot, { recursive: true, force: true });
+    }
+}
+
 function runCommandBuilderChecks() {
     assert.strictEqual(
         commands.buildCodexResumeCommand('abc123', '/work/My App', null, 'linux'),
@@ -1678,6 +2625,913 @@ function runCommandBuilderChecks() {
     assert.strictEqual(commands.quotePowerShellArg("O'Brien"), "'O''Brien'");
 }
 
+function runLifecycleParserChecks() {
+    const runStartedAtMs = Date.parse('2026-07-15T00:00:00.000Z');
+    const codexSignal = lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-14T23:59:59.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'old' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:01.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } }),
+        '{bad json',
+        JSON.stringify({ timestamp: '2026-07-15T00:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } }),
+    ], runStartedAtMs);
+    assert.strictEqual(codexSignal.phase, 'needsAttention');
+    assert.strictEqual(codexSignal.reason, 'completed');
+    assert.ok(codexSignal.token.includes('task_complete'));
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'event_msg', payload: { type: 'turn_aborted', turn_id: 'turn-2' } }),
+    ], runStartedAtMs).reason, 'aborted');
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'call-1' } }),
+    ], runStartedAtMs).reason, 'input-required');
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'call-1' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'other-call' } }),
+    ], runStartedAtMs).reason, 'input-required', 'unrelated Codex output does not answer the pending request');
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'call-1' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call-1' } }),
+    ], runStartedAtMs).phase, 'running', 'matching Codex output resumes the turn');
+
+    const kimiSignal = lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073601, message: { type: 'TurnBegin', payload: {} } }),
+        JSON.stringify({ timestamp: 1784073602, message: { type: 'QuestionRequest', payload: { id: 'question-1' } } }),
+    ], runStartedAtMs);
+    assert.strictEqual(kimiSignal.reason, 'input-required');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073603, message: { type: 'StepInterrupted', payload: {} } }),
+    ], runStartedAtMs).reason, 'aborted');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073604, message: { type: 'TurnEnd', payload: {} } }),
+    ], runStartedAtMs).reason, 'completed');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073605, message: { type: 'ApprovalRequest', payload: { id: 'approval-1' } } }),
+    ], runStartedAtMs).reason, 'input-required');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073606, message: { type: 'QuestionRequest', payload: { id: 'question-2' } } }),
+        JSON.stringify({ timestamp: 1784073607, message: { type: 'StatusUpdate', payload: { message_id: 'status-2' } } }),
+    ], runStartedAtMs).reason, 'input-required', 'Kimi status updates do not answer a pending question');
+
+    const claudeSignal = lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:01.000Z', type: 'user', message: { role: 'user' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:02.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn', content: [] } }),
+    ], runStartedAtMs);
+    assert.strictEqual(claudeSignal.reason, 'completed');
+    assert.strictEqual(lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'stop_sequence', content: [] } }),
+    ], runStartedAtMs).reason, 'completed');
+    assert.strictEqual(lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:04.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'tool_use', name: 'AskUserQuestion', id: 'ask-1' }] } }),
+    ], runStartedAtMs).reason, 'input-required');
+    assert.strictEqual(lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:05.000Z', type: 'system', subtype: 'api_error' }),
+    ], runStartedAtMs).reason, 'failed');
+    assert.strictEqual(lifecycle.parseClaudeLifecycleLines(['{}', 'not-json'], runStartedAtMs), null);
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-jsonl-tail-'));
+    try {
+        const filePath = path.join(tempRoot, 'events.jsonl');
+        fs.writeFileSync(filePath, `${'x'.repeat(40)}\nsecond\nthird\n`, 'utf8');
+        assert.deepStrictEqual(jsonlTail.readJsonlTailLines(filePath, 14), ['second', 'third']);
+        assert.deepStrictEqual(jsonlTail.readJsonlTailLines(path.join(tempRoot, 'missing.jsonl'), 14), []);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
+function runAttentionMonitorChecks() {
+    let now = 0;
+    const signal = (token, phase, reason, occurredAtMs = now) => ({ token, phase, reason, occurredAtMs });
+    let monitor = new AiSessionAttentionMonitor({ now: () => now });
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1' }]), []);
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: signal('run-1', 'running') }]), []);
+    now = 60_000;
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: signal('run-1', 'running', undefined, 0) }]), [], 'running never becomes attention merely with time');
+    let events = monitor.evaluate([{ key: 'codex:s1', signal: signal('complete-1', 'needsAttention', 'completed') }]);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].reason, 'completed');
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'needsAttention');
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: signal('complete-1', 'needsAttention', 'completed') }]), [], 'same token is idempotent');
+    monitor.acknowledge([events[0].eventId]);
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'acknowledged');
+
+    const beforeReload = new AiSessionAttentionMonitor({ now: () => now });
+    const acknowledgedBeforeReload = beforeReload.evaluate([{
+        key: 'codex:reloaded',
+        signal: signal('turn-before-reload', 'needsAttention', 'completed'),
+    }])[0];
+    const afterReload = new AiSessionAttentionMonitor({ now: () => now + 1 });
+    const newTurnAfterReload = afterReload.evaluate([{
+        key: 'codex:reloaded',
+        signal: signal('turn-after-reload', 'needsAttention', 'completed', now + 1),
+    }])[0];
+    assert.notStrictEqual(
+        newTurnAfterReload.eventId,
+        acknowledgedBeforeReload.eventId,
+        'a new lifecycle event must not collide with an acknowledgement after Extension Host reload'
+    );
+
+    now++;
+    monitor.evaluate([{ key: 'codex:s1', signal: signal('run-2', 'running') }]);
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'running');
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].event, undefined);
+    now++;
+    events = monitor.evaluate([{ key: 'codex:s1', signal: signal('input-2', 'needsAttention', 'input-required') }]);
+    assert.strictEqual(events[0].generation, 2);
+    assert.strictEqual(events[0].reason, 'input-required');
+    assert.strictEqual(monitor.evaluate([]).length, 0);
+
+    now = 100;
+    monitor = new AiSessionAttentionMonitor({ now: () => now });
+    events = monitor.evaluate([{ key: 'claude:visible', signal: signal('failed-1', 'needsAttention', 'failed'), ownerVisible: true }]);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(monitor.getSnapshot()['claude:visible'].state, 'needsAttention', 'active terminal attention remains unread until explicit handling');
+    now++;
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'claude:visible', signal: signal('failed-1', 'needsAttention', 'failed'), ownerVisible: true }]), [], 'the same active-terminal event is never duplicated');
+    assert.strictEqual(monitor.getSnapshot()['claude:visible'].state, 'needsAttention', 'remaining on the active terminal does not auto-acknowledge attention');
+
+    now = 200;
+    monitor = new AiSessionAttentionMonitor({ now: () => now });
+    events = monitor.evaluate([{ key: 'kimi:aborted', signal: signal('aborted-1', 'needsAttention', 'aborted') }]);
+    assert.strictEqual(events[0].reason, 'aborted');
+
+    now = 300;
+    monitor = new AiSessionAttentionMonitor({ now: () => now });
+    events = monitor.evaluate([{ key: 'codex:return-visible', signal: signal('complete-visible', 'needsAttention', 'completed') }]);
+    const hiddenEventId = events[0].eventId;
+    assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'needsAttention');
+    now++;
+    events = monitor.evaluate([{ key: 'codex:return-visible', signal: signal('complete-visible', 'needsAttention', 'completed'), ownerVisible: true }]);
+    assert.strictEqual(events.length, 0, 'returning to the owning terminal does not acknowledge or replay the event');
+    assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].event.eventId, hiddenEventId);
+    assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'needsAttention');
+}
+
+function runAttentionPayloadChecks() {
+    const payload = attentionPayload.createAttentionPayload([{ projectId: 'a'.repeat(64), sessionKey: 'k', state: 'needsAttention', eventId: 'e', reason: 'input-required', observedAtMs: 10 }], 20);
+    assert.deepStrictEqual(attentionPayload.parseAttentionPayload(attentionPayload.serializeAttentionPayload(payload)), payload);
+    assert.throws(() => attentionPayload.parseAttentionPayload('{"version":1,"generatedAtMs":1,"items":[{"projectId":"p","sessionKey":"k","state":"bad","observedAtMs":1}]}'));
+    const owner = attentionPayload.validateAttentionOwnerSnapshot({ ...payload, instanceId: 'a'.repeat(32), sequence: 1, heartbeat: 1 });
+    const aggregate = attentionAggregate.aggregateAttentionSnapshots([owner], new Set(['e']), 21);
+    assert.deepStrictEqual(aggregate.sessions, []);
+    assert.strictEqual(aggregate.aggregateRevision.length, 64);
+
+    const secondOwner = attentionPayload.validateAttentionOwnerSnapshot({
+        ...owner,
+        instanceId: 'b'.repeat(32),
+        items: owner.items.map(item => ({ ...item, eventId: 'e-2', reason: 'completed', observedAtMs: 10 })),
+    });
+    const partial = attentionAggregate.aggregateAttentionSnapshots([owner, secondOwner], new Set(['e']), 21);
+    assert.strictEqual(partial.sessions.length, 1, 'duplicate owners count as one logical session');
+    assert.deepStrictEqual(partial.sessions[0].eventIds, ['e-2'], 'only the exact acknowledged event is removed');
+    assert.deepStrictEqual(partial.sessions[0].reasons, ['completed']);
+
+    const newerAcknowledgedOwner = attentionPayload.validateAttentionOwnerSnapshot({
+        ...secondOwner,
+        items: secondOwner.items.map(item => ({ ...item, state: 'acknowledged', observedAtMs: 20 })),
+    });
+    const differentTimes = attentionAggregate.aggregateAttentionSnapshots([owner, newerAcknowledgedOwner], new Set(), 21);
+    assert.strictEqual(differentTimes.sessions.length, 1, 'a newer acknowledged duplicate must not hide an older unread event');
+    assert.deepStrictEqual(differentTimes.sessions[0].eventIds, ['e']);
+
+    assert.throws(() => attentionPayload.validateAttentionPayload({ ...payload, unexpected: true }), /unexpected fields/);
+    assert.throws(() => attentionPayload.validateAttentionPayload({
+        ...payload,
+        items: [{ projectId: 'a'.repeat(64), sessionKey: 'k', state: 'needsAttention', eventId: undefined, reason: undefined, observedAtMs: 1 }],
+    }), /eventId.*reason|combination/);
+    assert.throws(() => attentionPayload.validateAttentionPayload({
+        ...payload,
+        items: [{ ...payload.items[0], eventId: 'x'.repeat(1025) }],
+    }), /eventId/);
+    assert.throws(() => attentionPayload.validateAttentionPayload({
+        ...payload,
+        items: [{ ...payload.items[0], projectId: '/home/alice/private-repo' }],
+    }), /projectId|privacy-safe/);
+    assert.throws(() => attentionPayload.validateAttentionPayload({
+        ...payload,
+        items: [{ ...payload.items[0], reason: 'quiet' }],
+    }), /reason|combination/);
+    assert.throws(() => attentionPayload.validateAttentionOwnerSnapshot({ ...owner, unexpected: true }), /unexpected fields/);
+    assert.throws(() => attentionAggregate.validateAttentionAggregate({
+        protocolVersion: 1,
+        aggregateRevision: 'x'.repeat(64),
+        generatedAtMs: 1,
+        sessions: [],
+        unexpected: true,
+    }), /unexpected fields/);
+    assert.throws(() => attentionAggregate.validateAttentionAggregate({
+        protocolVersion: 2,
+        aggregateRevision: 'x'.repeat(64),
+        generatedAtMs: 1,
+        sessions: [],
+    }), /protocol/);
+
+    const manyOwners = Array.from({ length: 1001 }, (_, index) => attentionPayload.validateAttentionOwnerSnapshot({
+        ...payload,
+        instanceId: index.toString(16).padStart(32, '0'),
+        sequence: 1,
+        heartbeat: 1,
+        items: [{
+            ...payload.items[0],
+            sessionKey: `codex:bounded-${String(index).padStart(4, '0')}`,
+            eventId: `bounded-event-${index}`,
+        }],
+    }));
+    const boundedAggregate = attentionAggregate.aggregateAttentionSnapshots(manyOwners, new Set(), 30);
+    assert.strictEqual(boundedAggregate.sessions.length, 1000);
+    assert.doesNotThrow(() => attentionAggregate.validateAttentionAggregate(boundedAggregate));
+}
+
+async function runProductionAttentionStoreClockChecks() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-clock-'));
+    const store = new ProductionAttentionStore(root, 'f'.repeat(32));
+    const snapshot = attentionPayload.validateAttentionOwnerSnapshot({
+        ...attentionPayload.createAttentionPayload([], 1),
+        instanceId: 'a'.repeat(32),
+        sequence: 1,
+        heartbeat: 1,
+    });
+    try {
+        await store.write(snapshot, 1_000_000);
+        let scan = await store.scan(1_000_000 + 89_999);
+        assert.strictEqual(scan.snapshots.length, 1, 'far-past Workspace clock must not expire a fresh UI-host receipt');
+        const persisted = fs.readFileSync(path.join(root, 'instances', `${snapshot.instanceId}.json`), 'utf8');
+        assert.ok(persisted.includes('"receivedAtMs":1000000'));
+
+        await store.write({ ...snapshot, generatedAtMs: 9_999_999_999_999, sequence: 2, heartbeat: 2 }, 2_000_000);
+        scan = await store.scan(2_000_000 + 90_001);
+        assert.strictEqual(scan.snapshots.length, 0, 'far-future Workspace clock must not extend a UI-host lease');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
+async function runProductionAttentionStoreLifecycleChecks() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-lifecycle-'));
+    let releaseFirst;
+    const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+    let firstEntered = false;
+    const store = new ProductionAttentionStore(root, 'f'.repeat(32), {
+        beforeCommit: async snapshot => {
+            if (snapshot.sequence === 1) {
+                firstEntered = true;
+                await firstGate;
+            }
+        },
+    });
+    const base = attentionPayload.validateAttentionOwnerSnapshot({
+        ...attentionPayload.createAttentionPayload([], 1),
+        instanceId: 'b'.repeat(32), sequence: 1, heartbeat: 1,
+    });
+    try {
+        const firstWrite = store.write(base, 1000);
+        for (let attempt = 0; attempt < 50 && !firstEntered; attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.strictEqual(firstEntered, true, 'test hook must hold the first write inside the serialized commit');
+        const secondWrite = store.write({ ...base, sequence: 2, heartbeat: 2 }, 1001);
+        releaseFirst();
+        await Promise.all([firstWrite, secondWrite]);
+        const filePath = path.join(root, 'instances', `${base.instanceId}.json`);
+        assert.strictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')).snapshot.sequence, 2);
+        await assert.rejects(store.write({ ...base, sequence: 1 }, 1002), /sequence decreased/);
+        await store.write({ ...base, sequence: 3, heartbeat: 3 }, 1003);
+        assert.strictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')).snapshot.sequence, 3, 'mutation queue recovers after rejection');
+
+        fs.writeFileSync(filePath, '{malformed', 'utf8');
+        assert.strictEqual((await store.scan(1010)).snapshots[0].sequence, 3, 'malformed replacement retains last valid cache');
+        fs.unlinkSync(filePath);
+        assert.strictEqual((await store.scan(1011)).snapshots[0].sequence, 3, 'missing file retains last valid cache');
+        assert.strictEqual((await store.scan(1003 + 90_001)).snapshots.length, 0, 'cache expires only after desktop receipt lease');
+
+        await store.write({ ...base, sequence: 4, heartbeat: 4 }, 2000);
+        const delayedWrite = store.write({ ...base, sequence: 5, heartbeat: 5 }, 2001);
+        const removal = store.remove(base.instanceId);
+        await Promise.all([delayedWrite, removal]);
+        assert.strictEqual((await store.scan(2002)).snapshots.length, 0, 'serialized unregister wins after preceding write');
+
+        const instancesDirectory = path.join(root, 'instances');
+        for (let index = 0; index < 2001; index += 1) {
+            fs.writeFileSync(path.join(instancesDirectory, `stale-junk-${String(index).padStart(4, '0')}`), 'x');
+        }
+        const live = { ...base, instanceId: 'c'.repeat(32), sequence: 1, heartbeat: 1 };
+        await store.write(live, 3000);
+        const freshReader = new ProductionAttentionStore(root, 'e'.repeat(32));
+        assert.strictEqual((await freshReader.scan(3001)).snapshots.some(snapshot => snapshot.instanceId === live.instanceId), true,
+            'filtering valid filenames before the cap must retain a live owner after >2000 junk entries');
+        const invalidOldPath = path.join(instancesDirectory, `${'d'.repeat(32)}.json`);
+        fs.writeFileSync(invalidOldPath, '{invalid');
+        fs.utimesSync(invalidOldPath, new Date(0), new Date(0));
+        await freshReader.scan(24 * 60 * 60 * 1000 + 1);
+        assert.strictEqual(fs.existsSync(invalidOldPath), false, 'invalid files are cleaned after retention');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
+async function runProductionAttentionStoreUnregisterPropagationChecks() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-unregister-'));
+    const instanceId = '9'.repeat(32);
+    const ownerPath = path.join(root, 'instances', `${instanceId}.json`);
+    const removalPath = path.join(root, 'removals', `${instanceId}.json`);
+    const storeA = new ProductionAttentionStore(root, 'a'.repeat(32));
+    const storeB = new ProductionAttentionStore(root, 'b'.repeat(32));
+    const snapshot = sequence => attentionPayload.validateAttentionOwnerSnapshot({
+        ...attentionPayload.createAttentionPayload([], sequence),
+        instanceId,
+        sequence,
+        heartbeat: sequence,
+    });
+    try {
+        await storeA.write(snapshot(5), 1000);
+        assert.deepStrictEqual((await storeA.scan(1001)).snapshots.map(value => value.sequence), [5]);
+        assert.deepStrictEqual((await storeB.scan(1001)).snapshots.map(value => value.sequence), [5]);
+
+        fs.unlinkSync(ownerPath);
+        assert.deepStrictEqual((await storeB.scan(1002)).snapshots.map(value => value.sequence), [5],
+            'transient owner-file absence must retain the peer last-valid cache');
+        await storeA.write(snapshot(6), 1003);
+        assert.deepStrictEqual((await storeB.scan(1004)).snapshots.map(value => value.sequence), [6]);
+
+        await storeA.remove(instanceId, 1005);
+        assert.deepStrictEqual({
+            removingStore: (await storeA.scan(1006)).snapshots,
+            peerStore: (await storeB.scan(1006)).snapshots,
+        }, {
+            removingStore: [],
+            peerStore: [],
+        }, 'a shared unregister marker must invalidate every bridge cache immediately');
+        assert.deepStrictEqual(JSON.parse(fs.readFileSync(removalPath, 'utf8')), {
+            storageVersion: 1,
+            instanceId,
+            removedAtMs: 1005,
+        });
+
+        await storeA.write(snapshot(1), 1010);
+        assert.deepStrictEqual((await storeA.scan(1011)).snapshots.map(value => value.sequence), [1]);
+        assert.deepStrictEqual((await storeB.scan(1011)).snapshots.map(value => value.sequence), [1],
+            'a later activation reusing an instance ID must supersede the tombstone');
+
+        fs.mkdirSync(path.dirname(removalPath), { recursive: true });
+        fs.writeFileSync(removalPath, JSON.stringify({
+            storageVersion: 1,
+            instanceId,
+            removedAtMs: 2000,
+            unexpected: true,
+        }));
+        assert.deepStrictEqual((await storeB.scan(1012)).snapshots.map(value => value.sequence), [1],
+            'strict validation must ignore a malformed removal marker');
+
+        let releaseRead;
+        let readEntered = false;
+        const readGate = new Promise(resolve => { releaseRead = resolve; });
+        const originalReadFile = fs.promises.readFile;
+        fs.promises.readFile = async (...args) => {
+            const value = await originalReadFile.apply(fs.promises, args);
+            if (String(args[0]) === ownerPath && !readEntered) {
+                readEntered = true;
+                await readGate;
+            }
+            return value;
+        };
+        try {
+            const racingScan = storeA.scan(2000);
+            for (let attempt = 0; attempt < 50 && !readEntered; attempt += 1) {
+                await new Promise(resolve => setImmediate(resolve));
+            }
+            assert.strictEqual(readEntered, true);
+            const racingRemove = storeA.remove(instanceId, 2001);
+            await new Promise(resolve => setImmediate(resolve));
+            releaseRead();
+            await Promise.all([racingScan, racingRemove]);
+        } finally {
+            fs.promises.readFile = originalReadFile;
+        }
+        assert.deepStrictEqual((await storeA.scan(2002)).snapshots, [],
+            'a scan racing remove must not repopulate the local last-valid cache');
+        assert.deepStrictEqual((await storeB.scan(2002)).snapshots, [],
+            'the racing removal must still invalidate a peer cache');
+
+        assert.strictEqual(fs.existsSync(removalPath), true);
+        await storeB.scan(2001 + 24 * 60 * 60 * 1000 + 1);
+        assert.strictEqual(fs.existsSync(removalPath), false, 'removal markers are cleaned after bounded retention');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
+async function runProductionAttentionStoreTombstoneReactivationRaceChecks() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-reactivation-race-'));
+    const instanceId = '8'.repeat(32);
+    const removalPath = path.join(root, 'removals', `${instanceId}.json`);
+    const storeA = new ProductionAttentionStore(root, 'a'.repeat(32));
+    const storeB = new ProductionAttentionStore(root, 'b'.repeat(32));
+    const snapshot = sequence => attentionPayload.validateAttentionOwnerSnapshot({
+        ...attentionPayload.createAttentionPayload([], sequence),
+        instanceId,
+        sequence,
+        heartbeat: sequence,
+    });
+    try {
+        await storeA.write(snapshot(6), 1000);
+        await storeA.scan(1001);
+        assert.deepStrictEqual((await storeB.scan(1001)).snapshots.map(value => value.sequence), [6]);
+
+        await storeA.remove(instanceId, 1002);
+        await storeA.write(snapshot(1), 1003);
+        assert.deepStrictEqual((await storeB.scan(1003)).snapshots.map(value => value.sequence), [1],
+            'a peer that missed unregister must use the retained tombstone to accept reactivation sequence 1');
+        assert.strictEqual(fs.existsSync(removalPath), true,
+            'reactivation must retain the shared tombstone for peers that have not scanned yet');
+
+        await storeA.write(snapshot(2), 1004);
+        assert.deepStrictEqual((await storeB.scan(1004)).snapshots.map(value => value.sequence), [2],
+            'a retained tombstone must not block later heartbeats from the reactivated owner');
+        assert.strictEqual(fs.existsSync(removalPath), true);
+
+        await assert.rejects(storeA.write(snapshot(1), 1005), /sequence decreased/,
+            'a retained tombstone must not repeatedly reset sequence monotonicity after reactivation');
+        assert.deepStrictEqual({
+            writer: (await storeA.scan(1005)).snapshots.map(value => value.sequence),
+            peer: (await storeB.scan(1005)).snapshots.map(value => value.sequence),
+        }, { writer: [2], peer: [2] }, 'a rejected late heartbeat must leave both stores at sequence 2');
+
+        await storeA.remove(instanceId, 1006);
+        await storeA.write(snapshot(1), 1007);
+        assert.deepStrictEqual({
+            writer: (await storeA.scan(1007)).snapshots.map(value => value.sequence),
+            peer: (await storeB.scan(1007)).snapshots.map(value => value.sequence),
+        }, { writer: [1], peer: [1] }, 'a newer tombstone generation must permit one new sequence reset');
+
+        const afterRetentionMs = 1006 + 24 * 60 * 60 * 1000 + 1;
+        assert.deepStrictEqual((await storeA.scan(afterRetentionMs)).snapshots, [],
+            'the writer must not retain a stale snapshot after tombstone retention');
+        assert.deepStrictEqual((await storeB.scan(afterRetentionMs)).snapshots, [],
+            'the peer must not retain a stale snapshot after tombstone retention');
+        assert.strictEqual(fs.existsSync(removalPath), false, 'retained tombstones still expire after bounded retention');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
+async function runAttentionBridgeClientPrivacyChecks() {
+    const executed = [];
+    const registered = new Map();
+    let handshakeMode = 'accepted';
+    const vscode = {
+        commands: {
+            registerCommand: (command, callback) => {
+                registered.set(command, callback);
+                return { dispose() { registered.delete(command); } };
+            },
+            executeCommand: async (command, argument) => {
+                executed.push({ command, argument });
+                if (command === '_projectStewardAttention.bridge.handshake') {
+                    if (handshakeMode === 'missing') throw new Error('command not found');
+                    return {
+                        accepted: true,
+                        protocolVersion: handshakeMode === 'mismatch' ? 2 : 1,
+                        bridgeExtensionVersion: '0.1.1',
+                        capabilities: { snapshots: true, acknowledgements: true, atomicReplace: true },
+                    };
+                }
+                return undefined;
+            },
+        },
+    };
+    const currentModuleLoad = Module._load;
+    Module._load = function (request, parent, isMain) {
+        if (request === 'vscode') return vscode;
+        return currentModuleLoad.call(this, request, parent, isMain);
+    };
+    const modulePath = require.resolve('../out/aiSessions/attentionBridgeClient');
+    delete require.cache[modulePath];
+    try {
+        const AttentionBridgeClient = require(modulePath).default;
+        const secretIdentity = 'vscode-remote://ssh-remote+secret.example.com/home/alice/private-repo';
+        const errors = [];
+        const receivedAggregates = [];
+        const client = new AttentionBridgeClient(aggregate => receivedAggregates.push(aggregate), error => errors.push(error));
+        assert.strictEqual(await client.publish([]), true);
+        assert.strictEqual(executed[0].command, '_projectStewardAttention.bridge.handshake');
+        const productionPublish = executed.find(entry => entry.command === '_projectStewardAttention.bridge.publish');
+        assert.ok(productionPublish);
+        const serialized = JSON.stringify(productionPublish.argument);
+        assert.ok(!serialized.includes('/home/alice/private-repo'));
+        assert.ok(!serialized.includes('secret.example.com'));
+        assert.ok(!serialized.includes('ssh-remote'));
+        assert.ok(!Object.prototype.hasOwnProperty.call(productionPublish.argument, 'workspaceIdentity'));
+
+        const aggregateReceiver = registered.get('_projectStewardAttention.workspace.aggregate');
+        aggregateReceiver({
+            protocolVersion: 1,
+            aggregateRevision: 'b'.repeat(64),
+            generatedAtMs: 1,
+            sessions: [{
+                projectId: 'a'.repeat(64),
+                sessionKey: 'codex:peer',
+                reasons: ['input-required'],
+                eventIds: ['peer-event'],
+                observedAtMs: 1,
+            }],
+        });
+        assert.strictEqual(receivedAggregates.length, 1);
+        const errorCountBeforeMalformedAggregate = errors.length;
+        aggregateReceiver({ protocolVersion: 1, sessions: new Array(1001).fill({}) });
+        assert.strictEqual(errors.length, errorCountBeforeMalformedAggregate + 1, 'malformed aggregate must fail closed');
+        await client.acknowledge(['peer-event']);
+        assert.strictEqual(
+            executed.some(entry => entry.command === '_projectStewardAttention.bridge.acknowledge'
+                && entry.argument.eventIds[0] === 'peer-event'),
+            true,
+            'a window must acknowledge an exact event even when it does not own that event'
+        );
+        client.dispose();
+
+        const publishCount = executed.filter(entry => entry.command === '_projectStewardAttention.bridge.publish').length;
+        handshakeMode = 'mismatch';
+        const mismatch = new AttentionBridgeClient(() => undefined, error => errors.push(error));
+        assert.strictEqual(await mismatch.publish([]), false, 'incompatible bridge must keep window-local fallback');
+        mismatch.dispose();
+        assert.strictEqual(executed.filter(entry => entry.command === '_projectStewardAttention.bridge.publish').length, publishCount);
+
+        handshakeMode = 'missing';
+        const missing = new AttentionBridgeClient(() => undefined, error => errors.push(error));
+        assert.strictEqual(await missing.publish([]), false, 'missing bridge must keep window-local fallback');
+        missing.dispose();
+        assert.ok(errors.length >= 2);
+    } finally {
+        Module._load = currentModuleLoad;
+        delete require.cache[modulePath];
+    }
+}
+
+async function runProductionAttentionBridgeIntegrationChecks() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-integration-'));
+    const registered = new Map();
+    const executed = [];
+    const vscode = {
+        window: {
+            createOutputChannel: () => ({
+                appendLine: () => undefined,
+                dispose: () => undefined,
+            }),
+        },
+        workspace: { workspaceFolders: [] },
+        commands: {
+            registerCommand: (command, callback) => {
+                registered.set(command, callback);
+                return { dispose() { registered.delete(command); } };
+            },
+            executeCommand: async (command, argument) => {
+                executed.push({ command, argument });
+                const callback = registered.get(command);
+                return callback ? callback(argument) : undefined;
+            },
+        },
+    };
+    const currentModuleLoad = Module._load;
+    Module._load = function (request, parent, isMain) {
+        if (request === 'vscode') return vscode;
+        return currentModuleLoad.call(this, request, parent, isMain);
+    };
+    const extensionPath = require.resolve('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/extension');
+    const clientPath = require.resolve('../out/aiSessions/attentionBridgeClient');
+    delete require.cache[extensionPath];
+    delete require.cache[clientPath];
+    const bridgePackageRoot = path.join(__dirname, '..', 'extensions', 'attention-ui-bridge');
+    const bridgePackage = JSON.parse(fs.readFileSync(path.join(bridgePackageRoot, 'package.json'), 'utf8'));
+    const extensionSource = fs.readFileSync(path.join(bridgePackageRoot, 'src', 'extension.ts'), 'utf8');
+    const productionStoreSource = fs.readFileSync(path.join(bridgePackageRoot, 'src', 'productionAttentionStore.ts'), 'utf8');
+    assert.ok(!extensionSource.includes("bridgeExtensionVersion: '0.1.1'"));
+    assert.ok(!extensionSource.includes("Date.now(), '0.1.1'"));
+    assert.ok(!productionStoreSource.includes("bridgeVersion = '0.1.1'"));
+    const context = {
+        extensionPath: bridgePackageRoot,
+        globalStoragePath: root,
+        globalStorageUri: { scheme: 'file' },
+        subscriptions: [],
+    };
+    try {
+        const extension = require(extensionPath);
+        await extension.activate(context);
+        assert.strictEqual(typeof registered.get('_projectStewardAttention.bridge.handshake'), 'function');
+        const aggregates = [];
+        const errors = [];
+        const AttentionBridgeClient = require(clientPath).default;
+        const client = new AttentionBridgeClient(aggregate => aggregates.push(aggregate), error => errors.push(error));
+        assert.strictEqual(await client.publish([{
+            projectId: 'a'.repeat(64),
+            sessionKey: 'codex:integration',
+            state: 'needsAttention',
+            eventId: 'integration-event',
+            reason: 'completed',
+            observedAtMs: 1,
+        }]), true);
+        assert.strictEqual(errors.length, 0);
+        assert.strictEqual(aggregates.length > 0, true);
+        assert.deepStrictEqual(aggregates[aggregates.length - 1].sessions[0].eventIds, ['integration-event']);
+
+        const publish = registered.get('_projectStewardAttention.bridge.publish');
+        const handshake = registered.get('_projectStewardAttention.bridge.handshake');
+        const unregister = registered.get('_projectStewardAttention.bridge.unregister');
+        const validPublishedSnapshot = executed.find(entry => entry.command === '_projectStewardAttention.bridge.publish').argument;
+        assert.strictEqual(typeof unregister, 'function');
+        const handshakeResponse = await handshake({
+            protocolVersion: 1,
+            mainExtensionVersion: '1.1.8',
+            instanceId: 'a'.repeat(32),
+        });
+        assert.strictEqual(handshakeResponse.bridgeExtensionVersion, bridgePackage.version);
+        await assert.rejects(unregister({ protocolVersion: 1, instanceId: validPublishedSnapshot.instanceId, unexpected: true }), /unexpected fields/);
+        await assert.rejects(handshake({ protocolVersion: 2, mainExtensionVersion: '1.1.8', instanceId: 'a'.repeat(32) }), /protocol/);
+        await assert.rejects(publish({ ...validPublishedSnapshot, unexpected: true }), /unexpected fields/);
+        await assert.rejects(publish({ ...validPublishedSnapshot, version: 2 }), /header|version|protocol/);
+        await assert.rejects(publish({
+            ...validPublishedSnapshot,
+            items: [{ ...validPublishedSnapshot.items[0], eventId: 'x'.repeat(1025) }],
+        }), /eventId/);
+
+        const productionRoot = path.join(root, 'attention-local-bridge-spike', 'v1', 'production-attention', 'v1', 'instances');
+        const storedText = fs.readdirSync(productionRoot)
+            .filter(name => name.endsWith('.json'))
+            .map(name => fs.readFileSync(path.join(productionRoot, name), 'utf8'))
+            .join('\n');
+        assert.ok(!storedText.includes('/home/'));
+        assert.ok(!storedText.includes('ssh-remote'));
+        assert.ok(!storedText.includes('workspaceIdentity'));
+        await unregister({ protocolVersion: 1, instanceId: validPublishedSnapshot.instanceId });
+        assert.strictEqual(fs.existsSync(path.join(productionRoot, `${validPublishedSnapshot.instanceId}.json`)), false);
+        client.dispose();
+    } finally {
+        Module._load = currentModuleLoad;
+        delete require.cache[extensionPath];
+        delete require.cache[clientPath];
+        for (const disposable of context.subscriptions.slice().reverse()) disposable.dispose();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
+async function runAttentionBridgeClientLifecycleChecks() {
+    const registered = new Map();
+    const commands = [];
+    const timers = [];
+    let now = 1_000;
+    let bridgeMode = 'missing';
+    let holdHandshake = false;
+    let handshakeEntered = false;
+    let releaseHandshake;
+    let handshakeGate = Promise.resolve();
+    let holdFirstPublish = false;
+    let firstPublishEntered = false;
+    let releaseFirstPublish;
+    let firstPublishGate = new Promise(resolve => { releaseFirstPublish = resolve; });
+    const vscode = { commands: {
+        registerCommand: (command, callback) => {
+            registered.set(command, callback);
+            return { dispose: () => registered.delete(command) };
+        },
+        executeCommand: async (command, argument) => {
+            commands.push({ command, argument });
+            if (command === '_projectStewardAttention.bridge.handshake') {
+                if (holdHandshake) {
+                    handshakeEntered = true;
+                    await handshakeGate;
+                }
+                if (bridgeMode === 'missing') throw new Error('command not found');
+                return {
+                    accepted: true, protocolVersion: bridgeMode === 'incompatible' ? 2 : 1,
+                    bridgeExtensionVersion: '0.1.1',
+                    capabilities: { snapshots: true, acknowledgements: true, atomicReplace: true },
+                };
+            }
+            if (command === '_projectStewardAttention.bridge.publish' && holdFirstPublish && !firstPublishEntered) {
+                firstPublishEntered = true;
+                await firstPublishGate;
+            }
+            if (command === '_projectStewardAttention.bridge.publish' && bridgeMode === 'missing') {
+                throw new Error('command not found');
+            }
+            return undefined;
+        },
+    } };
+    const currentModuleLoad = Module._load;
+    Module._load = function (request, parent, isMain) {
+        if (request === 'vscode') return vscode;
+        return currentModuleLoad.call(this, request, parent, isMain);
+    };
+    const modulePath = require.resolve('../out/aiSessions/attentionBridgeClient');
+    delete require.cache[modulePath];
+    const options = {
+        now: () => now,
+        setTimeout: (callback, delayMs) => { timers.push({ callback, delayMs }); return timers.length; },
+        clearTimeout: () => undefined,
+    };
+    const item = eventId => ({
+        projectId: 'a'.repeat(64), sessionKey: 'codex:lifecycle', state: 'needsAttention',
+        eventId, reason: 'input-required', observedAtMs: now,
+    });
+    try {
+        const Client = require(modulePath).default;
+        const client = new Client(() => undefined, () => undefined, options);
+        assert.strictEqual(await client.publish([item('latest-while-missing')]), false);
+        assert.strictEqual(timers.length, 1, 'missing bridge schedules bounded retry');
+        bridgeMode = 'available';
+        timers.shift().callback();
+        for (let attempt = 0; attempt < 50 && !commands.some(entry => entry.command === '_projectStewardAttention.bridge.publish'); attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.strictEqual(commands.find(entry => entry.command === '_projectStewardAttention.bridge.publish').argument.items[0].eventId, 'latest-while-missing');
+
+        bridgeMode = 'missing';
+        assert.strictEqual(await client.publish([], true), false);
+        const publishCountBeforeEmptyRecovery = commands.filter(
+            entry => entry.command === '_projectStewardAttention.bridge.publish'
+        ).length;
+        assert.strictEqual(timers.length, 1);
+        bridgeMode = 'available';
+        timers.shift().callback();
+        for (let attempt = 0; attempt < 50 && commands.filter(
+            entry => entry.command === '_projectStewardAttention.bridge.publish'
+        ).length === publishCountBeforeEmptyRecovery; attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        const publicationsAfterEmptyRecovery = commands.filter(
+            entry => entry.command === '_projectStewardAttention.bridge.publish'
+        );
+        assert.strictEqual(publicationsAfterEmptyRecovery.length, publishCountBeforeEmptyRecovery + 1,
+            'bridge recovery must flush an explicitly requested empty snapshot');
+        assert.deepStrictEqual(publicationsAfterEmptyRecovery[publicationsAfterEmptyRecovery.length - 1].argument.items, []);
+
+        holdFirstPublish = true;
+        firstPublishEntered = false;
+        firstPublishGate = new Promise(resolve => { releaseFirstPublish = resolve; });
+        const first = client.publish([item('older')], true);
+        for (let attempt = 0; attempt < 50 && !firstPublishEntered; attempt += 1) await new Promise(resolve => setImmediate(resolve));
+        const second = client.publish([item('newer')], true);
+        releaseFirstPublish();
+        await Promise.all([first, second]);
+        holdFirstPublish = false;
+        const beforeDedup = commands.filter(entry => entry.command === '_projectStewardAttention.bridge.publish').length;
+        await client.publish([item('newer')]);
+        assert.strictEqual(commands.filter(entry => entry.command === '_projectStewardAttention.bridge.publish').length, beforeDedup, 'client cache remains at newest publication');
+        client.dispose();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.strictEqual(commands.some(entry => entry.command === '_projectStewardAttention.bridge.unregister'), true);
+
+        holdHandshake = true;
+        handshakeEntered = false;
+        handshakeGate = new Promise(resolve => { releaseHandshake = resolve; });
+        const handshakeDisposeClient = new Client(() => undefined, () => undefined, options);
+        const handshakeDisposePublish = handshakeDisposeClient.publish([item('dispose-during-handshake')], true);
+        for (let attempt = 0; attempt < 50 && !handshakeEntered; attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        const handshakeDisposeInstanceId = handshakeDisposeClient.instanceId;
+        handshakeDisposeClient.dispose();
+        releaseHandshake();
+        await handshakeDisposePublish;
+        await new Promise(resolve => setImmediate(resolve));
+        holdHandshake = false;
+
+        holdFirstPublish = false;
+        const queuedDisposeClient = new Client(() => undefined, () => undefined, options);
+        assert.strictEqual(await queuedDisposeClient.publish([item('queued-dispose-warmup')], true), true);
+        const queuedDisposeInstanceId = queuedDisposeClient.instanceId;
+        holdFirstPublish = true;
+        firstPublishEntered = false;
+        firstPublishGate = new Promise(resolve => { releaseFirstPublish = resolve; });
+        const inFlightAtDispose = queuedDisposeClient.publish([item('in-flight-at-dispose')], true);
+        for (let attempt = 0; attempt < 50 && !firstPublishEntered; attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        const queuedAtDispose = queuedDisposeClient.publish([item('queued-at-dispose')], true);
+        queuedDisposeClient.dispose();
+        releaseFirstPublish();
+        await Promise.all([inFlightAtDispose, queuedAtDispose]);
+        await new Promise(resolve => setImmediate(resolve));
+        holdFirstPublish = false;
+
+        const lifecycleMutations = instanceId => commands
+            .filter(entry => entry.argument?.instanceId === instanceId
+                && (entry.command === '_projectStewardAttention.bridge.publish'
+                    || entry.command === '_projectStewardAttention.bridge.unregister'))
+            .map(entry => ({
+                command: entry.command,
+                eventIds: entry.argument.items?.map(value => value.eventId) || [],
+            }));
+        assert.deepStrictEqual({
+            disposedDuringHandshake: lifecycleMutations(handshakeDisposeInstanceId),
+            disposedWithQueuedAndInFlight: lifecycleMutations(queuedDisposeInstanceId).slice(1),
+        }, {
+            disposedDuringHandshake: [{
+                command: '_projectStewardAttention.bridge.unregister',
+                eventIds: [],
+            }],
+            disposedWithQueuedAndInFlight: [
+                {
+                    command: '_projectStewardAttention.bridge.publish',
+                    eventIds: ['in-flight-at-dispose'],
+                },
+                {
+                    command: '_projectStewardAttention.bridge.unregister',
+                    eventIds: [],
+                },
+            ],
+        });
+
+        bridgeMode = 'incompatible';
+        const incompatibleTimersBefore = timers.length;
+        const incompatible = new Client(() => undefined, () => undefined, options);
+        assert.strictEqual(await incompatible.publish([item('never')]), false);
+        assert.strictEqual(timers.length, incompatibleTimersBefore, 'incompatible protocol is not retried blindly');
+        incompatible.dispose();
+    } finally {
+        Module._load = currentModuleLoad;
+        delete require.cache[modulePath];
+    }
+}
+
+function runAttentionProjectChecks() {
+    const localKey = attentionProject.getAttentionProjectKey('/work/My%20Repo/');
+    assert.strictEqual(localKey, attentionProject.getAttentionProjectKey('/work/My Repo'));
+    assert.strictEqual(localKey.length, 64);
+    assert.ok(!localKey.includes('/work/My Repo'));
+    assert.notStrictEqual(
+        attentionProject.getAttentionProjectKey('vscode-remote://ssh-remote+host-a/work/repo'),
+        attentionProject.getAttentionProjectKey('vscode-remote://ssh-remote+host-b/work/repo')
+    );
+    assert.strictEqual(attentionProject.getAttentionProjectKey(''), '');
+
+    const summaries = attentionProject.getAttentionProjectSummaries({
+        protocolVersion: 1,
+        aggregateRevision: 'revision',
+        generatedAtMs: 10,
+        sessions: [
+            { projectId: localKey, sessionKey: 'codex:one', eventIds: ['event-1'], reasons: ['input-required'], observedAtMs: 1 },
+            { projectId: localKey, sessionKey: 'claude:two', eventIds: ['event-2'], reasons: ['completed'], observedAtMs: 2 },
+        ],
+    });
+    assert.deepStrictEqual(summaries, [{
+        projectKey: localKey,
+        attentionCount: 2,
+        eventIds: ['event-1', 'event-2'],
+        sessions: [
+            { sessionKey: 'claude:two', eventId: 'event-2', eventIds: ['event-2'] },
+            { sessionKey: 'codex:one', eventId: 'event-1', eventIds: ['event-1'] },
+        ],
+    }]);
+    const multiEventSummary = attentionProject.getAttentionProjectSummaries({
+        protocolVersion: 1,
+        aggregateRevision: 'c'.repeat(64),
+        generatedAtMs: 10,
+        sessions: [{
+            projectId: localKey,
+            sessionKey: 'codex:one',
+            eventIds: ['event-old', 'event-new'],
+            reasons: ['completed', 'input-required'],
+            observedAtMs: 2,
+        }],
+    });
+    assert.deepStrictEqual(multiEventSummary[0].sessions[0].eventIds, ['event-new', 'event-old']);
+    const project = { id: 'saved', path: '/work/My Repo', name: 'Repo' };
+    const annotated = attentionProject.withAttentionProject(project, {
+        protocolVersion: 1,
+        aggregateRevision: 'revision',
+        generatedAtMs: 10,
+        sessions: [
+            { projectId: localKey, sessionKey: 'codex:one', eventIds: ['event-1'], reasons: ['input-required'], observedAtMs: 1 },
+        ],
+    });
+    assert.notStrictEqual(annotated, project);
+    assert.strictEqual(annotated.aiSessionAttentionCount, 1);
+    assert.deepStrictEqual(annotated.aiSessionAttentionEventIds, ['event-1']);
+    assert.strictEqual(project.aiSessionAttentionCount, undefined);
+
+    const remotePath = 'vscode-remote://dev-container+fixture/work/app';
+    const openPath = '/work/app';
+    const openKey = attentionProject.getAttentionProjectKey(openPath);
+    const remoteOpenProject = attentionProject.withAttentionProject({
+        id: 'open-project',
+        path: openPath,
+        attentionProjectPath: remotePath,
+    }, {
+        protocolVersion: 1,
+        aggregateRevision: 'remote-revision',
+        generatedAtMs: 10,
+        sessions: [{
+            projectId: openKey,
+            sessionKey: 'codex:remote',
+            eventIds: ['event-remote'],
+            reasons: ['input-required'],
+            observedAtMs: 2,
+        }],
+    });
+    assert.strictEqual(
+        remoteOpenProject.aiSessionAttentionCount,
+        1,
+        'OPEN attention identity must use the actual open path shared by OTHER WINDOWS cards'
+    );
+}
+
 function runVsixPackagingChecks() {
     const vscodeIgnore = fs.readFileSync(path.join(__dirname, '..', '.vscodeignore'), 'utf8');
     assert.ok(
@@ -1689,9 +3543,10 @@ function runVsixPackagingChecks() {
 async function main() {
     runPathChecks();
     runAssignmentChecks();
-    runCurrentWorkspaceStateChecks();
+    runDashboardSearchCatalogChecks();
+    runAttentionProjectionChecks();
     runFavoriteProjectOrderChecks();
-    runCurrentWorkspaceMatchingChecks();
+    runOpenProjectRuntimeIdentityChecks();
     runCandidateFilterChecks();
     runDisplayChecks();
     runPinStoreChecks();
@@ -1699,18 +3554,34 @@ async function main() {
     runBatchAiSessionArchiveChecks();
     runActiveAiSessionTerminalHighlightChecks();
     runAiSessionTerminalResolutionChecks();
+    await runAiSessionTerminalBindingStoreChecks();
+    await runAiSessionTerminalPersistenceChecks();
     await runBatchAiSessionArchiveHostChecks();
     runWebviewContentChecks();
     runCurrentWorkspaceRenderingChecks();
     runFavoriteRenderingChecks();
+    runAttentionProjectRenderingChecks();
     runFavoriteDndChecks();
     runBatchAiSessionWebviewChecks();
     runGitRepositoryDetectorChecks();
     runCodexSubagentSessionFilterChecks();
+    runCodexSessionActivityTimestampChecks();
     runKimiNestedSubagentBoundaryChecks();
     runClaudeSessionChecks();
     runProviderChecks();
+    runProviderLifecycleServiceChecks();
     runCommandBuilderChecks();
+    runLifecycleParserChecks();
+    runAttentionMonitorChecks();
+    runAttentionPayloadChecks();
+    await runProductionAttentionStoreClockChecks();
+    await runProductionAttentionStoreLifecycleChecks();
+    await runProductionAttentionStoreUnregisterPropagationChecks();
+    await runProductionAttentionStoreTombstoneReactivationRaceChecks();
+    await runAttentionBridgeClientPrivacyChecks();
+    await runProductionAttentionBridgeIntegrationChecks();
+    await runAttentionBridgeClientLifecycleChecks();
+    runAttentionProjectChecks();
     runVsixPackagingChecks();
 
     console.log('AI session safety checks passed.');

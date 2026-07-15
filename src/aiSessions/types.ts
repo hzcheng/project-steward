@@ -2,10 +2,13 @@
 
 import type { AiSessionProviderId, CodexSession } from '../models';
 import type { BatchAiSessionArchiveResult } from './archiveBatch';
+import type { AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
+import type { DashboardSearchCatalog } from '../webview/dashboardViewModel';
 
 export interface AiSessionTerminalEntry<TTerminal = unknown> {
     terminal: TTerminal;
     markerPath: string;
+    runStartedAtMs: number;
 }
 
 export interface AiSessionReadResult {
@@ -24,6 +27,7 @@ export interface AiSessionDisposable {
 
 export interface AiSessionService {
     getSessions(options?: boolean | AiSessionQueryOptions): AiSessionReadResult;
+    getLifecycleSignals(requests: readonly AiSessionLifecycleRequest[]): Record<string, AiSessionLifecycleSignal>;
     watchSessionChanges(onDidChange: () => void): AiSessionDisposable;
     archiveSession(sessionId: string): boolean;
     invalidateCache(): void;
@@ -73,6 +77,7 @@ export interface OpenProjectAiSessionViewModel {
     unavailableProviders: AiSessionProviderId[];
     searchText?: string;
     aiSessionCount?: number;
+    attentionCount?: number;
     sessionSectionHtml?: string;
 }
 
@@ -82,6 +87,7 @@ export interface AiSessionsUpdatedMessage {
     sequence: number;
     generatedAt: string;
     openProjects: OpenProjectAiSessionViewModel[];
+    searchCatalog: DashboardSearchCatalog;
 }
 
 export interface AiSessionActiveTerminalChangedMessage {

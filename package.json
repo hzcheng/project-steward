@@ -2,7 +2,7 @@
     "name": "project-steward",
     "displayName": "Project Steward",
     "description": "Organize local, SSH, and Dev Container projects in a synchronized project steward.",
-    "version": "1.1.8",
+    "version": "2.0.0",
     "publisher": "hzcheng",
     "license": "MIT",
     "icon": "media/extension_icon.png",
@@ -12,6 +12,9 @@
     "extensionKind": [
         "workspace",
         "ui"
+    ],
+    "extensionDependencies": [
+        "hzcheng.project-steward-attention-ui-bridge"
     ],
     "categories": [
         "Other"
@@ -108,6 +111,11 @@
                     "minimum": 1,
                     "markdownDescription": "Maximum number of AI session rows visible in an expanded project card before the session list scrolls."
                 },
+                "projectSteward.aiSessionAttention.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show attention indicators when Project Steward AI sessions finish or may need input."
+                },
                 "projectSteward.displayProjectPath": {
                     "type": "boolean",
                     "default": true
@@ -186,8 +194,19 @@
         "webpack": "webpack --mode development",
         "webpack-dev": "webpack --mode development --watch",
         "test-compile": "tsc -p ./",
-        "test:safety": "npm run test-compile && node scripts/run-ai-session-safety-checks.js",
+        "test:open-projects": "npm run test-compile && npm run attention:bridge:compile && node scripts/run-open-project-safety-checks.js",
+        "test:dashboard": "npm run test-compile && node scripts/run-dashboard-webview-checks.js",
+        "test:safety": "npm run test-compile && npm run attention:bridge:compile && node scripts/run-ai-session-safety-checks.js && node scripts/run-open-project-safety-checks.js",
         "test:release-notes": "node scripts/run-release-notes-checks.js",
+        "test:release-packaging": "node scripts/run-release-packaging-checks.js",
+        "spike:attention:compile": "tsc -p spikes/attention-local-bridge/tsconfig.json",
+        "spike:attention:test": "npm run spike:attention:compile && npm run attention:bridge:compile && node scripts/run-attention-local-bridge-spike-checks.js",
+        "spike:attention:bundle": "webpack --config spikes/attention-local-bridge/webpack.config.js --mode production",
+        "attention:bridge:compile": "tsc -p extensions/attention-ui-bridge/tsconfig.json",
+        "attention:bridge:bundle": "webpack --config extensions/attention-ui-bridge/webpack.config.js --mode production",
+        "package:release": "npm run attention:bridge:bundle && node scripts/package-release-extensions.js",
+        "attention:package": "npm run spike:attention:test && npm run spike:attention:bundle && npm run attention:bridge:bundle && node scripts/package-attention-extensions.js",
+        "spike:attention:package": "npm run attention:package",
         "lint": "tslint -p ./",
         "install-local": "./scripts/build-test-package-install.sh",
         "publish-marketplace": "./scripts/publish-marketplace.sh"

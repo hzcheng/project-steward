@@ -7,6 +7,8 @@ import * as path from 'path';
 import { CodexSession } from '../models';
 import { filterAiSessionsByCandidatePaths, normalizeAiSessionCandidatePaths } from '../aiSessions/sessionHelpers';
 import type { AiSessionQueryOptions } from '../aiSessions/types';
+import { parseCodexLifecycleLines, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from '../aiSessions/lifecycle';
+import { readJsonlTailLines } from '../aiSessions/jsonlTail';
 
 interface CodexSessionIndexEntry {
     id?: string;
@@ -34,6 +36,7 @@ export interface Disposable {
 export default class CodexSessionService {
     private cachedResult: CodexSessionReadResult = null;
     private cachedAt = 0;
+    private readonly lifecycleSessionFiles = new Map<string, string>();
     private readonly cacheTtlMs = 5000;
     private readonly changePollIntervalMs = 3000;
 
@@ -72,7 +75,12 @@ export default class CodexSessionService {
             let session: CodexSession = {
                 id: entry.id,
                 name: entry.thread_name || previous?.name || entry.id,
-                updatedAt: entry.updated_at || meta?.timestamp || previous?.updatedAt,
+                updatedAt: this.getMostRecentTimestamp(
+                    entry.updated_at,
+                    meta?.timestamp,
+                    this.getSessionFileUpdatedAt(entry.id, sessionFiles),
+                    previous?.updatedAt
+                ),
                 cwd: meta?.cwd,
             };
 
@@ -87,6 +95,37 @@ export default class CodexSessionService {
             .sort((a, b) => this.compareUpdatedAt(b.updatedAt, a.updatedAt));
 
         return this.filterResult(this.cacheResult({ available: true, sessions }), candidatePaths);
+    }
+
+    getLifecycleSignals(requests: readonly AiSessionLifecycleRequest[]): Record<string, AiSessionLifecycleSignal> {
+        let codexHome = this.getCodexHome();
+        if (!codexHome) {
+            return {};
+        }
+        let signals: Record<string, AiSessionLifecycleSignal> = {};
+        let discoveredFiles: Map<string, string> = null;
+        for (let request of requests || []) {
+            if (!request?.sessionId || !Number.isFinite(request.runStartedAtMs) || signals[request.sessionId]) {
+                continue;
+            }
+            let sessionFile = this.lifecycleSessionFiles.get(request.sessionId);
+            if (sessionFile && !fs.existsSync(sessionFile)) {
+                this.lifecycleSessionFiles.delete(request.sessionId);
+                sessionFile = null;
+            }
+            if (!sessionFile) {
+                discoveredFiles = discoveredFiles || this.getSessionFiles(codexHome);
+                sessionFile = discoveredFiles.get(request.sessionId);
+            }
+            if (!sessionFile) {
+                continue;
+            }
+            let signal = parseCodexLifecycleLines(readJsonlTailLines(sessionFile), request.runStartedAtMs);
+            if (signal) {
+                signals[request.sessionId] = signal;
+            }
+        }
+        return signals;
     }
 
     archiveSession(sessionId: string): boolean {
@@ -108,6 +147,7 @@ export default class CodexSessionService {
             let archivePath = path.join(codexHome, 'archived_sessions');
             fs.mkdirSync(archivePath, { recursive: true });
             fs.renameSync(sessionFile, this.getAvailableArchivePath(archivePath, path.basename(sessionFile)));
+            this.lifecycleSessionFiles.delete(sessionId);
             this.invalidateCache();
             return true;
         } catch (e) {
@@ -242,6 +282,9 @@ export default class CodexSessionService {
     private getSessionFiles(codexHome: string): Map<string, string> {
         let files = new Map<string, string>();
         this.addSessionFiles(path.join(codexHome, 'sessions'), files, true);
+        for (let [sessionId, filePath] of files) {
+            this.lifecycleSessionFiles.set(sessionId, filePath);
+        }
 
         return files;
     }
@@ -289,10 +332,45 @@ export default class CodexSessionService {
             sessionsById.set(sessionId, {
                 id: sessionId,
                 name: previous?.name || sessionId,
-                updatedAt: previous?.updatedAt || meta.timestamp,
+                updatedAt: this.getMostRecentTimestamp(
+                    previous?.updatedAt,
+                    meta.timestamp,
+                    this.getSessionFileUpdatedAt(sessionId, sessionFiles)
+                ),
                 cwd: previous?.cwd || meta.cwd,
             });
         }
+    }
+
+    private getSessionFileUpdatedAt(sessionId: string, sessionFiles: Map<string, string>): string {
+        let sessionFile = sessionFiles.get(sessionId);
+        if (!sessionFile) {
+            return null;
+        }
+
+        try {
+            return fs.statSync(sessionFile).mtime.toISOString();
+        } catch (e) {
+            return null;
+        }
+    }
+
+    private getMostRecentTimestamp(...timestamps: string[]): string {
+        let mostRecent: string = null;
+        let mostRecentTime = -Infinity;
+        for (let timestamp of timestamps) {
+            if (!timestamp) {
+                continue;
+            }
+
+            let parsed = Date.parse(timestamp);
+            if (!isNaN(parsed) && parsed > mostRecentTime) {
+                mostRecent = timestamp;
+                mostRecentTime = parsed;
+            }
+        }
+
+        return mostRecent || timestamps.find(timestamp => Boolean(timestamp)) || null;
     }
 
     private isExplicitSubagentSource(source: unknown): boolean {

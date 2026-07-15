@@ -2,6 +2,7 @@
 
 import * as vscode from 'vscode';
 import { StorageOption, VSCODE_REMOTE_PREFIX, WSL_DEFAULT_REGEX } from "./constants";
+import type { AiSessionAttentionReason } from './aiSessions/lifecycle';
 
 export class Group {
     id: string;
@@ -29,7 +30,6 @@ export class Project {
     favorite?: boolean;
     favoriteOrder?: number;
     showSaveAction?: boolean;
-    isCurrentWorkspace?: boolean;
     codexSessions?: CodexSession[];
     kimiSessions?: CodexSession[];
     claudeSessions?: CodexSession[];
@@ -38,6 +38,11 @@ export class Project {
     kimiSessionsUnavailable?: boolean;
     claudeSessionsUnavailable?: boolean;
     activeAiSessionProvider?: AiSessionProviderId;
+    aiSessionAttentionCount?: number;
+    aiSessionAttentionEventIds?: string[];
+    openProjectCardKind?: 'current' | 'projectNavigation';
+    openProjectSourceInstanceId?: string;
+    openProjectEnvironmentLabel?: string;
     color: string;
     isGitRepo = false;
 
@@ -160,6 +165,7 @@ export interface CodexSession {
     workDir?: string;
     provider?: AiSessionProviderId;
     pinned?: boolean;
+    attention?: { eventId: string; reason: AiSessionAttentionReason; unread: boolean };
 }
 
 export interface StewardInfos {
@@ -169,7 +175,6 @@ export interface StewardInfos {
     favoritesGroupCollapsed?: boolean;
     openProjects?: Project[];
     openProjectsGroupCollapsed?: boolean;
-    currentWorkspaceProjectIds?: string[];
 }
 
 export enum ProjectPathType {

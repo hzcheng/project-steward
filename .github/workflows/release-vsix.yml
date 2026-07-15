@@ -47,6 +47,10 @@ jobs:
 
           package_name="$(node -p "require('./package.json').name")"
           package_version="$(node -p "require('./package.json').version")"
+          publisher="$(node -p "require('./package.json').publisher")"
+          bridge_name="$(node -p "require('./extensions/attention-ui-bridge/package.json').name")"
+          bridge_version="$(node -p "require('./extensions/attention-ui-bridge/package.json').version")"
+          bridge_publisher="$(node -p "require('./extensions/attention-ui-bridge/package.json').publisher")"
           requested_version="${{ inputs.version }}"
           trigger_ref_type="${{ github.ref_type }}"
           trigger_ref_name="${{ github.ref_name }}"
@@ -66,12 +70,18 @@ jobs:
             exit 1
           fi
 
-          vsix_file="${package_name}-${version}.vsix"
+          vsix_file="artifacts/${package_name}-${version}.vsix"
+          bridge_vsix_file="artifacts/${bridge_name}-${bridge_version}.vsix"
 
           echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publisher=$publisher" >> "$GITHUB_OUTPUT"
+          echo "bridge_name=$bridge_name" >> "$GITHUB_OUTPUT"
+          echo "bridge_version=$bridge_version" >> "$GITHUB_OUTPUT"
+          echo "bridge_publisher=$bridge_publisher" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "vsix_file=$vsix_file" >> "$GITHUB_OUTPUT"
+          echo "bridge_vsix_file=$bridge_vsix_file" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm ci
@@ -79,20 +89,38 @@ jobs:
       - name: Verify release notes
         run: npm run test:release-notes
 
+      - name: Verify release packaging
+        run: npm run test:release-packaging
+
       - name: Compile
-        run: npm run test-compile
+        run: npm run test-compile && npm run attention:bridge:compile
 
       - name: Lint
         run: npm run lint
 
-      - name: Package VSIX
-        run: npx --yes @vscode/vsce package --allow-star-activation --out "${{ steps.meta.outputs.vsix_file }}"
+      - name: Package release VSIX files
+        run: npm run package:release
+
+      - name: Write package summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## VSIX files"
+            echo
+            echo "| Extension | Version | File | SHA-256 |"
+            echo "| --- | --- | --- | --- |"
+            echo "| ${{ steps.meta.outputs.bridge_publisher }}.${{ steps.meta.outputs.bridge_name }} | ${{ steps.meta.outputs.bridge_version }} | ${{ steps.meta.outputs.bridge_vsix_file }} | $(sha256sum "${{ steps.meta.outputs.bridge_vsix_file }}" | awk '{print $1}') |"
+            echo "| ${{ steps.meta.outputs.publisher }}.${{ steps.meta.outputs.package_name }} | ${{ steps.meta.outputs.version }} | ${{ steps.meta.outputs.vsix_file }} | $(sha256sum "${{ steps.meta.outputs.vsix_file }}" | awk '{print $1}') |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.meta.outputs.vsix_file }}
-          path: ${{ steps.meta.outputs.vsix_file }}
+          name: project-steward-${{ steps.meta.outputs.version }}-vsix
+          path: |
+            ${{ steps.meta.outputs.bridge_vsix_file }}
+            ${{ steps.meta.outputs.vsix_file }}
           if-no-files-found: error
 
       - name: Create GitHub release
@@ -100,7 +128,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.meta.outputs.tag }}
           VERSION: ${{ steps.meta.outputs.version }}
-          VSIX_FILE: ${{ steps.meta.outputs.vsix_file }}
+          MAIN_VSIX_FILE: ${{ steps.meta.outputs.vsix_file }}
+          BRIDGE_VSIX_FILE: ${{ steps.meta.outputs.bridge_vsix_file }}
           DRAFT: ${{ inputs.draft }}
           PRERELEASE: ${{ inputs.prerelease }}
         shell: bash
@@ -122,7 +151,7 @@ jobs:
 
           node scripts/extract-release-notes.js "$VERSION" > release-notes.md
 
-          gh release create "$TAG" "$VSIX_FILE" \
+          gh release create "$TAG" "$BRIDGE_VSIX_FILE" "$MAIN_VSIX_FILE" \
             --title "Project Steward ${VERSION}" \
             --notes-file release-notes.md \
             "${args[@]}"
