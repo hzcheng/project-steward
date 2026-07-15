@@ -319,8 +319,11 @@ function getProjectDiv(
 ) {
     var isProjectNavigation = project.openProjectCardKind === 'projectNavigation';
     var isCurrentOpenProject = isReadOnlyProject && !isProjectNavigation;
-    var borderStyle = `background: ${project.color};`;
-    var projectStyle = project.color ? `--project-color: ${escapeStyleValue(project.color)};` : '';
+    var rawProjectColor = (project.color || '').trim();
+    var projectColor = escapeStyleValue(rawProjectColor);
+    projectColor = projectColor === rawProjectColor ? projectColor : '';
+    var borderStyle = projectColor ? `background: ${projectColor};` : '';
+    var projectStyle = projectColor ? `--project-color: ${projectColor};` : '';
     var remoteType = getRemoteType(project);
     var description = sanitizeProjectName(project.description);
     var projectName = escapeAttribute(sanitizeProjectName(project.name));

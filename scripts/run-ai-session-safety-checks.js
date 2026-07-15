@@ -928,7 +928,7 @@ function runCurrentWorkspaceRenderingChecks() {
                 {
                     id: '__openProjectNavigation-other', name: 'Other Window', path: '/work/other-window',
                     description: 'Other workspace', remoteType: models.ProjectRemoteType.SSH,
-                    color: '#cc00aa', openProjectCardKind: 'projectNavigation', showSaveAction: true,
+                    color: 'red;" data-injected="yes', openProjectCardKind: 'projectNavigation', showSaveAction: true,
                     favorite: true, aiSessionAttentionCount: 2,
                     codexSessions: [{ id: 'leaked-session', name: 'Leaked Session' }],
                 },
@@ -971,6 +971,11 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.ok(!navigationHtml.includes('project-codex-badge'));
     assert.ok(!navigationHtml.includes('class="codex-sessions"'));
     assert.ok(!navigationHtml.includes('Leaked Session'));
+    assert.ok(!html.includes('data-injected'));
+    assert.ok(!navigationHtml.includes('red;'));
+    assert.ok(navigationHtml.includes('<div class="project-border" style=""></div>'));
+    assert.ok(openTags[0].includes('style="--project-color: #00aacc;"'));
+    assert.ok(html.includes('<div class="project-border" style="background: #00aacc;"></div>'));
     assert.ok(navigationHtml.includes('title="SSH Project"'));
     assert.match(navigationHtml, /class="project-description" title="Other workspace">\s*Other workspace\s*<\/p>/);
 }
