@@ -80,10 +80,13 @@ The publisher writes immediately on activation and again when:
 - the window becomes focused;
 - the ten-second heartbeat is due.
 
-`lastFocusedAtMs` changes only when the window becomes focused. Heartbeats
-update only `leaseUpdatedAtMs`. Normal deactivation performs a best-effort
-unregister; a thirty-second lease removes registrations left by crashes or
-lost remote connections.
+The Workspace publisher reports whether a publication follows a focus event,
+but it does not supply lease or focus wall-clock timestamps. The desktop UI
+Bridge stamps both `lastFocusedAtMs` and `leaseUpdatedAtMs` in its own clock
+domain. This prevents SSH or container clock skew from changing ordering or
+lease validity. Heartbeats update only `leaseUpdatedAtMs`. Normal deactivation
+performs a best-effort unregister; a thirty-second lease removes registrations
+left by crashes or lost remote connections.
 
 Empty windows publish an empty project list and produce no cards.
 
@@ -169,6 +172,14 @@ interface OpenProjectRegistration {
   sequence: number;
   lastFocusedAtMs: number;
   leaseUpdatedAtMs: number;
+  projects: OpenProjectRecord[];
+}
+
+interface OpenProjectPublication {
+  protocolVersion: 1;
+  instanceId: string;
+  sequence: number;
+  followsFocusEvent: boolean;
   projects: OpenProjectRecord[];
 }
 
