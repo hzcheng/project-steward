@@ -4,16 +4,50 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ## [Unreleased]
 
+## [2.0.0] 2026-07-15
+
 ### Added
 
 -   Add `OPEN` and `PROJECTS` tabs plus grouped global search for AI sessions, open projects, and saved projects.
 -   Show unread AI session counts on `OTHER WINDOWS` navigation cards in the live `OPEN` view.
+-   Add cross-window Project Steward visibility by publishing live workspace project cards through the UI Bridge.
+-   Add profile-local AI session attention so Codex, Kimi, and Claude sessions can show unread attention indicators across VS Code windows.
+-   Add AI session attention acknowledgement, repeated-animation suppression, and webview reload restoration.
+-   Add terminal-backed AI session monitoring and active terminal/session highlighting.
+-   Add persistent AI terminal ownership using process IDs so reloads can recover the owning session terminal.
+-   Add explicit lifecycle attention for completed, failed, aborted, and input-required Codex, Kimi, and Claude sessions.
+-   Add a production UI Bridge dependency and release packaging for both `hzcheng.project-steward` and `hzcheng.project-steward-attention-ui-bridge`.
+-   Add release packaging checks that guard dependency IDs, Bridge host kind, production VSIX names, GitHub Release assets, and Marketplace publish order.
 
 ### Changed
 
 -   Load the static saved-project `PROJECTS` panel only when it is first opened, reducing initial Webview work.
 -   Keep runtime attention and current-workspace highlighting in `OPEN`; `PROJECTS`, tabs, and search results remain static.
 -   Move the live groups below the tab row; custom CSS targeting `.steward-sticky-header > .sticky-groups-wrapper` must target `#dashboard-tab-open .sticky-groups-wrapper` instead.
+-   Search now ignores tab boundaries and returns one combined result list for matching AI sessions, open projects, and saved projects.
+-   Keep AI attention indicators scoped to live `OPEN` content; saved `PROJECTS` cards remain static.
+-   Keep `OTHER WINDOWS` project attention indicators on live navigation cards so users can see when another window needs interaction.
+-   Resolve open projects by canonical URI/path and choose current-window or most-recently-focused publishers deterministically.
+-   Publish open project updates after project metadata changes, migration, workspace-folder changes, and focus changes.
+-   Package local installs from production VSIX artifacts and install the UI Bridge before the main extension.
+-   Publish Marketplace releases in dependency order: UI Bridge first, main extension second.
+-   Publish GitHub Release VSIX assets for both production extensions and include SHA-256 values in the workflow summary.
+
+### Fixed
+
+-   Prevent acknowledged AI attention events from colliding after Extension Host reloads by deriving attention event IDs from provider lifecycle tokens.
+-   Keep active terminal attention unread until the user opens the associated AI session row.
+-   Reuse pending AI terminals for discovered sessions instead of starting duplicate terminal ownership.
+-   Restore ready AI terminal ownership after Extension Host reloads using persisted process IDs.
+-   Avoid stale cross-window attention after reactivation by enforcing attention sequence and removal ordering.
+-   Retain attention removal tombstones long enough to prevent stale events from reappearing.
+-   Harden attention bridge lifecycle, validation, acknowledgement aggregation, retry behavior, unregister handling, and privacy boundaries.
+-   Deduplicate open project attention badges so the same project does not show duplicate unread indicators.
+-   Stabilize cross-window open project aggregation under concurrent publishers, focus changes, malformed records, and stale leases.
+-   Republish project metadata after storage migration and saved-project mutations.
+-   Sanitize project card colors used by cross-window project records.
+-   Exclude explicit Codex subagent sessions from project assignment, terminal matching, and Dashboard session lists.
+-   Keep release dry runs from publishing while still building both production VSIX files.
 
 ## [1.1.8] 2026-07-13
 

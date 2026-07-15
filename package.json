@@ -2,7 +2,7 @@
     "name": "project-steward",
     "displayName": "Project Steward",
     "description": "Organize local, SSH, and Dev Container projects in a synchronized project steward.",
-    "version": "1.1.8",
+    "version": "2.0.0",
     "publisher": "hzcheng",
     "license": "MIT",
     "icon": "media/extension_icon.png",
