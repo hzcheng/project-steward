@@ -5,6 +5,7 @@ import * as path from 'path';
 import { AttentionOwnerSnapshot, validateAttentionOwnerSnapshot } from '../../../src/aiSessions/attentionPayload';
 
 const INSTANCE_FILE_PATTERN = /^[a-f0-9]{32}\.json$/;
+const INSTANCE_ID_PATTERN = /^[a-f0-9]{32}$/;
 const LEASE_MS = 90_000;
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_FILE_BYTES = 256 * 1024;
@@ -16,6 +17,12 @@ interface StoredAttentionEnvelope {
     receivedAtMs: number;
     bridgeVersion: string;
     snapshot: AttentionOwnerSnapshot;
+}
+
+interface StoredAttentionRemoval {
+    storageVersion: 1;
+    instanceId: string;
+    removedAtMs: number;
 }
 
 export interface ProductionAttentionStoreOptions {
@@ -44,8 +51,23 @@ function validateEnvelope(value: unknown): StoredAttentionEnvelope {
     };
 }
 
+function validateRemoval(value: unknown): StoredAttentionRemoval {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('attention removal must be an object');
+    const record = value as Record<string, unknown>;
+    if (Object.keys(record).sort().join('\n') !== ['instanceId', 'removedAtMs', 'storageVersion'].join('\n')) {
+        throw new Error('attention removal has unexpected fields');
+    }
+    if (record.storageVersion !== 1 || typeof record.instanceId !== 'string'
+        || !INSTANCE_ID_PATTERN.test(record.instanceId)) throw new Error('attention removal identity is invalid');
+    if (typeof record.removedAtMs !== 'number' || !Number.isFinite(record.removedAtMs) || record.removedAtMs < 0) {
+        throw new Error('attention removal time is invalid');
+    }
+    return { storageVersion: 1, instanceId: record.instanceId, removedAtMs: record.removedAtMs };
+}
+
 export class ProductionAttentionStore {
     private readonly instancesDirectory: string;
+    private readonly removalsDirectory: string;
     private readonly highWater = new Map<string, number>();
     private readonly cache = new Map<string, StoredAttentionEnvelope>();
     private mutationQueue: Promise<void> = Promise.resolve();
@@ -56,12 +78,18 @@ export class ProductionAttentionStore {
         private readonly options: ProductionAttentionStoreOptions = {},
     ) {
         this.instancesDirectory = path.join(rootDirectory, 'instances');
+        this.removalsDirectory = path.join(rootDirectory, 'removals');
     }
 
-    public write(snapshot: AttentionOwnerSnapshot, receivedAtMs = Date.now(), bridgeVersion = '0.1.1'): Promise<void> {
+    public write(snapshot: AttentionOwnerSnapshot, receivedAtMs = Date.now(), bridgeVersion = 'unknown'): Promise<void> {
         const validated = validateAttentionOwnerSnapshot(snapshot);
         if (!Number.isFinite(receivedAtMs) || receivedAtMs < 0) return Promise.reject(new Error('attention receipt time is invalid'));
-        return this.enqueueMutation(async () => {
+        return this.enqueueOperation(async () => {
+            const previousRemoval = await this.readRemoval(validated.instanceId);
+            if (previousRemoval && receivedAtMs > previousRemoval.removedAtMs) {
+                this.highWater.delete(validated.instanceId);
+                this.cache.delete(validated.instanceId);
+            }
             const previous = this.highWater.get(validated.instanceId) ?? -1;
             if (validated.sequence < previous) throw new Error('attention snapshot sequence decreased');
             const envelope = validateEnvelope({ storageVersion: 1, receivedAtMs, bridgeVersion, snapshot: validated });
@@ -76,8 +104,22 @@ export class ProductionAttentionStore {
                 const latest = this.highWater.get(validated.instanceId) ?? -1;
                 if (validated.sequence < latest) throw new Error('attention snapshot sequence decreased');
                 await fs.promises.rename(temporaryPath, finalPath);
+                const latestRemoval = await this.readRemoval(validated.instanceId);
+                if (latestRemoval && latestRemoval.removedAtMs >= receivedAtMs) {
+                    await fs.promises.unlink(finalPath).catch(error => {
+                        if (!hasErrorCode(error, 'ENOENT')) throw error;
+                    });
+                    this.highWater.delete(validated.instanceId);
+                    this.cache.delete(validated.instanceId);
+                    return;
+                }
                 this.highWater.set(validated.instanceId, validated.sequence);
                 this.cache.set(validated.instanceId, envelope);
+                if (latestRemoval) {
+                    await fs.promises.unlink(this.removalPath(validated.instanceId)).catch(error => {
+                        if (!hasErrorCode(error, 'ENOENT')) throw error;
+                    });
+                }
             } finally {
                 try {
                     await fs.promises.unlink(temporaryPath);
@@ -88,19 +130,43 @@ export class ProductionAttentionStore {
         });
     }
 
-    public remove(instanceId: string): Promise<void> {
-        if (!/^[a-f0-9]{32}$/.test(instanceId)) return Promise.reject(new Error('attention unregister instanceId is invalid'));
-        return this.enqueueMutation(async () => {
+    public remove(instanceId: string, removedAtMs = Date.now()): Promise<void> {
+        if (!INSTANCE_ID_PATTERN.test(instanceId)) return Promise.reject(new Error('attention unregister instanceId is invalid'));
+        if (!Number.isFinite(removedAtMs) || removedAtMs < 0) return Promise.reject(new Error('attention unregister time is invalid'));
+        return this.enqueueOperation(async () => {
+            const removal = validateRemoval({ storageVersion: 1, instanceId, removedAtMs });
+            const contents = `${JSON.stringify(removal)}\n`;
+            if (Buffer.byteLength(contents, 'utf8') > MAX_FILE_BYTES) throw new Error('attention removal file is too large');
+            await fs.promises.mkdir(this.removalsDirectory, { recursive: true, mode: 0o700 });
+            const finalRemovalPath = this.removalPath(instanceId);
+            const temporaryRemovalPath = path.join(
+                this.removalsDirectory,
+                `${instanceId}.${this.bridgeProcessId}.${crypto.randomBytes(8).toString('hex')}.tmp`,
+            );
+            try {
+                await fs.promises.writeFile(temporaryRemovalPath, contents, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+                await fs.promises.rename(temporaryRemovalPath, finalRemovalPath);
+            } finally {
+                await fs.promises.unlink(temporaryRemovalPath).catch(error => {
+                    if (!hasErrorCode(error, 'ENOENT')) throw error;
+                });
+            }
             try {
                 await fs.promises.unlink(path.join(this.instancesDirectory, `${instanceId}.json`));
             } catch (error) {
                 if (!hasErrorCode(error, 'ENOENT')) throw error;
             }
             this.cache.delete(instanceId);
+            this.highWater.delete(instanceId);
         });
     }
 
-    public async scan(nowMs = Date.now()): Promise<{ snapshots: AttentionOwnerSnapshot[] }> {
+    public scan(nowMs = Date.now()): Promise<{ snapshots: AttentionOwnerSnapshot[] }> {
+        return this.enqueueOperation(() => this.scanNow(nowMs));
+    }
+
+    private async scanNow(nowMs: number): Promise<{ snapshots: AttentionOwnerSnapshot[] }> {
+        const removals = await this.scanRemovals(nowMs);
         let entries: fs.Dirent[] = [];
         try {
             entries = await fs.promises.readdir(this.instancesDirectory, { withFileTypes: true });
@@ -120,10 +186,19 @@ export class ProductionAttentionStore {
                 if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_FILE_BYTES) throw new Error('invalid attention owner file');
                 const envelope = validateEnvelope(JSON.parse(await fs.promises.readFile(filePath, 'utf8')));
                 if (envelope.snapshot.instanceId !== instanceId) throw new Error('attention owner filename mismatch');
+                const removal = removals.get(instanceId);
+                if (removal && envelope.receivedAtMs <= removal.removedAtMs) {
+                    await fs.promises.unlink(filePath).catch(() => undefined);
+                    continue;
+                }
                 const previous = this.highWater.get(instanceId) ?? -1;
                 if (envelope.snapshot.sequence < previous) throw new Error('attention snapshot sequence decreased');
                 this.highWater.set(instanceId, envelope.snapshot.sequence);
                 this.cache.set(instanceId, envelope);
+                if (removal) {
+                    removals.delete(instanceId);
+                    await fs.promises.unlink(this.removalPath(instanceId)).catch(() => undefined);
+                }
                 if (nowMs - envelope.receivedAtMs > RETENTION_MS) await fs.promises.unlink(filePath).catch(() => undefined);
             } catch (_error) {
                 if (stats && nowMs - stats.mtimeMs > RETENTION_MS) await fs.promises.unlink(filePath).catch(() => undefined);
@@ -140,7 +215,57 @@ export class ProductionAttentionStore {
         return { snapshots };
     }
 
-    private enqueueMutation(operation: () => Promise<void>): Promise<void> {
+    private async scanRemovals(nowMs: number): Promise<Map<string, StoredAttentionRemoval>> {
+        const removals = new Map<string, StoredAttentionRemoval>();
+        let entries: fs.Dirent[] = [];
+        try {
+            entries = await fs.promises.readdir(this.removalsDirectory, { withFileTypes: true });
+        } catch (error) {
+            if (!hasErrorCode(error, 'ENOENT')) throw error;
+        }
+        const candidates = entries
+            .filter(entry => INSTANCE_FILE_PATTERN.test(entry.name))
+            .sort((left, right) => left.name.localeCompare(right.name))
+            .slice(0, MAX_FILENAMES);
+        for (const entry of candidates) {
+            const instanceId = entry.name.slice(0, -5);
+            const filePath = path.join(this.removalsDirectory, entry.name);
+            let stats: fs.Stats | undefined;
+            try {
+                stats = await fs.promises.lstat(filePath);
+                if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_FILE_BYTES) throw new Error('invalid attention removal file');
+                const removal = validateRemoval(JSON.parse(await fs.promises.readFile(filePath, 'utf8')));
+                if (removal.instanceId !== instanceId) throw new Error('attention removal filename mismatch');
+                if (nowMs - removal.removedAtMs > RETENTION_MS) {
+                    await fs.promises.unlink(filePath).catch(() => undefined);
+                    continue;
+                }
+                removals.set(instanceId, removal);
+                this.cache.delete(instanceId);
+                this.highWater.delete(instanceId);
+            } catch (_error) {
+                if (stats && nowMs - stats.mtimeMs > RETENTION_MS) await fs.promises.unlink(filePath).catch(() => undefined);
+            }
+        }
+        return removals;
+    }
+
+    private async readRemoval(instanceId: string): Promise<StoredAttentionRemoval | undefined> {
+        try {
+            const stats = await fs.promises.lstat(this.removalPath(instanceId));
+            if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_FILE_BYTES) return undefined;
+            const removal = validateRemoval(JSON.parse(await fs.promises.readFile(this.removalPath(instanceId), 'utf8')));
+            return removal.instanceId === instanceId ? removal : undefined;
+        } catch (_error) {
+            return undefined;
+        }
+    }
+
+    private removalPath(instanceId: string): string {
+        return path.join(this.removalsDirectory, `${instanceId}.json`);
+    }
+
+    private enqueueOperation<T>(operation: () => Promise<T>): Promise<T> {
         const result = this.mutationQueue.then(operation, operation);
         this.mutationQueue = result.then(() => undefined, () => undefined);
         return result;

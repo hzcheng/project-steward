@@ -42,6 +42,7 @@ interface AggregateState {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+    const bridgeExtensionVersion = readBridgeExtensionVersion(context);
     const bridgeProcessId = crypto.randomBytes(16).toString('hex');
     const workspaceIdentity = createWorkspaceIdentity(
         (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.path)
@@ -151,13 +152,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return {
             accepted: true,
             protocolVersion: 1,
-            bridgeExtensionVersion: '0.1.1',
+            bridgeExtensionVersion,
             capabilities: { snapshots: true, acknowledgements: true, atomicReplace: true },
         };
     });
     const productionPublishDisposable = vscode.commands.registerCommand(PRODUCTION_BRIDGE_PUBLISH, async (raw: unknown) => {
         const snapshot = validateAttentionOwnerSnapshot(raw);
-        await productionStore.write(snapshot, Date.now(), '0.1.1');
+        await productionStore.write(snapshot, Date.now(), bridgeExtensionVersion);
         await scanProductionAndNotify();
         return { accepted: true, bridgeProcessId, instanceId };
     });
@@ -259,6 +260,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             },
         },
     );
+}
+
+function readBridgeExtensionVersion(context: vscode.ExtensionContext): string {
+    try {
+        const packageJson = JSON.parse(fs.readFileSync(path.join(context.extensionPath, 'package.json'), 'utf8')) as {
+            version?: unknown;
+        };
+        if (typeof packageJson.version === 'string' && packageJson.version.length > 0 && packageJson.version.length <= 64) {
+            return packageJson.version;
+        }
+    } catch (_error) {
+        // A nonempty fallback preserves the strict handshake if extension metadata is unavailable.
+    }
+    return 'unknown';
 }
 
 export function deactivate(): void {

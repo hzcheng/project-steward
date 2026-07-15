@@ -814,6 +814,16 @@ function initProjects() {
 
         if (message && message.type === 'ai-session-attention-state') {
             window.__projectStewardAttentionEvents = window.__projectStewardAttentionEvents || {};
+            window.__projectStewardAttentionSessionEvents = {};
+            (Array.isArray(message.sessionEvents) ? message.sessionEvents.slice(0, 1000) : []).forEach(session => {
+                if (!session || typeof session.sessionKey !== 'string' || !Array.isArray(session.eventIds)) return;
+                var separator = session.sessionKey.indexOf(':');
+                if (separator <= 0 || !isAiSessionProvider(session.sessionKey.slice(0, separator))) return;
+                var eventIds = Array.from(new Set(session.eventIds
+                    .slice(0, 1000)
+                    .filter(eventId => typeof eventId === 'string' && !!eventId)));
+                if (eventIds.length) window.__projectStewardAttentionSessionEvents[session.sessionKey] = eventIds;
+            });
             (message.eventIds || []).forEach(eventId => {
                 if (typeof eventId === 'string') window.__projectStewardAttentionEvents[eventId] = true;
             });

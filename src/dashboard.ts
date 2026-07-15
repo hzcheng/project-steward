@@ -448,6 +448,30 @@ export function activate(context: vscode.ExtensionContext) {
         }], new Set<string>(), now);
     }
 
+    function getAiSessionAttentionRecoverySessionEvents(): Array<{ sessionKey: string; eventIds: string[] }> {
+        const bySession = new Map<string, Set<string>>();
+        const addEvent = (sessionKey: string, eventId: string) => {
+            if (!sessionKey || !eventId) {
+                return;
+            }
+            const eventIds = bySession.get(sessionKey) || new Set<string>();
+            eventIds.add(eventId);
+            bySession.set(sessionKey, eventIds);
+        };
+        Object.entries(aiSessionAttentionMonitor.getSnapshot()).forEach(([sessionKey, snapshot]) => {
+            if (snapshot.event?.eventId) {
+                addEvent(sessionKey, snapshot.event.eventId);
+            }
+        });
+        getEffectiveAiSessionAttentionAggregate().sessions.forEach(session => {
+            session.eventIds.forEach(eventId => addEvent(session.sessionKey, eventId));
+        });
+        return Array.from(bySession.entries())
+            .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+            .slice(0, 1000)
+            .map(([sessionKey, eventIds]) => ({ sessionKey, eventIds: Array.from(eventIds).slice(0, 1000) }));
+    }
+
     function getGroupsWithAiSessionAttention(groups: Group[]): Group[] {
         const aggregate = getEffectiveAiSessionAttentionAggregate();
         return (groups || []).map(group => ({
@@ -790,6 +814,7 @@ export function activate(context: vscode.ExtensionContext) {
             case 'request-ai-session-attention-state':
                 provider.postMessage({
                     type: 'ai-session-attention-state',
+                    sessionEvents: getAiSessionAttentionRecoverySessionEvents(),
                     eventIds: Array.from(new Set([
                         ...Object.values(aiSessionAttentionMonitor.getSnapshot())
                             .map(snapshot => snapshot.event?.eventId)

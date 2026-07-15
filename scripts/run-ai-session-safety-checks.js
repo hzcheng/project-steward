@@ -735,6 +735,8 @@ function runWebviewContentChecks() {
     assert.ok(evaluateAttentionFunction.includes('if (!terminal)'));
     assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
     assert.ok(dashboard.includes("type: 'ai-session-attention-projects-updated'"));
+    assert.ok(dashboard.includes('sessionEvents: getAiSessionAttentionRecoverySessionEvents()'));
+    assert.ok(webviewProjectScripts.includes('message.sessionEvents'));
     assert.ok(dashboard.includes("case 'open-settings':"));
     assert.ok(settingsFunction.includes("executeCommand('workbench.action.openSettings', '@ext:hzcheng.project-steward')"));
     assert.ok(!settingsFunction.includes('showQuickPick'));
@@ -1451,10 +1453,23 @@ function runBatchAiSessionWebviewChecks() {
     assert.ok(messages.every(message => !Object.prototype.hasOwnProperty.call(message, 'uri')));
     messages.length = 0;
 
+    attentionRow.setAttribute('data-ai-session-attention', '');
+    attentionRow.setAttribute('data-session-event-id', 'full-owner-event-a');
     windowEventListeners.message({ data: {
         type: 'ai-session-attention-state',
-        eventIds: ['existing-event'],
+        eventIds: ['full-owner-event-a', 'full-owner-event-b', 'existing-event'],
+        sessionEvents: [{
+            sessionKey: 'codex:attention-session',
+            eventIds: ['full-owner-event-a', 'full-owner-event-b'],
+        }],
     } });
+    messages.length = 0;
+    eventListeners.click({ button: 0, target: attentionRow });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0])), {
+        type: 'acknowledge-ai-session-attention',
+        eventIds: ['full-owner-event-a', 'full-owner-event-b'],
+    }, 'a fresh full render must acknowledge every current owner event before an incremental update');
+    messages.length = 0;
     windowEventListeners.message({ data: {
         type: 'ai-session-attention-projects-updated',
         projects: [{
@@ -2323,6 +2338,97 @@ async function runProductionAttentionStoreLifecycleChecks() {
     }
 }
 
+async function runProductionAttentionStoreUnregisterPropagationChecks() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-unregister-'));
+    const instanceId = '9'.repeat(32);
+    const ownerPath = path.join(root, 'instances', `${instanceId}.json`);
+    const removalPath = path.join(root, 'removals', `${instanceId}.json`);
+    const storeA = new ProductionAttentionStore(root, 'a'.repeat(32));
+    const storeB = new ProductionAttentionStore(root, 'b'.repeat(32));
+    const snapshot = sequence => attentionPayload.validateAttentionOwnerSnapshot({
+        ...attentionPayload.createAttentionPayload([], sequence),
+        instanceId,
+        sequence,
+        heartbeat: sequence,
+    });
+    try {
+        await storeA.write(snapshot(5), 1000);
+        assert.deepStrictEqual((await storeA.scan(1001)).snapshots.map(value => value.sequence), [5]);
+        assert.deepStrictEqual((await storeB.scan(1001)).snapshots.map(value => value.sequence), [5]);
+
+        fs.unlinkSync(ownerPath);
+        assert.deepStrictEqual((await storeB.scan(1002)).snapshots.map(value => value.sequence), [5],
+            'transient owner-file absence must retain the peer last-valid cache');
+        await storeA.write(snapshot(6), 1003);
+        assert.deepStrictEqual((await storeB.scan(1004)).snapshots.map(value => value.sequence), [6]);
+
+        await storeA.remove(instanceId, 1005);
+        assert.deepStrictEqual({
+            removingStore: (await storeA.scan(1006)).snapshots,
+            peerStore: (await storeB.scan(1006)).snapshots,
+        }, {
+            removingStore: [],
+            peerStore: [],
+        }, 'a shared unregister marker must invalidate every bridge cache immediately');
+        assert.deepStrictEqual(JSON.parse(fs.readFileSync(removalPath, 'utf8')), {
+            storageVersion: 1,
+            instanceId,
+            removedAtMs: 1005,
+        });
+
+        await storeA.write(snapshot(1), 1010);
+        assert.deepStrictEqual((await storeA.scan(1011)).snapshots.map(value => value.sequence), [1]);
+        assert.deepStrictEqual((await storeB.scan(1011)).snapshots.map(value => value.sequence), [1],
+            'a later activation reusing an instance ID must supersede the tombstone');
+
+        fs.mkdirSync(path.dirname(removalPath), { recursive: true });
+        fs.writeFileSync(removalPath, JSON.stringify({
+            storageVersion: 1,
+            instanceId,
+            removedAtMs: 2000,
+            unexpected: true,
+        }));
+        assert.deepStrictEqual((await storeB.scan(1012)).snapshots.map(value => value.sequence), [1],
+            'strict validation must ignore a malformed removal marker');
+
+        let releaseRead;
+        let readEntered = false;
+        const readGate = new Promise(resolve => { releaseRead = resolve; });
+        const originalReadFile = fs.promises.readFile;
+        fs.promises.readFile = async (...args) => {
+            const value = await originalReadFile.apply(fs.promises, args);
+            if (String(args[0]) === ownerPath && !readEntered) {
+                readEntered = true;
+                await readGate;
+            }
+            return value;
+        };
+        try {
+            const racingScan = storeA.scan(2000);
+            for (let attempt = 0; attempt < 50 && !readEntered; attempt += 1) {
+                await new Promise(resolve => setImmediate(resolve));
+            }
+            assert.strictEqual(readEntered, true);
+            const racingRemove = storeA.remove(instanceId, 2001);
+            await new Promise(resolve => setImmediate(resolve));
+            releaseRead();
+            await Promise.all([racingScan, racingRemove]);
+        } finally {
+            fs.promises.readFile = originalReadFile;
+        }
+        assert.deepStrictEqual((await storeA.scan(2002)).snapshots, [],
+            'a scan racing remove must not repopulate the local last-valid cache');
+        assert.deepStrictEqual((await storeB.scan(2002)).snapshots, [],
+            'the racing removal must still invalidate a peer cache');
+
+        assert.strictEqual(fs.existsSync(removalPath), true);
+        await storeB.scan(2001 + 24 * 60 * 60 * 1000 + 1);
+        assert.strictEqual(fs.existsSync(removalPath), false, 'removal markers are cleaned after bounded retention');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
 async function runAttentionBridgeClientPrivacyChecks() {
     const executed = [];
     const registered = new Map();
@@ -2442,7 +2548,19 @@ async function runProductionAttentionBridgeIntegrationChecks() {
     const clientPath = require.resolve('../out/aiSessions/attentionBridgeClient');
     delete require.cache[extensionPath];
     delete require.cache[clientPath];
-    const context = { globalStoragePath: root, globalStorageUri: { scheme: 'file' }, subscriptions: [] };
+    const bridgePackageRoot = path.join(__dirname, '..', 'extensions', 'attention-ui-bridge');
+    const bridgePackage = JSON.parse(fs.readFileSync(path.join(bridgePackageRoot, 'package.json'), 'utf8'));
+    const extensionSource = fs.readFileSync(path.join(bridgePackageRoot, 'src', 'extension.ts'), 'utf8');
+    const productionStoreSource = fs.readFileSync(path.join(bridgePackageRoot, 'src', 'productionAttentionStore.ts'), 'utf8');
+    assert.ok(!extensionSource.includes("bridgeExtensionVersion: '0.1.1'"));
+    assert.ok(!extensionSource.includes("Date.now(), '0.1.1'"));
+    assert.ok(!productionStoreSource.includes("bridgeVersion = '0.1.1'"));
+    const context = {
+        extensionPath: bridgePackageRoot,
+        globalStoragePath: root,
+        globalStorageUri: { scheme: 'file' },
+        subscriptions: [],
+    };
     try {
         const extension = require(extensionPath);
         await extension.activate(context);
@@ -2468,6 +2586,12 @@ async function runProductionAttentionBridgeIntegrationChecks() {
         const unregister = registered.get('_projectStewardAttention.bridge.unregister');
         const validPublishedSnapshot = executed.find(entry => entry.command === '_projectStewardAttention.bridge.publish').argument;
         assert.strictEqual(typeof unregister, 'function');
+        const handshakeResponse = await handshake({
+            protocolVersion: 1,
+            mainExtensionVersion: '1.1.8',
+            instanceId: 'a'.repeat(32),
+        });
+        assert.strictEqual(handshakeResponse.bridgeExtensionVersion, bridgePackage.version);
         await assert.rejects(unregister({ protocolVersion: 1, instanceId: validPublishedSnapshot.instanceId, unexpected: true }), /unexpected fields/);
         await assert.rejects(handshake({ protocolVersion: 2, mainExtensionVersion: '1.1.8', instanceId: 'a'.repeat(32) }), /protocol/);
         await assert.rejects(publish({ ...validPublishedSnapshot, unexpected: true }), /unexpected fields/);
@@ -2503,6 +2627,10 @@ async function runAttentionBridgeClientLifecycleChecks() {
     const timers = [];
     let now = 1_000;
     let bridgeMode = 'missing';
+    let holdHandshake = false;
+    let handshakeEntered = false;
+    let releaseHandshake;
+    let handshakeGate = Promise.resolve();
     let holdFirstPublish = false;
     let firstPublishEntered = false;
     let releaseFirstPublish;
@@ -2515,6 +2643,10 @@ async function runAttentionBridgeClientLifecycleChecks() {
         executeCommand: async (command, argument) => {
             commands.push({ command, argument });
             if (command === '_projectStewardAttention.bridge.handshake') {
+                if (holdHandshake) {
+                    handshakeEntered = true;
+                    await handshakeGate;
+                }
                 if (bridgeMode === 'missing') throw new Error('command not found');
                 return {
                     accepted: true, protocolVersion: bridgeMode === 'incompatible' ? 2 : 1,
@@ -2525,6 +2657,9 @@ async function runAttentionBridgeClientLifecycleChecks() {
             if (command === '_projectStewardAttention.bridge.publish' && holdFirstPublish && !firstPublishEntered) {
                 firstPublishEntered = true;
                 await firstPublishGate;
+            }
+            if (command === '_projectStewardAttention.bridge.publish' && bridgeMode === 'missing') {
+                throw new Error('command not found');
             }
             return undefined;
         },
@@ -2557,6 +2692,26 @@ async function runAttentionBridgeClientLifecycleChecks() {
         }
         assert.strictEqual(commands.find(entry => entry.command === '_projectStewardAttention.bridge.publish').argument.items[0].eventId, 'latest-while-missing');
 
+        bridgeMode = 'missing';
+        assert.strictEqual(await client.publish([], true), false);
+        const publishCountBeforeEmptyRecovery = commands.filter(
+            entry => entry.command === '_projectStewardAttention.bridge.publish'
+        ).length;
+        assert.strictEqual(timers.length, 1);
+        bridgeMode = 'available';
+        timers.shift().callback();
+        for (let attempt = 0; attempt < 50 && commands.filter(
+            entry => entry.command === '_projectStewardAttention.bridge.publish'
+        ).length === publishCountBeforeEmptyRecovery; attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        const publicationsAfterEmptyRecovery = commands.filter(
+            entry => entry.command === '_projectStewardAttention.bridge.publish'
+        );
+        assert.strictEqual(publicationsAfterEmptyRecovery.length, publishCountBeforeEmptyRecovery + 1,
+            'bridge recovery must flush an explicitly requested empty snapshot');
+        assert.deepStrictEqual(publicationsAfterEmptyRecovery[publicationsAfterEmptyRecovery.length - 1].argument.items, []);
+
         holdFirstPublish = true;
         firstPublishEntered = false;
         firstPublishGate = new Promise(resolve => { releaseFirstPublish = resolve; });
@@ -2572,6 +2727,67 @@ async function runAttentionBridgeClientLifecycleChecks() {
         client.dispose();
         await new Promise(resolve => setImmediate(resolve));
         assert.strictEqual(commands.some(entry => entry.command === '_projectStewardAttention.bridge.unregister'), true);
+
+        holdHandshake = true;
+        handshakeEntered = false;
+        handshakeGate = new Promise(resolve => { releaseHandshake = resolve; });
+        const handshakeDisposeClient = new Client(() => undefined, () => undefined, options);
+        const handshakeDisposePublish = handshakeDisposeClient.publish([item('dispose-during-handshake')], true);
+        for (let attempt = 0; attempt < 50 && !handshakeEntered; attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        const handshakeDisposeInstanceId = handshakeDisposeClient.instanceId;
+        handshakeDisposeClient.dispose();
+        releaseHandshake();
+        await handshakeDisposePublish;
+        await new Promise(resolve => setImmediate(resolve));
+        holdHandshake = false;
+
+        holdFirstPublish = false;
+        const queuedDisposeClient = new Client(() => undefined, () => undefined, options);
+        assert.strictEqual(await queuedDisposeClient.publish([item('queued-dispose-warmup')], true), true);
+        const queuedDisposeInstanceId = queuedDisposeClient.instanceId;
+        holdFirstPublish = true;
+        firstPublishEntered = false;
+        firstPublishGate = new Promise(resolve => { releaseFirstPublish = resolve; });
+        const inFlightAtDispose = queuedDisposeClient.publish([item('in-flight-at-dispose')], true);
+        for (let attempt = 0; attempt < 50 && !firstPublishEntered; attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        const queuedAtDispose = queuedDisposeClient.publish([item('queued-at-dispose')], true);
+        queuedDisposeClient.dispose();
+        releaseFirstPublish();
+        await Promise.all([inFlightAtDispose, queuedAtDispose]);
+        await new Promise(resolve => setImmediate(resolve));
+        holdFirstPublish = false;
+
+        const lifecycleMutations = instanceId => commands
+            .filter(entry => entry.argument?.instanceId === instanceId
+                && (entry.command === '_projectStewardAttention.bridge.publish'
+                    || entry.command === '_projectStewardAttention.bridge.unregister'))
+            .map(entry => ({
+                command: entry.command,
+                eventIds: entry.argument.items?.map(value => value.eventId) || [],
+            }));
+        assert.deepStrictEqual({
+            disposedDuringHandshake: lifecycleMutations(handshakeDisposeInstanceId),
+            disposedWithQueuedAndInFlight: lifecycleMutations(queuedDisposeInstanceId).slice(1),
+        }, {
+            disposedDuringHandshake: [{
+                command: '_projectStewardAttention.bridge.unregister',
+                eventIds: [],
+            }],
+            disposedWithQueuedAndInFlight: [
+                {
+                    command: '_projectStewardAttention.bridge.publish',
+                    eventIds: ['in-flight-at-dispose'],
+                },
+                {
+                    command: '_projectStewardAttention.bridge.unregister',
+                    eventIds: [],
+                },
+            ],
+        });
 
         bridgeMode = 'incompatible';
         const incompatibleTimersBefore = timers.length;
@@ -2702,6 +2918,7 @@ async function main() {
     runAttentionPayloadChecks();
     await runProductionAttentionStoreClockChecks();
     await runProductionAttentionStoreLifecycleChecks();
+    await runProductionAttentionStoreUnregisterPropagationChecks();
     await runAttentionBridgeClientPrivacyChecks();
     await runProductionAttentionBridgeIntegrationChecks();
     await runAttentionBridgeClientLifecycleChecks();

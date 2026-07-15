@@ -29,6 +29,7 @@ export default class AttentionBridgeClient implements vscode.Disposable {
     private lastPublishedAt = 0;
     private lastItems: AttentionPayloadItem[] = [];
     private latestItems: AttentionPayloadItem[] = [];
+    private hasLatestSnapshot = false;
     private lastAggregate: AttentionAggregate | null = null;
     private lastErrorAt = 0;
     private readonly aggregateRegistration: vscode.Disposable;
@@ -57,22 +58,26 @@ export default class AttentionBridgeClient implements vscode.Disposable {
         void this.ensureHandshake();
     }
 
-    async publish(items: AttentionPayloadItem[], forceHeartbeat = false): Promise<boolean> {
+    publish(items: AttentionPayloadItem[], forceHeartbeat = false): Promise<boolean> {
+        if (this.disposed) return Promise.resolve(false);
         const payload = createAttentionPayload(items);
         this.latestItems = payload.items.map(item => ({ ...item }));
-        if (!await this.ensureHandshake()) return false;
+        this.hasLatestSnapshot = true;
         return this.enqueuePublication(payload.items, forceHeartbeat);
     }
 
     dispose(): void {
+        if (this.disposed) return;
         this.disposed = true;
         this.aggregateRegistration.dispose();
         if (this.retryTimer !== null) this.cancelTimeout(this.retryTimer);
         this.retryTimer = null;
-        void vscode.commands.executeCommand(UNREGISTER_COMMAND, { protocolVersion: 1, instanceId: this.instanceId }).then(
-            () => undefined,
-            () => undefined,
-        );
+        const unregister = () => vscode.commands.executeCommand(
+            UNREGISTER_COMMAND,
+            { protocolVersion: 1, instanceId: this.instanceId },
+        ).then(() => undefined, () => undefined);
+        const result = this.publicationQueue.then(unregister, unregister);
+        this.publicationQueue = result.then(() => undefined, () => undefined);
     }
 
     async acknowledge(eventIds: string[]): Promise<void> {
@@ -93,8 +98,10 @@ export default class AttentionBridgeClient implements vscode.Disposable {
     }
 
     private enqueuePublication(items: AttentionPayloadItem[], forceHeartbeat: boolean): Promise<boolean> {
+        if (this.disposed) return Promise.resolve(false);
         let accepted = false;
         const operation = async () => {
+            if (this.disposed || !await this.ensureHandshake() || this.disposed) return;
             accepted = await this.publishNow(items, forceHeartbeat);
         };
         const result = this.publicationQueue.then(operation, operation);
@@ -103,6 +110,7 @@ export default class AttentionBridgeClient implements vscode.Disposable {
     }
 
     private async publishNow(items: AttentionPayloadItem[], forceHeartbeat: boolean): Promise<boolean> {
+        if (this.disposed) return false;
         const payload = createAttentionPayload(items, this.now());
         const semantic = JSON.stringify(payload.items);
         if (!forceHeartbeat && semantic === this.lastSemantic && this.now() - this.lastPublishedAt < 30_000) return true;
@@ -181,7 +189,7 @@ export default class AttentionBridgeClient implements vscode.Disposable {
         this.retryTimer = this.scheduleTimeout(() => {
             this.retryTimer = null;
             void this.ensureHandshake().then(ready => {
-                if (ready && this.latestItems.length) void this.enqueuePublication(this.latestItems, true);
+                if (ready && this.hasLatestSnapshot) void this.enqueuePublication(this.latestItems, true);
             });
         }, delay);
     }
