@@ -70,6 +70,7 @@ export class ProductionAttentionStore {
     private readonly removalsDirectory: string;
     private readonly highWater = new Map<string, number>();
     private readonly cache = new Map<string, StoredAttentionEnvelope>();
+    private readonly appliedRemovals = new Map<string, number>();
     private mutationQueue: Promise<void> = Promise.resolve();
 
     public constructor(
@@ -87,8 +88,7 @@ export class ProductionAttentionStore {
         return this.enqueueOperation(async () => {
             const previousRemoval = await this.readRemoval(validated.instanceId);
             if (previousRemoval && receivedAtMs > previousRemoval.removedAtMs) {
-                this.highWater.delete(validated.instanceId);
-                this.cache.delete(validated.instanceId);
+                this.applyRemoval(previousRemoval);
             }
             const previous = this.highWater.get(validated.instanceId) ?? -1;
             if (validated.sequence < previous) throw new Error('attention snapshot sequence decreased');
@@ -109,8 +109,7 @@ export class ProductionAttentionStore {
                     await fs.promises.unlink(finalPath).catch(error => {
                         if (!hasErrorCode(error, 'ENOENT')) throw error;
                     });
-                    this.highWater.delete(validated.instanceId);
-                    this.cache.delete(validated.instanceId);
+                    this.applyRemoval(latestRemoval);
                     return;
                 }
                 this.highWater.set(validated.instanceId, validated.sequence);
@@ -151,8 +150,7 @@ export class ProductionAttentionStore {
             } catch (error) {
                 if (!hasErrorCode(error, 'ENOENT')) throw error;
             }
-            this.cache.delete(instanceId);
-            this.highWater.delete(instanceId);
+            this.applyRemoval(removal);
         });
     }
 
@@ -232,13 +230,20 @@ export class ProductionAttentionStore {
                     continue;
                 }
                 removals.set(instanceId, removal);
-                this.cache.delete(instanceId);
-                this.highWater.delete(instanceId);
+                this.applyRemoval(removal);
             } catch (_error) {
                 if (stats && nowMs - stats.mtimeMs > RETENTION_MS) await fs.promises.unlink(filePath).catch(() => undefined);
             }
         }
         return removals;
+    }
+
+    private applyRemoval(removal: StoredAttentionRemoval): void {
+        const appliedRemovedAtMs = this.appliedRemovals.get(removal.instanceId);
+        if (appliedRemovedAtMs !== undefined && removal.removedAtMs <= appliedRemovedAtMs) return;
+        this.cache.delete(removal.instanceId);
+        this.highWater.delete(removal.instanceId);
+        this.appliedRemovals.set(removal.instanceId, removal.removedAtMs);
     }
 
     private async readRemoval(instanceId: string): Promise<StoredAttentionRemoval | undefined> {

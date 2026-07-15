@@ -2458,7 +2458,25 @@ async function runProductionAttentionStoreTombstoneReactivationRaceChecks() {
             'a retained tombstone must not block later heartbeats from the reactivated owner');
         assert.strictEqual(fs.existsSync(removalPath), true);
 
-        await storeB.scan(1002 + 24 * 60 * 60 * 1000 + 1);
+        await assert.rejects(storeA.write(snapshot(1), 1005), /sequence decreased/,
+            'a retained tombstone must not repeatedly reset sequence monotonicity after reactivation');
+        assert.deepStrictEqual({
+            writer: (await storeA.scan(1005)).snapshots.map(value => value.sequence),
+            peer: (await storeB.scan(1005)).snapshots.map(value => value.sequence),
+        }, { writer: [2], peer: [2] }, 'a rejected late heartbeat must leave both stores at sequence 2');
+
+        await storeA.remove(instanceId, 1006);
+        await storeA.write(snapshot(1), 1007);
+        assert.deepStrictEqual({
+            writer: (await storeA.scan(1007)).snapshots.map(value => value.sequence),
+            peer: (await storeB.scan(1007)).snapshots.map(value => value.sequence),
+        }, { writer: [1], peer: [1] }, 'a newer tombstone generation must permit one new sequence reset');
+
+        const afterRetentionMs = 1006 + 24 * 60 * 60 * 1000 + 1;
+        assert.deepStrictEqual((await storeA.scan(afterRetentionMs)).snapshots, [],
+            'the writer must not retain a stale snapshot after tombstone retention');
+        assert.deepStrictEqual((await storeB.scan(afterRetentionMs)).snapshots, [],
+            'the peer must not retain a stale snapshot after tombstone retention');
         assert.strictEqual(fs.existsSync(removalPath), false, 'retained tombstones still expire after bounded retention');
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
