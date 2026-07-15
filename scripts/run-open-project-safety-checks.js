@@ -851,11 +851,106 @@ async function runCoordinatorChecks() {
         assert.strictEqual(eventDeliveries.length, beforePolling + 1, 'fallback polling should recover a missed watcher event');
         assert.deepStrictEqual(
             eventDeliveries[eventDeliveries.length - 1].registrations.map(value => value.instanceId),
-            [SELF, OTHER].sort()
+            [OTHER, SELF]
         );
     } finally {
         eventCoordinator.dispose();
         await fs.promises.rm(eventRoot, { recursive: true, force: true });
+    }
+}
+
+async function runCoordinatorAggregateBoundaryChecks() {
+    const registrations = Array.from({ length: 101 }, (_, index) => makeRegistration(
+        index.toString(16).padStart(32, '0'),
+        index >= 99 ? 1000 : index,
+        `/work/project-${index}`,
+        { sequence: index + 1, leaseUpdatedAtMs: 5000 }
+    ));
+    const expectedInstanceIds = registrations.slice()
+        .sort((left, right) => right.lastFocusedAtMs - left.lastFocusedAtMs
+            || (left.instanceId < right.instanceId ? -1 : left.instanceId > right.instanceId ? 1 : 0))
+        .slice(0, 100)
+        .map(registration => registration.instanceId);
+
+    const deliverFromScan = async scanRegistrations => {
+        const deliveries = [];
+        const coordinator = new OpenProjectCoordinator('/unused-bounded-root', {
+            now: () => 5000,
+            setInterval: () => 'bounded-interval',
+            clearInterval: () => undefined,
+            createWatcher: () => ({ close: () => undefined }),
+            deliverAggregate: async aggregate => { deliveries.push(aggregate); },
+            createStore: () => ({
+                write: async () => undefined,
+                remove: async () => undefined,
+                scan: async () => ({ registrations: scanRegistrations, counters: {} }),
+            }),
+        });
+        try {
+            await coordinator.publish(makePublication());
+            assert.strictEqual(deliveries.length, 1);
+            return deliveries[0];
+        } finally {
+            coordinator.dispose();
+        }
+    };
+
+    const forwardAggregate = await deliverFromScan(registrations);
+    const reverseAggregate = await deliverFromScan(registrations.slice().reverse());
+    assert.strictEqual(forwardAggregate.registrations.length, 100);
+    assert.deepStrictEqual(protocol.validateOpenProjectAggregate(forwardAggregate), forwardAggregate);
+    assert.deepStrictEqual(
+        forwardAggregate.registrations.map(registration => registration.instanceId),
+        expectedInstanceIds
+    );
+    assert.deepStrictEqual(reverseAggregate, forwardAggregate);
+    assert.ok(forwardAggregate.registrations.some(registration => registration.instanceId === registrations[100].instanceId));
+    assert.ok(!forwardAggregate.registrations.some(registration => registration.instanceId === registrations[0].instanceId));
+
+    let fireWatcher;
+    let deliveryAttempts = 0;
+    const attemptedRevisions = [];
+    const successfulDeliveries = [];
+    const retryCoordinator = new OpenProjectCoordinator('/unused-retry-root', {
+        now: () => 6000,
+        setInterval: () => 'retry-interval',
+        clearInterval: () => undefined,
+        createWatcher: (_directory, callback) => {
+            fireWatcher = callback;
+            return { close: () => undefined };
+        },
+        deliverAggregate: async aggregate => {
+            deliveryAttempts += 1;
+            attemptedRevisions.push(aggregate.semanticRevision);
+            if (deliveryAttempts === 1) {
+                throw new Error('forced aggregate delivery failure');
+            }
+            successfulDeliveries.push(aggregate);
+        },
+        createStore: () => ({
+            write: async () => undefined,
+            remove: async () => undefined,
+            scan: async () => ({ registrations: [makeRegistration()], counters: {} }),
+        }),
+    });
+    try {
+        await assert.rejects(
+            retryCoordinator.publish(makePublication()),
+            /forced aggregate delivery failure/
+        );
+        fireWatcher();
+        for (let attempt = 0; attempt < 50 && successfulDeliveries.length === 0; attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.strictEqual(deliveryAttempts, 2);
+        assert.strictEqual(attemptedRevisions[1], attemptedRevisions[0]);
+        assert.strictEqual(successfulDeliveries.length, 1);
+        assert.deepStrictEqual(
+            protocol.validateOpenProjectAggregate(successfulDeliveries[0]),
+            successfulDeliveries[0]
+        );
+    } finally {
+        retryCoordinator.dispose();
     }
 }
 
@@ -920,6 +1015,7 @@ async function main() {
     runProjectionChecks();
     await runStoreChecks();
     await runCoordinatorChecks();
+    await runCoordinatorAggregateBoundaryChecks();
     await runCoordinatorWiringChecks();
     console.log('Open project safety checks passed.');
 }

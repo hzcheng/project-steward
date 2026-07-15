@@ -2,10 +2,12 @@ import * as path from 'path';
 
 import {
     createOpenProjectSemanticRevision,
+    MAX_OPEN_PROJECT_RECORDS,
     OPEN_PROJECT_PROTOCOL_VERSION,
     OpenProjectAggregate,
     OpenProjectPublication,
     OpenProjectRegistration,
+    validateOpenProjectAggregate,
     validateOpenProjectPublication,
 } from '../../../src/openProjects/protocol';
 import { OpenProjectStore, OpenProjectStoreScan } from './openProjectStore';
@@ -55,6 +57,16 @@ function validateUnregisterRequest(raw: unknown): string {
         projects: [],
     });
     return validated.instanceId;
+}
+
+function compareRegistrationPriority(
+    left: OpenProjectRegistration,
+    right: OpenProjectRegistration,
+): number {
+    if (left.lastFocusedAtMs !== right.lastFocusedAtMs) {
+        return left.lastFocusedAtMs > right.lastFocusedAtMs ? -1 : 1;
+    }
+    return left.instanceId < right.instanceId ? -1 : left.instanceId > right.instanceId ? 1 : 0;
 }
 
 export class OpenProjectCoordinator {
@@ -181,16 +193,20 @@ export class OpenProjectCoordinator {
         }
         const observedAtMs = validateTimestamp(this.dependencies.now());
         const scan = await this.store.scan(observedAtMs);
-        const semanticRevision = createOpenProjectSemanticRevision(scan.registrations);
+        const registrations = scan.registrations
+            .slice()
+            .sort(compareRegistrationPriority)
+            .slice(0, MAX_OPEN_PROJECT_RECORDS);
+        const semanticRevision = createOpenProjectSemanticRevision(registrations);
         if (semanticRevision === this.lastDeliveredRevision) {
             return;
         }
-        const aggregate: OpenProjectAggregate = {
+        const aggregate = validateOpenProjectAggregate({
             protocolVersion: OPEN_PROJECT_PROTOCOL_VERSION,
             semanticRevision,
             observedAtMs,
-            registrations: scan.registrations,
-        };
+            registrations,
+        });
         await this.dependencies.deliverAggregate(aggregate);
         this.lastDeliveredRevision = semanticRevision;
     }
