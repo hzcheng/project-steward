@@ -11,7 +11,6 @@ const batchDrain = require(spikeOut + 'drainBatch');
 const workspaceIdentity = require('../spikes/attention-local-bridge/out/shared/attention-bridge/workspaceIdentity');
 const autoRunControl = require(spikeOut + 'autoRunControl');
 const storeProtocol = require('../spikes/attention-local-bridge/out/shared/attention-bridge/storeProtocol');
-const focusRelay = require('../spikes/attention-local-bridge/out/spikes/attention-local-bridge/shared/focusRelay');
 const localStore = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/localStore');
 const bridgeStorageRoot = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/bridgeStorageRoot');
 
@@ -52,27 +51,6 @@ function runProtocolChecks() {
         () => protocol.assertStableBridgeProcessId(new Set([response.bridgeProcessId]), 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
         /unstable bridge process mapping/
     );
-}
-
-function runFocusRelayChecks() {
-    const request = {
-        protocolVersion: 1,
-        requestId: '11111111111111111111111111111111',
-        sourceInstanceId: '22222222222222222222222222222222',
-        targetInstanceId: '33333333333333333333333333333333',
-        createdAtMs: 1_000,
-    };
-    assert.deepStrictEqual(focusRelay.parseFocusSpikeRequest(request, 1_001), request);
-    assert.strictEqual(focusRelay.shouldHandleFocusSpikeRequest(request, request.targetInstanceId, 1_001), true);
-    assert.strictEqual(focusRelay.shouldHandleFocusSpikeRequest(request, request.sourceInstanceId, 1_001), false);
-    assert.throws(() => focusRelay.parseFocusSpikeRequest({ ...request, targetInstanceId: 'bad' }, 1_001), /targetInstanceId/);
-    assert.throws(() => focusRelay.parseFocusSpikeRequest(request, 11_001), /expired/);
-    assert.deepStrictEqual(
-        focusRelay.parseFocusSpikeRequestForRelay({ ...request, createdAtMs: 99_999 }, 2_000),
-        { ...request, createdAtMs: 2_000 }
-    );
-    assert.deepStrictEqual(focusRelay.tryParseFocusSpikeJson(JSON.stringify(request)), request);
-    assert.strictEqual(focusRelay.tryParseFocusSpikeJson('{malformed'), null);
 }
 
 function runMetricChecks() {
@@ -432,35 +410,13 @@ function runAutomationIntegrationContractChecks() {
     assert.ok(!workspaceSource.includes('readFile(AUTO_RUN_RESULT_ROOT'), 'Workspace automation must not read result contents');
 }
 
-function runFocusSpikeIntegrationContractChecks() {
+function runFocusSpikeRetirementContractChecks() {
     const workspaceSource = readText('spikes/attention-local-bridge/workspace/src/extension.ts');
-    for (const requiredText of [
-        "const FOCUS_WORKSPACE = '_projectStewardOpenWindowSpike.workspace.focus'",
-        "const RUN_FOCUS_SPIKE = 'projectSteward.openWindowFocusSpike'",
-        "vscode.commands.executeCommand('workbench.action.focusWindow')",
-        'vscode.window.showQuickPick',
-        'OPEN_WINDOW_FOCUS_SPIKE',
-    ]) {
-        assert.ok(workspaceSource.includes(requiredText), `Workspace focus spike must contain ${requiredText}`);
-    }
-
     const bridgeSource = readText('extensions/attention-ui-bridge/src/extension.ts');
-    for (const requiredText of [
-        "const FOCUS_SPIKE_ROOT = 'open-window-focus-spike'",
-        "const FOCUS_WORKSPACE = '_projectStewardOpenWindowSpike.workspace.focus'",
-        "const FOCUS_BRIDGE_LIST = '_projectStewardOpenWindowSpike.bridge.list'",
-        "const FOCUS_BRIDGE_REQUEST = '_projectStewardOpenWindowSpike.bridge.request'",
-        'FOCUS_SPIKE_SOURCE_TIMEOUT_MS = 3_000',
-        'FOCUS_SPIKE_RETRY_MS = 100',
-        'FOCUS_SPIKE_TTL_MS',
-        'fs.watch(focusRequestsDirectory',
-    ]) {
-        assert.ok(bridgeSource.includes(requiredText), `UI Bridge focus spike must contain ${requiredText}`);
-    }
-
     for (const source of [workspaceSource, bridgeSource]) {
-        assert.ok(!source.includes('vscode.openFolder'), 'Focus spike must not call vscode.openFolder');
-        assert.ok(!source.includes('vscode.newWindow'), 'Focus spike must not call vscode.newWindow');
+        assert.ok(!source.includes('workbench.action.focusWindow'));
+        assert.ok(!source.includes('open-window-focus-spike'));
+        assert.ok(!source.includes('_projectStewardOpenWindowSpike'));
     }
 }
 
@@ -492,12 +448,11 @@ async function main() {
     runWorkspaceIdentityChecks();
     runAutoRunControlChecks();
     runBridgeStorageRootChecks();
-    runFocusRelayChecks();
     await runLocalStoreChecks();
     runPackagingChecks();
     runArtifactContractChecks();
     runAutomationIntegrationContractChecks();
-    runFocusSpikeIntegrationContractChecks();
+    runFocusSpikeRetirementContractChecks();
     runManifestChecks();
     console.log('Attention Local Bridge spike checks passed.');
 }

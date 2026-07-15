@@ -19,8 +19,7 @@
             { "command": "projectStewardAttentionSpike.disableWatcher", "title": "Project Steward Attention Spike: Disable Watcher" },
             { "command": "projectStewardAttentionSpike.showFileStatus", "title": "Project Steward Attention Spike: Show File Status" },
             { "command": "projectStewardAttentionSpike.clearLocalState", "title": "Project Steward Attention Spike: Clear Local State" },
-            { "command": "projectStewardAttentionSpike.showStatus", "title": "Project Steward Attention Spike: Show Status" },
-            { "command": "projectSteward.openWindowFocusSpike", "title": "Project Steward: Run Open Window Focus Spike" }
+            { "command": "projectStewardAttentionSpike.showStatus", "title": "Project Steward Attention Spike: Show Status" }
         ]
     }
 }
