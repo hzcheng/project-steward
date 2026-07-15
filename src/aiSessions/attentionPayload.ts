@@ -46,6 +46,11 @@ export interface AttentionBridgeHandshakeResponse {
     errorCode?: 'protocol-mismatch' | 'storage-unavailable';
 }
 
+export interface AttentionUnregisterRequest {
+    protocolVersion: 1;
+    instanceId: string;
+}
+
 export function createAttentionPayload(items: AttentionPayloadItem[], generatedAtMs = Date.now()): AttentionPayload {
     return {
         version: ATTENTION_PAYLOAD_VERSION,
@@ -141,4 +146,13 @@ export function validateAttentionBridgeHandshakeResponse(value: unknown): Attent
         capabilities: { snapshots: true, acknowledgements: true, atomicReplace: true },
         ...(record.errorCode === undefined ? {} : { errorCode: record.errorCode }),
     };
+}
+
+export function validateAttentionUnregisterRequest(value: unknown): AttentionUnregisterRequest {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('attention unregister request must be an object');
+    const record = value as Record<string, unknown>;
+    assertExactKeys(record, ['protocolVersion', 'instanceId'], 'attention unregister request');
+    if (record.protocolVersion !== 1) throw new Error('attention unregister protocol is incompatible');
+    if (typeof record.instanceId !== 'string' || !/^[a-f0-9]{32}$/.test(record.instanceId)) throw new Error('attention unregister instanceId is invalid');
+    return { protocolVersion: 1, instanceId: record.instanceId };
 }

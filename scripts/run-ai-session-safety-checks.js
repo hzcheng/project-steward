@@ -1208,9 +1208,10 @@ function runBatchAiSessionWebviewChecks() {
         const attributeValues = {};
         const classes = new Set();
         let attentionIndicator = null;
-        return {
+        const row = {
             provider,
             sessionId,
+            project: null,
             classList: {
                 add: className => classes.add(className),
                 remove: className => classes.delete(className),
@@ -1241,7 +1242,13 @@ function runBatchAiSessionWebviewChecks() {
                     attributes.delete(attribute);
                 }
             },
+            closest: selector => {
+                if (selector === '.codex-session-row[data-session-id]') return row;
+                if (selector === '.project' || selector === '.project[data-id]') return row.project;
+                return null;
+            },
         };
+        return row;
     };
     const createProject = (projectId, provider) => {
         const attributes = new Set(['data-open-project']);
@@ -1319,6 +1326,7 @@ function runBatchAiSessionWebviewChecks() {
     let attentionBadge = null;
     const attentionProjectClasses = new Set();
     const attentionRow = createSessionRow('codex', 'attention-session');
+    attentionRow.project = projectA;
     let openAttentionBadge = { remove: () => { openAttentionBadge = null; } };
     let openAttentionBadgeInsertions = 0;
     const attentionProjectCard = {
@@ -1501,6 +1509,37 @@ function runBatchAiSessionWebviewChecks() {
     assert.strictEqual(attentionBadge, null);
     assert.strictEqual(attentionRow.hasAttribute('data-ai-session-attention'), false);
     assert.strictEqual(attentionRow.querySelector('.ai-session-attention-indicator'), null);
+
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [{
+            projectKey: 'attention-project-a', attentionCount: 1,
+            eventIds: ['owner-event-a', 'owner-event-b'],
+            sessions: [{
+                sessionKey: 'codex:attention-session',
+                eventId: 'owner-event-a',
+                eventIds: ['owner-event-a', 'owner-event-b'],
+            }],
+        }],
+    } });
+    messages.length = 0;
+    eventListeners.click({ button: 0, target: attentionRow });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0])), {
+        type: 'acknowledge-ai-session-attention',
+        eventIds: ['owner-event-a', 'owner-event-b'],
+    });
+    windowEventListeners.message({ data: {
+        type: 'ai-session-attention-projects-updated',
+        projects: [{
+            projectKey: 'attention-project-a', attentionCount: 1,
+            eventIds: ['later-generation'],
+            sessions: [{ sessionKey: 'codex:attention-session', eventId: 'later-generation', eventIds: ['later-generation'] }],
+        }],
+    } });
+    messages.length = 0;
+    eventListeners.click({ button: 0, target: attentionRow });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0].eventIds)), ['later-generation']);
+    messages.length = 0;
 
     windowEventListeners.message({ data: {
         type: 'active-ai-session-terminal-changed',
@@ -2109,6 +2148,21 @@ function runAttentionMonitorChecks() {
     events = monitor.evaluate([{ key: 'codex:visible-quiet', activityToken: 'b', ownerVisible: true }]);
     assert.strictEqual(events.length, 1);
     assert.strictEqual(monitor.getSnapshot()['codex:visible-quiet'].state, 'acknowledged', 'visible quiet event is already seen');
+
+    now = 400;
+    monitor = new AiSessionAttentionMonitor({ quietThresholdMs: 30, now: () => now });
+    monitor.evaluate([{ key: 'codex:return-visible', activityToken: 'a' }]);
+    now = 401;
+    monitor.evaluate([{ key: 'codex:return-visible', activityToken: 'b' }]);
+    now = 431;
+    events = monitor.evaluate([{ key: 'codex:return-visible', activityToken: 'b' }]);
+    const hiddenEventId = events[0].eventId;
+    assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'needsAttention');
+    now = 432;
+    events = monitor.evaluate([{ key: 'codex:return-visible', activityToken: 'b', ownerVisible: true }]);
+    assert.strictEqual(events.length, 1, 'returning to the owning terminal must republish the changed snapshot');
+    assert.strictEqual(events[0].eventId, hiddenEventId, 'visibility acknowledgement retains the exact event');
+    assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'acknowledged');
 }
 
 function runAttentionPayloadChecks() {
@@ -2165,6 +2219,21 @@ function runAttentionPayloadChecks() {
         generatedAtMs: 1,
         sessions: [],
     }), /protocol/);
+
+    const manyOwners = Array.from({ length: 1001 }, (_, index) => attentionPayload.validateAttentionOwnerSnapshot({
+        ...payload,
+        instanceId: index.toString(16).padStart(32, '0'),
+        sequence: 1,
+        heartbeat: 1,
+        items: [{
+            ...payload.items[0],
+            sessionKey: `codex:bounded-${String(index).padStart(4, '0')}`,
+            eventId: `bounded-event-${index}`,
+        }],
+    }));
+    const boundedAggregate = attentionAggregate.aggregateAttentionSnapshots(manyOwners, new Set(), 30);
+    assert.strictEqual(boundedAggregate.sessions.length, 1000);
+    assert.doesNotThrow(() => attentionAggregate.validateAttentionAggregate(boundedAggregate));
 }
 
 async function runProductionAttentionStoreClockChecks() {
@@ -2186,6 +2255,69 @@ async function runProductionAttentionStoreClockChecks() {
         await store.write({ ...snapshot, generatedAtMs: 9_999_999_999_999, sequence: 2, heartbeat: 2 }, 2_000_000);
         scan = await store.scan(2_000_000 + 90_001);
         assert.strictEqual(scan.snapshots.length, 0, 'far-future Workspace clock must not extend a UI-host lease');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
+async function runProductionAttentionStoreLifecycleChecks() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-lifecycle-'));
+    let releaseFirst;
+    const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+    let firstEntered = false;
+    const store = new ProductionAttentionStore(root, 'f'.repeat(32), {
+        beforeCommit: async snapshot => {
+            if (snapshot.sequence === 1) {
+                firstEntered = true;
+                await firstGate;
+            }
+        },
+    });
+    const base = attentionPayload.validateAttentionOwnerSnapshot({
+        ...attentionPayload.createAttentionPayload([], 1),
+        instanceId: 'b'.repeat(32), sequence: 1, heartbeat: 1,
+    });
+    try {
+        const firstWrite = store.write(base, 1000);
+        for (let attempt = 0; attempt < 50 && !firstEntered; attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.strictEqual(firstEntered, true, 'test hook must hold the first write inside the serialized commit');
+        const secondWrite = store.write({ ...base, sequence: 2, heartbeat: 2 }, 1001);
+        releaseFirst();
+        await Promise.all([firstWrite, secondWrite]);
+        const filePath = path.join(root, 'instances', `${base.instanceId}.json`);
+        assert.strictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')).snapshot.sequence, 2);
+        await assert.rejects(store.write({ ...base, sequence: 1 }, 1002), /sequence decreased/);
+        await store.write({ ...base, sequence: 3, heartbeat: 3 }, 1003);
+        assert.strictEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')).snapshot.sequence, 3, 'mutation queue recovers after rejection');
+
+        fs.writeFileSync(filePath, '{malformed', 'utf8');
+        assert.strictEqual((await store.scan(1010)).snapshots[0].sequence, 3, 'malformed replacement retains last valid cache');
+        fs.unlinkSync(filePath);
+        assert.strictEqual((await store.scan(1011)).snapshots[0].sequence, 3, 'missing file retains last valid cache');
+        assert.strictEqual((await store.scan(1003 + 90_001)).snapshots.length, 0, 'cache expires only after desktop receipt lease');
+
+        await store.write({ ...base, sequence: 4, heartbeat: 4 }, 2000);
+        const delayedWrite = store.write({ ...base, sequence: 5, heartbeat: 5 }, 2001);
+        const removal = store.remove(base.instanceId);
+        await Promise.all([delayedWrite, removal]);
+        assert.strictEqual((await store.scan(2002)).snapshots.length, 0, 'serialized unregister wins after preceding write');
+
+        const instancesDirectory = path.join(root, 'instances');
+        for (let index = 0; index < 2001; index += 1) {
+            fs.writeFileSync(path.join(instancesDirectory, `stale-junk-${String(index).padStart(4, '0')}`), 'x');
+        }
+        const live = { ...base, instanceId: 'c'.repeat(32), sequence: 1, heartbeat: 1 };
+        await store.write(live, 3000);
+        const freshReader = new ProductionAttentionStore(root, 'e'.repeat(32));
+        assert.strictEqual((await freshReader.scan(3001)).snapshots.some(snapshot => snapshot.instanceId === live.instanceId), true,
+            'filtering valid filenames before the cap must retain a live owner after >2000 junk entries');
+        const invalidOldPath = path.join(instancesDirectory, `${'d'.repeat(32)}.json`);
+        fs.writeFileSync(invalidOldPath, '{invalid');
+        fs.utimesSync(invalidOldPath, new Date(0), new Date(0));
+        await freshReader.scan(24 * 60 * 60 * 1000 + 1);
+        assert.strictEqual(fs.existsSync(invalidOldPath), false, 'invalid files are cleaned after retention');
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
@@ -2333,8 +2465,11 @@ async function runProductionAttentionBridgeIntegrationChecks() {
 
         const publish = registered.get('_projectStewardAttention.bridge.publish');
         const handshake = registered.get('_projectStewardAttention.bridge.handshake');
-        await assert.rejects(handshake({ protocolVersion: 2, mainExtensionVersion: '1.1.8', instanceId: 'a'.repeat(32) }), /protocol/);
+        const unregister = registered.get('_projectStewardAttention.bridge.unregister');
         const validPublishedSnapshot = executed.find(entry => entry.command === '_projectStewardAttention.bridge.publish').argument;
+        assert.strictEqual(typeof unregister, 'function');
+        await assert.rejects(unregister({ protocolVersion: 1, instanceId: validPublishedSnapshot.instanceId, unexpected: true }), /unexpected fields/);
+        await assert.rejects(handshake({ protocolVersion: 2, mainExtensionVersion: '1.1.8', instanceId: 'a'.repeat(32) }), /protocol/);
         await assert.rejects(publish({ ...validPublishedSnapshot, unexpected: true }), /unexpected fields/);
         await assert.rejects(publish({ ...validPublishedSnapshot, version: 2 }), /header|version|protocol/);
         await assert.rejects(publish({
@@ -2350,6 +2485,8 @@ async function runProductionAttentionBridgeIntegrationChecks() {
         assert.ok(!storedText.includes('/home/'));
         assert.ok(!storedText.includes('ssh-remote'));
         assert.ok(!storedText.includes('workspaceIdentity'));
+        await unregister({ protocolVersion: 1, instanceId: validPublishedSnapshot.instanceId });
+        assert.strictEqual(fs.existsSync(path.join(productionRoot, `${validPublishedSnapshot.instanceId}.json`)), false);
         client.dispose();
     } finally {
         Module._load = currentModuleLoad;
@@ -2357,6 +2494,94 @@ async function runProductionAttentionBridgeIntegrationChecks() {
         delete require.cache[clientPath];
         for (const disposable of context.subscriptions.slice().reverse()) disposable.dispose();
         fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
+async function runAttentionBridgeClientLifecycleChecks() {
+    const registered = new Map();
+    const commands = [];
+    const timers = [];
+    let now = 1_000;
+    let bridgeMode = 'missing';
+    let holdFirstPublish = false;
+    let firstPublishEntered = false;
+    let releaseFirstPublish;
+    let firstPublishGate = new Promise(resolve => { releaseFirstPublish = resolve; });
+    const vscode = { commands: {
+        registerCommand: (command, callback) => {
+            registered.set(command, callback);
+            return { dispose: () => registered.delete(command) };
+        },
+        executeCommand: async (command, argument) => {
+            commands.push({ command, argument });
+            if (command === '_projectStewardAttention.bridge.handshake') {
+                if (bridgeMode === 'missing') throw new Error('command not found');
+                return {
+                    accepted: true, protocolVersion: bridgeMode === 'incompatible' ? 2 : 1,
+                    bridgeExtensionVersion: '0.1.1',
+                    capabilities: { snapshots: true, acknowledgements: true, atomicReplace: true },
+                };
+            }
+            if (command === '_projectStewardAttention.bridge.publish' && holdFirstPublish && !firstPublishEntered) {
+                firstPublishEntered = true;
+                await firstPublishGate;
+            }
+            return undefined;
+        },
+    } };
+    const currentModuleLoad = Module._load;
+    Module._load = function (request, parent, isMain) {
+        if (request === 'vscode') return vscode;
+        return currentModuleLoad.call(this, request, parent, isMain);
+    };
+    const modulePath = require.resolve('../out/aiSessions/attentionBridgeClient');
+    delete require.cache[modulePath];
+    const options = {
+        now: () => now,
+        setTimeout: (callback, delayMs) => { timers.push({ callback, delayMs }); return timers.length; },
+        clearTimeout: () => undefined,
+    };
+    const item = eventId => ({
+        projectId: 'a'.repeat(64), sessionKey: 'codex:lifecycle', state: 'needsAttention',
+        eventId, reason: 'quiet', observedAtMs: now,
+    });
+    try {
+        const Client = require(modulePath).default;
+        const client = new Client(() => undefined, () => undefined, options);
+        assert.strictEqual(await client.publish([item('latest-while-missing')]), false);
+        assert.strictEqual(timers.length, 1, 'missing bridge schedules bounded retry');
+        bridgeMode = 'available';
+        timers.shift().callback();
+        for (let attempt = 0; attempt < 50 && !commands.some(entry => entry.command === '_projectStewardAttention.bridge.publish'); attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.strictEqual(commands.find(entry => entry.command === '_projectStewardAttention.bridge.publish').argument.items[0].eventId, 'latest-while-missing');
+
+        holdFirstPublish = true;
+        firstPublishEntered = false;
+        firstPublishGate = new Promise(resolve => { releaseFirstPublish = resolve; });
+        const first = client.publish([item('older')], true);
+        for (let attempt = 0; attempt < 50 && !firstPublishEntered; attempt += 1) await new Promise(resolve => setImmediate(resolve));
+        const second = client.publish([item('newer')], true);
+        releaseFirstPublish();
+        await Promise.all([first, second]);
+        holdFirstPublish = false;
+        const beforeDedup = commands.filter(entry => entry.command === '_projectStewardAttention.bridge.publish').length;
+        await client.publish([item('newer')]);
+        assert.strictEqual(commands.filter(entry => entry.command === '_projectStewardAttention.bridge.publish').length, beforeDedup, 'client cache remains at newest publication');
+        client.dispose();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.strictEqual(commands.some(entry => entry.command === '_projectStewardAttention.bridge.unregister'), true);
+
+        bridgeMode = 'incompatible';
+        const incompatibleTimersBefore = timers.length;
+        const incompatible = new Client(() => undefined, () => undefined, options);
+        assert.strictEqual(await incompatible.publish([item('never')]), false);
+        assert.strictEqual(timers.length, incompatibleTimersBefore, 'incompatible protocol is not retried blindly');
+        incompatible.dispose();
+    } finally {
+        Module._load = currentModuleLoad;
+        delete require.cache[modulePath];
     }
 }
 
@@ -2476,8 +2701,10 @@ async function main() {
     runAttentionMonitorChecks();
     runAttentionPayloadChecks();
     await runProductionAttentionStoreClockChecks();
+    await runProductionAttentionStoreLifecycleChecks();
     await runAttentionBridgeClientPrivacyChecks();
     await runProductionAttentionBridgeIntegrationChecks();
+    await runAttentionBridgeClientLifecycleChecks();
     runAttentionProjectChecks();
     runVsixPackagingChecks();
 

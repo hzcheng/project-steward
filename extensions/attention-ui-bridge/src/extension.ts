@@ -11,6 +11,7 @@ import { aggregateAttentionSnapshots, validateAttentionAggregate } from '../../.
 import {
     validateAttentionBridgeHandshakeRequest,
     validateAttentionOwnerSnapshot,
+    validateAttentionUnregisterRequest,
 } from '../../../src/aiSessions/attentionPayload';
 import { parseRoutingChallenge } from '../../../shared/attention-bridge/protocol';
 import { ProbeSnapshot } from '../../../shared/attention-bridge/storeProtocol';
@@ -27,6 +28,7 @@ const PRODUCTION_BRIDGE_PUBLISH = '_projectStewardAttention.bridge.publish';
 const PRODUCTION_WORKSPACE_AGGREGATE = '_projectStewardAttention.workspace.aggregate';
 const PRODUCTION_BRIDGE_ACKNOWLEDGE = '_projectStewardAttention.bridge.acknowledge';
 const PRODUCTION_BRIDGE_HANDSHAKE = '_projectStewardAttention.bridge.handshake';
+const PRODUCTION_BRIDGE_UNREGISTER = '_projectStewardAttention.bridge.unregister';
 const OPEN_PROJECT_BRIDGE_PUBLISH = '_projectStewardOpenProjects.bridge.publish';
 const OPEN_PROJECT_BRIDGE_UNREGISTER = '_projectStewardOpenProjects.bridge.unregister';
 const OPEN_PROJECT_WORKSPACE_AGGREGATE = '_projectStewardOpenProjects.workspace.aggregate';
@@ -159,6 +161,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await scanProductionAndNotify();
         return { accepted: true, bridgeProcessId, instanceId };
     });
+    const productionUnregisterDisposable = vscode.commands.registerCommand(PRODUCTION_BRIDGE_UNREGISTER, async (raw: unknown) => {
+        const request = validateAttentionUnregisterRequest(raw);
+        await productionStore.remove(request.instanceId);
+        await scanProductionAndNotify(true);
+        return { removed: true };
+    });
     const productionAcknowledgeDisposable = vscode.commands.registerCommand(PRODUCTION_BRIDGE_ACKNOWLEDGE, async (raw: unknown) => {
         const eventIds = (raw as { eventIds?: unknown })?.eventIds;
         if (!Array.isArray(eventIds) || eventIds.length > 1000
@@ -228,6 +236,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         publishDisposable,
         productionHandshakeDisposable,
         productionPublishDisposable,
+        productionUnregisterDisposable,
         productionAcknowledgeDisposable,
         openProjectPublishDisposable,
         openProjectUnregisterDisposable,

@@ -271,6 +271,7 @@ function initProjects() {
             var archiveSessionId = archiveRow && archiveRow.getAttribute("data-session-id");
             var archiveProvider = archiveRow && archiveRow.getAttribute("data-session-provider") || "codex";
             if (archiveSessionId && isAiSessionProvider(archiveProvider)) {
+                acknowledgeAiSessionRow(archiveRow);
                 window.vscode.postMessage({
                     type: getArchiveAiSessionMessageType(archiveProvider),
                     projectId,
@@ -290,15 +291,7 @@ function initProjects() {
             return true;
         var sessionProvider = sessionRow.getAttribute("data-session-provider") || "codex";
 
-        if (sessionRow.hasAttribute('data-ai-session-attention')) {
-            var attentionEventId = sessionRow.getAttribute('data-ai-session-event-id');
-            if (attentionEventId) {
-                window.vscode.postMessage({
-                    type: 'acknowledge-ai-session-attention',
-                    eventIds: [attentionEventId],
-                });
-            }
-        }
+        acknowledgeAiSessionRow(sessionRow);
 
         if (isAiSessionProvider(sessionProvider)) {
             window.vscode.postMessage({
@@ -309,6 +302,23 @@ function initProjects() {
         }
 
         return true;
+    }
+
+    function acknowledgeAiSessionRow(sessionRow) {
+        if (!sessionRow || !sessionRow.hasAttribute('data-ai-session-attention')) return;
+        var provider = sessionRow.getAttribute('data-session-provider') || 'codex';
+        var sessionId = sessionRow.getAttribute('data-session-id') || '';
+        var sessionKey = provider + ':' + sessionId;
+        window.__projectStewardAttentionSessionEvents = window.__projectStewardAttentionSessionEvents || {};
+        var eventIds = window.__projectStewardAttentionSessionEvents[sessionKey] || [];
+        if (!eventIds.length) {
+            var fallback = sessionRow.getAttribute('data-session-event-id') || sessionRow.getAttribute('data-ai-session-event-id');
+            if (fallback) eventIds = [fallback];
+        }
+        eventIds = Array.from(new Set(eventIds.filter(eventId => typeof eventId === 'string' && !!eventId)));
+        if (eventIds.length) {
+            window.vscode.postMessage({ type: 'acknowledge-ai-session-attention', eventIds: eventIds });
+        }
     }
 
     function selectAiSessionProvider(projectId, provider) {
@@ -995,6 +1005,7 @@ function initProjects() {
     function syncAiSessionAttentionRows(projectDiv, sessions) {
         if (!projectDiv || typeof projectDiv.querySelectorAll !== 'function') return;
         var bySessionKey = {};
+        window.__projectStewardAttentionSessionEvents = window.__projectStewardAttentionSessionEvents || {};
         (sessions || []).forEach(session => {
             if (session && typeof session.sessionKey === 'string') {
                 var eventIds = Array.isArray(session.eventIds)
@@ -1002,6 +1013,7 @@ function initProjects() {
                     : (typeof session.eventId === 'string' ? [session.eventId] : []);
                 if (eventIds.length) {
                     bySessionKey[session.sessionKey] = eventIds.find(eventId => !window.__projectStewardAttentionEvents[eventId]) || eventIds[0];
+                    window.__projectStewardAttentionSessionEvents[session.sessionKey] = eventIds.slice();
                 }
             }
         });
@@ -1012,6 +1024,7 @@ function initProjects() {
             var eventId = bySessionKey[provider + ':' + sessionId];
             var indicator = row.querySelector('.ai-session-attention-indicator');
             if (!eventId) {
+                delete window.__projectStewardAttentionSessionEvents[provider + ':' + sessionId];
                 row.removeAttribute('data-ai-session-attention');
                 row.removeAttribute('data-session-event-id');
                 if (indicator) indicator.remove();

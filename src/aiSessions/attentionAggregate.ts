@@ -93,13 +93,19 @@ export function aggregateAttentionSnapshots(
             }
         }
     }
-    const sessions: AggregatedAttentionSession[] = Array.from(bySession, ([sessionKey, logical]) => ({
-        projectId: logical.projectId,
-        sessionKey,
-        reasons: Array.from(new Set(logical.events.values())).sort(),
-        eventIds: Array.from(logical.events.keys()).sort(),
-        observedAtMs: logical.observedAtMs,
-    })).sort((left, right) => left.sessionKey.localeCompare(right.sessionKey));
+    const sessions: AggregatedAttentionSession[] = Array.from(bySession, ([sessionKey, logical]) => {
+        const events = Array.from(logical.events.entries())
+            .sort((left, right) => left[0].localeCompare(right[0]))
+            .slice(0, MAX_AGGREGATE_EVENTS_PER_SESSION);
+        return {
+            projectId: logical.projectId,
+            sessionKey,
+            reasons: Array.from(new Set(events.map(event => event[1]))).sort(),
+            eventIds: events.map(event => event[0]),
+            observedAtMs: logical.observedAtMs,
+        };
+    }).sort((left, right) => left.sessionKey.localeCompare(right.sessionKey))
+        .slice(0, MAX_AGGREGATE_SESSIONS);
     const semantic = JSON.stringify(sessions.map(session => [
         session.projectId,
         session.sessionKey,

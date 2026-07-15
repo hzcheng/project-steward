@@ -80,6 +80,11 @@ export default class AiSessionAttentionMonitor {
                 events.push(entry.event);
                 continue;
             }
+            if (entry.state === 'needsAttention' && input.ownerVisible && entry.event) {
+                entry.state = 'acknowledged';
+                entry.stateChangedAt = now;
+                events.push(entry.event);
+            }
             const changed = input.activityToken !== undefined && input.activityToken !== entry.lastToken;
             if (changed) {
                 entry.lastToken = input.activityToken;
