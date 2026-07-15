@@ -13,7 +13,9 @@ const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
 const lifecycle = require('../out/aiSessions/lifecycle');
 const jsonlTail = require('../out/aiSessions/jsonlTail');
-const AiSessionTerminalBindingStore = require('../out/aiSessions/terminalBindingStore').default;
+const terminalBindingStore = require('../out/aiSessions/terminalBindingStore');
+const AiSessionTerminalBindingStore = terminalBindingStore.default;
+const AI_SESSION_TERMINAL_INSTANCE_ENV_KEY = terminalBindingStore.AI_SESSION_TERMINAL_INSTANCE_ENV_KEY;
 const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').default;
 const attentionPayload = require('../out/aiSessions/attentionPayload');
 const attentionAggregate = require('../out/aiSessions/attentionAggregate');
@@ -34,7 +36,20 @@ Module._load = function (request, parent, isMain) {
     if (request === 'vscode') {
         return {
             Uri: { parse: createTestUri, file: createTestFileUri },
-            window: { terminals: vscodeTestState.terminals },
+            window: {
+                terminals: vscodeTestState.terminals,
+                createTerminal: options => {
+                    const terminal = {
+                        name: options.name,
+                        creationOptions: options,
+                        processId: Promise.resolve(1),
+                        sendText() {},
+                    };
+                    vscodeTestState.terminals.push(terminal);
+                    return terminal;
+                },
+                showWarningMessage() {},
+            },
         };
     }
     return originalModuleLoad.call(this, request, parent, isMain);
@@ -519,6 +534,64 @@ async function runAiSessionTerminalBindingStoreChecks() {
     withInvalid.remove(instanceId);
     await withInvalid.flush();
     assert.strictEqual(new AiSessionTerminalBindingStore(state).get(instanceId), null);
+}
+
+async function runAiSessionTerminalPersistenceChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-terminal-persistence-'));
+    const stateData = {};
+    const state = {
+        get: (key, fallback) => Object.prototype.hasOwnProperty.call(stateData, key) ? stateData[key] : fallback,
+        update: async (key, value) => { stateData[key] = value; },
+    };
+    const getProvider = providerId => providers.getAiSessionProviderDefinition(providerId);
+    try {
+        const firstStore = new AiSessionTerminalBindingStore(state);
+        const firstService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, firstStore);
+        const created = firstService.createTerminal({
+            name: 'Codex: App',
+            cwd: '/work/app',
+            logError() {},
+            cwdFailureMessage: '',
+            cwdWarningMessage: '',
+        }).terminal;
+        const instanceId = created.creationOptions.env[AI_SESSION_TERMINAL_INSTANCE_ENV_KEY];
+        assert.match(instanceId, /^[a-f0-9]{32}$/);
+        firstService.trackPending({
+            provider: 'codex',
+            terminal: created,
+            markerPath: path.join(tempRoot, 'pending.done'),
+            cwd: '/work/app',
+            createdAt: '2026-07-15T08:00:00.000Z',
+            excludedSessionIds: [],
+            title: 'App',
+        });
+        await firstStore.flush();
+
+        const secondStore = new AiSessionTerminalBindingStore(state);
+        const secondService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, secondStore);
+        secondService.restorePersistedTerminals([created]);
+        assert.strictEqual(secondService.getPendingTerminals().length, 1);
+        assert.strictEqual(secondService.getPendingTerminals()[0].terminal, created);
+
+        secondService.track('codex', 'session-new', {
+            terminal: created,
+            markerPath: path.join(tempRoot, 'session-new.done'),
+            runStartedAtMs: 1784102400000,
+        });
+        await secondStore.flush();
+
+        const thirdStore = new AiSessionTerminalBindingStore(state);
+        const thirdService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, thirdStore);
+        thirdService.restorePersistedTerminals([created]);
+        assert.strictEqual(thirdService.getById('codex', 'session-new').terminal, created);
+
+        thirdService.handleClosedTerminal(created);
+        await thirdStore.flush();
+        assert.strictEqual(new AiSessionTerminalBindingStore(state).get(instanceId), null);
+    } finally {
+        vscodeTestState.terminals.length = 0;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 }
 
 function runBatchAiSessionArchiveChecks() {
@@ -3159,6 +3232,7 @@ async function main() {
     runActiveAiSessionTerminalHighlightChecks();
     runAiSessionTerminalResolutionChecks();
     await runAiSessionTerminalBindingStoreChecks();
+    await runAiSessionTerminalPersistenceChecks();
     await runBatchAiSessionArchiveHostChecks();
     runWebviewContentChecks();
     runCurrentWorkspaceRenderingChecks();

@@ -1,5 +1,6 @@
 'use strict';
 
+import * as crypto from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { existsSync, mkdirSync, statSync, unlinkSync } from 'fs';
@@ -7,6 +8,7 @@ import { existsSync, mkdirSync, statSync, unlinkSync } from 'fs';
 import type { AiSessionProviderId, CodexSession } from '../models';
 import type { ActiveAiSessionTerminalResolution } from './activeTerminalHighlight';
 import { AI_SESSION_PROVIDER_IDS } from './providers';
+import AiSessionTerminalBindingStore, { AI_SESSION_TERMINAL_INSTANCE_ENV_KEY } from './terminalBindingStore';
 import type { AiSessionProvider, AiSessionTerminalEntry } from './types';
 
 export interface AiSessionTerminalCreateOptions {
@@ -50,16 +52,21 @@ export default class AiSessionTerminalService {
         private readonly globalStoragePath: string,
         private readonly getProvider: (providerId: AiSessionProviderId) => AiSessionProvider,
         private readonly terminalStartupDelayMs = 1000,
-        private readonly pendingTerminalTtlMs = 24 * 60 * 60 * 1000
+        private readonly pendingTerminalTtlMs = 24 * 60 * 60 * 1000,
+        private readonly bindingStore: AiSessionTerminalBindingStore = null
     ) { }
 
     createTerminal(options: AiSessionTerminalCreateOptions): AiSessionTerminalCreateResult {
+        let env = {
+            ...(options.env || {}),
+            [AI_SESSION_TERMINAL_INSTANCE_ENV_KEY]: crypto.randomBytes(16).toString('hex'),
+        };
         try {
             return {
                 terminal: vscode.window.createTerminal({
                     name: options.name,
                     cwd: options.cwd || undefined,
-                    env: options.env,
+                    env,
                 }),
                 cwdAccepted: true,
             };
@@ -69,7 +76,7 @@ export default class AiSessionTerminalService {
             return {
                 terminal: vscode.window.createTerminal({
                     name: options.name,
-                    env: options.env,
+                    env,
                 }),
                 cwdAccepted: false,
             };
@@ -98,18 +105,35 @@ export default class AiSessionTerminalService {
         terminal.sendText(provider.buildResumeCommand(sessionId, cwd, markerPath));
     }
 
-    track(providerId: AiSessionProviderId, sessionId: string, entry: AiSessionTerminalEntry<vscode.Terminal>) {
-        this.terminals[providerId].set(sessionId, {
+    track(providerId: AiSessionProviderId, sessionId: string, entry: AiSessionTerminalEntry<vscode.Terminal>, persist = true) {
+        let normalizedEntry = {
             ...entry,
             runStartedAtMs: Number.isFinite(entry?.runStartedAtMs) ? entry.runStartedAtMs : Date.now(),
-        });
+        };
+        this.terminals[providerId].set(sessionId, normalizedEntry);
+        if (persist) {
+            let instanceId = this.getTerminalInstanceId(normalizedEntry.terminal);
+            if (instanceId) {
+                this.bindingStore?.setBound(instanceId, {
+                    providerId,
+                    sessionId,
+                    markerPath: normalizedEntry.markerPath,
+                    runStartedAtMs: normalizedEntry.runStartedAtMs,
+                });
+            }
+        }
     }
 
     untrack(providerId: AiSessionProviderId, sessionId: string) {
+        let entry = this.terminals[providerId].get(sessionId);
         this.terminals[providerId].delete(sessionId);
+        let instanceId = this.getTerminalInstanceId(entry?.terminal);
+        if (instanceId) {
+            this.bindingStore?.remove(instanceId);
+        }
     }
 
-    trackPending(entry: PendingAiSessionTerminal) {
+    trackPending(entry: PendingAiSessionTerminal, persist = true) {
         if (!entry || !entry.terminal || !entry.markerPath || !entry.cwd || !entry.createdAt) {
             return;
         }
@@ -119,6 +143,19 @@ export default class AiSessionTerminalService {
             excludedSessionIds: Array.isArray(entry.excludedSessionIds) ? entry.excludedSessionIds.filter(id => !!id) : [],
         });
         this.pendingTerminals = this.trimPendingTerminals(this.pendingTerminals);
+        if (persist) {
+            let instanceId = this.getTerminalInstanceId(entry.terminal);
+            if (instanceId) {
+                this.bindingStore?.setPending(instanceId, {
+                    providerId: entry.provider,
+                    markerPath: entry.markerPath,
+                    cwd: entry.cwd,
+                    createdAt: entry.createdAt,
+                    excludedSessionIds: entry.excludedSessionIds || [],
+                    ...(entry.title === undefined ? {} : { title: entry.title }),
+                });
+            }
+        }
     }
 
     getPendingTerminals(): PendingAiSessionTerminal[] {
@@ -139,6 +176,36 @@ export default class AiSessionTerminalService {
             this.deleteMarker(entry.markerPath);
             return false;
         });
+        let instanceId = this.getTerminalInstanceId(terminal);
+        if (instanceId) {
+            this.bindingStore?.remove(instanceId);
+        }
+    }
+
+    restorePersistedTerminals(terminals: readonly vscode.Terminal[]) {
+        for (let terminal of terminals || []) {
+            let instanceId = this.getTerminalInstanceId(terminal);
+            let binding = instanceId ? this.bindingStore?.get(instanceId) : null;
+            if (binding?.state === 'bound') {
+                this.track(binding.providerId, binding.sessionId, {
+                    terminal,
+                    markerPath: binding.markerPath,
+                    runStartedAtMs: binding.runStartedAtMs,
+                }, false);
+                continue;
+            }
+            if (binding?.state === 'pending') {
+                this.trackPending({
+                    provider: binding.providerId,
+                    terminal,
+                    markerPath: binding.markerPath,
+                    cwd: binding.cwd,
+                    createdAt: binding.createdAt,
+                    excludedSessionIds: binding.excludedSessionIds,
+                    ...(binding.title === undefined ? {} : { title: binding.title }),
+                }, false);
+            }
+        }
     }
 
     beginResume(providerId: AiSessionProviderId, sessionId: string): boolean {
@@ -288,6 +355,7 @@ export default class AiSessionTerminalService {
                 }
             }
         }
+        this.removePendingForTerminal(terminal);
     }
 
     private trimPendingTerminals(pendingTerminals: PendingAiSessionTerminal[]): PendingAiSessionTerminal[] {
@@ -331,5 +399,14 @@ export default class AiSessionTerminalService {
         }
 
         return null;
+    }
+
+    private getTerminalInstanceId(terminal: vscode.Terminal): string {
+        let creationOptions = terminal?.creationOptions;
+        if (!creationOptions || !('env' in creationOptions)) {
+            return null;
+        }
+        let instanceId = creationOptions.env?.[AI_SESSION_TERMINAL_INSTANCE_ENV_KEY];
+        return typeof instanceId === 'string' && /^[a-f0-9]{32}$/.test(instanceId) ? instanceId : null;
     }
 }
