@@ -92,6 +92,7 @@ export default class AiSessionTerminalService {
     async sendNewSessionCommand(providerId: AiSessionProviderId, terminal: vscode.Terminal, cwd: string, title: string, markerPath: string) {
         let provider = this.getProvider(providerId);
         await this.waitForReady(terminal);
+        await this.persistReadyPendingTerminal(terminal);
         terminal.sendText(provider.buildNewSessionCommand(cwd, title, markerPath));
     }
 
@@ -137,15 +138,32 @@ export default class AiSessionTerminalService {
         });
         this.pendingTerminals = this.trimPendingTerminals(this.pendingTerminals);
         if (persist) {
-            this.bindingStore?.setPending(entry.terminal.processId, {
-                providerId: entry.provider,
-                markerPath: entry.markerPath,
-                cwd: entry.cwd,
-                createdAt: entry.createdAt,
-                excludedSessionIds: entry.excludedSessionIds || [],
-                ...(entry.title === undefined ? {} : { title: entry.title }),
-            });
+            this.persistPendingBinding(entry, entry.terminal.processId);
         }
+    }
+
+    private async persistReadyPendingTerminal(terminal: vscode.Terminal): Promise<void> {
+        let pendingTerminal = this.pendingTerminals.find(entry => entry.terminal === terminal);
+        if (!pendingTerminal || !this.bindingStore) {
+            return;
+        }
+        let processId = await this.resolveTerminalProcessId(terminal);
+        if (processId === null) {
+            return;
+        }
+        this.persistPendingBinding(pendingTerminal, processId);
+        await this.bindingStore.flush();
+    }
+
+    private persistPendingBinding(entry: PendingAiSessionTerminal, processId: number | PromiseLike<number | undefined>) {
+        this.bindingStore?.setPending(processId, {
+            providerId: entry.provider,
+            markerPath: entry.markerPath,
+            cwd: entry.cwd,
+            createdAt: entry.createdAt,
+            excludedSessionIds: entry.excludedSessionIds || [],
+            ...(entry.title === undefined ? {} : { title: entry.title }),
+        });
     }
 
     getPendingTerminals(): PendingAiSessionTerminal[] {

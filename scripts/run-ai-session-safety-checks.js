@@ -633,6 +633,73 @@ async function runAiSessionTerminalPersistenceChecks() {
     const getProvider = providerId => providers.getAiSessionProviderDefinition(providerId);
     const createdAt = new Date().toISOString();
     try {
+        const readyRetryProcessId = 42008;
+        let readyRetryProcessIdReads = 0;
+        const readyRetryCommands = [];
+        const readyRetryEvents = [];
+        const readyRetryState = {
+            get: (key, fallback) => Object.prototype.hasOwnProperty.call(stateData, key) ? stateData[key] : fallback,
+            update: async (key, value) => {
+                stateData[key] = value;
+                readyRetryEvents.push('persisted');
+            },
+        };
+        const readyRetryTerminal = {
+            name: 'Codex: Retry after ready',
+            creationOptions: { name: 'Codex: Retry after ready', cwd: '/work/app' },
+            get processId() {
+                readyRetryProcessIdReads++;
+                return readyRetryProcessIdReads === 1
+                    ? new Promise(() => {})
+                    : Promise.resolve(readyRetryProcessId);
+            },
+            sendText(command) {
+                readyRetryCommands.push(command);
+                readyRetryEvents.push('sent');
+            },
+        };
+        const readyRetryStore = new AiSessionTerminalBindingStore(readyRetryState, undefined, undefined, 5);
+        const readyRetryService = new AiSessionTerminalService(
+            tempRoot,
+            getProvider,
+            0,
+            undefined,
+            readyRetryStore,
+            5
+        );
+        readyRetryService.trackPending({
+            provider: 'codex',
+            terminal: readyRetryTerminal,
+            markerPath: path.join(tempRoot, 'retry-after-ready.done'),
+            cwd: '/work/app',
+            createdAt,
+            excludedSessionIds: [],
+            title: 'Retry after ready',
+        });
+        await new Promise(resolve => setTimeout(resolve, 10));
+        await readyRetryStore.flush();
+        assert.strictEqual(
+            readyRetryStore.get(readyRetryProcessId),
+            null,
+            'the fixture must reproduce the initial unresolved PID write'
+        );
+
+        await readyRetryService.sendNewSessionCommand(
+            'codex',
+            readyRetryTerminal,
+            '/work/app',
+            'Retry after ready',
+            path.join(tempRoot, 'retry-after-ready.done')
+        );
+        await readyRetryStore.flush();
+        assert.strictEqual(
+            readyRetryStore.get(readyRetryProcessId)?.state,
+            'pending',
+            'a ready terminal must retry and persist its pending binding before sending the provider command'
+        );
+        assert.strictEqual(readyRetryCommands.length, 1);
+        assert.deepStrictEqual(readyRetryEvents, ['persisted', 'sent']);
+
         const firstStore = new AiSessionTerminalBindingStore(state);
         const firstService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, firstStore);
         const created = firstService.createTerminal({
