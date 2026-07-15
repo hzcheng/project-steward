@@ -13,6 +13,7 @@ const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
 const lifecycle = require('../out/aiSessions/lifecycle');
 const jsonlTail = require('../out/aiSessions/jsonlTail');
+const AiSessionTerminalBindingStore = require('../out/aiSessions/terminalBindingStore').default;
 const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').default;
 const attentionPayload = require('../out/aiSessions/attentionPayload');
 const attentionAggregate = require('../out/aiSessions/attentionAggregate');
@@ -467,6 +468,57 @@ function runAiSessionTerminalResolutionChecks() {
         vscodeTestState.terminals.length = 0;
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
+}
+
+async function runAiSessionTerminalBindingStoreChecks() {
+    const stateData = {};
+    const state = {
+        get: (key, fallback) => Object.prototype.hasOwnProperty.call(stateData, key) ? stateData[key] : fallback,
+        update: async (key, value) => { stateData[key] = value; },
+    };
+    const instanceId = 'a'.repeat(32);
+    const first = new AiSessionTerminalBindingStore(state);
+    first.setPending(instanceId, {
+        providerId: 'codex',
+        markerPath: '/tmp/pending.done',
+        cwd: '/work/app',
+        createdAt: '2026-07-15T08:00:00.000Z',
+        excludedSessionIds: ['old'],
+        title: 'New chat',
+    });
+    await first.flush();
+
+    const restoredPending = new AiSessionTerminalBindingStore(state).get(instanceId);
+    assert.strictEqual(restoredPending.state, 'pending');
+    assert.strictEqual(restoredPending.providerId, 'codex');
+    assert.deepStrictEqual(restoredPending.excludedSessionIds, ['old']);
+
+    const second = new AiSessionTerminalBindingStore(state);
+    second.setBound(instanceId, {
+        providerId: 'codex',
+        sessionId: 'session-new',
+        markerPath: '/tmp/session-new.done',
+        runStartedAtMs: 1784102400000,
+    });
+    await second.flush();
+    assert.strictEqual(new AiSessionTerminalBindingStore(state).get(instanceId).sessionId, 'session-new');
+
+    stateData['aiSessionTerminalBindings.v1']['b'.repeat(32)] = {
+        version: 1,
+        state: 'bound',
+        providerId: 'invalid',
+        sessionId: 'bad',
+        markerPath: '/tmp/bad.done',
+        runStartedAtMs: 1,
+        updatedAtMs: 1,
+    };
+    const withInvalid = new AiSessionTerminalBindingStore(state);
+    assert.strictEqual(withInvalid.get('b'.repeat(32)), null);
+    assert.strictEqual(withInvalid.get(instanceId).sessionId, 'session-new');
+
+    withInvalid.remove(instanceId);
+    await withInvalid.flush();
+    assert.strictEqual(new AiSessionTerminalBindingStore(state).get(instanceId), null);
 }
 
 function runBatchAiSessionArchiveChecks() {
@@ -3106,6 +3158,7 @@ async function main() {
     runBatchAiSessionArchiveChecks();
     runActiveAiSessionTerminalHighlightChecks();
     runAiSessionTerminalResolutionChecks();
+    await runAiSessionTerminalBindingStoreChecks();
     await runBatchAiSessionArchiveHostChecks();
     runWebviewContentChecks();
     runCurrentWorkspaceRenderingChecks();
