@@ -4,6 +4,14 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ## [Unreleased]
 
+### Added
+
+-   Add a command to append the active editor file reference, including selected line ranges, to the active terminal and focus it for CLI discussions.
+
+### Fixed
+
+-   Recover the Open Projects `OTHER WINDOWS` group if an incremental webview update drops the expected navigation cards.
+
 ## [2.0.1] 2026-07-16
 
 ### Changed
