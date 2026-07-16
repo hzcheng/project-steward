@@ -18,6 +18,7 @@ export interface OpenProjectDashboardControllerOptions {
     isVisible: () => boolean;
     logDiagnostic: (source: string, event: Record<string, unknown>) => void;
     logError: (message: string, error: unknown) => void;
+    nowMs?: () => number;
 }
 
 export class OpenProjectDashboardController {
@@ -37,9 +38,11 @@ export class OpenProjectDashboardController {
     }
 
     getCards(): Project[] {
+        const startedAt = this.nowMs();
+        const openProjects = this.options.getOpenProjects();
         const cards = withAttentionProjects(
             projectOpenProjectCards(
-                this.options.getOpenProjects(),
+                openProjects,
                 this.aggregate,
                 this.options.getBridgeInstanceId()
             ),
@@ -50,6 +53,14 @@ export class OpenProjectDashboardController {
                 .filter(card => card.openProjectCardKind === 'projectNavigation')
                 .map(card => [card.id, card] as [string, Project])
         );
+        this.options.logDiagnostic('Renderer', {
+            event: 'open-project-cards-build',
+            durationMs: this.nowMs() - startedAt,
+            projectCount: openProjects.length,
+            cardCount: cards.length,
+            navigationCardCount: cards.filter(card => card.openProjectCardKind === 'projectNavigation').length,
+            semanticRevision: this.aggregate?.semanticRevision || null,
+        });
         return cards;
     }
 
@@ -64,12 +75,20 @@ export class OpenProjectDashboardController {
 
         const cards = this.getCards();
         const stewardInfos = this.options.getStewardInfos();
+        const messageBuildStartedAt = this.nowMs();
         const message = buildOpenProjectsUpdatedMessage({
             groups: this.options.getGroups(),
             cards,
             collapsed: stewardInfos.openProjectsGroupCollapsed,
             stewardInfos,
             semanticRevision: this.aggregate.semanticRevision,
+        });
+        this.options.logDiagnostic('Renderer', {
+            event: 'post-update-build',
+            durationMs: this.nowMs() - messageBuildStartedAt,
+            semanticRevision: message.semanticRevision,
+            projectCount: message.projectCount,
+            htmlBytes: Buffer.byteLength(message.html, 'utf8'),
         });
         this.options.logDiagnostic('Renderer', {
             event: 'post-update',
@@ -92,5 +111,9 @@ export class OpenProjectDashboardController {
                 this.options.refresh('open-project-update-post-error');
             }
         });
+    }
+
+    private nowMs(): number {
+        return this.options.nowMs ? this.options.nowMs() : Date.now();
     }
 }

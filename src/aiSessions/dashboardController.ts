@@ -20,6 +20,8 @@ export interface AiSessionDashboardControllerOptions {
     postMessage: (message: unknown) => Thenable<boolean>;
     refresh: (reason: string) => void;
     logError: (message: string, error: unknown) => void;
+    logDiagnostic?: (event: Record<string, unknown>) => void;
+    nowMs?: () => number;
     beforeRefresh?: (reason: string) => void;
     afterRefresh?: () => void;
     debounceMs: number;
@@ -88,7 +90,7 @@ export class AiSessionDashboardController {
 
         this.options.beforeRefresh?.(reason);
         try {
-            const message = this.getUpdatedMessage();
+            const message = this.getUpdatedMessage(reason);
             this.options.postMessage(message).then(delivered => {
                 if (!delivered) {
                     this.options.refresh('ai-session-update-not-delivered');
@@ -105,17 +107,26 @@ export class AiSessionDashboardController {
         }
     }
 
-    getUpdatedMessage(): AiSessionsUpdatedMessage {
+    getUpdatedMessage(reason = 'refresh'): AiSessionsUpdatedMessage {
+        const startedAt = this.nowMs();
         const cards = this.options.getCards();
         const openProjects = cards
             .filter(project => project.openProjectCardKind !== 'projectNavigation');
-        return buildAiSessionsUpdatedMessage({
+        const message = buildAiSessionsUpdatedMessage({
             groups: this.options.getGroups(),
             cards,
             sequence: this.options.nextSequence(),
             generatedAt: new Date().toISOString(),
             openProjects: openProjects.map(project => this.options.getOpenProjectAiSessionViewModel(project)),
         });
+        this.options.logDiagnostic?.({
+            event: 'ai-session-message-build',
+            reason,
+            durationMs: this.nowMs() - startedAt,
+            cardCount: cards.length,
+            openProjectCount: openProjects.length,
+        });
+        return message;
     }
 
     dispose(): void {
@@ -145,5 +156,9 @@ export class AiSessionDashboardController {
             this.options.clearTimeout(this.refreshTimeout);
             this.refreshTimeout = null;
         }
+    }
+
+    private nowMs(): number {
+        return this.options.nowMs ? this.options.nowMs() : Date.now();
     }
 }

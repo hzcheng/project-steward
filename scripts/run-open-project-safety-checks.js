@@ -16,6 +16,7 @@ Module._load = function (request, parent, isMain) {
 const protocol = require('../out/openProjects/protocol');
 const projection = require('../out/openProjects/projection');
 const { default: OpenProjectBridgeClient } = require('../out/openProjects/bridgeClient');
+const { OpenProjectDashboardController } = require('../out/openProjects/dashboardController');
 const { OpenProjectWorkspaceController } = require('../out/openProjects/workspaceController');
 const { CurrentProjectDetailsResolver } = require('../out/projects/currentProjectDetails');
 const { ProjectManualEditController } = require('../out/projects/projectManualEditController');
@@ -984,6 +985,62 @@ function runWebviewRefreshFocusChecks() {
     assert.strictEqual(blurCalls, 0, 'reloading a visible Webview must not alter editor focus');
 }
 
+async function runOpenProjectDashboardControllerChecks() {
+    const diagnostics = [];
+    const posted = [];
+    let nowMs = 3000;
+    const controller = new OpenProjectDashboardController({
+        getOpenProjects: () => [{
+            id: 'project-a',
+            name: 'Project A',
+            description: 'Current',
+            path: '/work/a',
+        }],
+        getGroups: () => [],
+        getStewardInfos: () => ({
+            openProjectsGroupCollapsed: false,
+            config: {},
+        }),
+        getAttentionAggregate: () => ({
+            protocolVersion: 1,
+            aggregateRevision: '3'.repeat(64),
+            generatedAtMs: 1,
+            sessions: [],
+        }),
+        getBridgeInstanceId: () => SELF,
+        postMessage: message => {
+            posted.push(message);
+            return Promise.resolve(true);
+        },
+        refresh: reason => diagnostics.push(['refresh', reason]),
+        isVisible: () => true,
+        logDiagnostic: (source, event) => diagnostics.push([source, event]),
+        logError: error => { throw new Error(`Unexpected logError: ${error}`); },
+        nowMs: () => {
+            nowMs += 5;
+            return nowMs;
+        },
+    });
+
+    controller.setAggregate(makeAggregate([makeRegistration(SELF, 4000, '/work/a')]));
+    controller.postUpdated();
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.strictEqual(posted.length, 1);
+    assert.strictEqual(posted[0].type, 'open-projects-updated');
+    assert.deepStrictEqual(diagnostics.map(([source, event]) => [source, event.event]), [
+        ['Renderer', 'open-project-cards-build'],
+        ['Renderer', 'post-update-build'],
+        ['Renderer', 'post-update'],
+        ['Renderer', 'post-update-result'],
+    ]);
+    assert.strictEqual(diagnostics[0][1].durationMs, 5);
+    assert.strictEqual(diagnostics[0][1].projectCount, 1);
+    assert.strictEqual(diagnostics[0][1].cardCount, 1);
+    assert.strictEqual(diagnostics[1][1].durationMs, 5);
+    assert.strictEqual(diagnostics[1][1].projectCount, 1);
+}
+
 function runOpenProjectIncrementalRenderingChecks() {
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
     const controllerPath = path.join(__dirname, '..', 'src', 'openProjects', 'dashboardController.ts');
@@ -1811,6 +1868,7 @@ async function main() {
     await runProjectOpenControllerChecks();
     runDashboardBridgeLifecycleChecks();
     runWebviewRefreshFocusChecks();
+    await runOpenProjectDashboardControllerChecks();
     runOpenProjectIncrementalRenderingChecks();
     await runDashboardMigrationPublicationChecks();
     await runStoreChecks();

@@ -70,19 +70,71 @@ export interface AiSessionProjectHydrationControllerOptions<TTerminal = unknown>
     hasRemoteAttentionAggregate: () => boolean;
     getProjectKey: (project: Project) => string;
     normalizeProjectPath: (projectPath: string) => string;
+    nowMs?: () => number;
+    logDiagnostic?: (event: Record<string, unknown>) => void;
 }
 
 export class AiSessionProjectHydrationController<TTerminal = unknown> {
+    private cache: {
+        signature: string;
+        projects: Project[];
+        diagnostic: Record<string, unknown>;
+    } | null = null;
+    private cacheClearScheduled = false;
+
     constructor(private readonly options: AiSessionProjectHydrationControllerOptions<TTerminal>) {
     }
 
     hydrate(openProjects: Project[]): Project[] {
+        const startedAt = this.nowMs();
+        const reason = this.options.getRefreshReason();
+        const providers = this.options.getProviders();
         if (!openProjects.length) {
+            this.logDiagnostic({
+                event: 'ai-session-hydration',
+                reason,
+                durationMs: this.nowMs() - startedAt,
+                projectCount: 0,
+                hydratedProjectCount: 0,
+                candidatePathCount: 0,
+                providerCount: providers.length,
+                sessionCount: 0,
+                pendingTerminalCount: 0,
+                cacheHit: false,
+            });
             return openProjects;
         }
 
-        const providers = this.options.getProviders();
-        const sessionResults = this.getAiSessionResults(openProjects);
+        const workspaceFile = this.options.getWorkspaceFile();
+        const workspaceFolders = this.options.getWorkspaceFolders();
+        const candidatePaths = getAiSessionCandidatePaths(openProjects, workspaceFile, workspaceFolders);
+        const assignmentCandidates = getAiSessionOpenProjectCandidates(openProjects, workspaceFile, workspaceFolders);
+        const maxFiles = getAiSessionScanMaxFiles(reason, this.options.incrementalScanMaxFiles);
+        const pendingTerminals = this.options.terminalService.getPendingTerminals();
+        const pendingTerminalCount = pendingTerminals.length;
+        const aggregate = this.options.getAttentionAggregate();
+        const localAttentionBySession = this.options.getLocalAttentionBySession();
+        const signature = this.getCacheSignature({
+            openProjects,
+            providers,
+            candidatePaths,
+            assignmentCandidates,
+            reason,
+            maxFiles,
+            aggregate,
+            localAttentionBySession,
+            pendingTerminals,
+        });
+        if (this.cache?.signature === signature) {
+            this.logDiagnostic({
+                ...this.cache.diagnostic,
+                durationMs: this.nowMs() - startedAt,
+                cacheHit: true,
+            });
+            return this.cache.projects;
+        }
+
+        const sessionResults = this.getAiSessionResults(candidatePaths, reason, maxFiles);
         resolvePendingAiSessionTerminals({
             terminalService: this.options.terminalService,
             sessionResults,
@@ -91,9 +143,8 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             setAlias: this.options.setAlias,
             syncActiveTerminal: this.options.syncActiveTerminal,
         });
-        const assignments = this.getAiSessionAssignments(openProjects, sessionResults);
-        const aggregate = this.options.getAttentionAggregate();
-        return hydrateOpenProjectsWithAiSessions({
+        const assignments = this.getAiSessionAssignments(assignmentCandidates, sessionResults);
+        const hydrated = hydrateOpenProjectsWithAiSessions({
             projects: openProjects,
             providers,
             sessionResults,
@@ -103,10 +154,33 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             pinnedSessions: this.options.getPinnedSessions(),
             aliases: this.options.getAliases(),
             aggregateByProjectAndSession: buildAttentionSessionIndex(aggregate),
-            localAttentionBySession: this.options.getLocalAttentionBySession(),
+            localAttentionBySession,
             includeLocalAttention: !this.options.hasRemoteAttentionAggregate(),
             getProjectKey: this.options.getProjectKey,
         });
+        const diagnostic = {
+            event: 'ai-session-hydration',
+            reason,
+            projectCount: openProjects.length,
+            hydratedProjectCount: hydrated.length,
+            candidatePathCount: candidatePaths.length,
+            providerCount: providers.length,
+            sessionCount: Object.values(sessionResults)
+                .reduce((count, result) => count + result.sessions.length, 0),
+            pendingTerminalCount,
+        };
+        this.cache = {
+            signature,
+            projects: hydrated,
+            diagnostic,
+        };
+        this.scheduleCacheClear();
+        this.logDiagnostic({
+            ...diagnostic,
+            durationMs: this.nowMs() - startedAt,
+            cacheHit: false,
+        });
+        return hydrated;
     }
 
     trackPendingTerminal(
@@ -134,29 +208,117 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
         });
     }
 
-    private getAiSessionResults(openProjects: Project[]): Record<AiSessionProviderId, AiSessionReadResult> {
-        const reason = this.options.getRefreshReason();
-        const candidatePaths = getAiSessionCandidatePaths(
-            openProjects,
-            this.options.getWorkspaceFile(),
-            this.options.getWorkspaceFolders()
-        );
-        const maxFiles = getAiSessionScanMaxFiles(reason, this.options.incrementalScanMaxFiles);
+    private getAiSessionResults(
+        candidatePaths: string[],
+        reason: string,
+        maxFiles: number
+    ): Record<AiSessionProviderId, AiSessionReadResult> {
         return this.options.readCoordinator.getResults({ candidatePaths, reason, maxFiles });
     }
 
     private getAiSessionAssignments(
-        openProjects: Project[],
+        assignmentCandidates: AiSessionAssignmentCandidate<Project>[],
         sessionResults: Record<AiSessionProviderId, AiSessionReadResult>
     ): Record<AiSessionProviderId, Map<string, CodexSession[]>> {
         return this.options.readCoordinator.getAssignments(
-            getAiSessionOpenProjectCandidates(
-                openProjects,
-                this.options.getWorkspaceFile(),
-                this.options.getWorkspaceFolders()
-            ),
+            assignmentCandidates,
             sessionResults,
             this.options.getSessionComparableCwd
         );
+    }
+
+    private nowMs(): number {
+        return this.options.nowMs ? this.options.nowMs() : Date.now();
+    }
+
+    private logDiagnostic(event: Record<string, unknown>): void {
+        this.options.logDiagnostic?.(event);
+    }
+
+    private scheduleCacheClear(): void {
+        if (this.cacheClearScheduled) {
+            return;
+        }
+
+        this.cacheClearScheduled = true;
+        Promise.resolve().then(() => {
+            this.cache = null;
+            this.cacheClearScheduled = false;
+        });
+    }
+
+    private getCacheSignature(input: {
+        openProjects: Project[];
+        providers: readonly HydrationProvider[];
+        candidatePaths: string[];
+        assignmentCandidates: AiSessionAssignmentCandidate<Project>[];
+        reason: string;
+        maxFiles: number;
+        aggregate: AttentionAggregate;
+        localAttentionBySession: Record<string, AiSessionAttentionSnapshot>;
+        pendingTerminals: ReturnType<PendingAiSessionTerminalService<TTerminal>['getPendingTerminals']>;
+    }): string {
+        return JSON.stringify({
+            reason: input.reason,
+            maxFiles: input.maxFiles,
+            candidatePaths: input.candidatePaths,
+            assignmentCandidates: input.assignmentCandidates.map(candidate => ({
+                projectId: candidate.project.id,
+                path: candidate.path,
+            })),
+            providers: input.providers.map(provider => ({
+                id: provider.id,
+                terminalNamePrefix: provider.terminalNamePrefix,
+                projectSessionsKey: provider.projectSessionsKey,
+                projectSessionsUnavailableKey: provider.projectSessionsUnavailableKey,
+                terminalCwdFields: provider.terminalCwdFields,
+            })),
+            projects: this.stableValue(input.openProjects),
+            expandedProjects: Array.from(this.options.getExpandedProjects()).sort(),
+            activeProviders: this.options.getActiveProviders(),
+            pinnedSessions: Array.from(this.options.getPinnedSessions()).sort(),
+            aliases: this.options.getAliases(),
+            hasRemoteAttentionAggregate: this.options.hasRemoteAttentionAggregate(),
+            aggregateRevision: input.aggregate.aggregateRevision,
+            aggregateSessions: input.aggregate.sessions.map(session => ({
+                projectId: session.projectId,
+                sessionKey: session.sessionKey,
+                reasons: session.reasons,
+                eventIds: session.eventIds,
+                observedAtMs: session.observedAtMs,
+            })),
+            localAttentionBySession: Object.entries(input.localAttentionBySession)
+                .map(([sessionKey, snapshot]) => ({
+                    sessionKey,
+                    state: snapshot.state,
+                    stateChangedAt: snapshot.stateChangedAt,
+                    eventId: snapshot.event?.eventId,
+                    reason: snapshot.event?.reason,
+                }))
+                .sort((left, right) => left.sessionKey < right.sessionKey ? -1 : left.sessionKey > right.sessionKey ? 1 : 0),
+            pendingTerminals: input.pendingTerminals.map(pending => ({
+                provider: pending.provider,
+                markerPath: pending.markerPath,
+                cwd: pending.cwd,
+                createdAt: pending.createdAt,
+                excludedSessionIds: pending.excludedSessionIds,
+                title: pending.title,
+            })),
+        });
+    }
+
+    private stableValue(value: unknown): unknown {
+        if (Array.isArray(value)) {
+            return value.map(item => this.stableValue(item));
+        }
+        if (!value || typeof value !== 'object') {
+            return value;
+        }
+        return Object.keys(value as Record<string, unknown>)
+            .sort()
+            .reduce((result, key) => {
+                result[key] = this.stableValue((value as Record<string, unknown>)[key]);
+                return result;
+            }, {} as Record<string, unknown>);
     }
 }

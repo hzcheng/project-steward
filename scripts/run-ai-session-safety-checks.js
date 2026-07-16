@@ -1227,7 +1227,7 @@ async function runAiSessionAttentionControllerChecks() {
     assert.deepStrictEqual(scheduled.slice(-1), ['attention']);
 }
 
-function runAiSessionProjectHydrationControllerChecks() {
+async function runAiSessionProjectHydrationControllerChecks() {
     let refreshReason = 'refresh';
     const codexSession = {
         id: 'session-a',
@@ -1279,10 +1279,14 @@ function runAiSessionProjectHydrationControllerChecks() {
     };
     const aliasesSet = [];
     const synced = [];
+    const diagnostics = [];
+    let nowMs = 1000;
+    let workspaceFile = null;
+    let workspaceFolders = null;
     const attentionEventId = 'attention-event-a';
     const controller = new AiSessionProjectHydrationController({
-        getWorkspaceFile: () => null,
-        getWorkspaceFolders: () => null,
+        getWorkspaceFile: () => workspaceFile,
+        getWorkspaceFolders: () => workspaceFolders,
         getRefreshReason: () => refreshReason,
         incrementalScanMaxFiles: 123,
         getProviders: () => providersForTest,
@@ -1333,10 +1337,27 @@ function runAiSessionProjectHydrationControllerChecks() {
         hasRemoteAttentionAggregate: () => true,
         getProjectKey: project => `key:${project.path}`,
         normalizeProjectPath: value => value ? value.replace(/\/+$/, '') : '',
+        nowMs: () => {
+            nowMs += 7;
+            return nowMs;
+        },
+        logDiagnostic: event => diagnostics.push(event),
     });
 
     assert.deepStrictEqual(controller.hydrate([]), []);
     assert.strictEqual(readOptions.length, 0);
+    assert.deepStrictEqual(diagnostics[0], {
+        event: 'ai-session-hydration',
+        reason: 'refresh',
+        durationMs: 7,
+        projectCount: 0,
+        hydratedProjectCount: 0,
+        candidatePathCount: 0,
+        providerCount: 3,
+        sessionCount: 0,
+        pendingTerminalCount: 0,
+        cacheHit: false,
+    });
 
     terminalService.pending = [{
         provider: 'codex',
@@ -1353,6 +1374,18 @@ function runAiSessionProjectHydrationControllerChecks() {
         candidatePaths: ['/work/a'],
         reason: 'refresh',
         maxFiles: 123,
+    });
+    assert.deepStrictEqual(diagnostics[1], {
+        event: 'ai-session-hydration',
+        reason: 'refresh',
+        durationMs: 7,
+        projectCount: 1,
+        hydratedProjectCount: 1,
+        candidatePathCount: 1,
+        providerCount: 3,
+        sessionCount: 1,
+        pendingTerminalCount: 1,
+        cacheHit: false,
     });
     assert.strictEqual(assignmentInputs[0].candidates[0].path, '/work/a');
     assert.strictEqual(assignmentInputs[0].sessionPath, '/work/a');
@@ -1376,6 +1409,57 @@ function runAiSessionProjectHydrationControllerChecks() {
     refreshReason = 'terminal-candidates';
     controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A' }]);
     assert.strictEqual(readOptions[1].maxFiles, 0);
+    controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A' }]);
+    assert.strictEqual(readOptions.length, 2, 'same-turn hydration cache should avoid duplicate reads');
+    assert.strictEqual(diagnostics[3].cacheHit, true);
+    assert.strictEqual(diagnostics[3].reason, 'terminal-candidates');
+    controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A', isGitRepo: true }]);
+    assert.strictEqual(readOptions.length, 3, 'hydration cache signature must include all raw project fields');
+    providersForTest[0].projectSessionsUnavailableKey = 'codexSessionsTemporarilyUnavailable';
+    controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A', isGitRepo: true }]);
+    assert.strictEqual(readOptions.length, 4, 'hydration cache signature must include provider rendering fields');
+    providersForTest[0].projectSessionsUnavailableKey = 'codexSessionsUnavailable';
+    workspaceFile = createTestFileUri('/work/missing.code-workspace');
+    workspaceFolders = [{ uri: createTestFileUri('/work/shared') }];
+    controller.hydrate([
+        { id: 'project-a', path: '/work/a', name: 'Project A' },
+        { id: 'project-b', path: '/work/b', name: 'Project B' },
+    ]);
+    assert.strictEqual(readOptions.length, 5);
+    assert.deepStrictEqual(
+        assignmentInputs[assignmentInputs.length - 1].candidates.map(candidate => ({
+            projectId: candidate.project.id,
+            path: candidate.path,
+        })),
+        [
+            { projectId: 'project-a', path: '/work/a' },
+            { projectId: 'project-b', path: '/work/b' },
+            { projectId: 'project-a', path: '/work/shared' },
+        ]
+    );
+    workspaceFile = createTestFileUri('/work/b');
+    controller.hydrate([
+        { id: 'project-a', path: '/work/a', name: 'Project A' },
+        { id: 'project-b', path: '/work/b', name: 'Project B' },
+    ]);
+    assert.strictEqual(readOptions.length, 6, 'hydration cache signature must include candidate project ownership');
+    assert.deepStrictEqual(
+        assignmentInputs[assignmentInputs.length - 1].candidates.map(candidate => ({
+            projectId: candidate.project.id,
+            path: candidate.path,
+        })),
+        [
+            { projectId: 'project-a', path: '/work/a' },
+            { projectId: 'project-b', path: '/work/b' },
+            { projectId: 'project-b', path: '/work/shared' },
+        ]
+    );
+    await Promise.resolve();
+    controller.hydrate([
+        { id: 'project-a', path: '/work/a', name: 'Project A' },
+        { id: 'project-b', path: '/work/b', name: 'Project B' },
+    ]);
+    assert.strictEqual(readOptions.length, 7, 'hydration cache must clear after the current turn');
 
     controller.trackPendingTerminal('codex', null, '/tmp/skip.done', '/work/a', '2026-07-16T10:00:00.000Z', [], 'skip');
     controller.trackPendingTerminal('codex', { name: 'terminal' }, '', '/work/a', '2026-07-16T10:00:00.000Z', [], 'skip');
@@ -3349,7 +3433,7 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     const refreshFunction = extractFunctionBody(dashboard, 'refreshAiSessionViewsIncrementally');
     assert.ok(refreshFunction.includes('aiSessionDashboardController.refreshNow()'));
     assert.ok(controllerSource.includes("async refreshNow(reason = 'refresh'): Promise<void>"));
-    assert.ok(controllerSource.includes('const message = this.getUpdatedMessage();'));
+    assert.ok(controllerSource.includes('const message = this.getUpdatedMessage(reason);'));
     assert.ok(controllerSource.includes('this.options.postMessage(message).then(delivered =>'));
     assert.ok(controllerSource.includes('if (!delivered)'));
     assert.ok(controllerSource.includes('refresh: (reason: string) => void;'));
@@ -3380,7 +3464,7 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(!dashboard.includes('function getAiSessionResults('));
     assert.ok(getAiSessionResultsBody.includes('this.options.readCoordinator.getResults('));
     assert.ok(projectHydrationControllerSource.includes("from './scanOptions'"));
-    assert.ok(getAiSessionResultsBody.includes('const maxFiles = getAiSessionScanMaxFiles(reason, this.options.incrementalScanMaxFiles);'));
+    assert.ok(hydrateOpenProjectsBody.includes('const maxFiles = getAiSessionScanMaxFiles(reason, this.options.incrementalScanMaxFiles);'));
     assert.ok(getAiSessionResultsBody.includes('candidatePaths, reason, maxFiles'));
     assert.ok(projectCandidatesSource.includes('export function getAiSessionOpenProjectCandidates'));
     assert.ok(projectCandidatesSource.includes('export function getAiSessionCandidatePaths'));
@@ -3755,6 +3839,8 @@ function runAiSessionDashboardControllerChecks() {
     const messages = [];
     const clearedTimeouts = [];
     const refreshReasons = [];
+    const diagnostics = [];
+    let nowMs = 2000;
     const controller = new AiSessionDashboardController({
         providerIds: ['codex'],
         isVisible: () => true,
@@ -3772,6 +3858,11 @@ function runAiSessionDashboardControllerChecks() {
         logError: error => { throw new Error(`Unexpected logError: ${error}`); },
         beforeRefresh: reason => refreshReasons.push(reason),
         afterRefresh: () => undefined,
+        nowMs: () => {
+            nowMs += 5;
+            return nowMs;
+        },
+        logDiagnostic: event => diagnostics.push(event),
         debounceMs: 1,
         newSessionRefreshDelaysMs: [1, 2],
         setTimeout: callback => {
@@ -3787,6 +3878,19 @@ function runAiSessionDashboardControllerChecks() {
     assert.deepStrictEqual(refreshReasons, ['new-session', 'new-session']);
     assert.strictEqual(messages.length, 2);
     assert.deepStrictEqual(messages.map(message => message.type), ['ai-sessions-updated', 'ai-sessions-updated']);
+    assert.deepStrictEqual(diagnostics, [{
+        event: 'ai-session-message-build',
+        reason: 'new-session',
+        durationMs: 5,
+        cardCount: 0,
+        openProjectCount: 0,
+    }, {
+        event: 'ai-session-message-build',
+        reason: 'new-session',
+        durationMs: 5,
+        cardCount: 0,
+        openProjectCount: 0,
+    }]);
     assert.strictEqual(clearedTimeouts.length, 0);
 }
 
@@ -5310,7 +5414,7 @@ async function main() {
     await runAiSessionCreationControllerChecks();
     await runAiSessionResumeControllerChecks();
     await runAiSessionAttentionControllerChecks();
-    runAiSessionProjectHydrationControllerChecks();
+    await runAiSessionProjectHydrationControllerChecks();
     runKeyChecks();
     runBatchAiSessionArchiveChecks();
     runActiveAiSessionTerminalHighlightChecks();

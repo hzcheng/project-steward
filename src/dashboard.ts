@@ -271,6 +271,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         hasRemoteAttentionAggregate: () => aiSessionAttentionController.hasRemoteAggregate(),
         getProjectKey: getOpenProjectAiSessionKey,
         normalizeProjectPath: normalizeAiSessionProjectPath,
+        logDiagnostic: logAiSessionDiagnostic,
     });
     aiSessionPinController.migrateLegacy(
         context.globalState.get(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY) as string[],
@@ -406,6 +407,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         postMessage: message => provider.postMessage(message),
         refresh: refreshStewardViews,
         logError,
+        logDiagnostic: logAiSessionDiagnostic,
         beforeRefresh: reason => { currentAiSessionRefreshReason = reason; },
         afterRefresh: () => { currentAiSessionRefreshReason = 'refresh'; },
         debounceMs: AI_SESSION_REFRESH_DEBOUNCE_MS,
