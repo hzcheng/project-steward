@@ -57,6 +57,7 @@ import { ProjectRemovalController } from './projects/projectRemovalController';
 import OpenProjectBridgeClient from './openProjects/bridgeClient';
 import { SidebarStewardViewProvider } from './dashboard/viewProvider';
 import { getStewardConfiguration } from './dashboard/configuration';
+import { DashboardCommandRegistration } from './dashboard/commandRegistration';
 import DashboardDiagnostics from './dashboard/diagnostics';
 import { getErrorContent } from './dashboard/errorContent';
 import { GroupCollapseController } from './dashboard/groupCollapseController';
@@ -696,45 +697,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         evaluateAiSessionAttention: () => aiSessionAttentionController.evaluate(),
     });
 
-    const openCommand = vscode.commands.registerCommand('projectSteward.open', () => {
-        showSteward();
-    });
-
-    const addProjectCommand = vscode.commands.registerCommand('projectSteward.addProject', async () => {
-        await projectMutationController.addProject();
-    });
-
-    const saveProjectCommand = vscode.commands.registerCommand('projectSteward.saveProject', async () => {
-        await projectMutationController.saveProject();
-    });
-
-    const removeProjectCommand = vscode.commands.registerCommand('projectSteward.removeProject', async () => {
-        await projectRemovalController.removeProjectPerCommand();
-    });
-
-    const editProjectsManuallyCommand = vscode.commands.registerCommand('projectSteward.editProjects', async () => {
-        await projectManualEditController.editProjectsManually();
-    });
-
-    const addGroupCommand = vscode.commands.registerCommand('projectSteward.addGroup', async () => {
-        await groupCommandController.addGroup();
-    });
-
-    const removeGroupCommand = vscode.commands.registerCommand('projectSteward.removeGroup', async () => {
-        await groupCommandController.removeGroupPerCommand();
-    });
-    const addProjectsFromFolderCommand = vscode.commands.registerCommand('projectSteward.addProjectsFromFolder', async () => {
-        await addProjectsFromFolderController.addProjectsFromFolder();
-    });
-
-    context.subscriptions.push(openCommand);
-    context.subscriptions.push(addProjectCommand);
-    context.subscriptions.push(saveProjectCommand);
-    context.subscriptions.push(removeProjectCommand);
-    context.subscriptions.push(editProjectsManuallyCommand);
-    context.subscriptions.push(addGroupCommand);
-    context.subscriptions.push(removeGroupCommand);
-    context.subscriptions.push(addProjectsFromFolderCommand);
+    new DashboardCommandRegistration<vscode.Disposable>({
+        registerCommand: (command, callback) => vscode.commands.registerCommand(command, callback),
+        pushSubscription: disposable => context.subscriptions.push(disposable),
+        handlers: {
+            open: () => showSteward(),
+            addProject: () => projectMutationController.addProject(),
+            saveProject: () => projectMutationController.saveProject(),
+            removeProject: () => projectRemovalController.removeProjectPerCommand(),
+            editProjects: () => projectManualEditController.editProjectsManually(),
+            addGroup: () => groupCommandController.addGroup(),
+            removeGroup: () => groupCommandController.removeGroupPerCommand(),
+            addProjectsFromFolder: () => addProjectsFromFolderController.addProjectsFromFolder(),
+        },
+    }).register();
 
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(async event => {
         await dashboardLifecycleController.handleConfigurationChanged(event);

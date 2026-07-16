@@ -9,6 +9,7 @@ const dashboardConfiguration = require('../out/dashboard/configuration');
 const dashboardStartup = require('../out/dashboard/startup');
 const { DashboardStartupController } = require('../out/dashboard/startupController');
 const { DashboardLifecycleController } = require('../out/dashboard/lifecycleController');
+const { DashboardCommandRegistration } = require('../out/dashboard/commandRegistration');
 const dashboardWebviewOptions = require('../out/dashboard/webviewOptions');
 const { GroupCollapseController } = require('../out/dashboard/groupCollapseController');
 const { DashboardRuntimeController } = require('../out/dashboard/runtimeController');
@@ -683,6 +684,59 @@ async function runDashboardLifecycleControllerChecks() {
     ]);
 }
 
+async function runDashboardCommandRegistrationChecks() {
+    const registered = [];
+    const subscriptions = [];
+    const calls = [];
+    const registration = new DashboardCommandRegistration({
+        registerCommand: (command, callback) => {
+            const disposable = { command, dispose: () => undefined };
+            registered.push([command, callback]);
+            return disposable;
+        },
+        pushSubscription: disposable => subscriptions.push(disposable),
+        handlers: {
+            open: () => calls.push('open'),
+            addProject: async () => calls.push('addProject'),
+            saveProject: async () => calls.push('saveProject'),
+            removeProject: async () => calls.push('removeProject'),
+            editProjects: async () => calls.push('editProjects'),
+            addGroup: async () => calls.push('addGroup'),
+            removeGroup: async () => calls.push('removeGroup'),
+            addProjectsFromFolder: async () => calls.push('addProjectsFromFolder'),
+        },
+    });
+
+    registration.register();
+
+    assert.deepStrictEqual(registered.map(([command]) => command), [
+        'projectSteward.open',
+        'projectSteward.addProject',
+        'projectSteward.saveProject',
+        'projectSteward.removeProject',
+        'projectSteward.editProjects',
+        'projectSteward.addGroup',
+        'projectSteward.removeGroup',
+        'projectSteward.addProjectsFromFolder',
+    ]);
+    assert.deepStrictEqual(subscriptions.map(disposable => disposable.command), registered.map(([command]) => command));
+
+    for (const [, callback] of registered) {
+        await callback();
+    }
+
+    assert.deepStrictEqual(calls, [
+        'open',
+        'addProject',
+        'saveProject',
+        'removeProject',
+        'editProjects',
+        'addGroup',
+        'removeGroup',
+        'addProjectsFromFolder',
+    ]);
+}
+
 function createClassList() {
     const values = new Set();
     return {
@@ -1082,6 +1136,7 @@ async function main() {
     await runDashboardRuntimeControllerChecks();
     await runDashboardStartupControllerChecks();
     await runDashboardLifecycleControllerChecks();
+    await runDashboardCommandRegistrationChecks();
     runControllerChecks(source);
     runSourceContractChecks(source);
     await runDashboardMessageRouterChecks();

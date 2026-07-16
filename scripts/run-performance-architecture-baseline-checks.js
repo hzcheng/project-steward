@@ -24,6 +24,7 @@ const providerDefinitions = read('src/aiSessions/providers.ts');
 const providerRegistryCalls = (dashboard.match(/aiSessionProviderRegistry\.providers\(\)/g) || []).length;
 const expectedModules = [
     'src/dashboard/viewProvider.ts',
+    'src/dashboard/commandRegistration.ts',
     'src/dashboard/configuration.ts',
     'src/dashboard/diagnostics.ts',
     'src/dashboard/errorContent.ts',

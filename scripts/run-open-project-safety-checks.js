@@ -702,6 +702,7 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('const projectManualEditController = new ProjectManualEditController({'));
     assert.ok(dashboard.includes('const projectMutationController = new ProjectMutationController({'));
     assert.ok(dashboard.includes('const projectPromptController = new ProjectPromptController({'));
+    assert.ok(dashboard.includes('new DashboardCommandRegistration<vscode.Disposable>({'));
     assert.ok(dashboard.includes('const openProjectDashboardController = new OpenProjectDashboardController({'));
     assert.ok(dashboard.includes('const openProjectWorkspaceController = new OpenProjectWorkspaceController({'));
     assert.ok(dashboard.includes('new OpenProjectBridgeClient('));
@@ -724,9 +725,9 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('await projectMutationController.saveOpenProject('));
     assert.ok(dashboard.includes('await projectMutationController.editProject('));
     assert.ok(dashboard.includes('await projectMutationController.editProjectColor('));
-    assert.ok(dashboard.includes('await projectManualEditController.editProjectsManually()'));
-    assert.ok(dashboard.includes('await projectRemovalController.removeProjectPerCommand()'));
-    assert.ok(dashboard.includes('await groupCommandController.removeGroupPerCommand()'));
+    assert.ok(dashboard.includes('editProjects: () => projectManualEditController.editProjectsManually()'));
+    assert.ok(dashboard.includes('removeProject: () => projectRemovalController.removeProjectPerCommand()'));
+    assert.ok(dashboard.includes('removeGroup: () => groupCommandController.removeGroupPerCommand()'));
     assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryProjectFields('));
     assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryGroup('));
     assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryProjectDescription('));
