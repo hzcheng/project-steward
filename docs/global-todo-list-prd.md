@@ -155,8 +155,7 @@ TODO
 │   ├── Todo item
 │   ├── Todo item
 │   └── Completed items, hidden by default
-├── Group B
-└── New group action
+└── Group B
 ```
 
 ### 8.1 顶部摘要
