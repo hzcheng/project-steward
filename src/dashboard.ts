@@ -2,7 +2,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { Project, GroupOrder, Group, ProjectRemoteType, getRemoteType, StewardInfos, ProjectOpenType, ReopenStewardReason, ProjectPathType, sanitizeProjectName, CodexSession, AiSessionProviderId, isAiSessionProviderId } from './models';
-import { getAiSessionsDiv, getOpenProjectsGroupContent, getProjectSearchText, getProjectsPanelContent, getStewardContent } from './webview/webviewContent';
+import { getAiSessionsDiv, getProjectSearchText, getProjectsPanelContent, getStewardContent } from './webview/webviewContent';
 import { USE_PROJECT_COLOR, PREDEFINED_COLORS, StartupOptions, USER_CANCELED, SAVE_CURRENT_PROJECT, FixedColorOptions, RelevantExtensions, SSH_REGEX, SSH_REMOTE_PREFIX, REOPEN_KEY, WSL_DEFAULT_REGEX, FAVORITES_GROUP_ID, FAVORITES_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_GROUP_ID, OPEN_PROJECTS_GROUP_COLLAPSED_KEY, OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY, OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from './constants';
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 
@@ -19,25 +19,27 @@ import AiSessionAttentionMonitor from './aiSessions/attentionMonitor';
 import AttentionBridgeClient from './aiSessions/attentionBridgeClient';
 import { aggregateAttentionSnapshots, AttentionAggregate } from './aiSessions/attentionAggregate';
 import type { AttentionPayloadItem } from './aiSessions/attentionPayload';
-import { buildAttentionSessionIndex, getAttentionProjectKey, getAttentionProjectSummaries, getAttentionSessionLookupKey, withAttentionProjects } from './aiSessions/attentionProject';
+import { buildAttentionSessionIndex, getAttentionProjectKey, getAttentionProjectSummaries, getAttentionSessionLookupKey } from './aiSessions/attentionProject';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
-import { AI_SESSION_PROVIDER_IDS, getAiSessionProviderDefinition, getAiSessionProviderLabel } from './aiSessions/providers';
+import { AI_SESSION_PROVIDER_IDS, createAiSessionProviderRegistry, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
 import AiSessionTerminalBindingStore from './aiSessions/terminalBindingStore';
 import { archiveBatchAiSessionItem as executeBatchAiSessionArchiveItem, executeBatchAiSessionArchiveRequest, formatBatchAiSessionArchiveSummary, formatBatchAiSessionIdForLog, hasBatchAiSessionArchiveIssues } from './aiSessions/archiveBatch';
 import type { BatchAiSessionArchiveAttemptStatus, BatchAiSessionArchiveResult, BatchAiSessionArchiveSelection } from './aiSessions/archiveBatch';
-import type { AiSessionActiveTerminalChangedMessage, AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
+import type { AiSessionActiveTerminalChangedMessage, AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionQueryOptions, AiSessionReadResult, AiSessionService, AiSessionTerminalEntry, AiSessionViewModel, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
 import type { AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './aiSessions/lifecycle';
+import { AiSessionDashboardController } from './aiSessions/dashboardController';
 import { getProjectPathPart, normalizeComparableProjectPath, projectPathMatchesWorkspaceUri, uriToProjectPath } from './projects/openProjectMatcher';
 import { getLastPartOfPath, getOpenProjectUri as resolveOpenProjectUri, getOpenProjectsFromWorkspace, getWorkspaceUri as resolveWorkspaceUri, getWorkspaceUris as resolveWorkspaceUris, isUriString, parsePathAsUri } from './projects/openProjectService';
 import RemoteProjectResolver from './projects/remoteProjectResolver';
 import GitRepositoryDetector from './projects/gitRepositoryDetector';
 import { withFavoriteProjectOrder, withToggledProjectFavorite } from './projects/favoriteProjectOrder';
 import OpenProjectBridgeClient from './openProjects/bridgeClient';
-import type { OpenProjectAggregate } from './openProjects/protocol';
-import { createOpenProjectRecords, projectOpenProjectCards } from './openProjects/projection';
-import { buildDashboardSearchCatalog } from './webview/dashboardViewModel';
+import { createOpenProjectRecords } from './openProjects/projection';
+import { SidebarStewardViewProvider } from './dashboard/viewProvider';
+import { createDashboardMessageRouter } from './dashboard/messageRouter';
+import { OpenProjectDashboardController } from './openProjects/dashboardController';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -54,61 +56,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(outputChannel);
     const openProjectDiagnosticPath = path.join(context.globalStoragePath, 'open-project-diagnostics.jsonl');
 
-    class SidebarStewardViewProvider implements vscode.WebviewViewProvider {
-
-        public static readonly viewType = "projectSteward.steward";
-
-        private _view?: vscode.WebviewView;
-
-        resolveWebviewView(webviewView: vscode.WebviewView, webviewContext: vscode.WebviewViewResolveContext<unknown>, token: vscode.CancellationToken): void | Thenable<void> {
-            this._view = webviewView;
-            webviewView.webview.options = getWebviewOptions();
-            this.refresh();
-            setAiSessionWatchersActive(webviewView.visible);
-
-            webviewView.webview.onDidReceiveMessage(async (e) => {
-                await handleStewardMessage(e);
-            });
-
-            webviewView.onDidChangeVisibility(() => {
-                if (webviewView.visible) {
-                    this.refresh();
-                }
-                setAiSessionWatchersActive(webviewView.visible);
-                activeAiSessionTerminalHighlighter.setVisible(webviewView.visible);
-            });
-        }
-
-        get visible() {
-            return Boolean(this._view?.visible);
-        }
-
-        refresh() {
-            if (this._view) {
-                try {
-                    this._view.webview.html = getStewardContent(
-                        context,
-                        this._view.webview,
-                        projectService.getGroups(),
-                        stewardInfos,
-                        true
-                    );
-                } catch (error) {
-                    logError('Failed to render Project Steward view.', error);
-                    this._view.webview.html = getErrorContent(error);
-                }
-            }
-        }
-
-        postMessage(message: unknown): Thenable<boolean> {
-            if (!this._view) {
-                return Promise.resolve(false);
-            }
-
-            return this._view.webview.postMessage(message);
-        }
-    }
-
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
     const projectWindowColorService = new ProjectWindowColorService(context);
@@ -123,6 +70,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         kimi: kimiSessionService,
         claude: claudeSessionService,
     };
+    const aiSessionProviderRegistry = createAiSessionProviderRegistry(aiSessionServices);
     const aiSessionTerminalBindingStore = new AiSessionTerminalBindingStore(context.workspaceState, error =>
         logError('Failed to persist AI session terminal ownership.', error)
     );
@@ -136,9 +84,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals);
     const aiSessionPinStore = new AiSessionPinStore(context.globalStoragePath);
     migrateLegacyPinnedAiSessions();
-    let aiSessionRefreshTimeout: NodeJS.Timeout = null;
-    let aiSessionWatcherDisposables: { dispose(): void }[] = [];
     let aiSessionUpdateSequence = 0;
+    let currentAiSessionRefreshReason = 'refresh';
     const aiSessionAttentionMonitor = new AiSessionAttentionMonitor();
     let aiSessionAttentionAggregate: AttentionAggregate | null = null;
     let aiSessionAttentionLocalItems: AttentionPayloadItem[] = [];
@@ -146,7 +93,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         aggregate => {
             if (aggregate.aggregateRevision !== aiSessionAttentionAggregate?.aggregateRevision) {
                 aiSessionAttentionAggregate = aggregate;
-                scheduleAiSessionRefresh();
+                scheduleAiSessionRefresh('attention');
                 postAiSessionAttentionProjectsUpdated();
             }
         },
@@ -154,15 +101,63 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
     const aiSessionAttentionInterval = setInterval(() => { void evaluateAiSessionAttention(); }, 10_000);
     setTimeout(() => { void evaluateAiSessionAttention(); }, 0);
+    const aiSessionDashboardController = new AiSessionDashboardController({
+        providerIds: aiSessionProviderRegistry.providers().map(provider => provider.id),
+        isVisible: () => provider.visible,
+        invalidateCache: providerId => invalidateAiSessionCache(providerId),
+        watchSessionChanges: (providerId, onDidChange) => getRegisteredAiSessionProvider(providerId).service.watchSessionChanges(onDidChange),
+        getGroups: () => projectService.getGroups(),
+        getCards: getOpenProjectCards,
+        getOpenProjectAiSessionViewModel,
+        nextSequence: () => ++aiSessionUpdateSequence,
+        postMessage: message => provider.postMessage(message),
+        refresh: refreshStewardViews,
+        logError,
+        beforeRefresh: reason => { currentAiSessionRefreshReason = reason; },
+        afterRefresh: () => { currentAiSessionRefreshReason = 'refresh'; },
+        debounceMs: AI_SESSION_REFRESH_DEBOUNCE_MS,
+        newSessionRefreshDelaysMs: NEW_AI_SESSION_REFRESH_DELAYS_MS,
+        setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+        clearTimeout: handle => clearTimeout(handle),
+    });
 
-    const provider = new SidebarStewardViewProvider();
-    let openProjectAggregate: OpenProjectAggregate | null = null;
-    let openProjectNavigationCardsById = new Map<string, Project>();
-    const openProjectBridgeClient = new OpenProjectBridgeClient(
+    const dashboardMessageRouter = createDashboardMessageRouter({
+        handleRawMessage: handleStewardMessage,
+    });
+    const provider = new SidebarStewardViewProvider({
+        getWebviewOptions,
+        renderContent: webview => getStewardContent(
+            context,
+            webview,
+            projectService.getGroups(),
+            stewardInfos,
+            true
+        ),
+        renderError: getErrorContent,
+        onMessage: dashboardMessageRouter,
+        onVisibleChanged: visible => {
+            setAiSessionWatchersActive(visible);
+            activeAiSessionTerminalHighlighter.setVisible(visible);
+        },
+        logError,
+    });
+    let openProjectBridgeClient: OpenProjectBridgeClient;
+    const openProjectDashboardController = new OpenProjectDashboardController({
+        getOpenProjects,
+        getGroups: () => projectService.getGroups(),
+        getStewardInfos: () => stewardInfos,
+        getAttentionAggregate: getEffectiveAiSessionAttentionAggregate,
+        getBridgeInstanceId: () => openProjectBridgeClient.instanceId,
+        postMessage: message => provider.postMessage(message),
+        refresh: () => provider.refresh(),
+        isVisible: () => provider.visible,
+        logDiagnostic: logOpenProjectDiagnostic,
+        logError,
+    });
+    openProjectBridgeClient = new OpenProjectBridgeClient(
         createOpenProjectRecords(getRawOpenProjects()),
         aggregate => {
-            if (aggregate.semanticRevision !== openProjectAggregate?.semanticRevision) {
-                openProjectAggregate = aggregate;
+            if (openProjectDashboardController.setAggregate(aggregate)) {
                 postOpenProjectsUpdated();
             }
         },
@@ -205,7 +200,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(aiSessionAttentionBridgeClient);
     context.subscriptions.push({
         dispose: () => {
-            stopAiSessionWatchers();
+            aiSessionDashboardController.dispose();
             clearInterval(aiSessionAttentionInterval);
         }
     });
@@ -427,20 +422,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function getRegisteredAiSessionProvider(providerId: AiSessionProviderId): AiSessionProvider {
-        let definition = getAiSessionProviderDefinition(providerId);
-        let service = aiSessionServices[providerId];
-        if (!definition || !service) {
+        let provider = aiSessionProviderRegistry.get(providerId);
+        if (!provider) {
             return null;
         }
 
-        return {
-            ...definition,
-            service,
-        };
+        return provider;
     }
 
     function getAiSessionTerminalCandidates(providerId: AiSessionProviderId): readonly CodexSession[] {
-        return getRegisteredAiSessionProvider(providerId).service.getSessions().sessions;
+        return getProviderAiSessions(providerId, { reason: 'terminal-candidates' }).sessions;
     }
 
     function refreshStewardViews() {
@@ -452,44 +443,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function postOpenProjectsUpdated() {
-        if (!provider.visible || !openProjectAggregate) {
-            return;
-        }
-
-        const cards = getOpenProjectCards();
-        const message = {
-            type: 'open-projects-updated',
-            version: 1,
-            semanticRevision: openProjectAggregate.semanticRevision,
-            projectCount: cards.length,
-            searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), cards),
-            html: getOpenProjectsGroupContent(
-                cards,
-                stewardInfos.openProjectsGroupCollapsed,
-                stewardInfos,
-            ),
-        };
-        logOpenProjectDiagnostic('Renderer', {
-            event: 'post-update',
-            semanticRevision: message.semanticRevision,
-            projectCount: message.projectCount,
-        });
-        provider.postMessage(message).then(delivered => {
-            logOpenProjectDiagnostic('Renderer', {
-                event: 'post-update-result',
-                semanticRevision: message.semanticRevision,
-                projectCount: message.projectCount,
-                delivered,
-            });
-            if (!delivered && provider.visible) {
-                provider.refresh();
-            }
-        }, error => {
-            logError('Failed to post OPEN PROJECT update message.', error);
-            if (provider.visible) {
-                provider.refresh();
-            }
-        });
+        openProjectDashboardController.postUpdated();
     }
 
     function getEffectiveAiSessionAttentionAggregate(): AttentionAggregate {
@@ -539,27 +493,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         });
     }
 
-    function scheduleAiSessionRefresh() {
-        if (!provider.visible) {
-            return;
-        }
-
-        if (aiSessionRefreshTimeout) {
-            clearTimeout(aiSessionRefreshTimeout);
-        }
-
-        aiSessionRefreshTimeout = setTimeout(() => {
-            aiSessionRefreshTimeout = null;
-            refreshAiSessionViewsIncrementally();
-        }, AI_SESSION_REFRESH_DEBOUNCE_MS);
+    function scheduleAiSessionRefresh(reason = 'refresh') {
+        aiSessionDashboardController.scheduleRefresh(reason);
     }
 
     function setAiSessionWatchersActive(active: boolean) {
-        if (active) {
-            startAiSessionWatchers();
-        } else {
-            stopAiSessionWatchers();
-        }
+        aiSessionDashboardController.setWatchersActive(active);
     }
 
     async function evaluateAiSessionAttention() {
@@ -568,7 +507,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             aiSessionAttentionAggregate = null;
             aiSessionAttentionLocalItems = [];
             await aiSessionAttentionBridgeClient.publish([], true);
-            scheduleAiSessionRefresh();
+            scheduleAiSessionRefresh('attention');
             postAiSessionAttentionProjectsUpdated();
             return;
         }
@@ -627,7 +566,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             };
         });
         if (aiSessionAttentionMonitor.evaluate(inputs).length) {
-            scheduleAiSessionRefresh();
+            scheduleAiSessionRefresh('attention');
         }
         const snapshot = aiSessionAttentionMonitor.getSnapshot();
         const items: AttentionPayloadItem[] = [];
@@ -661,55 +600,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await aiSessionAttentionBridgeClient.publish(items);
     }
 
-    function startAiSessionWatchers() {
-        if (aiSessionWatcherDisposables.length) {
-            return;
-        }
-
-        aiSessionWatcherDisposables = AI_SESSION_PROVIDER_IDS
-            .map(providerId => getRegisteredAiSessionProvider(providerId).service.watchSessionChanges(() => scheduleAiSessionRefresh()));
-    }
-
-    function stopAiSessionWatchers() {
-        for (let disposable of aiSessionWatcherDisposables) {
-            disposable.dispose();
-        }
-
-        aiSessionWatcherDisposables = [];
-        if (aiSessionRefreshTimeout) {
-            clearTimeout(aiSessionRefreshTimeout);
-            aiSessionRefreshTimeout = null;
-        }
-    }
-
     function scheduleNewAiSessionRefresh(providerId: AiSessionProviderId) {
-        for (let delay of NEW_AI_SESSION_REFRESH_DELAYS_MS) {
-            setTimeout(() => {
-                invalidateAiSessionCache(providerId);
-                refreshAiSessionViewsIncrementally();
-            }, delay);
-        }
+        aiSessionDashboardController.scheduleNewSessionRefresh(providerId);
     }
 
     function refreshAiSessionViewsIncrementally() {
-        if (!provider.visible) {
-            return;
-        }
-
-        try {
-            let message = getAiSessionsUpdatedMessage();
-            provider.postMessage(message).then(delivered => {
-                if (!delivered) {
-                    refreshStewardViews();
-                }
-            }, error => {
-                logError('Failed to post AI session update message.', error);
-                refreshStewardViews();
-            });
-        } catch (error) {
-            logError('Failed to update AI sessions incrementally.', error);
-            refreshStewardViews();
-        }
+        void aiSessionDashboardController.refreshNow();
     }
 
     function postBatchArchiveCompletion(message: AiSessionBatchArchiveCompletedMessage) {
@@ -736,6 +632,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     function logError(message: string, error: unknown) {
         outputChannel.appendLine(message);
         outputChannel.appendLine(error instanceof Error ? `${error.stack || error.message}` : String(error));
+    }
+
+    function logAiSessionDiagnostic(event: Record<string, unknown>) {
+        outputChannel.appendLine(`[AiSessions] ${JSON.stringify(event)}`);
     }
 
     function logOpenProjectDiagnostic(component: string, event: unknown) {
@@ -855,7 +755,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 let isProjectNavigation = false;
                 if (project === null || project === undefined) {
                     getOpenProjectCards();
-                    project = openProjectNavigationCardsById.get(projectId);
+                    project = openProjectDashboardController.getNavigationCard(projectId);
                     isProjectNavigation = project !== null && project !== undefined;
                 }
                 if (project == null) {
@@ -1299,9 +1199,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             cwdWarningMessage: `Could not open the ${sessionProvider.label} terminal at the project directory. Starting without a working directory.`,
             logError,
         }).terminal;
-        let existingSessionIds = getAiSessionIdsForCwd(providerId, sessionProvider.service.getSessions({
+        let existingSessionIds = getAiSessionIdsForCwd(providerId, getProviderAiSessions(providerId, {
             forceRefresh: true,
             candidatePaths: [pendingTerminalCwd],
+            reason: 'new-session',
         }), pendingTerminalCwd);
         let createdAt = new Date().toISOString();
         let markerPath = getPendingAiSessionTerminalMarkerPath(providerId);
@@ -2426,16 +2327,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function getOpenProjectCards(): Project[] {
-        const cards = withAttentionProjects(
-            projectOpenProjectCards(getOpenProjects(), openProjectAggregate, openProjectBridgeClient.instanceId),
-            getEffectiveAiSessionAttentionAggregate()
-        );
-        openProjectNavigationCardsById = new Map(
-            cards
-                .filter(card => card.openProjectCardKind === 'projectNavigation')
-                .map(card => [card.id, card] as [string, Project])
-        );
-        return cards;
+        return openProjectDashboardController.getCards();
     }
 
     function publishOpenProjects(followsFocusEvent = false): void {
@@ -2500,17 +2392,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function getAiSessionsUpdatedMessage(): AiSessionsUpdatedMessage {
-        const cards = getOpenProjectCards();
-        const openProjects = cards
-            .filter(project => project.openProjectCardKind !== 'projectNavigation');
-        return {
-            type: 'ai-sessions-updated',
-            version: 1,
-            sequence: ++aiSessionUpdateSequence,
-            generatedAt: new Date().toISOString(),
-            openProjects: openProjects.map(project => getOpenProjectAiSessionViewModel(project)),
-            searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), cards),
-        };
+        return aiSessionDashboardController.getUpdatedMessage();
     }
 
     function getOpenProjectAiSessionViewModel(project: Project): OpenProjectAiSessionViewModel {
@@ -2551,14 +2433,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         };
     }
 
-    function getAiSessionResults(openProjects: Project[] = []): Record<AiSessionProviderId, AiSessionReadResult> {
+    function getAiSessionResults(openProjects: Project[] = [], reason = currentAiSessionRefreshReason): Record<AiSessionProviderId, AiSessionReadResult> {
         let results = {} as Record<AiSessionProviderId, AiSessionReadResult>;
         let candidatePaths = getAiSessionCandidatePaths(openProjects);
         for (let providerId of AI_SESSION_PROVIDER_IDS) {
-            results[providerId] = getRegisteredAiSessionProvider(providerId).service.getSessions({ candidatePaths });
+            results[providerId] = getProviderAiSessions(providerId, { candidatePaths, reason });
         }
 
         return results;
+    }
+
+    function getProviderAiSessions(providerId: AiSessionProviderId, options?: boolean | AiSessionQueryOptions): AiSessionReadResult {
+        const startedAt = Date.now();
+        const result = getRegisteredAiSessionProvider(providerId).service.getSessions(options);
+        const normalizedOptions = typeof options === 'boolean' ? { forceRefresh: options } : options || {};
+        logAiSessionDiagnostic({
+            event: 'ai-session-scan',
+            provider: providerId,
+            reason: normalizedOptions.reason || (normalizedOptions.forceRefresh ? 'force-refresh' : 'refresh'),
+            durationMs: Date.now() - startedAt,
+            sessionCount: result.sessions.length,
+            available: result.available,
+        });
+        return result;
     }
 
     function getAiSessionAssignments(openProjects: Project[], sessionResults: Record<AiSessionProviderId, AiSessionReadResult>): Record<AiSessionProviderId, Map<string, CodexSession[]>> {
@@ -2753,8 +2650,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function getAiSessionOriginalName(providerId: AiSessionProviderId, sessionId: string): string {
-        let sessionProvider = getRegisteredAiSessionProvider(providerId);
-        let sessionResult = sessionProvider.service.getSessions();
+        let sessionResult = getProviderAiSessions(providerId, { reason: 'alias-original-name' });
         let session = sessionResult.sessions.find(candidate => candidate.id === sessionId);
 
         return session?.name || sessionId;

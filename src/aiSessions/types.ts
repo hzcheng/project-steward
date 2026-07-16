@@ -19,6 +19,8 @@ export interface AiSessionReadResult {
 export interface AiSessionQueryOptions {
     forceRefresh?: boolean;
     candidatePaths?: string[];
+    maxFiles?: number;
+    reason?: string;
 }
 
 export interface AiSessionDisposable {

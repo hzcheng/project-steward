@@ -58,6 +58,7 @@ const models = require('../out/models');
 const openProjectService = require('../out/projects/openProjectService');
 const webviewContentModule = require('../out/webview/webviewContent');
 const dashboardViewModel = require('../out/webview/dashboardViewModel');
+const AiSessionDashboardController = require('../out/aiSessions/dashboardController').AiSessionDashboardController;
 Module._load = originalModuleLoad;
 
 function createTestUri(value) {
@@ -1142,9 +1143,12 @@ function runWebviewContentChecks() {
     assert.ok(webviewProjectScripts.includes('data-ai-session-active-terminal'));
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal)'));
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.sync()'));
-    assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.setVisible(webviewView.visible)'));
+    assert.ok(dashboard.includes('onVisibleChanged: visible =>'));
+    assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.setVisible(visible)'));
+    const viewProvider = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'viewProvider.ts'), 'utf8');
+    assert.ok(viewProvider.includes('this.options.onVisibleChanged(webviewView.visible)'));
     const activeTerminalCandidatesFunction = extractFunctionBody(dashboard, 'getAiSessionTerminalCandidates');
-    assert.ok(activeTerminalCandidatesFunction.includes('getRegisteredAiSessionProvider(providerId).service.getSessions().sessions'));
+    assert.ok(activeTerminalCandidatesFunction.includes("getProviderAiSessions(providerId, { reason: 'terminal-candidates' }).sessions"));
     assert.ok(!activeTerminalCandidatesFunction.includes('AI_SESSION_PROVIDER_IDS'));
     assert.ok(!activeTerminalCandidatesFunction.includes('getOpenProjects('));
     assert.ok(!activeTerminalCandidatesFunction.includes('activeAiSessionProvider'));
@@ -2153,6 +2157,88 @@ function runBatchAiSessionWebviewChecks() {
     assert.notStrictEqual(collapseExitIndex, -1);
     assert.notStrictEqual(collapseMessageIndex, -1);
     assert.ok(collapseExitIndex < collapseMessageIndex);
+}
+
+function runAiSessionIncrementalRefreshSourceChecks() {
+    const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const typesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'types.ts'), 'utf8');
+    assert.ok(typesSource.includes('maxFiles?: number;'));
+    assert.ok(typesSource.includes('reason?: string;'));
+    const providersSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'providers.ts'), 'utf8');
+    assert.ok(providersSource.includes('export interface AiSessionProviderRegistry'));
+    assert.ok(providersSource.includes('export function createAiSessionProviderRegistry('));
+    assert.ok(providersSource.includes('providers(): AiSessionProvider[]'));
+    const controllerPath = path.join(__dirname, '..', 'src', 'aiSessions', 'dashboardController.ts');
+    assert.ok(fs.existsSync(controllerPath));
+    const controllerSource = fs.readFileSync(controllerPath, 'utf8');
+    assert.ok(controllerSource.includes('export class AiSessionDashboardController'));
+    assert.ok(controllerSource.includes('scheduleRefresh('));
+    assert.ok(controllerSource.includes('setWatchersActive('));
+    assert.ok(controllerSource.includes('buildAiSessionsUpdatedMessage'));
+    const refreshFunction = extractFunctionBody(dashboard, 'refreshAiSessionViewsIncrementally');
+    assert.ok(refreshFunction.includes('aiSessionDashboardController.refreshNow()'));
+    assert.ok(controllerSource.includes("async refreshNow(reason = 'refresh'): Promise<void>"));
+    assert.ok(controllerSource.includes('const message = this.getUpdatedMessage();'));
+    assert.ok(controllerSource.includes('this.options.postMessage(message).then(delivered =>'));
+    assert.ok(controllerSource.includes('if (!delivered)'));
+    assert.ok(controllerSource.includes('this.options.refresh();'));
+    const getAiSessionResultsBody = extractFunctionBody(dashboard, 'getAiSessionResults');
+    assert.ok(dashboard.includes("function getAiSessionResults(openProjects: Project[] = [], reason = currentAiSessionRefreshReason)"));
+    assert.ok(getAiSessionResultsBody.includes('getProviderAiSessions(providerId, { candidatePaths, reason })'));
+    assert.strictEqual((dashboard.match(/\.service\.getSessions\(/g) || []).length, 1);
+    assert.ok(dashboard.includes('function getProviderAiSessions('));
+    const getProviderAiSessionsIndex = dashboard.indexOf('function getProviderAiSessions(');
+    assert.notStrictEqual(getProviderAiSessionsIndex, -1);
+    const getProviderAiSessionsSlice = dashboard.slice(getProviderAiSessionsIndex, dashboard.indexOf('function getAiSessionAssignments(', getProviderAiSessionsIndex));
+    assert.ok(getProviderAiSessionsSlice.includes("event: 'ai-session-scan'"));
+    assert.ok(getProviderAiSessionsSlice.includes('durationMs: Date.now() - startedAt'));
+    assert.ok(controllerSource.includes("this.scheduleRefresh('watcher')"));
+    assert.ok(controllerSource.includes("this.refreshNow('new-session')"));
+    assert.ok(controllerSource.includes('private newSessionRefreshTimeouts: NodeJS.Timeout[] = []'));
+    assert.ok(controllerSource.includes('let firedSynchronously = false'));
+    assert.ok(controllerSource.includes('this.newSessionRefreshTimeouts.push(timeout)'));
+    assert.ok(controllerSource.includes('for (let timeout of this.newSessionRefreshTimeouts)'));
+    assert.ok(controllerSource.includes('this.options.clearTimeout(timeout)'));
+}
+
+function runAiSessionDashboardControllerChecks() {
+    const invalidated = [];
+    const messages = [];
+    const clearedTimeouts = [];
+    const refreshReasons = [];
+    const controller = new AiSessionDashboardController({
+        providerIds: ['codex'],
+        isVisible: () => true,
+        invalidateCache: providerId => invalidated.push(providerId),
+        watchSessionChanges: () => ({ dispose() {} }),
+        getGroups: () => [],
+        getCards: () => [],
+        getOpenProjectAiSessionViewModel: project => project,
+        nextSequence: () => 1,
+        postMessage: message => {
+            messages.push(message);
+            return Promise.resolve(true);
+        },
+        refresh: () => undefined,
+        logError: error => { throw new Error(`Unexpected logError: ${error}`); },
+        beforeRefresh: reason => refreshReasons.push(reason),
+        afterRefresh: () => undefined,
+        debounceMs: 1,
+        newSessionRefreshDelaysMs: [1, 2],
+        setTimeout: callback => {
+            callback();
+            return { disposed: false };
+        },
+        clearTimeout: handle => clearedTimeouts.push(handle),
+    });
+
+    controller.scheduleNewSessionRefresh('codex');
+    controller.dispose();
+    assert.deepStrictEqual(invalidated, ['codex', 'codex']);
+    assert.deepStrictEqual(refreshReasons, ['new-session', 'new-session']);
+    assert.strictEqual(messages.length, 2);
+    assert.deepStrictEqual(messages.map(message => message.type), ['ai-sessions-updated', 'ai-sessions-updated']);
+    assert.strictEqual(clearedTimeouts.length, 0);
 }
 
 function extractFunctionBody(source, functionName) {
@@ -3563,6 +3649,8 @@ async function main() {
     runAttentionProjectRenderingChecks();
     runFavoriteDndChecks();
     runBatchAiSessionWebviewChecks();
+    runAiSessionIncrementalRefreshSourceChecks();
+    runAiSessionDashboardControllerChecks();
     runGitRepositoryDetectorChecks();
     runCodexSubagentSessionFilterChecks();
     runCodexSessionActivityTimestampChecks();

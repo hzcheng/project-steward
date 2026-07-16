@@ -656,8 +656,9 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(!rawOpenProjects.includes('withAiSessions('));
     assert.ok(openProjects.includes('withAiSessions(getRawOpenProjects())'));
     assert.ok(dashboard.includes("import OpenProjectBridgeClient from './openProjects/bridgeClient';"));
-    assert.ok(dashboard.includes("import { createOpenProjectRecords, projectOpenProjectCards } from './openProjects/projection';"));
-    assert.ok(dashboard.includes('let openProjectAggregate: OpenProjectAggregate | null = null;'));
+    assert.ok(dashboard.includes("import { createOpenProjectRecords } from './openProjects/projection';"));
+    assert.ok(dashboard.includes("import { OpenProjectDashboardController } from './openProjects/dashboardController';"));
+    assert.ok(dashboard.includes('const openProjectDashboardController = new OpenProjectDashboardController({'));
     assert.ok(dashboard.includes('new OpenProjectBridgeClient('));
     assert.ok(dashboard.includes("reportDiagnostic: event => logOpenProjectDiagnostic('Workspace', event)"));
     assert.ok(dashboard.includes("reportBridgeDiagnostic: event => logOpenProjectDiagnostic('Bridge', event)"));
@@ -666,13 +667,11 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('createOpenProjectRecords(getRawOpenProjects())'));
     assert.ok(dashboard.includes('context.subscriptions.push(openProjectBridgeClient);'));
     assert.ok(dashboard.includes('get openProjects() { return getOpenProjectCards() }'));
-    assert.ok(projectedOpenProjects.includes('projectOpenProjectCards(getOpenProjects(), openProjectAggregate, openProjectBridgeClient.instanceId)'));
-    assert.ok(projectedOpenProjects.includes("card.openProjectCardKind === 'projectNavigation'"));
-    assert.ok(projectedOpenProjects.includes('openProjectNavigationCardsById = new Map('));
+    assert.ok(projectedOpenProjects.includes('openProjectDashboardController.getCards()'));
     assert.ok(selectedProjectCase.includes('getOpenProjectCards();'));
-    assert.ok(selectedProjectCase.includes('openProjectNavigationCardsById.get(projectId)'));
+    assert.ok(selectedProjectCase.includes('openProjectDashboardController.getNavigationCard(projectId)'));
     assert.ok(selectedProjectCase.indexOf('projectService.getProject(projectId)') < selectedProjectCase.indexOf('getOpenProjects().find'));
-    assert.ok(selectedProjectCase.indexOf('getOpenProjects().find') < selectedProjectCase.indexOf('openProjectNavigationCardsById.get(projectId)'));
+    assert.ok(selectedProjectCase.indexOf('getOpenProjects().find') < selectedProjectCase.indexOf('openProjectDashboardController.getNavigationCard(projectId)'));
     assert.ok(selectedProjectCase.includes('await openProject(project, isProjectNavigation ? ProjectOpenType.Default : projectOpenType);'));
     assert.ok(!selectedProjectCase.includes('e.uri'));
     assert.ok(!selectedProjectCase.includes('projectUri'));
@@ -751,8 +750,14 @@ function runWebviewRefreshFocusChecks() {
 
 function runOpenProjectIncrementalRenderingChecks() {
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const controllerPath = path.join(__dirname, '..', 'src', 'openProjects', 'dashboardController.ts');
+    assert.ok(fs.existsSync(controllerPath));
+    const controllerSource = fs.readFileSync(controllerPath, 'utf8');
+    assert.ok(controllerSource.includes('export class OpenProjectDashboardController'));
+    assert.ok(controllerSource.includes('postUpdated('));
+    assert.ok(controllerSource.includes('buildOpenProjectsUpdatedMessage'));
     const bridgeCallback = dashboard.slice(
-        dashboard.indexOf('const openProjectBridgeClient = new OpenProjectBridgeClient('),
+        dashboard.indexOf('openProjectBridgeClient = new OpenProjectBridgeClient('),
         dashboard.indexOf('const activeAiSessionTerminalHighlighter')
     );
     assert.ok(bridgeCallback.includes('postOpenProjectsUpdated();'));
@@ -794,6 +799,16 @@ function runOpenProjectIncrementalRenderingChecks() {
     assert.strictEqual(applyOpenProjectsUpdate({ version: 2, html: '<div>bad</div>' }), false);
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.ok(webviewScript.includes("type: 'open-projects-rendered'"));
+
+    const postOpenProjectsUpdated = extractFunctionBody(dashboard, 'postOpenProjectsUpdated');
+    assert.ok(postOpenProjectsUpdated.includes('openProjectDashboardController.postUpdated()'));
+    const postUpdatedIndex = controllerSource.indexOf('postUpdated()');
+    assert.notStrictEqual(postUpdatedIndex, -1);
+    const postUpdatedBody = controllerSource.slice(postUpdatedIndex, controllerSource.indexOf('\n    }\n}', postUpdatedIndex));
+    assert.ok(postUpdatedBody.includes('this.options.postMessage(message).then('));
+    assert.ok(postUpdatedBody.includes('if (!delivered && this.options.isVisible())'));
+    assert.ok(postUpdatedBody.includes("this.options.logError('Failed to post OPEN PROJECT update message.'"));
+    assert.ok(postUpdatedBody.includes('this.options.refresh();'));
 }
 
 async function runDashboardMigrationPublicationChecks() {
