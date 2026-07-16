@@ -4170,6 +4170,75 @@ function runCodexSessionActivityTimestampChecks() {
     }
 }
 
+function runCodexSessionMetaCacheChecks() {
+    const previousCodexHome = process.env.CODEX_HOME;
+    const originalOpenSync = fs.openSync;
+    const originalReadFileSync = fs.readFileSync;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-codex-meta-cache-'));
+    const sessionsDir = path.join(tempRoot, 'sessions', '2026', '07', '16');
+    const sessionId = '88888888-8888-4888-8888-888888888888';
+    try {
+        process.env.CODEX_HOME = tempRoot;
+        fs.mkdirSync(sessionsDir, { recursive: true });
+        const sessionFile = writeCodexSessionMetaFile(sessionsDir, sessionId, {
+            id: sessionId,
+            session_id: sessionId,
+            cwd: '/work/app',
+            timestamp: '2026-07-16T01:00:00.000Z',
+            source: 'vscode',
+        });
+        const indexPath = path.join(tempRoot, 'session_index.jsonl');
+        fs.writeFileSync(indexPath, JSON.stringify({
+            id: sessionId,
+            thread_name: 'Cached Index',
+            updated_at: '2026-07-16T02:00:00.000Z',
+        }) + '\n', 'utf8');
+
+        let sessionMetaOpenCount = 0;
+        let sessionIndexReadCount = 0;
+        fs.openSync = function patchedOpenSync(filePath, flags, mode) {
+            if (filePath === sessionFile) {
+                sessionMetaOpenCount++;
+            }
+            return originalOpenSync.apply(this, arguments);
+        };
+        fs.readFileSync = function patchedReadFileSync(filePath, options) {
+            if (filePath === indexPath) {
+                sessionIndexReadCount++;
+            }
+            return originalReadFileSync.apply(this, arguments);
+        };
+
+        const service = new CodexSessionService();
+        assert.strictEqual(service.getSessions({ forceRefresh: true }).sessions[0].id, sessionId);
+        const firstReadCount = sessionMetaOpenCount;
+        const firstIndexReadCount = sessionIndexReadCount;
+        assert.ok(firstReadCount > 0, 'first Codex scan should read session metadata from disk');
+        assert.ok(firstIndexReadCount > 0, 'first Codex scan should read session index from disk');
+
+        assert.strictEqual(service.getSessions({ forceRefresh: true }).sessions[0].id, sessionId);
+        assert.strictEqual(
+            sessionMetaOpenCount,
+            firstReadCount,
+            'unchanged Codex session metadata should be reused across forced scans'
+        );
+        assert.strictEqual(
+            sessionIndexReadCount,
+            firstIndexReadCount,
+            'unchanged Codex session index should be reused across forced scans'
+        );
+    } finally {
+        fs.openSync = originalOpenSync;
+        fs.readFileSync = originalReadFileSync;
+        if (previousCodexHome === undefined) {
+            delete process.env.CODEX_HOME;
+        } else {
+            process.env.CODEX_HOME = previousCodexHome;
+        }
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
 function runKimiNestedSubagentBoundaryChecks() {
     const previousKimiHome = process.env.KIMI_SHARE_DIR;
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-kimi-subagents-'));
@@ -5436,6 +5505,7 @@ async function main() {
     runGitRepositoryDetectorChecks();
     runCodexSubagentSessionFilterChecks();
     runCodexSessionActivityTimestampChecks();
+    runCodexSessionMetaCacheChecks();
     runKimiNestedSubagentBoundaryChecks();
     runClaudeSessionChecks();
     runAiSessionProviderMaxFilesChecks();
