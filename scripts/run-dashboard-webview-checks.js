@@ -20,6 +20,8 @@ const { GroupCommandController } = require('../out/projects/groupCommandControll
 const { queryGroupName } = require('../out/projects/groupPrompts');
 const { ProjectOrderController } = require('../out/projects/projectOrderController');
 const { ProjectRemovalController } = require('../out/projects/projectRemovalController');
+const todoTypes = require('../out/todos/types');
+const { TodoService } = require('../out/todos/service');
 
 const root = path.join(__dirname, '..');
 const dashboardScriptPath = path.join(root, 'src', 'webview', 'webviewDashboardScripts.js');
@@ -273,6 +275,107 @@ async function runGroupCommandControllerChecks() {
     nextConfirmation = undefined;
     await controller.removeGroup('group-a');
     assert.strictEqual(actions.filter(action => action[0] === 'remove').length, 1);
+}
+
+async function runTodoStoreChecks() {
+    assert.deepStrictEqual(todoTypes.normalizeTodoData(null), { version: 1, groups: [], todos: [] });
+    assert.deepStrictEqual(todoTypes.normalizeTodoData({ version: 99, groups: null, todos: null }), { version: 1, groups: [], todos: [] });
+
+    const normalized = todoTypes.normalizeTodoData({
+        version: 1,
+        groups: [
+            { id: 'group-a', title: ' Group A ', collapsed: true, order: 2 },
+            { id: '', title: '', order: 'bad' },
+        ],
+        todos: [
+            {
+                id: 'todo-a',
+                groupId: 'group-a',
+                title: ' Todo A ',
+                notes: 'notes',
+                priority: 'high',
+                completed: true,
+                createdAt: '2026-07-15T00:00:00.000Z',
+                updatedAt: '2026-07-16T00:00:00.000Z',
+                completedAt: '2026-07-16T00:00:00.000Z',
+                order: 3,
+            },
+            { id: 'todo-b', groupId: 'missing', title: 'Invalid Group' },
+            { id: '', groupId: 'group-a', title: 'Invalid Id' },
+        ],
+    });
+
+    assert.deepStrictEqual(normalized.groups, [
+        { id: 'group-a', title: 'Group A', collapsed: true, order: 2 },
+    ]);
+    assert.strictEqual(normalized.todos.length, 1);
+    assert.strictEqual(normalized.todos[0].title, 'Todo A');
+    assert.strictEqual(normalized.todos[0].priority, 'high');
+    assert.strictEqual(normalized.todos[0].completed, true);
+
+    const searchItems = todoTypes.buildTodoSearchItems({
+        version: 1,
+        groups: [{ id: 'group-a', title: 'Planning', collapsed: false, order: 0 }],
+        todos: [{
+            id: 'todo-a',
+            groupId: 'group-a',
+            title: 'Ship TODO',
+            notes: 'x'.repeat(700),
+            priority: 'medium',
+            completed: false,
+            createdAt: '2026-07-16T00:00:00.000Z',
+            updatedAt: '2026-07-16T00:00:00.000Z',
+            order: 0,
+        }],
+    });
+    assert.strictEqual(searchItems.length, 1);
+    assert.strictEqual(searchItems[0].notesSearchText.length, 500);
+    assert.ok(searchItems[0].searchText.includes('planning'));
+    assert.ok(searchItems[0].searchText.includes('ship todo'));
+
+    const globalValues = new Map();
+    const configValues = {};
+    const globalUpdates = [];
+    const configUpdates = [];
+    const makeService = useSettingsStorage => new TodoService({
+        globalState: {
+            get: key => globalValues.get(key),
+            update: async (key, value) => {
+                globalUpdates.push([key, value]);
+                globalValues.set(key, value);
+            },
+        },
+        configuration: {
+            get: (key, fallback) => Object.prototype.hasOwnProperty.call(configValues, key) ? configValues[key] : fallback,
+            update: async (key, value, target) => {
+                configUpdates.push([key, value, target]);
+                configValues[key] = value;
+            },
+        },
+        useSettingsStorage: () => useSettingsStorage,
+        now: () => '2026-07-16T00:00:00.000Z',
+        generateId: prefix => `${prefix}-id-${globalUpdates.length + configUpdates.length}`,
+    });
+
+    const globalService = makeService(false);
+    const afterAddTodo = await globalService.addTodo({ title: ' First task ', notes: ' Notes ', priority: 'high' });
+    assert.strictEqual(afterAddTodo.groups.length, 1);
+    assert.strictEqual(afterAddTodo.groups[0].title, 'Inbox');
+    assert.strictEqual(afterAddTodo.todos[0].title, 'First task');
+    assert.strictEqual(afterAddTodo.todos[0].notes, 'Notes');
+    assert.strictEqual(afterAddTodo.todos[0].priority, 'high');
+    assert.deepStrictEqual(globalUpdates[0][0], 'todos');
+
+    const completed = await globalService.completeTodo(afterAddTodo.todos[0].id, true);
+    assert.strictEqual(completed.todos[0].completed, true);
+    assert.strictEqual(completed.todos[0].completedAt, '2026-07-16T00:00:00.000Z');
+
+    const renamed = await globalService.addGroup('');
+    assert.strictEqual(renamed.groups[1].title, 'Untitled Group');
+
+    const settingsService = makeService(true);
+    await settingsService.saveData({ version: 1, groups: [], todos: [] });
+    assert.deepStrictEqual(configUpdates[0], ['todoData', { version: 1, groups: [], todos: [] }, 1]);
 }
 
 async function runAddProjectsFromFolderControllerChecks() {
@@ -1233,6 +1336,7 @@ async function main() {
     await runDashboardLifecycleControllerChecks();
     await runDashboardCommandRegistrationChecks();
     await runActiveTerminalFileReferenceChecks();
+    await runTodoStoreChecks();
     runControllerChecks(source);
     runSourceContractChecks(source);
     await runDashboardMessageRouterChecks();
