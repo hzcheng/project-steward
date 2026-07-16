@@ -18,6 +18,9 @@ function applyOpenProjectsUpdate(message) {
     }
 
     wrapper.innerHTML = message.html;
+    if (!isOpenProjectsUpdateDomConsistent(message)) {
+        return false;
+    }
     if (window.__projectStewardDashboard) {
         window.__projectStewardDashboard.replaceSearchCatalog(message.searchCatalog);
     }
@@ -25,6 +28,40 @@ function applyOpenProjectsUpdate(message) {
         window.__projectStewardSyncCollapseButton();
     }
     return true;
+}
+
+function getOpenProjectsUpdateCatalogCounts(searchCatalog) {
+    var openProjects = searchCatalog && Array.isArray(searchCatalog.openProjects)
+        ? searchCatalog.openProjects
+        : [];
+    return {
+        projectCount: openProjects.length,
+        navigationProjectCount: openProjects.filter(project => project && project.action !== 'open-current').length,
+    };
+}
+
+function getOpenProjectsUpdateDomState() {
+    return {
+        projectCount: document.querySelectorAll('.sticky-groups-wrapper .project[data-id]').length,
+        navigationProjectCount: document.querySelectorAll('.sticky-groups-wrapper .project[data-project-navigation][data-id]').length,
+        hasOtherWindowsGroup: document.querySelectorAll('.sticky-groups-wrapper .open-other-windows-group').length > 0,
+    };
+}
+
+function isOpenProjectsUpdateDomConsistent(message) {
+    var expected = getOpenProjectsUpdateCatalogCounts(message.searchCatalog);
+    if (!expected.projectCount) {
+        return true;
+    }
+
+    var rendered = getOpenProjectsUpdateDomState();
+    if (rendered.projectCount !== expected.projectCount) {
+        return false;
+    }
+    if (rendered.navigationProjectCount !== expected.navigationProjectCount) {
+        return false;
+    }
+    return expected.navigationProjectCount === 0 || rendered.hasOtherWindowsGroup;
 }
 
 function getCollapseButtonState(tab, collapsedStates) {
@@ -923,10 +960,14 @@ function initProjects() {
             }
             syncActiveAiSessionTerminalDom();
             updateStickyGroupHeaderOffset();
+            var renderedOpenProjectsState = getOpenProjectsUpdateDomState();
             window.vscode.postMessage({
                 type: 'open-projects-rendered',
                 semanticRevision: message.semanticRevision,
                 projectCount: message.projectCount,
+                renderedProjectCount: renderedOpenProjectsState.projectCount,
+                renderedNavigationProjectCount: renderedOpenProjectsState.navigationProjectCount,
+                hasOtherWindowsGroup: renderedOpenProjectsState.hasOtherWindowsGroup,
             });
             return;
         }

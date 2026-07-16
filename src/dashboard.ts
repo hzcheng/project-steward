@@ -519,6 +519,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     projectCount: Number.isSafeInteger(e.projectCount) && e.projectCount >= 0
                         ? e.projectCount as number
                         : -1,
+                    renderedProjectCount: Number.isSafeInteger(e.renderedProjectCount) && e.renderedProjectCount >= 0
+                        ? e.renderedProjectCount as number
+                        : -1,
+                    renderedNavigationProjectCount: Number.isSafeInteger(e.renderedNavigationProjectCount) && e.renderedNavigationProjectCount >= 0
+                        ? e.renderedNavigationProjectCount as number
+                        : -1,
+                    hasOtherWindowsGroup: e.hasOtherWindowsGroup === true,
                 });
             },
             'request-active-ai-session-terminal': () => {

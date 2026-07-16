@@ -1162,14 +1162,36 @@ function runOpenProjectIncrementalRenderingChecks() {
         'utf8'
     );
     const wrapper = { innerHTML: '<div>old</div>' };
+    const documentStub = {
+        querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null,
+        querySelectorAll: selector => {
+            const projectTags = wrapper.innerHTML.match(/<div class="project"[^>]*data-id=[^>]*>/g) || [];
+            if (selector === '.sticky-groups-wrapper .project[data-id]') {
+                return Array.from({ length: projectTags.length }, () => ({}));
+            }
+            if (selector === '.sticky-groups-wrapper .project[data-project-navigation][data-id]') {
+                const matches = projectTags.filter(tag => tag.includes('data-project-navigation'));
+                return Array.from({ length: matches.length }, () => ({}));
+            }
+            if (selector === '.sticky-groups-wrapper .open-other-windows-group') {
+                return wrapper.innerHTML.includes('open-other-windows-group') ? [{}] : [];
+            }
+            return [];
+        },
+    };
     let catalogReplacements = 0;
     const applyOpenProjectsUpdate = new Function(
         'document',
         'window',
         'normalizeDashboardSearchCatalog',
-        `return function applyOpenProjectsUpdate(message) {${extractFunctionBody(webviewScript, 'applyOpenProjectsUpdate')}};`
+        `
+        function getOpenProjectsUpdateCatalogCounts(searchCatalog) {${extractFunctionBody(webviewScript, 'getOpenProjectsUpdateCatalogCounts')}}
+        function getOpenProjectsUpdateDomState() {${extractFunctionBody(webviewScript, 'getOpenProjectsUpdateDomState')}}
+        function isOpenProjectsUpdateDomConsistent(message) {${extractFunctionBody(webviewScript, 'isOpenProjectsUpdateDomConsistent')}}
+        return function applyOpenProjectsUpdate(message) {${extractFunctionBody(webviewScript, 'applyOpenProjectsUpdate')}};
+        `
     )(
-        { querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null },
+        documentStub,
         { __projectStewardDashboard: { replaceSearchCatalog: () => { catalogReplacements += 1; } } },
         value => value && Array.isArray(value.sessions) && Array.isArray(value.openProjects) && Array.isArray(value.savedProjects)
             ? value
@@ -1188,6 +1210,39 @@ function runOpenProjectIncrementalRenderingChecks() {
     assert.strictEqual(applyOpenProjectsUpdate({ version: 2, html: '<div>bad</div>' }), false);
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.ok(webviewScript.includes("type: 'open-projects-rendered'"));
+    assert.strictEqual(applyOpenProjectsUpdate({
+        type: 'open-projects-updated',
+        version: 1,
+        semanticRevision: 'revision-valid-navigation',
+        projectCount: 2,
+        html: [
+            '<div class="group open-current-workspace-group"><div class="project" data-id="current"></div></div>',
+            '<div class="group open-other-windows-group"><div class="project" data-project-navigation data-id="other"></div></div>',
+        ].join(''),
+        searchCatalog: {
+            sessions: [],
+            openProjects: [
+                { projectId: 'current', action: 'open-current' },
+                { projectId: 'other', action: 'switch-open' },
+            ],
+            savedProjects: [],
+        },
+    }), true, 'OPEN update must accept DOM that keeps OTHER WINDOWS navigation cards');
+    assert.strictEqual(applyOpenProjectsUpdate({
+        type: 'open-projects-updated',
+        version: 1,
+        semanticRevision: 'revision-3',
+        projectCount: 2,
+        html: '<div class="group open-current-workspace-group"><div class="project" data-id="current"></div></div>',
+        searchCatalog: {
+            sessions: [],
+            openProjects: [
+                { projectId: 'current', action: 'open-current' },
+                { projectId: 'other', action: 'switch-open' },
+            ],
+            savedProjects: [],
+        },
+    }), false, 'OPEN update must reject DOM that loses OTHER WINDOWS navigation cards');
 
     const postOpenProjectsUpdated = extractFunctionBody(dashboard, 'postOpenProjectsUpdated');
     assert.ok(postOpenProjectsUpdated.includes('openProjectDashboardController.postUpdated()'));
