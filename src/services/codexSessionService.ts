@@ -38,6 +38,8 @@ export interface Disposable {
 export default class CodexSessionService {
     private cachedResult: CodexSessionReadResult = null;
     private cachedAt = 0;
+    private readonly sessionMetaCache = new Map<string, { signature: string; meta: CodexSessionMeta }>();
+    private readonly sessionIndexCache = new Map<string, { signature: string; entries: CodexSessionIndexEntry[] }>();
     private readonly lifecycleSessionFiles = new Map<string, string>();
     private readonly cacheTtlMs = 5000;
     private readonly changePollIntervalMs = 3000;
@@ -269,6 +271,12 @@ export default class CodexSessionService {
     }
 
     private readSessionIndex(indexPath: string): CodexSessionIndexEntry[] {
+        let signature = this.getFileSignature(indexPath);
+        let cached = this.sessionIndexCache.get(indexPath);
+        if (cached?.signature === signature) {
+            return cached.entries;
+        }
+
         try {
             let lines = fs.readFileSync(indexPath, 'utf8')
                 .split(/\r?\n/g)
@@ -287,8 +295,10 @@ export default class CodexSessionService {
                 }
             }
 
+            this.sessionIndexCache.set(indexPath, { signature, entries });
             return entries;
         } catch (e) {
+            this.sessionIndexCache.delete(indexPath);
             return [];
         }
     }
@@ -422,26 +432,37 @@ export default class CodexSessionService {
             return null;
         }
 
+        let signature = this.getFileSignature(sessionFile);
+        let cached = this.sessionMetaCache.get(sessionFile);
+        if (cached?.signature === signature) {
+            return cached.meta;
+        }
+
         let firstLine = this.readFirstLine(sessionFile);
         if (!firstLine) {
+            this.sessionMetaCache.delete(sessionFile);
             return null;
         }
 
         try {
             let event = JSON.parse(firstLine);
             if (event?.type !== 'session_meta') {
+                this.sessionMetaCache.set(sessionFile, { signature, meta: null });
                 return null;
             }
 
             let payload = event.payload || {};
-            return {
+            let meta = {
                 id: payload.id,
                 session_id: payload.session_id,
                 cwd: payload.cwd,
                 timestamp: payload.timestamp || event.timestamp,
                 isSubagent: this.isExplicitSubagentSource(payload.source),
             };
+            this.sessionMetaCache.set(sessionFile, { signature, meta });
+            return meta;
         } catch (e) {
+            this.sessionMetaCache.delete(sessionFile);
             return null;
         }
     }

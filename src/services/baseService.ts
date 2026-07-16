@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { LEGACY_DASHBOARD_CONFIG_SECTION, PROJECT_STEWARD_CONFIG_SECTION } from '../constants';
+import { hasConfiguredValue } from '../dashboard/configuration';
 
 export default abstract class BaseService {
     context: vscode.ExtensionContext;
@@ -16,11 +17,11 @@ export default abstract class BaseService {
         let primaryConfig = vscode.workspace.getConfiguration(PROJECT_STEWARD_CONFIG_SECTION);
         let legacyConfig = vscode.workspace.getConfiguration(LEGACY_DASHBOARD_CONFIG_SECTION);
 
-        if (this.hasConfiguredValue(primaryConfig, key)) {
+        if (hasConfiguredValue(primaryConfig, key)) {
             return primaryConfig.get<T>(key, defaultValue);
         }
 
-        if (this.hasConfiguredValue(legacyConfig, key)) {
+        if (hasConfiguredValue(legacyConfig, key)) {
             return legacyConfig.get<T>(key, defaultValue);
         }
 
@@ -29,20 +30,6 @@ export default abstract class BaseService {
 
     useSettingsStorage(): boolean {
         return this.getConfig<boolean>('storeProjectsInSettings');
-    }
-
-    private hasConfiguredValue(config: vscode.WorkspaceConfiguration, key: string): boolean {
-        let inspection = config.inspect(key);
-        if (!inspection) {
-            return false;
-        }
-
-        return inspection.globalValue !== undefined
-            || inspection.workspaceValue !== undefined
-            || inspection.workspaceFolderValue !== undefined
-            || inspection.globalLanguageValue !== undefined
-            || inspection.workspaceLanguageValue !== undefined
-            || inspection.workspaceFolderLanguageValue !== undefined;
     }
 
 }
