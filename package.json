@@ -65,6 +65,10 @@
             {
                 "command": "projectSteward.addProjectsFromFolder",
                 "title": "Project Steward: Add Projects from Folder"
+            },
+            {
+                "command": "projectSteward.addFileToActiveTerminal",
+                "title": "Project Steward: Add File to Active Terminal"
             }
         ],
         "keybindings": [

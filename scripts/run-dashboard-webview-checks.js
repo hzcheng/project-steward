@@ -10,6 +10,7 @@ const dashboardStartup = require('../out/dashboard/startup');
 const { DashboardStartupController } = require('../out/dashboard/startupController');
 const { DashboardLifecycleController } = require('../out/dashboard/lifecycleController');
 const { DashboardCommandRegistration } = require('../out/dashboard/commandRegistration');
+const activeTerminalFileReference = require('../out/dashboard/activeTerminalFileReference');
 const dashboardWebviewOptions = require('../out/dashboard/webviewOptions');
 const { GroupCollapseController } = require('../out/dashboard/groupCollapseController');
 const { DashboardRuntimeController } = require('../out/dashboard/runtimeController');
@@ -704,6 +705,7 @@ async function runDashboardCommandRegistrationChecks() {
             addGroup: async () => calls.push('addGroup'),
             removeGroup: async () => calls.push('removeGroup'),
             addProjectsFromFolder: async () => calls.push('addProjectsFromFolder'),
+            addFileToActiveTerminal: async () => calls.push('addFileToActiveTerminal'),
         },
     });
 
@@ -718,6 +720,7 @@ async function runDashboardCommandRegistrationChecks() {
         'projectSteward.addGroup',
         'projectSteward.removeGroup',
         'projectSteward.addProjectsFromFolder',
+        'projectSteward.addFileToActiveTerminal',
     ]);
     assert.deepStrictEqual(subscriptions.map(disposable => disposable.command), registered.map(([command]) => command));
 
@@ -734,7 +737,95 @@ async function runDashboardCommandRegistrationChecks() {
         'addGroup',
         'removeGroup',
         'addProjectsFromFolder',
+        'addFileToActiveTerminal',
     ]);
+}
+
+async function runActiveTerminalFileReferenceChecks() {
+    const sent = [];
+    const warnings = [];
+    let terminalShowCalls = 0;
+    const terminal = {
+        sendText: (text, addNewLine) => sent.push([text, addNewLine]),
+        show: () => { terminalShowCalls += 1; },
+    };
+    const controller = new activeTerminalFileReference.ActiveTerminalFileReferenceController({
+        getActiveTextEditor: () => ({
+            document: { uri: { scheme: 'file', fsPath: '/repo/src/dashboard.ts' } },
+            selection: {
+                isEmpty: false,
+                start: { line: 9 },
+                end: { line: 14 },
+            },
+        }),
+        getActiveTerminal: () => terminal,
+        asRelativePath: uri => uri.fsPath.replace('/repo/', ''),
+        showWarningMessage: message => warnings.push(message),
+    });
+
+    assert.strictEqual(activeTerminalFileReference.formatFileReference('src/dashboard.ts', null), 'src/dashboard.ts');
+    assert.strictEqual(activeTerminalFileReference.formatFileReference('src/dashboard.ts', { startLine: 10, endLine: 10 }), 'src/dashboard.ts:10');
+    assert.strictEqual(activeTerminalFileReference.formatFileReference('src/dashboard.ts', { startLine: 10, endLine: 15 }), 'src/dashboard.ts:10-15');
+    assert.deepStrictEqual(activeTerminalFileReference.getPrimarySelectionLineRange({
+        isEmpty: false,
+        start: { line: 14 },
+        end: { line: 9 },
+    }), { startLine: 10, endLine: 15 });
+
+    await controller.addFileToActiveTerminal();
+    assert.deepStrictEqual(sent, [['src/dashboard.ts:10-15', false]]);
+    assert.strictEqual(terminalShowCalls, 1);
+    assert.deepStrictEqual(warnings, []);
+
+    const emptySelectionController = new activeTerminalFileReference.ActiveTerminalFileReferenceController({
+        getActiveTextEditor: () => ({
+            document: { uri: { scheme: 'file', fsPath: '/repo/src/models.ts' } },
+            selection: { isEmpty: true, start: { line: 0 }, end: { line: 0 } },
+        }),
+        getActiveTerminal: () => terminal,
+        asRelativePath: uri => uri.fsPath.replace('/repo/', ''),
+        showWarningMessage: message => warnings.push(message),
+    });
+    await emptySelectionController.addFileToActiveTerminal();
+    assert.deepStrictEqual(sent[1], ['src/models.ts', false]);
+    assert.strictEqual(terminalShowCalls, 2);
+
+    const remoteFileController = new activeTerminalFileReference.ActiveTerminalFileReferenceController({
+        getActiveTextEditor: () => ({
+            document: { uri: { scheme: 'vscode-remote', fsPath: '/repo/src/remote.ts', path: '/repo/src/remote.ts' } },
+            selection: { isEmpty: true, start: { line: 0 }, end: { line: 0 } },
+        }),
+        getActiveTerminal: () => terminal,
+        asRelativePath: uri => uri.path.replace('/repo/', ''),
+        showWarningMessage: message => warnings.push(message),
+    });
+    await remoteFileController.addFileToActiveTerminal();
+    assert.deepStrictEqual(sent[2], ['src/remote.ts', false]);
+    assert.strictEqual(terminalShowCalls, 3);
+
+    const missingTerminalController = new activeTerminalFileReference.ActiveTerminalFileReferenceController({
+        getActiveTextEditor: () => ({
+            document: { uri: { scheme: 'file', fsPath: '/repo/src/models.ts' } },
+            selection: { isEmpty: true, start: { line: 0 }, end: { line: 0 } },
+        }),
+        getActiveTerminal: () => null,
+        asRelativePath: uri => uri.fsPath.replace('/repo/', ''),
+        showWarningMessage: message => warnings.push(message),
+    });
+    await missingTerminalController.addFileToActiveTerminal();
+    assert.ok(warnings.includes('No active terminal to receive the file reference.'));
+
+    const untitledController = new activeTerminalFileReference.ActiveTerminalFileReferenceController({
+        getActiveTextEditor: () => ({
+            document: { uri: { scheme: 'untitled', fsPath: '' } },
+            selection: { isEmpty: true, start: { line: 0 }, end: { line: 0 } },
+        }),
+        getActiveTerminal: () => terminal,
+        asRelativePath: uri => uri.fsPath,
+        showWarningMessage: message => warnings.push(message),
+    });
+    await untitledController.addFileToActiveTerminal();
+    assert.ok(warnings.includes('Open a saved file before adding it to the active terminal.'));
 }
 
 function createClassList() {
@@ -1137,6 +1228,7 @@ async function main() {
     await runDashboardStartupControllerChecks();
     await runDashboardLifecycleControllerChecks();
     await runDashboardCommandRegistrationChecks();
+    await runActiveTerminalFileReferenceChecks();
     runControllerChecks(source);
     runSourceContractChecks(source);
     await runDashboardMessageRouterChecks();

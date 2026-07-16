@@ -58,6 +58,7 @@ import OpenProjectBridgeClient from './openProjects/bridgeClient';
 import { SidebarStewardViewProvider } from './dashboard/viewProvider';
 import { getStewardConfiguration } from './dashboard/configuration';
 import { DashboardCommandRegistration } from './dashboard/commandRegistration';
+import { ActiveTerminalFileReferenceController } from './dashboard/activeTerminalFileReference';
 import DashboardDiagnostics from './dashboard/diagnostics';
 import { getErrorContent } from './dashboard/errorContent';
 import { GroupCollapseController } from './dashboard/groupCollapseController';
@@ -708,6 +709,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         publishOpenProjects: followsFocusEvent => openProjectWorkspaceController.publish(followsFocusEvent),
         evaluateAiSessionAttention: () => aiSessionAttentionController.evaluate(),
     });
+    const activeTerminalFileReferenceController = new ActiveTerminalFileReferenceController({
+        getActiveTextEditor: () => vscode.window.activeTextEditor,
+        getActiveTerminal: () => vscode.window.activeTerminal,
+        asRelativePath: uri => vscode.workspace.asRelativePath(uri as vscode.Uri, false),
+        showWarningMessage: message => vscode.window.showWarningMessage(message),
+    });
 
     new DashboardCommandRegistration<vscode.Disposable>({
         registerCommand: (command, callback) => vscode.commands.registerCommand(command, callback),
@@ -721,6 +728,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             addGroup: () => groupCommandController.addGroup(),
             removeGroup: () => groupCommandController.removeGroupPerCommand(),
             addProjectsFromFolder: () => addProjectsFromFolderController.addProjectsFromFolder(),
+            addFileToActiveTerminal: () => activeTerminalFileReferenceController.addFileToActiveTerminal(),
         },
     }).register();
 
