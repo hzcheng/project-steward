@@ -7,8 +7,11 @@ const vm = require('vm');
 const dashboardErrorContent = require('../out/dashboard/errorContent');
 const dashboardConfiguration = require('../out/dashboard/configuration');
 const dashboardStartup = require('../out/dashboard/startup');
+const { DashboardStartupController } = require('../out/dashboard/startupController');
+const { DashboardLifecycleController } = require('../out/dashboard/lifecycleController');
 const dashboardWebviewOptions = require('../out/dashboard/webviewOptions');
 const { GroupCollapseController } = require('../out/dashboard/groupCollapseController');
+const { DashboardRuntimeController } = require('../out/dashboard/runtimeController');
 const { AddProjectsFromFolderController } = require('../out/projects/addProjectsFromFolderController');
 const { FavoriteProjectController } = require('../out/projects/favoriteProjectController');
 const { GroupCommandController } = require('../out/projects/groupCommandController');
@@ -431,6 +434,255 @@ async function runProjectRemovalControllerChecks() {
     ]);
 }
 
+async function runDashboardRuntimeControllerChecks() {
+    const commands = [];
+    const refreshes = [];
+    const diagnostics = [];
+    const published = [];
+    const posted = [];
+    const colorSyncs = [];
+    const errors = [];
+    const projects = [{ id: 'project-a', path: '/work/a' }];
+    let visible = true;
+    let focusFails = true;
+    const baseOptions = {
+        isVisible: () => visible,
+        refreshProvider: () => refreshes.push('refresh'),
+        logDashboardDiagnostic: event => diagnostics.push(event),
+        executeCommand: (command, ...args) => {
+            commands.push([command, ...args]);
+            if (command.endsWith('.focus') && focusFails) {
+                focusFails = false;
+                return Promise.reject(new Error('focus failed once'));
+            }
+            return Promise.resolve();
+        },
+        viewType: 'project-steward.views.sidebar',
+        publishOpenProjects: () => published.push('open-projects'),
+        getOpenProjects: () => projects,
+        syncProjectColorToCurrentWindow: project => {
+            colorSyncs.push(project);
+            return Promise.resolve();
+        },
+        postMessage: message => {
+            posted.push(message);
+            return Promise.resolve(true);
+        },
+        logError: (message, error) => errors.push([message, error?.message]),
+    };
+    const controller = new DashboardRuntimeController(baseOptions);
+
+    controller.refresh('manual');
+    assert.deepStrictEqual(refreshes, ['refresh']);
+    assert.deepStrictEqual(diagnostics, [{ event: 'full-refresh', reason: 'manual' }]);
+
+    visible = false;
+    controller.refresh('hidden');
+    assert.deepStrictEqual(refreshes, ['refresh']);
+
+    visible = true;
+    await controller.showSteward();
+    assert.deepStrictEqual(published, ['open-projects']);
+    assert.deepStrictEqual(commands, [
+        ['workbench.view.extension.project-steward'],
+        ['project-steward.views.sidebar.focus'],
+        ['project-steward.views.sidebar.focus'],
+    ]);
+    assert.deepStrictEqual(diagnostics.slice(-1), [{ event: 'full-refresh', reason: 'show-steward' }]);
+
+    await controller.openSettings();
+    assert.deepStrictEqual(commands[commands.length - 1], ['workbench.action.openSettings', '@ext:hzcheng.project-steward']);
+
+    controller.postAttentionProjectsUpdated([{ projectKey: 'p', attentionCount: 1, eventIds: ['e'], sessions: [] }]);
+    controller.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
+    controller.postActiveAiSessionTerminalChanged({ provider: 'codex', sessionId: 's1' });
+    controller.postActiveAiSessionTerminalChanged(null);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(posted.map(message => message.type), [
+        'ai-session-attention-projects-updated',
+        'ai-session-batch-archive-completed',
+        'active-ai-session-terminal-changed',
+        'active-ai-session-terminal-changed',
+    ]);
+    assert.deepStrictEqual(posted[2], { type: 'active-ai-session-terminal-changed', provider: 'codex', sessionId: 's1' });
+    assert.deepStrictEqual(posted[3], { type: 'active-ai-session-terminal-changed', provider: null, sessionId: null });
+
+    controller.applyProjectColorToCurrentWindow();
+    controller.applyProjectColorToCurrentWindow({ id: 'save', showSaveAction: true });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(colorSyncs, [projects[0], null]);
+
+    controller.refreshAfterMutation();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(colorSyncs, [projects[0], null, projects[0]]);
+    assert.deepStrictEqual(diagnostics.slice(-1), [{ event: 'full-refresh', reason: 'project-mutation' }]);
+    assert.deepStrictEqual(published, ['open-projects', 'open-projects']);
+
+    const failingController = new DashboardRuntimeController({
+        ...baseOptions,
+        syncProjectColorToCurrentWindow: () => Promise.reject(new Error('color failed')),
+        postMessage: () => Promise.reject(new Error('post failed')),
+    });
+    failingController.applyProjectColorToCurrentWindow(projects[0]);
+    failingController.postAttentionProjectsUpdated([{ projectKey: 'p', attentionCount: 1, eventIds: ['e'], sessions: [] }]);
+    failingController.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(errors.slice(-3).map(item => item[0]), [
+        'Failed to apply project color to current window.',
+        'Failed to post AI session attention projects.',
+        'Failed to post batch AI session archive completion.',
+    ]);
+
+    const syncThrowErrors = [];
+    const syncThrowController = new DashboardRuntimeController({
+        ...baseOptions,
+        executeCommand: () => { throw new Error('command threw'); },
+        syncProjectColorToCurrentWindow: () => { throw new Error('color threw'); },
+        postMessage: () => { throw new Error('post threw'); },
+        logError: (message, error) => syncThrowErrors.push([message, error?.message]),
+    });
+    await syncThrowController.revealSidebarSteward();
+    syncThrowController.applyProjectColorToCurrentWindow(projects[0]);
+    syncThrowController.postAttentionProjectsUpdated([{ projectKey: 'p', attentionCount: 1, eventIds: ['e'], sessions: [] }]);
+    syncThrowController.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(syncThrowErrors, [
+        ['Failed to apply project color to current window.', 'color threw'],
+        ['Failed to post AI session attention projects.', 'post threw'],
+        ['Failed to post batch AI session archive completion.', 'post threw'],
+    ]);
+}
+
+async function runDashboardStartupControllerChecks() {
+    const extensionChecks = [];
+    const publications = [];
+    const informationMessages = [];
+    const colorApplications = [];
+    const reopenUpdates = [];
+    let migrated = true;
+    let showStewardCalls = 0;
+    let reopenReason = 0;
+    let workspaceName = 'workspace';
+    let visibleEditorLanguageIds = ['typescript'];
+    const stewardInfos = {
+        relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+        config: { openOnStartup: 'never' },
+    };
+    const controller = new DashboardStartupController({
+        stewardInfos,
+        relevantExtensions: {
+            remoteSSH: 'ms-vscode-remote.remote-ssh',
+            remoteContainers: 'ms-vscode-remote.remote-containers',
+        },
+        isExtensionInstalled: extensionId => {
+            extensionChecks.push(extensionId);
+            return extensionId.endsWith('remote-ssh');
+        },
+        migrateDataIfNeeded: async () => migrated,
+        publishOpenProjects: () => publications.push('published'),
+        showInformationMessage: message => informationMessages.push(message),
+        showSteward: () => { showStewardCalls += 1; },
+        applyProjectColorToCurrentWindow: () => colorApplications.push('applied'),
+        getReopenReason: () => reopenReason,
+        updateReopenReason: value => reopenUpdates.push(value),
+        reopenNoneValue: 0,
+        getWorkspaceName: () => workspaceName,
+        getVisibleEditorLanguageIds: () => visibleEditorLanguageIds,
+    });
+
+    await controller.checkDataMigration();
+    assert.deepStrictEqual(publications, ['published']);
+    assert.strictEqual(informationMessages.length, 1);
+    assert.strictEqual(showStewardCalls, 0);
+
+    migrated = false;
+    await controller.checkDataMigration(true);
+    assert.deepStrictEqual(publications, ['published']);
+    assert.strictEqual(showStewardCalls, 0);
+
+    migrated = true;
+    await controller.checkDataMigration(true);
+    assert.deepStrictEqual(publications, ['published', 'published']);
+    assert.strictEqual(showStewardCalls, 1);
+
+    reopenReason = 1;
+    await controller.startUp();
+    assert.deepStrictEqual(extensionChecks, [
+        'ms-vscode-remote.remote-ssh',
+        'ms-vscode-remote.remote-containers',
+    ]);
+    assert.deepStrictEqual(stewardInfos.relevantExtensionsInstalls, { remoteSSH: true, remoteContainers: false });
+    assert.deepStrictEqual(colorApplications, ['applied']);
+    assert.deepStrictEqual(reopenUpdates, [0]);
+    assert.strictEqual(showStewardCalls, 2);
+
+    reopenReason = 0;
+    workspaceName = '';
+    visibleEditorLanguageIds = ['code-runner-output'];
+    stewardInfos.config = { openOnStartup: 'empty workspace' };
+    await controller.startUp();
+    assert.strictEqual(showStewardCalls, 3);
+}
+
+async function runDashboardLifecycleControllerChecks() {
+    const events = [];
+    const controller = new DashboardLifecycleController({
+        checkDataMigration: async openStewardAfterMigrate => events.push(['migrate', openStewardAfterMigrate]),
+        applyProjectColorToCurrentWindow: () => events.push(['color']),
+        refresh: reason => events.push(['refresh', reason]),
+        publishOpenProjects: followsFocusEvent => events.push(['publish', followsFocusEvent]),
+        evaluateAiSessionAttention: () => events.push(['attention']),
+    });
+    const makeConfigurationEvent = affectedSections => ({
+        affectsConfiguration: section => affectedSections.some(affectedSection =>
+            affectedSection === section || affectedSection.startsWith(`${section}.`)),
+    });
+
+    await controller.handleConfigurationChanged(makeConfigurationEvent(['projectSteward.storeProjectsInSettings']));
+    assert.deepStrictEqual(events, [
+        ['migrate', false],
+        ['color'],
+        ['refresh', 'configuration-changed'],
+        ['publish', undefined],
+    ]);
+
+    events.length = 0;
+    await controller.handleConfigurationChanged(makeConfigurationEvent(['dashboard.storeProjectsInSettings']));
+    assert.deepStrictEqual(events.map(event => event[0]), ['migrate', 'color', 'refresh', 'publish']);
+
+    events.length = 0;
+    await controller.handleConfigurationChanged(makeConfigurationEvent(['projectSteward']));
+    assert.deepStrictEqual(events, [
+        ['color'],
+        ['refresh', 'configuration-changed'],
+        ['publish', undefined],
+    ]);
+
+    events.length = 0;
+    await controller.handleConfigurationChanged(makeConfigurationEvent(['unrelated']));
+    assert.deepStrictEqual(events, []);
+
+    controller.handleWorkspaceFoldersChanged();
+    assert.deepStrictEqual(events, [
+        ['color'],
+        ['refresh', 'workspace-folders-changed'],
+        ['publish', undefined],
+    ]);
+
+    events.length = 0;
+    controller.handleWindowStateChanged({ focused: true });
+    assert.deepStrictEqual(events, [
+        ['publish', true],
+        ['attention'],
+    ]);
+
+    events.length = 0;
+    controller.handleWindowStateChanged({ focused: false });
+    assert.deepStrictEqual(events, [
+        ['attention'],
+    ]);
+}
+
 function createClassList() {
     const values = new Set();
     return {
@@ -676,9 +928,11 @@ function runSourceContractChecks(source) {
     const aiSessionControllerSource = fs.readFileSync(path.join(root, 'src', 'aiSessions', 'dashboardController.ts'), 'utf8');
     const dashboardDiagnosticsSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'diagnostics.ts'), 'utf8');
     const dashboardErrorContentSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'errorContent.ts'), 'utf8');
+    const dashboardRuntimeControllerSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'runtimeController.ts'), 'utf8');
     const baseServiceSource = fs.readFileSync(path.join(root, 'src', 'services', 'baseService.ts'), 'utf8');
-    assert.ok(refreshStewardViewsBody.includes('provider.refresh();'));
-    assert.ok(refreshStewardViewsBody.includes('logDashboardDiagnostic({'));
+    assert.ok(refreshStewardViewsBody.includes('dashboardRuntimeController.refresh(reason);'));
+    assert.ok(dashboardRuntimeControllerSource.includes('this.options.refreshProvider();'));
+    assert.ok(dashboardRuntimeControllerSource.includes('this.options.logDashboardDiagnostic({'));
     assert.ok(extensionHostSource.includes('new DashboardDiagnostics({'));
     assert.ok(!extensionHostSource.includes('function logDashboardDiagnostic('));
     assert.ok(dashboardDiagnosticsSource.includes('logDashboardDiagnostic('));
@@ -696,10 +950,13 @@ function runSourceContractChecks(source) {
     assert.ok(baseServiceSource.includes("from '../dashboard/configuration'"));
     assert.strictEqual(baseServiceSource.includes('private hasConfiguredValue('), false);
     const dashboardStartupSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'startup.ts'), 'utf8');
-    assert.ok(extensionHostSource.includes("from './dashboard/startup'"));
+    const dashboardStartupControllerSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'startupController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './dashboard/startupController'"));
     assert.ok(!extensionHostSource.includes('function showStewardOnOpenIfNeeded('));
     assert.ok(dashboardStartupSource.includes('export function shouldOpenStewardOnStartup('));
     assert.ok(dashboardStartupSource.includes('code-runner-output'));
+    assert.ok(dashboardStartupControllerSource.includes('export class DashboardStartupController'));
+    assert.ok(dashboardStartupControllerSource.includes('shouldOpenStewardOnStartup({'));
     const dashboardWebviewOptionsSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'webviewOptions.ts'), 'utf8');
     assert.ok(extensionHostSource.includes("from './dashboard/webviewOptions'"));
     assert.ok(!extensionHostSource.includes('function getWebviewOptions('));
@@ -822,6 +1079,9 @@ async function main() {
     await runFavoriteProjectControllerChecks();
     await runProjectOrderControllerChecks();
     await runProjectRemovalControllerChecks();
+    await runDashboardRuntimeControllerChecks();
+    await runDashboardStartupControllerChecks();
+    await runDashboardLifecycleControllerChecks();
     runControllerChecks(source);
     runSourceContractChecks(source);
     await runDashboardMessageRouterChecks();

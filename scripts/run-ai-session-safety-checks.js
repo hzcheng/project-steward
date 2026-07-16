@@ -86,6 +86,8 @@ const AiSessionDashboardController = require('../out/aiSessions/dashboardControl
 const AiSessionCommandController = require('../out/aiSessions/commandController').AiSessionCommandController;
 const AiSessionCreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
 const AiSessionResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
+const AiSessionAttentionController = require('../out/aiSessions/attentionController').AiSessionAttentionController;
+const AiSessionProjectHydrationController = require('../out/aiSessions/projectHydrationController').AiSessionProjectHydrationController;
 Module._load = originalModuleLoad;
 
 function createTestUri(value) {
@@ -1122,6 +1124,269 @@ async function runAiSessionResumeControllerChecks() {
     assert.strictEqual(synced.length, syncCountBeforeReject);
 }
 
+async function runAiSessionAttentionControllerChecks() {
+    let nowMs = 1000;
+    let enabled = true;
+    const projects = [{
+        id: 'project-a',
+        path: '/work/a',
+        codexSessions: [{ id: 'session-a', updatedAt: '2026-07-16T10:00:00Z' }],
+        kimiSessions: [],
+        claudeSessions: [],
+    }];
+    const providersForTest = [{
+        id: 'codex',
+        projectSessionsKey: 'codexSessions',
+        service: {
+            getLifecycleSignals: requests => Object.fromEntries(requests.map(request => [
+                request.sessionId,
+                {
+                    token: `codex:complete:${request.sessionId}`,
+                    phase: 'needsAttention',
+                    reason: 'completed',
+                    occurredAtMs: 1100,
+                },
+            ])),
+        },
+    }, {
+        id: 'kimi',
+        projectSessionsKey: 'kimiSessions',
+        service: { getLifecycleSignals: () => ({}) },
+    }, {
+        id: 'claude',
+        projectSessionsKey: 'claudeSessions',
+        service: { getLifecycleSignals: () => ({}) },
+    }];
+    const terminalEntries = new Map([
+        ['codex:session-a', { runStartedAtMs: 900, complete: false }],
+    ]);
+    const published = [];
+    const scheduled = [];
+    const postedSummaries = [];
+    const controller = new AiSessionAttentionController({
+        isEnabled: () => enabled,
+        getOpenProjects: () => projects,
+        getProviders: () => providersForTest,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
+        getTerminalById: (providerId, sessionId) => terminalEntries.get(`${providerId}:${sessionId}`) || null,
+        isTerminalComplete: entry => Boolean(entry.complete),
+        publish: async (items, forceHeartbeat) => {
+            published.push({ items: items.map(item => ({ ...item })), forceHeartbeat: Boolean(forceHeartbeat) });
+            return true;
+        },
+        scheduleRefresh: reason => scheduled.push(reason),
+        postProjectsUpdated: summaries => postedSummaries.push(summaries.map(summary => ({ ...summary }))),
+        nowMs: () => nowMs,
+    });
+
+    await controller.evaluate();
+    assert.deepStrictEqual(scheduled, ['attention']);
+    assert.strictEqual(published.length, 1);
+    assert.strictEqual(published[0].forceHeartbeat, false);
+    assert.strictEqual(published[0].items.length, 1);
+    assert.strictEqual(published[0].items[0].projectId, attentionProject.getAttentionProjectKey('/work/a'));
+    assert.strictEqual(published[0].items[0].sessionKey, 'codex:session-a');
+    assert.strictEqual(published[0].items[0].state, 'needsAttention');
+    assert.strictEqual(published[0].items[0].reason, 'completed');
+    assert.strictEqual(published[0].items[0].observedAtMs, 1100);
+    assert.strictEqual(postedSummaries.length, 1, 'local fallback posts project summaries when no bridge aggregate is available');
+    assert.deepStrictEqual(controller.getRecoverySessionEvents(), [{
+        sessionKey: 'codex:session-a',
+        eventIds: [published[0].items[0].eventId],
+    }]);
+    assert.strictEqual(controller.getEffectiveAggregate().sessions[0].sessionKey, 'codex:session-a');
+    assert.strictEqual(controller.hasRemoteAggregate(), false);
+    await controller.acknowledge([published[0].items[0].eventId]);
+    assert.strictEqual(controller.getLocalSnapshot()['codex:session-a'].state, 'acknowledged');
+    assert.strictEqual(controller.getEffectiveAggregate().sessions.length, 0, 'local fallback aggregate must reflect acknowledged owner events immediately');
+
+    const remoteAggregate = {
+        protocolVersion: 1,
+        aggregateRevision: '1'.repeat(64),
+        generatedAtMs: 1200,
+        sessions: [{
+            projectId: attentionProject.getAttentionProjectKey('/work/remote'),
+            sessionKey: 'kimi:remote',
+            reasons: ['input-required'],
+            eventIds: ['remote-event'],
+            observedAtMs: 1200,
+        }],
+    };
+    assert.strictEqual(controller.setRemoteAggregate(remoteAggregate), true);
+    assert.strictEqual(controller.setRemoteAggregate(remoteAggregate), false);
+    assert.strictEqual(controller.hasRemoteAggregate(), true);
+    assert.strictEqual(controller.getEffectiveAggregate().sessions[0].sessionKey, 'kimi:remote');
+    assert.deepStrictEqual(controller.getRecoverySessionEvents().map(item => item.sessionKey), ['codex:session-a', 'kimi:remote']);
+
+    enabled = false;
+    await controller.evaluate();
+    assert.strictEqual(controller.hasRemoteAggregate(), false);
+    assert.deepStrictEqual(controller.getLocalSnapshot(), {});
+    assert.deepStrictEqual(published[published.length - 1], { items: [], forceHeartbeat: true });
+    assert.deepStrictEqual(scheduled.slice(-1), ['attention']);
+}
+
+function runAiSessionProjectHydrationControllerChecks() {
+    let refreshReason = 'refresh';
+    const codexSession = {
+        id: 'session-a',
+        name: 'Original Name',
+        cwd: '/work/a',
+        updatedAt: '2026-07-16T10:00:00Z',
+    };
+    const providersForTest = [{
+        id: 'codex',
+        terminalNamePrefix: 'Codex',
+        projectSessionsKey: 'codexSessions',
+        projectSessionsUnavailableKey: 'codexSessionsUnavailable',
+        terminalCwdFields: ['cwd'],
+    }, {
+        id: 'kimi',
+        terminalNamePrefix: 'Kimi',
+        projectSessionsKey: 'kimiSessions',
+        projectSessionsUnavailableKey: 'kimiSessionsUnavailable',
+        terminalCwdFields: ['cwd'],
+    }, {
+        id: 'claude',
+        terminalNamePrefix: 'Claude',
+        projectSessionsKey: 'claudeSessions',
+        projectSessionsUnavailableKey: 'claudeSessionsUnavailable',
+        terminalCwdFields: ['cwd'],
+    }];
+    const readOptions = [];
+    const assignmentInputs = [];
+    const terminalService = {
+        pending: [],
+        tracked: [],
+        replaced: [],
+        getPendingTerminals() {
+            return this.pending;
+        },
+        getTrackedSessionKeys() {
+            return new Set();
+        },
+        track(providerId, sessionId, entry) {
+            this.tracked.push([providerId, sessionId, entry]);
+        },
+        replacePendingTerminals(pending) {
+            this.replaced.push(pending);
+            this.pending = pending;
+        },
+        trackPending(pending) {
+            this.pending.push(pending);
+        },
+    };
+    const aliasesSet = [];
+    const synced = [];
+    const attentionEventId = 'attention-event-a';
+    const controller = new AiSessionProjectHydrationController({
+        getWorkspaceFile: () => null,
+        getWorkspaceFolders: () => null,
+        getRefreshReason: () => refreshReason,
+        incrementalScanMaxFiles: 123,
+        getProviders: () => providersForTest,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        readCoordinator: {
+            getResults: options => {
+                readOptions.push(options);
+                return {
+                    codex: { available: true, scannedFiles: 1, parsedFiles: 1, sessions: [codexSession] },
+                    kimi: { available: false, scannedFiles: 0, parsedFiles: 0, sessions: [] },
+                    claude: { available: true, scannedFiles: 0, parsedFiles: 0, sessions: [] },
+                };
+            },
+            getAssignments: (candidates, sessionResults, getSessionPath) => {
+                assignmentInputs.push({
+                    candidates,
+                    sessionPath: getSessionPath('codex', codexSession),
+                    sessionResults,
+                });
+                return {
+                    codex: new Map([['project-a', [codexSession]]]),
+                    kimi: new Map(),
+                    claude: new Map(),
+                };
+            },
+        },
+        terminalService,
+        setAlias: (providerId, sessionId, alias) => aliasesSet.push([providerId, sessionId, alias]),
+        syncActiveTerminal: () => synced.push('sync'),
+        getSessionComparableCwd: (providerId, session) => session.cwd,
+        getExpandedProjects: () => new Set(['key:/work/a']),
+        getActiveProviders: () => ({ 'key:/work/a': 'codex' }),
+        getPinnedSessions: () => new Set(['codex:session-a']),
+        getAliases: () => ({ 'codex:session-a': 'Renamed Name' }),
+        getAttentionAggregate: () => ({
+            protocolVersion: 1,
+            aggregateRevision: '2'.repeat(64),
+            generatedAtMs: 1,
+            sessions: [{
+                projectId: attentionProject.getAttentionProjectKey('/work/a'),
+                sessionKey: 'codex:session-a',
+                reasons: ['completed'],
+                eventIds: [attentionEventId],
+                observedAtMs: 2,
+            }],
+        }),
+        getLocalAttentionBySession: () => ({}),
+        hasRemoteAttentionAggregate: () => true,
+        getProjectKey: project => `key:${project.path}`,
+        normalizeProjectPath: value => value ? value.replace(/\/+$/, '') : '',
+    });
+
+    assert.deepStrictEqual(controller.hydrate([]), []);
+    assert.strictEqual(readOptions.length, 0);
+
+    terminalService.pending = [{
+        provider: 'codex',
+        terminal: { name: 'pending-terminal' },
+        markerPath: '/tmp/session-a.done',
+        cwd: '/work/a',
+        createdAt: '2026-07-16T10:00:00.000Z',
+        excludedSessionIds: [],
+        title: ' Pending Alias ',
+    }];
+    const hydrated = controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A' }]);
+
+    assert.deepStrictEqual(readOptions[0], {
+        candidatePaths: ['/work/a'],
+        reason: 'refresh',
+        maxFiles: 123,
+    });
+    assert.strictEqual(assignmentInputs[0].candidates[0].path, '/work/a');
+    assert.strictEqual(assignmentInputs[0].sessionPath, '/work/a');
+    assert.strictEqual(terminalService.tracked[0][0], 'codex');
+    assert.strictEqual(terminalService.tracked[0][1], 'session-a');
+    assert.strictEqual(terminalService.tracked[0][2].runStartedAtMs, Date.parse('2026-07-16T10:00:00.000Z'));
+    assert.deepStrictEqual(aliasesSet, [['codex', 'session-a', ' Pending Alias ']]);
+    assert.deepStrictEqual(synced, ['sync']);
+    assert.strictEqual(hydrated[0].codexSessionsUnavailable, false);
+    assert.strictEqual(hydrated[0].kimiSessionsUnavailable, true);
+    assert.strictEqual(hydrated[0].codexSessionsExpanded, true);
+    assert.strictEqual(hydrated[0].activeAiSessionProvider, 'codex');
+    assert.strictEqual(hydrated[0].codexSessions[0].name, 'Renamed Name');
+    assert.strictEqual(hydrated[0].codexSessions[0].pinned, true);
+    assert.deepStrictEqual(hydrated[0].codexSessions[0].attention, {
+        eventId: attentionEventId,
+        reason: 'completed',
+        unread: true,
+    });
+
+    refreshReason = 'terminal-candidates';
+    controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A' }]);
+    assert.strictEqual(readOptions[1].maxFiles, 0);
+
+    controller.trackPendingTerminal('codex', null, '/tmp/skip.done', '/work/a', '2026-07-16T10:00:00.000Z', [], 'skip');
+    controller.trackPendingTerminal('codex', { name: 'terminal' }, '', '/work/a', '2026-07-16T10:00:00.000Z', [], 'skip');
+    controller.trackPendingTerminal('codex', { name: 'terminal' }, '/tmp/manual.done', '/work/a/', '2026-07-16T10:00:00.000Z', ['session-a', '', null, 'session-b'], ' Manual\nTitle ');
+    const manualPending = terminalService.pending[terminalService.pending.length - 1];
+    assert.strictEqual(manualPending.provider, 'codex');
+    assert.strictEqual(manualPending.cwd, '/work/a');
+    assert.deepStrictEqual(manualPending.excludedSessionIds, ['session-a', 'session-b']);
+    assert.strictEqual(manualPending.title, 'Manual Title');
+}
+
 function runKeyChecks() {
     const isProviderId = value => value === 'codex' || value === 'kimi' || value === 'claude';
 
@@ -1849,8 +2114,12 @@ function runWebviewContentChecks() {
     const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
     const insideProjectClick = extractFunctionBody(webviewProjectScripts, 'onInsideProjectClick');
-    const evaluateAttentionFunction = extractFunctionBody(dashboard, 'evaluateAiSessionAttention');
-    const withAiSessionsFunction = extractFunctionBody(dashboard, 'withAiSessions');
+    const projectHydrationControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydrationController.ts'), 'utf8');
+    const hydrateOpenProjectsFunction = extractMethodBody(projectHydrationControllerSource, 'hydrate');
+    const attentionControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'attentionController.ts'), 'utf8');
+    const dashboardRuntimeControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'runtimeController.ts'), 'utf8');
+    const dashboardLifecycleControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'lifecycleController.ts'), 'utf8');
+    const evaluateAttentionFunction = extractMethodBody(attentionControllerSource, 'evaluate');
     const archiveControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'archiveController.ts'), 'utf8');
     const singleArchiveFunction = extractMethodBody(archiveControllerSource, 'archiveSession');
     const batchArchiveFunction = extractMethodBody(archiveControllerSource, 'archiveSessions');
@@ -1892,11 +2161,12 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes('getAttentionProjectKey(project.path)'));
     assert.ok(webviewContent.includes('class="ai-session-attention-indicator"'));
     assert.ok(styles.includes('.ai-session-attention-indicator'));
-    assert.ok(evaluateAttentionFunction.includes('getAttentionProjectKey(project.path)'));
-    assert.ok(evaluateAttentionFunction.includes('projectId: projectKey'));
-    assert.ok(evaluateAttentionFunction.includes('observedAtMs: attention.stateChangedAt'));
-    assert.ok(evaluateAttentionFunction.includes('if (!terminal ||'));
-    assert.ok(evaluateAttentionFunction.includes('getLifecycleSignals'));
+    assert.ok(dashboard.includes('getProjectKey: project => getAttentionProjectKey(project.path)'));
+    assert.ok(attentionControllerSource.includes('const projectKey = this.options.getProjectKey(project);'));
+    assert.ok(attentionControllerSource.includes('projectId: projectKey'));
+    assert.ok(attentionControllerSource.includes('observedAtMs: attention.stateChangedAt'));
+    assert.ok(attentionControllerSource.includes('if (!terminal ||'));
+    assert.ok(attentionControllerSource.includes('provider.service.getLifecycleSignals(requests)'));
     assert.ok(evaluateAttentionFunction.includes('terminal-exit:'));
     assert.ok(!evaluateAttentionFunction.includes('activityToken'));
     assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
@@ -1905,11 +2175,17 @@ function runWebviewContentChecks() {
     assert.ok(pendingTerminalResolverSource.includes('runStartedAtMs: Date.parse(pendingTerminal.createdAt)'));
     assert.ok(resumeControllerSource.includes('runStartedAtMs: this.options.nowMs()'));
     assert.ok(dashboard.includes('nowMs: () => Date.now()'));
-    assert.ok(dashboard.includes("type: 'ai-session-attention-projects-updated'"));
-    assert.ok(dashboard.includes('sessionEvents: getAiSessionAttentionRecoverySessionEvents()'));
+    assert.ok(dashboardRuntimeControllerSource.includes("type: 'ai-session-attention-projects-updated'"));
+    assert.ok(dashboard.includes('sessionEvents: aiSessionAttentionController.getRecoverySessionEvents()'));
     assert.ok(webviewProjectScripts.includes('message.sessionEvents'));
+    assert.ok(dashboard.includes("import { AiSessionAttentionController } from './aiSessions/attentionController';"));
+    assert.ok(dashboard.includes('const aiSessionAttentionController = new AiSessionAttentionController<TerminalEntry>({'));
+    assert.ok(!dashboard.includes('function getEffectiveAiSessionAttentionAggregate('));
+    assert.ok(!dashboard.includes('function getAiSessionAttentionRecoverySessionEvents('));
+    assert.ok(!dashboard.includes('async function evaluateAiSessionAttention('));
     assert.ok(dashboard.includes("'open-settings': async () =>"));
-    assert.ok(settingsFunction.includes("executeCommand('workbench.action.openSettings', '@ext:hzcheng.project-steward')"));
+    assert.ok(settingsFunction.includes('dashboardRuntimeController.openSettings()'));
+    assert.ok(dashboardRuntimeControllerSource.includes("executeCommand('workbench.action.openSettings', query)"));
     assert.ok(!settingsFunction.includes('showQuickPick'));
     assert.ok(!settingsFunction.includes('ai-session-terminal-mode-planned'));
     assert.ok(dashboard.includes('new AiSessionPinStore(context.globalStoragePath)'));
@@ -1941,10 +2217,12 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
-    assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);
-    assert.match(dashboard, /onDidChangeWindowState\(windowState => \{[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);
+    assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void aiSessionAttentionController\.evaluate\(\);[\s\S]*?\}\)/);
+    assert.match(dashboard, /onDidChangeWindowState\(windowState => \{[\s\S]*?dashboardLifecycleController\.handleWindowStateChanged\(windowState\);[\s\S]*?\}\)/);
+    assert.ok(dashboardLifecycleControllerSource.includes('this.options.evaluateAiSessionAttention();'));
+    assert.ok(dashboardLifecycleControllerSource.includes('this.options.publishOpenProjects(true);'));
     assert.ok(dashboard.includes("'request-active-ai-session-terminal': () =>"));
-    assert.ok(dashboard.includes("type: 'active-ai-session-terminal-changed'"));
+    assert.ok(dashboardRuntimeControllerSource.includes("type: 'active-ai-session-terminal-changed'"));
     assert.ok(webviewProjectScripts.includes("type: 'request-active-ai-session-terminal'"));
     assert.ok(webviewProjectScripts.includes("message.type === 'active-ai-session-terminal-changed'"));
     assert.ok(webviewProjectScripts.includes('data-ai-session-active-terminal'));
@@ -2034,8 +2312,9 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes('visibleRows * 42'));
     assert.ok(styles.includes('calc(3 * 42px + 2 * 2px)'));
     assert.ok(!packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode']);
-    assert.ok(withAiSessionsFunction.includes('let aliases = aiSessionAliasController.getAll();'));
-    assert.ok(!withAiSessionsFunction.includes('pruneAiSessionAliases('));
+    assert.ok(projectHydrationControllerSource.includes('getAliases: () => Record<string, string>;'));
+    assert.ok(hydrateOpenProjectsFunction.includes('aliases: this.options.getAliases()'));
+    assert.ok(!projectHydrationControllerSource.includes('pruneAiSessionAliases('));
     assert.ok(!dashboard.includes('function pruneAiSessionAliases('));
     assert.ok(!dashboard.includes("const AI_SESSION_ALIASES_FILE_NAME = 'ai-session-aliases.json';"));
     assert.ok(!dashboard.includes('function getAiSessionAliasesPath('));
@@ -2094,8 +2373,8 @@ function runWebviewContentChecks() {
     assert.ok(favoriteProjectControllerSource.includes('withFavoriteProjectOrder(groups, projectIds)'));
     assert.ok(favoriteProjectControllerSource.includes('withToggledProjectFavorite(groups, projectId)'));
     assert.ok(dashboard.includes("function applyProjectColorToCurrentWindow(project: Project = null)"));
-    assert.ok(dashboard.includes("project?.showSaveAction"));
-    assert.ok(dashboard.includes("syncProjectColorToCurrentWindow(project)"));
+    assert.ok(dashboardRuntimeControllerSource.includes('targetProject?.showSaveAction'));
+    assert.ok(dashboard.includes('dashboardRuntimeController.applyProjectColorToCurrentWindow(project)'));
     assert.ok(projectWindowColorService.includes("PROJECT_COLOR_TO_WINDOW_KEY = 'applyProjectColorToWindow'"));
     assert.ok(projectWindowColorService.includes("PROJECT_WINDOW_COLOR_BACKUP_KEY"));
     assert.ok(projectWindowColorService.includes("WORKBENCH_SECTION = 'workbench'"));
@@ -3077,10 +3356,16 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-not-delivered');"));
     assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-post-error');"));
     assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-build-error');"));
-    const evaluateAttentionBody = extractFunctionBody(dashboard, 'evaluateAiSessionAttention');
-    assert.ok(evaluateAttentionBody.includes('const registeredProviders = getRegisteredAiSessionProviders();'));
-    const withAiSessionsBody = extractFunctionBody(dashboard, 'withAiSessions');
-    assert.ok(withAiSessionsBody.includes('hydrateOpenProjectsWithAiSessions({'));
+    const attentionControllerPath = path.join(__dirname, '..', 'src', 'aiSessions', 'attentionController.ts');
+    assert.ok(fs.existsSync(attentionControllerPath));
+    const attentionControllerSource = fs.readFileSync(attentionControllerPath, 'utf8');
+    const evaluateAttentionBody = extractMethodBody(attentionControllerSource, 'evaluate');
+    assert.ok(evaluateAttentionBody.includes('const providers = this.options.getProviders();'));
+    const projectHydrationControllerPath = path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydrationController.ts');
+    assert.ok(fs.existsSync(projectHydrationControllerPath));
+    const projectHydrationControllerSource = fs.readFileSync(projectHydrationControllerPath, 'utf8');
+    const hydrateOpenProjectsBody = extractMethodBody(projectHydrationControllerSource, 'hydrate');
+    assert.ok(hydrateOpenProjectsBody.includes('hydrateOpenProjectsWithAiSessions({'));
     assert.ok(projectHydrationSource.includes('export function hydrateOpenProjectsWithAiSessions('));
     assert.ok(projectHydrationSource.includes('prepareAiSessionsForDisplay('));
     assert.ok(projectHydrationSource.includes('getAttentionSessionLookupKey('));
@@ -3091,11 +3376,11 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(viewModelsSource.includes('export function buildOpenProjectAiSessionViewModel('));
     assert.ok(viewModelsSource.includes('sessionsByProvider[providerId]'));
     assert.ok(viewModelsSource.includes('attentionCount: project.aiSessionAttentionCount ?? providers.reduce'));
-    const getAiSessionResultsBody = extractFunctionBody(dashboard, 'getAiSessionResults');
-    assert.ok(dashboard.includes("function getAiSessionResults(openProjects: Project[] = [], reason = currentAiSessionRefreshReason)"));
-    assert.ok(getAiSessionResultsBody.includes('aiSessionReadCoordinator.getResults('));
-    assert.ok(dashboard.includes("from './aiSessions/scanOptions'"));
-    assert.ok(getAiSessionResultsBody.includes('let maxFiles = getAiSessionScanMaxFiles(reason, AI_SESSION_INCREMENTAL_SCAN_MAX_FILES);'));
+    const getAiSessionResultsBody = extractMethodBody(projectHydrationControllerSource, 'getAiSessionResults');
+    assert.ok(!dashboard.includes('function getAiSessionResults('));
+    assert.ok(getAiSessionResultsBody.includes('this.options.readCoordinator.getResults('));
+    assert.ok(projectHydrationControllerSource.includes("from './scanOptions'"));
+    assert.ok(getAiSessionResultsBody.includes('const maxFiles = getAiSessionScanMaxFiles(reason, this.options.incrementalScanMaxFiles);'));
     assert.ok(getAiSessionResultsBody.includes('candidatePaths, reason, maxFiles'));
     assert.ok(projectCandidatesSource.includes('export function getAiSessionOpenProjectCandidates'));
     assert.ok(projectCandidatesSource.includes('export function getAiSessionCandidatePaths'));
@@ -3136,8 +3421,11 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(!dashboard.includes('function getWorkspacePath('));
     assert.ok(!dashboard.includes('function getWorkspaceUri('));
     assert.ok(!dashboard.includes('function getWorkspaceUris('));
-    const getAiSessionAssignmentsBody = extractFunctionBody(dashboard, 'getAiSessionAssignments');
-    assert.ok(getAiSessionAssignmentsBody.includes('aiSessionReadCoordinator.getAssignments('));
+    const getAiSessionAssignmentsBody = extractMethodBody(projectHydrationControllerSource, 'getAiSessionAssignments');
+    assert.ok(!dashboard.includes('function getAiSessionAssignments('));
+    assert.ok(getAiSessionAssignmentsBody.includes('this.options.readCoordinator.getAssignments('));
+    assert.ok(!dashboard.includes('function withAiSessions('));
+    assert.ok(!dashboard.includes('function trackPendingAiSessionTerminal('));
     assert.strictEqual((dashboard.match(/\.service\.getSessions\(/g) || []).length, 0);
     assert.strictEqual(dashboard.includes('function getProviderAiSessions('), false);
     assert.ok(readCoordinatorSource.includes('export class AiSessionReadCoordinator'));
@@ -5021,6 +5309,8 @@ async function main() {
     await runAiSessionCommandControllerChecks();
     await runAiSessionCreationControllerChecks();
     await runAiSessionResumeControllerChecks();
+    await runAiSessionAttentionControllerChecks();
+    runAiSessionProjectHydrationControllerChecks();
     runKeyChecks();
     runBatchAiSessionArchiveChecks();
     runActiveAiSessionTerminalHighlightChecks();

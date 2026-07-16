@@ -22,6 +22,7 @@ const { ProjectManualEditController } = require('../out/projects/projectManualEd
 const { ProjectOpenController } = require('../out/projects/projectOpenController');
 const { ProjectMutationController } = require('../out/projects/projectMutationController');
 const { ProjectPromptController } = require('../out/projects/projectPromptController');
+const { DashboardStartupController } = require('../out/dashboard/startupController');
 const models = require('../out/models');
 const { OpenProjectStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectStore');
 const { OpenProjectCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectCoordinator');
@@ -668,7 +669,7 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(!dashboard.includes('function getRawOpenProjects('));
     assert.ok(!dashboard.includes('function publishOpenProjects('));
     assert.ok(!dashboard.includes('function getOpenProjectUri('));
-    assert.ok(openProjects.includes('withAiSessions(openProjectWorkspaceController.getRawOpenProjects())'));
+    assert.ok(openProjects.includes('aiSessionProjectHydrationController.hydrate(openProjectWorkspaceController.getRawOpenProjects())'));
     assert.ok(dashboard.includes("import OpenProjectBridgeClient from './openProjects/bridgeClient';"));
     assert.ok(dashboard.includes("import { OpenProjectDashboardController } from './openProjects/dashboardController';"));
     assert.ok(dashboard.includes("import { OpenProjectWorkspaceController } from './openProjects/workspaceController';"));
@@ -733,16 +734,21 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(!selectedProjectHandler.includes('e.uri'));
     assert.ok(!selectedProjectHandler.includes('projectUri'));
     assert.ok(dashboard.includes('vscode.window.onDidChangeWindowState(windowState =>'));
-    assert.ok(dashboard.includes('if (windowState.focused)'));
-    assert.ok(dashboard.includes('openProjectWorkspaceController.publish(true);'));
+    assert.ok(dashboard.includes('dashboardLifecycleController.handleWindowStateChanged(windowState);'));
+    const dashboardLifecycleControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'lifecycleController.ts'), 'utf8');
+    assert.ok(dashboardLifecycleControllerSource.includes('if (windowState.focused)'));
+    assert.ok(dashboardLifecycleControllerSource.includes('this.options.publishOpenProjects(true);'));
     assert.ok(
-        refreshAfterMutation.includes('openProjectWorkspaceController.publish();'),
+        refreshAfterMutation.includes('dashboardRuntimeController.refreshAfterMutation();'),
         'saved project metadata mutations must republish even when configuration storage is disabled'
     );
     assert.ok(
-        showSteward.includes('openProjectWorkspaceController.publish();'),
+        showSteward.includes('dashboardRuntimeController.showSteward();'),
         'legacy metadata mutation paths that reveal the steward must also republish'
     );
+    const dashboardRuntimeControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'runtimeController.ts'), 'utf8');
+    assert.ok(dashboardRuntimeControllerSource.includes('refreshAfterMutation('));
+    assert.ok(dashboardRuntimeControllerSource.includes('this.options.publishOpenProjects();'));
 }
 
 async function runOpenProjectWorkspaceControllerChecks() {
@@ -1043,46 +1049,47 @@ function runOpenProjectIncrementalRenderingChecks() {
 }
 
 async function runDashboardMigrationPublicationChecks() {
-    const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
-    const checkDataMigrationBody = extractFunctionBody(dashboard, 'checkDataMigration');
     const publications = [];
     const informationMessages = [];
     let currentMetadata = 'before-migration';
     let migrated = true;
     let showStewardCalls = 0;
-    const checkDataMigration = new Function(
-        'projectService',
-        'openProjectWorkspaceController',
-        'vscode',
-        'showSteward',
-        `return async function checkDataMigration(openStewardAfterMigrate = false) {${checkDataMigrationBody}};`
-    )(
-        {
-            migrateDataIfNeeded: async () => {
-                if (migrated) {
-                    currentMetadata = 'after-migration';
-                }
-                return migrated;
-            },
+    const controller = new DashboardStartupController({
+        stewardInfos: {
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            config: { openOnStartup: 'never' },
         },
-        { publish: () => publications.push(currentMetadata) },
-        { window: { showInformationMessage: message => informationMessages.push(message) } },
-        () => { showStewardCalls += 1; }
-    );
+        isExtensionInstalled: () => false,
+        migrateDataIfNeeded: async () => {
+            if (migrated) {
+                currentMetadata = 'after-migration';
+            }
+            return migrated;
+        },
+        publishOpenProjects: () => publications.push(currentMetadata),
+        showInformationMessage: message => informationMessages.push(message),
+        showSteward: () => { showStewardCalls += 1; },
+        applyProjectColorToCurrentWindow: () => undefined,
+        getReopenReason: () => 0,
+        updateReopenReason: () => undefined,
+        reopenNoneValue: 0,
+        getWorkspaceName: () => 'workspace',
+        getVisibleEditorLanguageIds: () => [],
+    });
 
-    await checkDataMigration();
+    await controller.checkDataMigration();
     assert.deepStrictEqual(publications, ['after-migration']);
     assert.strictEqual(showStewardCalls, 0, 'default startup migration must not require revealing the steward');
     assert.strictEqual(informationMessages.length, 1);
 
     migrated = false;
     currentMetadata = 'unchanged-without-migration';
-    await checkDataMigration();
+    await controller.checkDataMigration();
     assert.deepStrictEqual(publications, ['after-migration'], 'no migration must not trigger a redundant publish');
 
     migrated = true;
     currentMetadata = 'before-explicit-migration';
-    await checkDataMigration(true);
+    await controller.checkDataMigration(true);
     assert.deepStrictEqual(publications, ['after-migration', 'after-migration']);
     assert.strictEqual(showStewardCalls, 1);
 }

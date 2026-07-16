@@ -28,8 +28,11 @@ const expectedModules = [
     'src/dashboard/diagnostics.ts',
     'src/dashboard/errorContent.ts',
     'src/dashboard/groupCollapseController.ts',
+    'src/dashboard/lifecycleController.ts',
     'src/dashboard/messageRouter.ts',
+    'src/dashboard/runtimeController.ts',
     'src/dashboard/startup.ts',
+    'src/dashboard/startupController.ts',
     'src/dashboard/webviewOptions.ts',
     'src/dashboard/webviewUpdateMessages.ts',
     'src/openProjects/dashboardController.ts',
@@ -48,6 +51,7 @@ const expectedModules = [
     'src/projects/workspaceHelpers.ts',
     'src/aiSessions/aliasController.ts',
     'src/aiSessions/aliasStore.ts',
+    'src/aiSessions/attentionController.ts',
     'src/aiSessions/archiveController.ts',
     'src/aiSessions/commandController.ts',
     'src/aiSessions/creationController.ts',
@@ -58,6 +62,7 @@ const expectedModules = [
     'src/aiSessions/pinController.ts',
     'src/aiSessions/projectCandidates.ts',
     'src/aiSessions/projectHydration.ts',
+    'src/aiSessions/projectHydrationController.ts',
     'src/aiSessions/projectStateStore.ts',
     'src/aiSessions/readCoordinator.ts',
     'src/aiSessions/scanOptions.ts',
@@ -79,9 +84,12 @@ assert.ok(aiSessionReadCoordinator.includes("event: 'ai-session-scan'"));
 assert.ok(aiSessionReadCoordinator.includes('scannedFileCount: result.scannedFiles'));
 assert.ok(aiSessionReadCoordinator.includes('parsedFileCount: result.parsedFiles'));
 assert.ok(aiSessionReadCoordinator.includes('scanBudget: normalizedOptions.maxFiles || null'));
-assert.ok(dashboard.includes("from './aiSessions/scanOptions'"));
+const projectHydrationController = fs.readFileSync(path.join(root, 'src', 'aiSessions', 'projectHydrationController.ts'), 'utf8');
+assert.ok(!dashboard.includes("from './aiSessions/scanOptions'"));
+assert.ok(projectHydrationController.includes("from './scanOptions'"));
+const dashboardRuntimeController = fs.readFileSync(path.join(root, 'src', 'dashboard', 'runtimeController.ts'), 'utf8');
 assert.ok(dashboard.includes("function refreshStewardViews(reason = 'refresh')"));
-assert.ok(dashboard.includes("event: 'full-refresh'"));
+assert.ok(dashboardRuntimeController.includes("event: 'full-refresh'"));
 assert.ok(dashboard.includes('new DashboardDiagnostics({'));
 assert.ok(!dashboard.includes('function logDashboardDiagnostic('));
 assert.ok(!dashboard.includes('function logAiSessionDiagnostic('));
