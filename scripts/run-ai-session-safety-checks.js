@@ -3458,8 +3458,9 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(projectHydrationSource.includes('function getActiveAiSessionProvider('));
     assert.ok(!dashboard.includes('function getActiveAiSessionProvider('));
     const openProjectViewModelBody = extractFunctionBody(dashboard, 'getOpenProjectAiSessionViewModel');
-    assert.ok(openProjectViewModelBody.includes('buildOpenProjectAiSessionViewModel({'));
+    assert.ok(openProjectViewModelBody.includes('openProjectAiSessionViewModelBuilder.build({'));
     assert.ok(viewModelsSource.includes('export function buildOpenProjectAiSessionViewModel('));
+    assert.ok(viewModelsSource.includes('export function createOpenProjectAiSessionViewModelBuilder('));
     assert.ok(viewModelsSource.includes('sessionsByProvider[providerId]'));
     assert.ok(viewModelsSource.includes('attentionCount: project.aiSessionAttentionCount ?? providers.reduce'));
     const getAiSessionResultsBody = extractMethodBody(projectHydrationControllerSource, 'getAiSessionResults');
@@ -3700,6 +3701,48 @@ function runOpenProjectAiSessionViewModelBuilderChecks() {
         renderSessionSection: () => '',
     });
     assert.strictEqual(explicitAttentionModel.attentionCount, 7);
+
+    const cachedBuilder = aiSessionViewModels.createOpenProjectAiSessionViewModelBuilder({ maxEntries: 2 });
+    let searchCalls = 0;
+    let renderCalls = 0;
+    const cachedInput = {
+        project,
+        providers: [
+            { id: 'codex', label: 'Codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
+            { id: 'kimi', label: 'Kimi', projectSessionsKey: 'kimiSessions', projectSessionsUnavailableKey: 'kimiSessionsUnavailable' },
+        ],
+        getProjectKey: item => `key:${item.id}`,
+        getSearchText: item => {
+            searchCalls++;
+            return `search:${item.name}`;
+        },
+        renderSessionSection: item => {
+            renderCalls++;
+            return `html:${item.id}:${item.kimiSessions[0].name}`;
+        },
+    };
+    const cachedFirst = cachedBuilder.build(cachedInput);
+    const cachedSecond = cachedBuilder.build(cachedInput);
+    assert.strictEqual(cachedSecond, cachedFirst);
+    assert.strictEqual(searchCalls, 1);
+    assert.strictEqual(renderCalls, 1);
+
+    const changedCachedModel = cachedBuilder.build({
+        ...cachedInput,
+        project: {
+            ...project,
+            kimiSessions: [{ ...project.kimiSessions[0], name: 'Kimi Two' }],
+        },
+    });
+    assert.notStrictEqual(changedCachedModel, cachedFirst);
+    assert.strictEqual(searchCalls, 2);
+    assert.strictEqual(renderCalls, 2);
+
+    const differentRendererModel = cachedBuilder.build({
+        ...cachedInput,
+        renderSessionSection: item => `html:new-renderer:${item.id}`,
+    });
+    assert.strictEqual(differentRendererModel.sessionSectionHtml, 'html:new-renderer:project-a');
 }
 
 function runAiSessionProjectHydrationChecks() {
@@ -4901,11 +4944,14 @@ async function runProductionAttentionStoreLifecycleChecks() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-lifecycle-'));
     let releaseFirst;
     const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+    let resolveFirstEntered;
+    const firstEnteredPromise = new Promise(resolve => { resolveFirstEntered = resolve; });
     let firstEntered = false;
     const store = new ProductionAttentionStore(root, 'f'.repeat(32), {
         beforeCommit: async snapshot => {
             if (snapshot.sequence === 1) {
                 firstEntered = true;
+                resolveFirstEntered();
                 await firstGate;
             }
         },
@@ -4916,8 +4962,14 @@ async function runProductionAttentionStoreLifecycleChecks() {
     });
     try {
         const firstWrite = store.write(base, 1000);
-        for (let attempt = 0; attempt < 50 && !firstEntered; attempt += 1) {
-            await new Promise(resolve => setImmediate(resolve));
+        let firstEnteredTimeout;
+        try {
+            await Promise.race([
+                firstEnteredPromise,
+                new Promise(resolve => { firstEnteredTimeout = setTimeout(resolve, 1000); }),
+            ]);
+        } finally {
+            clearTimeout(firstEnteredTimeout);
         }
         assert.strictEqual(firstEntered, true, 'test hook must hold the first write inside the serialized commit');
         const secondWrite = store.write({ ...base, sequence: 2, heartbeat: 2 }, 1001);

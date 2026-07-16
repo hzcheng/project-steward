@@ -1765,8 +1765,9 @@ async function runCoordinatorChecks() {
         }));
         const beforePolling = eventDeliveries.length;
         fireInterval();
-        for (let attempt = 0; attempt < 50 && eventDeliveries.length === beforePolling; attempt += 1) {
-            await new Promise(resolve => setImmediate(resolve));
+        const pollingDeadline = Date.now() + 1000;
+        while (eventDeliveries.length === beforePolling && Date.now() < pollingDeadline) {
+            await new Promise(resolve => setTimeout(resolve, 5));
         }
         assert.strictEqual(eventDeliveries.length, beforePolling + 1, 'fallback polling should recover a missed watcher event');
         assert.deepStrictEqual(

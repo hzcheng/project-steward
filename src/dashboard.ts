@@ -28,7 +28,7 @@ import { getAiSessionIdsForCwd } from './aiSessions/pendingTerminals';
 import { getAiSessionTerminalCandidates } from './aiSessions/terminalCandidates';
 import { getUsableTerminalCwd } from './aiSessions/terminalCwd';
 import { AiSessionReadCoordinator } from './aiSessions/readCoordinator';
-import { buildOpenProjectAiSessionViewModel } from './aiSessions/viewModels';
+import { createOpenProjectAiSessionViewModelBuilder } from './aiSessions/viewModels';
 import AiSessionTerminalService from './aiSessions/terminalService';
 import AiSessionTerminalBindingStore from './aiSessions/terminalBindingStore';
 import type { AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionService, AiSessionTerminalEntry, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
@@ -396,6 +396,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
     const aiSessionAttentionInterval = setInterval(() => { void aiSessionAttentionController.evaluate(); }, 10_000);
     setTimeout(() => { void aiSessionAttentionController.evaluate(); }, 0);
+    const openProjectAiSessionViewModelBuilder = createOpenProjectAiSessionViewModelBuilder();
     const aiSessionDashboardController = new AiSessionDashboardController({
         providerIds: aiSessionProviders.map(provider => provider.id),
         isVisible: () => provider.visible,
@@ -817,7 +818,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function getOpenProjectAiSessionViewModel(project: Project): OpenProjectAiSessionViewModel {
-        return buildOpenProjectAiSessionViewModel({
+        return openProjectAiSessionViewModelBuilder.build({
             project,
             providers: getRegisteredAiSessionProviders(),
             getProjectKey: getOpenProjectAiSessionKey,
