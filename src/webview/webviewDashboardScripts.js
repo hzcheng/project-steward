@@ -33,6 +33,14 @@ function validateTodoPanelMessage(message) {
         && typeof message.html === 'string';
 }
 
+function validateTodoPanelUpdatedMessage(message) {
+    return !!message
+        && message.type === 'todo-panel-updated'
+        && message.version === 1
+        && typeof message.html === 'string'
+        && normalizeDashboardSearchCatalog(message.searchCatalog) === message.searchCatalog;
+}
+
 function normalizeDashboardSearchCatalog(value) {
     return value
         && Array.isArray(value.sessions)
@@ -432,6 +440,20 @@ function initDashboard(options) {
         return true;
     }
 
+    function applyTodoPanelUpdatedMessage(message) {
+        if (!validateTodoPanelUpdatedMessage(message) || !panels.todo) {
+            return false;
+        }
+
+        panels.todo.innerHTML = message.html;
+        todoState = 'mounted';
+        replaceSearchCatalog(message.searchCatalog);
+        if (typeof options.onTodoMounted === 'function') {
+            options.onTodoMounted(panels.todo);
+        }
+        return true;
+    }
+
     tabButtons.forEach(button => {
         button.addEventListener('click', () => {
             activateTab(button.getAttribute('data-dashboard-tab'));
@@ -463,6 +485,9 @@ function initDashboard(options) {
         if (event && event.data && event.data.type === 'todo-panel-content') {
             applyTodoPanelMessage(event.data);
         }
+        if (event && event.data && event.data.type === 'todo-panel-updated') {
+            applyTodoPanelUpdatedMessage(event.data);
+        }
     });
     if (searchResults) {
         searchResults.addEventListener('click', onSearchResultClick);
@@ -484,6 +509,7 @@ function initDashboard(options) {
         activateTab,
         applyProjectsPanelMessage,
         applyTodoPanelMessage,
+        applyTodoPanelUpdatedMessage,
         ensureProjectsPanel,
         ensureTodoPanel,
         getActiveTab: () => activeTab,

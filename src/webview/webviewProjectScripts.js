@@ -592,6 +592,64 @@ function initProjects() {
         syncCollapseButton();
     }
 
+    function onTodoAction(e) {
+        var addTodoAction = e.target.closest('[data-action="todo-add"]');
+        if (addTodoAction) {
+            window.vscode.postMessage({
+                type: 'todo-add',
+                groupId: addTodoAction.getAttribute('data-group-id') || undefined,
+            });
+            return true;
+        }
+
+        var addGroupAction = e.target.closest('[data-action="todo-add-group"]');
+        if (addGroupAction) {
+            window.vscode.postMessage({
+                type: 'todo-add-group',
+            });
+            return true;
+        }
+
+        var toggleAction = e.target.closest('[data-action="todo-toggle"]');
+        if (toggleAction) {
+            window.vscode.postMessage({
+                type: 'todo-toggle',
+                todoId: toggleAction.getAttribute('data-todo-id'),
+                completed: toggleAction.checked === true,
+            });
+            return true;
+        }
+
+        var deleteAction = e.target.closest('[data-action="todo-delete"]');
+        if (deleteAction) {
+            window.vscode.postMessage({
+                type: 'todo-delete',
+                todoId: deleteAction.getAttribute('data-todo-id'),
+            });
+            return true;
+        }
+
+        var sortAction = e.target.closest('[data-action="todo-sort-priority"]');
+        if (sortAction) {
+            window.vscode.postMessage({
+                type: 'todo-sort-priority',
+                groupId: sortAction.getAttribute('data-group-id'),
+            });
+            return true;
+        }
+
+        var showCompletedAction = e.target.closest('[data-action="todo-toggle-show-completed"]');
+        if (showCompletedAction) {
+            window.vscode.postMessage({
+                type: 'todo-toggle-show-completed',
+                showCompleted: showCompletedAction.checked === true,
+            });
+            return true;
+        }
+
+        return false;
+    }
+
     function onTriggerProjectAction(target, projectId) {
         var actionDiv = target.closest('[data-action]')
         if (actionDiv == null)
@@ -916,6 +974,10 @@ function initProjects() {
 
         if (e.target.closest('[data-action="import-from-other-storage"]')) {
             onImportFromOtherStorageClicked(e);
+            return;
+        }
+
+        if (onTodoAction(e)) {
             return;
         }
 

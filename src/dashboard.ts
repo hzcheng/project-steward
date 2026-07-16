@@ -73,6 +73,7 @@ import { DashboardStartupController } from './dashboard/startupController';
 import { getDashboardWebviewOptions } from './dashboard/webviewOptions';
 import { OpenProjectDashboardController } from './openProjects/dashboardController';
 import { OpenProjectWorkspaceController } from './openProjects/workspaceController';
+import { buildDashboardSearchCatalog } from './webview/dashboardViewModel';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -96,6 +97,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
     const todoService = new TodoService(context);
+    const todoViewState = { showCompleted: false };
     const groupCollapseController = new GroupCollapseController({
         state: context.globalState,
         projectService,
@@ -443,12 +445,57 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 if (e.version !== 1 || !Number.isSafeInteger(e.requestId) || e.requestId < 1) {
                     return;
                 }
-                await provider.postMessage({
-                    type: 'todo-panel-content',
-                    version: 1,
-                    requestId: e.requestId,
-                    html: getTodoPanelContent(buildTodoViewModel(todoService.getData(), { showCompleted: false })),
+                await postTodoPanelContent(e.requestId as number);
+            },
+            'todo-add': async e => {
+                const title = await vscode.window.showInputBox({
+                    prompt: 'Todo title',
+                    placeHolder: 'What needs to be done?',
+                    ignoreFocusOut: true,
+                    validateInput: value => value && value.trim() ? '' : 'A todo title is required.',
                 });
+                if (title === undefined) {
+                    return;
+                }
+                await todoService.addTodo({ title, groupId: typeof e.groupId === 'string' ? e.groupId : undefined });
+                await postTodoPanelContent();
+            },
+            'todo-add-group': async () => {
+                const title = await vscode.window.showInputBox({
+                    prompt: 'Todo group title',
+                    placeHolder: 'Group name',
+                    ignoreFocusOut: true,
+                });
+                if (title === undefined) {
+                    return;
+                }
+                await todoService.addGroup(title);
+                await postTodoPanelContent();
+            },
+            'todo-toggle': async e => {
+                if (typeof e.todoId !== 'string') {
+                    return;
+                }
+                await todoService.completeTodo(e.todoId, e.completed === true);
+                await postTodoPanelContent();
+            },
+            'todo-delete': async e => {
+                if (typeof e.todoId !== 'string') {
+                    return;
+                }
+                await todoService.deleteTodo(e.todoId);
+                await postTodoPanelContent();
+            },
+            'todo-sort-priority': async e => {
+                if (typeof e.groupId !== 'string') {
+                    return;
+                }
+                await todoService.sortGroupByPriority(e.groupId);
+                await postTodoPanelContent();
+            },
+            'todo-toggle-show-completed': async e => {
+                todoViewState.showCompleted = e.showCompleted === true;
+                await postTodoPanelContent();
             },
             'selected-project': async e => {
                 let projectId = e.projectId as string;
@@ -815,6 +862,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     function postActiveAiSessionTerminalChanged(identity: ActiveAiSessionTerminalIdentity | null) {
         dashboardRuntimeController.postActiveAiSessionTerminalChanged(identity);
+    }
+
+    async function postTodoPanelContent(requestId?: number) {
+        const todoData = todoService.getData();
+        await provider.postMessage(requestId
+            ? {
+                type: 'todo-panel-content',
+                version: 1,
+                requestId,
+                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState)),
+            }
+            : {
+                type: 'todo-panel-updated',
+                version: 1,
+                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState)),
+                searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), getOpenProjectCards(), buildTodoSearchItems(todoData)),
+            });
     }
 
     function invalidateAiSessionCache(providerId: AiSessionProviderId) {
