@@ -4,6 +4,22 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ## [Unreleased]
 
+## [2.0.1] 2026-07-16
+
+### Changed
+
+-   Split Dashboard session and command orchestration into smaller controllers to reduce `dashboard.ts` responsibilities while preserving the 2.0.0 user experience.
+-   Add render-path diagnostics for Dashboard, Open Projects, AI session hydration, and incremental update message builds.
+-   Cache Codex session metadata reads by file signature to reduce repeated JSONL metadata parsing during scans.
+-   Coalesce high-frequency AI session watcher refreshes and skip unchanged incremental AI session messages.
+-   Skip unchanged Open Projects incremental updates by semantic revision, including duplicate in-flight updates.
+-   Cache per-project AI session view models so repeated incremental updates can reuse session row HTML and search text when project/provider inputs are unchanged.
+
+### Fixed
+
+-   Keep Open Projects update delivery retryable when a same-revision message is not delivered while the sidebar is hidden.
+-   Stabilize asynchronous safety checks for attention-store lifecycle and Open Projects fallback polling.
+
 ## [2.0.0] 2026-07-15
 
 ### Added
