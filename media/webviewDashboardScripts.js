@@ -1,14 +1,16 @@
 function normalizeDashboardTab(tab) {
-    return tab === 'projects' ? 'projects' : 'open';
+    return tab === 'projects' || tab === 'todo' ? tab : 'open';
 }
 
 function getAdjacentDashboardTab(tab, key) {
     tab = normalizeDashboardTab(tab);
+    var tabs = ['open', 'projects', 'todo'];
+    var currentIndex = tabs.indexOf(tab);
     if (key === 'ArrowRight') {
-        return tab === 'open' ? 'projects' : 'open';
+        return tabs[(currentIndex + 1) % tabs.length];
     }
     if (key === 'ArrowLeft') {
-        return tab === 'projects' ? 'open' : 'projects';
+        return tabs[(currentIndex + tabs.length - 1) % tabs.length];
     }
     return tab;
 }
@@ -22,13 +24,31 @@ function validateProjectsPanelMessage(message) {
         && typeof message.html === 'string';
 }
 
+function validateTodoPanelMessage(message) {
+    return !!message
+        && message.type === 'todo-panel-content'
+        && message.version === 1
+        && Number.isSafeInteger(message.requestId)
+        && message.requestId > 0
+        && typeof message.html === 'string';
+}
+
+function validateTodoPanelUpdatedMessage(message) {
+    return !!message
+        && message.type === 'todo-panel-updated'
+        && message.version === 1
+        && typeof message.html === 'string'
+        && normalizeDashboardSearchCatalog(message.searchCatalog) === message.searchCatalog;
+}
+
 function normalizeDashboardSearchCatalog(value) {
     return value
         && Array.isArray(value.sessions)
         && Array.isArray(value.openProjects)
         && Array.isArray(value.savedProjects)
+        && Array.isArray(value.todos)
         ? value
-        : { sessions: [], openProjects: [], savedProjects: [] };
+        : { sessions: [], openProjects: [], savedProjects: [], todos: [] };
 }
 
 function replaceDashboardSearchCatalogState(state, catalog) {
@@ -61,6 +81,7 @@ function filterDashboardCatalog(catalog, query) {
         { id: 'ai-sessions', title: 'AI SESSIONS', type: 'session', items: catalog.sessions },
         { id: 'open-projects', title: 'OPEN PROJECTS', type: 'open-project', items: catalog.openProjects },
         { id: 'saved-projects', title: 'SAVED PROJECTS', type: 'saved-project', items: catalog.savedProjects },
+        { id: 'todos', title: 'TODO', type: 'todo', items: catalog.todos },
     ];
     return sections
         .map(section => ({
@@ -104,7 +125,7 @@ function renderDashboardSearchResults(container, sections) {
 
             var title = document.createElement('span');
             title.className = 'dashboard-search-result-title';
-            title.textContent = String(item.name || '');
+            title.textContent = String(item.name || item.title || '');
             button.appendChild(title);
 
             var metadata = document.createElement('span');
@@ -119,6 +140,11 @@ function renderDashboardSearchResults(container, sections) {
                     ? 'show-current-project'
                     : 'switch-open-project';
                 metadata.textContent = [item.description, item.environmentLabel].filter(Boolean).join(' · ');
+            } else if (section.type === 'todo') {
+                button.dataset.searchAction = 'show-todo';
+                button.dataset.todoId = String(item.todoId || '');
+                button.dataset.groupId = String(item.groupId || '');
+                metadata.textContent = [item.groupTitle, item.priority].filter(Boolean).join(' · ');
             } else {
                 button.dataset.searchAction = 'open-saved-project';
                 metadata.textContent = [item.description].concat(item.groupLabels || []).filter(Boolean).join(' · ');
@@ -133,11 +159,14 @@ function renderDashboardSearchResults(container, sections) {
 function initDashboard(options) {
     options = options || {};
     var storageKey = 'projectSteward.activeDashboardTab';
-    var scrollPositions = { open: 0, projects: 0 };
+    var scrollPositions = { open: 0, projects: 0, todo: 0 };
     var activeTab = normalizeDashboardTab(sessionStorage.getItem(storageKey));
     var projectsState = 'unloaded';
     var projectsRequestId = 0;
     var acceptedProjectsRequestId = 0;
+    var todoState = 'unloaded';
+    var todoRequestId = 0;
+    var acceptedTodoRequestId = 0;
     var pendingScrollRestoreTab = null;
     var catalog = readInitialDashboardSearchCatalog();
     var searchQuery = String(options.initialSearchQuery || '').trim();
@@ -145,6 +174,7 @@ function initDashboard(options) {
     var panels = {
         open: document.getElementById('dashboard-tab-open'),
         projects: document.getElementById('dashboard-tab-projects'),
+        todo: document.getElementById('dashboard-tab-todo'),
     };
     var tablist = document.querySelector ? document.querySelector('[role="tablist"]') : null;
     var collapseButton = document.querySelector ? document.querySelector('[data-action="toggle-all-groups"]') : null;
@@ -217,6 +247,25 @@ function initDashboard(options) {
         });
     }
 
+    function ensureTodoPanel() {
+        if (todoState !== 'unloaded') {
+            return;
+        }
+        todoState = 'loading';
+        todoRequestId += 1;
+        var loadingElement = panels.todo && panels.todo.querySelector
+            ? panels.todo.querySelector('.dashboard-todo-loading')
+            : null;
+        if (loadingElement) {
+            loadingElement.hidden = false;
+        }
+        options.postMessage({
+            type: 'request-todo-panel',
+            version: 1,
+            requestId: todoRequestId,
+        });
+    }
+
     function activateTab(tab, saveScroll) {
         tab = normalizeDashboardTab(tab);
         saveScroll = saveScroll !== false;
@@ -240,6 +289,13 @@ function initDashboard(options) {
                 pendingScrollRestoreTab = 'projects';
                 ensureProjectsPanel();
             }
+        } else if (activeTab === 'todo') {
+            if (todoState === 'mounted') {
+                restoreScroll('todo');
+            } else {
+                pendingScrollRestoreTab = 'todo';
+                ensureTodoPanel();
+            }
         } else {
             restoreScroll('open');
         }
@@ -259,6 +315,9 @@ function initDashboard(options) {
             if (activeTab === 'projects' && projectsState !== 'mounted') {
                 pendingScrollRestoreTab = 'projects';
                 ensureProjectsPanel();
+            } else if (activeTab === 'todo' && todoState !== 'mounted') {
+                pendingScrollRestoreTab = 'todo';
+                ensureTodoPanel();
             } else {
                 restoreScroll(activeTab);
             }
@@ -321,6 +380,15 @@ function initDashboard(options) {
                 projectId: button.dataset.projectId,
                 projectOpenType: 0,
             });
+            return;
+        }
+        if (action === 'show-todo') {
+            if (typeof options.clearSearch === 'function') {
+                options.clearSearch();
+            } else {
+                setSearchQuery('');
+            }
+            activateTab('todo', false);
         }
     }
 
@@ -344,6 +412,44 @@ function initDashboard(options) {
             if (activeTab === 'projects' && !searchQuery) {
                 restoreScroll('projects');
             }
+        }
+        return true;
+    }
+
+    function applyTodoPanelMessage(message) {
+        if (!validateTodoPanelMessage(message)
+            || todoState !== 'loading'
+            || message.requestId !== todoRequestId
+            || message.requestId <= acceptedTodoRequestId
+            || !panels.todo) {
+            return false;
+        }
+
+        acceptedTodoRequestId = message.requestId;
+        panels.todo.innerHTML = message.html;
+        todoState = 'mounted';
+        if (typeof options.onTodoMounted === 'function') {
+            options.onTodoMounted(panels.todo);
+        }
+        if (pendingScrollRestoreTab === 'todo') {
+            pendingScrollRestoreTab = null;
+            if (activeTab === 'todo' && !searchQuery) {
+                restoreScroll('todo');
+            }
+        }
+        return true;
+    }
+
+    function applyTodoPanelUpdatedMessage(message) {
+        if (!validateTodoPanelUpdatedMessage(message) || !panels.todo) {
+            return false;
+        }
+
+        panels.todo.innerHTML = message.html;
+        todoState = 'mounted';
+        replaceSearchCatalog(message.searchCatalog);
+        if (typeof options.onTodoMounted === 'function') {
+            options.onTodoMounted(panels.todo);
         }
         return true;
     }
@@ -376,6 +482,12 @@ function initDashboard(options) {
         if (event && event.data && event.data.type === 'projects-panel-content') {
             applyProjectsPanelMessage(event.data);
         }
+        if (event && event.data && event.data.type === 'todo-panel-content') {
+            applyTodoPanelMessage(event.data);
+        }
+        if (event && event.data && event.data.type === 'todo-panel-updated') {
+            applyTodoPanelUpdatedMessage(event.data);
+        }
     });
     if (searchResults) {
         searchResults.addEventListener('click', onSearchResultClick);
@@ -386,6 +498,9 @@ function initDashboard(options) {
     } else if (activeTab === 'projects') {
         pendingScrollRestoreTab = 'projects';
         ensureProjectsPanel();
+    } else if (activeTab === 'todo') {
+        pendingScrollRestoreTab = 'todo';
+        ensureTodoPanel();
     }
     document.body.classList.remove('preload');
     notifyActiveTabChanged();
@@ -393,9 +508,13 @@ function initDashboard(options) {
     return {
         activateTab,
         applyProjectsPanelMessage,
+        applyTodoPanelMessage,
+        applyTodoPanelUpdatedMessage,
         ensureProjectsPanel,
+        ensureTodoPanel,
         getActiveTab: () => activeTab,
         getProjectsState: () => projectsState,
+        getTodoState: () => todoState,
         getScrollPosition: tab => scrollPositions[normalizeDashboardTab(tab)],
         isSearchActive: () => searchQuery.length > 0,
         replaceSearchCatalog,

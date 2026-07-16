@@ -594,7 +594,7 @@ function initProjects() {
 
     function onTodoAction(e) {
         var addTodoAction = e.target.closest('[data-action="todo-add"]');
-        if (addTodoAction) {
+        if (addTodoAction && !addTodoAction.closest('.todo-add-form')) {
             window.vscode.postMessage({
                 type: 'todo-add',
                 groupId: addTodoAction.getAttribute('data-group-id') || undefined,
@@ -647,7 +647,106 @@ function initProjects() {
             return true;
         }
 
+        var focusAddAction = e.target.closest('[data-action="todo-focus-add"]');
+        if (focusAddAction) {
+            focusTodoAddForm(focusAddAction.getAttribute('data-group-id'));
+            return true;
+        }
+
+        var editAction = e.target.closest('[data-action="todo-edit"]');
+        if (editAction) {
+            setTodoEditing(editAction.getAttribute('data-todo-id'), true);
+            return true;
+        }
+
+        var cancelEditAction = e.target.closest('[data-action="todo-cancel-edit"]');
+        if (cancelEditAction) {
+            setTodoEditing(cancelEditAction.getAttribute('data-todo-id'), false);
+            return true;
+        }
+
         return false;
+    }
+
+    function getTodoFormValue(form, name) {
+        var element = form.querySelector('[name="' + name + '"]');
+        return element ? String(element.value || '').trim() : '';
+    }
+
+    function focusTodoAddForm(groupId) {
+        var form = document.querySelector('.todo-add-form');
+        if (!form)
+            return;
+
+        var groupSelect = form.querySelector('[name="groupId"]');
+        if (groupSelect && groupId) {
+            groupSelect.value = groupId;
+        }
+        var titleInput = form.querySelector('[name="title"]');
+        if (titleInput) {
+            titleInput.focus();
+        }
+        form.scrollIntoView({ block: 'nearest' });
+    }
+
+    function setTodoEditing(todoId, editing) {
+        if (!todoId)
+            return;
+
+        var item = Array.from(document.querySelectorAll('.todo-item[data-todo-id]'))
+            .find(candidate => candidate.getAttribute('data-todo-id') === todoId);
+        if (!item)
+            return;
+
+        var view = item.querySelector('.todo-item-view');
+        var form = item.querySelector('.todo-edit-form');
+        if (view) {
+            view.hidden = editing;
+        }
+        if (form) {
+            form.hidden = !editing;
+            if (editing) {
+                var titleInput = form.querySelector('[name="title"]');
+                if (titleInput) {
+                    titleInput.focus();
+                }
+            }
+        }
+    }
+
+    function onTodoFormSubmit(e) {
+        var addForm = e.target && e.target.closest ? e.target.closest('.todo-add-form') : null;
+        if (addForm) {
+            e.preventDefault();
+            var title = getTodoFormValue(addForm, 'title');
+            if (!title)
+                return;
+            window.vscode.postMessage({
+                type: 'todo-add',
+                title,
+                notes: getTodoFormValue(addForm, 'notes'),
+                priority: getTodoFormValue(addForm, 'priority'),
+                groupId: getTodoFormValue(addForm, 'groupId') || undefined,
+            });
+            addForm.reset();
+            return;
+        }
+
+        var editForm = e.target && e.target.closest ? e.target.closest('.todo-edit-form') : null;
+        if (editForm) {
+            e.preventDefault();
+            var todoId = editForm.getAttribute('data-todo-id');
+            var editTitle = getTodoFormValue(editForm, 'title');
+            if (!todoId || !editTitle)
+                return;
+            window.vscode.postMessage({
+                type: 'todo-update',
+                todoId,
+                title: editTitle,
+                notes: getTodoFormValue(editForm, 'notes'),
+                priority: getTodoFormValue(editForm, 'priority'),
+            });
+        }
     }
 
     function onTriggerProjectAction(target, projectId) {
@@ -1369,6 +1468,7 @@ function initProjects() {
     });
 
     document.addEventListener('change', onChangeEvent);
+    document.addEventListener('submit', onTodoFormSubmit);
 
     document.addEventListener('mousedown', (e) => {
         if (e.target.closest('.codex-session-row')) {

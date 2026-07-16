@@ -448,16 +448,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 await postTodoPanelContent(e.requestId as number);
             },
             'todo-add': async e => {
-                const title = await vscode.window.showInputBox({
-                    prompt: 'Todo title',
-                    placeHolder: 'What needs to be done?',
-                    ignoreFocusOut: true,
-                    validateInput: value => value && value.trim() ? '' : 'A todo title is required.',
-                });
+                const title = typeof e.title === 'string' && e.title.trim()
+                    ? e.title
+                    : await vscode.window.showInputBox({
+                        prompt: 'Todo title',
+                        placeHolder: 'What needs to be done?',
+                        ignoreFocusOut: true,
+                        validateInput: value => value && value.trim() ? '' : 'A todo title is required.',
+                    });
                 if (title === undefined) {
                     return;
                 }
-                await todoService.addTodo({ title, groupId: typeof e.groupId === 'string' ? e.groupId : undefined });
+                await todoService.addTodo({
+                    title,
+                    notes: typeof e.notes === 'string' ? e.notes : '',
+                    priority: e.priority === 'high' || e.priority === 'medium' || e.priority === 'low' ? e.priority : 'medium',
+                    groupId: typeof e.groupId === 'string' ? e.groupId : undefined,
+                });
                 await postTodoPanelContent();
             },
             'todo-add-group': async () => {
@@ -495,6 +502,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             },
             'todo-toggle-show-completed': async e => {
                 todoViewState.showCompleted = e.showCompleted === true;
+                await postTodoPanelContent();
+            },
+            'todo-update': async e => {
+                if (typeof e.todoId !== 'string' || typeof e.title !== 'string') {
+                    return;
+                }
+                await todoService.updateTodo(e.todoId, {
+                    title: e.title,
+                    notes: typeof e.notes === 'string' ? e.notes : '',
+                    priority: e.priority === 'high' || e.priority === 'medium' || e.priority === 'low' ? e.priority : 'medium',
+                });
                 await postTodoPanelContent();
             },
             'selected-project': async e => {

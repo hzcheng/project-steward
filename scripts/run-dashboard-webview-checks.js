@@ -437,6 +437,10 @@ function runTodoViewModelChecks() {
     assert.strictEqual(html.includes('Done task'), false);
     assert.ok(html.includes('1 completed hidden'));
     assert.ok(html.includes('data-action="todo-add"'));
+    assert.ok(html.includes('todo-add-form'));
+    assert.ok(html.includes('todo-edit-form'));
+    assert.ok(html.includes('data-action="todo-save-edit"'));
+    assert.ok(html.includes('data-action="todo-cancel-edit"'));
     assert.ok(html.includes('data-action="todo-toggle-show-completed"'));
 
     const emptyHtml = todoWebviewContent.getTodoPanelContent(todoViewModel.buildTodoViewModel({ version: 1, groups: [], todos: [] }));
@@ -1252,6 +1256,8 @@ function runSourceContractChecks(source) {
     assert.ok(projectSource.includes("type: 'todo-delete'"));
     assert.ok(projectSource.includes("type: 'todo-sort-priority'"));
     assert.ok(projectSource.includes("type: 'todo-toggle-show-completed'"));
+    assert.ok(projectSource.includes("type: 'todo-update'"));
+    assert.ok(projectSource.includes('function onTodoFormSubmit('));
     assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"add-project\"]')"), false);
     assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"import-from-other-storage\"]')"), false);
     assert.ok(extensionHostSource.includes("'todo-add': async e =>"));
@@ -1259,6 +1265,7 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'todo-delete': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-sort-priority': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-toggle-show-completed': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-update': async e =>"));
     assert.ok(extensionHostSource.includes('async function postTodoPanelContent('));
     assert.ok(dndSource.includes('function initDnD(root)'));
     assert.ok(dndSource.includes('root.__projectStewardDnDInitialized'));
@@ -1385,10 +1392,13 @@ function runSourceContractChecks(source) {
         '.dashboard-tab-list', '.dashboard-tab-button', '.dashboard-tab-panel',
         '.dashboard-search-results', '.dashboard-search-section', '.dashboard-search-result',
         '.open-current-workspace-group', '.open-other-windows-group', '.dashboard-projects-loading',
-        '.dashboard-todo-loading',
+        '.dashboard-todo-loading', '.todo-panel', '.todo-item', '.todo-priority-high',
+        '.todo-empty-state', '.todo-edit-form',
     ]) {
         assert.ok(styles.includes(selector), `missing ${selector}`);
     }
+    const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+    assert.ok(changelog.includes('Add a global `TODO` Dashboard tab'));
     assert.strictEqual((source.match(/type: 'request-projects-panel'/g) || []).length, 1);
     assert.strictEqual((source.match(/type: 'request-todo-panel'/g) || []).length, 1);
     assert.ok(extractFunctionBody(source, 'ensureProjectsPanel').includes("type: 'request-projects-panel'"));

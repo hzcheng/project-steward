@@ -6,6 +6,7 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ### Added
 
+-   Add a global `TODO` Dashboard tab with grouped, synchronized planning tasks.
 -   Add a command to append the active editor file reference, including selected line ranges, to the active terminal and focus it for CLI discussions.
 
 ### Fixed
