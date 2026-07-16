@@ -25,6 +25,7 @@ export interface AiSessionDashboardControllerOptions {
     beforeRefresh?: (reason: string) => void;
     afterRefresh?: () => void;
     debounceMs: number;
+    watcherRefreshMinIntervalMs?: number;
     newSessionRefreshDelaysMs: number[];
     setTimeout: (callback: () => void, delayMs: number) => NodeJS.Timeout;
     clearTimeout: (handle: NodeJS.Timeout) => void;
@@ -35,6 +36,7 @@ export class AiSessionDashboardController {
     private newSessionRefreshTimeouts: NodeJS.Timeout[] = [];
     private watcherDisposables: DisposableLike[] = [];
     private pendingRefreshReason = 'refresh';
+    private lastWatcherRefreshAtMs: number | null = null;
 
     constructor(private readonly options: AiSessionDashboardControllerOptions) {
     }
@@ -52,7 +54,7 @@ export class AiSessionDashboardController {
         this.refreshTimeout = this.options.setTimeout(() => {
             this.refreshTimeout = null;
             void this.refreshNow(this.pendingRefreshReason);
-        }, this.options.debounceMs);
+        }, this.getRefreshDelayMs(reason));
     }
 
     setWatchersActive(active: boolean): void {
@@ -103,6 +105,9 @@ export class AiSessionDashboardController {
             this.options.logError('Failed to update AI sessions incrementally.', error);
             this.options.refresh('ai-session-update-build-error');
         } finally {
+            if (reason === 'watcher') {
+                this.lastWatcherRefreshAtMs = this.nowMs();
+            }
             this.options.afterRefresh?.();
         }
     }
@@ -160,5 +165,15 @@ export class AiSessionDashboardController {
 
     private nowMs(): number {
         return this.options.nowMs ? this.options.nowMs() : Date.now();
+    }
+
+    private getRefreshDelayMs(reason: string): number {
+        if (reason !== 'watcher' || this.lastWatcherRefreshAtMs === null) {
+            return this.options.debounceMs;
+        }
+
+        const minIntervalMs = Math.max(this.options.watcherRefreshMinIntervalMs || 0, this.options.debounceMs);
+        const elapsedMs = Math.max(0, this.nowMs() - this.lastWatcherRefreshAtMs);
+        return Math.max(this.options.debounceMs, minIntervalMs - elapsedMs);
     }
 }

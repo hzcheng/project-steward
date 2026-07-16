@@ -73,6 +73,7 @@ type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
 const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
 const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
+const AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS = 10000;
 const AI_SESSION_INCREMENTAL_SCAN_MAX_FILES = 2000;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -411,6 +412,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         beforeRefresh: reason => { currentAiSessionRefreshReason = reason; },
         afterRefresh: () => { currentAiSessionRefreshReason = 'refresh'; },
         debounceMs: AI_SESSION_REFRESH_DEBOUNCE_MS,
+        watcherRefreshMinIntervalMs: AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS,
         newSessionRefreshDelaysMs: NEW_AI_SESSION_REFRESH_DELAYS_MS,
         setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
         clearTimeout: handle => clearTimeout(handle),

@@ -3430,6 +3430,8 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(controllerSource.includes('scheduleRefresh('));
     assert.ok(controllerSource.includes('setWatchersActive('));
     assert.ok(controllerSource.includes('buildAiSessionsUpdatedMessage'));
+    assert.ok(dashboard.includes('AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS'));
+    assert.ok(dashboard.includes('watcherRefreshMinIntervalMs: AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS'));
     const refreshFunction = extractFunctionBody(dashboard, 'refreshAiSessionViewsIncrementally');
     assert.ok(refreshFunction.includes('aiSessionDashboardController.refreshNow()'));
     assert.ok(controllerSource.includes("async refreshNow(reason = 'refresh'): Promise<void>"));
@@ -3892,6 +3894,63 @@ function runAiSessionDashboardControllerChecks() {
         openProjectCount: 0,
     }]);
     assert.strictEqual(clearedTimeouts.length, 0);
+}
+
+function runAiSessionDashboardWatcherCoalescingChecks() {
+    const messages = [];
+    const refreshReasons = [];
+    const scheduled = [];
+    const cleared = [];
+    let nowMs = 1000;
+    const controller = new AiSessionDashboardController({
+        providerIds: ['codex'],
+        isVisible: () => true,
+        invalidateCache: () => undefined,
+        watchSessionChanges: () => ({ dispose() {} }),
+        getGroups: () => [],
+        getCards: () => [],
+        getOpenProjectAiSessionViewModel: project => project,
+        nextSequence: () => messages.length + 1,
+        postMessage: message => {
+            messages.push(message);
+            return Promise.resolve(true);
+        },
+        refresh: () => undefined,
+        logError: error => { throw new Error(`Unexpected logError: ${error}`); },
+        beforeRefresh: reason => refreshReasons.push(reason),
+        afterRefresh: () => undefined,
+        nowMs: () => nowMs,
+        debounceMs: 100,
+        watcherRefreshMinIntervalMs: 1000,
+        newSessionRefreshDelaysMs: [],
+        setTimeout: (callback, delayMs) => {
+            const handle = { callback, delayMs };
+            scheduled.push(handle);
+            return handle;
+        },
+        clearTimeout: handle => cleared.push(handle),
+    });
+
+    controller.scheduleRefresh('watcher');
+    assert.strictEqual(scheduled[0].delayMs, 100);
+    scheduled[0].callback();
+    assert.deepStrictEqual(refreshReasons, ['watcher']);
+    assert.strictEqual(messages.length, 1);
+
+    nowMs = 1200;
+    controller.scheduleRefresh('watcher');
+    assert.strictEqual(scheduled[1].delayMs, 800);
+    nowMs = 1300;
+    controller.scheduleRefresh('watcher');
+    assert.deepStrictEqual(cleared, [scheduled[1]]);
+    assert.strictEqual(scheduled[2].delayMs, 700);
+    scheduled[2].callback();
+    assert.deepStrictEqual(refreshReasons, ['watcher', 'watcher']);
+    assert.strictEqual(messages.length, 2);
+
+    nowMs = 1350;
+    controller.scheduleRefresh('attention');
+    assert.strictEqual(scheduled[3].delayMs, 100, 'non-watcher refreshes should not be throttled by watcher coalescing');
 }
 
 function extractFunctionBody(source, functionName) {
@@ -5502,6 +5561,7 @@ async function main() {
     runOpenProjectAiSessionViewModelBuilderChecks();
     runAiSessionProjectHydrationChecks();
     runAiSessionDashboardControllerChecks();
+    runAiSessionDashboardWatcherCoalescingChecks();
     runGitRepositoryDetectorChecks();
     runCodexSubagentSessionFilterChecks();
     runCodexSessionActivityTimestampChecks();
