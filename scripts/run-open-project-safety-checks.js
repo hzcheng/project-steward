@@ -1039,6 +1039,102 @@ async function runOpenProjectDashboardControllerChecks() {
     assert.strictEqual(diagnostics[0][1].cardCount, 1);
     assert.strictEqual(diagnostics[1][1].durationMs, 5);
     assert.strictEqual(diagnostics[1][1].projectCount, 1);
+
+    controller.postUpdated();
+    assert.strictEqual(posted.length, 1, 'unchanged open project revisions should not be posted twice');
+    assert.strictEqual(diagnostics[diagnostics.length - 1][1].event, 'post-update-skip');
+
+    controller.setAggregate(makeAggregate([makeRegistration(SELF, 5000, '/work/b')], {
+        semanticRevision: 'revision-2',
+    }));
+    controller.postUpdated();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(posted.length, 2, 'changed open project revisions must still be posted');
+    assert.notStrictEqual(posted[1].semanticRevision, posted[0].semanticRevision);
+
+    const inFlightPosted = [];
+    const inFlightDiagnostics = [];
+    let resolveDelivery;
+    const inFlightController = new OpenProjectDashboardController({
+        getOpenProjects: () => [makeRecord({ uri: '/work/in-flight' })],
+        getGroups: () => [],
+        getStewardInfos: () => ({
+            openProjectsGroupCollapsed: false,
+            config: {},
+        }),
+        getAttentionAggregate: () => ({
+            protocolVersion: 1,
+            aggregateRevision: '4'.repeat(64),
+            generatedAtMs: 1,
+            sessions: [],
+        }),
+        getBridgeInstanceId: () => SELF,
+        postMessage: message => {
+            inFlightPosted.push(message);
+            return new Promise(resolve => {
+                resolveDelivery = resolve;
+            });
+        },
+        refresh: reason => inFlightDiagnostics.push(['refresh', reason]),
+        isVisible: () => true,
+        logDiagnostic: (source, event) => inFlightDiagnostics.push([source, event]),
+        logError: error => { throw new Error(`Unexpected logError: ${error}`); },
+        nowMs: () => {
+            nowMs += 5;
+            return nowMs;
+        },
+    });
+    inFlightController.setAggregate(makeAggregate([makeRegistration(SELF, 4000, '/work/in-flight')], {
+        semanticRevision: 'in-flight-revision',
+    }));
+    inFlightController.postUpdated();
+    inFlightController.postUpdated();
+    assert.strictEqual(inFlightPosted.length, 1, 'in-flight open project revisions should not be posted twice');
+    assert.strictEqual(inFlightDiagnostics[inFlightDiagnostics.length - 1][1].event, 'post-update-skip');
+    resolveDelivery(true);
+    await new Promise(resolve => setImmediate(resolve));
+    inFlightController.postUpdated();
+    assert.strictEqual(inFlightPosted.length, 1, 'delivered open project revisions should remain deduped');
+
+    const undeliveredPosted = [];
+    const undeliveredDiagnostics = [];
+    let undeliveredVisible = true;
+    const undeliveredController = new OpenProjectDashboardController({
+        getOpenProjects: () => [makeRecord({ uri: '/work/undelivered' })],
+        getGroups: () => [],
+        getStewardInfos: () => ({
+            openProjectsGroupCollapsed: false,
+            config: {},
+        }),
+        getAttentionAggregate: () => ({
+            protocolVersion: 1,
+            aggregateRevision: '5'.repeat(64),
+            generatedAtMs: 1,
+            sessions: [],
+        }),
+        getBridgeInstanceId: () => SELF,
+        postMessage: message => {
+            undeliveredPosted.push(message);
+            return Promise.resolve(false);
+        },
+        refresh: reason => undeliveredDiagnostics.push(['refresh', reason]),
+        isVisible: () => undeliveredVisible,
+        logDiagnostic: (source, event) => undeliveredDiagnostics.push([source, event]),
+        logError: error => { throw new Error(`Unexpected logError: ${error}`); },
+        nowMs: () => {
+            nowMs += 5;
+            return nowMs;
+        },
+    });
+    undeliveredController.setAggregate(makeAggregate([makeRegistration(SELF, 4000, '/work/undelivered')], {
+        semanticRevision: 'undelivered-revision',
+    }));
+    undeliveredController.postUpdated();
+    undeliveredVisible = false;
+    await new Promise(resolve => setImmediate(resolve));
+    undeliveredVisible = true;
+    undeliveredController.postUpdated();
+    assert.strictEqual(undeliveredPosted.length, 2, 'undelivered hidden open project revisions must be retryable');
 }
 
 function runOpenProjectIncrementalRenderingChecks() {
@@ -1099,7 +1195,8 @@ function runOpenProjectIncrementalRenderingChecks() {
     assert.notStrictEqual(postUpdatedIndex, -1);
     const postUpdatedBody = controllerSource.slice(postUpdatedIndex, controllerSource.indexOf('\n    }\n}', postUpdatedIndex));
     assert.ok(postUpdatedBody.includes('this.options.postMessage(message).then('));
-    assert.ok(postUpdatedBody.includes('if (!delivered && this.options.isVisible())'));
+    assert.ok(postUpdatedBody.includes('if (!delivered)'));
+    assert.ok(postUpdatedBody.includes('if (this.options.isVisible())'));
     assert.ok(postUpdatedBody.includes("this.options.logError('Failed to post OPEN PROJECT update message.'"));
     assert.ok(controllerSource.includes('refresh: (reason: string) => void;'));
     assert.ok(postUpdatedBody.includes("this.options.refresh('open-project-update-not-delivered');"));

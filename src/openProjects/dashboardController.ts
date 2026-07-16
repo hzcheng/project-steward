@@ -24,6 +24,7 @@ export interface OpenProjectDashboardControllerOptions {
 export class OpenProjectDashboardController {
     private aggregate: OpenProjectAggregate | null = null;
     private navigationCardsById = new Map<string, Project>();
+    private lastPostedSemanticRevision: string | null = null;
 
     constructor(private readonly options: OpenProjectDashboardControllerOptions) {
     }
@@ -73,6 +74,14 @@ export class OpenProjectDashboardController {
             return;
         }
 
+        if (this.aggregate.semanticRevision === this.lastPostedSemanticRevision) {
+            this.options.logDiagnostic('Renderer', {
+                event: 'post-update-skip',
+                semanticRevision: this.aggregate.semanticRevision,
+            });
+            return;
+        }
+
         const cards = this.getCards();
         const stewardInfos = this.options.getStewardInfos();
         const messageBuildStartedAt = this.nowMs();
@@ -95,6 +104,7 @@ export class OpenProjectDashboardController {
             semanticRevision: message.semanticRevision,
             projectCount: message.projectCount,
         });
+        this.lastPostedSemanticRevision = message.semanticRevision;
         this.options.postMessage(message).then(delivered => {
             this.options.logDiagnostic('Renderer', {
                 event: 'post-update-result',
@@ -102,15 +112,27 @@ export class OpenProjectDashboardController {
                 projectCount: message.projectCount,
                 delivered,
             });
-            if (!delivered && this.options.isVisible()) {
-                this.options.refresh('open-project-update-not-delivered');
+            if (!delivered) {
+                this.clearPostedSemanticRevision(message.semanticRevision);
+                if (this.options.isVisible()) {
+                    this.options.refresh('open-project-update-not-delivered');
+                }
+            } else if (delivered) {
+                this.lastPostedSemanticRevision = message.semanticRevision;
             }
         }, error => {
+            this.clearPostedSemanticRevision(message.semanticRevision);
             this.options.logError('Failed to post OPEN PROJECT update message.', error);
             if (this.options.isVisible()) {
                 this.options.refresh('open-project-update-post-error');
             }
         });
+    }
+
+    private clearPostedSemanticRevision(semanticRevision: string): void {
+        if (this.lastPostedSemanticRevision === semanticRevision) {
+            this.lastPostedSemanticRevision = null;
+        }
     }
 
     private nowMs(): number {
