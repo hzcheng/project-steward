@@ -4,6 +4,10 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const dashboardErrorContent = require('../out/dashboard/errorContent');
+const dashboardConfiguration = require('../out/dashboard/configuration');
+const dashboardStartup = require('../out/dashboard/startup');
+const dashboardWebviewOptions = require('../out/dashboard/webviewOptions');
 
 const root = path.join(__dirname, '..');
 const dashboardScriptPath = path.join(root, 'src', 'webview', 'webviewDashboardScripts.js');
@@ -51,6 +55,92 @@ function makeUpdatedDashboardCatalog() {
             projectName: 'Dashboard', provider: 'kimi', sessionId: 'k1', name: 'Review dashboard',
         }),
     };
+}
+
+function runErrorContentChecks() {
+    const html = dashboardErrorContent.getErrorContent(new Error('<script>alert("x")</script>'));
+    assert.ok(html.includes('Project Steward could not render this view.'));
+    assert.ok(html.includes('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;'));
+    assert.strictEqual(html.includes('<script>alert("x")</script>'), false);
+
+    assert.strictEqual(
+        dashboardErrorContent.escapeHtml(`<&>"'`),
+        '&lt;&amp;&gt;&quot;&#39;'
+    );
+}
+
+function makeWorkspaceConfiguration(values, inspectedKeys = Object.keys(values), fallbackValues = {}) {
+    return {
+        get: (key, defaultValue) => Object.prototype.hasOwnProperty.call(values, key)
+            ? values[key]
+            : (Object.prototype.hasOwnProperty.call(fallbackValues, key) ? fallbackValues[key] : defaultValue),
+        inspect: key => inspectedKeys.includes(key)
+            ? { globalValue: Object.prototype.hasOwnProperty.call(values, key) ? values[key] : undefined }
+            : undefined,
+        update: () => 'primary-update',
+        passthrough: 'primary-passthrough',
+    };
+}
+
+function runConfigurationChecks() {
+    const primary = makeWorkspaceConfiguration({ customCss: '.primary{}' });
+    const legacy = makeWorkspaceConfiguration({ customCss: '.legacy{}', displayProjectPath: false });
+    const config = dashboardConfiguration.createStewardConfiguration(primary, legacy);
+
+    assert.strictEqual(config.get('customCss'), '.primary{}');
+    assert.strictEqual(config.get('displayProjectPath'), false);
+    assert.strictEqual(config.get('missing', 'default'), 'default');
+    assert.strictEqual(config.customCss, '.primary{}');
+    assert.strictEqual(config.displayProjectPath, false);
+    assert.strictEqual(config.passthrough, 'primary-passthrough');
+    assert.strictEqual(config.update(), 'primary-update');
+    assert.strictEqual(dashboardConfiguration.hasConfiguredValue(primary, 'customCss'), true);
+    assert.strictEqual(dashboardConfiguration.hasConfiguredValue(primary, 'missing'), false);
+}
+
+function runStartupChecks() {
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        reopenReason: 1,
+        openOnStartup: 'never',
+        workspaceName: 'project',
+        visibleEditorLanguageIds: ['typescript'],
+    }), true);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'always',
+        workspaceName: 'project',
+        visibleEditorLanguageIds: ['typescript'],
+    }), true);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'never',
+        workspaceName: '',
+        visibleEditorLanguageIds: [],
+    }), false);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'empty workspace',
+        workspaceName: '',
+        visibleEditorLanguageIds: [],
+    }), true);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'empty workspace',
+        workspaceName: '',
+        visibleEditorLanguageIds: ['code-runner-output'],
+    }), true);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'empty workspace',
+        workspaceName: 'project',
+        visibleEditorLanguageIds: [],
+    }), false);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'empty workspace',
+        workspaceName: '',
+        visibleEditorLanguageIds: ['typescript'],
+    }), false);
+}
+
+function runWebviewOptionsChecks() {
+    const options = dashboardWebviewOptions.getDashboardWebviewOptions('/extensions/project-steward', value => ({ uri: value }));
+    assert.strictEqual(options.enableScripts, true);
+    assert.deepStrictEqual(options.localResourceRoots, [{ uri: path.join('/extensions/project-steward', 'media') }]);
 }
 
 function createClassList() {
@@ -237,7 +327,11 @@ function runSourceContractChecks(source) {
     assert.ok(fs.existsSync(routerPath));
     const routerSource = fs.readFileSync(routerPath, 'utf8');
     assert.ok(routerSource.includes('export interface DashboardMessageHandlers'));
+    assert.ok(routerSource.includes('handlers: Record<string, DashboardMessageHandler>'));
+    assert.ok(routerSource.includes('resumeAiSession?: DashboardAiSessionMessageHandler'));
+    assert.ok(routerSource.includes('archiveAiSession?: DashboardAiSessionMessageHandler'));
     assert.ok(routerSource.includes('export function createDashboardMessageRouter('));
+    assert.strictEqual(routerSource.includes('handleRawMessage'), false);
 
     assert.ok(source.includes("projectSteward.activeDashboardTab"));
     assert.ok(source.includes("setAttribute('aria-selected'"));
@@ -245,7 +339,9 @@ function runSourceContractChecks(source) {
     assert.ok(source.includes('scrollPositions'));
     assert.ok(source.includes('acceptedProjectsRequestId'));
     assert.ok(source.includes('pendingScrollRestoreTab'));
-    assert.ok(extensionHostSource.includes("case 'request-projects-panel':"));
+    assert.ok(extensionHostSource.includes("'request-projects-panel': async e =>"));
+    assert.strictEqual(extensionHostSource.includes('function handleStewardMessage('), false);
+    assert.ok(extensionHostSource.includes('getAiSessionProviderIds: () => getRegisteredAiSessionProviders().map(provider => provider.id)'));
     assert.ok(extensionHostSource.includes("type: 'projects-panel-content'"));
     assert.ok(extensionHostSource.includes('getProjectsPanelContent(projectService.getGroups(), stewardInfos)'));
     assert.ok(projectSource.includes("e.target.closest('[data-action=\"add-project\"]')"));
@@ -290,9 +386,36 @@ function runSourceContractChecks(source) {
     const openProjectsMessageBody = extractFunctionBody(extensionHostSource, 'postOpenProjectsUpdated');
     const openProjectControllerSource = fs.readFileSync(path.join(root, 'src', 'openProjects', 'dashboardController.ts'), 'utf8');
     const aiSessionControllerSource = fs.readFileSync(path.join(root, 'src', 'aiSessions', 'dashboardController.ts'), 'utf8');
+    const dashboardDiagnosticsSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'diagnostics.ts'), 'utf8');
+    const dashboardErrorContentSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'errorContent.ts'), 'utf8');
+    const baseServiceSource = fs.readFileSync(path.join(root, 'src', 'services', 'baseService.ts'), 'utf8');
     assert.ok(refreshStewardViewsBody.includes('provider.refresh();'));
     assert.ok(refreshStewardViewsBody.includes('logDashboardDiagnostic({'));
-    assert.ok(extensionHostSource.includes('function logDashboardDiagnostic('));
+    assert.ok(extensionHostSource.includes('new DashboardDiagnostics({'));
+    assert.ok(!extensionHostSource.includes('function logDashboardDiagnostic('));
+    assert.ok(dashboardDiagnosticsSource.includes('logDashboardDiagnostic('));
+    assert.ok(extensionHostSource.includes("from './dashboard/errorContent'"));
+    assert.ok(!extensionHostSource.includes('function getErrorContent('));
+    assert.ok(!extensionHostSource.includes('function escapeHtml('));
+    assert.ok(dashboardErrorContentSource.includes('export function getErrorContent('));
+    assert.ok(dashboardErrorContentSource.includes('Project Steward could not render this view.'));
+    const dashboardConfigurationSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'configuration.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './dashboard/configuration'"));
+    assert.ok(!extensionHostSource.includes('function getStewardConfiguration('));
+    assert.ok(!extensionHostSource.includes('function hasConfiguredValue('));
+    assert.ok(dashboardConfigurationSource.includes('export function createStewardConfiguration('));
+    assert.ok(dashboardConfigurationSource.includes('export function hasConfiguredValue('));
+    assert.ok(baseServiceSource.includes("from '../dashboard/configuration'"));
+    assert.strictEqual(baseServiceSource.includes('private hasConfiguredValue('), false);
+    const dashboardStartupSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'startup.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './dashboard/startup'"));
+    assert.ok(!extensionHostSource.includes('function showStewardOnOpenIfNeeded('));
+    assert.ok(dashboardStartupSource.includes('export function shouldOpenStewardOnStartup('));
+    assert.ok(dashboardStartupSource.includes('code-runner-output'));
+    const dashboardWebviewOptionsSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'webviewOptions.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './dashboard/webviewOptions'"));
+    assert.ok(!extensionHostSource.includes('function getWebviewOptions('));
+    assert.ok(dashboardWebviewOptionsSource.includes('export function getDashboardWebviewOptions('));
     assert.ok(openProjectsMessageBody.includes('openProjectDashboardController.postUpdated()'));
     assert.ok(openProjectControllerSource.includes('buildOpenProjectsUpdatedMessage({'));
     assert.ok(openProjectControllerSource.includes('groups: this.options.getGroups()'));
@@ -318,11 +441,63 @@ function runSourceContractChecks(source) {
     assert.ok(source.includes("document.body.classList.toggle('dashboard-search-active'"));
 }
 
-function main() {
+async function runDashboardMessageRouterChecks() {
+    const routerModule = require(path.join(root, 'out', 'dashboard', 'messageRouter.js'));
+    const calls = [];
+    const router = routerModule.createDashboardMessageRouter({
+        getAiSessionProviderIds: () => ['codex', 'kimi', 'claude'],
+        handlers: {
+            'request-projects-panel': async message => {
+                calls.push(['request-projects-panel', message.requestId]);
+            },
+            'selected-project': message => {
+                calls.push(['selected-project', message.projectId]);
+            },
+        },
+        resumeAiSession: (message, providerId) => {
+            calls.push(['resume-ai-session', providerId, message.sessionId]);
+        },
+        archiveAiSession: (message, providerId) => {
+            calls.push(['archive-ai-session', providerId, message.sessionId]);
+        },
+    });
+
+    await router(null);
+    await router({});
+    await router({ type: 'unknown-message' });
+    assert.deepStrictEqual(calls, []);
+
+    await router({ type: 'request-projects-panel', requestId: 7 });
+    await router({ type: 'selected-project', projectId: 'project-a' });
+    await router({ type: 'resume-ai-session', provider: 'codex', sessionId: 'c1' });
+    await router({ type: 'resume-ai-session', provider: 'unknown', sessionId: 'invalid' });
+    await router({ type: 'resume-kimi-session', sessionId: 'k1' });
+    await router({ type: 'archive-claude-session', sessionId: 'a1' });
+    await router({ type: 'resume-unknown-session', sessionId: 'ignored' });
+
+    assert.deepStrictEqual(calls, [
+        ['request-projects-panel', 7],
+        ['selected-project', 'project-a'],
+        ['resume-ai-session', 'codex', 'c1'],
+        ['resume-ai-session', null, 'invalid'],
+        ['resume-ai-session', 'kimi', 'k1'],
+        ['archive-ai-session', 'claude', 'a1'],
+    ]);
+}
+
+async function main() {
     const source = fs.readFileSync(dashboardScriptPath, 'utf8');
+    runErrorContentChecks();
+    runConfigurationChecks();
+    runStartupChecks();
+    runWebviewOptionsChecks();
     runControllerChecks(source);
     runSourceContractChecks(source);
+    await runDashboardMessageRouterChecks();
     console.log('Dashboard Webview checks passed.');
 }
 
-main();
+main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+});

@@ -647,9 +647,9 @@ function runDashboardBridgeLifecycleChecks() {
     const refreshAfterMutation = extractFunctionBody(dashboard, 'refreshAfterMutation');
     const showSteward = extractFunctionBody(dashboard, 'showSteward');
     const projectedOpenProjects = extractFunctionBody(dashboard, 'getOpenProjectCards');
-    const selectedProjectCase = dashboard.slice(
-        dashboard.indexOf("case 'selected-project':"),
-        dashboard.indexOf("case 'add-project':")
+    const selectedProjectHandler = dashboard.slice(
+        dashboard.indexOf("'selected-project': async e =>"),
+        dashboard.indexOf("'add-project': async e =>")
     );
 
     assert.ok(rawOpenProjects.includes('getOpenProjectsFromWorkspace('));
@@ -662,19 +662,21 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('new OpenProjectBridgeClient('));
     assert.ok(dashboard.includes("reportDiagnostic: event => logOpenProjectDiagnostic('Workspace', event)"));
     assert.ok(dashboard.includes("reportBridgeDiagnostic: event => logOpenProjectDiagnostic('Bridge', event)"));
-    assert.ok(dashboard.includes("'open-project-diagnostics.jsonl'"));
-    assert.ok(dashboard.includes('function logOpenProjectDiagnostic('));
+    const diagnosticsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'diagnostics.ts'), 'utf8');
+    assert.ok(diagnosticsSource.includes("'open-project-diagnostics.jsonl'"));
+    assert.ok(dashboard.includes('new DashboardDiagnostics({'));
+    assert.ok(!dashboard.includes('function logOpenProjectDiagnostic('));
     assert.ok(dashboard.includes('createOpenProjectRecords(getRawOpenProjects())'));
     assert.ok(dashboard.includes('context.subscriptions.push(openProjectBridgeClient);'));
     assert.ok(dashboard.includes('get openProjects() { return getOpenProjectCards() }'));
     assert.ok(projectedOpenProjects.includes('openProjectDashboardController.getCards()'));
-    assert.ok(selectedProjectCase.includes('getOpenProjectCards();'));
-    assert.ok(selectedProjectCase.includes('openProjectDashboardController.getNavigationCard(projectId)'));
-    assert.ok(selectedProjectCase.indexOf('projectService.getProject(projectId)') < selectedProjectCase.indexOf('getOpenProjects().find'));
-    assert.ok(selectedProjectCase.indexOf('getOpenProjects().find') < selectedProjectCase.indexOf('openProjectDashboardController.getNavigationCard(projectId)'));
-    assert.ok(selectedProjectCase.includes('await openProject(project, isProjectNavigation ? ProjectOpenType.Default : projectOpenType);'));
-    assert.ok(!selectedProjectCase.includes('e.uri'));
-    assert.ok(!selectedProjectCase.includes('projectUri'));
+    assert.ok(selectedProjectHandler.includes('getOpenProjectCards();'));
+    assert.ok(selectedProjectHandler.includes('openProjectDashboardController.getNavigationCard(projectId)'));
+    assert.ok(selectedProjectHandler.indexOf('projectService.getProject(projectId)') < selectedProjectHandler.indexOf('getOpenProjects().find'));
+    assert.ok(selectedProjectHandler.indexOf('getOpenProjects().find') < selectedProjectHandler.indexOf('openProjectDashboardController.getNavigationCard(projectId)'));
+    assert.ok(selectedProjectHandler.includes('await openProject(project, isProjectNavigation ? ProjectOpenType.Default : projectOpenType);'));
+    assert.ok(!selectedProjectHandler.includes('e.uri'));
+    assert.ok(!selectedProjectHandler.includes('projectUri'));
     assert.ok(dashboard.includes('vscode.window.onDidChangeWindowState(windowState =>'));
     assert.ok(dashboard.includes('if (windowState.focused)'));
     assert.ok(dashboard.includes('publishOpenProjects(true);'));
@@ -1186,7 +1188,8 @@ async function runCoordinatorChecks() {
         let locallyRenewed;
         for (let attempt = 0; attempt < 50; attempt += 1) {
             locallyRenewed = (await observer.scan(currentNow)).registrations[0];
-            if (locallyRenewed?.leaseUpdatedAtMs === currentNow) {
+            if (locallyRenewed?.leaseUpdatedAtMs === currentNow
+                && diagnostics.some(event => event.event === 'renew' && event.instanceId === SELF)) {
                 break;
             }
             await new Promise(resolve => setImmediate(resolve));

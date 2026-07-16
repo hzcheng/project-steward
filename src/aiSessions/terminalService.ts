@@ -6,9 +6,9 @@ import { existsSync, mkdirSync, statSync, unlinkSync } from 'fs';
 
 import type { AiSessionProviderId, CodexSession } from '../models';
 import type { ActiveAiSessionTerminalResolution } from './activeTerminalHighlight';
-import { AI_SESSION_PROVIDER_IDS } from './providers';
 import AiSessionTerminalBindingStore from './terminalBindingStore';
-import type { AiSessionProvider, AiSessionTerminalEntry } from './types';
+import { getAiSessionTerminalName } from './sessionPaths';
+import type { AiSessionProviderDefinition, AiSessionTerminalEntry } from './types';
 
 export interface AiSessionTerminalCreateOptions {
     name: string;
@@ -35,26 +35,27 @@ export interface PendingAiSessionTerminal {
 }
 
 export default class AiSessionTerminalService {
-    private readonly terminals: Record<AiSessionProviderId, Map<string, AiSessionTerminalEntry<vscode.Terminal>>> = {
-        codex: new Map<string, AiSessionTerminalEntry<vscode.Terminal>>(),
-        kimi: new Map<string, AiSessionTerminalEntry<vscode.Terminal>>(),
-        claude: new Map<string, AiSessionTerminalEntry<vscode.Terminal>>(),
-    };
-    private readonly resumesInFlight: Record<AiSessionProviderId, Set<string>> = {
-        codex: new Set<string>(),
-        kimi: new Set<string>(),
-        claude: new Set<string>(),
-    };
+    private readonly providers: readonly AiSessionProviderDefinition[];
+    private readonly providersById = new Map<AiSessionProviderId, AiSessionProviderDefinition>();
+    private readonly terminals: Partial<Record<AiSessionProviderId, Map<string, AiSessionTerminalEntry<vscode.Terminal>>>> = {};
+    private readonly resumesInFlight: Partial<Record<AiSessionProviderId, Set<string>>> = {};
     private pendingTerminals: PendingAiSessionTerminal[] = [];
 
     constructor(
         private readonly globalStoragePath: string,
-        private readonly getProvider: (providerId: AiSessionProviderId) => AiSessionProvider,
+        providers: readonly AiSessionProviderDefinition[],
         private readonly terminalStartupDelayMs = 1000,
         private readonly pendingTerminalTtlMs = 24 * 60 * 60 * 1000,
         private readonly bindingStore: AiSessionTerminalBindingStore = null,
         private readonly terminalProcessIdTimeoutMs = 2000
-    ) { }
+    ) {
+        this.providers = (providers || []).slice();
+        for (let provider of this.providers) {
+            this.providersById.set(provider.id, provider);
+            this.terminals[provider.id] = new Map<string, AiSessionTerminalEntry<vscode.Terminal>>();
+            this.resumesInFlight[provider.id] = new Set<string>();
+        }
+    }
 
     createTerminal(options: AiSessionTerminalCreateOptions): AiSessionTerminalCreateResult {
         let env = { ...(options.env || {}) };
@@ -108,7 +109,7 @@ export default class AiSessionTerminalService {
             ...entry,
             runStartedAtMs: Number.isFinite(entry?.runStartedAtMs) ? entry.runStartedAtMs : Date.now(),
         };
-        this.terminals[providerId].set(sessionId, normalizedEntry);
+        this.getTerminalMap(providerId).set(sessionId, normalizedEntry);
         if (persist) {
             this.bindingStore?.setBound(normalizedEntry.terminal.processId, {
                 providerId,
@@ -120,8 +121,8 @@ export default class AiSessionTerminalService {
     }
 
     untrack(providerId: AiSessionProviderId, sessionId: string) {
-        let entry = this.terminals[providerId].get(sessionId);
-        this.terminals[providerId].delete(sessionId);
+        let entry = this.getTerminalMap(providerId).get(sessionId);
+        this.getTerminalMap(providerId).delete(sessionId);
         if (entry?.terminal) {
             this.bindingStore?.remove(entry.terminal.processId);
         }
@@ -274,7 +275,7 @@ export default class AiSessionTerminalService {
     }
 
     beginResume(providerId: AiSessionProviderId, sessionId: string): boolean {
-        let resumesInFlight = this.resumesInFlight[providerId];
+        let resumesInFlight = this.getResumesInFlight(providerId);
         if (resumesInFlight.has(sessionId)) {
             return false;
         }
@@ -284,7 +285,7 @@ export default class AiSessionTerminalService {
     }
 
     finishResume(providerId: AiSessionProviderId, sessionId: string) {
-        this.resumesInFlight[providerId].delete(sessionId);
+        this.getResumesInFlight(providerId).delete(sessionId);
     }
 
     get(providerId: AiSessionProviderId, session: CodexSession): AiSessionTerminalEntry<vscode.Terminal> {
@@ -292,7 +293,7 @@ export default class AiSessionTerminalService {
     }
 
     getById(providerId: AiSessionProviderId, sessionId: string): AiSessionTerminalEntry<vscode.Terminal> {
-        let trackedTerminal = this.terminals[providerId].get(sessionId);
+        let trackedTerminal = this.getTerminalMap(providerId).get(sessionId);
         if (trackedTerminal) {
             return trackedTerminal;
         }
@@ -320,8 +321,8 @@ export default class AiSessionTerminalService {
             return null;
         }
 
-        for (let providerId of AI_SESSION_PROVIDER_IDS) {
-            for (let [sessionId, entry] of this.terminals[providerId]) {
+        for (let providerId of this.getProviderIds()) {
+            for (let [sessionId, entry] of this.getTerminalMap(providerId)) {
                 if (entry.terminal === terminal) {
                     return { provider: providerId, sessionId, terminal, entry };
                 }
@@ -347,8 +348,8 @@ export default class AiSessionTerminalService {
 
     getTrackedSessionKeys(getSessionKey: (providerId: AiSessionProviderId, sessionId: string) => string): Set<string> {
         let sessionKeys = new Set<string>();
-        for (let providerId of AI_SESSION_PROVIDER_IDS) {
-            for (let sessionId of this.terminals[providerId].keys()) {
+        for (let providerId of this.getProviderIds()) {
+            for (let sessionId of this.getTerminalMap(providerId).keys()) {
                 sessionKeys.add(getSessionKey(providerId, sessionId));
             }
         }
@@ -357,8 +358,7 @@ export default class AiSessionTerminalService {
     }
 
     getTerminalName(providerId: AiSessionProviderId, session: CodexSession): string {
-        let provider = this.getProvider(providerId);
-        return `${provider.terminalNamePrefix}: ${session.name || session.id} [${session.id.substring(0, 8)}]`;
+        return getAiSessionTerminalName(providerId, session, this.providers);
     }
 
     getMarkerPath(providerId: AiSessionProviderId, sessionId: string): string {
@@ -412,8 +412,8 @@ export default class AiSessionTerminalService {
     }
 
     handleClosedTerminal(terminal: vscode.Terminal) {
-        for (let providerId of AI_SESSION_PROVIDER_IDS) {
-            for (let [sessionId, entry] of this.terminals[providerId]) {
+        for (let providerId of this.getProviderIds()) {
+            for (let [sessionId, entry] of this.getTerminalMap(providerId)) {
                 if (entry.terminal === terminal) {
                     this.deleteEntryMarker(entry);
                     this.untrack(providerId, sessionId);
@@ -438,6 +438,9 @@ export default class AiSessionTerminalService {
 
     private terminalMatchesSession(providerId: AiSessionProviderId, terminal: vscode.Terminal, sessionId: string): boolean {
         let provider = this.getProvider(providerId);
+        if (!provider) {
+            return false;
+        }
         let creationOptions = terminal.creationOptions;
         if ('env' in creationOptions && creationOptions.env?.[provider.terminalEnvKey] === sessionId) {
             return true;
@@ -449,21 +452,47 @@ export default class AiSessionTerminalService {
 
     private getTerminalProvider(terminal: vscode.Terminal): AiSessionProviderId {
         let creationOptions = terminal.creationOptions;
-        for (let providerId of AI_SESSION_PROVIDER_IDS) {
-            let provider = this.getProvider(providerId);
+        for (let provider of this.providers) {
             if ('env' in creationOptions && creationOptions.env?.[provider.terminalEnvKey]) {
-                return providerId;
+                return provider.id;
             }
         }
 
-        for (let providerId of AI_SESSION_PROVIDER_IDS) {
-            let provider = this.getProvider(providerId);
+        for (let provider of this.providers) {
             if (terminal.name.startsWith(`${provider.terminalNamePrefix}: `)) {
-                return providerId;
+                return provider.id;
             }
         }
 
         return null;
+    }
+
+    private getProviderIds(): AiSessionProviderId[] {
+        return this.providers.map(provider => provider.id);
+    }
+
+    private getProvider(providerId: AiSessionProviderId): AiSessionProviderDefinition | null {
+        return this.providersById.get(providerId) || null;
+    }
+
+    private getTerminalMap(providerId: AiSessionProviderId): Map<string, AiSessionTerminalEntry<vscode.Terminal>> {
+        let terminalMap = this.terminals[providerId];
+        if (!terminalMap) {
+            terminalMap = new Map<string, AiSessionTerminalEntry<vscode.Terminal>>();
+            this.terminals[providerId] = terminalMap;
+        }
+
+        return terminalMap;
+    }
+
+    private getResumesInFlight(providerId: AiSessionProviderId): Set<string> {
+        let resumesInFlight = this.resumesInFlight[providerId];
+        if (!resumesInFlight) {
+            resumesInFlight = new Set<string>();
+            this.resumesInFlight[providerId] = resumesInFlight;
+        }
+
+        return resumesInFlight;
     }
 
 }

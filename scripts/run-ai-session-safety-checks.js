@@ -20,8 +20,15 @@ const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').
 const attentionPayload = require('../out/aiSessions/attentionPayload');
 const attentionAggregate = require('../out/aiSessions/attentionAggregate');
 const attentionProject = require('../out/aiSessions/attentionProject');
+const AiSessionReadCoordinator = require('../out/aiSessions/readCoordinator').AiSessionReadCoordinator;
+const aiSessionViewModels = require('../out/aiSessions/viewModels');
+const aiSessionProjectHydration = require('../out/aiSessions/projectHydration');
+const AiSessionAliasStore = require('../out/aiSessions/aliasStore').default;
+const AiSessionAliasController = require('../out/aiSessions/aliasController').default;
+const AiSessionProjectStateStore = require('../out/aiSessions/projectStateStore').default;
 const ProductionAttentionStore = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/productionAttentionStore').ProductionAttentionStore;
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
+const AiSessionPinController = require('../out/aiSessions/pinController').default;
 const providers = require('../out/aiSessions/providers');
 const CodexSessionService = require('../out/services/codexSessionService').default;
 const KimiSessionService = require('../out/services/kimiSessionService').default;
@@ -29,8 +36,17 @@ const ClaudeSessionService = require('../out/services/claudeSessionService').def
 const GitRepositoryDetector = require('../out/projects/gitRepositoryDetector').default;
 const projectPathUtils = require('../out/projects/projectPathUtils');
 const favoriteProjectOrder = require('../out/projects/favoriteProjectOrder');
+const DashboardDiagnostics = require('../out/dashboard/diagnostics').default;
 const originalModuleLoad = Module._load;
 const vscodeTestState = { terminals: [], nextTerminalProcessId: 42000 };
+let aiSessionProjectCandidates;
+let aiSessionSessionPaths;
+let aiSessionPendingTerminals;
+let aiSessionTerminalCandidates;
+let aiSessionPendingTerminalResolver;
+let aiSessionScanOptions;
+let aiSessionTerminalCwd;
+let projectWorkspaceHelpers;
 Module._load = function (request, parent, isMain) {
     if (request === 'vscode') {
         return {
@@ -53,6 +69,14 @@ Module._load = function (request, parent, isMain) {
     }
     return originalModuleLoad.call(this, request, parent, isMain);
 };
+aiSessionProjectCandidates = require('../out/aiSessions/projectCandidates');
+aiSessionSessionPaths = require('../out/aiSessions/sessionPaths');
+aiSessionPendingTerminals = require('../out/aiSessions/pendingTerminals');
+aiSessionTerminalCandidates = require('../out/aiSessions/terminalCandidates');
+aiSessionPendingTerminalResolver = require('../out/aiSessions/pendingTerminalResolver');
+aiSessionScanOptions = require('../out/aiSessions/scanOptions');
+aiSessionTerminalCwd = require('../out/aiSessions/terminalCwd');
+projectWorkspaceHelpers = require('../out/projects/workspaceHelpers');
 const AiSessionTerminalService = require('../out/aiSessions/terminalService').default;
 const models = require('../out/models');
 const openProjectService = require('../out/projects/openProjectService');
@@ -159,6 +183,50 @@ function runDashboardSearchCatalogChecks() {
     });
     assert.strictEqual(serialized.includes('</script>'), false);
     assert.deepStrictEqual(JSON.parse(serialized).savedProjects[0].name, '</script><script>bad()</script>');
+}
+
+function runDashboardDiagnosticsChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-diagnostics-'));
+    try {
+        const lines = [];
+        let nowMs = Date.parse('2026-07-16T12:00:00.000Z');
+        const diagnostics = new DashboardDiagnostics({
+            outputChannel: { appendLine: line => lines.push(line) },
+            globalStoragePath: tempRoot,
+            now: () => new Date(nowMs),
+            maxOpenProjectDiagnosticBytes: 120,
+        });
+
+        diagnostics.logError('Failed action.', new Error('Boom'));
+        diagnostics.logAiSessionDiagnostic({ event: 'scan', count: 1 });
+        diagnostics.logDashboardDiagnostic({ event: 'refresh' });
+        diagnostics.logOpenProjectDiagnostic('Workspace', { event: 'snapshot' });
+
+        assert.strictEqual(lines[0], 'Failed action.');
+        assert.ok(lines[1].includes('Boom'));
+        assert.strictEqual(lines[2], '[AiSessions] {"event":"scan","count":1}');
+        assert.strictEqual(lines[3], '[Dashboard] {"loggedAt":"2026-07-16T12:00:00.000Z","event":"refresh"}');
+        assert.strictEqual(lines[4], '[OpenProjects][Workspace] {"event":"snapshot"}');
+
+        const diagnosticPath = path.join(tempRoot, 'open-project-diagnostics.jsonl');
+        assert.deepStrictEqual(
+            fs.readFileSync(diagnosticPath, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line).component),
+            ['Workspace']
+        );
+
+        nowMs += 1000;
+        diagnostics.logOpenProjectDiagnostic('Bridge', { event: 'large', payload: 'x'.repeat(100) });
+        const persisted = fs.readFileSync(diagnosticPath, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line));
+        assert.deepStrictEqual(persisted.map(item => item.component), ['Bridge']);
+        assert.strictEqual(persisted[0].loggedAt, '2026-07-16T12:00:01.000Z');
+
+        const circular = {};
+        circular.self = circular;
+        diagnostics.logOpenProjectDiagnostic('Renderer', circular);
+        assert.ok(lines.some(line => line.includes('[OpenProjects][Renderer] Failed to serialize diagnostic:')));
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 }
 
 function runAttentionProjectionChecks() {
@@ -283,6 +351,28 @@ function runOpenProjectRuntimeIdentityChecks() {
     assert.strictEqual(openProjects[0].attentionProjectPath, undefined);
 }
 
+function runWorkspaceHelperChecks() {
+    const workspaceFile = createTestFileUri('/work/app.code-workspace');
+    const workspaceFolders = [
+        { uri: createTestFileUri('/work/app') },
+        { uri: createTestFileUri('/work/packages/api') },
+    ];
+
+    assert.strictEqual(
+        projectWorkspaceHelpers.getWorkspacePath(workspaceFile, workspaceFolders),
+        '/work/app.code-workspace'
+    );
+    assert.strictEqual(
+        projectWorkspaceHelpers.getWorkspaceUri(workspaceFile, workspaceFolders).fsPath,
+        '/work/app.code-workspace'
+    );
+    assert.deepStrictEqual(
+        projectWorkspaceHelpers.getWorkspaceUris(null, workspaceFolders).map(uri => uri.fsPath),
+        ['/work/app', '/work/packages/api']
+    );
+    assert.strictEqual(projectWorkspaceHelpers.getWorkspacePath(null, []), null);
+}
+
 function runCandidateFilterChecks() {
     const result = {
         available: true,
@@ -296,6 +386,236 @@ function runCandidateFilterChecks() {
     assert.deepStrictEqual(filtered.sessions.map(session => session.id), ['s1']);
     assert.strictEqual(helpers.filterAiSessionsByCandidatePaths(result, [], session => session.cwd), result);
     assert.deepStrictEqual(helpers.normalizeAiSessionCandidatePaths(['/work/app/', '/work/app', '']).map(item => item), ['/work/app']);
+}
+
+function runProjectCandidateChecks() {
+    const openProjects = [
+        { id: 'app', path: '/work/app/' },
+        { id: 'remote', path: 'vscode-remote://ssh-remote+host/work/remote' },
+    ];
+    const workspaceFile = createTestFileUri('/work/app.code-workspace');
+    const workspaceFolders = [
+        { uri: createTestFileUri('/work/app') },
+        { uri: createTestFileUri('/work/app/packages/api') },
+        { uri: createTestFileUri('/work/app/packages/api/') },
+    ];
+    const candidates = aiSessionProjectCandidates.getAiSessionOpenProjectCandidates(
+        openProjects,
+        workspaceFile,
+        workspaceFolders
+    );
+
+    assert.deepStrictEqual(candidates.map(candidate => ({
+        id: candidate.project.id,
+        path: candidate.path,
+    })), [
+        { id: 'app', path: '/work/app' },
+        { id: 'remote', path: '/work/remote' },
+        { id: 'app', path: '/work/app/packages/api' },
+    ]);
+    assert.deepStrictEqual(
+        aiSessionProjectCandidates.getAiSessionCandidatePaths(openProjects, workspaceFile, workspaceFolders),
+        ['/work/app', '/work/remote', '/work/app/packages/api']
+    );
+    assert.strictEqual(aiSessionProjectCandidates.getOpenProjectAiSessionKey(openProjects[0]), '/work/app');
+    assert.strictEqual(aiSessionProjectCandidates.getOpenProjectTerminalCwd(openProjects[1]), '/work/remote');
+    assert.strictEqual(aiSessionProjectCandidates.normalizeAiSessionProjectPath(''), '');
+}
+
+function runSessionPathChecks() {
+    const providerDefinitions = [
+        { id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions', terminalCwdFields: ['cwd'] },
+        { id: 'kimi', terminalNamePrefix: 'Kimi', projectSessionsKey: 'kimiSessions', terminalCwdFields: ['workDir', 'cwd'] },
+        { id: 'claude', terminalNamePrefix: 'Claude', projectSessionsKey: 'claudeSessions', terminalCwdFields: ['workDir', 'cwd'] },
+    ];
+    const project = {
+        id: 'project-a',
+        path: '/work/app',
+        codexSessions: [{ id: 'c1', cwd: '/work/app/codex' }],
+        kimiSessions: [{ id: 'k1', cwd: '/work/app/kimi-cwd', workDir: '/work/app/kimi-workdir' }],
+    };
+
+    assert.deepStrictEqual(
+        aiSessionSessionPaths.getProjectAiSessions(project, 'codex', providerDefinitions).map(session => session.id),
+        ['c1']
+    );
+    assert.deepStrictEqual(
+        aiSessionSessionPaths.getProjectAiSessions(project, 'claude', providerDefinitions),
+        []
+    );
+    assert.strictEqual(
+        aiSessionSessionPaths.getAiSessionComparableCwd('kimi', project.kimiSessions[0], providerDefinitions),
+        '/work/app/kimi-workdir'
+    );
+    assert.strictEqual(
+        aiSessionSessionPaths.getAiSessionTerminalCwd('claude', { id: 'missing', name: 'Missing' }, project, providerDefinitions),
+        '/work/app'
+    );
+    assert.strictEqual(
+        aiSessionSessionPaths.getAiSessionTerminalName('codex', { id: 'c1', name: 'Fix bug' }, providerDefinitions),
+        'Codex: Fix bug [c1]'
+    );
+    assert.strictEqual(
+        aiSessionSessionPaths.getAiSessionTerminalName('unknown', { id: 'u1', name: '<b>Unsafe</b>' }, providerDefinitions),
+        'AI: <b>Unsafe</b> [u1]'
+    );
+}
+
+function runPendingTerminalMatcherChecks() {
+    const providerDefinitions = [
+        { id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions', terminalCwdFields: ['cwd'] },
+        { id: 'kimi', terminalNamePrefix: 'Kimi', projectSessionsKey: 'kimiSessions', terminalCwdFields: ['workDir', 'cwd'] },
+    ];
+    const result = {
+        available: true,
+        scannedFiles: 3,
+        parsedFiles: 3,
+        sessions: [
+            { id: 'old', cwd: '/work/app', updatedAt: '2026-07-15T09:59:00Z' },
+            { id: 'excluded', cwd: '/work/app', updatedAt: '2026-07-15T10:01:00Z' },
+            { id: 'claimed', cwd: '/work/app', updatedAt: '2026-07-15T10:02:00Z' },
+            { id: 'newest', cwd: '/work/app', updatedAt: '2026-07-15T10:03:00Z' },
+            { id: 'other-cwd', cwd: '/work/other', updatedAt: '2026-07-15T10:04:00Z' },
+        ],
+    };
+
+    assert.deepStrictEqual(
+        aiSessionPendingTerminals.getAiSessionIdsForCwd('codex', result, '/work/app/', providerDefinitions),
+        ['old', 'excluded', 'claimed', 'newest']
+    );
+    assert.deepStrictEqual(
+        aiSessionPendingTerminals.getAiSessionIdsForCwd('codex', { ...result, available: false }, '/work/app', providerDefinitions),
+        []
+    );
+
+    const match = aiSessionPendingTerminals.findPendingAiSessionTerminalMatch({
+        provider: 'codex',
+        cwd: '/work/app',
+        createdAt: '2026-07-15T10:00:00Z',
+        excludedSessionIds: ['excluded'],
+    }, result, new Set(['codex:claimed']), (providerId, sessionId) => `${providerId}:${sessionId}`, providerDefinitions);
+
+    assert.strictEqual(match.id, 'newest');
+    assert.strictEqual(
+        aiSessionPendingTerminals.findPendingAiSessionTerminalMatch({
+            provider: 'kimi',
+            cwd: '/work/app',
+            createdAt: '2026-07-15T10:00:00Z',
+            excludedSessionIds: [],
+        }, {
+            ...result,
+            sessions: [{ id: 'workdir', cwd: '/fallback', workDir: '/work/app', updatedAt: '2026-07-15T10:05:00Z' }],
+        }, new Set(), (providerId, sessionId) => `${providerId}:${sessionId}`, providerDefinitions).id,
+        'workdir'
+    );
+}
+
+function runTerminalCandidateChecks() {
+    const calls = [];
+    const coordinator = {
+        getProviderResult(providerId, options) {
+            calls.push([providerId, options]);
+            return {
+                available: true,
+                scannedFiles: 0,
+                parsedFiles: 0,
+                sessions: [{ id: `${providerId}-one`, name: 'One' }],
+            };
+        },
+    };
+
+    assert.deepStrictEqual(
+        aiSessionTerminalCandidates.getAiSessionTerminalCandidates('codex', coordinator),
+        [{ id: 'codex-one', name: 'One' }]
+    );
+    assert.deepStrictEqual(calls, [['codex', { reason: 'terminal-candidates' }]]);
+}
+
+function runPendingTerminalResolverChecks() {
+    const providerDefinitions = [
+        { id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions', terminalCwdFields: ['cwd'] },
+    ];
+    const pendingTerminals = [
+        {
+            provider: 'codex',
+            terminal: { name: 'Codex: New' },
+            markerPath: '/tmp/new.done',
+            cwd: '/work/app',
+            createdAt: '2026-07-15T10:00:00Z',
+            excludedSessionIds: ['old'],
+            title: 'Created Alias',
+        },
+        {
+            provider: 'codex',
+            terminal: { name: 'Codex: Still Pending' },
+            markerPath: '/tmp/pending.done',
+            cwd: '/work/other',
+            createdAt: '2026-07-15T10:00:00Z',
+            excludedSessionIds: [],
+        },
+    ];
+    const tracked = [];
+    const aliases = [];
+    const replacements = [];
+    let synced = 0;
+    const terminalService = {
+        getPendingTerminals: () => pendingTerminals.slice(),
+        getTrackedSessionKeys: getKey => new Set([getKey('codex', 'claimed')]),
+        track: (providerId, sessionId, entry) => tracked.push([providerId, sessionId, entry]),
+        replacePendingTerminals: remaining => replacements.push(remaining),
+    };
+
+    const matched = aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals({
+        terminalService,
+        sessionResults: {
+            codex: {
+                available: true,
+                scannedFiles: 3,
+                parsedFiles: 3,
+                sessions: [
+                    { id: 'old', cwd: '/work/app', updatedAt: '2026-07-15T10:01:00Z' },
+                    { id: 'claimed', cwd: '/work/app', updatedAt: '2026-07-15T10:02:00Z' },
+                    { id: 'new', cwd: '/work/app', updatedAt: '2026-07-15T10:03:00Z' },
+                ],
+            },
+        },
+        providers: providerDefinitions,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        setAlias: (providerId, sessionId, alias) => aliases.push([providerId, sessionId, alias]),
+        syncActiveTerminal: () => { synced++; },
+    });
+
+    assert.strictEqual(matched, true);
+    assert.deepStrictEqual(tracked.map(item => item.slice(0, 2)), [['codex', 'new']]);
+    assert.strictEqual(tracked[0][2].terminal, pendingTerminals[0].terminal);
+    assert.strictEqual(tracked[0][2].markerPath, '/tmp/new.done');
+    assert.strictEqual(tracked[0][2].runStartedAtMs, Date.parse('2026-07-15T10:00:00Z'));
+    assert.deepStrictEqual(aliases, [['codex', 'new', 'Created Alias']]);
+    assert.deepStrictEqual(replacements, [[pendingTerminals[1]]]);
+    assert.strictEqual(synced, 1);
+}
+
+function runScanOptionChecks() {
+    assert.strictEqual(aiSessionScanOptions.getAiSessionScanMaxFiles('alias-original-name', 2000), 0);
+    assert.strictEqual(aiSessionScanOptions.getAiSessionScanMaxFiles('terminal-candidates', 2000), 0);
+    assert.strictEqual(aiSessionScanOptions.getAiSessionScanMaxFiles('refresh', 2000), 2000);
+}
+
+function runTerminalCwdChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-terminal-cwd-'));
+    try {
+        const nestedFile = path.join(tempRoot, 'src', 'index.ts');
+        fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
+        fs.writeFileSync(nestedFile, 'export {};\n', 'utf8');
+
+        assert.strictEqual(aiSessionTerminalCwd.getUsableTerminalCwd(tempRoot), tempRoot);
+        assert.strictEqual(aiSessionTerminalCwd.getUsableTerminalCwd(nestedFile), path.dirname(nestedFile));
+        assert.strictEqual(aiSessionTerminalCwd.getUsableTerminalCwd('vscode-remote://ssh-remote+host/work/app'), null);
+        assert.strictEqual(aiSessionTerminalCwd.getUsableTerminalCwd(path.join(tempRoot, 'missing')), null);
+        assert.strictEqual(aiSessionTerminalCwd.getUsableTerminalCwd(''), null);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 }
 
 function runDisplayChecks() {
@@ -340,6 +660,204 @@ function runPinStoreChecks() {
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
+}
+
+async function runPinControllerChecks() {
+    const events = [];
+    const errors = [];
+    const store = {
+        getAll: () => new Set(['codex:pinned']),
+        toggle: key => {
+            events.push(['toggle', key]);
+            return true;
+        },
+        remove: key => events.push(['remove', key]),
+        migrateLegacy: pinned => events.push(['migrate', pinned]),
+    };
+    const controller = new AiSessionPinController({
+        store,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        logError: (message, error) => errors.push([message, error.message]),
+        showUpdateError: () => events.push(['show-update-error']),
+    });
+
+    assert.deepStrictEqual(Array.from(controller.getAll()), ['codex:pinned']);
+    assert.strictEqual(controller.toggle('codex', 'p1'), true);
+    controller.remove('codex', 'p1');
+    await controller.migrateLegacy(['legacy'], () => {
+        events.push(['clear']);
+        return Promise.resolve();
+    });
+    assert.deepStrictEqual(events, [
+        ['toggle', 'codex:p1'],
+        ['remove', 'codex:p1'],
+        ['migrate', ['legacy']],
+        ['clear'],
+    ]);
+    assert.deepStrictEqual(errors, []);
+
+    const failingController = new AiSessionPinController({
+        store: {
+            getAll: () => { throw new Error('read failed'); },
+            toggle: () => { throw new Error('toggle failed'); },
+            remove: () => { throw new Error('remove failed'); },
+            migrateLegacy: () => { throw new Error('migrate failed'); },
+        },
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        logError: (message, error) => errors.push([message, error.message]),
+        showUpdateError: () => events.push(['show-update-error']),
+    });
+
+    assert.deepStrictEqual(Array.from(failingController.getAll()), []);
+    assert.strictEqual(failingController.toggle('codex', 'p1'), false);
+    failingController.remove('codex', 'p1');
+    await failingController.migrateLegacy(['legacy'], () => Promise.resolve());
+    assert.deepStrictEqual(errors.map(item => item[0]), [
+        'Failed to read pinned AI sessions.',
+        'Failed to update the pinned AI session.',
+        'Failed to delete the pinned AI session.',
+        'Failed to migrate pinned AI sessions.',
+    ]);
+    assert.deepStrictEqual(events.slice(-1), [['show-update-error']]);
+}
+
+function runAliasStoreChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-aliases-'));
+    try {
+        const store = new AiSessionAliasStore(tempRoot);
+        assert.deepStrictEqual(store.getAll(), {});
+
+        store.set('codex:c1', '  Renamed\nChat  ');
+        assert.deepStrictEqual(store.getAll(), { 'codex:c1': 'Renamed Chat' });
+
+        store.set('codex:empty', '   ');
+        assert.deepStrictEqual(store.getAll(), { 'codex:c1': 'Renamed Chat' });
+
+        store.saveAll({
+            'codex:c1': 'Renamed Chat',
+            'kimi:k1': ' Kimi Alias ',
+            'claude:empty': '',
+            'bad:number': 1,
+        });
+        assert.deepStrictEqual(store.getAll(), {
+            'codex:c1': 'Renamed Chat',
+            'kimi:k1': ' Kimi Alias ',
+        });
+
+        store.remove('codex:c1');
+        assert.deepStrictEqual(store.getAll(), { 'kimi:k1': ' Kimi Alias ' });
+
+        fs.writeFileSync(path.join(tempRoot, 'ai-session-aliases.json'), '[]', 'utf8');
+        assert.deepStrictEqual(store.getAll(), {});
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
+function runAliasControllerChecks() {
+    const saved = [];
+    const removed = [];
+    const setAliases = [];
+    const errors = [];
+    let showSaveErrorCount = 0;
+    const store = {
+        getAll: () => ({ 'codex:c1': 'Renamed' }),
+        saveAll: aliases => saved.push(aliases),
+        remove: key => removed.push(key),
+        set: (key, alias) => setAliases.push([key, alias]),
+    };
+    const baseOptions = {
+        store,
+        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        getProviderResult: (providerId, options) => {
+            assert.deepStrictEqual([providerId, options], ['codex', { reason: 'alias-original-name' }]);
+            return {
+                available: true,
+                scannedFiles: 1,
+                parsedFiles: 1,
+                sessions: [{ id: 'c1', name: 'Original' }],
+            };
+        },
+        logError: (message, error) => errors.push([message, error.message]),
+        showSaveError: () => { showSaveErrorCount++; },
+    };
+    const controller = new AiSessionAliasController(baseOptions);
+
+    assert.deepStrictEqual(controller.getAll(), { 'codex:c1': 'Renamed' });
+    controller.saveAll({ 'codex:c2': 'Second' });
+    controller.remove('codex', 'c1');
+    controller.set('codex', 'c3', '  Alias\nThree ');
+    controller.set('unknown', 'bad', 'Alias');
+    controller.set('codex', 'empty', '   ');
+
+    assert.deepStrictEqual(saved, [{ 'codex:c2': 'Second' }]);
+    assert.deepStrictEqual(removed, ['codex:c1']);
+    assert.deepStrictEqual(setAliases, [['codex:c3', 'Alias Three']]);
+    assert.strictEqual(controller.getOriginalName('codex', 'c1'), 'Original');
+    assert.strictEqual(controller.getOriginalName('codex', 'missing'), 'missing');
+
+    const failingController = new AiSessionAliasController({
+        ...baseOptions,
+        store: {
+            getAll: () => { throw new Error('read failed'); },
+            saveAll: () => { throw new Error('save failed'); },
+            remove: () => { throw new Error('remove failed'); },
+            set: () => { throw new Error('set failed'); },
+        },
+    });
+    assert.deepStrictEqual(failingController.getAll(), {});
+    failingController.saveAll({});
+    failingController.remove('codex', 'c1');
+    failingController.set('codex', 'c1', 'Alias');
+    assert.strictEqual(showSaveErrorCount, 2);
+    assert.deepStrictEqual(errors.map(item => item[0]), [
+        'Failed to read AI session aliases.',
+        'Failed to save AI session aliases.',
+        'Failed to delete AI session alias.',
+        'Failed to save AI session alias.',
+    ]);
+}
+
+async function runProjectStateStoreChecks() {
+    const data = {
+        openProjectsExpandedCodexSessions: ['project-a', 1, '', 'project-b'],
+        openProjectsActiveAiSessionProvider: {
+            'project-a': 'codex',
+            'project-b': 'unknown',
+            'project-c': 'kimi',
+        },
+    };
+    const updates = [];
+    const state = {
+        get: key => data[key],
+        update: async (key, value) => {
+            updates.push([key, value]);
+            data[key] = value;
+        },
+    };
+    const store = new AiSessionProjectStateStore(state, value => value === 'codex' || value === 'kimi' || value === 'claude');
+
+    assert.deepStrictEqual(Array.from(store.getExpandedProjects()), ['project-a', 'project-b']);
+    assert.deepStrictEqual(store.getActiveProviders(), {
+        'project-a': 'codex',
+        'project-c': 'kimi',
+    });
+
+    await store.setExpanded('project-c', true);
+    await store.setExpanded('project-a', false);
+    await store.setActiveProvider('project-d', 'claude');
+    await store.setActiveProvider('project-e', 'unknown');
+
+    assert.deepStrictEqual(updates, [
+        ['openProjectsExpandedCodexSessions', ['project-a', 'project-b', 'project-c']],
+        ['openProjectsExpandedCodexSessions', ['project-b', 'project-c']],
+        ['openProjectsActiveAiSessionProvider', {
+            'project-a': 'codex',
+            'project-c': 'kimi',
+            'project-d': 'claude',
+        }],
+    ]);
 }
 
 function runKeyChecks() {
@@ -421,8 +939,8 @@ function runActiveAiSessionTerminalHighlightChecks() {
 function runAiSessionTerminalResolutionChecks() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-active-terminal-'));
     try {
-        const service = new AiSessionTerminalService(tempRoot, providerId =>
-            providers.getAiSessionProviderDefinition(providerId), 0
+        const service = new AiSessionTerminalService(tempRoot, providers.AI_SESSION_PROVIDER_IDS.map(providerId =>
+            providers.getAiSessionProviderDefinition(providerId)), 0
         );
         const tracked = { name: 'Codex: One [session-]', creationOptions: {} };
         service.track('codex', 'session-one', {
@@ -636,7 +1154,7 @@ async function runAiSessionTerminalPersistenceChecks() {
         get: (key, fallback) => Object.prototype.hasOwnProperty.call(stateData, key) ? stateData[key] : fallback,
         update: async (key, value) => { stateData[key] = value; },
     };
-    const getProvider = providerId => providers.getAiSessionProviderDefinition(providerId);
+    const terminalProviders = providers.AI_SESSION_PROVIDER_IDS.map(providerId => providers.getAiSessionProviderDefinition(providerId));
     const createdAt = new Date().toISOString();
     try {
         const readyRetryProcessId = 42008;
@@ -667,7 +1185,7 @@ async function runAiSessionTerminalPersistenceChecks() {
         const readyRetryStore = new AiSessionTerminalBindingStore(readyRetryState, undefined, undefined, 5);
         const readyRetryService = new AiSessionTerminalService(
             tempRoot,
-            getProvider,
+            terminalProviders,
             0,
             undefined,
             readyRetryStore,
@@ -707,7 +1225,7 @@ async function runAiSessionTerminalPersistenceChecks() {
         assert.deepStrictEqual(readyRetryEvents, ['persisted', 'sent']);
 
         const firstStore = new AiSessionTerminalBindingStore(state);
-        const firstService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, firstStore);
+        const firstService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, firstStore);
         const created = firstService.createTerminal({
             name: 'Codex: App',
             cwd: '/work/app',
@@ -734,7 +1252,7 @@ async function runAiSessionTerminalPersistenceChecks() {
             processId: Promise.resolve(processId),
         };
         const secondStore = new AiSessionTerminalBindingStore(state);
-        const secondService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, secondStore);
+        const secondService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, secondStore);
         await secondService.restorePersistedTerminals([restoredPendingTerminal]);
         assert.strictEqual(secondService.getPendingTerminals().length, 1);
         assert.strictEqual(secondService.getPendingTerminals()[0].terminal, restoredPendingTerminal);
@@ -752,7 +1270,7 @@ async function runAiSessionTerminalPersistenceChecks() {
             processId: Promise.resolve(processId),
         };
         const thirdStore = new AiSessionTerminalBindingStore(state);
-        const thirdService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, thirdStore);
+        const thirdService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, thirdStore);
         await thirdService.restorePersistedTerminals([restoredBoundTerminal]);
         assert.strictEqual(thirdService.getById('codex', 'session-new').terminal, restoredBoundTerminal);
 
@@ -775,7 +1293,7 @@ async function runAiSessionTerminalPersistenceChecks() {
             creationOptions: { name: created.name, cwd: '/work/app' },
             processId: Promise.resolve(expiredProcessId),
         };
-        const expiredService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, expiredStore);
+        const expiredService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, expiredStore);
         await expiredService.restorePersistedTerminals([expiredTerminal]);
         assert.strictEqual(expiredService.getPendingTerminals().length, 0);
         await expiredStore.flush();
@@ -802,7 +1320,7 @@ async function runAiSessionTerminalPersistenceChecks() {
             processId: Promise.resolve(recoverableProcessId),
             sendText() {},
         };
-        const timeoutService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, timeoutStore, 5);
+        const timeoutService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, timeoutStore, 5);
         const restoreCompleted = await Promise.race([
             timeoutService.restorePersistedTerminals([stalledTerminal, recoverableTerminal]).then(() => true),
             new Promise(resolve => setTimeout(() => resolve(false), 50)),
@@ -828,7 +1346,7 @@ async function runAiSessionTerminalPersistenceChecks() {
             processId: Promise.resolve(reusedProcessId),
             sendText() {},
         };
-        const reusedProcessService = new AiSessionTerminalService(tempRoot, getProvider, 0, undefined, reusedProcessStore);
+        const reusedProcessService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, reusedProcessStore);
         await reusedProcessService.restorePersistedTerminals([ordinaryTerminalWithReusedPid]);
         assert.strictEqual(reusedProcessService.getById('codex', 'stale-session'), null);
         await reusedProcessStore.flush();
@@ -1119,24 +1637,42 @@ function runWebviewContentChecks() {
     assert.ok(evaluateAttentionFunction.includes('terminal-exit:'));
     assert.ok(!evaluateAttentionFunction.includes('activityToken'));
     assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
-    assert.ok(dashboard.includes('runStartedAtMs: Date.parse(pendingTerminal.createdAt)'));
+    const pendingTerminalResolverSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'pendingTerminalResolver.ts'), 'utf8');
+    assert.ok(pendingTerminalResolverSource.includes('runStartedAtMs: Date.parse(pendingTerminal.createdAt)'));
     assert.ok(dashboard.includes('runStartedAtMs: Date.now()'));
     assert.ok(dashboard.includes("type: 'ai-session-attention-projects-updated'"));
     assert.ok(dashboard.includes('sessionEvents: getAiSessionAttentionRecoverySessionEvents()'));
     assert.ok(webviewProjectScripts.includes('message.sessionEvents'));
-    assert.ok(dashboard.includes("case 'open-settings':"));
+    assert.ok(dashboard.includes("'open-settings': async () =>"));
     assert.ok(settingsFunction.includes("executeCommand('workbench.action.openSettings', '@ext:hzcheng.project-steward')"));
     assert.ok(!settingsFunction.includes('showQuickPick'));
     assert.ok(!settingsFunction.includes('ai-session-terminal-mode-planned'));
     assert.ok(dashboard.includes('new AiSessionPinStore(context.globalStoragePath)'));
+    assert.ok(dashboard.includes('new AiSessionPinController({'));
+    assert.ok(dashboard.includes('aiSessionPinController.getAll()'));
+    assert.ok(dashboard.includes('aiSessionPinController.toggle('));
+    assert.ok(dashboard.includes('aiSessionPinController.remove('));
+    assert.ok(dashboard.includes('aiSessionPinController.migrateLegacy('));
+    assert.ok(!dashboard.includes('function getPinnedAiSessionKeys('));
+    assert.ok(!dashboard.includes('function migrateLegacyPinnedAiSessions('));
+    assert.ok(!dashboard.includes('function deletePinnedAiSession('));
+    assert.ok(dashboard.includes('new AiSessionAliasStore(context.globalStoragePath)'));
+    assert.ok(dashboard.includes('new AiSessionProjectStateStore(context.globalState'));
     assert.ok(dashboard.includes('new AiSessionTerminalBindingStore(context.workspaceState'));
+    assert.ok(dashboard.includes('new DashboardDiagnostics({'));
+    assert.ok(!dashboard.includes('function logAiSessionDiagnostic('));
+    assert.ok(!dashboard.includes('function logDashboardDiagnostic('));
+    assert.ok(!dashboard.includes('function logOpenProjectDiagnostic('));
     assert.ok(dashboard.includes('export async function activate(context: vscode.ExtensionContext)'));
+    const terminalServiceSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'terminalService.ts'), 'utf8');
+    assert.ok(!terminalServiceSource.includes('AI_SESSION_PROVIDER_IDS'));
+    assert.ok(dashboard.includes('const aiSessionProviders = aiSessionProviderRegistry.providers();'));
     assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
     assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);
     assert.match(dashboard, /onDidChangeWindowState\(windowState => \{[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);
-    assert.ok(dashboard.includes("case 'request-active-ai-session-terminal':"));
+    assert.ok(dashboard.includes("'request-active-ai-session-terminal': () =>"));
     assert.ok(dashboard.includes("type: 'active-ai-session-terminal-changed'"));
     assert.ok(webviewProjectScripts.includes("type: 'request-active-ai-session-terminal'"));
     assert.ok(webviewProjectScripts.includes("message.type === 'active-ai-session-terminal-changed'"));
@@ -1147,14 +1683,13 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.setVisible(visible)'));
     const viewProvider = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'viewProvider.ts'), 'utf8');
     assert.ok(viewProvider.includes('this.options.onVisibleChanged(webviewView.visible)'));
-    const activeTerminalCandidatesFunction = extractFunctionBody(dashboard, 'getAiSessionTerminalCandidates');
-    assert.ok(activeTerminalCandidatesFunction.includes("getProviderAiSessions(providerId, { reason: 'terminal-candidates' }).sessions"));
-    assert.ok(!activeTerminalCandidatesFunction.includes('AI_SESSION_PROVIDER_IDS'));
-    assert.ok(!activeTerminalCandidatesFunction.includes('getOpenProjects('));
-    assert.ok(!activeTerminalCandidatesFunction.includes('activeAiSessionProvider'));
+    const terminalCandidatesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'terminalCandidates.ts'), 'utf8');
+    assert.ok(terminalCandidatesSource.includes("reason: 'terminal-candidates'"));
+    assert.ok(!terminalCandidatesSource.includes('AI_SESSION_PROVIDER_IDS'));
+    assert.ok(!terminalCandidatesSource.includes('getOpenProjects('));
+    assert.ok(!terminalCandidatesSource.includes('activeAiSessionProvider'));
     assert.ok(!dashboard.includes('prunePinnedAiSessionKeys'));
-    assert.ok(extractFunctionBody(dashboard, 'deletePinnedAiSession').includes("logError('Failed to delete the pinned AI session.'"));
-    assert.ok(dashboard.includes("case 'archive-ai-sessions':"));
+    assert.ok(dashboard.includes("'archive-ai-sessions': async e =>"));
     assert.ok(dashboard.includes('AiSessionBatchArchiveCompletedMessage'));
     assert.ok(singleArchiveFunction.includes('archiveAiSessionItem(providerId, sessionId)'));
     assert.ok(batchArchiveFunction.includes('executeBatchAiSessionArchiveRequest('));
@@ -1219,9 +1754,30 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes('visibleRows * 42'));
     assert.ok(styles.includes('calc(3 * 42px + 2 * 2px)'));
     assert.ok(!packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode']);
-    assert.ok(withAiSessionsFunction.includes('let aliases = getAiSessionAliases();'));
+    assert.ok(withAiSessionsFunction.includes('let aliases = aiSessionAliasController.getAll();'));
     assert.ok(!withAiSessionsFunction.includes('pruneAiSessionAliases('));
     assert.ok(!dashboard.includes('function pruneAiSessionAliases('));
+    assert.ok(!dashboard.includes("const AI_SESSION_ALIASES_FILE_NAME = 'ai-session-aliases.json';"));
+    assert.ok(!dashboard.includes('function getAiSessionAliasesPath('));
+    assert.ok(dashboard.includes('new AiSessionAliasController({'));
+    assert.ok(dashboard.includes('aiSessionAliasController.getAll()'));
+    assert.ok(dashboard.includes('aiSessionAliasController.saveAll(aliases)'));
+    assert.ok(dashboard.includes('aiSessionAliasController.set('));
+    assert.ok(dashboard.includes('aiSessionAliasController.remove('));
+    assert.ok(dashboard.includes('aiSessionAliasController.getOriginalName('));
+    assert.ok(!dashboard.includes('function getAiSessionAliases('));
+    assert.ok(!dashboard.includes('function saveAiSessionAliases('));
+    assert.ok(!dashboard.includes('function deleteAiSessionAlias('));
+    assert.ok(!dashboard.includes('function setAiSessionAlias('));
+    assert.ok(!dashboard.includes('function getAiSessionOriginalName('));
+    assert.ok(dashboard.includes('aiSessionProjectStateStore.getExpandedProjects()'));
+    assert.ok(dashboard.includes('aiSessionProjectStateStore.setExpanded('));
+    assert.ok(dashboard.includes('aiSessionProjectStateStore.getActiveProviders()'));
+    assert.ok(dashboard.includes('aiSessionProjectStateStore.setActiveProvider('));
+    assert.ok(!dashboard.includes('context.globalState.get(OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY)'));
+    assert.ok(!dashboard.includes('context.globalState.update(OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY'));
+    assert.ok(!dashboard.includes('context.globalState.get(OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY)'));
+    assert.ok(!dashboard.includes('context.globalState.update(OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY'));
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.storeProjectsInSettings'].default, true);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.applyProjectColorToWindow'].default, false);
     assert.strictEqual(packageJson.contributes.configuration.properties['projectSteward.maxVisibleAiSessions'].default, 3);
@@ -1234,7 +1790,7 @@ function runWebviewContentChecks() {
     assert.ok(!webviewContent.includes('withCurrentWorkspaceState('));
     assert.ok(!webviewContent.includes('infos.currentWorkspaceProjectIds || []'));
     assert.ok(webviewContent.includes('getFavoriteProjectsInOrder('));
-    assert.ok(dashboard.includes("case 'reordered-favorites':"));
+    assert.ok(dashboard.includes("'reordered-favorites': async e =>"));
     assert.ok(dashboard.includes('withFavoriteProjectOrder(groups, projectIds)'));
     assert.ok(dashboard.includes('withToggledProjectFavorite(groups, projectId)'));
     assert.ok(dashboard.includes("function applyProjectColorToCurrentWindow(project: Project = null)"));
@@ -2161,6 +2717,39 @@ function runBatchAiSessionWebviewChecks() {
 
 function runAiSessionIncrementalRefreshSourceChecks() {
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const readCoordinatorPath = path.join(__dirname, '..', 'src', 'aiSessions', 'readCoordinator.ts');
+    assert.ok(fs.existsSync(readCoordinatorPath));
+    const readCoordinatorSource = fs.readFileSync(readCoordinatorPath, 'utf8');
+    const viewModelsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'viewModels.ts');
+    assert.ok(fs.existsSync(viewModelsPath));
+    const viewModelsSource = fs.readFileSync(viewModelsPath, 'utf8');
+    const projectHydrationPath = path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydration.ts');
+    assert.ok(fs.existsSync(projectHydrationPath));
+    const projectHydrationSource = fs.readFileSync(projectHydrationPath, 'utf8');
+    const projectCandidatesPath = path.join(__dirname, '..', 'src', 'aiSessions', 'projectCandidates.ts');
+    assert.ok(fs.existsSync(projectCandidatesPath));
+    const projectCandidatesSource = fs.readFileSync(projectCandidatesPath, 'utf8');
+    const sessionPathsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'sessionPaths.ts');
+    assert.ok(fs.existsSync(sessionPathsPath));
+    const sessionPathsSource = fs.readFileSync(sessionPathsPath, 'utf8');
+    const pendingTerminalsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'pendingTerminals.ts');
+    assert.ok(fs.existsSync(pendingTerminalsPath));
+    const pendingTerminalsSource = fs.readFileSync(pendingTerminalsPath, 'utf8');
+    const pendingTerminalResolverPath = path.join(__dirname, '..', 'src', 'aiSessions', 'pendingTerminalResolver.ts');
+    assert.ok(fs.existsSync(pendingTerminalResolverPath));
+    const pendingTerminalResolverSource = fs.readFileSync(pendingTerminalResolverPath, 'utf8');
+    const terminalCandidatesPath = path.join(__dirname, '..', 'src', 'aiSessions', 'terminalCandidates.ts');
+    assert.ok(fs.existsSync(terminalCandidatesPath));
+    const terminalCandidatesSource = fs.readFileSync(terminalCandidatesPath, 'utf8');
+    const scanOptionsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'scanOptions.ts');
+    assert.ok(fs.existsSync(scanOptionsPath));
+    const scanOptionsSource = fs.readFileSync(scanOptionsPath, 'utf8');
+    const terminalCwdPath = path.join(__dirname, '..', 'src', 'aiSessions', 'terminalCwd.ts');
+    assert.ok(fs.existsSync(terminalCwdPath));
+    const terminalCwdSource = fs.readFileSync(terminalCwdPath, 'utf8');
+    const workspaceHelpersPath = path.join(__dirname, '..', 'src', 'projects', 'workspaceHelpers.ts');
+    assert.ok(fs.existsSync(workspaceHelpersPath));
+    const workspaceHelpersSource = fs.readFileSync(workspaceHelpersPath, 'utf8');
     const typesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'types.ts'), 'utf8');
     assert.ok(typesSource.includes('scannedFiles: number;'));
     assert.ok(typesSource.includes('parsedFiles: number;'));
@@ -2191,28 +2780,72 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     const evaluateAttentionBody = extractFunctionBody(dashboard, 'evaluateAiSessionAttention');
     assert.ok(evaluateAttentionBody.includes('const registeredProviders = getRegisteredAiSessionProviders();'));
     const withAiSessionsBody = extractFunctionBody(dashboard, 'withAiSessions');
-    assert.ok(withAiSessionsBody.includes('const registeredProviders = getRegisteredAiSessionProviders();'));
+    assert.ok(withAiSessionsBody.includes('hydrateOpenProjectsWithAiSessions({'));
+    assert.ok(projectHydrationSource.includes('export function hydrateOpenProjectsWithAiSessions('));
+    assert.ok(projectHydrationSource.includes('prepareAiSessionsForDisplay('));
+    assert.ok(projectHydrationSource.includes('getAttentionSessionLookupKey('));
+    assert.ok(projectHydrationSource.includes('function getActiveAiSessionProvider('));
+    assert.ok(!dashboard.includes('function getActiveAiSessionProvider('));
     const openProjectViewModelBody = extractFunctionBody(dashboard, 'getOpenProjectAiSessionViewModel');
-    assert.ok(openProjectViewModelBody.includes('getRegisteredAiSessionProviders()'));
-    assert.ok(openProjectViewModelBody.includes('registeredProviders.reduce'));
+    assert.ok(openProjectViewModelBody.includes('buildOpenProjectAiSessionViewModel({'));
+    assert.ok(viewModelsSource.includes('export function buildOpenProjectAiSessionViewModel('));
+    assert.ok(viewModelsSource.includes('sessionsByProvider[providerId]'));
+    assert.ok(viewModelsSource.includes('attentionCount: project.aiSessionAttentionCount ?? providers.reduce'));
     const getAiSessionResultsBody = extractFunctionBody(dashboard, 'getAiSessionResults');
     assert.ok(dashboard.includes("function getAiSessionResults(openProjects: Project[] = [], reason = currentAiSessionRefreshReason)"));
-    assert.ok(getAiSessionResultsBody.includes('getRegisteredAiSessionProviders()'));
-    assert.ok(dashboard.includes('function getAiSessionScanMaxFiles('));
-    assert.ok(getAiSessionResultsBody.includes('let maxFiles = getAiSessionScanMaxFiles(reason);'));
-    assert.ok(getAiSessionResultsBody.includes('getProviderAiSessions(providerId, { candidatePaths, reason, maxFiles })'));
+    assert.ok(getAiSessionResultsBody.includes('aiSessionReadCoordinator.getResults('));
+    assert.ok(dashboard.includes("from './aiSessions/scanOptions'"));
+    assert.ok(getAiSessionResultsBody.includes('let maxFiles = getAiSessionScanMaxFiles(reason, AI_SESSION_INCREMENTAL_SCAN_MAX_FILES);'));
+    assert.ok(getAiSessionResultsBody.includes('candidatePaths, reason, maxFiles'));
+    assert.ok(projectCandidatesSource.includes('export function getAiSessionOpenProjectCandidates'));
+    assert.ok(projectCandidatesSource.includes('export function getAiSessionCandidatePaths'));
+    assert.ok(projectCandidatesSource.includes('export function getOpenProjectAiSessionKey('));
+    assert.ok(projectCandidatesSource.includes('export function getOpenProjectTerminalCwd('));
+    assert.ok(sessionPathsSource.includes('export function getProjectAiSessions('));
+    assert.ok(sessionPathsSource.includes('export function getAiSessionTerminalCwd('));
+    assert.ok(sessionPathsSource.includes('export function getAiSessionComparableCwd('));
+    assert.ok(sessionPathsSource.includes('export function getAiSessionTerminalName('));
+    assert.ok(pendingTerminalsSource.includes('export function getAiSessionIdsForCwd('));
+    assert.ok(pendingTerminalsSource.includes('export function findPendingAiSessionTerminalMatch('));
+    assert.ok(pendingTerminalResolverSource.includes('export function resolvePendingAiSessionTerminals'));
+    assert.ok(pendingTerminalResolverSource.includes('replacePendingTerminals'));
+    assert.ok(terminalCandidatesSource.includes('export function getAiSessionTerminalCandidates('));
+    assert.ok(terminalCandidatesSource.includes("reason: 'terminal-candidates'"));
+    assert.ok(scanOptionsSource.includes('export function getAiSessionScanMaxFiles('));
+    assert.ok(scanOptionsSource.includes("reason === 'alias-original-name'"));
+    assert.ok(scanOptionsSource.includes("reason === 'terminal-candidates'"));
+    assert.ok(terminalCwdSource.includes('export function getUsableTerminalCwd('));
+    assert.ok(workspaceHelpersSource.includes('export function getWorkspacePath('));
+    assert.ok(workspaceHelpersSource.includes('export function getWorkspaceUri('));
+    assert.ok(workspaceHelpersSource.includes('export function getWorkspaceUris('));
+    assert.ok(!dashboard.includes('function getCodexOpenProjectCandidates('));
+    assert.ok(!dashboard.includes('function normalizeCodexComparablePath('));
+    assert.ok(!dashboard.includes('function getProjectAiSessions('));
+    assert.ok(!dashboard.includes('function getAiSessionTerminalCwd('));
+    assert.ok(!dashboard.includes('function getAiSessionComparableCwd('));
+    assert.ok(!dashboard.includes('function getAiSessionTerminalName('));
+    assert.ok(!dashboard.includes('function getAiSessionIdsForCwd('));
+    assert.ok(!dashboard.includes('function findPendingAiSessionTerminalMatch('));
+    assert.ok(!dashboard.includes('function resolvePendingAiSessionTerminals('));
+    assert.ok(!dashboard.includes('function getTrackedAiSessionTerminalKeys('));
+    assert.ok(!dashboard.includes('function getAiSessionTerminalCandidates('));
+    assert.ok(!dashboard.includes('function getAiSessionScanMaxFiles('));
+    assert.ok(!dashboard.includes('function getUsableTerminalCwd('));
+    assert.ok(!dashboard.includes('function getAiSessionTerminalMarkerPath('));
+    assert.ok(!dashboard.includes('function getPendingAiSessionTerminalMarkerPath('));
+    assert.ok(!dashboard.includes('function getWorkspacePath('));
+    assert.ok(!dashboard.includes('function getWorkspaceUri('));
+    assert.ok(!dashboard.includes('function getWorkspaceUris('));
     const getAiSessionAssignmentsBody = extractFunctionBody(dashboard, 'getAiSessionAssignments');
-    assert.ok(getAiSessionAssignmentsBody.includes('getRegisteredAiSessionProviders()'));
-    assert.strictEqual((dashboard.match(/\.service\.getSessions\(/g) || []).length, 1);
-    assert.ok(dashboard.includes('function getProviderAiSessions('));
-    const getProviderAiSessionsIndex = dashboard.indexOf('function getProviderAiSessions(');
-    assert.notStrictEqual(getProviderAiSessionsIndex, -1);
-    const getProviderAiSessionsSlice = dashboard.slice(getProviderAiSessionsIndex, dashboard.indexOf('function getAiSessionAssignments(', getProviderAiSessionsIndex));
-    assert.ok(getProviderAiSessionsSlice.includes("event: 'ai-session-scan'"));
-    assert.ok(getProviderAiSessionsSlice.includes('durationMs: Date.now() - startedAt'));
-    assert.ok(getProviderAiSessionsSlice.includes('scannedFileCount: result.scannedFiles'));
-    assert.ok(getProviderAiSessionsSlice.includes('parsedFileCount: result.parsedFiles'));
-    assert.ok(getProviderAiSessionsSlice.includes('scanBudget: normalizedOptions.maxFiles || null'));
+    assert.ok(getAiSessionAssignmentsBody.includes('aiSessionReadCoordinator.getAssignments('));
+    assert.strictEqual((dashboard.match(/\.service\.getSessions\(/g) || []).length, 0);
+    assert.strictEqual(dashboard.includes('function getProviderAiSessions('), false);
+    assert.ok(readCoordinatorSource.includes('export class AiSessionReadCoordinator'));
+    assert.ok(readCoordinatorSource.includes("event: 'ai-session-scan'"));
+    assert.ok(readCoordinatorSource.includes('durationMs: this.now() - startedAt'));
+    assert.ok(readCoordinatorSource.includes('scannedFileCount: result.scannedFiles'));
+    assert.ok(readCoordinatorSource.includes('parsedFileCount: result.parsedFiles'));
+    assert.ok(readCoordinatorSource.includes('scanBudget: normalizedOptions.maxFiles || null'));
     assert.ok(controllerSource.includes("this.scheduleRefresh('watcher')"));
     assert.ok(controllerSource.includes("this.refreshNow('new-session')"));
     assert.ok(controllerSource.includes('private newSessionRefreshTimeouts: NodeJS.Timeout[] = []'));
@@ -2220,6 +2853,313 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(controllerSource.includes('this.newSessionRefreshTimeouts.push(timeout)'));
     assert.ok(controllerSource.includes('for (let timeout of this.newSessionRefreshTimeouts)'));
     assert.ok(controllerSource.includes('this.options.clearTimeout(timeout)'));
+}
+
+function runAiSessionReadCoordinatorChecks() {
+    const calls = [];
+    const diagnostics = [];
+    let now = 1000;
+    const codexResult = {
+        available: true,
+        scannedFiles: 4,
+        parsedFiles: 2,
+        sessions: [
+            { id: 'session-a', cwd: '/work/app', updatedAt: '2026-07-16T00:00:00.000Z' },
+            { id: 'session-b', cwd: '/elsewhere', updatedAt: '2026-07-16T00:00:01.000Z' },
+        ],
+    };
+    const kimiResult = {
+        available: false,
+        scannedFiles: 0,
+        parsedFiles: 0,
+        sessions: [],
+    };
+    const coordinator = new AiSessionReadCoordinator([
+        {
+            id: 'codex',
+            service: {
+                getSessions: options => {
+                    calls.push(['codex', options]);
+                    now += 7;
+                    return codexResult;
+                },
+            },
+        },
+        {
+            id: 'kimi',
+            service: {
+                getSessions: options => {
+                    calls.push(['kimi', options]);
+                    now += 3;
+                    return kimiResult;
+                },
+            },
+        },
+    ], event => diagnostics.push(event), () => now);
+
+    const results = coordinator.getResults({
+        candidatePaths: ['/work/app'],
+        reason: 'refresh',
+        maxFiles: 2000,
+    });
+    assert.strictEqual(results.codex, codexResult);
+    assert.strictEqual(results.kimi, kimiResult);
+    assert.deepStrictEqual(calls, [
+        ['codex', { candidatePaths: ['/work/app'], reason: 'refresh', maxFiles: 2000 }],
+        ['kimi', { candidatePaths: ['/work/app'], reason: 'refresh', maxFiles: 2000 }],
+    ]);
+    assert.deepStrictEqual(diagnostics.map(event => ({
+        event: event.event,
+        provider: event.provider,
+        durationMs: event.durationMs,
+        sessionCount: event.sessionCount,
+        scannedFileCount: event.scannedFileCount,
+        parsedFileCount: event.parsedFileCount,
+        scanBudget: event.scanBudget,
+        available: event.available,
+    })), [
+        {
+            event: 'ai-session-scan',
+            provider: 'codex',
+            durationMs: 7,
+            sessionCount: 2,
+            scannedFileCount: 4,
+            parsedFileCount: 2,
+            scanBudget: 2000,
+            available: true,
+        },
+        {
+            event: 'ai-session-scan',
+            provider: 'kimi',
+            durationMs: 3,
+            sessionCount: 0,
+            scannedFileCount: 0,
+            parsedFileCount: 0,
+            scanBudget: 2000,
+            available: false,
+        },
+    ]);
+
+    const assignments = coordinator.getAssignments(
+        [{ project: { id: 'project-a' }, path: '/work' }],
+        results,
+        (providerId, session) => providerId === 'codex' ? session.cwd : session.workDir
+    );
+    assert.deepStrictEqual(Array.from(assignments.codex.keys()), ['project-a']);
+    assert.deepStrictEqual(assignments.codex.get('project-a').map(session => session.id), ['session-a']);
+    assert.deepStrictEqual(Array.from(assignments.kimi.keys()), []);
+
+    assert.throws(
+        () => coordinator.getProviderResult('claude', { reason: 'missing-provider' }),
+        /AI session provider claude is not registered/
+    );
+}
+
+function runOpenProjectAiSessionViewModelBuilderChecks() {
+    const project = {
+        id: 'project-a',
+        name: 'Project A',
+        path: '/work/project-a',
+        activeAiSessionProvider: 'kimi',
+        codexSessionsExpanded: true,
+        codexSessions: [
+            { id: 'c1', name: 'Codex One', updatedAt: '2026-07-16T00:00:00.000Z', attention: { unread: true } },
+        ],
+        kimiSessions: [
+            { id: 'k1', name: 'Kimi One', updatedAt: '2026-07-16T00:01:00.000Z' },
+        ],
+        claudeSessions: [],
+        kimiSessionsUnavailable: true,
+    };
+    const model = aiSessionViewModels.buildOpenProjectAiSessionViewModel({
+        project,
+        providers: [
+            { id: 'codex', label: 'Codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
+            { id: 'kimi', label: 'Kimi', projectSessionsKey: 'kimiSessions', projectSessionsUnavailableKey: 'kimiSessionsUnavailable' },
+            { id: 'claude', label: 'Claude', projectSessionsKey: 'claudeSessions', projectSessionsUnavailableKey: 'claudeSessionsUnavailable' },
+        ],
+        getProjectKey: item => `key:${item.id}`,
+        getSearchText: item => `search:${item.name}`,
+        renderSessionSection: item => `html:${item.id}`,
+    });
+
+    assert.strictEqual(model.projectId, 'project-a');
+    assert.strictEqual(model.projectKey, 'key:project-a');
+    assert.strictEqual(model.activeProvider, 'kimi');
+    assert.strictEqual(model.expanded, true);
+    assert.deepStrictEqual(model.providers.map(provider => ({
+        id: provider.id,
+        label: provider.label,
+        count: provider.count,
+        unavailable: provider.unavailable,
+    })), [
+        { id: 'codex', label: 'Codex', count: 1, unavailable: false },
+        { id: 'kimi', label: 'Kimi', count: 1, unavailable: true },
+        { id: 'claude', label: 'Claude', count: 0, unavailable: false },
+    ]);
+    assert.deepStrictEqual(model.unavailableProviders, ['kimi']);
+    assert.deepStrictEqual(model.sessionsByProvider.codex, [{
+        id: 'c1',
+        name: 'Codex One',
+        updatedAt: '2026-07-16T00:00:00.000Z',
+        attention: { unread: true },
+        provider: 'codex',
+    }]);
+    assert.deepStrictEqual(model.sessionsByProvider.kimi, [{
+        id: 'k1',
+        name: 'Kimi One',
+        updatedAt: '2026-07-16T00:01:00.000Z',
+        provider: 'kimi',
+    }]);
+    assert.strictEqual(model.searchText, 'search:Project A');
+    assert.strictEqual(model.aiSessionCount, 2);
+    assert.strictEqual(model.attentionCount, 1);
+    assert.strictEqual(model.sessionSectionHtml, 'html:project-a');
+
+    const explicitAttentionModel = aiSessionViewModels.buildOpenProjectAiSessionViewModel({
+        project: { ...project, aiSessionAttentionCount: 7 },
+        providers: [
+            { id: 'codex', label: 'Codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
+        ],
+        getProjectKey: item => item.id,
+        getSearchText: () => '',
+        renderSessionSection: () => '',
+    });
+    assert.strictEqual(explicitAttentionModel.attentionCount, 7);
+}
+
+function runAiSessionProjectHydrationChecks() {
+    const project = { id: 'project-a', path: '/work/app' };
+    const codexSessions = [
+        { id: 'c1', name: 'Codex One', cwd: '/work/app', updatedAt: '2026-07-16T00:00:00.000Z' },
+        { id: 'c2', name: 'Codex Two', cwd: '/work/app', updatedAt: '2026-07-16T00:01:00.000Z' },
+    ];
+    const aggregateByProjectAndSession = new Map();
+    aggregateByProjectAndSession.set(
+        attentionProject.getAttentionSessionLookupKey(
+            attentionProject.getAttentionProjectKey('/work/app'),
+            'codex:c2'
+        ),
+        {
+            sessionKey: 'codex:c2',
+            eventIds: ['remote-event'],
+            reasons: ['completed'],
+            observedAtMs: 17,
+        }
+    );
+
+    const hydrated = aiSessionProjectHydration.hydrateOpenProjectsWithAiSessions({
+        projects: [project],
+        providers: [
+            { id: 'codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
+            { id: 'kimi', projectSessionsKey: 'kimiSessions', projectSessionsUnavailableKey: 'kimiSessionsUnavailable' },
+        ],
+        sessionResults: {
+            codex: { available: true, sessions: codexSessions, scannedFiles: 2, parsedFiles: 2 },
+            kimi: { available: false, sessions: [], scannedFiles: 0, parsedFiles: 0 },
+        },
+        assignments: {
+            codex: new Map([['project-a', codexSessions]]),
+            kimi: new Map(),
+        },
+        expandedProjects: new Set(['project-key']),
+        activeProviders: { 'project-key': 'kimi' },
+        pinnedSessions: new Set(['codex:c2']),
+        aliases: { 'codex:c1': 'Aliased Codex One' },
+        aggregateByProjectAndSession,
+        localAttentionBySession: {
+            'codex:c1': {
+                state: 'needsAttention',
+                stateChangedAt: 3,
+                event: { eventId: 'local-event', reason: 'input-required' },
+            },
+        },
+        includeLocalAttention: false,
+        getProjectKey: item => item.id === 'project-a' ? 'project-key' : item.id,
+    });
+
+    assert.strictEqual(hydrated[0], project, 'hydration preserves project object identity');
+    assert.strictEqual(project.codexSessionsExpanded, true);
+    assert.strictEqual(project.activeAiSessionProvider, 'kimi');
+    assert.strictEqual(project.codexSessionsUnavailable, false);
+    assert.strictEqual(project.kimiSessionsUnavailable, true);
+    assert.deepStrictEqual(project.codexSessions.map(session => ({
+        id: session.id,
+        name: session.name,
+        pinned: session.pinned,
+        attention: session.attention,
+    })), [
+        {
+            id: 'c2',
+            name: 'Codex Two',
+            pinned: true,
+            attention: { eventId: 'remote-event', reason: 'completed', unread: true },
+        },
+        {
+            id: 'c1',
+            name: 'Aliased Codex One',
+            pinned: false,
+            attention: undefined,
+        },
+    ]);
+
+    aiSessionProjectHydration.hydrateOpenProjectsWithAiSessions({
+        projects: [project],
+        providers: [
+            { id: 'codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
+        ],
+        sessionResults: {
+            codex: { available: true, sessions: codexSessions, scannedFiles: 2, parsedFiles: 2 },
+        },
+        assignments: {
+            codex: new Map([['project-a', [codexSessions[0]]]]),
+        },
+        expandedProjects: new Set(),
+        activeProviders: {},
+        pinnedSessions: new Set(),
+        aliases: {},
+        aggregateByProjectAndSession: new Map(),
+        localAttentionBySession: {
+            'codex:c1': {
+                state: 'needsAttention',
+                stateChangedAt: 3,
+                event: { eventId: 'local-event', reason: 'input-required' },
+            },
+        },
+        includeLocalAttention: true,
+        getProjectKey: () => 'project-key',
+    });
+    assert.deepStrictEqual(project.codexSessions[0].attention, {
+        eventId: 'local-event',
+        reason: 'input-required',
+        unread: true,
+    });
+
+    const fallbackProject = { id: 'fallback', path: '/fallback', codexSessions: [], kimiSessions: [{ id: 'k2' }] };
+    aiSessionProjectHydration.hydrateOpenProjectsWithAiSessions({
+        projects: [fallbackProject],
+        providers: [
+            { id: 'codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
+            { id: 'kimi', projectSessionsKey: 'kimiSessions', projectSessionsUnavailableKey: 'kimiSessionsUnavailable' },
+        ],
+        sessionResults: {
+            codex: { available: true, sessions: [], scannedFiles: 0, parsedFiles: 0 },
+            kimi: { available: true, sessions: [{ id: 'k2' }], scannedFiles: 1, parsedFiles: 1 },
+        },
+        assignments: {
+            codex: new Map(),
+            kimi: new Map([['fallback', [{ id: 'k2' }]]]),
+        },
+        expandedProjects: new Set(),
+        activeProviders: { fallback: 'claude' },
+        pinnedSessions: new Set(),
+        aliases: {},
+        aggregateByProjectAndSession: new Map(),
+        localAttentionBySession: {},
+        includeLocalAttention: false,
+        getProjectKey: item => item.id,
+    });
+    assert.strictEqual(fallbackProject.activeAiSessionProvider, 'kimi');
 }
 
 function runAiSessionDashboardControllerChecks() {
@@ -2465,7 +3405,7 @@ function runCodexSubagentSessionFilterChecks() {
 
         const terminalService = new AiSessionTerminalService(
             path.join(tempRoot, 'storage'),
-            providerId => providers.getAiSessionProviderDefinition(providerId),
+            providers.AI_SESSION_PROVIDER_IDS.map(providerId => providers.getAiSessionProviderDefinition(providerId)),
             0
         );
         const subagentTerminal = {
@@ -3747,12 +4687,25 @@ async function main() {
     runPathChecks();
     runAssignmentChecks();
     runDashboardSearchCatalogChecks();
+    runDashboardDiagnosticsChecks();
     runAttentionProjectionChecks();
     runFavoriteProjectOrderChecks();
     runOpenProjectRuntimeIdentityChecks();
+    runWorkspaceHelperChecks();
     runCandidateFilterChecks();
+    runProjectCandidateChecks();
+    runSessionPathChecks();
+    runPendingTerminalMatcherChecks();
+    runTerminalCandidateChecks();
+    runPendingTerminalResolverChecks();
+    runScanOptionChecks();
+    runTerminalCwdChecks();
     runDisplayChecks();
     runPinStoreChecks();
+    await runPinControllerChecks();
+    runAliasStoreChecks();
+    runAliasControllerChecks();
+    await runProjectStateStoreChecks();
     runKeyChecks();
     runBatchAiSessionArchiveChecks();
     runActiveAiSessionTerminalHighlightChecks();
@@ -3767,6 +4720,9 @@ async function main() {
     runFavoriteDndChecks();
     runBatchAiSessionWebviewChecks();
     runAiSessionIncrementalRefreshSourceChecks();
+    runAiSessionReadCoordinatorChecks();
+    runOpenProjectAiSessionViewModelBuilderChecks();
+    runAiSessionProjectHydrationChecks();
     runAiSessionDashboardControllerChecks();
     runGitRepositoryDetectorChecks();
     runCodexSubagentSessionFilterChecks();
