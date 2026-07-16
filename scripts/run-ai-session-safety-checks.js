@@ -3946,11 +3946,69 @@ function runAiSessionDashboardWatcherCoalescingChecks() {
     assert.strictEqual(scheduled[2].delayMs, 700);
     scheduled[2].callback();
     assert.deepStrictEqual(refreshReasons, ['watcher', 'watcher']);
-    assert.strictEqual(messages.length, 2);
+    assert.strictEqual(messages.length, 1, 'unchanged coalesced watcher refreshes may be skipped after build');
 
     nowMs = 1350;
     controller.scheduleRefresh('attention');
     assert.strictEqual(scheduled[3].delayMs, 100, 'non-watcher refreshes should not be throttled by watcher coalescing');
+}
+
+async function runAiSessionDashboardUnchangedMessageSkipChecks() {
+    const messages = [];
+    const diagnostics = [];
+    let sessionName = 'Codex One';
+    const project = {
+        id: 'project-a',
+        path: '/work/app',
+        codexSessions: [{ id: 'session-a', name: sessionName }],
+        kimiSessions: [],
+        claudeSessions: [],
+    };
+    const controller = new AiSessionDashboardController({
+        providerIds: ['codex'],
+        isVisible: () => true,
+        invalidateCache: () => undefined,
+        watchSessionChanges: () => ({ dispose() {} }),
+        getGroups: () => [],
+        getCards: () => [project],
+        getOpenProjectAiSessionViewModel: item => ({
+            projectId: item.id,
+            projectKey: item.path,
+            activeProvider: 'codex',
+            expanded: true,
+            providers: [{ id: 'codex', label: 'Codex', count: 1 }],
+            sessionsByProvider: {
+                codex: [{ id: 'session-a', name: sessionName, provider: 'codex' }],
+            },
+        }),
+        nextSequence: () => messages.length + 1,
+        postMessage: message => {
+            messages.push(message);
+            return Promise.resolve(true);
+        },
+        refresh: () => undefined,
+        logError: error => { throw new Error(`Unexpected logError: ${error}`); },
+        logDiagnostic: event => diagnostics.push(event),
+        debounceMs: 1,
+        newSessionRefreshDelaysMs: [],
+        setTimeout: callback => {
+            callback();
+            return { disposed: false };
+        },
+        clearTimeout: () => undefined,
+    });
+
+    await controller.refreshNow('watcher');
+    await controller.refreshNow('watcher');
+    assert.strictEqual(messages.length, 1, 'unchanged watcher messages should not be posted twice');
+    assert.strictEqual(diagnostics.some(event => event.event === 'ai-session-message-skip' && event.reason === 'watcher'), true);
+
+    sessionName = 'Codex Two';
+    await controller.refreshNow('watcher');
+    assert.strictEqual(messages.length, 2, 'changed watcher messages must still be posted');
+
+    await controller.refreshNow('refresh');
+    assert.strictEqual(messages.length, 3, 'explicit refresh messages must not be suppressed by watcher dedupe');
 }
 
 function extractFunctionBody(source, functionName) {
@@ -5562,6 +5620,7 @@ async function main() {
     runAiSessionProjectHydrationChecks();
     runAiSessionDashboardControllerChecks();
     runAiSessionDashboardWatcherCoalescingChecks();
+    await runAiSessionDashboardUnchangedMessageSkipChecks();
     runGitRepositoryDetectorChecks();
     runCodexSubagentSessionFilterChecks();
     runCodexSessionActivityTimestampChecks();

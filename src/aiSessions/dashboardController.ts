@@ -37,6 +37,7 @@ export class AiSessionDashboardController {
     private watcherDisposables: DisposableLike[] = [];
     private pendingRefreshReason = 'refresh';
     private lastWatcherRefreshAtMs: number | null = null;
+    private lastPostedIncrementalMessageSignature: string | null = null;
 
     constructor(private readonly options: AiSessionDashboardControllerOptions) {
     }
@@ -93,11 +94,28 @@ export class AiSessionDashboardController {
         this.options.beforeRefresh?.(reason);
         try {
             const message = this.getUpdatedMessage(reason);
+            const signature = this.getIncrementalMessageSignature(message);
+            if (this.shouldSkipUnchangedMessage(reason) && signature === this.lastPostedIncrementalMessageSignature) {
+                this.options.logDiagnostic?.({
+                    event: 'ai-session-message-skip',
+                    reason,
+                    sequence: message.sequence,
+                    cardCount: message.searchCatalog.openProjects.length,
+                    openProjectCount: message.openProjects.length,
+                });
+                return;
+            }
+
+            if (this.shouldSkipUnchangedMessage(reason)) {
+                this.lastPostedIncrementalMessageSignature = signature;
+            }
             this.options.postMessage(message).then(delivered => {
                 if (!delivered) {
+                    this.lastPostedIncrementalMessageSignature = null;
                     this.options.refresh('ai-session-update-not-delivered');
                 }
             }, error => {
+                this.lastPostedIncrementalMessageSignature = null;
                 this.options.logError('Failed to post AI session update message.', error);
                 this.options.refresh('ai-session-update-post-error');
             });
@@ -175,5 +193,31 @@ export class AiSessionDashboardController {
         const minIntervalMs = Math.max(this.options.watcherRefreshMinIntervalMs || 0, this.options.debounceMs);
         const elapsedMs = Math.max(0, this.nowMs() - this.lastWatcherRefreshAtMs);
         return Math.max(this.options.debounceMs, minIntervalMs - elapsedMs);
+    }
+
+    private shouldSkipUnchangedMessage(reason: string): boolean {
+        return reason === 'watcher' || reason === 'attention';
+    }
+
+    private getIncrementalMessageSignature(message: AiSessionsUpdatedMessage): string {
+        return JSON.stringify({
+            openProjects: this.stableValue(message.openProjects),
+            searchCatalog: this.stableValue(message.searchCatalog),
+        });
+    }
+
+    private stableValue(value: unknown): unknown {
+        if (Array.isArray(value)) {
+            return value.map(item => this.stableValue(item));
+        }
+        if (!value || typeof value !== 'object') {
+            return value;
+        }
+        return Object.keys(value as Record<string, unknown>)
+            .sort()
+            .reduce((result, key) => {
+                result[key] = this.stableValue((value as Record<string, unknown>)[key]);
+                return result;
+            }, {} as Record<string, unknown>);
     }
 }
