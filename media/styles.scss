@@ -768,14 +768,16 @@ body .project {
 
 .todo-panel {
     display: grid;
-    gap: 10px;
-    padding: 8px 2px 18px;
+    gap: 12px;
+    padding: 8px 4px 18px;
     box-sizing: border-box;
 }
 
 .todo-toolbar,
 .todo-form-row,
 .todo-group-header,
+.todo-toolbar-actions,
+.todo-item-main,
 .todo-item-actions {
     display: flex;
     align-items: center;
@@ -783,35 +785,104 @@ body .project {
 }
 
 .todo-toolbar {
+    min-height: 36px;
+    padding: 6px 8px;
     justify-content: space-between;
-    flex-wrap: wrap;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 6px;
+    background: var(--vscode-sideBarSectionHeader-background, var(--vscode-list-inactiveSelectionBackground));
+    box-sizing: border-box;
 }
 
-.todo-toolbar button,
-.todo-group-actions button,
-.todo-item-actions button,
-.todo-add-form button,
-.todo-edit-form button {
-    min-height: 26px;
-    border: 1px solid var(--vscode-button-border, transparent);
+.todo-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+}
+
+.todo-summary strong {
+    color: var(--vscode-foreground);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.todo-toolbar-actions {
+    flex: 0 0 auto;
+}
+
+.todo-primary-button,
+.todo-secondary-button,
+.todo-quiet-button,
+.todo-icon-button {
+    border: 1px solid transparent;
     border-radius: 4px;
-    color: var(--vscode-button-foreground);
-    background: var(--vscode-button-background);
     font-family: var(--vscode-font-family);
     font-size: 11px;
+    line-height: 1;
     cursor: pointer;
 }
 
-.todo-toolbar button:hover,
-.todo-group-actions button:hover,
-.todo-item-actions button:hover,
-.todo-add-form button:hover,
-.todo-edit-form button:hover {
+.todo-primary-button,
+.todo-secondary-button,
+.todo-quiet-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 26px;
+    padding: 0 8px;
+}
+
+.todo-primary-button {
+    border-color: var(--vscode-button-border, transparent);
+    color: var(--vscode-button-foreground);
+    background: var(--vscode-button-background);
+    font-weight: 650;
+}
+
+.todo-primary-button:hover {
     background: var(--vscode-button-hoverBackground);
 }
 
+.todo-secondary-button,
+.todo-quiet-button {
+    color: var(--vscode-foreground);
+    background: transparent;
+}
+
+.todo-secondary-button:hover,
+.todo-quiet-button:hover,
+.todo-icon-button:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+.todo-primary-button svg,
+.todo-quiet-button svg,
+.todo-compose-icon svg,
+.todo-icon-button svg {
+    display: block;
+    width: 12px;
+    height: 12px;
+    fill: currentColor;
+}
+
+.todo-icon-button {
+    display: inline-grid;
+    width: 24px;
+    height: 24px;
+    place-items: center;
+    padding: 0;
+    color: var(--vscode-descriptionForeground);
+    background: transparent;
+}
+
+.todo-icon-button.danger:hover {
+    color: var(--vscode-errorForeground);
+}
+
 .todo-show-completed,
-.todo-summary,
 .todo-hidden-completed,
 .todo-group-empty,
 .todo-empty-state {
@@ -819,10 +890,42 @@ body .project {
     font-size: 11px;
 }
 
+.todo-show-completed {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+}
+
+.todo-compose-panel,
 .todo-add-form,
-.todo-edit-form {
+.todo-inline-editor {
     display: grid;
-    gap: 6px;
+    gap: 7px;
+}
+
+.todo-compose-panel {
+    padding: 9px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 6px;
+    background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+}
+
+.todo-compose-primary {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    gap: 7px;
+    align-items: center;
+}
+
+.todo-compose-icon {
+    display: grid;
+    width: 18px;
+    height: 18px;
+    place-items: center;
+    border-radius: 4px;
+    color: var(--vscode-button-foreground);
+    background: var(--vscode-button-background);
 }
 
 .todo-add-form input,
@@ -834,7 +937,7 @@ body .project {
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
-    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border: 1px solid transparent;
     border-radius: 4px;
     color: var(--vscode-input-foreground);
     background: var(--vscode-input-background);
@@ -842,11 +945,25 @@ body .project {
     font-size: 12px;
 }
 
+.todo-add-form input:focus,
+.todo-add-form textarea:focus,
+.todo-add-form select:focus,
+.todo-edit-form input:focus,
+.todo-edit-form textarea:focus,
+.todo-edit-form select:focus {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 0;
+}
+
 .todo-add-form input,
 .todo-edit-form input,
 .todo-add-form select,
 .todo-edit-form select {
     min-height: 28px;
+}
+
+.todo-title-input {
+    font-weight: 650;
 }
 
 .todo-add-form textarea,
@@ -864,18 +981,26 @@ body .project {
 
 .todo-groups {
     display: grid;
-    gap: 10px;
+    gap: 12px;
 }
 
 .todo-group {
     display: grid;
-    gap: 7px;
+    gap: 8px;
     border-top: 1px solid var(--vscode-panel-border);
-    padding-top: 10px;
+    padding-top: 12px;
 }
 
 .todo-group-header {
     justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.todo-group-title-block {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
 }
 
 .todo-group-header h2 {
@@ -889,6 +1014,15 @@ body .project {
     white-space: nowrap;
 }
 
+.todo-group-count {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--vscode-descriptionForeground);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .todo-group-actions {
     display: flex;
     flex: 0 0 auto;
@@ -897,7 +1031,7 @@ body .project {
 
 .todo-list {
     display: grid;
-    gap: 6px;
+    gap: 7px;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -905,12 +1039,17 @@ body .project {
 
 .todo-item {
     display: grid;
-    gap: 6px;
-    padding: 8px;
+    gap: 7px;
+    padding: 8px 9px;
     border: 1px solid var(--vscode-panel-border);
     border-left-width: 3px;
     border-radius: 6px;
-    background: var(--vscode-list-inactiveSelectionBackground);
+    background: var(--vscode-editorWidget-background, var(--vscode-list-inactiveSelectionBackground));
+    box-shadow: 0 1px 0 rgba(0, 0, 0, .08);
+}
+
+.todo-item:hover {
+    border-color: var(--vscode-focusBorder);
 }
 
 .todo-priority-high {
@@ -926,7 +1065,14 @@ body .project {
 }
 
 .todo-item.completed {
-    opacity: .72;
+    border-left-color: var(--vscode-panel-border);
+    opacity: .68;
+}
+
+.todo-item-main {
+    align-items: flex-start;
+    justify-content: space-between;
+    min-width: 0;
 }
 
 .todo-check {
@@ -935,6 +1081,10 @@ body .project {
     gap: 6px;
     align-items: start;
     min-width: 0;
+}
+
+.todo-check input {
+    margin-top: 1px;
 }
 
 .todo-check span {
@@ -951,24 +1101,64 @@ body .project {
 .todo-priority-badge {
     display: inline-block;
     width: fit-content;
-    margin-top: 5px;
-    padding: 1px 5px;
+    padding: 2px 6px;
     border: 1px solid var(--vscode-panel-border);
-    border-radius: 4px;
+    border-radius: 999px;
     color: var(--vscode-descriptionForeground);
     font-size: 10px;
+    font-weight: 650;
+    text-transform: uppercase;
+}
+
+.todo-priority-high .todo-priority-badge {
+    color: var(--vscode-testing-iconFailed);
+}
+
+.todo-priority-medium .todo-priority-badge {
+    color: var(--vscode-gitDecoration-modifiedResourceForeground);
+}
+
+.todo-priority-low .todo-priority-badge {
+    color: var(--vscode-gitDecoration-untrackedResourceForeground);
+}
+
+.todo-item-meta {
+    display: grid;
+    gap: 5px;
+    margin-left: 22px;
 }
 
 .todo-notes {
-    margin: 5px 0 0 22px;
+    margin: 0;
     color: var(--vscode-descriptionForeground);
     font-size: 11px;
     white-space: pre-wrap;
 }
 
 .todo-item-actions {
+    flex: 0 0 auto;
     justify-content: flex-end;
-    margin-top: 4px;
+}
+
+.todo-inline-editor {
+    padding: 8px;
+    border: 1px solid var(--vscode-focusBorder);
+    border-radius: 5px;
+    background: var(--vscode-input-background);
+}
+
+.todo-empty-state {
+    display: grid;
+    gap: 3px;
+    padding: 18px 8px;
+    border: 1px dashed var(--vscode-panel-border);
+    border-radius: 6px;
+    text-align: center;
+}
+
+.todo-empty-state strong {
+    color: var(--vscode-foreground);
+    font-size: 12px;
 }
 
 .open-current-workspace-group {
