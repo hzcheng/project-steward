@@ -17,8 +17,10 @@ function applyOpenProjectsUpdate(message) {
         return false;
     }
 
+    var previousHtml = wrapper.innerHTML;
     wrapper.innerHTML = message.html;
     if (!isOpenProjectsUpdateDomConsistent(message)) {
+        wrapper.innerHTML = previousHtml;
         return false;
     }
     if (window.__projectStewardDashboard) {

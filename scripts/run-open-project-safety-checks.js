@@ -1210,15 +1210,16 @@ function runOpenProjectIncrementalRenderingChecks() {
     assert.strictEqual(applyOpenProjectsUpdate({ version: 2, html: '<div>bad</div>' }), false);
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.ok(webviewScript.includes("type: 'open-projects-rendered'"));
+    const validNavigationHtml = [
+        '<div class="group open-current-workspace-group"><div class="project" data-id="current"></div></div>',
+        '<div class="group open-other-windows-group"><div class="project" data-project-navigation data-id="other"></div></div>',
+    ].join('');
     assert.strictEqual(applyOpenProjectsUpdate({
         type: 'open-projects-updated',
         version: 1,
         semanticRevision: 'revision-valid-navigation',
         projectCount: 2,
-        html: [
-            '<div class="group open-current-workspace-group"><div class="project" data-id="current"></div></div>',
-            '<div class="group open-other-windows-group"><div class="project" data-project-navigation data-id="other"></div></div>',
-        ].join(''),
+        html: validNavigationHtml,
         searchCatalog: {
             sessions: [],
             openProjects: [
@@ -1243,6 +1244,7 @@ function runOpenProjectIncrementalRenderingChecks() {
             savedProjects: [],
         },
     }), false, 'OPEN update must reject DOM that loses OTHER WINDOWS navigation cards');
+    assert.strictEqual(wrapper.innerHTML, validNavigationHtml, 'OPEN update must restore previous DOM after rejecting an inconsistent update');
 
     const postOpenProjectsUpdated = extractFunctionBody(dashboard, 'postOpenProjectsUpdated');
     assert.ok(postOpenProjectsUpdated.includes('openProjectDashboardController.postUpdated()'));
