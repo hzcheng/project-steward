@@ -16,6 +16,12 @@ Module._load = function (request, parent, isMain) {
 const protocol = require('../out/openProjects/protocol');
 const projection = require('../out/openProjects/projection');
 const { default: OpenProjectBridgeClient } = require('../out/openProjects/bridgeClient');
+const { OpenProjectWorkspaceController } = require('../out/openProjects/workspaceController');
+const { CurrentProjectDetailsResolver } = require('../out/projects/currentProjectDetails');
+const { ProjectManualEditController } = require('../out/projects/projectManualEditController');
+const { ProjectOpenController } = require('../out/projects/projectOpenController');
+const { ProjectMutationController } = require('../out/projects/projectMutationController');
+const { ProjectPromptController } = require('../out/projects/projectPromptController');
 const models = require('../out/models');
 const { OpenProjectStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectStore');
 const { OpenProjectCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectCoordinator');
@@ -642,7 +648,6 @@ async function runBridgeClientChecks() {
 
 function runDashboardBridgeLifecycleChecks() {
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
-    const rawOpenProjects = extractFunctionBody(dashboard, 'getRawOpenProjects');
     const openProjects = extractFunctionBody(dashboard, 'getOpenProjects');
     const refreshAfterMutation = extractFunctionBody(dashboard, 'refreshAfterMutation');
     const showSteward = extractFunctionBody(dashboard, 'showSteward');
@@ -652,13 +657,52 @@ function runDashboardBridgeLifecycleChecks() {
         dashboard.indexOf("'add-project': async e =>")
     );
 
-    assert.ok(rawOpenProjects.includes('getOpenProjectsFromWorkspace('));
-    assert.ok(!rawOpenProjects.includes('withAiSessions('));
-    assert.ok(openProjects.includes('withAiSessions(getRawOpenProjects())'));
+    const workspaceControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'openProjects', 'workspaceController.ts'), 'utf8');
+    const projectMutationControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'projects', 'projectMutationController.ts'), 'utf8');
+    assert.ok(workspaceControllerSource.includes('export class OpenProjectWorkspaceController'));
+    assert.ok(workspaceControllerSource.includes('getRawOpenProjects('));
+    assert.ok(workspaceControllerSource.includes('publish('));
+    assert.ok(workspaceControllerSource.includes('getOpenProjectUri('));
+    assert.ok(workspaceControllerSource.includes('getOpenProjectsFromWorkspace('));
+    assert.ok(workspaceControllerSource.includes('createOpenProjectRecords('));
+    assert.ok(!dashboard.includes('function getRawOpenProjects('));
+    assert.ok(!dashboard.includes('function publishOpenProjects('));
+    assert.ok(!dashboard.includes('function getOpenProjectUri('));
+    assert.ok(openProjects.includes('withAiSessions(openProjectWorkspaceController.getRawOpenProjects())'));
     assert.ok(dashboard.includes("import OpenProjectBridgeClient from './openProjects/bridgeClient';"));
-    assert.ok(dashboard.includes("import { createOpenProjectRecords } from './openProjects/projection';"));
     assert.ok(dashboard.includes("import { OpenProjectDashboardController } from './openProjects/dashboardController';"));
+    assert.ok(dashboard.includes("import { OpenProjectWorkspaceController } from './openProjects/workspaceController';"));
+    assert.ok(dashboard.includes("import { CurrentProjectDetailsResolver } from './projects/currentProjectDetails';"));
+    assert.ok(dashboard.includes("import { ProjectManualEditController } from './projects/projectManualEditController';"));
+    assert.ok(dashboard.includes("import { ProjectOpenController } from './projects/projectOpenController';"));
+    assert.ok(dashboard.includes("import { ProjectMutationController } from './projects/projectMutationController';"));
+    assert.ok(dashboard.includes("import { ProjectPromptController } from './projects/projectPromptController';"));
+    assert.ok(!dashboard.includes('async function addProject('));
+    assert.ok(!dashboard.includes('async function saveOpenProject('));
+    assert.ok(!dashboard.includes('async function saveProject('));
+    assert.ok(!dashboard.includes('async function editProject('));
+    assert.ok(!dashboard.includes('async function editProjectColor('));
+    assert.ok(!dashboard.includes('async function editProjectsManuallyPerCommand('));
+    assert.ok(!dashboard.includes('async function removeProjectPerCommand('));
+    assert.ok(!dashboard.includes('async function removeGroupPerCommand('));
+    assert.ok(!dashboard.includes('function getGroupsTempFilePath('));
+    assert.ok(!dashboard.includes('async function getCurrentProjectDetailsForSave('));
+    assert.ok(!dashboard.includes('async function getProjectDetailsForSave('));
+    assert.ok(!dashboard.includes('async function openProject('));
+    assert.ok(!dashboard.includes('async function openFolderUri('));
+    assert.ok(!dashboard.includes('function projectPathMatchesCurrentWorkspace('));
+    assert.ok(!dashboard.includes('async function addToWorkspace('));
+    assert.ok(!dashboard.includes('async function queryProjectFields('));
+    assert.ok(!dashboard.includes('async function queryProjectDescription('));
+    assert.ok(!dashboard.includes('async function queryGroup('));
+    assert.ok(!dashboard.includes('async function queryProjectPath('));
+    assert.ok(!dashboard.includes('async function queryProjectColor('));
+    assert.ok(!dashboard.includes("import { createOpenProjectRecords } from './openProjects/projection';"));
+    assert.ok(dashboard.includes('const projectManualEditController = new ProjectManualEditController({'));
+    assert.ok(dashboard.includes('const projectMutationController = new ProjectMutationController({'));
+    assert.ok(dashboard.includes('const projectPromptController = new ProjectPromptController({'));
     assert.ok(dashboard.includes('const openProjectDashboardController = new OpenProjectDashboardController({'));
+    assert.ok(dashboard.includes('const openProjectWorkspaceController = new OpenProjectWorkspaceController({'));
     assert.ok(dashboard.includes('new OpenProjectBridgeClient('));
     assert.ok(dashboard.includes("reportDiagnostic: event => logOpenProjectDiagnostic('Workspace', event)"));
     assert.ok(dashboard.includes("reportBridgeDiagnostic: event => logOpenProjectDiagnostic('Bridge', event)"));
@@ -666,7 +710,7 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(diagnosticsSource.includes("'open-project-diagnostics.jsonl'"));
     assert.ok(dashboard.includes('new DashboardDiagnostics({'));
     assert.ok(!dashboard.includes('function logOpenProjectDiagnostic('));
-    assert.ok(dashboard.includes('createOpenProjectRecords(getRawOpenProjects())'));
+    assert.ok(dashboard.includes('openProjectWorkspaceController.publish('));
     assert.ok(dashboard.includes('context.subscriptions.push(openProjectBridgeClient);'));
     assert.ok(dashboard.includes('get openProjects() { return getOpenProjectCards() }'));
     assert.ok(projectedOpenProjects.includes('openProjectDashboardController.getCards()'));
@@ -674,20 +718,203 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(selectedProjectHandler.includes('openProjectDashboardController.getNavigationCard(projectId)'));
     assert.ok(selectedProjectHandler.indexOf('projectService.getProject(projectId)') < selectedProjectHandler.indexOf('getOpenProjects().find'));
     assert.ok(selectedProjectHandler.indexOf('getOpenProjects().find') < selectedProjectHandler.indexOf('openProjectDashboardController.getNavigationCard(projectId)'));
-    assert.ok(selectedProjectHandler.includes('await openProject(project, isProjectNavigation ? ProjectOpenType.Default : projectOpenType);'));
+    assert.ok(selectedProjectHandler.includes('await projectOpenController.openProject(project, isProjectNavigation ? ProjectOpenType.Default : projectOpenType);'));
+    assert.ok(dashboard.includes('await projectMutationController.addProject('));
+    assert.ok(dashboard.includes('await projectMutationController.saveOpenProject('));
+    assert.ok(dashboard.includes('await projectMutationController.editProject('));
+    assert.ok(dashboard.includes('await projectMutationController.editProjectColor('));
+    assert.ok(dashboard.includes('await projectManualEditController.editProjectsManually()'));
+    assert.ok(dashboard.includes('await projectRemovalController.removeProjectPerCommand()'));
+    assert.ok(dashboard.includes('await groupCommandController.removeGroupPerCommand()'));
+    assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryProjectFields('));
+    assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryGroup('));
+    assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryProjectDescription('));
+    assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryProjectColor('));
     assert.ok(!selectedProjectHandler.includes('e.uri'));
     assert.ok(!selectedProjectHandler.includes('projectUri'));
     assert.ok(dashboard.includes('vscode.window.onDidChangeWindowState(windowState =>'));
     assert.ok(dashboard.includes('if (windowState.focused)'));
-    assert.ok(dashboard.includes('publishOpenProjects(true);'));
+    assert.ok(dashboard.includes('openProjectWorkspaceController.publish(true);'));
     assert.ok(
-        refreshAfterMutation.includes('publishOpenProjects();'),
+        refreshAfterMutation.includes('openProjectWorkspaceController.publish();'),
         'saved project metadata mutations must republish even when configuration storage is disabled'
     );
     assert.ok(
-        showSteward.includes('publishOpenProjects();'),
+        showSteward.includes('openProjectWorkspaceController.publish();'),
         'legacy metadata mutation paths that reveal the steward must also republish'
     );
+}
+
+async function runOpenProjectWorkspaceControllerChecks() {
+    const fileUri = {
+        scheme: 'file',
+        fsPath: '/work/shared',
+        path: '/work/shared',
+        toString: () => 'file:///work/shared',
+    };
+    const saved = new models.Project('Saved Shared', '/work/shared', 'Saved description');
+    saved.color = '#123456';
+    let publishInput = null;
+    const controller = new OpenProjectWorkspaceController({
+        getWorkspaceFile: () => null,
+        getWorkspaceFolders: () => [{ uri: fileUri, name: 'shared' }],
+        getSavedProjects: () => [saved],
+        getCurrentRemoteName: () => undefined,
+        isFolderGitRepo: projectPath => projectPath === '/work/shared',
+        publishRecords: async (records, followsFocusEvent) => {
+            publishInput = { records, followsFocusEvent };
+        },
+    });
+
+    const rawOpenProjects = controller.getRawOpenProjects();
+    assert.strictEqual(rawOpenProjects.length, 1);
+    assert.strictEqual(rawOpenProjects[0].id, '__openProjects-0');
+    assert.strictEqual(rawOpenProjects[0].name, 'Saved Shared');
+    assert.strictEqual(rawOpenProjects[0].description, 'Saved description');
+    assert.strictEqual(rawOpenProjects[0].path, '/work/shared');
+    assert.strictEqual(rawOpenProjects[0].isGitRepo, true);
+    assert.strictEqual(controller.getOpenProjectUri('__openProjects-0'), fileUri);
+    assert.strictEqual(controller.getOpenProjectUri('__openProjects-1'), null);
+
+    await controller.publish(true);
+    assert.strictEqual(publishInput.followsFocusEvent, true);
+    assert.deepStrictEqual(publishInput.records.map(record => ({
+        localProjectId: record.localProjectId,
+        name: record.name,
+        uri: record.uri,
+        color: record.color,
+    })), [{
+        localProjectId: '__openProjects-0',
+        name: 'Saved Shared',
+        uri: '/work/shared',
+        color: '#123456',
+    }]);
+}
+
+async function runCurrentProjectDetailsResolverChecks() {
+    const workspaceUri = {
+        scheme: 'file',
+        fsPath: '/work/current',
+        path: '/work/current',
+        toString: () => 'file:///work/current',
+    };
+    const calls = [];
+    const resolver = new CurrentProjectDetailsResolver({
+        getWorkspaceFile: () => null,
+        getWorkspaceFolders: () => [{ uri: workspaceUri, name: 'current' }],
+        getRemoteName: () => 'dev-container',
+        getProjectDetailsForSave: async (uri, remoteName) => {
+            calls.push([uri, remoteName]);
+            return { path: uri.fsPath, remoteType: 3 };
+        },
+    });
+
+    assert.deepStrictEqual(await resolver.getCurrentProjectDetailsForSave(), { path: '/work/current', remoteType: 3 });
+    assert.deepStrictEqual(calls, [[workspaceUri, 'dev-container']]);
+
+    const emptyResolver = new CurrentProjectDetailsResolver({
+        getWorkspaceFile: () => null,
+        getWorkspaceFolders: () => [],
+        getRemoteName: () => undefined,
+        getProjectDetailsForSave: async () => {
+            throw new Error('must not resolve without a workspace');
+        },
+    });
+    assert.strictEqual(await emptyResolver.getCurrentProjectDetailsForSave(), null);
+}
+
+async function runProjectOpenControllerChecks() {
+    const commands = [];
+    const warnings = [];
+    const errors = [];
+    const workspaceUpdates = [];
+    const stateUpdates = [];
+    const folderUri = {
+        scheme: 'file',
+        fsPath: '/work/target',
+        path: '/work/target',
+        toString: () => 'file:///work/target',
+    };
+    const currentUri = {
+        scheme: 'file',
+        fsPath: '/work/current',
+        path: '/work/current',
+        toString: () => 'file:///work/current',
+    };
+    const fileUris = new Map([
+        ['/work/target', folderUri],
+        ['/work/current', currentUri],
+    ]);
+    const fileUri = value => {
+        if (!fileUris.has(value)) {
+            fileUris.set(value, {
+                scheme: 'file',
+                fsPath: value,
+                path: value,
+                toString: () => `file://${value}`,
+            });
+        }
+        return fileUris.get(value);
+    };
+    const parseUri = value => ({
+        scheme: value.split(':')[0],
+        authority: value.startsWith('vscode-remote://') ? value.replace('vscode-remote://', '').split('/')[0] : '',
+        fsPath: value,
+        path: value.replace(/^vscode-remote:\/\/[^/]+/, '') || '/',
+        toString: () => value,
+    });
+    const controller = new ProjectOpenController({
+        getWorkspaceFile: () => null,
+        getWorkspaceFolders: () => [{ uri: currentUri, name: 'current' }],
+        getPrependVscodeUrlToWslRemotes: () => true,
+        getProjectPathType: async projectPath => projectPath.endsWith('.code-workspace') ? models.ProjectPathType.WorkspaceFile : models.ProjectPathType.Folder,
+        getFoldersFromWorkspaceFile: async () => ['/work/one', '/work/two'],
+        showWarningMessage: message => warnings.push(message),
+        showInformationMessage: message => warnings.push(message),
+        showErrorMessage: message => errors.push(message),
+        executeCommand: async (command, ...args) => commands.push([command, ...args]),
+        updateWorkspaceFolders: (start, deleteCount, ...folders) => {
+            workspaceUpdates.push([start, deleteCount, folders]);
+            return true;
+        },
+        updateReopenReason: reason => stateUpdates.push(reason),
+        fileUri,
+        parseUri,
+    });
+
+    await controller.openProject({ name: 'Current', path: '/work/current' }, models.ProjectOpenType.Default);
+    assert.deepStrictEqual(commands, []);
+
+    await controller.openProject({ name: 'Target', path: '/work/target' }, models.ProjectOpenType.Default);
+    assert.deepStrictEqual(commands.pop(), ['vscode.openFolder', folderUri, { forceNewWindow: true }]);
+
+    await controller.openProject({ name: 'Relative', path: 'relative' }, models.ProjectOpenType.Default);
+    assert.deepStrictEqual(commands.pop(), ['vscode.openFolder', fileUri('/work/current/relative'), { forceNewWindow: true }]);
+
+    await controller.openProject({ name: 'Folder', path: '/work/folder' }, models.ProjectOpenType.AddToWorkspace);
+    assert.strictEqual(workspaceUpdates.length, 1);
+    assert.strictEqual(workspaceUpdates[0][2][0].name, 'Folder');
+
+    await controller.openProject({ name: 'SSH', path: 'vscode-remote://ssh-remote+host', remoteType: models.ProjectRemoteType.SSH }, models.ProjectOpenType.NewWindow);
+    assert.deepStrictEqual(commands.pop(), ['vscode.newWindow', { remoteAuthority: 'ssh-remote+host', reuseWindow: false }]);
+
+    const noWorkspaceController = new ProjectOpenController({
+        getWorkspaceFile: () => null,
+        getWorkspaceFolders: () => [],
+        getPrependVscodeUrlToWslRemotes: () => true,
+        getProjectPathType: async () => models.ProjectPathType.Folder,
+        getFoldersFromWorkspaceFile: async () => [],
+        showWarningMessage: message => warnings.push(message),
+        showInformationMessage: message => warnings.push(message),
+        showErrorMessage: message => errors.push(message),
+        executeCommand: async () => undefined,
+        updateWorkspaceFolders: () => false,
+        updateReopenReason: reason => stateUpdates.push(reason),
+        fileUri,
+        parseUri,
+    });
+    await noWorkspaceController.openProject({ name: 'Relative', path: 'relative' }, models.ProjectOpenType.Default);
+    assert.ok(warnings.includes('Tried to open a project with a relative path, but no workspace is open.'));
 }
 
 function runWebviewRefreshFocusChecks() {
@@ -825,7 +1052,7 @@ async function runDashboardMigrationPublicationChecks() {
     let showStewardCalls = 0;
     const checkDataMigration = new Function(
         'projectService',
-        'publishOpenProjects',
+        'openProjectWorkspaceController',
         'vscode',
         'showSteward',
         `return async function checkDataMigration(openStewardAfterMigrate = false) {${checkDataMigrationBody}};`
@@ -838,7 +1065,7 @@ async function runDashboardMigrationPublicationChecks() {
                 return migrated;
             },
         },
-        () => publications.push(currentMetadata),
+        { publish: () => publications.push(currentMetadata) },
         { window: { showInformationMessage: message => informationMessages.push(message) } },
         () => { showStewardCalls += 1; }
     );
@@ -1571,6 +1798,9 @@ async function main() {
     runRecordChecks();
     runProjectionChecks();
     await runBridgeClientChecks();
+    await runOpenProjectWorkspaceControllerChecks();
+    await runCurrentProjectDetailsResolverChecks();
+    await runProjectOpenControllerChecks();
     runDashboardBridgeLifecycleChecks();
     runWebviewRefreshFocusChecks();
     runOpenProjectIncrementalRenderingChecks();

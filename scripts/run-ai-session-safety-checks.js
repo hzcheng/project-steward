@@ -83,6 +83,9 @@ const openProjectService = require('../out/projects/openProjectService');
 const webviewContentModule = require('../out/webview/webviewContent');
 const dashboardViewModel = require('../out/webview/dashboardViewModel');
 const AiSessionDashboardController = require('../out/aiSessions/dashboardController').AiSessionDashboardController;
+const AiSessionCommandController = require('../out/aiSessions/commandController').AiSessionCommandController;
+const AiSessionCreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
+const AiSessionResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 Module._load = originalModuleLoad;
 
 function createTestUri(value) {
@@ -860,6 +863,265 @@ async function runProjectStateStoreChecks() {
     ]);
 }
 
+async function runAiSessionCommandControllerChecks() {
+    const projects = [
+        { id: 'project-a', path: '/work/a' },
+        { id: 'project-b', path: '/work/b' },
+    ];
+    const expanded = [];
+    const activeProviders = [];
+    const refreshes = [];
+    const clipboardWrites = [];
+    const infoMessages = [];
+    const aliases = {};
+    const pinToggles = [];
+    const inputPrompts = [];
+    let pinToggleResult = true;
+    let nextInputValue = '  Renamed Chat  ';
+    const controller = new AiSessionCommandController({
+        getOpenProjects: () => projects,
+        getProjectKey: project => `key:${project.path}`,
+        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
+        setExpanded: async (projectKey, value) => expanded.push([projectKey, value]),
+        setActiveProvider: async (projectKey, providerId) => activeProviders.push([projectKey, providerId]),
+        togglePin: (providerId, sessionId) => {
+            pinToggles.push([providerId, sessionId]);
+            return pinToggleResult;
+        },
+        getAliases: () => aliases,
+        saveAliases: values => {
+            const savedValues = { ...values };
+            Object.keys(aliases).forEach(key => delete aliases[key]);
+            Object.assign(aliases, savedValues);
+        },
+        getOriginalName: (providerId, sessionId) => `${providerId}:${sessionId}:original`,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        showInputBox: async options => {
+            inputPrompts.push(options);
+            return nextInputValue;
+        },
+        writeClipboard: async value => clipboardWrites.push(value),
+        showInformationMessage: message => infoMessages.push(message),
+        refresh: () => refreshes.push('refresh'),
+    });
+
+    await controller.toggleSessionsExpanded('project-a', true);
+    assert.deepStrictEqual(expanded, [['key:/work/a', true]]);
+
+    await controller.selectProvider('project-a', 'kimi');
+    assert.deepStrictEqual(activeProviders, [['key:/work/a', 'kimi']]);
+    assert.strictEqual(refreshes.length, 1);
+
+    await controller.selectProvider('missing', 'codex');
+    await controller.selectProvider('project-a', 'invalid');
+    assert.strictEqual(activeProviders.length, 1);
+
+    await controller.togglePin('codex', 'session-1');
+    assert.deepStrictEqual(pinToggles, [['codex', 'session-1']]);
+    assert.strictEqual(refreshes.length, 2);
+    pinToggleResult = false;
+    await controller.togglePin('codex', 'session-2');
+    assert.deepStrictEqual(pinToggles, [['codex', 'session-1'], ['codex', 'session-2']]);
+    assert.strictEqual(refreshes.length, 2);
+
+    await controller.renameSession('codex', 'session-1');
+    assert.strictEqual(aliases['codex:session-1'], 'Renamed Chat');
+    assert.strictEqual(inputPrompts[0].placeHolder, 'codex:session-1:original');
+    assert.strictEqual(refreshes.length, 3);
+
+    nextInputValue = 'codex:session-1:original';
+    await controller.renameSession('codex', 'session-1');
+    assert.strictEqual(aliases['codex:session-1'], undefined);
+
+    await controller.copySessionId('session-1');
+    assert.deepStrictEqual(clipboardWrites, ['session-1']);
+    assert.deepStrictEqual(infoMessages, ['Chat ID copied to clipboard.']);
+}
+
+async function runAiSessionCreationControllerChecks() {
+    const projects = [
+        { id: 'project-a', name: 'Project A', path: '/work/a' },
+    ];
+    const warnings = [];
+    const terminals = [];
+    const tracked = [];
+    const sent = [];
+    const scheduled = [];
+    const existingSessionInputs = [];
+    let nextInputValue = '  Test Title  ';
+    let usableCwd = '/work/a';
+    const controller = new AiSessionCreationController({
+        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
+        getOpenProjects: () => projects,
+        getProviderLabel: providerId => providerId.toUpperCase(),
+        getProvider: providerId => ({
+            id: providerId,
+            label: providerId.toUpperCase(),
+            terminalNamePrefix: `${providerId}-terminal`,
+        }),
+        getTerminalCwd: project => project.path,
+        getUsableTerminalCwd: () => usableCwd,
+        showInputBox: async () => nextInputValue,
+        showWarningMessage: message => warnings.push(message),
+        createTerminal: options => {
+            const terminal = { name: options.name, showCalls: 0, show() { this.showCalls += 1; } };
+            terminals.push({ terminal, options });
+            return { terminal, cwdAccepted: true };
+        },
+        getExistingSessionIdsForCwd: (providerId, cwd) => {
+            existingSessionInputs.push([providerId, cwd]);
+            return [`existing:${providerId}:${cwd}`];
+        },
+        getPendingMarkerPath: providerId => `/tmp/${providerId}.marker`,
+        trackPendingTerminal: pending => tracked.push(pending),
+        sendNewSessionCommand: async (providerId, terminal, cwd, title, markerPath) => sent.push([providerId, terminal, cwd, title, markerPath]),
+        scheduleNewSessionRefresh: providerId => scheduled.push(providerId),
+    });
+
+    await controller.createSession('missing', 'codex');
+    assert.deepStrictEqual(warnings, ['Open project not found.']);
+    assert.strictEqual(terminals.length, 0);
+
+    await controller.createSession('project-a', 'invalid');
+    assert.strictEqual(terminals.length, 0);
+
+    nextInputValue = undefined;
+    await controller.createSession('project-a', 'codex');
+    assert.strictEqual(terminals.length, 0);
+
+    nextInputValue = '  Test Title  ';
+    await controller.createSession('project-a', 'codex');
+    assert.strictEqual(terminals[0].options.name, 'codex-terminal: Project A');
+    assert.strictEqual(terminals[0].options.cwd, '/work/a');
+    assert.strictEqual(tracked[0].provider, 'codex');
+    assert.strictEqual(tracked[0].cwd, '/work/a');
+    assert.deepStrictEqual(tracked[0].excludedSessionIds, ['existing:codex:/work/a']);
+    assert.strictEqual(tracked[0].title, 'Test Title');
+    assert.deepStrictEqual(sent[0], ['codex', terminals[0].terminal, '/work/a', 'Test Title', '/tmp/codex.marker']);
+    assert.deepStrictEqual(scheduled, ['codex']);
+    assert.strictEqual(terminals[0].terminal.showCalls, 1);
+
+    usableCwd = null;
+    nextInputValue = '';
+    await controller.createSession('project-a', 'kimi');
+    assert.strictEqual(terminals[1].options.cwd, null);
+    assert.deepStrictEqual(existingSessionInputs[1], ['kimi', '/work/a']);
+    assert.strictEqual(tracked[1].cwd, '/work/a');
+    assert.deepStrictEqual(sent[1], ['kimi', terminals[1].terminal, null, '', '/tmp/kimi.marker']);
+}
+
+async function runAiSessionResumeControllerChecks() {
+    const session = { id: 'session-a', name: 'Session A', cwd: '/work/a', updatedAt: '2026-07-16T10:00:00Z' };
+    const projects = [
+        { id: 'project-a', name: 'Project A', path: '/work/a' },
+    ];
+    const warnings = [];
+    const shown = [];
+    const begins = [];
+    const finishes = [];
+    const created = [];
+    const tracked = [];
+    const sent = [];
+    const synced = [];
+    const pendingLookups = [];
+    let existingEntry = null;
+    let beginResult = true;
+    let createCwdAccepted = false;
+    let pendingTerminal = null;
+    let rejectResumeSend = false;
+    const makeTerminal = name => ({ name, show() { shown.push(name); } });
+    const controller = new AiSessionResumeController({
+        getOpenProjects: () => projects,
+        getProvider: providerId => ({ label: providerId.toUpperCase(), terminalEnvKey: `${providerId.toUpperCase()}_SESSION_ID` }),
+        getProjectSession: (project, providerId, sessionId) => project.id === 'project-a' && providerId === 'codex' && sessionId === session.id ? session : null,
+        getTerminalCwd: () => '/work/a',
+        getTerminalName: (providerId, value) => `${providerId}: ${value.name}`,
+        getComparableCwd: () => '/work/a',
+        getUsableTerminalCwd: cwd => cwd,
+        normalizeProjectPath: cwd => cwd,
+        getExistingTerminal: () => existingEntry,
+        isTerminalComplete: entry => Boolean(entry.complete),
+        beginResume: (providerId, sessionId) => {
+            begins.push([providerId, sessionId]);
+            return beginResult;
+        },
+        finishResume: (providerId, sessionId) => finishes.push([providerId, sessionId]),
+        getMarkerPath: (providerId, sessionId) => `/tmp/${providerId}-${sessionId}.marker`,
+        findPendingTerminalForSession: (providerId, sessionId, cwd, updatedAt) => {
+            pendingLookups.push([providerId, sessionId, cwd, updatedAt]);
+            return pendingTerminal;
+        },
+        createTerminal: options => {
+            const terminal = makeTerminal(`created:${created.length}`);
+            created.push(options);
+            return { terminal, cwdAccepted: createCwdAccepted };
+        },
+        track: (providerId, sessionId, entry) => tracked.push([providerId, sessionId, entry]),
+        sendResumeCommand: async (providerId, terminal, sessionId, cwd, markerPath) => {
+            if (rejectResumeSend) {
+                throw new Error('send failed');
+            }
+            sent.push([providerId, terminal, sessionId, cwd, markerPath]);
+        },
+        showWarningMessage: message => warnings.push(message),
+        syncActiveTerminal: () => synced.push('sync'),
+        logError() {},
+        nowMs: () => 123456,
+    });
+
+    await controller.resumeProjectSession('project-a', null, session.id);
+    assert.strictEqual(begins.length, 0);
+
+    await controller.resumeProjectSession('project-a', 'codex', 'missing');
+    assert.deepStrictEqual(warnings, ['Selected CODEX session not found.']);
+    assert.strictEqual(begins.length, 0);
+
+    existingEntry = { terminal: makeTerminal('existing-running'), markerPath: '/tmp/existing.marker', complete: false };
+    await controller.resumeProjectSession('project-a', 'codex', session.id);
+    assert.deepStrictEqual(shown, ['existing-running']);
+    assert.strictEqual(begins.length, 0);
+
+    existingEntry = null;
+    beginResult = false;
+    await controller.resumeProjectSession('project-a', 'codex', session.id);
+    assert.deepStrictEqual(begins, [['codex', session.id]]);
+    assert.strictEqual(created.length, 0);
+
+    beginResult = true;
+    await controller.resumeProjectSession('project-a', 'codex', session.id);
+    assert.strictEqual(created[0].name, 'codex: Session A');
+    assert.deepStrictEqual(created[0].env, { CODEX_SESSION_ID: session.id });
+    assert.deepStrictEqual(pendingLookups[0], ['codex', session.id, '/work/a', session.updatedAt]);
+    assert.deepStrictEqual(tracked[0][0], 'codex');
+    assert.strictEqual(tracked[0][2].markerPath, `/tmp/codex-${session.id}.marker`);
+    assert.strictEqual(tracked[0][2].runStartedAtMs, 123456);
+    assert.deepStrictEqual(sent[0], ['codex', tracked[0][2].terminal, session.id, null, `/tmp/codex-${session.id}.marker`]);
+    assert.deepStrictEqual(finishes.slice(-1)[0], ['codex', session.id]);
+    assert.deepStrictEqual(synced, ['sync']);
+
+    createCwdAccepted = true;
+    pendingTerminal = { terminal: makeTerminal('pending'), markerPath: '/tmp/pending.marker' };
+    await controller.resumeProjectSession('project-a', 'codex', session.id);
+    assert.strictEqual(created.length, 1);
+    assert.strictEqual(tracked[1][2].terminal, pendingTerminal.terminal);
+    assert.deepStrictEqual(sent[1], ['codex', pendingTerminal.terminal, session.id, '/work/a', '/tmp/pending.marker']);
+
+    pendingTerminal = null;
+    rejectResumeSend = true;
+    const finishCountBeforeReject = finishes.length;
+    const syncCountBeforeReject = synced.length;
+    let rejected = false;
+    try {
+        await controller.resumeProjectSession('project-a', 'codex', session.id);
+    } catch (error) {
+        rejected = true;
+        assert.strictEqual(error.message, 'send failed');
+    }
+    assert.strictEqual(rejected, true);
+    assert.strictEqual(finishes.length, finishCountBeforeReject + 1);
+    assert.strictEqual(synced.length, syncCountBeforeReject);
+}
+
 function runKeyChecks() {
     const isProviderId = value => value === 'codex' || value === 'kimi' || value === 'claude';
 
@@ -1589,10 +1851,11 @@ function runWebviewContentChecks() {
     const insideProjectClick = extractFunctionBody(webviewProjectScripts, 'onInsideProjectClick');
     const evaluateAttentionFunction = extractFunctionBody(dashboard, 'evaluateAiSessionAttention');
     const withAiSessionsFunction = extractFunctionBody(dashboard, 'withAiSessions');
-    const singleArchiveFunction = extractFunctionBody(dashboard, 'archiveAiSession');
-    const batchArchiveFunction = extractFunctionBody(dashboard, 'archiveAiSessions');
-    const archiveItemFunction = extractFunctionBody(dashboard, 'archiveAiSessionItem');
-    const batchArchiveLogFunction = extractFunctionBody(dashboard, 'logBatchAiSessionArchiveResult');
+    const archiveControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'archiveController.ts'), 'utf8');
+    const singleArchiveFunction = extractMethodBody(archiveControllerSource, 'archiveSession');
+    const batchArchiveFunction = extractMethodBody(archiveControllerSource, 'archiveSessions');
+    const archiveItemFunction = extractMethodBody(archiveControllerSource, 'archiveSessionItem');
+    const batchArchiveLogFunction = extractMethodBody(archiveControllerSource, 'logBatchAiSessionArchiveResult');
     const projectWindowColorService = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'projectWindowColorService.ts'), 'utf8');
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
@@ -1638,8 +1901,10 @@ function runWebviewContentChecks() {
     assert.ok(!evaluateAttentionFunction.includes('activityToken'));
     assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
     const pendingTerminalResolverSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'pendingTerminalResolver.ts'), 'utf8');
+    const resumeControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'resumeController.ts'), 'utf8');
     assert.ok(pendingTerminalResolverSource.includes('runStartedAtMs: Date.parse(pendingTerminal.createdAt)'));
-    assert.ok(dashboard.includes('runStartedAtMs: Date.now()'));
+    assert.ok(resumeControllerSource.includes('runStartedAtMs: this.options.nowMs()'));
+    assert.ok(dashboard.includes('nowMs: () => Date.now()'));
     assert.ok(dashboard.includes("type: 'ai-session-attention-projects-updated'"));
     assert.ok(dashboard.includes('sessionEvents: getAiSessionAttentionRecoverySessionEvents()'));
     assert.ok(webviewProjectScripts.includes('message.sessionEvents'));
@@ -1648,6 +1913,12 @@ function runWebviewContentChecks() {
     assert.ok(!settingsFunction.includes('showQuickPick'));
     assert.ok(!settingsFunction.includes('ai-session-terminal-mode-planned'));
     assert.ok(dashboard.includes('new AiSessionPinStore(context.globalStoragePath)'));
+    assert.ok(dashboard.includes("import { AiSessionCommandController } from './aiSessions/commandController';"));
+    assert.ok(dashboard.includes("import { AiSessionCreationController } from './aiSessions/creationController';"));
+    assert.ok(dashboard.includes("import { AiSessionResumeController } from './aiSessions/resumeController';"));
+    assert.ok(dashboard.includes('const aiSessionCommandController = new AiSessionCommandController({'));
+    assert.ok(dashboard.includes('const aiSessionCreationController = new AiSessionCreationController({'));
+    assert.ok(dashboard.includes('const aiSessionResumeController = new AiSessionResumeController<vscode.Terminal, TerminalEntry>({'));
     assert.ok(dashboard.includes('new AiSessionPinController({'));
     assert.ok(dashboard.includes('aiSessionPinController.getAll()'));
     assert.ok(dashboard.includes('aiSessionPinController.toggle('));
@@ -1691,14 +1962,23 @@ function runWebviewContentChecks() {
     assert.ok(!dashboard.includes('prunePinnedAiSessionKeys'));
     assert.ok(dashboard.includes("'archive-ai-sessions': async e =>"));
     assert.ok(dashboard.includes('AiSessionBatchArchiveCompletedMessage'));
-    assert.ok(singleArchiveFunction.includes('archiveAiSessionItem(providerId, sessionId)'));
+    assert.ok(dashboard.includes("import { AiSessionArchiveController } from './aiSessions/archiveController';"));
+    assert.ok(dashboard.includes('const aiSessionArchiveController = new AiSessionArchiveController<AiSessionTerminalEntry<vscode.Terminal>>({'));
+    assert.ok(dashboard.includes('await aiSessionArchiveController.archiveSessions('));
+    assert.ok(dashboard.includes('await aiSessionArchiveController.archiveSession('));
+    assert.ok(!dashboard.includes('async function archiveAiSession('));
+    assert.ok(!dashboard.includes('function archiveAiSessionItem('));
+    assert.ok(!dashboard.includes('async function archiveAiSessions('));
+    assert.ok(!dashboard.includes('function logRejectedBatchAiSessionSelections('));
+    assert.ok(!dashboard.includes('function logBatchAiSessionArchiveResult('));
+    assert.ok(singleArchiveFunction.includes('this.archiveSessionItem(providerId, sessionId)'));
     assert.ok(batchArchiveFunction.includes('executeBatchAiSessionArchiveRequest('));
-    assert.strictEqual((singleArchiveFunction.match(/activeAiSessionTerminalHighlighter\.sync\(\)/g) || []).length, 1);
-    assert.strictEqual((batchArchiveFunction.match(/activeAiSessionTerminalHighlighter\.sync\(\)/g) || []).length, 1);
+    assert.strictEqual((singleArchiveFunction.match(/syncActiveTerminal\(\)/g) || []).length, 1);
+    assert.strictEqual((batchArchiveFunction.match(/syncActiveTerminal\(\)/g) || []).length, 1);
     assert.ok(!archiveItemFunction.includes('activeAiSessionTerminalHighlighter.sync()'));
     assert.ok(!archiveItemFunction.includes('refreshAiSessionViewsIncrementally()'));
     assert.ok(!archiveItemFunction.includes('invalidateAiSessionCache('));
-    assert.ok(archiveItemFunction.includes('executeBatchAiSessionArchiveItem('));
+    assert.ok(archiveItemFunction.includes('archiveBatchAiSessionItem('));
     assert.strictEqual((batchArchiveLogFunction.match(/formatBatchAiSessionIdForLog\(sessionId\)/g) || []).length, 3);
     assert.ok(webviewContent.includes('.settings-button,'));
     assert.ok(styles.includes('max-width: calc(100% - 76px);'));
@@ -1774,6 +2054,23 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('aiSessionProjectStateStore.setExpanded('));
     assert.ok(dashboard.includes('aiSessionProjectStateStore.getActiveProviders()'));
     assert.ok(dashboard.includes('aiSessionProjectStateStore.setActiveProvider('));
+    assert.ok(!dashboard.includes('async function toggleCodexSessions('));
+    assert.ok(!dashboard.includes('async function selectAiSessionProvider('));
+    assert.ok(!dashboard.includes('async function toggleAiSessionPin('));
+    assert.ok(!dashboard.includes('async function renameAiSession('));
+    assert.ok(!dashboard.includes('async function copyAiSessionId('));
+    assert.ok(!dashboard.includes('async function createAiSession('));
+    assert.ok(!dashboard.includes('async function queryNewAiSessionFields('));
+    assert.ok(!dashboard.includes('async function createProviderAiSession('));
+    assert.ok(dashboard.includes('await aiSessionCommandController.toggleSessionsExpanded('));
+    assert.ok(dashboard.includes('await aiSessionCommandController.selectProvider('));
+    assert.ok(dashboard.includes('await aiSessionCommandController.togglePin('));
+    assert.ok(dashboard.includes('await aiSessionCommandController.renameSession('));
+    assert.ok(dashboard.includes('await aiSessionCommandController.copySessionId('));
+    assert.ok(dashboard.includes('await aiSessionCreationController.createSession('));
+    assert.ok(dashboard.includes('await aiSessionResumeController.resumeProjectSession('));
+    assert.ok(!dashboard.includes('async function resumeProjectAiSession('));
+    assert.ok(!dashboard.includes('async function resumeAiSession('));
     assert.ok(!dashboard.includes('context.globalState.get(OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY)'));
     assert.ok(!dashboard.includes('context.globalState.update(OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY'));
     assert.ok(!dashboard.includes('context.globalState.get(OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY)'));
@@ -1791,8 +2088,11 @@ function runWebviewContentChecks() {
     assert.ok(!webviewContent.includes('infos.currentWorkspaceProjectIds || []'));
     assert.ok(webviewContent.includes('getFavoriteProjectsInOrder('));
     assert.ok(dashboard.includes("'reordered-favorites': async e =>"));
-    assert.ok(dashboard.includes('withFavoriteProjectOrder(groups, projectIds)'));
-    assert.ok(dashboard.includes('withToggledProjectFavorite(groups, projectId)'));
+    const favoriteProjectControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'projects', 'favoriteProjectController.ts'), 'utf8');
+    assert.ok(!dashboard.includes('withFavoriteProjectOrder(groups, projectIds)'));
+    assert.ok(!dashboard.includes('withToggledProjectFavorite(groups, projectId)'));
+    assert.ok(favoriteProjectControllerSource.includes('withFavoriteProjectOrder(groups, projectIds)'));
+    assert.ok(favoriteProjectControllerSource.includes('withToggledProjectFavorite(groups, projectId)'));
     assert.ok(dashboard.includes("function applyProjectColorToCurrentWindow(project: Project = null)"));
     assert.ok(dashboard.includes("project?.showSaveAction"));
     assert.ok(dashboard.includes("syncProjectColorToCurrentWindow(project)"));
@@ -3226,10 +3526,22 @@ function extractFunctionBody(source, functionName) {
 }
 
 function extractMethodBody(source, methodName) {
-    const signatureIndex = source.indexOf(`${methodName}(`);
+    const pattern = new RegExp(`\\b${methodName}\\s*\\(`, 'g');
+    let match;
+    let signatureIndex = -1;
+    let openingBraceIndex = -1;
+    while ((match = pattern.exec(source)) !== null) {
+        const candidateIndex = match.index;
+        const candidateBraceIndex = source.indexOf('{', candidateIndex);
+        const candidateSemicolonIndex = source.indexOf(';', candidateIndex);
+        if (candidateBraceIndex !== -1 && (candidateSemicolonIndex === -1 || candidateBraceIndex < candidateSemicolonIndex)) {
+            signatureIndex = candidateIndex;
+            openingBraceIndex = candidateBraceIndex;
+            break;
+        }
+    }
     assert.notStrictEqual(signatureIndex, -1);
 
-    const openingBraceIndex = source.indexOf('{', signatureIndex);
     assert.notStrictEqual(openingBraceIndex, -1);
 
     let depth = 0;
@@ -4706,6 +5018,9 @@ async function main() {
     runAliasStoreChecks();
     runAliasControllerChecks();
     await runProjectStateStoreChecks();
+    await runAiSessionCommandControllerChecks();
+    await runAiSessionCreationControllerChecks();
+    await runAiSessionResumeControllerChecks();
     runKeyChecks();
     runBatchAiSessionArchiveChecks();
     runActiveAiSessionTerminalHighlightChecks();

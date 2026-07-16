@@ -8,6 +8,13 @@ const dashboardErrorContent = require('../out/dashboard/errorContent');
 const dashboardConfiguration = require('../out/dashboard/configuration');
 const dashboardStartup = require('../out/dashboard/startup');
 const dashboardWebviewOptions = require('../out/dashboard/webviewOptions');
+const { GroupCollapseController } = require('../out/dashboard/groupCollapseController');
+const { AddProjectsFromFolderController } = require('../out/projects/addProjectsFromFolderController');
+const { FavoriteProjectController } = require('../out/projects/favoriteProjectController');
+const { GroupCommandController } = require('../out/projects/groupCommandController');
+const { queryGroupName } = require('../out/projects/groupPrompts');
+const { ProjectOrderController } = require('../out/projects/projectOrderController');
+const { ProjectRemovalController } = require('../out/projects/projectRemovalController');
 
 const root = path.join(__dirname, '..');
 const dashboardScriptPath = path.join(root, 'src', 'webview', 'webviewDashboardScripts.js');
@@ -141,6 +148,287 @@ function runWebviewOptionsChecks() {
     const options = dashboardWebviewOptions.getDashboardWebviewOptions('/extensions/project-steward', value => ({ uri: value }));
     assert.strictEqual(options.enableScripts, true);
     assert.deepStrictEqual(options.localResourceRoots, [{ uri: path.join('/extensions/project-steward', 'media') }]);
+}
+
+async function runGroupCollapseControllerChecks() {
+    const updates = [];
+    const groups = new Map([
+        ['group-a', { id: 'group-a', groupName: 'A', collapsed: false }],
+        ['group-b', { id: 'group-b', groupName: 'B', collapsed: true }],
+    ]);
+    const projectServiceUpdates = [];
+    const controller = new GroupCollapseController({
+        state: {
+            get: key => key === 'favoritesGroupCollapsed' ? true : undefined,
+            update: async (key, value) => { updates.push([key, value]); },
+        },
+        projectService: {
+            getGroup: groupId => groups.get(groupId) || null,
+            updateGroup: async (groupId, group) => { projectServiceUpdates.push([groupId, { ...group }]); },
+        },
+    });
+
+    assert.strictEqual(controller.getFavoritesCollapsed(), true);
+    assert.strictEqual(controller.getOpenProjectsCollapsed(), undefined);
+
+    await controller.collapseGroup('__favorites', true);
+    await controller.collapseGroup('__openProjects', false);
+    await controller.collapseGroup('group-a');
+    await controller.collapseGroup('group-b', false);
+    await controller.collapseGroup('missing-group', true);
+
+    assert.deepStrictEqual(updates, [
+        ['favoritesGroupCollapsed', true],
+        ['openProjectsGroupCollapsed', false],
+    ]);
+    assert.deepStrictEqual(projectServiceUpdates, [
+        ['group-a', { id: 'group-a', groupName: 'A', collapsed: true }],
+        ['group-b', { id: 'group-b', groupName: 'B', collapsed: false }],
+    ]);
+}
+
+async function runGroupPromptChecks() {
+    const calls = [];
+    const groupName = await queryGroupName(
+        {
+            showInputBox: async options => {
+                calls.push(options);
+                return 'Renamed Group';
+            },
+        },
+        'Existing Group'
+    );
+    assert.strictEqual(groupName, 'Renamed Group');
+    assert.strictEqual(calls[0].value, 'Existing Group');
+    assert.deepStrictEqual(calls[0].valueSelection, [0, 'Existing Group'.length]);
+    assert.strictEqual(calls[0].placeHolder, 'Group Name');
+    assert.strictEqual(calls[0].ignoreFocusOut, true);
+    assert.strictEqual(calls[0].validateInput(''), 'A Group Name must be provided.');
+    assert.strictEqual(calls[0].validateInput('Group'), '');
+
+    await assert.rejects(
+        () => queryGroupName({ showInputBox: async () => undefined }),
+        /CanceledByUser/
+    );
+}
+
+async function runGroupCommandControllerChecks() {
+    const groups = new Map([['group-a', { id: 'group-a', groupName: 'Old' }]]);
+    const actions = [];
+    const errors = [];
+    let nextPrompt = 'New Group';
+    let nextConfirmation = 'Remove';
+    const controller = new GroupCommandController({
+        projectService: {
+            addGroup: async groupName => actions.push(['add', groupName]),
+            getGroup: groupId => groups.get(groupId) || null,
+            updateGroup: async (groupId, group) => actions.push(['update', groupId, { ...group }]),
+            removeGroup: async groupId => actions.push(['remove', groupId]),
+        },
+        promptGroupName: async defaultText => {
+            actions.push(['prompt', defaultText || null]);
+            if (nextPrompt instanceof Error) {
+                throw nextPrompt;
+            }
+            return nextPrompt;
+        },
+        confirmRemoveGroup: async groupName => {
+            actions.push(['confirm', groupName]);
+            return nextConfirmation;
+        },
+        showErrorMessage: message => errors.push(message),
+        refreshAfterMutation: () => actions.push(['refresh']),
+        userCanceledToken: 'CanceledByUser',
+    });
+
+    await controller.addGroup();
+    await controller.editGroup('group-a');
+    await controller.removeGroup('group-a');
+    await controller.removeGroup('missing');
+    assert.deepStrictEqual(actions, [
+        ['prompt', null],
+        ['add', 'New Group'],
+        ['refresh'],
+        ['prompt', 'Old'],
+        ['update', 'group-a', { id: 'group-a', groupName: 'New Group' }],
+        ['refresh'],
+        ['confirm', 'New Group'],
+        ['remove', 'group-a'],
+        ['refresh'],
+    ]);
+
+    nextPrompt = new Error('CanceledByUser');
+    await controller.addGroup();
+    assert.strictEqual(actions.filter(action => action[0] === 'refresh').length, 3);
+
+    nextPrompt = new Error('boom');
+    await assert.rejects(() => controller.editGroup('group-a'), /boom/);
+    assert.deepStrictEqual(errors.slice(-1), ['An error occured while editing the group.']);
+
+    nextConfirmation = undefined;
+    await controller.removeGroup('group-a');
+    assert.strictEqual(actions.filter(action => action[0] === 'remove').length, 1);
+}
+
+async function runAddProjectsFromFolderControllerChecks() {
+    const actions = [];
+    const errors = [];
+    let selectedFolders = [{ fsPath: '/work/tools' }];
+    let foldersInSelectedPath = ['/work/tools/api', '/work/tools/web'];
+    const controller = new AddProjectsFromFolderController({
+        getCurrentWorkspacePath: () => '/work/current',
+        parsePathAsUri: value => ({ uri: value }),
+        showOpenDialog: async options => {
+            actions.push(['dialog', options.defaultUri, options.openLabel]);
+            return selectedFolders;
+        },
+        getFolders: async folderPath => {
+            actions.push(['get-folders', folderPath]);
+            if (foldersInSelectedPath instanceof Error) {
+                throw foldersInSelectedPath;
+            }
+            return foldersInSelectedPath;
+        },
+        addGroup: async groupName => {
+            actions.push(['add-group', groupName]);
+            return { id: 'group-tools' };
+        },
+        addProject: async (project, groupId) => actions.push(['add-project', project.name, project.path, project.color, project.isGitRepo, groupId]),
+        getRandomColor: () => '#abcdef',
+        isFolderGitRepo: folder => folder.endsWith('/api'),
+        showErrorMessage: message => errors.push(message),
+        refreshAfterMutation: () => actions.push(['refresh']),
+        userCanceledToken: 'CanceledByUser',
+    });
+
+    await controller.addProjectsFromFolder();
+    assert.deepStrictEqual(actions, [
+        ['dialog', { uri: '/work/current' }, 'Select Folder containing Projects'],
+        ['get-folders', '/work/tools'],
+        ['add-group', 'tools'],
+        ['add-project', 'api', '/work/tools/api', '#abcdef', true, 'group-tools'],
+        ['add-project', 'web', '/work/tools/web', '#abcdef', false, 'group-tools'],
+        ['refresh'],
+    ]);
+
+    selectedFolders = [];
+    await controller.addProjectsFromFolder();
+    assert.strictEqual(actions.filter(action => action[0] === 'refresh').length, 1);
+
+    selectedFolders = [{ fsPath: '/work/broken' }];
+    foldersInSelectedPath = new Error('boom');
+    await assert.rejects(() => controller.addProjectsFromFolder(), /boom/);
+    assert.deepStrictEqual(errors.slice(-1), ['An error occured while adding the projects.']);
+}
+
+async function runFavoriteProjectControllerChecks() {
+    let groups = [{
+        id: 'group-a',
+        groupName: 'A',
+        projects: [
+            { id: 'a', name: 'A', favorite: true, favoriteOrder: 0 },
+            { id: 'b', name: 'B' },
+        ],
+    }];
+    const saved = [];
+    const actions = [];
+    const controller = new FavoriteProjectController({
+        getGroups: () => groups,
+        saveGroups: async nextGroups => {
+            saved.push(nextGroups);
+            groups = nextGroups;
+        },
+        refreshAfterMutation: () => actions.push('refresh'),
+    });
+
+    await controller.toggleProjectFavorite('b');
+    assert.strictEqual(saved.length, 1);
+    assert.strictEqual(saved[0][0].projects.find(project => project.id === 'b').favorite, true);
+    assert.deepStrictEqual(saved[0][0].projects.filter(project => project.favorite).map(project => project.id), ['a', 'b']);
+    assert.deepStrictEqual(actions, ['refresh']);
+
+    await controller.toggleProjectFavorite('missing');
+    assert.strictEqual(saved.length, 1);
+    assert.deepStrictEqual(actions, ['refresh']);
+
+    await controller.reorderFavoriteProjects(['b', 'a']);
+    assert.strictEqual(saved.length, 2);
+    assert.deepStrictEqual(
+        saved[1][0].projects.filter(project => project.favorite).sort((left, right) => left.favoriteOrder - right.favoriteOrder).map(project => project.id),
+        ['b', 'a']
+    );
+    assert.deepStrictEqual(actions, ['refresh', 'refresh']);
+}
+
+async function runProjectOrderControllerChecks() {
+    const groups = [
+        {
+            id: 'group-a',
+            groupName: 'A',
+            projects: [{ id: 'a1', name: 'A1' }, { id: 'a2', name: 'A2' }],
+        },
+        {
+            id: 'group-b',
+            groupName: 'B',
+            projects: [{ id: 'b1', name: 'B1' }],
+        },
+    ];
+    const saved = [];
+    const informationMessages = [];
+    const actions = [];
+    const controller = new ProjectOrderController({
+        getGroups: () => groups,
+        saveGroups: async nextGroups => saved.push(nextGroups),
+        showInformationMessage: message => informationMessages.push(message),
+        refreshAfterMutation: () => actions.push('refresh'),
+    });
+
+    await controller.reorderGroups(null);
+    assert.deepStrictEqual(informationMessages, ['Invalid Argument passed to Reordering Projects.']);
+    assert.deepStrictEqual(saved, []);
+    assert.deepStrictEqual(actions, []);
+
+    await controller.reorderGroups([
+        { groupId: 'group-b', projectIds: ['b1', 'a1'] },
+        { groupId: 'missing-group', projectIds: ['a2', 'missing-project'] },
+    ]);
+    assert.strictEqual(saved.length, 1);
+    assert.deepStrictEqual(saved[0].map(group => ({
+        id: group.id,
+        groupName: group.groupName,
+        projectIds: group.projects.map(project => project.id),
+    })), [
+        { id: 'group-b', groupName: 'B', projectIds: ['b1', 'a1'] },
+        { id: saved[0][1].id, groupName: 'Group #2', projectIds: ['a2'] },
+    ]);
+    assert.deepStrictEqual(actions, ['refresh']);
+}
+
+async function runProjectRemovalControllerChecks() {
+    const projects = new Map([['project-a', { id: 'project-a', name: 'Alpha' }]]);
+    const actions = [];
+    let nextConfirmation = 'Remove';
+    const controller = new ProjectRemovalController({
+        getProject: projectId => projects.get(projectId) || null,
+        confirmRemoveProject: async projectName => {
+            actions.push(['confirm', projectName]);
+            return nextConfirmation;
+        },
+        removeProject: async projectId => actions.push(['remove', projectId]),
+        refreshAfterMutation: () => actions.push(['refresh']),
+    });
+
+    await controller.removeProject('project-a');
+    await controller.removeProject('missing');
+    nextConfirmation = undefined;
+    await controller.removeProject('project-a');
+
+    assert.deepStrictEqual(actions, [
+        ['confirm', 'Alpha'],
+        ['remove', 'project-a'],
+        ['refresh'],
+        ['confirm', 'Alpha'],
+    ]);
 }
 
 function createClassList() {
@@ -416,6 +704,42 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("from './dashboard/webviewOptions'"));
     assert.ok(!extensionHostSource.includes('function getWebviewOptions('));
     assert.ok(dashboardWebviewOptionsSource.includes('export function getDashboardWebviewOptions('));
+    const groupCollapseControllerSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'groupCollapseController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './dashboard/groupCollapseController'"));
+    assert.ok(!extensionHostSource.includes('async function collapseGroup('));
+    assert.ok(!extensionHostSource.includes('context.globalState.update(FAVORITES_GROUP_COLLAPSED_KEY'));
+    assert.ok(!extensionHostSource.includes('context.globalState.update(OPEN_PROJECTS_GROUP_COLLAPSED_KEY'));
+    assert.ok(groupCollapseControllerSource.includes('export class GroupCollapseController'));
+    assert.ok(groupCollapseControllerSource.includes('collapseGroup('));
+    const groupPromptsSource = fs.readFileSync(path.join(root, 'src', 'projects', 'groupPrompts.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/groupPrompts'"));
+    assert.ok(!extensionHostSource.includes('async function queryGroupFields('));
+    assert.ok(groupPromptsSource.includes('export async function queryGroupName('));
+    const groupCommandControllerSource = fs.readFileSync(path.join(root, 'src', 'projects', 'groupCommandController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/groupCommandController'"));
+    assert.ok(!extensionHostSource.includes('async function addGroup('));
+    assert.ok(!extensionHostSource.includes('async function editGroup('));
+    assert.ok(!extensionHostSource.includes('async function removeGroup('));
+    assert.ok(groupCommandControllerSource.includes('export class GroupCommandController'));
+    const addProjectsFromFolderControllerSource = fs.readFileSync(path.join(root, 'src', 'projects', 'addProjectsFromFolderController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/addProjectsFromFolderController'"));
+    assert.ok(!extensionHostSource.includes('async function addProjectsFromFolder('));
+    assert.ok(addProjectsFromFolderControllerSource.includes('export class AddProjectsFromFolderController'));
+    const favoriteProjectControllerSource = fs.readFileSync(path.join(root, 'src', 'projects', 'favoriteProjectController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/favoriteProjectController'"));
+    assert.ok(!extensionHostSource.includes('async function toggleProjectFavorite('));
+    assert.ok(!extensionHostSource.includes('async function reorderFavoriteProjects('));
+    assert.ok(!extensionHostSource.includes('withFavoriteProjectOrder(groups, projectIds)'));
+    assert.ok(!extensionHostSource.includes('withToggledProjectFavorite(groups, projectId)'));
+    assert.ok(favoriteProjectControllerSource.includes('export class FavoriteProjectController'));
+    const projectOrderControllerSource = fs.readFileSync(path.join(root, 'src', 'projects', 'projectOrderController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/projectOrderController'"));
+    assert.ok(!extensionHostSource.includes('async function reorderGroups('));
+    assert.ok(projectOrderControllerSource.includes('export class ProjectOrderController'));
+    const projectRemovalControllerSource = fs.readFileSync(path.join(root, 'src', 'projects', 'projectRemovalController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/projectRemovalController'"));
+    assert.ok(!extensionHostSource.includes('async function removeProject('));
+    assert.ok(projectRemovalControllerSource.includes('export class ProjectRemovalController'));
     assert.ok(openProjectsMessageBody.includes('openProjectDashboardController.postUpdated()'));
     assert.ok(openProjectControllerSource.includes('buildOpenProjectsUpdatedMessage({'));
     assert.ok(openProjectControllerSource.includes('groups: this.options.getGroups()'));
@@ -491,6 +815,13 @@ async function main() {
     runConfigurationChecks();
     runStartupChecks();
     runWebviewOptionsChecks();
+    await runGroupCollapseControllerChecks();
+    await runGroupPromptChecks();
+    await runGroupCommandControllerChecks();
+    await runAddProjectsFromFolderControllerChecks();
+    await runFavoriteProjectControllerChecks();
+    await runProjectOrderControllerChecks();
+    await runProjectRemovalControllerChecks();
     runControllerChecks(source);
     runSourceContractChecks(source);
     await runDashboardMessageRouterChecks();
