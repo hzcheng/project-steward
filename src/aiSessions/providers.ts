@@ -1,7 +1,7 @@
 'use strict';
 
 import type { AiSessionProviderId } from '../models';
-import type { AiSessionProviderDefinition } from './types';
+import type { AiSessionProvider, AiSessionProviderDefinition, AiSessionService } from './types';
 import {
     buildClaudeNewSessionCommand,
     buildClaudeResumeCommand,
@@ -58,4 +58,21 @@ export function getAiSessionProviderDefinition(providerId: AiSessionProviderId):
 
 export function getAiSessionProviderLabel(providerId: AiSessionProviderId): string {
     return getAiSessionProviderDefinition(providerId)?.label || 'AI';
+}
+
+export interface AiSessionProviderRegistry {
+    get(providerId: AiSessionProviderId): AiSessionProvider | null;
+    providers(): AiSessionProvider[];
+}
+
+export function createAiSessionProviderRegistry(services: Record<AiSessionProviderId, AiSessionService>): AiSessionProviderRegistry {
+    const providers = AI_SESSION_PROVIDER_IDS.map(id => ({
+        ...AI_SESSION_PROVIDER_DEFINITIONS[id],
+        service: services[id],
+    }));
+    const byId = new Map(providers.map(provider => [provider.id, provider] as [AiSessionProviderId, AiSessionProvider]));
+    return {
+        get: providerId => byId.get(providerId) || null,
+        providers: () => providers.slice(),
+    };
 }

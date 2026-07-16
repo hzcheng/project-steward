@@ -58,6 +58,7 @@ const models = require('../out/models');
 const openProjectService = require('../out/projects/openProjectService');
 const webviewContentModule = require('../out/webview/webviewContent');
 const dashboardViewModel = require('../out/webview/dashboardViewModel');
+const AiSessionDashboardController = require('../out/aiSessions/dashboardController').AiSessionDashboardController;
 Module._load = originalModuleLoad;
 
 function createTestUri(value) {
@@ -1142,9 +1143,12 @@ function runWebviewContentChecks() {
     assert.ok(webviewProjectScripts.includes('data-ai-session-active-terminal'));
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal)'));
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.sync()'));
-    assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.setVisible(webviewView.visible)'));
+    assert.ok(dashboard.includes('onVisibleChanged: visible =>'));
+    assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.setVisible(visible)'));
+    const viewProvider = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'viewProvider.ts'), 'utf8');
+    assert.ok(viewProvider.includes('this.options.onVisibleChanged(webviewView.visible)'));
     const activeTerminalCandidatesFunction = extractFunctionBody(dashboard, 'getAiSessionTerminalCandidates');
-    assert.ok(activeTerminalCandidatesFunction.includes('getRegisteredAiSessionProvider(providerId).service.getSessions().sessions'));
+    assert.ok(activeTerminalCandidatesFunction.includes("getProviderAiSessions(providerId, { reason: 'terminal-candidates' }).sessions"));
     assert.ok(!activeTerminalCandidatesFunction.includes('AI_SESSION_PROVIDER_IDS'));
     assert.ok(!activeTerminalCandidatesFunction.includes('getOpenProjects('));
     assert.ok(!activeTerminalCandidatesFunction.includes('activeAiSessionProvider'));
@@ -2155,6 +2159,109 @@ function runBatchAiSessionWebviewChecks() {
     assert.ok(collapseExitIndex < collapseMessageIndex);
 }
 
+function runAiSessionIncrementalRefreshSourceChecks() {
+    const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    const typesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'types.ts'), 'utf8');
+    assert.ok(typesSource.includes('scannedFiles: number;'));
+    assert.ok(typesSource.includes('parsedFiles: number;'));
+    assert.ok(typesSource.includes('maxFiles?: number;'));
+    assert.ok(typesSource.includes('reason?: string;'));
+    const providersSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'providers.ts'), 'utf8');
+    assert.ok(providersSource.includes('export interface AiSessionProviderRegistry'));
+    assert.ok(providersSource.includes('export function createAiSessionProviderRegistry('));
+    assert.ok(providersSource.includes('providers(): AiSessionProvider[]'));
+    assert.ok(!dashboard.includes('AI_SESSION_PROVIDER_IDS'));
+    const controllerPath = path.join(__dirname, '..', 'src', 'aiSessions', 'dashboardController.ts');
+    assert.ok(fs.existsSync(controllerPath));
+    const controllerSource = fs.readFileSync(controllerPath, 'utf8');
+    assert.ok(controllerSource.includes('export class AiSessionDashboardController'));
+    assert.ok(controllerSource.includes('scheduleRefresh('));
+    assert.ok(controllerSource.includes('setWatchersActive('));
+    assert.ok(controllerSource.includes('buildAiSessionsUpdatedMessage'));
+    const refreshFunction = extractFunctionBody(dashboard, 'refreshAiSessionViewsIncrementally');
+    assert.ok(refreshFunction.includes('aiSessionDashboardController.refreshNow()'));
+    assert.ok(controllerSource.includes("async refreshNow(reason = 'refresh'): Promise<void>"));
+    assert.ok(controllerSource.includes('const message = this.getUpdatedMessage();'));
+    assert.ok(controllerSource.includes('this.options.postMessage(message).then(delivered =>'));
+    assert.ok(controllerSource.includes('if (!delivered)'));
+    assert.ok(controllerSource.includes('refresh: (reason: string) => void;'));
+    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-not-delivered');"));
+    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-post-error');"));
+    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-build-error');"));
+    const evaluateAttentionBody = extractFunctionBody(dashboard, 'evaluateAiSessionAttention');
+    assert.ok(evaluateAttentionBody.includes('const registeredProviders = getRegisteredAiSessionProviders();'));
+    const withAiSessionsBody = extractFunctionBody(dashboard, 'withAiSessions');
+    assert.ok(withAiSessionsBody.includes('const registeredProviders = getRegisteredAiSessionProviders();'));
+    const openProjectViewModelBody = extractFunctionBody(dashboard, 'getOpenProjectAiSessionViewModel');
+    assert.ok(openProjectViewModelBody.includes('getRegisteredAiSessionProviders()'));
+    assert.ok(openProjectViewModelBody.includes('registeredProviders.reduce'));
+    const getAiSessionResultsBody = extractFunctionBody(dashboard, 'getAiSessionResults');
+    assert.ok(dashboard.includes("function getAiSessionResults(openProjects: Project[] = [], reason = currentAiSessionRefreshReason)"));
+    assert.ok(getAiSessionResultsBody.includes('getRegisteredAiSessionProviders()'));
+    assert.ok(dashboard.includes('function getAiSessionScanMaxFiles('));
+    assert.ok(getAiSessionResultsBody.includes('let maxFiles = getAiSessionScanMaxFiles(reason);'));
+    assert.ok(getAiSessionResultsBody.includes('getProviderAiSessions(providerId, { candidatePaths, reason, maxFiles })'));
+    const getAiSessionAssignmentsBody = extractFunctionBody(dashboard, 'getAiSessionAssignments');
+    assert.ok(getAiSessionAssignmentsBody.includes('getRegisteredAiSessionProviders()'));
+    assert.strictEqual((dashboard.match(/\.service\.getSessions\(/g) || []).length, 1);
+    assert.ok(dashboard.includes('function getProviderAiSessions('));
+    const getProviderAiSessionsIndex = dashboard.indexOf('function getProviderAiSessions(');
+    assert.notStrictEqual(getProviderAiSessionsIndex, -1);
+    const getProviderAiSessionsSlice = dashboard.slice(getProviderAiSessionsIndex, dashboard.indexOf('function getAiSessionAssignments(', getProviderAiSessionsIndex));
+    assert.ok(getProviderAiSessionsSlice.includes("event: 'ai-session-scan'"));
+    assert.ok(getProviderAiSessionsSlice.includes('durationMs: Date.now() - startedAt'));
+    assert.ok(getProviderAiSessionsSlice.includes('scannedFileCount: result.scannedFiles'));
+    assert.ok(getProviderAiSessionsSlice.includes('parsedFileCount: result.parsedFiles'));
+    assert.ok(getProviderAiSessionsSlice.includes('scanBudget: normalizedOptions.maxFiles || null'));
+    assert.ok(controllerSource.includes("this.scheduleRefresh('watcher')"));
+    assert.ok(controllerSource.includes("this.refreshNow('new-session')"));
+    assert.ok(controllerSource.includes('private newSessionRefreshTimeouts: NodeJS.Timeout[] = []'));
+    assert.ok(controllerSource.includes('let firedSynchronously = false'));
+    assert.ok(controllerSource.includes('this.newSessionRefreshTimeouts.push(timeout)'));
+    assert.ok(controllerSource.includes('for (let timeout of this.newSessionRefreshTimeouts)'));
+    assert.ok(controllerSource.includes('this.options.clearTimeout(timeout)'));
+}
+
+function runAiSessionDashboardControllerChecks() {
+    const invalidated = [];
+    const messages = [];
+    const clearedTimeouts = [];
+    const refreshReasons = [];
+    const controller = new AiSessionDashboardController({
+        providerIds: ['codex'],
+        isVisible: () => true,
+        invalidateCache: providerId => invalidated.push(providerId),
+        watchSessionChanges: () => ({ dispose() {} }),
+        getGroups: () => [],
+        getCards: () => [],
+        getOpenProjectAiSessionViewModel: project => project,
+        nextSequence: () => 1,
+        postMessage: message => {
+            messages.push(message);
+            return Promise.resolve(true);
+        },
+        refresh: () => undefined,
+        logError: error => { throw new Error(`Unexpected logError: ${error}`); },
+        beforeRefresh: reason => refreshReasons.push(reason),
+        afterRefresh: () => undefined,
+        debounceMs: 1,
+        newSessionRefreshDelaysMs: [1, 2],
+        setTimeout: callback => {
+            callback();
+            return { disposed: false };
+        },
+        clearTimeout: handle => clearedTimeouts.push(handle),
+    });
+
+    controller.scheduleNewSessionRefresh('codex');
+    controller.dispose();
+    assert.deepStrictEqual(invalidated, ['codex', 'codex']);
+    assert.deepStrictEqual(refreshReasons, ['new-session', 'new-session']);
+    assert.strictEqual(messages.length, 2);
+    assert.deepStrictEqual(messages.map(message => message.type), ['ai-sessions-updated', 'ai-sessions-updated']);
+    assert.strictEqual(clearedTimeouts.length, 0);
+}
+
 function extractFunctionBody(source, functionName) {
     const signature = `function ${functionName}(`;
     const signatureIndex = source.indexOf(signature);
@@ -2483,6 +2590,102 @@ function runClaudeSessionChecks() {
         assert.deepStrictEqual(result.sessions.map(session => session.id), [sessionId]);
         assert.strictEqual(result.sessions[0].cwd, '/work/app');
     } finally {
+        if (previousClaudeHome === undefined) {
+            delete process.env.CLAUDE_HOME;
+        } else {
+            process.env.CLAUDE_HOME = previousClaudeHome;
+        }
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
+function runAiSessionProviderMaxFilesChecks() {
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousKimiHome = process.env.KIMI_SHARE_DIR;
+    const previousClaudeHome = process.env.CLAUDE_HOME;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-provider-budget-'));
+    const firstId = '11111111-1111-4111-8111-111111111111';
+    const secondId = '22222222-2222-4222-8222-222222222222';
+    const thirdId = '33333333-3333-4333-8333-333333333333';
+    try {
+        const codexHome = path.join(tempRoot, 'codex');
+        const codexSessionsDir = path.join(codexHome, 'sessions');
+        fs.mkdirSync(codexSessionsDir, { recursive: true });
+        writeCodexSessionMetaFile(codexSessionsDir, firstId, {
+            id: firstId, session_id: firstId, cwd: '/work/app', timestamp: '2026-07-14T01:00:00.000Z',
+        });
+        writeCodexSessionMetaFile(codexSessionsDir, secondId, {
+            id: secondId, session_id: secondId, cwd: '/work/app', timestamp: '2026-07-14T02:00:00.000Z',
+        });
+        fs.writeFileSync(path.join(codexHome, 'session_index.jsonl'), [
+            { id: firstId, thread_name: 'One', updated_at: '2026-07-14T01:00:00.000Z' },
+            { id: secondId, thread_name: 'Two', updated_at: '2026-07-14T02:00:00.000Z' },
+        ].map(entry => JSON.stringify(entry)).join('\n') + '\n', 'utf8');
+        process.env.CODEX_HOME = codexHome;
+        const codexResult = new CodexSessionService().getSessions({ maxFiles: 1, forceRefresh: true });
+        assert.strictEqual(codexResult.sessions.length, 1);
+        assert.strictEqual(codexResult.scannedFiles, 2);
+        assert.strictEqual(codexResult.parsedFiles, 1);
+
+        const kimiHome = path.join(tempRoot, 'kimi');
+        const workDir = '/work/app';
+        const secondWorkDir = '/work/other';
+        const workDirHash = crypto.createHash('md5').update(workDir, 'utf8').digest('hex');
+        const secondWorkDirHash = crypto.createHash('md5').update(secondWorkDir, 'utf8').digest('hex');
+        const kimiSessionsRoot = path.join(kimiHome, 'sessions', workDirHash);
+        const secondKimiSessionsRoot = path.join(kimiHome, 'sessions', secondWorkDirHash);
+        fs.mkdirSync(kimiSessionsRoot, { recursive: true });
+        fs.mkdirSync(secondKimiSessionsRoot, { recursive: true });
+        fs.writeFileSync(path.join(kimiHome, 'kimi.json'), JSON.stringify({ work_dirs: [{ path: workDir }, { path: secondWorkDir }] }), 'utf8');
+        for (const sessionId of [firstId, secondId]) {
+            const sessionDir = path.join(kimiSessionsRoot, sessionId);
+            fs.mkdirSync(sessionDir, { recursive: true });
+            fs.writeFileSync(path.join(sessionDir, 'wire.jsonl'), '{}\n', 'utf8');
+            fs.writeFileSync(path.join(sessionDir, 'state.json'), '{}', 'utf8');
+        }
+        const thirdSessionDir = path.join(secondKimiSessionsRoot, thirdId);
+        fs.mkdirSync(thirdSessionDir, { recursive: true });
+        fs.writeFileSync(path.join(thirdSessionDir, 'wire.jsonl'), '{}\n', 'utf8');
+        fs.writeFileSync(path.join(thirdSessionDir, 'state.json'), '{}', 'utf8');
+        process.env.KIMI_SHARE_DIR = kimiHome;
+        fs.utimesSync(path.join(kimiSessionsRoot, firstId, 'wire.jsonl'), new Date('2026-07-14T01:00:00.000Z'), new Date('2026-07-14T01:00:00.000Z'));
+        fs.utimesSync(path.join(kimiSessionsRoot, secondId, 'wire.jsonl'), new Date('2026-07-14T02:00:00.000Z'), new Date('2026-07-14T02:00:00.000Z'));
+        fs.utimesSync(path.join(secondKimiSessionsRoot, thirdId, 'wire.jsonl'), new Date('2026-07-14T03:00:00.000Z'), new Date('2026-07-14T03:00:00.000Z'));
+        const kimiResult = new KimiSessionService().getSessions({ maxFiles: 2, forceRefresh: true });
+        assert.strictEqual(kimiResult.sessions.length, 2);
+        assert.deepStrictEqual(kimiResult.sessions.map(session => session.id), [thirdId, secondId]);
+        assert.strictEqual(kimiResult.scannedFiles, 3);
+        assert.strictEqual(kimiResult.parsedFiles, 2);
+        fs.writeFileSync(path.join(secondKimiSessionsRoot, thirdId, 'state.json'), JSON.stringify({ archived: true }), 'utf8');
+        const kimiArchivedResult = new KimiSessionService().getSessions({ maxFiles: 1, forceRefresh: true });
+        assert.strictEqual(kimiArchivedResult.sessions.length, 0, 'Kimi maxFiles should cap scanned session directories, including archived sessions');
+        assert.strictEqual(kimiArchivedResult.scannedFiles, 3);
+        assert.strictEqual(kimiArchivedResult.parsedFiles, 1);
+
+        const claudeHome = path.join(tempRoot, 'claude');
+        const claudeProjectDir = path.join(claudeHome, 'projects', '-work-app');
+        fs.mkdirSync(claudeProjectDir, { recursive: true });
+        for (const sessionId of [firstId, secondId, thirdId]) {
+            fs.writeFileSync(path.join(claudeProjectDir, `${sessionId}.jsonl`), JSON.stringify({
+                sessionId, cwd: '/work/app', timestamp: '2026-07-14T01:00:00.000Z',
+            }) + '\n', 'utf8');
+        }
+        process.env.CLAUDE_HOME = claudeHome;
+        const claudeResult = new ClaudeSessionService().getSessions({ maxFiles: 2, forceRefresh: true });
+        assert.strictEqual(claudeResult.sessions.length, 2);
+        assert.strictEqual(claudeResult.scannedFiles, 3);
+        assert.strictEqual(claudeResult.parsedFiles, 2);
+    } finally {
+        if (previousCodexHome === undefined) {
+            delete process.env.CODEX_HOME;
+        } else {
+            process.env.CODEX_HOME = previousCodexHome;
+        }
+        if (previousKimiHome === undefined) {
+            delete process.env.KIMI_SHARE_DIR;
+        } else {
+            process.env.KIMI_SHARE_DIR = previousKimiHome;
+        }
         if (previousClaudeHome === undefined) {
             delete process.env.CLAUDE_HOME;
         } else {
@@ -3563,11 +3766,14 @@ async function main() {
     runAttentionProjectRenderingChecks();
     runFavoriteDndChecks();
     runBatchAiSessionWebviewChecks();
+    runAiSessionIncrementalRefreshSourceChecks();
+    runAiSessionDashboardControllerChecks();
     runGitRepositoryDetectorChecks();
     runCodexSubagentSessionFilterChecks();
     runCodexSessionActivityTimestampChecks();
     runKimiNestedSubagentBoundaryChecks();
     runClaudeSessionChecks();
+    runAiSessionProviderMaxFilesChecks();
     runProviderChecks();
     runProviderLifecycleServiceChecks();
     runCommandBuilderChecks();

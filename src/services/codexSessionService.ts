@@ -27,6 +27,8 @@ interface CodexSessionMeta {
 export interface CodexSessionReadResult {
     available: boolean;
     sessions: CodexSession[];
+    scannedFiles: number;
+    parsedFiles: number;
 }
 
 export interface Disposable {
@@ -41,7 +43,7 @@ export default class CodexSessionService {
     private readonly changePollIntervalMs = 3000;
 
     getSessions(options: boolean | AiSessionQueryOptions = false): CodexSessionReadResult {
-        let { forceRefresh, candidatePaths } = this.getQueryOptions(options);
+        let { forceRefresh, candidatePaths, maxFiles } = this.getQueryOptions(options);
         let now = Date.now();
         if (!forceRefresh && this.cachedResult && now - this.cachedAt < this.cacheTtlMs) {
             return this.filterResult(this.cachedResult, candidatePaths);
@@ -49,14 +51,20 @@ export default class CodexSessionService {
 
         let codexHome = this.getCodexHome();
         if (!codexHome) {
-            return this.filterResult(this.cacheResult({ available: false, sessions: [] }), candidatePaths);
+            return this.filterResult(this.cacheResult({ available: false, sessions: [], scannedFiles: 0, parsedFiles: 0 }), candidatePaths);
         }
 
         let indexPath = path.join(codexHome, 'session_index.jsonl');
         let hasIndex = fs.existsSync(indexPath);
-        let sessionFiles = this.getSessionFiles(codexHome);
+        let scanStats = { discoveredFiles: 0 };
+        let sessionFiles = this.getSessionFiles(codexHome, maxFiles, scanStats);
         if (!hasIndex && !sessionFiles.size) {
-            return this.filterResult(this.cacheResult({ available: false, sessions: [] }), candidatePaths);
+            return this.filterResult(this.cacheResult({
+                available: false,
+                sessions: [],
+                scannedFiles: scanStats.discoveredFiles,
+                parsedFiles: sessionFiles.size,
+            }), candidatePaths);
         }
 
         let entries = hasIndex ? this.readSessionIndex(indexPath) : [];
@@ -94,7 +102,12 @@ export default class CodexSessionService {
         let sessions = Array.from(sessionsById.values())
             .sort((a, b) => this.compareUpdatedAt(b.updatedAt, a.updatedAt));
 
-        return this.filterResult(this.cacheResult({ available: true, sessions }), candidatePaths);
+        return this.filterResult(this.cacheResult({
+            available: true,
+            sessions,
+            scannedFiles: scanStats.discoveredFiles,
+            parsedFiles: sessionFiles.size,
+        }), candidatePaths);
     }
 
     getLifecycleSignals(requests: readonly AiSessionLifecycleRequest[]): Record<string, AiSessionLifecycleSignal> {
@@ -185,14 +198,15 @@ export default class CodexSessionService {
         return result;
     }
 
-    private getQueryOptions(options: boolean | AiSessionQueryOptions): { forceRefresh: boolean; candidatePaths: string[] } {
+    private getQueryOptions(options: boolean | AiSessionQueryOptions): { forceRefresh: boolean; candidatePaths: string[]; maxFiles: number } {
         if (typeof options === 'boolean') {
-            return { forceRefresh: options, candidatePaths: [] };
+            return { forceRefresh: options, candidatePaths: [], maxFiles: 0 };
         }
 
         return {
             forceRefresh: Boolean(options?.forceRefresh),
             candidatePaths: normalizeAiSessionCandidatePaths(options?.candidatePaths || []),
+            maxFiles: this.normalizeMaxFiles(options?.maxFiles),
         };
     }
 
@@ -279,9 +293,22 @@ export default class CodexSessionService {
         }
     }
 
-    private getSessionFiles(codexHome: string): Map<string, string> {
+    private normalizeMaxFiles(maxFiles: number): number {
+        return Number.isFinite(maxFiles) && maxFiles > 0 ? Math.floor(maxFiles) : 0;
+    }
+
+    private getSessionFiles(codexHome: string, maxFiles = 0, stats?: { discoveredFiles: number }): Map<string, string> {
+        let discovered: Array<{ id: string; filePath: string; mtimeMs: number }> = [];
+        this.addSessionFiles(path.join(codexHome, 'sessions'), discovered, true);
+        if (stats) {
+            stats.discoveredFiles = discovered.length;
+        }
         let files = new Map<string, string>();
-        this.addSessionFiles(path.join(codexHome, 'sessions'), files, true);
+        for (let entry of discovered
+            .sort((a, b) => b.mtimeMs - a.mtimeMs || a.filePath.localeCompare(b.filePath))
+            .slice(0, maxFiles || undefined)) {
+            files.set(entry.id, entry.filePath);
+        }
         for (let [sessionId, filePath] of files) {
             this.lifecycleSessionFiles.set(sessionId, filePath);
         }
@@ -289,7 +316,7 @@ export default class CodexSessionService {
         return files;
     }
 
-    private addSessionFiles(sessionPath: string, files: Map<string, string>, recursive: boolean) {
+    private addSessionFiles(sessionPath: string, files: Array<{ id: string; filePath: string; mtimeMs: number }>, recursive: boolean) {
         if (!fs.existsSync(sessionPath)) {
             return;
         }
@@ -308,11 +335,19 @@ export default class CodexSessionService {
 
                 let id = this.getSessionIdFromFileName(entry.name);
                 if (id) {
-                    files.set(id, entryPath);
+                    files.push({ id, filePath: entryPath, mtimeMs: this.getFileMtimeMs(entryPath) });
                 }
             }
         } catch (e) {
             return;
+        }
+    }
+
+    private getFileMtimeMs(filePath: string): number {
+        try {
+            return fs.statSync(filePath).mtimeMs;
+        } catch (e) {
+            return 0;
         }
     }
 

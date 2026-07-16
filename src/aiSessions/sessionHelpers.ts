@@ -107,6 +107,8 @@ export function filterAiSessionsByCandidatePaths(result: AiSessionReadResult, ca
 
     return {
         available: result.available,
+        scannedFiles: result.scannedFiles,
+        parsedFiles: result.parsedFiles,
         sessions: result.sessions.filter(session => {
             let sessionPath = normalizeAiSessionComparablePath(getSessionPath(session));
             return !!sessionPath && normalizedCandidates.some(candidatePath => aiSessionPathContains(candidatePath, sessionPath));

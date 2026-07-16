@@ -28,6 +28,8 @@ interface ClaudeSessionEvent {
 export interface ClaudeSessionReadResult {
     available: boolean;
     sessions: CodexSession[];
+    scannedFiles: number;
+    parsedFiles: number;
 }
 
 export default class ClaudeSessionService {
@@ -41,7 +43,7 @@ export default class ClaudeSessionService {
     private readonly sessionSampleBytes = 128 * 1024;
 
     getSessions(options: boolean | AiSessionQueryOptions = false): ClaudeSessionReadResult {
-        let { forceRefresh, candidatePaths } = this.getQueryOptions(options);
+        let { forceRefresh, candidatePaths, maxFiles } = this.getQueryOptions(options);
         let now = Date.now();
         if (!forceRefresh && this.cachedResult && now - this.cachedAt < this.cacheTtlMs) {
             return this.filterResult(this.cachedResult, candidatePaths);
@@ -49,13 +51,19 @@ export default class ClaudeSessionService {
 
         let claudeHome = this.getClaudeHome();
         if (!claudeHome) {
-            return this.filterResult(this.cacheResult({ available: false, sessions: [] }), candidatePaths);
+            return this.filterResult(this.cacheResult({ available: false, sessions: [], scannedFiles: 0, parsedFiles: 0 }), candidatePaths);
         }
 
         let projectRoot = path.join(claudeHome, 'projects');
-        let sessionFiles = this.getSessionFiles(projectRoot);
+        let scanStats = { discoveredFiles: 0 };
+        let sessionFiles = this.getSessionFiles(projectRoot, maxFiles, scanStats);
         if (!sessionFiles.length) {
-            return this.filterResult(this.cacheResult({ available: false, sessions: [] }), candidatePaths);
+            return this.filterResult(this.cacheResult({
+                available: false,
+                sessions: [],
+                scannedFiles: scanStats.discoveredFiles,
+                parsedFiles: sessionFiles.length,
+            }), candidatePaths);
         }
 
         let sessions = sessionFiles
@@ -63,7 +71,12 @@ export default class ClaudeSessionService {
             .filter(session => !!session)
             .sort((a, b) => this.compareUpdatedAt(b.updatedAt, a.updatedAt));
 
-        return this.filterResult(this.cacheResult({ available: true, sessions }), candidatePaths);
+        return this.filterResult(this.cacheResult({
+            available: true,
+            sessions,
+            scannedFiles: scanStats.discoveredFiles,
+            parsedFiles: sessionFiles.length,
+        }), candidatePaths);
     }
 
     getLifecycleSignals(requests: readonly AiSessionLifecycleRequest[]): Record<string, AiSessionLifecycleSignal> {
@@ -157,14 +170,15 @@ export default class ClaudeSessionService {
         return result;
     }
 
-    private getQueryOptions(options: boolean | AiSessionQueryOptions): { forceRefresh: boolean; candidatePaths: string[] } {
+    private getQueryOptions(options: boolean | AiSessionQueryOptions): { forceRefresh: boolean; candidatePaths: string[]; maxFiles: number } {
         if (typeof options === 'boolean') {
-            return { forceRefresh: options, candidatePaths: [] };
+            return { forceRefresh: options, candidatePaths: [], maxFiles: 0 };
         }
 
         return {
             forceRefresh: Boolean(options?.forceRefresh),
             candidatePaths: normalizeAiSessionCandidatePaths(options?.candidatePaths || []),
+            maxFiles: this.normalizeMaxFiles(options?.maxFiles),
         };
     }
 
@@ -182,7 +196,11 @@ export default class ClaudeSessionService {
         return fs.existsSync(defaultHome) ? defaultHome : null;
     }
 
-    private getSessionFiles(projectRoot: string): string[] {
+    private normalizeMaxFiles(maxFiles: number): number {
+        return Number.isFinite(maxFiles) && maxFiles > 0 ? Math.floor(maxFiles) : 0;
+    }
+
+    private getSessionFiles(projectRoot: string, maxFiles = 0, stats?: { discoveredFiles: number }): string[] {
         if (!fs.existsSync(projectRoot)) {
             return [];
         }
@@ -205,6 +223,13 @@ export default class ClaudeSessionService {
             return [];
         }
 
+        if (stats) {
+            stats.discoveredFiles = files.length;
+        }
+        files = files
+            .sort((a, b) => this.getFileMtimeMs(b) - this.getFileMtimeMs(a) || a.localeCompare(b))
+            .slice(0, maxFiles || undefined);
+
         for (let filePath of files) {
             let sessionId = this.getSessionIdFromFileName(path.basename(filePath));
             if (sessionId) {
@@ -213,6 +238,14 @@ export default class ClaudeSessionService {
         }
 
         return files;
+    }
+
+    private getFileMtimeMs(filePath: string): number {
+        try {
+            return fs.statSync(filePath).mtimeMs;
+        } catch (e) {
+            return 0;
+        }
     }
 
     private findSessionFile(projectRoot: string, sessionId: string): string {
