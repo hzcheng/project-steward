@@ -75,7 +75,7 @@ export function getStewardContent(
     var openProjects = infos.openProjects || [];
     var customCss = infos.config.get('customCss') || '';
     var allGroupsCollapsed = !!infos.openProjectsGroupCollapsed;
-    var searchCatalog = serializeDashboardSearchCatalog(buildDashboardSearchCatalog(groups, openProjects));
+    var searchCatalog = serializeDashboardSearchCatalog(buildDashboardSearchCatalog(groups, openProjects, infos.todoSearchItems || []));
     var openProjectsContent = getOpenProjectsGroupContent(openProjects, infos.openProjectsGroupCollapsed, infos);
 
     return `
@@ -118,6 +118,7 @@ export function getStewardContent(
             <div class="dashboard-tab-list" role="tablist" aria-label="Project views">
                 <button type="button" id="dashboard-tab-open-button" class="dashboard-tab-button active" role="tab" aria-selected="true" aria-controls="dashboard-tab-open" tabindex="0" data-dashboard-tab="open">OPEN</button>
                 <button type="button" id="dashboard-tab-projects-button" class="dashboard-tab-button" role="tab" aria-selected="false" aria-controls="dashboard-tab-projects" tabindex="-1" data-dashboard-tab="projects">PROJECTS</button>
+                <button type="button" id="dashboard-tab-todo-button" class="dashboard-tab-button" role="tab" aria-selected="false" aria-controls="dashboard-tab-todo" tabindex="-1" data-dashboard-tab="todo">TODO</button>
             </div>
         </div>
         <main class="dashboard-content">
@@ -128,6 +129,9 @@ export function getStewardContent(
             </section>
             <section id="dashboard-tab-projects" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-projects-button" hidden>
                 <div class="dashboard-projects-loading" role="status" hidden>Loading projects…</div>
+            </section>
+            <section id="dashboard-tab-todo" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-todo-button" hidden>
+                <div class="dashboard-todo-loading" role="status" hidden>Loading todos…</div>
             </section>
             <section id="dashboard-search-results" class="dashboard-search-results" aria-label="Search results" hidden></section>
         </main>

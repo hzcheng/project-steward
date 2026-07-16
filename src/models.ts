@@ -1,6 +1,7 @@
 'use strict';
 
 import * as vscode from 'vscode';
+import type { TodoSearchCatalogItem } from './todos/types';
 import { StorageOption, VSCODE_REMOTE_PREFIX, WSL_DEFAULT_REGEX } from "./constants";
 import type { AiSessionAttentionReason } from './aiSessions/lifecycle';
 
@@ -175,6 +176,7 @@ export interface StewardInfos {
     favoritesGroupCollapsed?: boolean;
     openProjects?: Project[];
     openProjectsGroupCollapsed?: boolean;
+    todoSearchItems?: TodoSearchCatalogItem[];
 }
 
 export enum ProjectPathType {

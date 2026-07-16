@@ -646,7 +646,7 @@ body .project {
 
 .dashboard-tab-list {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 4px;
     width: 100%;
     margin-top: 6px;
@@ -752,6 +752,7 @@ body .project {
 .dashboard-search-result-meta,
 .dashboard-search-empty,
 .dashboard-projects-loading,
+.dashboard-todo-loading,
 .open-current-workspace-empty {
     color: var(--vscode-descriptionForeground);
     font-size: 11px;
@@ -759,6 +760,7 @@ body .project {
 
 .dashboard-search-empty,
 .dashboard-projects-loading,
+.dashboard-todo-loading,
 .open-current-workspace-empty {
     padding: 14px 8px;
     text-align: center;

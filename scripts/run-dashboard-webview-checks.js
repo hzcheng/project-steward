@@ -59,7 +59,10 @@ function makeDashboardCatalog() {
             projectId: 'saved', name: 'Dashboard', description: 'Saved',
             action: 'open-saved', groupLabels: ['FAVORITES', 'TOOLS'],
         }],
-        todos: [],
+        todos: [{
+            key: 'todo:t1', todoId: 't1', groupId: 'todo-group-a', searchText: 'ship todo planning',
+            title: 'Ship TODO', groupTitle: 'Planning', priority: 'high', completed: false, notesSearchText: 'planning',
+        }],
     };
 }
 
@@ -1036,11 +1039,15 @@ function runControllerChecks(source) {
     openButton.setAttribute('data-dashboard-tab', 'open');
     const projectsButton = createElement('dashboard-tab-projects-button');
     projectsButton.setAttribute('data-dashboard-tab', 'projects');
+    const todoButton = createElement('dashboard-tab-todo-button');
+    todoButton.setAttribute('data-dashboard-tab', 'todo');
     const openPanel = createElement('dashboard-tab-open');
     const projectsPanel = createElement('dashboard-tab-projects');
+    const todoPanel = createElement('dashboard-tab-todo');
     const elements = {
         'dashboard-tab-open': openPanel,
         'dashboard-tab-projects': projectsPanel,
+        'dashboard-tab-todo': todoPanel,
     };
     const messages = [];
     const storage = new Map([['projectSteward.activeDashboardTab', 'open']]);
@@ -1050,7 +1057,7 @@ function runControllerChecks(source) {
             body: { classList: createClassList() },
             getElementById: id => elements[id] || null,
             querySelectorAll: selector => selector === '[data-dashboard-tab]'
-                ? [openButton, projectsButton]
+                ? [openButton, projectsButton, todoButton]
                 : [],
         },
         sessionStorage: {
@@ -1067,14 +1074,23 @@ function runControllerChecks(source) {
     vm.runInNewContext(source, context);
 
     assert.strictEqual(context.normalizeDashboardTab('projects'), 'projects');
+    assert.strictEqual(context.normalizeDashboardTab('todo'), 'todo');
     assert.strictEqual(context.normalizeDashboardTab('invalid'), 'open');
     assert.strictEqual(context.getAdjacentDashboardTab('open', 'ArrowRight'), 'projects');
+    assert.strictEqual(context.getAdjacentDashboardTab('projects', 'ArrowRight'), 'todo');
+    assert.strictEqual(context.getAdjacentDashboardTab('todo', 'ArrowLeft'), 'projects');
     assert.strictEqual(context.getAdjacentDashboardTab('projects', 'ArrowLeft'), 'open');
     assert.strictEqual(context.validateProjectsPanelMessage({
         type: 'projects-panel-content', version: 1, requestId: 2, html: '<div></div>',
     }), true);
     assert.strictEqual(context.validateProjectsPanelMessage({
         type: 'projects-panel-content', version: 2, requestId: 2, html: '<div></div>',
+    }), false);
+    assert.strictEqual(context.validateTodoPanelMessage({
+        type: 'todo-panel-content', version: 1, requestId: 2, html: '<div></div>',
+    }), true);
+    assert.strictEqual(context.validateTodoPanelMessage({
+        type: 'todo-panel-content', version: 2, requestId: 2, html: '<div></div>',
     }), false);
     assert.strictEqual(context.globToDashboardRegex('dash*').test('dashboard'), true);
     assert.strictEqual(context.globToDashboardRegex('data?').test('data1'), true);
@@ -1083,21 +1099,26 @@ function runControllerChecks(source) {
         JSON.parse(JSON.stringify(sections.map(section => section.id))),
         ['ai-sessions', 'open-projects', 'saved-projects']
     );
+    const todoSections = context.filterDashboardCatalog(makeDashboardCatalog(), 'ship');
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(todoSections.map(section => section.id))),
+        ['todos']
+    );
     assert.strictEqual(context.filterDashboardCatalog(makeDashboardCatalog(), 'missing').length, 0);
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(context.normalizeDashboardSearchCatalog(null))),
-        { sessions: [], openProjects: [], savedProjects: [] }
+        { sessions: [], openProjects: [], savedProjects: [], todos: [] }
     );
     const state = {
         activeTab: 'projects',
         searchQuery: 'dash',
-        scrollPositions: { open: 12, projects: 34 },
+        scrollPositions: { open: 12, projects: 34, todo: 56 },
         catalog: makeDashboardCatalog(),
     };
     const nextState = context.replaceDashboardSearchCatalogState(state, makeUpdatedDashboardCatalog());
     assert.strictEqual(nextState.activeTab, 'projects');
     assert.strictEqual(nextState.searchQuery, 'dash');
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(nextState.scrollPositions)), { open: 12, projects: 34 });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(nextState.scrollPositions)), { open: 12, projects: 34, todo: 56 });
     assert.notStrictEqual(nextState.catalog, state.catalog);
 
     let mounted = 0;
@@ -1107,10 +1128,14 @@ function runControllerChecks(source) {
             assert.strictEqual(panel, projectsPanel);
             mounted += 1;
         },
+        onTodoMounted: panel => {
+            assert.strictEqual(panel, todoPanel);
+        },
     });
     assert.strictEqual(controller.getActiveTab(), 'open');
     assert.strictEqual(openPanel.hidden, false);
     assert.strictEqual(projectsPanel.hidden, true);
+    assert.strictEqual(todoPanel.hidden, true);
     assert.strictEqual(openButton.getAttribute('aria-selected'), 'true');
     assert.strictEqual(projectsButton.getAttribute('tabindex'), '-1');
 
@@ -1138,6 +1163,17 @@ function runControllerChecks(source) {
     assert.strictEqual(mounted, 1);
     controller.ensureProjectsPanel();
     assert.strictEqual(messages.length, 1, 'mounted PROJECTS must not be requested again');
+    context.window.scrollY = 41;
+    controller.activateTab('todo');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.slice(1))), [
+        { type: 'request-todo-panel', version: 1, requestId: 1 },
+    ]);
+    assert.strictEqual(controller.getTodoState(), 'loading');
+    assert.strictEqual(controller.applyTodoPanelMessage({
+        type: 'todo-panel-content', version: 1, requestId: 1, html: '<div>todo</div>',
+    }), true);
+    assert.strictEqual(todoPanel.innerHTML, '<div>todo</div>');
+    assert.strictEqual(controller.getTodoState(), 'mounted');
     assert.strictEqual(typeof windowListeners.message, 'function');
 
     storage.set('projectSteward.activeDashboardTab', 'projects');
@@ -1149,6 +1185,7 @@ function runControllerChecks(source) {
     assert.strictEqual(searchController.getActiveTab(), 'projects');
     assert.strictEqual(searchController.isSearchActive(), true);
     assert.strictEqual(searchController.getProjectsState(), 'unloaded');
+    assert.strictEqual(searchController.getTodoState(), 'unloaded');
     assert.strictEqual(searchMessages.length, 0, 'restored search must not load PROJECTS');
     searchController.setSearchQuery('');
     assert.deepStrictEqual(JSON.parse(JSON.stringify(searchMessages)), [
@@ -1200,10 +1237,13 @@ function runSourceContractChecks(source) {
     assert.ok(source.includes('acceptedProjectsRequestId'));
     assert.ok(source.includes('pendingScrollRestoreTab'));
     assert.ok(extensionHostSource.includes("'request-projects-panel': async e =>"));
+    assert.ok(extensionHostSource.includes("'request-todo-panel': async e =>"));
     assert.strictEqual(extensionHostSource.includes('function handleStewardMessage('), false);
     assert.ok(extensionHostSource.includes('getAiSessionProviderIds: () => getRegisteredAiSessionProviders().map(provider => provider.id)'));
     assert.ok(extensionHostSource.includes("type: 'projects-panel-content'"));
+    assert.ok(extensionHostSource.includes("type: 'todo-panel-content'"));
     assert.ok(extensionHostSource.includes('getProjectsPanelContent(projectService.getGroups(), stewardInfos)'));
+    assert.ok(extensionHostSource.includes('getTodoPanelContent(buildTodoViewModel(todoService.getData()'));
     assert.ok(projectSource.includes("e.target.closest('[data-action=\"add-project\"]')"));
     assert.ok(projectSource.includes("e.target.closest('[data-action=\"import-from-other-storage\"]')"));
     assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"add-project\"]')"), false);
@@ -1333,11 +1373,14 @@ function runSourceContractChecks(source) {
         '.dashboard-tab-list', '.dashboard-tab-button', '.dashboard-tab-panel',
         '.dashboard-search-results', '.dashboard-search-section', '.dashboard-search-result',
         '.open-current-workspace-group', '.open-other-windows-group', '.dashboard-projects-loading',
+        '.dashboard-todo-loading',
     ]) {
         assert.ok(styles.includes(selector), `missing ${selector}`);
     }
     assert.strictEqual((source.match(/type: 'request-projects-panel'/g) || []).length, 1);
+    assert.strictEqual((source.match(/type: 'request-todo-panel'/g) || []).length, 1);
     assert.ok(extractFunctionBody(source, 'ensureProjectsPanel').includes("type: 'request-projects-panel'"));
+    assert.ok(extractFunctionBody(source, 'ensureTodoPanel').includes("type: 'request-todo-panel'"));
     assert.strictEqual(extractFunctionBody(source, 'renderSearchMode').includes('ensureProjectsPanel()'), false);
     assert.ok(source.includes("document.body.classList.toggle('dashboard-search-active'"));
 }
@@ -1350,6 +1393,9 @@ async function runDashboardMessageRouterChecks() {
         handlers: {
             'request-projects-panel': async message => {
                 calls.push(['request-projects-panel', message.requestId]);
+            },
+            'request-todo-panel': async message => {
+                calls.push(['request-todo-panel', message.requestId]);
             },
             'selected-project': message => {
                 calls.push(['selected-project', message.projectId]);
@@ -1369,6 +1415,7 @@ async function runDashboardMessageRouterChecks() {
     assert.deepStrictEqual(calls, []);
 
     await router({ type: 'request-projects-panel', requestId: 7 });
+    await router({ type: 'request-todo-panel', requestId: 8 });
     await router({ type: 'selected-project', projectId: 'project-a' });
     await router({ type: 'resume-ai-session', provider: 'codex', sessionId: 'c1' });
     await router({ type: 'resume-ai-session', provider: 'unknown', sessionId: 'invalid' });
@@ -1378,6 +1425,7 @@ async function runDashboardMessageRouterChecks() {
 
     assert.deepStrictEqual(calls, [
         ['request-projects-panel', 7],
+        ['request-todo-panel', 8],
         ['selected-project', 'project-a'],
         ['resume-ai-session', 'codex', 'c1'],
         ['resume-ai-session', null, 'invalid'],

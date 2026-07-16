@@ -6,6 +6,10 @@ import { USER_CANCELED, RelevantExtensions, REOPEN_KEY, WSL_DEFAULT_REGEX, OPEN_
 
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
+import { TodoService } from './todos/service';
+import { buildTodoSearchItems } from './todos/types';
+import { buildTodoViewModel } from './todos/viewModel';
+import { getTodoPanelContent } from './todos/webviewContent';
 import FileService from './services/fileService';
 import CodexSessionService from './services/codexSessionService';
 import KimiSessionService from './services/kimiSessionService';
@@ -91,6 +95,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
+    const todoService = new TodoService(context);
     const groupCollapseController = new GroupCollapseController({
         state: context.globalState,
         projectService,
@@ -434,6 +439,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     html: getProjectsPanelContent(projectService.getGroups(), stewardInfos),
                 });
             },
+            'request-todo-panel': async e => {
+                if (e.version !== 1 || !Number.isSafeInteger(e.requestId) || e.requestId < 1) {
+                    return;
+                }
+                await provider.postMessage({
+                    type: 'todo-panel-content',
+                    version: 1,
+                    requestId: e.requestId,
+                    html: getTodoPanelContent(buildTodoViewModel(todoService.getData(), { showCompleted: false })),
+                });
+            },
             'selected-project': async e => {
                 let projectId = e.projectId as string;
                 let projectOpenType = e.projectOpenType as ProjectOpenType;
@@ -686,6 +702,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         get favoritesGroupCollapsed() { return groupCollapseController.getFavoritesCollapsed() },
         get openProjects() { return getOpenProjectCards() },
         get openProjectsGroupCollapsed() { return groupCollapseController.getOpenProjectsCollapsed() },
+        get todoSearchItems() { return buildTodoSearchItems(todoService.getData()) },
     };
     const dashboardStartupController = new DashboardStartupController({
         stewardInfos,
