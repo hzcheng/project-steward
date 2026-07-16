@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="940" viewBox="0 0 420 940" role="img" aria-labelledby="title desc">
+  <title id="title">Project Steward TODO 页面默认列表效果图</title>
+  <desc id="desc">VS Code 深色主题侧边栏，OPEN、PROJECTS、TODO 三个 Tab 中 TODO 被选中，展示分组 Todo 列表、优先级、备注和默认隐藏完成项。</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity=".28"/>
+    </filter>
+    <linearGradient id="selectedTab" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#30333a"/>
+      <stop offset="1" stop-color="#26282e"/>
+    </linearGradient>
+    <style>
+      .ui { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .chrome { fill:#181818; }
+      .panel { fill:#222328; stroke:#3a3c42; }
+      .panel2 { fill:#25262a; stroke:#3a3c42; }
+      .text { fill:#d7d8dc; }
+      .title { fill:#f1f1f1; font-size:13px; font-weight:650; }
+      .desc { fill:#aeb0b5; font-size:10.5px; }
+      .meta { fill:#8d9097; font-size:10px; }
+      .label { fill:#cfd1d6; font-size:11px; font-weight:700; letter-spacing:.7px; }
+      .tab { fill:#b8bbc2; font-size:11px; font-weight:700; letter-spacing:.5px; }
+      .tabActive { fill:#fff; }
+      .priority { font-size:9px; font-weight:700; }
+    </style>
+  </defs>
+
+  <rect width="420" height="940" class="chrome"/>
+  <rect x="0" y="0" width="420" height="34" fill="#202124"/>
+  <text class="ui label" x="18" y="22" fill="#c8c8c8">PROJECT STEWARD</text>
+  <path d="M389 12h14M389 17h14M389 22h14" stroke="#9da0a6" stroke-width="1.5"/>
+
+  <rect x="12" y="44" width="316" height="34" rx="17" fill="#25262a" stroke="#35373d"/>
+  <circle cx="31" cy="61" r="6" fill="none" stroke="#8e9198" stroke-width="1.5"/>
+  <path d="M35.5 65.5l5 5" stroke="#8e9198" stroke-width="1.5"/>
+  <text class="ui desc" x="51" y="65">Search projects, sessions, and todos</text>
+  <circle cx="347" cy="61" r="15" fill="#242529" stroke="#34363b"/>
+  <path d="M340 58h14m-11-5l-4 5 4 5m8 6l4-5-4-5" fill="none" stroke="#aeb0b5" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="386" cy="61" r="15" fill="#242529"/>
+  <path d="M386 52v3m0 12v3m-9-9h3m12 0h3m-14.5-5.5l2.2 2.2m6.6 6.6l2.2 2.2m0-11l-2.2 2.2m-6.6 6.6l-2.2 2.2" stroke="#aeb0b5" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="386" cy="61" r="4.5" fill="none" stroke="#aeb0b5" stroke-width="1.5"/>
+
+  <rect x="12" y="88" width="396" height="42" rx="9" fill="#111214" stroke="#34363b"/>
+  <text class="ui tab" x="54" y="113">OPEN</text>
+  <text class="ui tab" x="165" y="113">PROJECTS</text>
+  <rect x="284" y="92" width="120" height="34" rx="7" fill="url(#selectedTab)" stroke="#4c9aff"/>
+  <text class="ui tab tabActive" x="326" y="113">TODO</text>
+  <line x1="0" y1="140" x2="420" y2="140" stroke="#303136"/>
+
+  <rect x="14" y="153" width="392" height="44" rx="10" class="panel2"/>
+  <text class="ui label" x="31" y="181">TODO</text>
+  <text class="ui meta" x="74" y="181">12 open · 3 groups · completed hidden</text>
+  <rect x="287" y="162" width="28" height="26" rx="7" fill="#1c1d21" stroke="#45474e"/>
+  <path d="M301 168v14m-7-7h14" stroke="#c7c9ce" stroke-width="1.5" stroke-linecap="round"/>
+  <rect x="323" y="162" width="30" height="26" rx="7" fill="#1c1d21" stroke="#45474e"/>
+  <path d="M334 169h9m-9 6h7m-7 6h4" stroke="#c7c9ce" stroke-width="1.4" stroke-linecap="round"/>
+  <rect x="361" y="162" width="31" height="26" rx="7" fill="#1c1d21" stroke="#45474e"/>
+  <path d="M372 169l4 4 4-4m-8 8l4 4 4-4" fill="none" stroke="#c7c9ce" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g id="group-release">
+    <rect x="14" y="214" width="392" height="34" rx="8" class="panel2"/>
+    <path d="M29 226l5 5 5-5" fill="none" stroke="#c5c7cc" stroke-width="1.5"/>
+    <text class="ui label" x="50" y="236">RELEASE PLAN</text>
+    <text class="ui meta" x="333" y="236">4 open</text>
+    <path d="M380 224v14m-7-7h14" stroke="#c7c9ce" stroke-width="1.4" stroke-linecap="round"/>
+
+    <rect x="16" y="259" width="388" height="78" rx="10" class="panel" filter="url(#shadow)"/>
+    <circle cx="35" cy="282" r="8" fill="none" stroke="#d64b4b" stroke-width="1.8"/>
+    <rect x="54" y="270" width="36" height="18" rx="9" fill="#5a2323" stroke="#d64b4b"/>
+    <text class="ui priority" x="65" y="283" fill="#ffcccc">HIGH</text>
+    <text class="ui title" x="101" y="283">Draft marketplace release checklist</text>
+    <text class="ui desc" x="54" y="307">Cover VSIX artifacts, install order, and manual smoke test notes.</text>
+    <text class="ui meta" x="54" y="324">Manual order · synced with Settings when enabled</text>
+
+    <rect x="16" y="347" width="388" height="78" rx="10" class="panel"/>
+    <circle cx="35" cy="370" r="8" fill="none" stroke="#d7ba7d" stroke-width="1.8"/>
+    <rect x="54" y="358" width="32" height="18" rx="9" fill="#44371f" stroke="#d7ba7d"/>
+    <text class="ui priority" x="64" y="371" fill="#f1dca8">MED</text>
+    <text class="ui title" x="98" y="371">Validate changelog wording</text>
+    <text class="ui desc" x="54" y="395">Keep user-facing items short; avoid implementation detail.</text>
+    <text class="ui meta" x="54" y="412">Manual order</text>
+  </g>
+
+  <g id="group-refactor">
+    <rect x="14" y="444" width="392" height="34" rx="8" class="panel2"/>
+    <path d="M29 456l5 5 5-5" fill="none" stroke="#c5c7cc" stroke-width="1.5"/>
+    <text class="ui label" x="50" y="466">REFACTOR BACKLOG</text>
+    <text class="ui meta" x="331" y="466">5 open</text>
+    <path d="M380 454v14m-7-7h14" stroke="#c7c9ce" stroke-width="1.4" stroke-linecap="round"/>
+
+    <rect x="16" y="489" width="388" height="78" rx="10" class="panel"/>
+    <circle cx="35" cy="512" r="8" fill="none" stroke="#d64b4b" stroke-width="1.8"/>
+    <rect x="54" y="500" width="36" height="18" rx="9" fill="#5a2323" stroke="#d64b4b"/>
+    <text class="ui priority" x="65" y="513" fill="#ffcccc">HIGH</text>
+    <text class="ui title" x="101" y="513">Split TODO store from dashboard activation</text>
+    <text class="ui desc" x="54" y="537">Keep storage, validation, and mutations testable outside webview.</text>
+    <text class="ui meta" x="54" y="554">Manual order</text>
+
+    <rect x="16" y="577" width="388" height="78" rx="10" class="panel"/>
+    <circle cx="35" cy="600" r="8" fill="none" stroke="#6a9955" stroke-width="1.8"/>
+    <rect x="54" y="588" width="31" height="18" rx="9" fill="#21351f" stroke="#6a9955"/>
+    <text class="ui priority" x="64" y="601" fill="#b7ddb0">LOW</text>
+    <text class="ui title" x="97" y="601">Polish empty state copy</text>
+    <text class="ui desc" x="54" y="625">Make first-run path obvious without adding onboarding text.</text>
+    <text class="ui meta" x="54" y="642">Manual order</text>
+  </g>
+
+  <g id="group-research">
+    <rect x="14" y="674" width="392" height="34" rx="8" class="panel2"/>
+    <path d="M29 688l5-5 5 5" fill="none" stroke="#c5c7cc" stroke-width="1.5"/>
+    <text class="ui label" x="50" y="696">IDEAS</text>
+    <text class="ui meta" x="331" y="696">3 open</text>
+  </g>
+
+  <rect x="16" y="730" width="388" height="52" rx="10" fill="#1e1f23" stroke="#3a3c42" stroke-dasharray="5 4"/>
+  <path d="M191 748v16m-8-8h16" stroke="#aeb0b5" stroke-width="1.6" stroke-linecap="round"/>
+  <text class="ui desc" x="211" y="760">New group</text>
+</svg>
