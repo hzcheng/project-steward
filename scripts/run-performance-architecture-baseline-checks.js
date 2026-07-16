@@ -12,6 +12,8 @@ function read(relativePath) {
 
 const dashboard = read('src/dashboard.ts');
 const viewProvider = read('src/dashboard/viewProvider.ts');
+const aiSessionController = read('src/aiSessions/dashboardController.ts');
+const openProjectController = read('src/openProjects/dashboardController.ts');
 const dashboardLines = dashboard.split(/\r?\n/).length;
 const refreshCalls = (dashboard.match(/provider\.refresh\(/g) || []).length;
 const webviewHtmlAssignments = ((dashboard + '\n' + viewProvider).match(/webview\.html/g) || []).length;
@@ -31,6 +33,19 @@ assert.ok(providerDefinitions.includes('codex:'));
 assert.ok(providerDefinitions.includes('kimi:'));
 assert.ok(providerDefinitions.includes('claude:'));
 assert.ok(providerDefinitions.includes('export function createAiSessionProviderRegistry('));
+assert.ok(dashboard.includes("event: 'ai-session-scan'"));
+assert.ok(dashboard.includes('scannedFileCount: result.scannedFiles'));
+assert.ok(dashboard.includes('parsedFileCount: result.parsedFiles'));
+assert.ok(dashboard.includes('scanBudget: normalizedOptions.maxFiles || null'));
+assert.ok(dashboard.includes('function getAiSessionScanMaxFiles('));
+assert.ok(dashboard.includes("function refreshStewardViews(reason = 'refresh')"));
+assert.ok(dashboard.includes("event: 'full-refresh'"));
+assert.ok(dashboard.includes('function logDashboardDiagnostic('));
+assert.ok(dashboard.includes('[Dashboard]'));
+assert.ok(aiSessionController.includes('refresh: (reason: string) => void;'));
+assert.ok(aiSessionController.includes("this.options.refresh('ai-session-update-not-delivered');"));
+assert.ok(openProjectController.includes('refresh: (reason: string) => void;'));
+assert.ok(openProjectController.includes("this.options.refresh('open-project-update-not-delivered');"));
 for (const expectedModule of expectedModules) {
     assert.ok(fs.existsSync(path.join(root, expectedModule)), `missing ${expectedModule}`);
 }

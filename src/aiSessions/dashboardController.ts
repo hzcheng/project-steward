@@ -18,7 +18,7 @@ export interface AiSessionDashboardControllerOptions {
     getOpenProjectAiSessionViewModel: (project: Project) => OpenProjectAiSessionViewModel;
     nextSequence: () => number;
     postMessage: (message: unknown) => Thenable<boolean>;
-    refresh: () => void;
+    refresh: (reason: string) => void;
     logError: (message: string, error: unknown) => void;
     beforeRefresh?: (reason: string) => void;
     afterRefresh?: () => void;
@@ -91,15 +91,15 @@ export class AiSessionDashboardController {
             const message = this.getUpdatedMessage();
             this.options.postMessage(message).then(delivered => {
                 if (!delivered) {
-                    this.options.refresh();
+                    this.options.refresh('ai-session-update-not-delivered');
                 }
             }, error => {
                 this.options.logError('Failed to post AI session update message.', error);
-                this.options.refresh();
+                this.options.refresh('ai-session-update-post-error');
             });
         } catch (error) {
             this.options.logError('Failed to update AI sessions incrementally.', error);
-            this.options.refresh();
+            this.options.refresh('ai-session-update-build-error');
         } finally {
             this.options.afterRefresh?.();
         }

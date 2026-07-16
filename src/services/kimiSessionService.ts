@@ -29,9 +29,18 @@ interface KimiSessionState {
     plan_slug?: string;
 }
 
+interface KimiSessionCandidate {
+    workDir: string;
+    sessionId: string;
+    sessionDir: string;
+    mtimeMs: number;
+}
+
 export interface KimiSessionReadResult {
     available: boolean;
     sessions: CodexSession[];
+    scannedFiles: number;
+    parsedFiles: number;
 }
 
 export default class KimiSessionService {
@@ -42,7 +51,7 @@ export default class KimiSessionService {
     private readonly changePollIntervalMs = 3000;
 
     getSessions(options: boolean | AiSessionQueryOptions = false): KimiSessionReadResult {
-        let { forceRefresh, candidatePaths } = this.getQueryOptions(options);
+        let { forceRefresh, candidatePaths, maxFiles } = this.getQueryOptions(options);
         let now = Date.now();
         if (!forceRefresh && this.cachedResult && now - this.cachedAt < this.cacheTtlMs) {
             return this.filterResult(this.cachedResult, candidatePaths);
@@ -50,28 +59,41 @@ export default class KimiSessionService {
 
         let kimiHome = this.getKimiHome();
         if (!kimiHome) {
-            return this.cacheResult({ available: false, sessions: [] });
+            return this.cacheResult({ available: false, sessions: [], scannedFiles: 0, parsedFiles: 0 });
         }
 
         let workDirs = this.getWorkDirs(kimiHome);
         if (!workDirs.length) {
-            return this.cacheResult({ available: false, sessions: [] });
+            return this.cacheResult({ available: false, sessions: [], scannedFiles: 0, parsedFiles: 0 });
         }
 
         if (candidatePaths.length) {
             workDirs = workDirs.filter(workDir => candidatePaths.some(candidatePath => aiSessionPathContains(candidatePath, workDir)));
             if (!workDirs.length) {
-                return { available: true, sessions: [] };
+                return { available: true, sessions: [], scannedFiles: 0, parsedFiles: 0 };
             }
         }
 
-        let sessions: CodexSession[] = [];
+        let candidates: KimiSessionCandidate[] = [];
         for (let workDir of workDirs) {
-            sessions.push(...this.getSessionsForWorkDir(kimiHome, workDir));
+            candidates.push(...this.getSessionCandidatesForWorkDir(kimiHome, workDir));
+        }
+
+        let parsedFiles = 0;
+        let sessions: CodexSession[] = [];
+        for (let candidate of candidates
+            .sort((a, b) => b.mtimeMs - a.mtimeMs || a.sessionId.localeCompare(b.sessionId))
+            .slice(0, maxFiles || undefined)) {
+            parsedFiles++;
+            this.sessionDirsById.set(candidate.sessionId, candidate.sessionDir);
+            let session = this.readSession(candidate.workDir, candidate.sessionId, candidate.sessionDir);
+            if (session) {
+                sessions.push(session);
+            }
         }
 
         sessions.sort((a, b) => this.compareUpdatedAt(b.updatedAt, a.updatedAt));
-        let result = { available: true, sessions };
+        let result = { available: true, sessions, scannedFiles: candidates.length, parsedFiles };
         return candidatePaths.length ? this.filterResult(result, candidatePaths) : this.cacheResult(result);
     }
 
@@ -158,14 +180,15 @@ export default class KimiSessionService {
         return result;
     }
 
-    private getQueryOptions(options: boolean | AiSessionQueryOptions): { forceRefresh: boolean; candidatePaths: string[] } {
+    private getQueryOptions(options: boolean | AiSessionQueryOptions): { forceRefresh: boolean; candidatePaths: string[]; maxFiles: number } {
         if (typeof options === 'boolean') {
-            return { forceRefresh: options, candidatePaths: [] };
+            return { forceRefresh: options, candidatePaths: [], maxFiles: 0 };
         }
 
         return {
             forceRefresh: Boolean(options?.forceRefresh),
             candidatePaths: normalizeAiSessionCandidatePaths(options?.candidatePaths || []),
+            maxFiles: this.normalizeMaxFiles(options?.maxFiles),
         };
     }
 
@@ -205,31 +228,34 @@ export default class KimiSessionService {
         return workDirs;
     }
 
-    private getSessionsForWorkDir(kimiHome: string, workDir: string): CodexSession[] {
+    private normalizeMaxFiles(maxFiles: number): number {
+        return Number.isFinite(maxFiles) && maxFiles > 0 ? Math.floor(maxFiles) : 0;
+    }
+
+    private getSessionCandidatesForWorkDir(kimiHome: string, workDir: string): KimiSessionCandidate[] {
         let sessionsDir = path.join(kimiHome, 'sessions', this.getWorkDirHash(workDir));
         if (!fs.existsSync(sessionsDir)) {
             return [];
         }
 
-        let sessions: CodexSession[] = [];
+        let candidates: KimiSessionCandidate[] = [];
         try {
             for (let entry of fs.readdirSync(sessionsDir, { withFileTypes: true })) {
                 if (!entry.isDirectory() || !this.isSessionId(entry.name)) {
                     continue;
                 }
-
                 let sessionDir = path.join(sessionsDir, entry.name);
-                this.sessionDirsById.set(entry.name, sessionDir);
-                let session = this.readSession(workDir, entry.name, sessionDir);
-                if (session) {
-                    sessions.push(session);
-                }
+                candidates.push({
+                    workDir,
+                    sessionId: entry.name,
+                    sessionDir,
+                    mtimeMs: this.getFileMtimeMs(path.join(sessionDir, 'wire.jsonl')),
+                });
             }
+            return candidates;
         } catch (e) {
-            return [];
+            return candidates;
         }
-
-        return sessions;
     }
 
     private findSessionDir(kimiHome: string, sessionId: string): string {
@@ -351,6 +377,14 @@ export default class KimiSessionService {
             return `${filePath}:${stat.size}:${stat.mtimeMs}`;
         } catch (e) {
             return `${filePath}:missing`;
+        }
+    }
+
+    private getFileMtimeMs(filePath: string): number {
+        try {
+            return fs.statSync(filePath).mtimeMs;
+        } catch (e) {
+            return 0;
         }
     }
 

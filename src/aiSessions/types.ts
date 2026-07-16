@@ -14,6 +14,8 @@ export interface AiSessionTerminalEntry<TTerminal = unknown> {
 export interface AiSessionReadResult {
     available: boolean;
     sessions: CodexSession[];
+    scannedFiles: number;
+    parsedFiles: number;
 }
 
 export interface AiSessionQueryOptions {

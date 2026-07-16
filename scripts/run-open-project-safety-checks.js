@@ -808,7 +808,9 @@ function runOpenProjectIncrementalRenderingChecks() {
     assert.ok(postUpdatedBody.includes('this.options.postMessage(message).then('));
     assert.ok(postUpdatedBody.includes('if (!delivered && this.options.isVisible())'));
     assert.ok(postUpdatedBody.includes("this.options.logError('Failed to post OPEN PROJECT update message.'"));
-    assert.ok(postUpdatedBody.includes('this.options.refresh();'));
+    assert.ok(controllerSource.includes('refresh: (reason: string) => void;'));
+    assert.ok(postUpdatedBody.includes("this.options.refresh('open-project-update-not-delivered');"));
+    assert.ok(postUpdatedBody.includes("this.options.refresh('open-project-update-post-error');"));
 }
 
 async function runDashboardMigrationPublicationChecks() {

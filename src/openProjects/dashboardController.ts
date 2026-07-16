@@ -14,7 +14,7 @@ export interface OpenProjectDashboardControllerOptions {
     getAttentionAggregate: () => AttentionAggregate;
     getBridgeInstanceId: () => string;
     postMessage: (message: unknown) => Thenable<boolean>;
-    refresh: () => void;
+    refresh: (reason: string) => void;
     isVisible: () => boolean;
     logDiagnostic: (source: string, event: Record<string, unknown>) => void;
     logError: (message: string, error: unknown) => void;
@@ -84,12 +84,12 @@ export class OpenProjectDashboardController {
                 delivered,
             });
             if (!delivered && this.options.isVisible()) {
-                this.options.refresh();
+                this.options.refresh('open-project-update-not-delivered');
             }
         }, error => {
             this.options.logError('Failed to post OPEN PROJECT update message.', error);
             if (this.options.isVisible()) {
-                this.options.refresh();
+                this.options.refresh('open-project-update-post-error');
             }
         });
     }

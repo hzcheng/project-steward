@@ -291,6 +291,8 @@ function runSourceContractChecks(source) {
     const openProjectControllerSource = fs.readFileSync(path.join(root, 'src', 'openProjects', 'dashboardController.ts'), 'utf8');
     const aiSessionControllerSource = fs.readFileSync(path.join(root, 'src', 'aiSessions', 'dashboardController.ts'), 'utf8');
     assert.ok(refreshStewardViewsBody.includes('provider.refresh();'));
+    assert.ok(refreshStewardViewsBody.includes('logDashboardDiagnostic({'));
+    assert.ok(extensionHostSource.includes('function logDashboardDiagnostic('));
     assert.ok(openProjectsMessageBody.includes('openProjectDashboardController.postUpdated()'));
     assert.ok(openProjectControllerSource.includes('buildOpenProjectsUpdatedMessage({'));
     assert.ok(openProjectControllerSource.includes('groups: this.options.getGroups()'));

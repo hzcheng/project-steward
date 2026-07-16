@@ -22,7 +22,7 @@ import type { AttentionPayloadItem } from './aiSessions/attentionPayload';
 import { buildAttentionSessionIndex, getAttentionProjectKey, getAttentionProjectSummaries, getAttentionSessionLookupKey } from './aiSessions/attentionProject';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { assignAiSessionsToProjects, compareAiSessionUpdatedAt, getAiSessionKey, normalizeAiSessionComparablePath, prepareAiSessionsForDisplay } from './aiSessions/sessionHelpers';
-import { AI_SESSION_PROVIDER_IDS, createAiSessionProviderRegistry, getAiSessionProviderLabel } from './aiSessions/providers';
+import { createAiSessionProviderRegistry, getAiSessionProviderLabel } from './aiSessions/providers';
 import AiSessionTerminalService, { PendingAiSessionTerminal } from './aiSessions/terminalService';
 import AiSessionTerminalBindingStore from './aiSessions/terminalBindingStore';
 import { archiveBatchAiSessionItem as executeBatchAiSessionArchiveItem, executeBatchAiSessionArchiveRequest, formatBatchAiSessionArchiveSummary, formatBatchAiSessionIdForLog, hasBatchAiSessionArchiveIssues } from './aiSessions/archiveBatch';
@@ -49,6 +49,7 @@ interface NewAiSessionFields {
 
 const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
 const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
+const AI_SESSION_INCREMENTAL_SCAN_MAX_FILES = 2000;
 const AI_SESSION_ALIASES_FILE_NAME = 'ai-session-aliases.json';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -149,7 +150,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getAttentionAggregate: getEffectiveAiSessionAttentionAggregate,
         getBridgeInstanceId: () => openProjectBridgeClient.instanceId,
         postMessage: message => provider.postMessage(message),
-        refresh: () => provider.refresh(),
+        refresh: refreshStewardViews,
         isVisible: () => provider.visible,
         logDiagnostic: logOpenProjectDiagnostic,
         logError,
@@ -266,14 +267,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (event.affectsConfiguration("projectSteward")
             || event.affectsConfiguration("dashboard")) {
             applyProjectColorToCurrentWindow();
-            refreshStewardViews();
+            refreshStewardViews('configuration-changed');
             publishOpenProjects();
         }
     }));
 
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
         applyProjectColorToCurrentWindow();
-        refreshStewardViews();
+        refreshStewardViews('workspace-folders-changed');
         publishOpenProjects();
     }));
 
@@ -347,7 +348,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     async function showSteward() {
         publishOpenProjects();
         await revealSidebarSteward();
-        refreshStewardViews();
+        refreshStewardViews('show-steward');
     }
 
     function revealSidebarSteward(): Thenable<void> {
@@ -430,15 +431,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return provider;
     }
 
+    function getRegisteredAiSessionProviders(): AiSessionProvider[] {
+        return aiSessionProviderRegistry.providers();
+    }
+
     function getAiSessionTerminalCandidates(providerId: AiSessionProviderId): readonly CodexSession[] {
         return getProviderAiSessions(providerId, { reason: 'terminal-candidates' }).sessions;
     }
 
-    function refreshStewardViews() {
+    function refreshStewardViews(reason = 'refresh') {
         if (!provider.visible) {
             return;
         }
 
+        logDashboardDiagnostic({
+            event: 'full-refresh',
+            reason,
+        });
         provider.refresh();
     }
 
@@ -512,15 +521,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
         }
         const projects = getOpenProjects();
+        const registeredProviders = getRegisteredAiSessionProviders();
         const ownedSessions = new Map<string, {
             providerId: AiSessionProviderId;
             session: CodexSession;
             terminal: TerminalEntry;
         }>();
         for (const project of projects) {
-            for (const providerId of AI_SESSION_PROVIDER_IDS) {
-                const definition = getRegisteredAiSessionProvider(providerId);
-                for (const session of project[definition.projectSessionsKey] || []) {
+            for (const sessionProvider of registeredProviders) {
+                const providerId = sessionProvider.id;
+                for (const session of project[sessionProvider.projectSessionsKey] || []) {
                     const key = getAiSessionKey(providerId, session.id);
                     const terminal = aiSessionTerminalService.getById(providerId, session.id);
                     if (!terminal || ownedSessions.has(key)) {
@@ -531,8 +541,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
         }
 
-        const requestsByProvider = AI_SESSION_PROVIDER_IDS.reduce((result, providerId) => {
-            result[providerId] = [];
+        const requestsByProvider = registeredProviders.reduce((result, sessionProvider) => {
+            result[sessionProvider.id] = [];
             return result;
         }, {} as Record<AiSessionProviderId, AiSessionLifecycleRequest[]>);
         for (const owned of ownedSessions.values()) {
@@ -542,10 +552,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             });
         }
 
-        const signalsByProvider = AI_SESSION_PROVIDER_IDS.reduce((result, providerId) => {
+        const signalsByProvider = registeredProviders.reduce((result, sessionProvider) => {
+            const providerId = sessionProvider.id;
             const requests = requestsByProvider[providerId];
             result[providerId] = requests.length
-                ? getRegisteredAiSessionProvider(providerId).service.getLifecycleSignals(requests)
+                ? sessionProvider.service.getLifecycleSignals(requests)
                 : {};
             return result;
         }, {} as Record<AiSessionProviderId, Record<string, AiSessionLifecycleSignal>>);
@@ -575,9 +586,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (!projectKey) {
                 continue;
             }
-            for (const providerId of AI_SESSION_PROVIDER_IDS) {
-                const definition = getRegisteredAiSessionProvider(providerId);
-                for (const session of project[definition.projectSessionsKey] || []) {
+            for (const sessionProvider of registeredProviders) {
+                const providerId = sessionProvider.id;
+                for (const session of project[sessionProvider.projectSessionsKey] || []) {
                     const attention = snapshot[getAiSessionKey(providerId, session.id)];
                     if (!attention?.event) {
                         continue;
@@ -636,6 +647,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     function logAiSessionDiagnostic(event: Record<string, unknown>) {
         outputChannel.appendLine(`[AiSessions] ${JSON.stringify(event)}`);
+    }
+
+    function logDashboardDiagnostic(event: Record<string, unknown>) {
+        outputChannel.appendLine(`[Dashboard] ${JSON.stringify({
+            loggedAt: new Date().toISOString(),
+            ...event,
+        })}`);
     }
 
     function logOpenProjectDiagnostic(component: string, event: unknown) {
@@ -708,7 +726,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
 
         let messageType = String(e?.type || '');
-        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+        for (let { id: providerId } of getRegisteredAiSessionProviders()) {
             if (messageType === `${action}-${providerId}-session`) {
                 return providerId;
             }
@@ -719,7 +737,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     function refreshAfterMutation() {
         applyProjectColorToCurrentWindow();
-        refreshStewardViews();
+        refreshStewardViews('project-mutation');
         publishOpenProjects();
     }
 
@@ -832,7 +850,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     event: 'full-refresh-requested',
                     reason: typeof e.reason === 'string' ? e.reason.slice(0, 256) : 'unknown',
                 });
-                refreshStewardViews();
+                refreshStewardViews(typeof e.reason === 'string' ? e.reason.slice(0, 256) : 'webview-requested');
                 break;
             case 'open-projects-rendered':
                 logOpenProjectDiagnostic('Renderer', {
@@ -2357,11 +2375,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const aggregate = getEffectiveAiSessionAttentionAggregate();
         const aggregateByProjectAndSession = buildAttentionSessionIndex(aggregate);
         const localAttentionBySession = aiSessionAttentionMonitor.getSnapshot();
+        const registeredProviders = getRegisteredAiSessionProviders();
 
         return openProjects.map(project => {
             const projectKey = getAttentionProjectKey(project.path);
-            for (let providerId of AI_SESSION_PROVIDER_IDS) {
-                let sessionProvider = getRegisteredAiSessionProvider(providerId);
+            for (let sessionProvider of registeredProviders) {
+                let providerId = sessionProvider.id;
                 let sessionResult = sessionResults[providerId];
                 project[sessionProvider.projectSessionsKey] = prepareAiSessionsForDisplay(assignments[providerId].get(project.id) || [], providerId, pinnedSessions, aliases).map(session => {
                     const sessionKey = getAiSessionKey(providerId, session.id);
@@ -2397,8 +2416,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     function getOpenProjectAiSessionViewModel(project: Project): OpenProjectAiSessionViewModel {
         let sessionsByProvider: Partial<Record<AiSessionProviderId, AiSessionViewModel[]>> = {};
-        let providers = AI_SESSION_PROVIDER_IDS.map(providerId => {
-            let sessionProvider = getRegisteredAiSessionProvider(providerId);
+        let registeredProviders = getRegisteredAiSessionProviders();
+        let providers = registeredProviders.map(sessionProvider => {
+            let providerId = sessionProvider.id;
             let sessions = project[sessionProvider.projectSessionsKey] || [];
             sessionsByProvider[providerId] = sessions.map(session => ({
                 ...session,
@@ -2421,12 +2441,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             sessionsByProvider,
             unavailableProviders: providers.filter(item => item.unavailable).map(item => item.id),
             searchText: getProjectSearchText(project),
-            aiSessionCount: AI_SESSION_PROVIDER_IDS.reduce((count, providerId) => {
-                let sessionProvider = getRegisteredAiSessionProvider(providerId);
+            aiSessionCount: registeredProviders.reduce((count, sessionProvider) => {
                 return count + (project[sessionProvider.projectSessionsKey] || []).length;
             }, 0),
-            attentionCount: project.aiSessionAttentionCount ?? AI_SESSION_PROVIDER_IDS.reduce((count, providerId) => {
-                const sessionProvider = getRegisteredAiSessionProvider(providerId);
+            attentionCount: project.aiSessionAttentionCount ?? registeredProviders.reduce((count, sessionProvider) => {
                 return count + (project[sessionProvider.projectSessionsKey] || []).filter(session => session.attention?.unread).length;
             }, 0),
             sessionSectionHtml: getAiSessionsDiv(project),
@@ -2436,11 +2454,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     function getAiSessionResults(openProjects: Project[] = [], reason = currentAiSessionRefreshReason): Record<AiSessionProviderId, AiSessionReadResult> {
         let results = {} as Record<AiSessionProviderId, AiSessionReadResult>;
         let candidatePaths = getAiSessionCandidatePaths(openProjects);
-        for (let providerId of AI_SESSION_PROVIDER_IDS) {
-            results[providerId] = getProviderAiSessions(providerId, { candidatePaths, reason });
+        let maxFiles = getAiSessionScanMaxFiles(reason);
+        for (let { id: providerId } of getRegisteredAiSessionProviders()) {
+            results[providerId] = getProviderAiSessions(providerId, { candidatePaths, reason, maxFiles });
         }
 
         return results;
+    }
+
+    function getAiSessionScanMaxFiles(reason: string): number {
+        if (reason === 'alias-original-name' || reason === 'terminal-candidates') {
+            return 0;
+        }
+
+        return AI_SESSION_INCREMENTAL_SCAN_MAX_FILES;
     }
 
     function getProviderAiSessions(providerId: AiSessionProviderId, options?: boolean | AiSessionQueryOptions): AiSessionReadResult {
@@ -2453,6 +2480,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             reason: normalizedOptions.reason || (normalizedOptions.forceRefresh ? 'force-refresh' : 'refresh'),
             durationMs: Date.now() - startedAt,
             sessionCount: result.sessions.length,
+            scannedFileCount: result.scannedFiles,
+            parsedFileCount: result.parsedFiles,
+            scanBudget: normalizedOptions.maxFiles || null,
             available: result.available,
         });
         return result;
@@ -2460,7 +2490,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     function getAiSessionAssignments(openProjects: Project[], sessionResults: Record<AiSessionProviderId, AiSessionReadResult>): Record<AiSessionProviderId, Map<string, CodexSession[]>> {
         let assignments = {} as Record<AiSessionProviderId, Map<string, CodexSession[]>>;
-        for (let providerId of AI_SESSION_PROVIDER_IDS) {
+        for (let { id: providerId } of getRegisteredAiSessionProviders()) {
             assignments[providerId] = getAiSessionAssignmentsForProvider(openProjects, providerId, sessionResults[providerId]);
         }
 
@@ -2675,10 +2705,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return selectedProvider;
         }
 
-        for (let providerId of AI_SESSION_PROVIDER_IDS) {
-            let sessionProvider = getRegisteredAiSessionProvider(providerId);
+        for (let sessionProvider of getRegisteredAiSessionProviders()) {
             if (project[sessionProvider.projectSessionsKey]?.length) {
-                return providerId;
+                return sessionProvider.id;
             }
         }
 
