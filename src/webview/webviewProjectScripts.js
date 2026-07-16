@@ -52,6 +52,9 @@ function getOpenProjectsUpdateDomState() {
 
 function isOpenProjectsUpdateDomConsistent(message) {
     var expected = getOpenProjectsUpdateCatalogCounts(message.searchCatalog);
+    if (message.projectCount !== expected.projectCount) {
+        return false;
+    }
     if (!expected.projectCount) {
         return true;
     }

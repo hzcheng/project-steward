@@ -1201,12 +1201,21 @@ function runOpenProjectIncrementalRenderingChecks() {
         type: 'open-projects-updated',
         version: 1,
         semanticRevision: 'revision-2',
-        projectCount: 3,
+        projectCount: 0,
         html: '<div data-group-id="__openProjects">new</div>',
         searchCatalog: { sessions: [], openProjects: [], savedProjects: [] },
     }), true);
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.strictEqual(catalogReplacements, 1);
+    assert.strictEqual(applyOpenProjectsUpdate({
+        type: 'open-projects-updated',
+        version: 1,
+        semanticRevision: 'revision-mismatched-count',
+        projectCount: 3,
+        html: '<div>bad count</div>',
+        searchCatalog: { sessions: [], openProjects: [], savedProjects: [] },
+    }), false, 'OPEN update must reject projectCount values that do not match the search catalog');
+    assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.strictEqual(applyOpenProjectsUpdate({ version: 2, html: '<div>bad</div>' }), false);
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.ok(webviewScript.includes("type: 'open-projects-rendered'"));

@@ -814,6 +814,8 @@ async function runActiveTerminalFileReferenceChecks() {
     });
     await missingTerminalController.addFileToActiveTerminal();
     assert.ok(warnings.includes('No active terminal to receive the file reference.'));
+    assert.strictEqual(sent.length, 3);
+    assert.strictEqual(terminalShowCalls, 3);
 
     const untitledController = new activeTerminalFileReference.ActiveTerminalFileReferenceController({
         getActiveTextEditor: () => ({
@@ -826,6 +828,8 @@ async function runActiveTerminalFileReferenceChecks() {
     });
     await untitledController.addFileToActiveTerminal();
     assert.ok(warnings.includes('Open a saved file before adding it to the active terminal.'));
+    assert.strictEqual(sent.length, 3);
+    assert.strictEqual(terminalShowCalls, 3);
 }
 
 function createClassList() {
