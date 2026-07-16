@@ -669,6 +669,10 @@ function initProjects() {
     }
 
     function getTodoFormValue(form, name) {
+        var checkedElement = form.querySelector('[name="' + name + '"]:checked');
+        if (checkedElement) {
+            return String(checkedElement.value || '').trim();
+        }
         var element = form.querySelector('[name="' + name + '"]');
         return element ? String(element.value || '').trim() : '';
     }

@@ -7,6 +7,8 @@ export interface TodoItemViewModel extends TodoItem {
 export interface TodoGroupViewModel extends TodoGroup {
     visibleTodos: TodoItemViewModel[];
     totalTodos: number;
+    incompleteCount: number;
+    completedCount: number;
     hiddenCompletedCount: number;
 }
 
@@ -20,9 +22,9 @@ export interface TodoPanelViewModel {
 }
 
 const PRIORITY_LABELS = {
-    high: 'High',
-    medium: 'Medium',
-    low: 'Low',
+    high: 'HIGH',
+    medium: 'MED',
+    low: 'LOW',
 };
 
 function toTodoItemViewModel(todo: TodoItem): TodoItemViewModel {
@@ -52,6 +54,8 @@ export function buildTodoViewModel(data: TodoDataV1, viewState: Partial<TodoView
             ...group,
             visibleTodos,
             totalTodos: groupTodos.length,
+            incompleteCount: groupTodos.filter(todo => !todo.completed).length,
+            completedCount: groupTodos.filter(todo => todo.completed).length,
             hiddenCompletedCount: showCompleted ? 0 : groupTodos.filter(todo => todo.completed).length,
         };
     });

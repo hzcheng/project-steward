@@ -2,9 +2,9 @@ import { TodoGroupViewModel, TodoItemViewModel, TodoPanelViewModel } from './vie
 import * as Icons from '../webview/webviewIcons';
 
 const PRIORITIES = [
-    { value: 'high', label: 'High' },
-    { value: 'medium', label: 'Medium' },
-    { value: 'low', label: 'Low' },
+    { value: 'high', label: 'HIGH' },
+    { value: 'medium', label: 'MED' },
+    { value: 'low', label: 'LOW' },
 ];
 
 function escapeHtml(value: string): string {
@@ -33,7 +33,7 @@ function renderGroupOptions(groups: TodoGroupViewModel[], selectedGroupId = ''):
 }
 
 function renderTodoAddForm(viewModel: TodoPanelViewModel): string {
-    return `<form class="todo-add-form todo-compose-panel" data-todo-form="add">
+    return `<form class="todo-add-form todo-compose-panel" data-todo-form="add" hidden>
         <div class="todo-compose-primary">
             <span class="todo-compose-icon">${Icons.add}</span>
             <input class="todo-title-input" type="text" name="title" placeholder="Add a todo" aria-label="Todo title">
@@ -48,13 +48,22 @@ function renderTodoAddForm(viewModel: TodoPanelViewModel): string {
 }
 
 function renderTodoEditForm(todo: TodoItemViewModel): string {
-    return `<form class="todo-edit-form todo-inline-editor" data-todo-form="edit" data-todo-id="${escapeHtml(todo.id)}" hidden>
+    return `<form class="todo-edit-form todo-edit-panel" data-todo-form="edit" data-todo-id="${escapeHtml(todo.id)}" hidden>
+        <div class="todo-edit-heading">EDIT TODO</div>
+        <label class="todo-field-label">Title</label>
         <input class="todo-title-input" type="text" name="title" value="${escapeHtml(todo.title)}" aria-label="Todo title">
-        <textarea class="todo-notes-input" name="notes" rows="3" aria-label="Todo notes">${escapeHtml(todo.notes)}</textarea>
+        <label class="todo-field-label">Priority</label>
+        <div class="todo-priority-segment" aria-label="Todo priority">
+            ${PRIORITIES.map(priority => `<label class="todo-priority-choice ${priority.value === todo.priority ? 'active' : ''}">
+                <input type="radio" name="priority" value="${priority.value}"${priority.value === todo.priority ? ' checked' : ''}>
+                <span>${priority.label}</span>
+            </label>`).join('')}
+        </div>
+        <label class="todo-field-label">Notes</label>
+        <textarea class="todo-notes-input" name="notes" rows="4" aria-label="Todo notes">${escapeHtml(todo.notes)}</textarea>
         <div class="todo-form-row todo-edit-actions">
-            <select name="priority" aria-label="Todo priority">${renderPriorityOptions(todo.priority)}</select>
-            <button class="todo-primary-button" type="submit" data-action="todo-save-edit"><span>${Icons.save}</span>Save</button>
             <button class="todo-secondary-button" type="button" data-action="todo-cancel-edit" data-todo-id="${escapeHtml(todo.id)}">Cancel</button>
+            <button class="todo-primary-button" type="submit" data-action="todo-save-edit"><span>${Icons.save}</span>Save</button>
         </div>
     </form>`;
 }
@@ -66,17 +75,24 @@ function renderTodoItem(todo: TodoItemViewModel): string {
         <div class="todo-item-view">
             <div class="todo-item-main">
                 <label class="todo-check">
-                    <input type="checkbox" data-action="todo-toggle" data-todo-id="${escapeHtml(todo.id)}"${checked}>
-                    <span>${escapeHtml(todo.title)}</span>
+                    <input type="checkbox" data-action="todo-toggle" data-todo-id="${escapeHtml(todo.id)}" aria-label="Complete ${escapeHtml(todo.title)}"${checked}>
+                    <span class="todo-checkbox-visual"></span>
                 </label>
+                <div class="todo-item-content">
+                    <div class="todo-title-line">
+                        <span class="todo-priority-badge">${escapeHtml(todo.priorityLabel)}</span>
+                        <span class="todo-title-text">${escapeHtml(todo.title)}</span>
+                    </div>
+                    ${todo.notes ? `<p class="todo-notes">${escapeHtml(todo.notes)}</p>` : ''}
+                    <div class="todo-item-footer">
+                        <span>${todo.completed ? 'Completed item' : 'Manual order'}</span>
+                        ${todo.completed && todo.completedAt ? `<span>${escapeHtml(todo.completedAt.slice(0, 10))}</span>` : ''}
+                    </div>
+                </div>
                 <div class="todo-item-actions">
                     <button class="todo-icon-button" type="button" data-action="todo-edit" data-todo-id="${escapeHtml(todo.id)}" title="Edit todo" aria-label="Edit todo">${Icons.edit}</button>
                     <button class="todo-icon-button danger" type="button" data-action="todo-delete" data-todo-id="${escapeHtml(todo.id)}" title="Delete todo" aria-label="Delete todo">${Icons.remove}</button>
                 </div>
-            </div>
-            <div class="todo-item-meta">
-                <span class="todo-priority-badge">${escapeHtml(todo.priorityLabel)}</span>
-                ${todo.notes ? `<p class="todo-notes">${escapeHtml(todo.notes)}</p>` : ''}
             </div>
         </div>
         ${renderTodoEditForm(todo)}
@@ -88,14 +104,18 @@ function renderTodoGroup(group: TodoGroupViewModel): string {
         ? `<p class="todo-hidden-completed">${group.hiddenCompletedCount} completed hidden</p>`
         : '';
 
+    const groupMeta = group.completedCount && group.visibleTodos.some(todo => todo.completed)
+        ? `${group.incompleteCount} open · ${group.completedCount} done`
+        : `${group.incompleteCount} open`;
+
     return `<section class="todo-group${group.collapsed ? ' collapsed' : ''}" data-todo-group-id="${escapeHtml(group.id)}">
-        <header class="todo-group-header">
+        <header class="todo-group-header todo-group-strip">
             <div class="todo-group-title-block">
                 <h2>${escapeHtml(group.title)}</h2>
-                <span class="todo-group-count">${group.visibleTodos.length} visible / ${group.totalTodos} total</span>
+                <span class="todo-group-count">${groupMeta}</span>
             </div>
             <div class="todo-group-actions">
-                <button class="todo-quiet-button" type="button" data-action="todo-focus-add" data-group-id="${escapeHtml(group.id)}"><span>${Icons.add}</span>Add</button>
+                <button class="todo-quiet-button" type="button" data-action="todo-add" data-group-id="${escapeHtml(group.id)}"><span>${Icons.add}</span>Add</button>
                 <button class="todo-quiet-button" type="button" data-action="todo-sort-priority" data-group-id="${escapeHtml(group.id)}"><span>${Icons.manage}</span>Sort</button>
             </div>
         </header>
@@ -110,17 +130,18 @@ export function getTodoPanelContent(viewModel: TodoPanelViewModel): string {
     if (viewModel.isEmpty) {
         return `<div class="todo-panel todo-panel-empty">
             ${renderTodoCommandBar(viewModel)}
-            ${renderTodoAddForm(viewModel)}
             <div class="todo-empty-state">
-                <strong>No todos yet</strong>
-                <span>Create the first planning item.</span>
+                <div class="todo-empty-orb">${Icons.manage}</div>
+                <strong>Plan your next large task</strong>
+                <span>Create a group, then break the work into prioritized todos.</span>
+                <button class="todo-empty-primary" type="button" data-action="todo-add-group">Create first group</button>
+                <button class="todo-empty-secondary" type="button" data-action="todo-add">Add todo to Inbox</button>
             </div>
         </div>`;
     }
 
     return `<div class="todo-panel">
         ${renderTodoCommandBar(viewModel)}
-        ${renderTodoAddForm(viewModel)}
         <div class="todo-groups">
             ${viewModel.groups.map(renderTodoGroup).join('')}
         </div>
@@ -128,17 +149,26 @@ export function getTodoPanelContent(viewModel: TodoPanelViewModel): string {
 }
 
 function renderTodoCommandBar(viewModel: TodoPanelViewModel): string {
-    return `<div class="todo-toolbar">
-        <div class="todo-summary">
-            <span><strong>${viewModel.totalIncomplete}</strong> Open</span>
-            <span><strong>${viewModel.totalCompleted}</strong> Done</span>
+    const groupCount = viewModel.groups.length;
+    const completedState = viewModel.showCompleted
+        ? `${viewModel.totalCompleted} completed shown`
+        : 'completed hidden';
+    const meta = viewModel.isEmpty
+        ? 'No groups yet · synced when Project Steward data is synced'
+        : `${viewModel.totalIncomplete} open · ${groupCount} ${groupCount === 1 ? 'group' : 'groups'} · ${completedState}`;
+
+    return `<div class="todo-summary-card">
+        <div class="todo-summary-copy">
+            <strong>TODO</strong>
+            <span class="todo-summary-meta">${meta}</span>
         </div>
-        <div class="todo-toolbar-actions">
-            <label class="todo-show-completed">
+        <div class="todo-summary-actions">
+            <button class="todo-square-button" type="button" data-action="todo-add" title="Add todo" aria-label="Add todo">${Icons.add}</button>
+            <button class="todo-square-button" type="button" data-action="todo-add-group" title="Add group" aria-label="Add group">${Icons.manage}</button>
+            <label class="todo-square-toggle ${viewModel.showCompleted ? 'active' : ''}" title="Show completed">
                 <input type="checkbox" data-action="todo-toggle-show-completed"${viewModel.showCompleted ? ' checked' : ''}>
-                Done
+                <span>${Icons.collapseAll}</span>
             </label>
-            <button class="todo-quiet-button" type="button" data-action="todo-add-group"><span>${Icons.add}</span>Group</button>
         </div>
     </div>`;
 }

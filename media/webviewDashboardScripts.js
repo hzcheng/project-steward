@@ -81,7 +81,7 @@ function filterDashboardCatalog(catalog, query) {
         { id: 'ai-sessions', title: 'AI SESSIONS', type: 'session', items: catalog.sessions },
         { id: 'open-projects', title: 'OPEN PROJECTS', type: 'open-project', items: catalog.openProjects },
         { id: 'saved-projects', title: 'SAVED PROJECTS', type: 'saved-project', items: catalog.savedProjects },
-        { id: 'todos', title: 'TODO', type: 'todo', items: catalog.todos },
+        { id: 'todos', title: 'TODO RESULTS', type: 'todo', items: catalog.todos },
     ];
     return sections
         .map(section => ({
@@ -112,6 +112,7 @@ function renderDashboardSearchResults(container, sections) {
     sections.forEach(section => {
         var sectionElement = document.createElement('section');
         sectionElement.className = 'dashboard-search-section';
+        sectionElement.dataset.sectionType = section.type;
         var heading = document.createElement('h2');
         heading.className = 'dashboard-search-section-title';
         heading.textContent = section.title;

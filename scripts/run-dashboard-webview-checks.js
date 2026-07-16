@@ -436,16 +436,25 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('Write &lt;spec&gt;'));
     assert.strictEqual(html.includes('Done task'), false);
     assert.ok(html.includes('1 completed hidden'));
-    assert.ok(html.includes('data-action="todo-add"'));
-    assert.ok(html.includes('todo-add-form'));
+    assert.ok(html.includes('todo-summary-card'));
+    assert.ok(html.includes('todo-summary-meta'));
+    assert.ok(html.includes('todo-summary-actions'));
+    assert.ok(html.includes('todo-group-strip'));
+    assert.ok(html.includes('todo-item-content'));
+    assert.ok(html.includes('todo-item-footer'));
+    assert.strictEqual(html.includes('todo-add-form'), false, 'default TODO list must not show a persistent add form');
     assert.ok(html.includes('todo-edit-form'));
+    assert.ok(html.includes('todo-edit-panel'));
+    assert.ok(html.includes('todo-priority-segment'));
     assert.ok(html.includes('data-action="todo-save-edit"'));
     assert.ok(html.includes('data-action="todo-cancel-edit"'));
     assert.ok(html.includes('data-action="todo-toggle-show-completed"'));
 
     const emptyHtml = todoWebviewContent.getTodoPanelContent(todoViewModel.buildTodoViewModel({ version: 1, groups: [], todos: [] }));
     assert.ok(emptyHtml.includes('todo-empty-state'));
-    assert.ok(emptyHtml.includes('No todos yet'));
+    assert.ok(emptyHtml.includes('Plan your next large task'));
+    assert.ok(emptyHtml.includes('Create first group'));
+    assert.ok(emptyHtml.includes('Add todo to Inbox'));
 
     const dashboardViewModel = require('../out/webview/dashboardViewModel');
     const catalog = dashboardViewModel.buildDashboardSearchCatalog([], [], todoTypes.buildTodoSearchItems(makeTodoData()));
@@ -1298,6 +1307,7 @@ function runSourceContractChecks(source) {
     assert.ok(source.includes('initialSearchQuery'));
     assert.ok(source.includes('replaceSearchCatalog'));
     assert.ok(source.includes('isSearchActive'));
+    assert.ok(source.includes("title: 'TODO RESULTS'"));
     assert.ok(projectSource.includes('__projectStewardAcknowledgeSession'));
     assert.ok(projectSource.includes('__projectStewardShowCurrentProject'));
     const refreshStewardViewsBody = extractFunctionBody(extensionHostSource, 'refreshStewardViews');
@@ -1390,10 +1400,13 @@ function runSourceContractChecks(source) {
     assert.strictEqual(projectSource.includes("sessionStorage.setItem('projectSteward.activeDashboardTab', 'open')"), false);
     for (const selector of [
         '.dashboard-tab-list', '.dashboard-tab-button', '.dashboard-tab-panel',
+        '.dashboard-tab-button::before',
         '.dashboard-search-results', '.dashboard-search-section', '.dashboard-search-result',
+        '.dashboard-search-section[data-section-type="todo"]',
         '.open-current-workspace-group', '.open-other-windows-group', '.dashboard-projects-loading',
         '.dashboard-todo-loading', '.todo-panel', '.todo-item', '.todo-priority-high',
-        '.todo-empty-state', '.todo-edit-form',
+        '.todo-empty-state', '.todo-edit-form', '.todo-summary-card', '.todo-group-strip',
+        '.todo-edit-panel', '.todo-priority-segment',
     ]) {
         assert.ok(styles.includes(selector), `missing ${selector}`);
     }
