@@ -22,6 +22,8 @@ const { ProjectOrderController } = require('../out/projects/projectOrderControll
 const { ProjectRemovalController } = require('../out/projects/projectRemovalController');
 const todoTypes = require('../out/todos/types');
 const { TodoService } = require('../out/todos/service');
+const todoViewModel = require('../out/todos/viewModel');
+const todoWebviewContent = require('../out/todos/webviewContent');
 
 const root = path.join(__dirname, '..');
 const dashboardScriptPath = path.join(root, 'src', 'webview', 'webviewDashboardScripts.js');
@@ -57,6 +59,7 @@ function makeDashboardCatalog() {
             projectId: 'saved', name: 'Dashboard', description: 'Saved',
             action: 'open-saved', groupLabels: ['FAVORITES', 'TOOLS'],
         }],
+        todos: [],
     };
 }
 
@@ -376,6 +379,71 @@ async function runTodoStoreChecks() {
     const settingsService = makeService(true);
     await settingsService.saveData({ version: 1, groups: [], todos: [] });
     assert.deepStrictEqual(configUpdates[0], ['todoData', { version: 1, groups: [], todos: [] }, 1]);
+}
+
+function makeTodoData() {
+    return {
+        version: 1,
+        groups: [
+            { id: 'group-a', title: 'Launch <Group>', collapsed: false, order: 0 },
+            { id: 'group-b', title: 'Backlog', collapsed: true, order: 1 },
+        ],
+        todos: [
+            {
+                id: 'todo-a',
+                groupId: 'group-a',
+                title: 'Write <spec>',
+                notes: 'Plain notes',
+                priority: 'high',
+                completed: false,
+                createdAt: '2026-07-16T00:00:00.000Z',
+                updatedAt: '2026-07-16T00:00:00.000Z',
+                order: 0,
+            },
+            {
+                id: 'todo-b',
+                groupId: 'group-a',
+                title: 'Done task',
+                notes: '',
+                priority: 'low',
+                completed: true,
+                createdAt: '2026-07-16T00:00:00.000Z',
+                updatedAt: '2026-07-16T00:00:00.000Z',
+                completedAt: '2026-07-16T01:00:00.000Z',
+                order: 1,
+            },
+        ],
+    };
+}
+
+function runTodoViewModelChecks() {
+    const hiddenCompleted = todoViewModel.buildTodoViewModel(makeTodoData(), { showCompleted: false });
+    assert.strictEqual(hiddenCompleted.groups.length, 2);
+    assert.strictEqual(hiddenCompleted.groups[0].visibleTodos.length, 1);
+    assert.strictEqual(hiddenCompleted.groups[0].hiddenCompletedCount, 1);
+    assert.strictEqual(hiddenCompleted.totalIncomplete, 1);
+    assert.strictEqual(hiddenCompleted.totalCompleted, 1);
+
+    const showCompleted = todoViewModel.buildTodoViewModel(makeTodoData(), { showCompleted: true });
+    assert.strictEqual(showCompleted.groups[0].visibleTodos.length, 2);
+
+    const html = todoWebviewContent.getTodoPanelContent(hiddenCompleted);
+    assert.ok(html.includes('todo-panel'));
+    assert.ok(html.includes('Launch &lt;Group&gt;'));
+    assert.ok(html.includes('Write &lt;spec&gt;'));
+    assert.strictEqual(html.includes('Done task'), false);
+    assert.ok(html.includes('1 completed hidden'));
+    assert.ok(html.includes('data-action="todo-add"'));
+    assert.ok(html.includes('data-action="todo-toggle-show-completed"'));
+
+    const emptyHtml = todoWebviewContent.getTodoPanelContent(todoViewModel.buildTodoViewModel({ version: 1, groups: [], todos: [] }));
+    assert.ok(emptyHtml.includes('todo-empty-state'));
+    assert.ok(emptyHtml.includes('No todos yet'));
+
+    const dashboardViewModel = require('../out/webview/dashboardViewModel');
+    const catalog = dashboardViewModel.buildDashboardSearchCatalog([], [], todoTypes.buildTodoSearchItems(makeTodoData()));
+    assert.strictEqual(catalog.todos.length, 2);
+    assert.ok(dashboardViewModel.serializeDashboardSearchCatalog(catalog).includes('Write TODO') === false);
 }
 
 async function runAddProjectsFromFolderControllerChecks() {
@@ -1337,6 +1405,7 @@ async function main() {
     await runDashboardCommandRegistrationChecks();
     await runActiveTerminalFileReferenceChecks();
     await runTodoStoreChecks();
+    runTodoViewModelChecks();
     runControllerChecks(source);
     runSourceContractChecks(source);
     await runDashboardMessageRouterChecks();

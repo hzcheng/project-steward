@@ -2,6 +2,7 @@
 
 import type { AiSessionProviderId, Group, Project } from '../models';
 import { normalizeOpenProjectIdentity } from '../openProjects/projection';
+import type { TodoSearchCatalogItem } from '../todos/types';
 
 export type DashboardSearchProjectAction = 'open-current' | 'switch-open' | 'open-saved';
 
@@ -32,6 +33,7 @@ export interface DashboardSearchCatalog {
     sessions: DashboardSearchSessionItem[];
     openProjects: DashboardSearchProjectItem[];
     savedProjects: DashboardSearchProjectItem[];
+    todos: TodoSearchCatalogItem[];
 }
 
 const PROVIDERS: Array<{
@@ -49,7 +51,8 @@ function searchable(...values: Array<string | undefined>): string {
 
 export function buildDashboardSearchCatalog(
     groups: Group[],
-    openProjects: Project[]
+    openProjects: Project[],
+    todos: TodoSearchCatalogItem[] = []
 ): DashboardSearchCatalog {
     const sessions: DashboardSearchSessionItem[] = [];
     const openItems: DashboardSearchProjectItem[] = [];
@@ -113,6 +116,7 @@ export function buildDashboardSearchCatalog(
         sessions,
         openProjects: openItems,
         savedProjects: Array.from(savedByIdentity.values()),
+        todos,
     };
 }
 
