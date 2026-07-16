@@ -82,7 +82,7 @@ interface TodoGroup {
 规则：
 
 - `id` 由扩展生成，稳定且不依赖标题。
-- `title` 不能为空；用户未输入时使用 `Untitled Group`。
+- `title` 保存时不能为空；空白标题自动归一化为 `Untitled Group`。
 - `todoIds` 表示该组内的手动排序。
 - 分组排序由顶层 group 数组顺序决定。
 
@@ -130,6 +130,8 @@ projectSteward.todoData
 ```
 
 本功能不新增独立的 `storeTodosInSettings` 设置。这样可以保持 Project Steward 数据的同步行为一致：用户选择同步项目数据时，也同步全局 TODO；用户选择本机项目数据时，TODO 也留在本机。
+
+完成项显示开关不属于 TODO 数据本身。`showCompleted` 是本窗口或本机的视图状态，不写入 `projectSteward.todoData`，也不随 Settings Sync 跨机器同步。这样一台机器临时查看完成项，不会改变其他机器的 TODO 展示状态。
 
 ### 7.1 冲突策略
 
@@ -231,12 +233,14 @@ TODO 项应是扁平列表项，不使用项目卡片的视觉重量，避免和
 
 行为：
 
-- 在目标分组内插入一个编辑表单。
+- 顶部新增 TODO 固定使用 `Inbox` 作为目标分组；如果 `Inbox` 不存在，则自动创建并放在分组列表顶部。
+- 分组标题行新增 TODO 使用该分组作为目标分组。
+- 空状态新增 TODO 会创建默认分组 `Inbox` 并在其中插入编辑表单。
 - 用户输入标题、优先级和备注。
 - 保存后插入目标分组顶部。
 - 取消时不产生空任务。
 
-如果当前没有分组，新增 TODO 会先创建默认分组 `Inbox`。
+`Inbox` 是系统默认分组名，但仍是普通分组：用户可以重命名、排序或删除。删除后，下一次使用顶部新增 TODO 会重新创建 `Inbox`。
 
 ### 9.2 编辑 TODO
 
@@ -348,7 +352,7 @@ high -> medium -> low
 - 隐藏 Tab 导航；
 - 搜索 `OPEN`、`PROJECTS` 和 `TODO` 数据；
 - 增加 `TODO RESULTS` 区域；
-- TODO 搜索范围包括标题、备注、分组名和优先级文案；
+- TODO 搜索范围包括标题、备注搜索摘要、分组名和优先级文案；
 - 完成项即使默认隐藏，搜索命中时也显示；
 - 点击 TODO 搜索结果后：
   - 清空搜索；
@@ -363,6 +367,29 @@ TODO 搜索结果显示：
 - 备注摘要；
 - 所属分组 badge；
 - 完成状态弱化样式。
+
+### 13.1 TODO 搜索索引
+
+为了避免较大的 TODO 备注拖慢 `OPEN` 初始渲染，TODO 搜索使用轻量 catalog，而不是把完整 TODO 详情或完整备注塞进初始 HTML：
+
+```ts
+interface TodoSearchCatalogItem {
+  id: string;
+  groupId: string;
+  groupTitle: string;
+  title: string;
+  priority: TodoPriority;
+  completed: boolean;
+  notesSearchText: string;
+}
+```
+
+规则：
+
+- `notesSearchText` 是纯文本备注的截断搜索摘要，第一版上限为每条 TODO 500 个字符。
+- 搜索结果列表显示备注摘要，不渲染完整备注。
+- 打开 `TODO` Tab 或编辑 TODO 时再读取完整 TODO 数据。
+- 如果备注超过索引上限，超过部分第一版不保证被全局搜索命中；该限制用于保护 Dashboard 初始性能。
 
 ## 14. 页面状态
 
@@ -404,11 +431,18 @@ interface TodoDataV1 {
   version: 1;
   groups: TodoGroup[];
   todos: TodoItem[];
-  showCompleted: boolean;
 }
 ```
 
 这样后续可以添加字段而不破坏旧数据。
+
+本地视图状态单独保存，不进入同步数据：
+
+```ts
+interface TodoViewState {
+  showCompleted: boolean;
+}
+```
 
 ## 17. 与现有系统的关系
 
@@ -427,6 +461,7 @@ interface TodoDataV1 {
 ### 17.3 全局搜索
 
 - Search catalog 需要新增 TODO 数据。
+- 初始 Search catalog 只包含 TODO 的轻量搜索 projection，不包含完整备注或完整编辑数据。
 - TODO 搜索结果是独立区域，不混入 saved project 或 open project 区域。
 
 ## 18. 实现前置事项
