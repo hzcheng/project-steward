@@ -7,6 +7,7 @@ import { USER_CANCELED, RelevantExtensions, REOPEN_KEY, WSL_DEFAULT_REGEX, OPEN_
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
 import { TodoService } from './todos/service';
+import { runTodoMutation } from './todos/hostMutation';
 import { buildTodoSearchItems } from './todos/types';
 import { buildTodoViewModel } from './todos/viewModel';
 import { getTodoPanelContent } from './todos/webviewContent';
@@ -97,7 +98,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
     const todoService = new TodoService(context);
-    const todoViewState = { showCompleted: false };
+    const todoViewState = todoService.getViewState();
     const groupCollapseController = new GroupCollapseController({
         state: context.globalState,
         projectService,
@@ -459,13 +460,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 if (title === undefined) {
                     return;
                 }
-                await todoService.addTodo({
+                await runTodoPanelMutation(() => todoService.addTodo({
                     title,
                     notes: typeof e.notes === 'string' ? e.notes : '',
                     priority: e.priority === 'high' || e.priority === 'medium' || e.priority === 'low' ? e.priority : 'medium',
                     groupId: typeof e.groupId === 'string' ? e.groupId : undefined,
-                });
-                await postTodoPanelContent();
+                }));
             },
             'todo-add-group': async () => {
                 const title = await vscode.window.showInputBox({
@@ -476,22 +476,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 if (title === undefined) {
                     return;
                 }
-                await todoService.addGroup(title);
-                await postTodoPanelContent();
+                await runTodoPanelMutation(() => todoService.addGroup(title));
             },
             'todo-toggle': async e => {
                 if (typeof e.todoId !== 'string') {
                     return;
                 }
-                await todoService.completeTodo(e.todoId, e.completed === true);
-                await postTodoPanelContent();
+                await runTodoPanelMutation(() => todoService.completeTodo(e.todoId as string, e.completed === true));
             },
             'todo-delete': async e => {
                 if (typeof e.todoId !== 'string') {
                     return;
                 }
-                await todoService.deleteTodo(e.todoId);
-                await postTodoPanelContent();
+                await runTodoPanelMutation(() => todoService.deleteTodo(e.todoId as string));
             },
             'todo-delete-group': async e => {
                 if (typeof e.groupId !== 'string') {
@@ -509,37 +506,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 if (confirmed !== 'Delete') {
                     return;
                 }
-                await todoService.deleteGroup(e.groupId);
-                await postTodoPanelContent();
+                await runTodoPanelMutation(() => todoService.deleteGroup(e.groupId as string));
             },
             'todo-collapse-group': async e => {
                 if (typeof e.groupId !== 'string') {
                     return;
                 }
-                await todoService.setGroupCollapsed(e.groupId, e.collapsed === true);
-                await postTodoPanelContent();
+                await runTodoPanelMutation(() => todoService.setGroupCollapsed(e.groupId as string, e.collapsed === true));
             },
             'todo-sort-priority': async e => {
                 if (typeof e.groupId !== 'string') {
                     return;
                 }
-                await todoService.sortGroupByPriority(e.groupId);
-                await postTodoPanelContent();
+                await runTodoPanelMutation(() => todoService.sortGroupByPriority(e.groupId as string));
             },
             'todo-toggle-show-completed': async e => {
-                todoViewState.showCompleted = e.showCompleted === true;
-                await postTodoPanelContent();
+                await runTodoPanelMutation(async () => {
+                    const persistedViewState = await todoService.setShowCompleted(e.showCompleted === true);
+                    todoViewState.showCompleted = persistedViewState.showCompleted;
+                });
             },
             'todo-update': async e => {
                 if (typeof e.todoId !== 'string' || typeof e.title !== 'string') {
                     return;
                 }
-                await todoService.updateTodo(e.todoId, {
-                    title: e.title,
+                await runTodoPanelMutation(() => todoService.updateTodo(e.todoId as string, {
+                    title: e.title as string,
                     notes: typeof e.notes === 'string' ? e.notes : '',
                     priority: e.priority === 'high' || e.priority === 'medium' || e.priority === 'low' ? e.priority : 'medium',
-                });
-                await postTodoPanelContent();
+                }));
             },
             'selected-project': async e => {
                 let projectId = e.projectId as string;
@@ -799,7 +794,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         stewardInfos,
         relevantExtensions: RelevantExtensions,
         isExtensionInstalled: extensionId => vscode.extensions.getExtension(extensionId) !== undefined,
-        migrateDataIfNeeded: () => projectService.migrateDataIfNeeded(),
+        migrateDataIfNeeded: async () => {
+            const projectsMigrated = await projectService.migrateDataIfNeeded();
+            const todosMigrated = await todoService.migrateDataIfNeeded();
+            return projectsMigrated || todosMigrated;
+        },
         publishOpenProjects: () => openProjectWorkspaceController.publish(),
         showInformationMessage: message => vscode.window.showInformationMessage(message),
         showSteward,
@@ -927,6 +926,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState), todoRenderOptions),
                 searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), getOpenProjectCards(), buildTodoSearchItems(todoData)),
             });
+    }
+
+    async function runTodoPanelMutation(mutate: () => Promise<unknown>): Promise<boolean> {
+        return runTodoMutation({
+            mutate,
+            onSuccess: () => postTodoPanelContent(),
+            showErrorMessage: message => vscode.window.showErrorMessage(message),
+            logError,
+        });
     }
 
     function getMaxVisibleTodosPerGroup(config: vscode.WorkspaceConfiguration): number {

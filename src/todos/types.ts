@@ -67,6 +67,17 @@ export interface TodoMutationResult {
     data: TodoDataV1;
 }
 
+export class UnsupportedTodoDataVersionError extends Error {
+    readonly version: unknown;
+
+    constructor(version: unknown) {
+        super(`Unsupported TODO data version: ${String(version)}`);
+        this.name = 'UnsupportedTodoDataVersionError';
+        this.version = version;
+        Object.setPrototypeOf(this, UnsupportedTodoDataVersionError.prototype);
+    }
+}
+
 function asObject(value: unknown): { [key: string]: unknown } {
     return value && typeof value === 'object' ? value as { [key: string]: unknown } : {};
 }
@@ -93,6 +104,9 @@ export function normalizeTodoPriority(value: unknown): TodoPriority {
 
 export function normalizeTodoData(value: unknown, nowIso = new Date(0).toISOString()): TodoDataV1 {
     const source = asObject(value);
+    if (source.version !== undefined && source.version !== 1) {
+        throw new UnsupportedTodoDataVersionError(source.version);
+    }
     const rawGroups = Array.isArray(source.groups) ? source.groups : [];
     const groups: TodoGroup[] = [];
     const groupIds = new Set<string>();

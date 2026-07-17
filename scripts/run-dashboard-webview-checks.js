@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const Module = require('module');
 const path = require('path');
 const vm = require('vm');
 const CleanCSS = require('clean-css');
@@ -412,7 +413,15 @@ async function runGroupCommandControllerChecks() {
 
 async function runTodoStoreChecks() {
     assert.deepStrictEqual(todoTypes.normalizeTodoData(null), { version: 1, groups: [], todos: [] });
-    assert.deepStrictEqual(todoTypes.normalizeTodoData({ version: 99, groups: null, todos: null }), { version: 1, groups: [], todos: [] });
+    assert.throws(
+        () => todoTypes.normalizeTodoData({ version: 99, groups: [], todos: [] }),
+        error => error && error.name === 'UnsupportedTodoDataVersionError' && error.version === 99
+    );
+    assert.deepStrictEqual(
+        todoTypes.normalizeTodoData({ groups: [], todos: [] }),
+        { version: 1, groups: [], todos: [] },
+        'unversioned v1-shaped TODO data should remain readable'
+    );
 
     const normalized = todoTypes.normalizeTodoData({
         version: 1,
@@ -513,6 +522,231 @@ async function runTodoStoreChecks() {
     const settingsService = makeService(true);
     await settingsService.saveData({ version: 1, groups: [], todos: [] });
     assert.deepStrictEqual(configUpdates[0], ['todoData', { version: 1, groups: [], todos: [] }, 1]);
+
+    for (const useSettingsStorage of [false, true]) {
+        globalUpdates.length = 0;
+        configUpdates.length = 0;
+        await assert.rejects(
+            () => makeService(useSettingsStorage).saveData({ version: 2, groups: [], todos: [] }),
+            error => error && error.name === 'UnsupportedTodoDataVersionError' && error.version === 2
+        );
+        assert.deepStrictEqual(globalUpdates, [], 'unknown TODO data must not be written to globalState');
+        assert.deepStrictEqual(configUpdates, [], 'unknown TODO data must not be written to settings');
+    }
+}
+
+function makeStoredTodoData(groupId) {
+    return {
+        version: 1,
+        groups: [{ id: groupId, title: groupId, collapsed: false, order: 0 }],
+        todos: [],
+    };
+}
+
+function makeTodoServiceStorageHarness(useSettingsStorage, initialGlobalData, initialSettingsData) {
+    const values = {
+        global: initialGlobalData,
+        settings: initialSettingsData,
+    };
+    const updates = [];
+    const service = new TodoService({
+        globalState: {
+            get: key => key === 'todos' ? values.global : undefined,
+            update: async (key, value) => {
+                updates.push(['global', key, value]);
+                values.global = value;
+            },
+        },
+        configuration: {
+            get: (key, fallback) => key === 'todoData' ? values.settings : fallback,
+            update: async (key, value, target) => {
+                updates.push(['settings', key, value, target]);
+                values.settings = value;
+            },
+        },
+        useSettingsStorage: () => useSettingsStorage,
+        now: () => '2026-07-16T00:00:00.000Z',
+    });
+    return { service, updates, values };
+}
+
+async function runTodoStorageResolutionChecks() {
+    const primarySettingsData = makeStoredTodoData('settings-group');
+    const globalData = makeStoredTodoData('global-group');
+    const cases = [
+        {
+            name: 'explicit primary setting wins over legacy',
+            primary: makeWorkspaceConfiguration({ storeProjectsInSettings: false, todoData: primarySettingsData }),
+            legacy: makeWorkspaceConfiguration({ storeProjectsInSettings: true }),
+            expectedGroupId: 'global-group',
+        },
+        {
+            name: 'explicit legacy setting is used when primary is not configured',
+            primary: makeWorkspaceConfiguration(
+                { todoData: primarySettingsData },
+                ['todoData'],
+                { storeProjectsInSettings: true }
+            ),
+            legacy: makeWorkspaceConfiguration({ storeProjectsInSettings: false }),
+            expectedGroupId: 'global-group',
+        },
+        {
+            name: 'primary default is used when neither setting is configured',
+            primary: makeWorkspaceConfiguration(
+                { todoData: primarySettingsData },
+                ['todoData'],
+                { storeProjectsInSettings: true }
+            ),
+            legacy: makeWorkspaceConfiguration({}, []),
+            expectedGroupId: 'settings-group',
+        },
+    ];
+
+    for (const testCase of cases) {
+        const originalLoad = Module._load;
+        Module._load = function (request, parent, isMain) {
+            if (request === 'vscode') {
+                return {
+                    workspace: {
+                        getConfiguration: section => section === 'projectSteward'
+                            ? testCase.primary
+                            : testCase.legacy,
+                    },
+                };
+            }
+            return originalLoad.call(this, request, parent, isMain);
+        };
+        try {
+            const service = new TodoService({
+                globalState: {
+                    get: key => key === 'todos' ? globalData : undefined,
+                    update: async () => undefined,
+                },
+            });
+            assert.strictEqual(service.getData().groups[0].id, testCase.expectedGroupId, testCase.name);
+        } finally {
+            Module._load = originalLoad;
+        }
+    }
+}
+
+async function runTodoMigrationChecks() {
+    const globalSource = makeTodoServiceStorageHarness(true, makeStoredTodoData('global-source'), null);
+    assert.strictEqual(await globalSource.service.migrateDataIfNeeded(), true);
+    assert.deepStrictEqual(globalSource.updates.map(update => update[0]), ['settings']);
+    assert.strictEqual(globalSource.values.settings.groups[0].id, 'global-source');
+
+    const settingsSource = makeTodoServiceStorageHarness(false, { version: 1, groups: [], todos: [] }, makeStoredTodoData('settings-source'));
+    assert.strictEqual(await settingsSource.service.migrateDataIfNeeded(), true);
+    assert.deepStrictEqual(settingsSource.updates.map(update => update[0]), ['global']);
+    assert.strictEqual(settingsSource.values.global.groups[0].id, 'settings-source');
+
+    for (const useSettingsStorage of [false, true]) {
+        const conflict = makeTodoServiceStorageHarness(
+            useSettingsStorage,
+            makeStoredTodoData('global-conflict'),
+            makeStoredTodoData('settings-conflict')
+        );
+        assert.strictEqual(await conflict.service.migrateDataIfNeeded(), false);
+        assert.deepStrictEqual(conflict.updates, [], 'migration must not overwrite two non-empty stores');
+    }
+
+    for (const useSettingsStorage of [false, true]) {
+        const futureSource = makeTodoServiceStorageHarness(
+            useSettingsStorage,
+            useSettingsStorage ? { version: 2, groups: [], todos: [] } : null,
+            useSettingsStorage ? null : { version: 2, groups: [], todos: [] }
+        );
+        await assert.rejects(
+            () => futureSource.service.migrateDataIfNeeded(),
+            error => error && error.name === 'UnsupportedTodoDataVersionError' && error.version === 2
+        );
+        assert.deepStrictEqual(futureSource.updates, [], 'unknown migration data must not update either backend');
+    }
+}
+
+async function runTodoViewStateChecks() {
+    const values = new Map([['todoViewState', { showCompleted: true }]]);
+    const updates = [];
+    const syncUpdates = [];
+    const service = new TodoService({
+        globalState: {
+            get: key => values.get(key),
+            update: async (key, value) => {
+                updates.push([key, value]);
+                values.set(key, value);
+            },
+            setKeysForSync: keys => syncUpdates.push(keys),
+        },
+        configuration: makeWorkspaceConfiguration({}),
+        useSettingsStorage: () => true,
+    });
+
+    assert.deepStrictEqual(service.getViewState(), { showCompleted: true });
+    assert.deepStrictEqual(await service.setShowCompleted(false), { showCompleted: false });
+    assert.deepStrictEqual(updates, [['todoViewState', { showCompleted: false }]]);
+    assert.deepStrictEqual(syncUpdates, [], 'TODO view state must remain local and must not be registered for sync');
+}
+
+async function runTodoMutationSerializationChecks() {
+    let storedData = { version: 1, groups: [], todos: [] };
+    const writes = [];
+    let releaseFirstWrite;
+    const firstWriteGate = new Promise(resolve => { releaseFirstWrite = resolve; });
+    const service = new TodoService({
+        globalState: {
+            get: () => storedData,
+            update: async (_key, value) => {
+                writes.push(value);
+                if (writes.length === 1) {
+                    await firstWriteGate;
+                }
+                storedData = value;
+            },
+        },
+        configuration: makeWorkspaceConfiguration({}),
+        useSettingsStorage: () => false,
+        generateId: prefix => `${prefix}-${writes.length}-${storedData.groups.length}`,
+    });
+
+    const firstMutation = service.addGroup('First');
+    await new Promise(resolve => setImmediate(resolve));
+    const secondMutation = service.addGroup('Second');
+    await new Promise(resolve => setImmediate(resolve));
+    try {
+        assert.strictEqual(writes.length, 1, 'a second mutation must wait for the first write to settle');
+    } finally {
+        releaseFirstWrite();
+    }
+    await Promise.all([firstMutation, secondMutation]);
+    assert.deepStrictEqual(service.getData().groups.map(group => group.title), ['First', 'Second']);
+}
+
+async function runTodoHostMutationChecks() {
+    const hostModulePath = path.join(root, 'out', 'todos', 'hostMutation.js');
+    assert.ok(fs.existsSync(hostModulePath), 'TODO host mutation error boundary must exist');
+    const { runTodoMutation } = require(hostModulePath);
+    const events = [];
+    const failed = await runTodoMutation({
+        mutate: async () => { throw new Error('storage full'); },
+        onSuccess: async () => events.push('posted-panel'),
+        showErrorMessage: message => events.push(['error', message]),
+        logError: (message, error) => events.push(['log', message, error.message]),
+    });
+    assert.strictEqual(failed, false);
+    assert.strictEqual(events.some(event => event === 'posted-panel'), false, 'a rejected write must preserve the current panel');
+    assert.ok(events.some(event => Array.isArray(event) && event[0] === 'error' && /save TODO changes/i.test(event[1])));
+    assert.ok(events.some(event => Array.isArray(event) && event[0] === 'log' && event[2] === 'storage full'));
+
+    events.length = 0;
+    const succeeded = await runTodoMutation({
+        mutate: async () => events.push('mutated'),
+        onSuccess: async () => events.push('posted-panel'),
+        showErrorMessage: message => events.push(['error', message]),
+        logError: (message, error) => events.push(['log', message, error.message]),
+    });
+    assert.strictEqual(succeeded, true);
+    assert.deepStrictEqual(events, ['mutated', 'posted-panel']);
 }
 
 function makeTodoData() {
@@ -1513,6 +1747,14 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'todo-toggle-show-completed': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-update': async e =>"));
     assert.ok(extensionHostSource.includes('async function postTodoPanelContent('));
+    assert.ok(extensionHostSource.includes("from './todos/hostMutation'"));
+    assert.ok(extensionHostSource.includes('const todoViewState = todoService.getViewState();'));
+    assert.ok(extensionHostSource.includes('await todoService.migrateDataIfNeeded()'));
+    assert.strictEqual(
+        (extensionHostSource.match(/await runTodoPanelMutation\(/g) || []).length,
+        9,
+        'every TODO mutation handler must use the write-error boundary'
+    );
     assert.ok(dndSource.includes('function initDnD(root)'));
     assert.ok(dndSource.includes('root.__projectStewardDnDInitialized'));
     assert.strictEqual(dndSource.includes('document.querySelectorAll(`${groupsContainerSelector}'), false);
@@ -1917,6 +2159,11 @@ async function main() {
     await runDashboardCommandRegistrationChecks();
     await runActiveTerminalFileReferenceChecks();
     await runTodoStoreChecks();
+    await runTodoStorageResolutionChecks();
+    await runTodoMigrationChecks();
+    await runTodoViewStateChecks();
+    await runTodoMutationSerializationChecks();
+    await runTodoHostMutationChecks();
     runTodoViewModelChecks();
     runControllerChecks(source);
     runSourceContractChecks(source);
