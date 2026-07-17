@@ -97,25 +97,19 @@ export class TodoService {
     revealTodo(todoId: string, groupId: string): Promise<{
         revealed: boolean;
         data: TodoDataV1;
-        viewState: TodoViewState;
     }> {
         return this.enqueueMutation(async () => {
             const data = this.getData();
-            let viewState = this.getViewState();
             const todo = data.todos.find(item => item.id === todoId);
             const group = data.groups.find(item => item.id === groupId);
             if (!todo || !group || todo.groupId !== group.id) {
-                return { revealed: false, data, viewState };
-            }
-
-            if (todo.completed && !viewState.showCompleted) {
-                viewState = await this.setShowCompletedNow(true);
+                return { revealed: false, data };
             }
             if (group.collapsed) {
                 group.collapsed = false;
                 await this.saveDataNow(data);
             }
-            return { revealed: true, data, viewState };
+            return { revealed: true, data };
         });
     }
 

@@ -34,7 +34,11 @@ function toTodoItemViewModel(todo: TodoItem): TodoItemViewModel {
     };
 }
 
-export function buildTodoViewModel(data: TodoDataV1, viewState: Partial<TodoViewState> = {}): TodoPanelViewModel {
+export function buildTodoViewModel(
+    data: TodoDataV1,
+    viewState: Partial<TodoViewState> = {},
+    revealedTodoId?: string
+): TodoPanelViewModel {
     const normalized = normalizeTodoData(data);
     const showCompleted = viewState.showCompleted === true;
     const todosByGroup = new Map<string, TodoItem[]>();
@@ -49,7 +53,10 @@ export function buildTodoViewModel(data: TodoDataV1, viewState: Partial<TodoView
         const groupTodos = (todosByGroup.get(group.id) || []).sort((a, b) => a.order - b.order);
         const incompleteTodos = groupTodos.filter(todo => !todo.completed);
         const completedTodos = groupTodos.filter(todo => todo.completed);
-        const visibleTodos = (showCompleted ? incompleteTodos.concat(completedTodos) : incompleteTodos)
+        const revealedCompletedTodos = showCompleted
+            ? completedTodos
+            : completedTodos.filter(todo => todo.id === revealedTodoId);
+        const visibleTodos = incompleteTodos.concat(revealedCompletedTodos)
             .map(toTodoItemViewModel);
         return {
             ...group,
@@ -57,7 +64,7 @@ export function buildTodoViewModel(data: TodoDataV1, viewState: Partial<TodoView
             totalTodos: groupTodos.length,
             incompleteCount: incompleteTodos.length,
             completedCount: completedTodos.length,
-            hiddenCompletedCount: showCompleted ? 0 : completedTodos.length,
+            hiddenCompletedCount: completedTodos.length - revealedCompletedTodos.length,
         };
     });
 

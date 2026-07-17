@@ -1111,102 +1111,161 @@ async function runTodoMutationSerializationChecks() {
     assert.deepStrictEqual(recoveringService.getData().groups.map(group => group.title), ['Recovered']);
 }
 
-async function runTodoRevealSerializationChecks() {
-    const values = new Map([
-        ['todos', {
-            version: 1,
-            groups: [{ id: 'group-a', title: 'Release', collapsed: true, order: 0 }],
-            todos: [{
-                id: 'todo-a', groupId: 'group-a', title: 'Ship release', notes: '', priority: 'high',
+async function runTodoRevealSingleWriteChecks() {
+    const makeRevealData = collapsed => ({
+        version: 1,
+        groups: [{ id: 'group-a', title: 'Release', collapsed, order: 0 }],
+        todos: [
+            {
+                id: 'todo-open', groupId: 'group-a', title: 'Open task', notes: '', priority: 'medium',
+                completed: false, createdAt: '2026-07-17T00:00:00.000Z',
+                updatedAt: '2026-07-17T00:00:00.000Z', order: 0,
+            },
+            {
+                id: 'todo-target', groupId: 'group-a', title: 'Target completed', notes: '', priority: 'high',
                 completed: true, createdAt: '2026-07-17T00:00:00.000Z',
-                updatedAt: '2026-07-17T00:00:00.000Z', completedAt: '2026-07-17T00:00:00.000Z', order: 0,
-            }],
-        }],
+                updatedAt: '2026-07-17T00:00:00.000Z', completedAt: '2026-07-17T01:00:00.000Z', order: 1,
+            },
+            {
+                id: 'todo-other', groupId: 'group-a', title: 'Other completed', notes: '', priority: 'low',
+                completed: true, createdAt: '2026-07-17T00:00:00.000Z',
+                updatedAt: '2026-07-17T00:00:00.000Z', completedAt: '2026-07-17T02:00:00.000Z', order: 2,
+            },
+        ],
+    });
+
+    const values = new Map([
+        ['todos', makeRevealData(true)],
         ['todoViewState', { showCompleted: false }],
     ]);
-    const events = [];
-    let releaseRevealViewWrite;
-    const revealViewWriteGate = new Promise(resolve => { releaseRevealViewWrite = resolve; });
+    const writes = [];
     const service = new TodoService({
         globalState: {
             get: key => values.get(key),
             update: async (key, value) => {
-                events.push(['write-start', key, value]);
-                if (key === 'todoViewState' && value.showCompleted === true) {
-                    await revealViewWriteGate;
-                }
+                writes.push([key, value]);
                 values.set(key, value);
-                events.push(['write-end', key, value]);
             },
         },
         configuration: makeWorkspaceConfiguration({}),
         useSettingsStorage: () => false,
     });
-
-    const revealPromise = runTodoMutation({
-        mutate: async () => {
-            const result = await service.revealTodo('todo-a', 'group-a');
-            events.push(['reveal-result', result.revealed, result.viewState.showCompleted]);
-        },
-        onSuccess: async () => { events.push(['refresh']); },
-        showErrorMessage: message => events.push(['error', message]),
-        logError: (message, error) => events.push(['log', message, error.message]),
-    });
-    await new Promise(resolve => setImmediate(resolve));
-    const togglePromise = service.setShowCompleted(false).then(() => {
-        events.push(['toggle-result']);
-    });
-    await new Promise(resolve => setImmediate(resolve));
-    assert.deepStrictEqual(events.map(event => event.slice(0, 2)), [
-        ['write-start', 'todoViewState'],
-    ], 'show-completed toggles must not enter the reveal queue operation between its writes');
-
-    releaseRevealViewWrite();
-    await Promise.all([revealPromise, togglePromise]);
-    const eventSummaries = events.map(event => event.slice(0, 2));
-    assert.deepStrictEqual(eventSummaries.slice(0, 4), [
-        ['write-start', 'todoViewState'],
-        ['write-end', 'todoViewState'],
-        ['write-start', 'todos'],
-        ['write-end', 'todos'],
-    ], 'all reveal writes must remain contiguous inside one queue operation');
-    const revealDataWriteEnd = eventSummaries.findIndex(event =>
-        event[0] === 'write-end' && event[1] === 'todos'
-    );
-    const refreshIndex = eventSummaries.findIndex(event => event[0] === 'refresh');
-    const todoViewWriteStarts = eventSummaries
-        .map((event, index) => event[0] === 'write-start' && event[1] === 'todoViewState' ? index : -1)
-        .filter(index => index >= 0);
-    assert.ok(refreshIndex > revealDataWriteEnd,
-        'host refresh must happen only after the reveal operation succeeds');
-    assert.ok(todoViewWriteStarts[1] > revealDataWriteEnd,
-        'the queued toggle write must start only after all reveal writes finish');
+    const revealResult = await service.revealTodo('todo-target', 'group-a');
+    assert.strictEqual(revealResult.revealed, true);
+    assert.deepStrictEqual(writes.map(write => write[0]), ['todos'],
+        'revealing a completed TODO in a collapsed group must persist exactly one data write');
+    assert.deepStrictEqual(values.get('todoViewState'), { showCompleted: false },
+        'search reveal must never persist showCompleted view state');
     assert.strictEqual(values.get('todos').groups[0].collapsed, false);
-    assert.strictEqual(values.get('todoViewState').showCompleted, false);
 
-    const failureEvents = [];
+    const projected = todoViewModel.buildTodoViewModel(
+        values.get('todos'),
+        values.get('todoViewState'),
+        'todo-target'
+    );
+    assert.deepStrictEqual(projected.groups[0].visibleTodos.map(todo => todo.id), ['todo-open', 'todo-target'],
+        'temporary reveal must show only the searched completed TODO');
+    assert.strictEqual(projected.groups[0].hiddenCompletedCount, 1);
+    const projectedHtml = todoWebviewContent.getTodoPanelContent(projected);
+    assert.ok(projectedHtml.includes('Target completed'));
+    assert.strictEqual(projectedHtml.includes('Other completed'), false);
+
+    const failedData = makeRevealData(true);
+    const failedDataBefore = JSON.parse(JSON.stringify(failedData));
+    const failedViewState = { showCompleted: false };
+    const failedWrites = [];
     const failingService = new TodoService({
         globalState: {
-            get: key => key === 'todos' ? values.get('todos') : { showCompleted: false },
-            update: async key => {
-                if (key === 'todos') throw new Error('reveal data write failed');
+            get: key => key === 'todos' ? failedData : failedViewState,
+            update: async (key, value) => {
+                failedWrites.push([key, value]);
+                throw new Error('reveal data write failed');
             },
         },
         configuration: makeWorkspaceConfiguration({}),
         useSettingsStorage: () => false,
     });
-    values.get('todos').groups[0].collapsed = true;
+    let failedRevealedTodoId;
+    let failedRefreshes = 0;
     const failureResult = await runTodoMutation({
-        mutate: () => failingService.revealTodo('todo-a', 'group-a'),
-        onSuccess: async () => { failureEvents.push('refresh'); },
-        showErrorMessage: message => failureEvents.push(['error', message]),
-        logError: (message, error) => failureEvents.push(['log', message, error.message]),
+        mutate: async () => {
+            const result = await failingService.revealTodo('todo-target', 'group-a');
+            if (result.revealed) failedRevealedTodoId = 'todo-target';
+        },
+        onSuccess: async () => { failedRefreshes += 1; },
+        showErrorMessage: () => undefined,
+        logError: () => undefined,
     });
     assert.strictEqual(failureResult, false);
-    assert.strictEqual(failureEvents.includes('refresh'), false,
-        'a failed reveal operation must not refresh away the current panel');
-    assert.ok(failureEvents.some(event => Array.isArray(event)
-        && event[0] === 'log' && event[2] === 'reveal data write failed'));
+    assert.deepStrictEqual(failedWrites.map(write => write[0]), ['todos']);
+    assert.strictEqual(failedRevealedTodoId, undefined,
+        'a rejected group write must not set the temporary reveal target');
+    assert.deepStrictEqual(failedViewState, { showCompleted: false });
+    assert.deepStrictEqual(failedData, failedDataBefore);
+    assert.strictEqual(failedRefreshes, 0,
+        'a rejected group write must preserve the current panel');
+
+    const expandedData = makeRevealData(false);
+    const expandedWrites = [];
+    const expandedService = new TodoService({
+        globalState: {
+            get: key => key === 'todos' ? expandedData : { showCompleted: false },
+            update: async (key, value) => expandedWrites.push([key, value]),
+        },
+        configuration: makeWorkspaceConfiguration({}),
+        useSettingsStorage: () => false,
+    });
+    let expandedRevealedTodoId;
+    let expandedProjection;
+    const expandedResult = await runTodoMutation({
+        mutate: async () => {
+            const result = await expandedService.revealTodo('todo-target', 'group-a');
+            if (result.revealed) expandedRevealedTodoId = 'todo-target';
+        },
+        onSuccess: async () => {
+            expandedProjection = todoViewModel.buildTodoViewModel(
+                expandedData,
+                { showCompleted: false },
+                expandedRevealedTodoId
+            );
+        },
+        showErrorMessage: () => undefined,
+        logError: () => undefined,
+    });
+    assert.strictEqual(expandedResult, true);
+    assert.deepStrictEqual(expandedWrites, [],
+        'an already-expanded target group must require zero persistent writes');
+    assert.strictEqual(expandedRevealedTodoId, 'todo-target');
+    assert.deepStrictEqual(expandedProjection.groups[0].visibleTodos.map(todo => todo.id),
+        ['todo-open', 'todo-target']);
+
+    let queuedData = makeRevealData(true);
+    const queueEvents = [];
+    let releaseRevealWrite;
+    const revealWriteGate = new Promise(resolve => { releaseRevealWrite = resolve; });
+    const queuedService = new TodoService({
+        globalState: {
+            get: () => queuedData,
+            update: async (_key, value) => {
+                queueEvents.push('write-start');
+                if (queueEvents.length === 1) await revealWriteGate;
+                queuedData = value;
+                queueEvents.push('write-end');
+            },
+        },
+        configuration: makeWorkspaceConfiguration({}),
+        useSettingsStorage: () => false,
+    });
+    const queuedReveal = queuedService.revealTodo('todo-target', 'group-a');
+    await new Promise(resolve => setImmediate(resolve));
+    const queuedCollapse = queuedService.setGroupCollapsed('group-a', true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(queueEvents, ['write-start'],
+        'the next mutation must remain queued behind the reveal data write');
+    releaseRevealWrite();
+    await Promise.all([queuedReveal, queuedCollapse]);
+    assert.deepStrictEqual(queueEvents, ['write-start', 'write-end', 'write-start', 'write-end']);
+    assert.strictEqual(queuedData.groups[0].collapsed, true);
 }
 
 async function runDashboardTodoMigrationSequencingChecks() {
@@ -2632,16 +2691,30 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'todo-sort-priority': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-toggle-show-completed': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-reveal': async e =>"));
+    const todoShowCompletedHandler = extensionHostSource.slice(
+        extensionHostSource.indexOf("'todo-toggle-show-completed': async e =>"),
+        extensionHostSource.indexOf("'todo-reveal': async e =>")
+    );
     const todoRevealHandler = extensionHostSource.slice(
         extensionHostSource.indexOf("'todo-reveal': async e =>"),
         extensionHostSource.indexOf("'todo-update': async e =>")
     );
     assert.ok(todoRevealHandler.includes('await todoService.revealTodo('),
-        'host reveal must delegate parsing and all writes to one TodoService queue operation');
+        'host reveal must delegate parsing and the optional group write to one TodoService queue operation');
     assert.strictEqual(todoRevealHandler.includes('todoService.getData()'), false,
         'host reveal must not parse stale TODO/group state outside the service queue');
     assert.strictEqual(todoRevealHandler.includes('todoService.setShowCompleted('), false);
     assert.strictEqual(todoRevealHandler.includes('todoService.setGroupCollapsed('), false);
+    assert.ok(todoRevealHandler.indexOf('await todoService.revealTodo(')
+        < todoRevealHandler.indexOf('revealedTodoId = e.todoId as string;'),
+    'host must set the temporary target only after the queued reveal operation succeeds');
+    assert.ok(todoShowCompletedHandler.indexOf('await todoService.setShowCompleted(')
+        < todoShowCompletedHandler.indexOf('revealedTodoId = undefined;'),
+    'an explicit completed toggle must clear the temporary target only after persistence succeeds');
+    assert.strictEqual((extensionHostSource.match(/revealedTodoId = undefined;/g) || []).length, 1,
+        'the temporary target must persist until an explicit toggle or a later reveal replaces it');
+    assert.ok(extensionHostSource.includes('buildTodoViewModel(todoData, todoViewState, revealedTodoId)'),
+        'all TODO panel refreshes must project the temporary reveal target');
     assert.ok(extensionHostSource.includes("'todo-update': async e =>"));
     assert.ok(extensionHostSource.includes('async function postTodoPanelContent('));
     assert.ok(extensionHostSource.includes("from './todos/hostMutation'"));
@@ -3102,7 +3175,7 @@ async function main() {
     await runTodoMigrationChecks();
     await runTodoViewStateChecks();
     await runTodoMutationSerializationChecks();
-    await runTodoRevealSerializationChecks();
+    await runTodoRevealSingleWriteChecks();
     await runDashboardTodoMigrationSequencingChecks();
     await runTodoHostMutationChecks();
     runDashboardUpdateMessageChecks();

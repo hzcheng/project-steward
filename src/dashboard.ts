@@ -99,6 +99,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const projectService = new ProjectService(context, colorService);
     const todoService = new TodoService(context);
     const todoViewState = todoService.getViewState();
+    let revealedTodoId: string | undefined;
     const todoStorageMigration = { ready: Promise.resolve<unknown>(undefined) };
     const groupCollapseController = new GroupCollapseController({
         state: context.globalState,
@@ -564,6 +565,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 await runTodoPanelMutation(async () => {
                     const persistedViewState = await todoService.setShowCompleted(e.showCompleted === true);
                     todoViewState.showCompleted = persistedViewState.showCompleted;
+                    revealedTodoId = undefined;
                 });
             },
             'todo-reveal': async e => {
@@ -572,7 +574,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 }
                 await runTodoPanelMutation(async () => {
                     const result = await todoService.revealTodo(e.todoId as string, e.groupId as string);
-                    todoViewState.showCompleted = result.viewState.showCompleted;
+                    if (result.revealed) {
+                        revealedTodoId = e.todoId as string;
+                    }
                 });
             },
             'todo-update': async e => {
@@ -971,12 +975,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 type: 'todo-panel-content',
                 version: 1,
                 requestId,
-                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState), todoRenderOptions),
+                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState, revealedTodoId), todoRenderOptions),
             }
             : {
                 type: 'todo-panel-updated',
                 version: 1,
-                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState), todoRenderOptions),
+                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState, revealedTodoId), todoRenderOptions),
                 searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), getOpenProjectCards(), buildTodoSearchItems(todoData)),
             });
     }
