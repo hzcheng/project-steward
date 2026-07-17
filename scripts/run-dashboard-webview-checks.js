@@ -68,6 +68,20 @@ function extractAsyncArrowPropertyBody(source, propertyName) {
     throw new Error(`Unterminated async property ${propertyName}`);
 }
 
+function extractDashboardMessageHandlerBody(source, messageType) {
+    const signature = `'${messageType}': async e => {`;
+    const start = source.indexOf(signature);
+    assert.ok(start >= 0, `Missing ${messageType} dashboard handler`);
+    const braceStart = source.indexOf('{', start);
+    let depth = 0;
+    for (let index = braceStart; index < source.length; index += 1) {
+        if (source[index] === '{') depth += 1;
+        if (source[index] === '}') depth -= 1;
+        if (depth === 0) return source.slice(braceStart + 1, index);
+    }
+    throw new Error(`Unterminated ${messageType} dashboard handler`);
+}
+
 function extractHtmlElementBody(source, openingTag) {
     const start = source.indexOf(openingTag);
     assert.ok(start >= 0, `Missing HTML element ${openingTag}`);
@@ -1193,7 +1207,15 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('todo-icon-button steward-icon-button'));
     assert.ok(html.includes('todo-item-content'));
     assert.ok(html.includes('todo-item-footer'));
-    assert.strictEqual(html.includes('todo-add-form'), false, 'default TODO list must not show a persistent add form');
+    const addFormCount = (html.match(/<form class="todo-add-form\b/g) || []).length;
+    assert.strictEqual(addFormCount, 1, 'TODO panels must render one reachable compose form');
+    assert.ok(html.includes('<form class="todo-add-form todo-compose-panel steward-card" data-todo-form="add" hidden>'));
+    assert.ok(html.includes('name="title"'));
+    assert.ok(html.includes('name="priority"'));
+    assert.ok(html.includes('name="notes"'));
+    assert.ok(html.includes('name="groupId"'));
+    assert.ok(html.includes('data-action="todo-add"'));
+    assert.ok(html.includes('data-action="todo-cancel-add"'));
     assert.ok(html.includes('todo-edit-form'));
     assert.ok(html.includes('todo-edit-panel'));
     assert.ok(html.includes('todo-priority-segment'));
@@ -1233,6 +1255,9 @@ function runTodoViewModelChecks() {
     const emptyHtml = todoWebviewContent.getTodoPanelContent(todoViewModel.buildTodoViewModel({ version: 1, groups: [], todos: [] }));
     assert.ok(emptyHtml.includes('todo-empty-state steward-empty-state'));
     assert.ok(emptyHtml.includes('No todos yet'));
+    assert.strictEqual((emptyHtml.match(/<form class="todo-add-form\b/g) || []).length, 1,
+        'an empty TODO panel must expose the same compose form');
+    assert.ok(emptyHtml.includes('<option value="">Inbox</option>'));
     assert.strictEqual(emptyHtml.includes('todo-empty-orb'), false);
     assert.strictEqual(emptyHtml.includes('Create first group'), false);
     assert.strictEqual(emptyHtml.includes('Add todo to Inbox'), false);
@@ -2158,6 +2183,14 @@ function runSourceContractChecks(source) {
     assert.ok(projectSource.includes('function syncTodoPrioritySegment('));
     assert.ok(extractFunctionBody(projectSource, 'onChangeEvent').includes('syncTodoPrioritySegment('));
     assert.ok(projectSource.includes('function onTodoFormSubmit('));
+    const todoActionBody = extractFunctionBody(projectSource, 'onTodoAction');
+    const todoFormSubmitBody = extractFunctionBody(projectSource, 'onTodoFormSubmit');
+    assert.ok(todoActionBody.includes('data-action="todo-cancel-add"'));
+    assert.ok(todoActionBody.includes('setTodoAddFormVisible('));
+    assert.ok(todoFormSubmitBody.includes("type: 'todo-add'"));
+    assert.ok(todoFormSubmitBody.includes("groupId: getTodoFormValue(addForm, 'groupId')"));
+    assert.strictEqual(todoFormSubmitBody.includes('addForm.reset()'), false,
+        'TODO add submissions must retain form values until the host refresh succeeds');
     assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"add-project\"]')"), false);
     assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"import-from-other-storage\"]')"), false);
     assert.ok(extensionHostSource.includes("'todo-add': async e =>"));
@@ -2172,6 +2205,21 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'todo-sort-priority': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-toggle-show-completed': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-update': async e =>"));
+    const todoAddHandlerBody = extractDashboardMessageHandlerBody(extensionHostSource, 'todo-add');
+    assert.strictEqual(todoAddHandlerBody.includes('showInputBox'), false,
+        'webview TODO creation must not fall back to a title-only host prompt');
+    assert.ok(todoAddHandlerBody.includes('typeof e.title !== \'string\''));
+    assert.ok(todoAddHandlerBody.includes('notes: typeof e.notes === \'string\''));
+    assert.ok(todoAddHandlerBody.includes("priority: e.priority === 'high'"));
+    assert.ok(todoAddHandlerBody.includes("groupId: typeof e.groupId === 'string'"));
+    const todoDeleteHandlerBody = extractDashboardMessageHandlerBody(extensionHostSource, 'todo-delete');
+    assert.ok(todoDeleteHandlerBody.includes('todoService.getData().todos.find'));
+    assert.ok(todoDeleteHandlerBody.includes('showWarningMessage'));
+    assert.ok(todoDeleteHandlerBody.includes('`Delete TODO "${todo.title}"?`'));
+    assert.ok(todoDeleteHandlerBody.includes("if (confirmed !== 'Delete')"));
+    assert.ok(todoDeleteHandlerBody.indexOf("if (confirmed !== 'Delete')")
+        < todoDeleteHandlerBody.indexOf('todoService.deleteTodo'),
+    'canceling single TODO deletion must perform no mutation');
     assert.ok(extensionHostSource.includes('async function postTodoPanelContent('));
     assert.ok(extensionHostSource.includes("from './todos/hostMutation'"));
     assert.ok(extensionHostSource.includes('const todoViewState = todoService.getViewState();'));

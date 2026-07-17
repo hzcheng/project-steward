@@ -450,17 +450,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 await postTodoPanelContent(e.requestId as number);
             },
             'todo-add': async e => {
-                const title = typeof e.title === 'string' && e.title.trim()
-                    ? e.title
-                    : await vscode.window.showInputBox({
-                        prompt: 'Todo title',
-                        placeHolder: 'What needs to be done?',
-                        ignoreFocusOut: true,
-                        validateInput: value => value && value.trim() ? '' : 'A todo title is required.',
-                    });
-                if (title === undefined) {
+                if (typeof e.title !== 'string' || !e.title.trim()) {
                     return;
                 }
+                const title = e.title;
                 await runTodoPanelMutation(() => todoService.addTodo({
                     title,
                     notes: typeof e.notes === 'string' ? e.notes : '',
@@ -487,6 +480,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             },
             'todo-delete': async e => {
                 if (typeof e.todoId !== 'string') {
+                    return;
+                }
+                const todo = todoService.getData().todos.find(item => item.id === e.todoId);
+                if (!todo) {
+                    return;
+                }
+                const confirmed = await vscode.window.showWarningMessage(
+                    `Delete TODO "${todo.title}"?`,
+                    { modal: true },
+                    'Delete'
+                );
+                if (confirmed !== 'Delete') {
                     return;
                 }
                 await runTodoPanelMutation(() => todoService.deleteTodo(e.todoId as string));

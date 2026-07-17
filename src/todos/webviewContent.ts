@@ -42,13 +42,9 @@ function renderPriorityOptions(selected: string): string {
 }
 
 function renderGroupOptions(groups: TodoGroupViewModel[], selectedGroupId = ''): string {
-    if (!groups.length) {
-        return '<option value="">Inbox</option>';
-    }
-
-    return groups.map(group =>
+    return ['<option value="">Inbox</option>', ...groups.map(group =>
         `<option value="${escapeHtml(group.id)}"${group.id === selectedGroupId ? ' selected' : ''}>${escapeHtml(group.title)}</option>`
-    ).join('');
+    )].join('');
 }
 
 function renderTodoAddForm(viewModel: TodoPanelViewModel): string {
@@ -62,6 +58,7 @@ function renderTodoAddForm(viewModel: TodoPanelViewModel): string {
             <select name="priority" aria-label="Todo priority">${renderPriorityOptions('medium')}</select>
             <select name="groupId" aria-label="Todo group">${renderGroupOptions(viewModel.groups)}</select>
             <button class="todo-primary-button steward-button steward-button-primary" type="submit" data-action="todo-add"><span>${Icons.add}</span>Add</button>
+            <button class="todo-secondary-button steward-button" type="button" data-action="todo-cancel-add">Cancel</button>
         </div>
     </form>`;
 }
@@ -153,12 +150,14 @@ export function getTodoPanelContent(viewModel: TodoPanelViewModel, options: Todo
     if (viewModel.isEmpty) {
         return `<div class="todo-panel todo-panel-empty"${panelStyle}>
             ${renderTodoCommandBar(viewModel)}
+            ${renderTodoAddForm(viewModel)}
             <p class="todo-empty-state steward-empty-state">No todos yet</p>
         </div>`;
     }
 
     return `<div class="todo-panel"${panelStyle}>
         ${renderTodoCommandBar(viewModel)}
+        ${renderTodoAddForm(viewModel)}
         <div class="todo-groups">
             ${viewModel.groups.map(renderTodoGroup).join('')}
         </div>

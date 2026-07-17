@@ -616,10 +616,7 @@ function initProjects() {
     function onTodoAction(e) {
         var addTodoAction = e.target.closest('[data-action="todo-add"]');
         if (addTodoAction && !addTodoAction.closest('.todo-add-form')) {
-            window.vscode.postMessage({
-                type: 'todo-add',
-                groupId: addTodoAction.getAttribute('data-group-id') || undefined,
-            });
+            setTodoAddFormVisible(true, addTodoAction.getAttribute('data-group-id'));
             return true;
         }
 
@@ -703,7 +700,13 @@ function initProjects() {
 
         var focusAddAction = e.target.closest('[data-action="todo-focus-add"]');
         if (focusAddAction) {
-            focusTodoAddForm(focusAddAction.getAttribute('data-group-id'));
+            setTodoAddFormVisible(true, focusAddAction.getAttribute('data-group-id'));
+            return true;
+        }
+
+        var cancelAddAction = e.target.closest('[data-action="todo-cancel-add"]');
+        if (cancelAddAction) {
+            setTodoAddFormVisible(false);
             return true;
         }
 
@@ -771,15 +774,19 @@ function initProjects() {
         return !!(target && target.closest && target.closest('button, input, textarea, select, label, a, [data-action], .todo-edit-form'));
     }
 
-    function focusTodoAddForm(groupId) {
+    function setTodoAddFormVisible(visible, groupId) {
         var form = document.querySelector('.todo-add-form');
         if (!form)
             return;
 
         var groupSelect = form.querySelector('[name="groupId"]');
-        if (groupSelect && groupId) {
-            groupSelect.value = groupId;
+        if (visible && groupSelect) {
+            groupSelect.value = groupId || '';
         }
+        form.hidden = !visible;
+        if (!visible)
+            return;
+
         var titleInput = form.querySelector('[name="title"]');
         if (titleInput) {
             titleInput.focus();
@@ -831,9 +838,8 @@ function initProjects() {
                 title,
                 notes: getTodoFormValue(addForm, 'notes'),
                 priority: getTodoFormValue(addForm, 'priority'),
-                groupId: getTodoFormValue(addForm, 'groupId') || undefined,
+                groupId: getTodoFormValue(addForm, 'groupId'),
             });
-            addForm.reset();
             return;
         }
 
