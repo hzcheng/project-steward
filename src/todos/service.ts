@@ -138,8 +138,10 @@ export class TodoService {
             const group = this.resolveTargetGroup(data, input.groupId);
             const now = this.now();
             data.todos
-                .filter(todo => todo.groupId === group.id)
-                .forEach(todo => { todo.order += 1; });
+                .map((todo, index) => ({ todo, index }))
+                .filter(entry => entry.todo.groupId === group.id)
+                .sort((a, b) => a.todo.order - b.todo.order || a.index - b.index)
+                .forEach((entry, index) => { entry.todo.order = index + 1; });
             data.todos.push({
                 id: this.generateId('todo'),
                 groupId: group.id,

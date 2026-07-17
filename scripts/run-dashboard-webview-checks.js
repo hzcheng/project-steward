@@ -664,6 +664,82 @@ async function runTodoOrderingMutationChecks() {
     assert.strictEqual(writes.length, previousWrites + 1, 'bulk TODO collapse must use one persisted mutation');
 }
 
+async function runTodoInsertionOrderNormalizationChecks() {
+    const scenarios = [
+        { name: 'gapped target orders', orders: [0, 2] },
+        { name: 'negative target orders', orders: [-2, 0] },
+    ];
+
+    for (const scenario of scenarios) {
+        let storedData = {
+            version: 1,
+            groups: [
+                { id: 'target-group', title: 'Target', collapsed: false, order: 0 },
+                { id: 'other-group', title: 'Other', collapsed: true, order: 1 },
+            ],
+            todos: [
+                { id: 'target-second', groupId: 'target-group', title: 'Second', notes: 'second', priority: 'low', completed: false, createdAt: '2026-07-15T00:00:00.000Z', updatedAt: '2026-07-15T01:00:00.000Z', order: scenario.orders[1] },
+                { id: 'other-first', groupId: 'other-group', title: 'Other first', notes: 'unchanged', priority: 'high', completed: true, createdAt: '2026-07-14T00:00:00.000Z', updatedAt: '2026-07-14T01:00:00.000Z', completedAt: '2026-07-14T02:00:00.000Z', order: -7 },
+                { id: 'target-first', groupId: 'target-group', title: 'First', notes: 'first', priority: 'medium', completed: true, createdAt: '2026-07-13T00:00:00.000Z', updatedAt: '2026-07-13T01:00:00.000Z', completedAt: '2026-07-13T02:00:00.000Z', order: scenario.orders[0] },
+                { id: 'other-second', groupId: 'other-group', title: 'Other second', notes: 'also unchanged', priority: 'medium', completed: false, createdAt: '2026-07-12T00:00:00.000Z', updatedAt: '2026-07-12T01:00:00.000Z', order: 9 },
+            ],
+        };
+        const service = new TodoService({
+            globalState: {
+                get: () => storedData,
+                update: async (_key, value) => { storedData = value; },
+            },
+            configuration: makeWorkspaceConfiguration({}),
+            useSettingsStorage: () => false,
+            now: () => '2026-07-17T00:00:00.000Z',
+            generateId: prefix => `${prefix}-new`,
+        });
+        const otherGroupBefore = service.getData().todos
+            .filter(todo => todo.groupId === 'other-group')
+            .map(todo => ({ ...todo }));
+
+        const result = await service.addTodo({ title: 'Newest', groupId: 'target-group' });
+        assert.deepStrictEqual(
+            result.todos
+                .filter(todo => todo.groupId === 'target-group')
+                .sort((a, b) => a.order - b.order)
+                .map(todo => [todo.id, todo.order]),
+            [['todo-new', 0], ['target-first', 1], ['target-second', 2]],
+            `${scenario.name} must normalize to a stable contiguous sequence with the new TODO first`
+        );
+        assert.deepStrictEqual(
+            result.todos.filter(todo => todo.groupId === 'other-group'),
+            otherGroupBefore,
+            `${scenario.name} must not modify TODOs in other groups`
+        );
+    }
+
+    let tiedData = {
+        version: 1,
+        groups: [{ id: 'tied-group', title: 'Tied', collapsed: false, order: 0 }],
+        todos: [
+            { id: 'tie-first', groupId: 'tied-group', title: 'Tie first', notes: '', priority: 'medium', completed: false, createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z', order: 0 },
+            { id: 'tie-second', groupId: 'tied-group', title: 'Tie second', notes: '', priority: 'medium', completed: false, createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z', order: 0 },
+        ],
+    };
+    const tiedService = new TodoService({
+        globalState: {
+            get: () => tiedData,
+            update: async (_key, value) => { tiedData = value; },
+        },
+        configuration: makeWorkspaceConfiguration({}),
+        useSettingsStorage: () => false,
+        now: () => '2026-07-17T00:00:00.000Z',
+        generateId: prefix => `${prefix}-new`,
+    });
+    const tiedResult = await tiedService.addTodo({ title: 'Newest', groupId: 'tied-group' });
+    assert.deepStrictEqual(
+        tiedResult.todos.sort((a, b) => a.order - b.order).map(todo => [todo.id, todo.order]),
+        [['todo-new', 0], ['tie-first', 1], ['tie-second', 2]],
+        'equal old orders must retain the current data.todos index as their stable tie-breaker'
+    );
+}
+
 function makeStoredTodoData(groupId) {
     return {
         version: 1,
@@ -2521,6 +2597,7 @@ async function main() {
     await runDashboardCommandRegistrationChecks();
     await runActiveTerminalFileReferenceChecks();
     await runTodoStoreChecks();
+    await runTodoInsertionOrderNormalizationChecks();
     await runTodoOrderingMutationChecks();
     await runTodoStorageResolutionChecks();
     await runTodoMigrationChecks();
