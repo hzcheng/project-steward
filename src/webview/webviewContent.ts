@@ -26,6 +26,7 @@ import * as Icons from './webviewIcons';
 const FAVORITES_GROUP_NAME = 'FAVORITES';
 const OPEN_CURRENT_WORKSPACE_GROUP_NAME = 'CURRENT WORKSPACE';
 const OPEN_OTHER_WINDOWS_GROUP_NAME = 'OTHER WINDOWS';
+const DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP = 5;
 
 type ProjectAttentionMode = 'current' | 'navigation' | 'none';
 
@@ -234,6 +235,15 @@ export function getOpenProjectsGroupContent(
 }
 
 export function getProjectsPanelContent(groups: Group[], infos: StewardInfos): string {
+    var configuredMaxVisibleProjects = infos.config.get(
+        'maxVisibleProjectsPerGroup',
+        DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP
+    );
+    var normalizedMaxVisibleProjects = Math.floor(Number(configuredMaxVisibleProjects));
+    var maxVisibleProjectsPerGroup = Number.isFinite(normalizedMaxVisibleProjects)
+        && normalizedMaxVisibleProjects > 0
+        ? normalizedMaxVisibleProjects
+        : DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP;
     var favoriteProjects = getFavoriteProjectsInOrder(
         (groups || []).reduce((projects, group) => projects.concat(group.projects || []), [] as Project[])
     );
@@ -263,7 +273,7 @@ export function getProjectsPanelContent(groups: Group[], infos: StewardInfos): s
         projectAttentionMode: 'none',
     };
 
-    return `<div class="groups-wrapper ${!infos.config.displayProjectPath ? 'hide-project-path' : ''}">
+    return `<div class="groups-wrapper ${!infos.config.displayProjectPath ? 'hide-project-path' : ''}" style="--steward-max-visible-projects-per-group: ${maxVisibleProjectsPerGroup};">
         ${mainGroups.length
             ? mainGroups.map(group => getGroupSection(
                 group,

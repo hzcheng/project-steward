@@ -129,6 +129,12 @@
                     "minimum": 1,
                     "markdownDescription": "Maximum number of TODO items visible in each TODO group before the group list scrolls."
                 },
+                "projectSteward.maxVisibleProjectsPerGroup": {
+                    "type": "number",
+                    "default": 5,
+                    "minimum": 1,
+                    "markdownDescription": "Maximum number of project cards visible in each group on the Projects tab before the group list scrolls."
+                },
                 "projectSteward.aiSessionAttention.enabled": {
                     "type": "boolean",
                     "default": true,

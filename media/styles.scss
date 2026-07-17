@@ -1787,6 +1787,12 @@ body.steward-sidebar {
         }
     }
 
+    #dashboard-tab-projects .group-list {
+        max-height: calc(var(--steward-max-visible-projects-per-group, 5) * 65px);
+        overflow-x: hidden;
+        overflow-y: auto;
+    }
+
     .steward-group-header {
         display: flex;
         align-items: center;
