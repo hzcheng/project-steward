@@ -10,7 +10,7 @@ const sass = require('sass');
 const dashboardErrorContent = require('../out/dashboard/errorContent');
 const dashboardConfiguration = require('../out/dashboard/configuration');
 const dashboardStartup = require('../out/dashboard/startup');
-const { DashboardStartupController } = require('../out/dashboard/startupController');
+const { DashboardStartupController, settleMigration } = require('../out/dashboard/startupController');
 const { DashboardLifecycleController } = require('../out/dashboard/lifecycleController');
 const { DashboardCommandRegistration } = require('../out/dashboard/commandRegistration');
 const activeTerminalFileReference = require('../out/dashboard/activeTerminalFileReference');
@@ -1492,12 +1492,15 @@ async function runTodoRevealSingleWriteChecks() {
 async function runDashboardTodoMigrationSequencingChecks() {
     const extensionHostSource = fs.readFileSync(extensionHostPath, 'utf8');
     const migrationBody = extractAsyncArrowPropertyBody(extensionHostSource, 'migrateDataIfNeeded');
-    const runMigration = new AsyncFunction(
+    const runMigrationBody = new AsyncFunction(
         'projectService',
         'todoService',
         'todoStorageMigration',
+        'settleMigration',
         migrationBody
     );
+    const runMigration = (projectService, todoService, todoStorageMigration) =>
+        runMigrationBody(projectService, todoService, todoStorageMigration, settleMigration);
     const events = [];
     let resolveProjectMigration;
     const projectMigration = new Promise(resolve => { resolveProjectMigration = resolve; });
@@ -1523,6 +1526,7 @@ async function runDashboardTodoMigrationSequencingChecks() {
     migration.then(() => { migrationSettled = true; });
 
     try {
+        await Promise.resolve();
         assert.deepStrictEqual(events, ['project-started', 'todo-started'],
             'TODO migration must start before the deferred project migration resolves');
         await todoStorageMigration.ready;
@@ -1667,6 +1671,58 @@ async function runDashboardTodoMigrationSequencingChecks() {
     await bothRejectHarness.gate.ready;
     assert.deepStrictEqual(bothRejectHarness.refreshes, ['refreshed'],
         'both-reject migration state must remain retryable');
+
+    const syncTodoPartialError = new Error('TODO migration threw synchronously after project success');
+    const syncTodoPartialHarness = makeAggregationHarness(
+        () => Promise.resolve(true),
+        () => { throw syncTodoPartialError; }
+    );
+    await syncTodoPartialHarness.controller.checkDataMigration();
+    await syncTodoPartialHarness.gate.ready;
+    assert.deepStrictEqual(syncTodoPartialHarness.refreshes, ['refreshed'],
+        'a synchronous TODO throw must not discard a successful project migration');
+    assert.deepStrictEqual(syncTodoPartialHarness.logs,
+        [['Failed to migrate Project Steward TODO data.', syncTodoPartialError]]);
+    assert.strictEqual(syncTodoPartialHarness.errors.length, 1);
+
+    const syncTodoBothError = new Error('TODO migration threw synchronously with project rejection');
+    const rejectedProjectError = new Error('project migration rejected beside synchronous TODO throw');
+    let syncFailureAttempts = 0;
+    const syncFailureHarness = makeAggregationHarness(
+        () => syncFailureAttempts === 0 ? Promise.reject(rejectedProjectError) : Promise.resolve(false),
+        () => {
+            const firstAttempt = syncFailureAttempts === 0;
+            syncFailureAttempts += 1;
+            if (firstAttempt) {
+                throw syncTodoBothError;
+            }
+            return Promise.resolve(true);
+        }
+    );
+    const unhandledRejections = [];
+    const captureUnhandledRejection = reason => { unhandledRejections.push(reason); };
+    process.on('unhandledRejection', captureUnhandledRejection);
+    try {
+        await syncFailureHarness.controller.checkDataMigration();
+        await syncFailureHarness.gate.ready;
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepStrictEqual(syncFailureHarness.refreshes, [],
+            'a synchronous throw plus rejection must not refresh without a migration success');
+        assert.deepStrictEqual(syncFailureHarness.logs, [
+            ['Failed to migrate Project Steward project data.', rejectedProjectError],
+            ['Failed to migrate Project Steward TODO data.', syncTodoBothError],
+        ]);
+        assert.strictEqual(syncFailureHarness.errors.length, 2);
+        assert.deepStrictEqual(unhandledRejections, [],
+            'synchronous migration failure must not leave the other migration rejection unhandled');
+
+        await syncFailureHarness.controller.checkDataMigration();
+        await syncFailureHarness.gate.ready;
+        assert.deepStrictEqual(syncFailureHarness.refreshes, ['refreshed'],
+            'the TODO render gate must recover for retry after a synchronous migration throw');
+    } finally {
+        process.removeListener('unhandledRejection', captureUnhandledRejection);
+    }
 }
 
 async function runTodoHostMutationChecks() {
@@ -3232,7 +3288,10 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes('async function postTodoPanelContent('));
     assert.ok(extensionHostSource.includes("from './todos/hostMutation'"));
     assert.ok(extensionHostSource.includes('const todoViewState = todoService.getViewState();'));
-    assert.ok(extensionHostSource.includes('const todoMigration = todoService.migrateDataIfNeeded()'));
+    assert.ok(extensionHostSource.includes(
+        'const projectMigration = settleMigration(() => projectService.migrateDataIfNeeded())'));
+    assert.ok(extensionHostSource.includes(
+        'const todoMigration = settleMigration(() => todoService.migrateDataIfNeeded())'));
     assert.strictEqual(
         (extensionHostSource.match(/await runTodoPanelMutation\(/g) || []).length,
         13,

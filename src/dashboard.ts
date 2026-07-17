@@ -70,7 +70,7 @@ import { GroupCollapseController } from './dashboard/groupCollapseController';
 import { DashboardLifecycleController } from './dashboard/lifecycleController';
 import { createDashboardMessageRouter } from './dashboard/messageRouter';
 import { DashboardRuntimeController } from './dashboard/runtimeController';
-import { DashboardStartupController } from './dashboard/startupController';
+import { DashboardStartupController, settleMigration } from './dashboard/startupController';
 import { getDashboardWebviewOptions } from './dashboard/webviewOptions';
 import { OpenProjectDashboardController } from './openProjects/dashboardController';
 import { OpenProjectWorkspaceController } from './openProjects/workspaceController';
@@ -849,18 +849,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         relevantExtensions: RelevantExtensions,
         isExtensionInstalled: extensionId => vscode.extensions.getExtension(extensionId) !== undefined,
         migrateDataIfNeeded: async () => {
-            const projectMigration = projectService.migrateDataIfNeeded();
-            const todoMigration = todoService.migrateDataIfNeeded();
+            const projectMigration = settleMigration(() => projectService.migrateDataIfNeeded());
+            const todoMigration = settleMigration(() => todoService.migrateDataIfNeeded());
             todoStorageMigration.ready = todoMigration.then(() => undefined, () => undefined);
-            const settledProjectMigration = projectMigration.then(
-                migrated => ({ migrated }),
-                error => ({ migrated: false, error })
-            );
-            const settledTodoMigration = todoMigration.then(
-                migrated => ({ migrated }),
-                error => ({ migrated: false, error })
-            );
-            const [projects, todos] = await Promise.all([settledProjectMigration, settledTodoMigration]);
+            const [projects, todos] = await Promise.all([projectMigration, todoMigration]);
             return { projects, todos };
         },
         refreshDashboard: () => provider.refresh(),

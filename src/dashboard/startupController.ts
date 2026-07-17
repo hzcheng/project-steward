@@ -16,6 +16,17 @@ export interface DashboardMigrationResult {
     todos: DashboardMigrationComponentResult;
 }
 
+export function settleMigration(
+    run: () => Promise<boolean> | boolean
+): Promise<DashboardMigrationComponentResult> {
+    return Promise.resolve()
+        .then(run)
+        .then(
+            migrated => ({ migrated }),
+            error => ({ migrated: false, error })
+        );
+}
+
 export interface DashboardStartupControllerOptions {
     stewardInfos: StewardInfos;
     relevantExtensions?: Record<keyof RelevantExtensionInstalls, string>;
