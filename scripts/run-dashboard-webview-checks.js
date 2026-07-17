@@ -583,6 +583,87 @@ async function runTodoStoreChecks() {
     }
 }
 
+async function runTodoOrderingMutationChecks() {
+    let storedData = {
+        version: 1,
+        groups: [
+            { id: 'group-a', title: 'Group A', collapsed: false, order: 0 },
+            { id: 'group-b', title: 'Group B', collapsed: true, order: 1 },
+            { id: 'group-c', title: 'Group C', collapsed: false, order: 2 },
+        ],
+        todos: [
+            { id: 'todo-a1', groupId: 'group-a', title: 'A1', notes: '', priority: 'medium', completed: false, createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z', order: 0 },
+            { id: 'todo-a2', groupId: 'group-a', title: 'A2', notes: '', priority: 'medium', completed: false, createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z', order: 1 },
+            { id: 'todo-a-done', groupId: 'group-a', title: 'A done', notes: '', priority: 'medium', completed: true, createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z', completedAt: '2026-07-16T01:00:00.000Z', order: 2 },
+            { id: 'todo-b1', groupId: 'group-b', title: 'B1', notes: '', priority: 'medium', completed: false, createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z', order: 0 },
+        ],
+    };
+    const writes = [];
+    let nextId = 0;
+    const service = new TodoService({
+        globalState: {
+            get: () => storedData,
+            update: async (_key, value) => {
+                writes.push(value);
+                storedData = value;
+            },
+        },
+        configuration: makeWorkspaceConfiguration({}),
+        useSettingsStorage: () => false,
+        now: () => '2026-07-17T00:00:00.000Z',
+        generateId: prefix => `${prefix}-new-${++nextId}`,
+    });
+
+    const afterAdd = await service.addTodo({ title: 'Newest', groupId: 'group-a' });
+    assert.deepStrictEqual(
+        afterAdd.todos.filter(todo => todo.groupId === 'group-a' && !todo.completed).sort((a, b) => a.order - b.order).map(todo => [todo.title, todo.order]),
+        [['Newest', 0], ['A1', 1], ['A2', 2]],
+        'new TODOs must be inserted at order 0 and shift existing items down'
+    );
+    assert.strictEqual(afterAdd.todos.find(todo => todo.id === 'todo-a-done').order, 3,
+        'new TODO insertion must also shift completed items without changing their status');
+
+    let previousWrites = writes.length;
+    const renamed = await service.renameGroup('group-a', ' Renamed A ');
+    assert.strictEqual(renamed.groups.find(group => group.id === 'group-a').title, 'Renamed A');
+    assert.strictEqual(writes.length, previousWrites + 1, 'group rename must use one persisted mutation');
+
+    previousWrites = writes.length;
+    const reorderedGroups = await service.reorderGroups(['group-c', 'group-a', 'group-b']);
+    assert.deepStrictEqual(
+        reorderedGroups.groups.map(group => [group.id, group.order]),
+        [['group-c', 0], ['group-a', 1], ['group-b', 2]]
+    );
+    assert.strictEqual(writes.length, previousWrites + 1, 'group reorder must use one persisted mutation');
+
+    previousWrites = writes.length;
+    const reorderedTodos = await service.reorderTodos('group-a', ['todo-a2', 'todo-a1', 'todo-new-1']);
+    assert.deepStrictEqual(
+        reorderedTodos.todos.filter(todo => todo.groupId === 'group-a').sort((a, b) => a.order - b.order).map(todo => [todo.id, todo.order]),
+        [['todo-a2', 0], ['todo-a1', 1], ['todo-new-1', 2], ['todo-a-done', 3]],
+        'an exact visible TODO reorder must retain hidden completed items at the end'
+    );
+    assert.strictEqual(writes.length, previousWrites + 1, 'TODO reorder must use one persisted mutation');
+
+    const invalidReorders = [
+        () => service.reorderGroups(['group-a', 'group-b']),
+        () => service.reorderGroups(['group-a', 'group-b', 'group-b']),
+        () => service.reorderTodos('group-a', ['todo-a1', 'todo-a2']),
+        () => service.reorderTodos('group-a', ['todo-a1', 'todo-a2', 'todo-b1']),
+        () => service.reorderTodos('missing-group', []),
+    ];
+    previousWrites = writes.length;
+    for (const invalidReorder of invalidReorders) {
+        await assert.rejects(invalidReorder, /exactly|same group|must exist/i);
+    }
+    assert.strictEqual(writes.length, previousWrites, 'invalid or cross-group reorder arrays must not persist');
+
+    previousWrites = writes.length;
+    const collapsed = await service.setGroupsCollapsed(true);
+    assert.deepStrictEqual(collapsed.groups.map(group => group.collapsed), [true, true, true]);
+    assert.strictEqual(writes.length, previousWrites + 1, 'bulk TODO collapse must use one persisted mutation');
+}
+
 function makeStoredTodoData(groupId) {
     return {
         version: 1,
@@ -732,7 +813,11 @@ async function runTodoMigrationChecks() {
         service => service.completeTodo('todo-a', true),
         service => service.deleteTodo('todo-a'),
         service => service.deleteGroup('group-a'),
+        service => service.renameGroup('group-a', 'Blocked'),
+        service => service.reorderGroups(['group-a']),
+        service => service.reorderTodos('group-a', ['todo-a']),
         service => service.setGroupCollapsed('group-a', true),
+        service => service.setGroupsCollapsed(true),
         service => service.sortGroupByPriority('group-a'),
     ];
     for (const useSettingsStorage of [false, true]) {
@@ -973,6 +1058,22 @@ function runTodoViewModelChecks() {
     const showCompleted = todoViewModel.buildTodoViewModel(makeTodoData(), { showCompleted: true });
     assert.strictEqual(showCompleted.groups[0].visibleTodos.length, 2);
 
+    const stableCompletedLast = todoViewModel.buildTodoViewModel({
+        version: 1,
+        groups: [{ id: 'stable-group', title: 'Stable', collapsed: false, order: 0 }],
+        todos: [
+            { id: 'done-first', groupId: 'stable-group', title: 'Done first', notes: '', priority: 'medium', completed: true, createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z', completedAt: '2026-07-16T01:00:00.000Z', order: 0 },
+            { id: 'open-first', groupId: 'stable-group', title: 'Open first', notes: '', priority: 'medium', completed: false, createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z', order: 1 },
+            { id: 'done-second', groupId: 'stable-group', title: 'Done second', notes: '', priority: 'medium', completed: true, createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z', completedAt: '2026-07-16T02:00:00.000Z', order: 2 },
+            { id: 'open-second', groupId: 'stable-group', title: 'Open second', notes: '', priority: 'medium', completed: false, createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z', order: 3 },
+        ],
+    }, { showCompleted: true });
+    assert.deepStrictEqual(
+        stableCompletedLast.groups[0].visibleTodos.map(todo => todo.id),
+        ['open-first', 'open-second', 'done-first', 'done-second'],
+        'completed TODOs must be stably projected after incomplete TODOs'
+    );
+
     const html = todoWebviewContent.getTodoPanelContent(hiddenCompleted, { maxVisibleTodosPerGroup: 7 });
     assert.ok(html.includes('todo-panel'));
     assert.ok(html.includes('--todo-visible-items: 7;'));
@@ -994,7 +1095,9 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('todo-group group steward-section'));
     assert.ok(html.includes('todo-group-actions group-actions'));
     assert.ok(html.includes('data-action="todo-collapse-group"'));
+    assert.ok(html.includes('data-action="todo-rename-group"'));
     assert.ok(html.includes('data-action="todo-delete-group"'));
+    assert.ok(html.includes('data-drag-todo-group'));
     assert.ok(html.includes('todo-priority-badge steward-badge'));
     const todoTitleLineOpeningTag = '<div class="todo-title-line">';
     const todoTitleLineBody = extractHtmlElementBody(html, todoTitleLineOpeningTag);
@@ -1059,10 +1162,91 @@ function runTodoViewModelChecks() {
     assert.strictEqual(emptyHtml.includes('Add todo to Inbox'), false);
     assert.strictEqual(html.includes('todo-edit-panel steward-card'), false);
 
+    const emptyGroupViewModel = todoViewModel.buildTodoViewModel({
+        version: 1,
+        groups: [{ id: 'empty-group', title: 'Empty Group', collapsed: false, order: 0 }],
+        todos: [],
+    });
+    const emptyGroupHtml = todoWebviewContent.getTodoPanelContent(emptyGroupViewModel);
+    assert.strictEqual(emptyGroupViewModel.isEmpty, false, 'a panel with an empty group is not globally empty');
+    assert.ok(emptyGroupHtml.includes('data-todo-group-id="empty-group"'));
+    assert.ok(emptyGroupHtml.includes('Empty Group'));
+    assert.ok(emptyGroupHtml.includes('data-action="todo-add" data-group-id="empty-group"'));
+    assert.strictEqual(emptyGroupHtml.includes('No todos yet'), false);
+
     const dashboardViewModel = require('../out/webview/dashboardViewModel');
     const catalog = dashboardViewModel.buildDashboardSearchCatalog([], [], todoTypes.buildTodoSearchItems(makeTodoData()));
     assert.strictEqual(catalog.todos.length, 2);
     assert.ok(dashboardViewModel.serializeDashboardSearchCatalog(catalog).includes('Write TODO') === false);
+}
+
+function runTodoOrderingInteractionChecks() {
+    const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
+    const projectContext = {};
+    vm.runInNewContext(projectSource, projectContext);
+    const groups = [createElement('todo-group-a'), createElement('todo-group-b')];
+    const bulkMessages = [];
+    projectContext.collapseTodoGroups(groups, true, message => bulkMessages.push(message));
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(bulkMessages)),
+        [{ type: 'todo-collapse-groups', collapsed: true }],
+        'global TODO collapse must post one bulk message'
+    );
+    assert.deepStrictEqual(groups.map(group => group.classList.contains('collapsed')), [true, true]);
+
+    const dndSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewDnDScripts.js'), 'utf8');
+    const dndContext = {};
+    vm.runInNewContext(dndSource, dndContext);
+    const todoGroupsContainer = { matches: selector => selector === '.todo-groups' };
+    const projectGroupsContainer = { matches: selector => selector === '.groups-wrapper' };
+    const todoListA = { matches: selector => selector === '.todo-list' };
+    const todoListB = { matches: selector => selector === '.todo-list' };
+    assert.strictEqual(dndContext.canAcceptTodoGroup(todoGroupsContainer, todoGroupsContainer), true);
+    assert.strictEqual(dndContext.canAcceptTodoGroup(projectGroupsContainer, todoGroupsContainer), false,
+        'TODO groups must not be accepted by project group containers');
+    assert.strictEqual(dndContext.canAcceptTodoItem(todoListA, todoListA), true);
+    assert.strictEqual(dndContext.canAcceptTodoItem(todoListB, todoListA), false,
+        'TODO items must be rejected when dragged across groups');
+
+    const groupElements = ['group-c', 'group-a', 'group-b'].map(groupId => ({
+        getAttribute: name => name === 'data-todo-group-id' ? groupId : null,
+    }));
+    const todoElements = ['todo-a2', 'todo-a1'].map(todoId => ({
+        getAttribute: name => name === 'data-todo-id' ? todoId : null,
+    }));
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(dndContext.getTodoGroupIds({ querySelectorAll: () => groupElements }))),
+        ['group-c', 'group-a', 'group-b'],
+        'TODO group reorder messages must preserve the exact DOM ID array'
+    );
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(dndContext.getTodoIds({ querySelectorAll: () => todoElements }))),
+        ['todo-a2', 'todo-a1'],
+        'TODO item reorder messages must preserve the exact same-group DOM ID array'
+    );
+
+    const disposed = [];
+    dndContext.window = {
+        removeEventListener: (type, listener) => disposed.push(['listener', type, listener]),
+    };
+    const onKeyDown = () => undefined;
+    const dndRoot = {
+        __projectStewardDnDInitialized: true,
+        __projectStewardDnD: {
+            projectDrake: { destroy: () => disposed.push('project') },
+            groupsDrake: { destroy: () => disposed.push('groups') },
+            todoGroupsDrake: { destroy: () => disposed.push('todo-groups') },
+            todoItemsDrake: { destroy: () => disposed.push('todo-items') },
+            scroll: { destroy: force => disposed.push(['scroll', force]) },
+            onKeyDown,
+        },
+    };
+    dndContext.disposeDnD(dndRoot);
+    assert.deepStrictEqual(disposed, [
+        'project', 'groups', 'todo-groups', 'todo-items', ['scroll', true], ['listener', 'keydown', onKeyDown],
+    ]);
+    assert.strictEqual(dndRoot.__projectStewardDnDInitialized, undefined);
+    assert.strictEqual(dndRoot.__projectStewardDnD, undefined);
 }
 
 async function runAddProjectsFromFolderControllerChecks() {
@@ -1890,6 +2074,8 @@ function runSourceContractChecks(source) {
     assert.ok(projectSource.includes("type: 'todo-delete'"));
     assert.ok(projectSource.includes("type: 'todo-delete-group'"));
     assert.ok(projectSource.includes("type: 'todo-collapse-group'"));
+    assert.ok(projectSource.includes("type: 'todo-rename-group'"));
+    assert.ok(projectSource.includes("type: 'todo-collapse-groups'"));
     assert.ok(projectSource.includes("type: 'todo-sort-priority'"));
     assert.ok(projectSource.includes("type: 'todo-toggle-show-completed'"));
     assert.ok(projectSource.includes("type: 'todo-update'"));
@@ -1903,6 +2089,10 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'todo-delete': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-delete-group': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-collapse-group': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-rename-group': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-reorder-groups': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-reorder-items': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-collapse-groups': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-sort-priority': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-toggle-show-completed': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-update': async e =>"));
@@ -1912,13 +2102,25 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes('const todoMigration = todoService.migrateDataIfNeeded()'));
     assert.strictEqual(
         (extensionHostSource.match(/await runTodoPanelMutation\(/g) || []).length,
-        9,
+        13,
         'every TODO mutation handler must use the write-error boundary'
     );
     assert.ok(dndSource.includes('function initDnD(root)'));
+    assert.ok(dndSource.includes('function disposeDnD(root)'));
     assert.ok(dndSource.includes('root.__projectStewardDnDInitialized'));
+    assert.ok(dndSource.includes('const todoGroupsContainerSelector = ".todo-groups"'));
+    assert.ok(dndSource.includes('const todoItemsContainerSelector = ".todo-list"'));
+    assert.ok(dndSource.includes("type: 'todo-reorder-groups'"));
+    assert.ok(dndSource.includes("type: 'todo-reorder-items'"));
+    assert.strictEqual((dndSource.match(/type: 'todo-reorder-groups'/g) || []).length, 1,
+        'a TODO group drop must have one reorder message send point');
+    assert.strictEqual((dndSource.match(/type: 'todo-reorder-items'/g) || []).length, 1,
+        'a TODO item drop must have one reorder message send point');
     assert.strictEqual(dndSource.includes('document.querySelectorAll(`${groupsContainerSelector}'), false);
     assert.ok(projectSource.includes("'collapse-group'"));
+    const onWindowMessageBody = extractFunctionBody(projectSource, 'onWindowMessage');
+    assert.ok(onWindowMessageBody.includes('disposeDnD(todoRoot);'));
+    assert.ok(onWindowMessageBody.includes('initDnD(todoRoot);'));
     assert.ok(projectSource.includes('Collapse Other Windows'));
     assert.ok(projectSource.includes('Expand Other Windows'));
     assert.ok(projectSource.includes('aria-disabled'));
@@ -2319,6 +2521,7 @@ async function main() {
     await runDashboardCommandRegistrationChecks();
     await runActiveTerminalFileReferenceChecks();
     await runTodoStoreChecks();
+    await runTodoOrderingMutationChecks();
     await runTodoStorageResolutionChecks();
     await runTodoMigrationChecks();
     await runTodoViewStateChecks();
@@ -2326,6 +2529,7 @@ async function main() {
     await runDashboardTodoMigrationSequencingChecks();
     await runTodoHostMutationChecks();
     runTodoViewModelChecks();
+    runTodoOrderingInteractionChecks();
     runControllerChecks(source);
     runSourceContractChecks(source);
     await runDashboardMessageRouterChecks();

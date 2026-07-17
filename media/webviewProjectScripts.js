@@ -104,6 +104,14 @@ function getCollapseButtonState(tab, collapsedStates) {
     };
 }
 
+function collapseTodoGroups(groups, collapsed, postMessage) {
+    groups.forEach(group => group.classList.toggle('collapsed', collapsed));
+    postMessage({
+        type: 'todo-collapse-groups',
+        collapsed,
+    });
+}
+
 function initProjects() {
 
     const ProjectOpenType = {
@@ -651,6 +659,15 @@ function initProjects() {
             return true;
         }
 
+        var renameGroupAction = e.target.closest('[data-action="todo-rename-group"]');
+        if (renameGroupAction) {
+            window.vscode.postMessage({
+                type: 'todo-rename-group',
+                groupId: renameGroupAction.getAttribute('data-group-id'),
+            });
+            return true;
+        }
+
         var collapseGroupAction = e.target.closest('[data-action="todo-collapse-group"]');
         if (collapseGroupAction) {
             var todoGroup = collapseGroupAction.closest('.todo-group');
@@ -1107,8 +1124,18 @@ function initProjects() {
     }
 
     function toggleAllGroups() {
+        var dashboard = window.__projectStewardDashboard;
+        var activeTab = dashboard && typeof dashboard.getActiveTab === 'function'
+            ? dashboard.getActiveTab()
+            : 'open';
         var groups = getActiveCollapsibleGroups();
         var shouldCollapse = groups.some(group => !group.classList.contains("collapsed"));
+
+        if (activeTab === 'todo') {
+            collapseTodoGroups(groups, shouldCollapse, message => window.vscode.postMessage(message));
+            syncCollapseButton();
+            return;
+        }
 
         groups.forEach(group => setGroupCollapsed(group, shouldCollapse, true));
         syncCollapseButton();
@@ -1221,6 +1248,16 @@ function initProjects() {
 
     function onWindowMessage(e) {
         var message = e && e.data;
+        if (message && (message.type === 'todo-panel-content' || message.type === 'todo-panel-updated')) {
+            window.setTimeout(() => {
+                var todoRoot = document.querySelector('#dashboard-tab-todo');
+                if (todoRoot && typeof initDnD === 'function' && typeof disposeDnD === 'function') {
+                    disposeDnD(todoRoot);
+                    initDnD(todoRoot);
+                    syncCollapseButton('todo');
+                }
+            }, 0);
+        }
         if (message && message.type === 'open-projects-updated') {
             if (!applyOpenProjectsUpdate(message)) {
                 requestFullRefresh('invalid-open-projects-update');

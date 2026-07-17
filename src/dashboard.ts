@@ -509,11 +509,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 }
                 await runTodoPanelMutation(() => todoService.deleteGroup(e.groupId as string));
             },
+            'todo-rename-group': async e => {
+                if (typeof e.groupId !== 'string') {
+                    return;
+                }
+                const todoGroup = todoService.getData().groups.find(group => group.id === e.groupId);
+                if (!todoGroup) {
+                    return;
+                }
+                const title = await vscode.window.showInputBox({
+                    prompt: 'Todo group title',
+                    value: todoGroup.title,
+                    ignoreFocusOut: true,
+                });
+                if (title === undefined) {
+                    return;
+                }
+                await runTodoPanelMutation(() => todoService.renameGroup(e.groupId as string, title));
+            },
+            'todo-reorder-groups': async e => {
+                if (!Array.isArray(e.groupIds)) {
+                    return;
+                }
+                await runTodoPanelMutation(() => todoService.reorderGroups(e.groupIds as string[]));
+            },
+            'todo-reorder-items': async e => {
+                if (typeof e.groupId !== 'string' || !Array.isArray(e.todoIds)) {
+                    return;
+                }
+                await runTodoPanelMutation(() => todoService.reorderTodos(e.groupId as string, e.todoIds as string[]));
+            },
             'todo-collapse-group': async e => {
                 if (typeof e.groupId !== 'string') {
                     return;
                 }
                 await runTodoPanelMutation(() => todoService.setGroupCollapsed(e.groupId as string, e.collapsed === true));
+            },
+            'todo-collapse-groups': async e => {
+                await runTodoPanelMutation(() => todoService.setGroupsCollapsed(e.collapsed === true));
             },
             'todo-sort-priority': async e => {
                 if (typeof e.groupId !== 'string') {

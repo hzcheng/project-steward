@@ -137,6 +137,9 @@ export class TodoService {
             const data = this.getData();
             const group = this.resolveTargetGroup(data, input.groupId);
             const now = this.now();
+            data.todos
+                .filter(todo => todo.groupId === group.id)
+                .forEach(todo => { todo.order += 1; });
             data.todos.push({
                 id: this.generateId('todo'),
                 groupId: group.id,
@@ -146,9 +149,63 @@ export class TodoService {
                 completed: false,
                 createdAt: now,
                 updatedAt: now,
-                order: data.todos.filter(todo => todo.groupId === group.id).length,
+                order: 0,
             });
 
+            await this.saveDataNow(data);
+            return data;
+        });
+    }
+
+    renameGroup(id: string, title: string): Promise<TodoDataV1> {
+        return this.enqueueMutation(async () => {
+            const data = this.getData();
+            const group = data.groups.find(item => item.id === id);
+            if (!group) {
+                return data;
+            }
+
+            group.title = (title || '').trim() || TODO_UNTITLED_GROUP_TITLE;
+            await this.saveDataNow(data);
+            return data;
+        });
+    }
+
+    reorderGroups(groupIds: string[]): Promise<TodoDataV1> {
+        return this.enqueueMutation(async () => {
+            const data = this.getData();
+            this.assertExactOrder(data.groups.map(group => group.id), groupIds, 'TODO group');
+
+            const groupsById = new Map(data.groups.map(group => [group.id, group]));
+            data.groups = groupIds.map((groupId, order) => ({ ...groupsById.get(groupId)!, order }));
+            await this.saveDataNow(data);
+            return data;
+        });
+    }
+
+    reorderTodos(groupId: string, todoIds: string[]): Promise<TodoDataV1> {
+        return this.enqueueMutation(async () => {
+            const data = this.getData();
+            if (!data.groups.some(group => group.id === groupId)) {
+                throw new Error('TODO item reorder group must exist.');
+            }
+            const groupTodos = data.todos.filter(todo => todo.groupId === groupId);
+            const otherGroupTodoIds = new Set(data.todos
+                .filter(todo => todo.groupId !== groupId)
+                .map(todo => todo.id));
+            if (Array.isArray(todoIds) && todoIds.some(todoId => otherGroupTodoIds.has(todoId))) {
+                throw new Error('TODO items can only be reordered within the same group.');
+            }
+            const allTodoIds = groupTodos.map(todo => todo.id);
+            const incompleteTodoIds = groupTodos.filter(todo => !todo.completed).map(todo => todo.id);
+            if (!this.hasExactIds(allTodoIds, todoIds) && !this.hasExactIds(incompleteTodoIds, todoIds)) {
+                throw new Error('TODO item reorder must include exactly the current visible IDs.');
+            }
+
+            const requestedTodoIds = new Set(todoIds);
+            const orderedTodoIds = todoIds.concat(allTodoIds.filter(todoId => !requestedTodoIds.has(todoId)));
+            const orderByTodoId = new Map(orderedTodoIds.map((todoId, order) => [todoId, order]));
+            groupTodos.forEach(todo => { todo.order = orderByTodoId.get(todo.id)!; });
             await this.saveDataNow(data);
             return data;
         });
@@ -238,6 +295,15 @@ export class TodoService {
         });
     }
 
+    setGroupsCollapsed(collapsed: boolean): Promise<TodoDataV1> {
+        return this.enqueueMutation(async () => {
+            const data = this.getData();
+            data.groups.forEach(group => { group.collapsed = collapsed; });
+            await this.saveDataNow(data);
+            return data;
+        });
+    }
+
     sortGroupByPriority(groupId: string): Promise<TodoDataV1> {
         return this.enqueueMutation(async () => {
             const data = this.getData();
@@ -284,6 +350,21 @@ export class TodoService {
         const result = this.mutationQueue.then(mutation);
         this.mutationQueue = result.then(() => undefined, () => undefined);
         return result;
+    }
+
+    private assertExactOrder(actualIds: string[], requestedIds: string[], scope: string): void {
+        if (!this.hasExactIds(actualIds, requestedIds)) {
+            throw new Error(`${scope} reorder must include exactly the current IDs.`);
+        }
+    }
+
+    private hasExactIds(actualIds: string[], requestedIds: string[]): boolean {
+        if (!Array.isArray(requestedIds) || requestedIds.length !== actualIds.length) {
+            return false;
+        }
+        const requestedIdSet = new Set(requestedIds);
+        return requestedIdSet.size === requestedIds.length
+            && actualIds.every(id => requestedIdSet.has(id));
     }
 
     private resolveTargetGroup(data: TodoDataV1, requestedGroupId?: string): TodoGroup {

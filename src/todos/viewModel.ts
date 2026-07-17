@@ -47,16 +47,17 @@ export function buildTodoViewModel(data: TodoDataV1, viewState: Partial<TodoView
 
     const groups = normalized.groups.map(group => {
         const groupTodos = (todosByGroup.get(group.id) || []).sort((a, b) => a.order - b.order);
-        const visibleTodos = groupTodos
-            .filter(todo => showCompleted || !todo.completed)
+        const incompleteTodos = groupTodos.filter(todo => !todo.completed);
+        const completedTodos = groupTodos.filter(todo => todo.completed);
+        const visibleTodos = (showCompleted ? incompleteTodos.concat(completedTodos) : incompleteTodos)
             .map(toTodoItemViewModel);
         return {
             ...group,
             visibleTodos,
             totalTodos: groupTodos.length,
-            incompleteCount: groupTodos.filter(todo => !todo.completed).length,
-            completedCount: groupTodos.filter(todo => todo.completed).length,
-            hiddenCompletedCount: showCompleted ? 0 : groupTodos.filter(todo => todo.completed).length,
+            incompleteCount: incompleteTodos.length,
+            completedCount: completedTodos.length,
+            hiddenCompletedCount: showCompleted ? 0 : completedTodos.length,
         };
     });
 
@@ -68,6 +69,6 @@ export function buildTodoViewModel(data: TodoDataV1, viewState: Partial<TodoView
         totalTodos: normalized.todos.length,
         totalIncomplete: normalized.todos.length - totalCompleted,
         totalCompleted,
-        isEmpty: normalized.todos.length === 0,
+        isEmpty: normalized.groups.length === 0,
     };
 }
