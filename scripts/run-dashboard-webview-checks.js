@@ -44,8 +44,10 @@ function extractFunctionBody(source, functionName) {
 }
 
 function extractCssRule(source, selector) {
-    const start = source.indexOf(`${selector} {`);
-    assert.ok(start >= 0, `Missing CSS rule ${selector}`);
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = source.match(new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{`, 'm'));
+    assert.ok(match, `Missing CSS rule ${selector}`);
+    const start = match.index + match[0].lastIndexOf(selector);
     const braceStart = source.indexOf('{', start);
     let depth = 0;
     for (let index = braceStart; index < source.length; index += 1) {
@@ -1462,21 +1464,32 @@ function runSourceContractChecks(source) {
         '.dashboard-search-section[data-section-type="todo"]',
         '.open-current-workspace-group', '.open-other-windows-group', '.dashboard-projects-loading',
         '.dashboard-todo-loading', '.todo-panel', '.todo-item', '.todo-priority-high',
-        '.todo-empty-state', '.todo-edit-form', '.todo-summary-card', '.todo-group-strip',
+        '.todo-empty-state', '.todo-edit-form', '.steward-group-header', '.todo-page-header',
         '.todo-edit-panel', '.todo-priority-segment',
     ]) {
         assert.ok(styles.includes(selector), `missing ${selector}`);
     }
     assert.ok(styles.includes('.todo-item::before'), 'todo items should expose a shared project-card accent rail');
     assert.ok(styles.includes('.todo-priority-high::before'), 'todo item priority should drive the accent rail');
+    const sidebarStyles = extractCssRule(styles, 'body.steward-sidebar');
+    const sharedGroupHeaderRule = extractCssRule(sidebarStyles, '.steward-group-header');
+    for (const declaration of [
+        'display: flex',
+        'width: 100%',
+        'padding: 4px 6px',
+        'border: 1px solid var(--vscode-panel-border)',
+        'border-radius: 7px',
+        'background: var(--vscode-list-inactiveSelectionBackground, transparent)',
+        'font-size: 15px',
+    ]) {
+        assert.ok(sharedGroupHeaderRule.includes(declaration), `shared group header is missing ${declaration}`);
+    }
+
     const todoGroupHeaderRule = extractCssRule(styles, '.todo-group-header');
-    assert.ok(todoGroupHeaderRule.includes('font-size: $groupHeaderSize')
-        && todoGroupHeaderRule.includes('font-weight: 700')
-        && todoGroupHeaderRule.includes('line-height: 1.25')
-        && todoGroupHeaderRule.includes('color: var(--steward-foreground)')
-        && !todoGroupHeaderRule.includes('border:')
-        && !todoGroupHeaderRule.includes('background:'),
-        'todo group headers should share the regular group title typography');
+    for (const forbidden of ['border:', 'border-radius:', 'background:', 'box-shadow:']) {
+        assert.strictEqual(todoGroupHeaderRule.includes(forbidden), false, `TODO group header must not own ${forbidden}`);
+    }
+    assert.strictEqual(styles.includes('.todo-group-strip'), false);
     const todoGroupCountRule = extractCssRule(styles, '.todo-group-count');
     assert.ok(todoGroupCountRule.includes('color: currentColor')
         && todoGroupCountRule.includes('background: transparent')

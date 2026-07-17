@@ -949,8 +949,6 @@ body .project {
     display: none !important;
 }
 
-.todo-summary-card,
-.todo-summary-actions,
 .todo-group-header,
 .todo-item-main,
 .todo-title-line,
@@ -961,28 +959,28 @@ body .project {
     gap: 6px;
 }
 
-.todo-summary-card {
-    min-height: 40px;
-    padding: 7px 7px 7px 12px;
+.todo-page-header,
+.todo-group-header {
     justify-content: space-between;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 7px;
-    background: var(--steward-project-card-bg);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
-    box-sizing: border-box;
+}
+
+.todo-page-header {
+    min-height: 28px;
 }
 
 .todo-summary-copy {
-    display: grid;
-    gap: 1px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex: 1 1 auto;
     min-width: 0;
+    overflow: hidden;
 }
 
 .todo-summary-copy strong {
-    color: var(--vscode-foreground);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: .08em;
+    flex: 0 0 auto;
+    color: currentColor;
+    font: inherit;
 }
 
 .todo-summary-meta {
@@ -992,11 +990,6 @@ body .project {
     font-size: 11px;
     text-overflow: ellipsis;
     white-space: nowrap;
-}
-
-.todo-summary-actions {
-    flex: 0 0 auto;
-    gap: 2px;
 }
 
 .todo-primary-button,
@@ -1061,24 +1054,11 @@ body .project {
 .todo-primary-button svg,
 .todo-quiet-button svg,
 .todo-compose-icon svg,
-.todo-icon-button svg,
-.todo-square-button svg,
-.todo-square-toggle svg {
+.todo-icon-button svg {
     display: block;
     width: 12px;
     height: 12px;
     fill: currentColor;
-}
-
-.todo-square-button,
-.todo-square-toggle {
-    display: grid;
-    width: 26px;
-    height: 26px;
-    place-items: center;
-    padding: 0;
-    color: var(--vscode-descriptionForeground);
-    background: transparent;
 }
 
 .todo-square-toggle {
@@ -1223,26 +1203,6 @@ body .project {
     margin-right: 0;
 }
 
-.todo-group-header {
-    min-width: calc(var(--column-width) - 19px);
-    min-height: 28px;
-    padding: 0;
-    justify-content: space-between;
-    gap: 8px;
-    color: var(--steward-foreground);
-    box-sizing: border-box;
-    font-family: var(--vscode-font-family);
-    font-size: $groupHeaderSize;
-    font-weight: 700;
-    line-height: 1.25;
-}
-
-.todo-group-strip {
-    border: none;
-    background: transparent;
-    box-shadow: none;
-}
-
 .todo-group.collapsed .todo-list,
 .todo-group.collapsed .todo-group-empty,
 .todo-group.collapsed .todo-hidden-completed {
@@ -1281,31 +1241,6 @@ body .project {
     font-weight: 600;
     opacity: .55;
     white-space: nowrap;
-}
-
-.todo-group-actions {
-    display: flex;
-    flex: 0 0 auto;
-    gap: 2px;
-}
-
-.todo-group-action {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    padding: 0;
-    border: none;
-    color: currentColor;
-    background: transparent;
-    cursor: pointer;
-}
-
-.todo-group-action svg {
-    width: 14px;
-    height: 14px;
-    fill: currentColor;
 }
 
 .todo-group-action.danger:hover {
@@ -1862,11 +1797,68 @@ body.steward-sidebar {
     .groups-wrapper {
         width: 100%;
 
-        > .group:not(#tempGroup) .group-title {
+        > .group:not(#tempGroup) .steward-group-header {
             position: sticky;
             top: calc(var(--steward-sticky-header-height) + 4px);
             z-index: 160;
             box-shadow: 0 2px 4px rgba(0, 0, 0, .12);
+        }
+    }
+
+    .steward-group-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        width: 100%;
+        padding: 4px 6px;
+        border: 1px solid var(--vscode-panel-border);
+        border-radius: 7px;
+        color: var(--steward-foreground);
+        background: var(--vscode-list-inactiveSelectionBackground, transparent);
+        font-family: var(--vscode-font-family);
+        font-size: 15px;
+        font-weight: 750;
+        line-height: 1.25;
+        box-sizing: border-box;
+
+        .group-actions {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex: 0 0 auto;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity $defaultTransition $actionTransitionDelay;
+
+            &.right {
+                float: none;
+            }
+
+            > * {
+                display: inline-grid;
+                width: 22px;
+                height: 22px;
+                place-items: center;
+                padding: 0;
+                border: 0;
+                color: currentColor;
+                background: transparent;
+                cursor: pointer;
+            }
+
+            svg {
+                width: 14px;
+                height: 14px;
+                margin: 0;
+                fill: currentColor;
+            }
+        }
+
+        &:hover .group-actions,
+        &:focus-within .group-actions {
+            opacity: 1;
+            pointer-events: all;
         }
     }
 
@@ -1881,23 +1873,6 @@ body.steward-sidebar {
 
         &:first-child {
             margin-top: 8px;
-        }
-
-        .group-title {
-            display: flex;
-            align-items: center;
-            min-width: 0;
-            width: 100%;
-            padding: 4px 6px;
-            border: 1px solid var(--vscode-panel-border);
-            border-radius: 7px;
-            color: var(--steward-foreground);
-            background: var(--vscode-list-inactiveSelectionBackground, transparent);
-            font-family: var(--vscode-font-family);
-            font-size: 15px;
-            font-weight: 750;
-            line-height: 1.25;
-            box-sizing: border-box;
         }
 
         .group-title-text {
@@ -1931,14 +1906,6 @@ body.steward-sidebar {
                 line-height: 1.4;
                 text-transform: uppercase;
                 margin-right: 8px;
-            }
-        }
-
-        .group-actions {
-            flex: 0 0 auto;
-
-            &.right {
-                float: none;
             }
         }
 
