@@ -145,12 +145,32 @@ function renderDashboardSearchResults(container, sections) {
                 button.dataset.searchAction = 'show-todo';
                 button.dataset.todoId = String(item.todoId || '');
                 button.dataset.groupId = String(item.groupId || '');
-                metadata.textContent = [item.groupTitle, item.priority].filter(Boolean).join(' · ');
+                button.classList.toggle('completed', item.completed === true);
+                var groupBadge = document.createElement('span');
+                groupBadge.className = 'dashboard-search-result-group steward-badge';
+                groupBadge.textContent = String(item.groupTitle || '');
+                metadata.appendChild(groupBadge);
+                var priority = document.createElement('span');
+                priority.className = 'dashboard-search-result-priority';
+                priority.textContent = String(item.priority || '').toUpperCase();
+                metadata.appendChild(priority);
+                if (item.completed === true) {
+                    var status = document.createElement('span');
+                    status.className = 'dashboard-search-result-status';
+                    status.textContent = 'Completed';
+                    metadata.appendChild(status);
+                }
             } else {
                 button.dataset.searchAction = 'open-saved-project';
                 metadata.textContent = [item.description].concat(item.groupLabels || []).filter(Boolean).join(' · ');
             }
             button.appendChild(metadata);
+            if (section.type === 'todo' && item.notesSearchText) {
+                var notes = document.createElement('span');
+                notes.className = 'dashboard-search-result-notes';
+                notes.textContent = String(item.notesSearchText);
+                button.appendChild(notes);
+            }
             sectionElement.appendChild(button);
         });
         container.appendChild(sectionElement);
@@ -168,6 +188,7 @@ function initDashboard(options) {
     var todoState = 'unloaded';
     var todoRequestId = 0;
     var acceptedTodoRequestId = 0;
+    var pendingTodoSearchTarget = null;
     var pendingScrollRestoreTab = null;
     var catalog = readInitialDashboardSearchCatalog();
     var searchQuery = String(options.initialSearchQuery || '').trim();
@@ -384,13 +405,50 @@ function initDashboard(options) {
             return;
         }
         if (action === 'show-todo') {
+            pendingTodoSearchTarget = {
+                todoId: String(button.dataset.todoId || ''),
+                groupId: String(button.dataset.groupId || ''),
+                revealRequested: false,
+            };
             if (typeof options.clearSearch === 'function') {
                 options.clearSearch();
             } else {
                 setSearchQuery('');
             }
             activateTab('todo', false);
+            if (todoState === 'mounted') {
+                revealPendingTodoSearchTarget();
+            }
         }
+    }
+
+    function revealPendingTodoSearchTarget() {
+        if (!pendingTodoSearchTarget || !panels.todo) {
+            return false;
+        }
+        var todoItem = Array.from(panels.todo.querySelectorAll('.todo-item[data-todo-id]'))
+            .find(item => item.getAttribute('data-todo-id') === pendingTodoSearchTarget.todoId);
+        var todoGroup = todoItem && todoItem.closest ? todoItem.closest('.todo-group') : null;
+        if (!todoItem || (todoGroup && todoGroup.classList.contains('collapsed'))) {
+            if (!pendingTodoSearchTarget.revealRequested) {
+                pendingTodoSearchTarget.revealRequested = true;
+                options.postMessage({
+                    type: 'todo-reveal',
+                    todoId: pendingTodoSearchTarget.todoId,
+                    groupId: pendingTodoSearchTarget.groupId,
+                });
+            }
+            return false;
+        }
+
+        pendingTodoSearchTarget = null;
+        requestAnimationFrame(() => {
+            todoItem.setAttribute('tabindex', '-1');
+            todoItem.scrollIntoView({ block: 'nearest' });
+            todoItem.focus();
+            todoItem.addEventListener('blur', () => todoItem.removeAttribute('tabindex'), { once: true });
+        });
+        return true;
     }
 
     function applyProjectsPanelMessage(message) {
@@ -438,6 +496,7 @@ function initDashboard(options) {
                 restoreScroll('todo');
             }
         }
+        revealPendingTodoSearchTarget();
         return true;
     }
 
@@ -452,6 +511,7 @@ function initDashboard(options) {
         if (typeof options.onTodoMounted === 'function') {
             options.onTodoMounted(panels.todo);
         }
+        revealPendingTodoSearchTarget();
         return true;
     }
 

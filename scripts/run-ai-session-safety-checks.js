@@ -90,6 +90,18 @@ const AiSessionAttentionController = require('../out/aiSessions/attentionControl
 const AiSessionProjectHydrationController = require('../out/aiSessions/projectHydrationController').AiSessionProjectHydrationController;
 Module._load = originalModuleLoad;
 
+const TODO_SEARCH_ITEMS = [{
+    key: 'todo:ai-safety',
+    todoId: 'ai-safety',
+    groupId: 'release',
+    title: 'Preserve AI catalog',
+    groupTitle: 'Release',
+    priority: 'medium',
+    completed: true,
+    notesSearchText: 'non-empty AI safety fixture',
+    searchText: 'preserve ai catalog release medium non-empty ai safety fixture',
+}];
+
 function createTestUri(value) {
     const parsed = new URL(value);
     const uriPath = decodeURIComponent(parsed.pathname);
@@ -3267,7 +3279,7 @@ function runBatchAiSessionWebviewChecks() {
         type: 'ai-sessions-updated',
         version: 1,
         sequence: 1,
-        searchCatalog: { sessions: [], openProjects: [], savedProjects: [] },
+        searchCatalog: { sessions: [], openProjects: [], savedProjects: [], todos: TODO_SEARCH_ITEMS },
         openProjects: [{
             projectId: 'project-a',
             expanded: true,
@@ -3911,6 +3923,7 @@ function runAiSessionDashboardControllerChecks() {
         invalidateCache: providerId => invalidated.push(providerId),
         watchSessionChanges: () => ({ dispose() {} }),
         getGroups: () => [],
+        getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [],
         getOpenProjectAiSessionViewModel: project => project,
         nextSequence: () => 1,
@@ -3942,6 +3955,9 @@ function runAiSessionDashboardControllerChecks() {
     assert.deepStrictEqual(refreshReasons, ['new-session', 'new-session']);
     assert.strictEqual(messages.length, 2);
     assert.deepStrictEqual(messages.map(message => message.type), ['ai-sessions-updated', 'ai-sessions-updated']);
+    assert.ok(messages.every(message => message.searchCatalog.todos.length === 1
+        && message.searchCatalog.todos[0].todoId === 'ai-safety'),
+        'AI incremental updates must preserve the non-empty TODO catalog');
     assert.deepStrictEqual(diagnostics, [{
         event: 'ai-session-message-build',
         reason: 'new-session',
@@ -3970,6 +3986,7 @@ function runAiSessionDashboardWatcherCoalescingChecks() {
         invalidateCache: () => undefined,
         watchSessionChanges: () => ({ dispose() {} }),
         getGroups: () => [],
+        getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [],
         getOpenProjectAiSessionViewModel: project => project,
         nextSequence: () => messages.length + 1,
@@ -4032,6 +4049,7 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
         invalidateCache: () => undefined,
         watchSessionChanges: () => ({ dispose() {} }),
         getGroups: () => [],
+        getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [project],
         getOpenProjectAiSessionViewModel: item => ({
             projectId: item.id,

@@ -3,6 +3,7 @@
 import type { AiSessionProviderId, Group, Project } from '../models';
 import type { AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './types';
 import { buildAiSessionsUpdatedMessage } from '../dashboard/webviewUpdateMessages';
+import type { TodoSearchCatalogItem } from '../todos/types';
 
 interface DisposableLike {
     dispose(): void;
@@ -14,6 +15,7 @@ export interface AiSessionDashboardControllerOptions {
     invalidateCache: (providerId: AiSessionProviderId) => void;
     watchSessionChanges: (providerId: AiSessionProviderId, onDidChange: () => void) => DisposableLike;
     getGroups: () => Group[];
+    getTodoSearchItems: () => TodoSearchCatalogItem[];
     getCards: () => Project[];
     getOpenProjectAiSessionViewModel: (project: Project) => OpenProjectAiSessionViewModel;
     nextSequence: () => number;
@@ -141,6 +143,7 @@ export class AiSessionDashboardController {
             sequence: this.options.nextSequence(),
             generatedAt: new Date().toISOString(),
             openProjects: openProjects.map(project => this.options.getOpenProjectAiSessionViewModel(project)),
+            todoSearchItems: this.options.getTodoSearchItems(),
         });
         this.options.logDiagnostic?.({
             event: 'ai-session-message-build',

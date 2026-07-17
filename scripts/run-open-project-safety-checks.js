@@ -992,6 +992,17 @@ function runWebviewRefreshFocusChecks() {
 async function runOpenProjectDashboardControllerChecks() {
     const diagnostics = [];
     const posted = [];
+    const todoSearchItems = [{
+        key: 'todo:open-safety',
+        todoId: 'open-safety',
+        groupId: 'release',
+        title: 'Preserve OPEN catalog',
+        groupTitle: 'Release',
+        priority: 'high',
+        completed: false,
+        notesSearchText: 'non-empty OPEN safety fixture',
+        searchText: 'preserve open catalog release high non-empty open safety fixture',
+    }];
     let nowMs = 3000;
     const controller = new OpenProjectDashboardController({
         getOpenProjects: () => [{
@@ -1001,6 +1012,7 @@ async function runOpenProjectDashboardControllerChecks() {
             path: '/work/a',
         }],
         getGroups: () => [],
+        getTodoSearchItems: () => todoSearchItems,
         getStewardInfos: () => ({
             openProjectsGroupCollapsed: false,
             config: {},
@@ -1032,6 +1044,8 @@ async function runOpenProjectDashboardControllerChecks() {
 
     assert.strictEqual(posted.length, 1);
     assert.strictEqual(posted[0].type, 'open-projects-updated');
+    assert.deepStrictEqual(posted[0].searchCatalog.todos, todoSearchItems,
+        'OPEN incremental updates must preserve the non-empty TODO catalog');
     assert.deepStrictEqual(diagnostics.map(([source, event]) => [source, event.event]), [
         ['Renderer', 'open-project-cards-build'],
         ['Renderer', 'post-update-build'],
@@ -1062,6 +1076,7 @@ async function runOpenProjectDashboardControllerChecks() {
     const inFlightController = new OpenProjectDashboardController({
         getOpenProjects: () => [makeRecord({ uri: '/work/in-flight' })],
         getGroups: () => [],
+        getTodoSearchItems: () => todoSearchItems,
         getStewardInfos: () => ({
             openProjectsGroupCollapsed: false,
             config: {},
@@ -1106,6 +1121,7 @@ async function runOpenProjectDashboardControllerChecks() {
     const undeliveredController = new OpenProjectDashboardController({
         getOpenProjects: () => [makeRecord({ uri: '/work/undelivered' })],
         getGroups: () => [],
+        getTodoSearchItems: () => todoSearchItems,
         getStewardInfos: () => ({
             openProjectsGroupCollapsed: false,
             config: {},
@@ -1199,9 +1215,10 @@ function runOpenProjectIncrementalRenderingChecks() {
     )(
         documentStub,
         { __projectStewardDashboard: { replaceSearchCatalog: () => { catalogReplacements += 1; } } },
-        value => value && Array.isArray(value.sessions) && Array.isArray(value.openProjects) && Array.isArray(value.savedProjects)
+        value => value && Array.isArray(value.sessions) && Array.isArray(value.openProjects)
+            && Array.isArray(value.savedProjects) && Array.isArray(value.todos)
             ? value
-            : { sessions: [], openProjects: [], savedProjects: [] }
+            : { sessions: [], openProjects: [], savedProjects: [], todos: [] }
     );
     assert.strictEqual(applyOpenProjectsUpdate({
         type: 'open-projects-updated',
@@ -1209,7 +1226,7 @@ function runOpenProjectIncrementalRenderingChecks() {
         semanticRevision: 'revision-2',
         projectCount: 0,
         html: '<div data-group-id="__openProjects">new</div>',
-        searchCatalog: { sessions: [], openProjects: [], savedProjects: [] },
+        searchCatalog: { sessions: [], openProjects: [], savedProjects: [], todos: [{ todoId: 'preserved' }] },
     }), true);
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.strictEqual(catalogReplacements, 1);
@@ -1219,7 +1236,7 @@ function runOpenProjectIncrementalRenderingChecks() {
         semanticRevision: 'revision-mismatched-count',
         projectCount: 3,
         html: '<div>bad count</div>',
-        searchCatalog: { sessions: [], openProjects: [], savedProjects: [] },
+        searchCatalog: { sessions: [], openProjects: [], savedProjects: [], todos: [{ todoId: 'preserved' }] },
     }), false, 'OPEN update must reject projectCount values that do not match the search catalog');
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.strictEqual(applyOpenProjectsUpdate({ version: 2, html: '<div>bad</div>' }), false);
@@ -1242,6 +1259,7 @@ function runOpenProjectIncrementalRenderingChecks() {
                 { projectId: 'other', action: 'switch-open' },
             ],
             savedProjects: [],
+            todos: [{ todoId: 'preserved' }],
         },
     }), true, 'OPEN update must accept DOM that keeps OTHER WINDOWS navigation cards');
     assert.strictEqual(applyOpenProjectsUpdate({
@@ -1257,6 +1275,7 @@ function runOpenProjectIncrementalRenderingChecks() {
                 { projectId: 'other', action: 'switch-open' },
             ],
             savedProjects: [],
+            todos: [{ todoId: 'preserved' }],
         },
     }), false, 'OPEN update must reject DOM that loses OTHER WINDOWS navigation cards');
     assert.strictEqual(wrapper.innerHTML, validNavigationHtml, 'OPEN update must restore previous DOM after rejecting an inconsistent update');

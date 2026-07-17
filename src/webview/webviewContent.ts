@@ -176,6 +176,9 @@ export function getStewardContent(
                         initDnD(panel);
                         window.__projectStewardSyncCollapseButton();
                     },
+                    onTodoMounted: () => {
+                        window.__projectStewardSyncCollapseButton('todo');
+                    },
                     onActiveTabChanged: activeTab => window.__projectStewardSyncCollapseButton(activeTab),
                 });
                 window.__projectStewardDashboard = dashboard;

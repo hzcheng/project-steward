@@ -816,12 +816,45 @@ body .project {
     background: var(--vscode-editorWidget-background, var(--vscode-list-inactiveSelectionBackground));
 }
 
+.dashboard-search-section[data-section-type="todo"] .dashboard-search-result.completed {
+    color: var(--vscode-descriptionForeground);
+}
+
+.dashboard-search-section[data-section-type="todo"] .dashboard-search-result.completed .dashboard-search-result-title {
+    text-decoration: line-through;
+}
+
 .dashboard-search-result-title,
-.dashboard-search-result-meta {
+.dashboard-search-result-meta,
+.dashboard-search-result-notes {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.dashboard-search-section[data-section-type="todo"] .dashboard-search-result-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.dashboard-search-result-group {
+    max-width: 50%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dashboard-search-result-priority,
+.dashboard-search-result-status {
+    flex: 0 0 auto;
+    font-size: 10px;
+    font-weight: 650;
+}
+
+.dashboard-search-result-notes {
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
 }
 
 .dashboard-search-result-title {
@@ -1211,7 +1244,35 @@ body .project {
     align-items: center;
     gap: 8px;
     min-width: 0;
+}
+
+.todo-group-collapse-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
     cursor: pointer;
+
+    &:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 1px;
+    }
+}
+
+.todo-group-collapse-button[aria-expanded="false"] .collapse-icon,
+.todo-expand-control[aria-expanded="false"] svg {
+    transform: rotate(-90deg);
+}
+
+.todo-group-collapse-button .collapse-icon,
+.todo-expand-control svg {
+    transition: transform 120ms ease;
 }
 
 .todo-group-header h2 {

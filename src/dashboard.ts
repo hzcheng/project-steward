@@ -413,6 +413,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         invalidateCache: providerId => invalidateAiSessionCache(providerId),
         watchSessionChanges: (providerId, onDidChange) => getRegisteredAiSessionProvider(providerId).service.watchSessionChanges(onDidChange),
         getGroups: () => projectService.getGroups(),
+        getTodoSearchItems: () => buildTodoSearchItems(todoService.getData()),
         getCards: getOpenProjectCards,
         getOpenProjectAiSessionViewModel,
         nextSequence: () => ++aiSessionUpdateSequence,
@@ -563,6 +564,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 await runTodoPanelMutation(async () => {
                     const persistedViewState = await todoService.setShowCompleted(e.showCompleted === true);
                     todoViewState.showCompleted = persistedViewState.showCompleted;
+                });
+            },
+            'todo-reveal': async e => {
+                if (typeof e.todoId !== 'string' || typeof e.groupId !== 'string') {
+                    return;
+                }
+                const todoData = todoService.getData();
+                const todo = todoData.todos.find(item => item.id === e.todoId);
+                const group = todoData.groups.find(item => item.id === e.groupId);
+                if (!todo || !group || todo.groupId !== group.id) {
+                    return;
+                }
+                await runTodoPanelMutation(async () => {
+                    if (todo.completed && !todoViewState.showCompleted) {
+                        const persistedViewState = await todoService.setShowCompleted(true);
+                        todoViewState.showCompleted = persistedViewState.showCompleted;
+                    }
+                    if (group.collapsed) {
+                        await todoService.setGroupCollapsed(group.id, false);
+                    }
                 });
             },
             'todo-update': async e => {
@@ -757,6 +778,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const openProjectDashboardController = new OpenProjectDashboardController({
         getOpenProjects,
         getGroups: () => projectService.getGroups(),
+        getTodoSearchItems: () => buildTodoSearchItems(todoService.getData()),
         getStewardInfos: () => stewardInfos,
         getAttentionAggregate: () => aiSessionAttentionController.getEffectiveAggregate(),
         getBridgeInstanceId: () => openProjectBridgeClient.instanceId,

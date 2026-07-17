@@ -221,6 +221,122 @@ function makeUpdatedDashboardCatalog() {
     };
 }
 
+function runDashboardUpdateMessageChecks() {
+    const previousModuleLoad = Module._load;
+    let dashboardUpdateMessages;
+    try {
+        Module._load = function (request, parent, isMain) {
+            if (request === 'vscode') {
+                return {};
+            }
+            return previousModuleLoad.call(this, request, parent, isMain);
+        };
+        dashboardUpdateMessages = require('../out/dashboard/webviewUpdateMessages');
+    } finally {
+        Module._load = previousModuleLoad;
+    }
+    const todoSearchItems = makeDashboardCatalog().todos;
+    const openMessage = dashboardUpdateMessages.buildOpenProjectsUpdatedMessage({
+        groups: [],
+        cards: [],
+        collapsed: false,
+        stewardInfos: { openProjectsGroupCollapsed: false, config: {} },
+        semanticRevision: 'todo-catalog-open',
+        todoSearchItems,
+    });
+    const aiMessage = dashboardUpdateMessages.buildAiSessionsUpdatedMessage({
+        groups: [],
+        cards: [],
+        sequence: 7,
+        generatedAt: '2026-07-17T00:00:00.000Z',
+        openProjects: [],
+        todoSearchItems,
+    });
+
+    assert.deepStrictEqual(openMessage.searchCatalog.todos, todoSearchItems,
+        'OPEN incremental catalog rebuilds must preserve real TODO search items');
+    assert.deepStrictEqual(aiMessage.searchCatalog.todos, todoSearchItems,
+        'AI incremental catalog rebuilds must preserve real TODO search items');
+}
+
+function createSearchResultElement(tagName) {
+    const element = {
+        tagName: String(tagName || '').toUpperCase(),
+        children: [],
+        dataset: {},
+        attributes: {},
+        className: '',
+        textContent: '',
+        appendChild(child) {
+            this.children.push(child);
+            return child;
+        },
+        removeChild(child) {
+            this.children.splice(this.children.indexOf(child), 1);
+        },
+        setAttribute(name, value) {
+            this.attributes[name] = String(value);
+        },
+    };
+    Object.defineProperty(element, 'firstChild', {
+        get: () => element.children[0] || null,
+    });
+    element.classList = {
+        add: value => {
+            const classes = new Set(element.className.split(/\s+/).filter(Boolean));
+            classes.add(value);
+            element.className = Array.from(classes).join(' ');
+        },
+        toggle: (value, force) => {
+            const classes = new Set(element.className.split(/\s+/).filter(Boolean));
+            if (force) classes.add(value);
+            else classes.delete(value);
+            element.className = Array.from(classes).join(' ');
+        },
+        contains: value => element.className.split(/\s+/).includes(value),
+    };
+    return element;
+}
+
+function runTodoSearchResultRenderingChecks(source) {
+    const context = {
+        document: { createElement: createSearchResultElement },
+    };
+    vm.runInNewContext(source, context);
+    const container = createSearchResultElement('div');
+    context.renderDashboardSearchResults(container, [{
+        id: 'todos',
+        title: 'TODO RESULTS',
+        type: 'todo',
+        items: [{
+            ...makeDashboardCatalog().todos[0],
+            completed: true,
+            notesSearchText: 'A concise release note summary',
+        }],
+    }]);
+
+    const section = container.children[0];
+    const button = section.children[1];
+    assert.strictEqual(button.dataset.todoId, 't1');
+    assert.strictEqual(button.dataset.groupId, 'todo-group-a');
+    assert.strictEqual(button.classList.contains('completed'), true,
+        'completed TODO search results need an explicit state class');
+    assert.ok(button.children.some(child =>
+        child.className === 'dashboard-search-result-notes'
+        && child.textContent === 'A concise release note summary'
+    ), 'TODO search results must render the notes search summary');
+    const metadata = button.children.find(child => child.className === 'dashboard-search-result-meta');
+    assert.ok(metadata.children.some(child =>
+        child.className.includes('dashboard-search-result-group') && child.textContent === 'Planning'
+    ), 'TODO search results must render the group badge');
+    assert.ok(metadata.children.some(child =>
+        child.className.includes('dashboard-search-result-priority') && child.textContent === 'HIGH'
+    ), 'TODO search results must render textual priority metadata');
+    assert.ok(metadata.children.some(child =>
+        child.className.includes('dashboard-search-result-status') && child.textContent === 'Completed'
+    ), 'completed TODO search results must expose completed metadata');
+}
+
 function runErrorContentChecks() {
     const html = dashboardErrorContent.getErrorContent(new Error('<script>alert("x")</script>'));
     assert.ok(html.includes('Project Steward could not render this view.'));
@@ -1233,6 +1349,11 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('todo-group group steward-section'));
     assert.ok(html.includes('todo-group-actions group-actions'));
     assert.ok(html.includes('data-action="todo-collapse-group"'));
+    assert.ok(html.includes('<button class="todo-group-collapse-button"'));
+    assert.ok(html.includes('data-action="todo-collapse-group" data-todo-group-id="group-a" aria-expanded="true"'));
+    assert.ok(html.includes('data-action="todo-collapse-group" data-todo-group-id="group-b" aria-expanded="false"'));
+    assert.ok(html.includes('<h2 data-drag-todo-group title="Launch &lt;Group&gt;"'),
+        'the group collapse button must remain outside the Dragula handle');
     assert.ok(html.includes('data-action="todo-rename-group"'));
     assert.ok(html.includes('data-action="todo-delete-group"'));
     assert.ok(html.includes('data-drag-todo-group'));
@@ -1253,6 +1374,13 @@ function runTodoViewModelChecks() {
     );
     assert.ok(html.includes('todo-item-footer steward-meta'));
     assert.ok(html.includes('todo-icon-button steward-icon-button'));
+    assert.ok(html.includes('type="button" data-action="todo-toggle-expanded"'),
+        'the native TODO expand button must provide Enter and Space activation');
+    assert.ok(html.includes('aria-expanded="false"'));
+    assert.strictEqual(html.includes('<li class="todo-item steward-item-card todo-priority-high" data-todo-id="todo-a" aria-expanded='), false,
+        'TODO list items must not impersonate buttons or own the expand control state');
+    assert.strictEqual(html.includes('role="button"'), false,
+        'TODO cards with nested controls must not use role=button');
     assert.ok(html.includes('todo-item-content'));
     assert.ok(html.includes('todo-item-footer'));
     const addFormCount = (html.match(/<form class="todo-add-form\b/g) || []).length;
@@ -1993,10 +2121,17 @@ function runControllerChecks(source) {
     const openPanel = createElement('dashboard-tab-open');
     const projectsPanel = createElement('dashboard-tab-projects');
     const todoPanel = createElement('dashboard-tab-todo');
+    const searchResults = createSearchResultElement('div');
+    const searchResultListeners = {};
+    searchResults.id = 'dashboard-search-results';
+    searchResults.hidden = false;
+    searchResults.addEventListener = (type, listener) => { searchResultListeners[type] = listener; };
+    searchResults.dispatch = (type, event = {}) => searchResultListeners[type] && searchResultListeners[type](event);
     const elements = {
         'dashboard-tab-open': openPanel,
         'dashboard-tab-projects': projectsPanel,
         'dashboard-tab-todo': todoPanel,
+        'dashboard-search-results': searchResults,
     };
     const messages = [];
     const storage = new Map([['projectSteward.activeDashboardTab', 'open']]);
@@ -2004,6 +2139,7 @@ function runControllerChecks(source) {
     const context = {
         document: {
             body: { classList: createClassList() },
+            createElement: createSearchResultElement,
             getElementById: id => elements[id] || null,
             querySelectorAll: selector => selector === '[data-dashboard-tab]'
                 ? [openButton, projectsButton, todoButton]
@@ -2071,6 +2207,7 @@ function runControllerChecks(source) {
     assert.notStrictEqual(nextState.catalog, state.catalog);
 
     let mounted = 0;
+    let todoMounted = 0;
     const controller = context.initDashboard({
         postMessage: message => messages.push(message),
         onProjectsMounted: panel => {
@@ -2079,6 +2216,7 @@ function runControllerChecks(source) {
         },
         onTodoMounted: panel => {
             assert.strictEqual(panel, todoPanel);
+            todoMounted += 1;
         },
     });
     assert.strictEqual(controller.getActiveTab(), 'open');
@@ -2123,7 +2261,58 @@ function runControllerChecks(source) {
     }), true);
     assert.strictEqual(todoPanel.innerHTML, '<div>todo</div>');
     assert.strictEqual(controller.getTodoState(), 'mounted');
+    assert.strictEqual(todoMounted, 1);
     assert.strictEqual(typeof windowListeners.message, 'function');
+
+    let todoItemMounted = false;
+    let todoFocusCalls = 0;
+    let todoScrollCalls = 0;
+    const todoGroup = {
+        classList: createClassList(),
+        querySelector: selector => selector === '[data-action="todo-collapse-group"]'
+            ? { setAttribute: () => undefined }
+            : null,
+    };
+    const todoItem = {
+        getAttribute: name => name === 'data-todo-id' ? 't1' : null,
+        setAttribute: () => undefined,
+        removeAttribute: () => undefined,
+        closest: selector => selector === '.todo-group' ? todoGroup : null,
+        focus: () => { todoFocusCalls += 1; },
+        scrollIntoView: () => { todoScrollCalls += 1; },
+        addEventListener: () => undefined,
+    };
+    todoPanel.querySelectorAll = selector => selector === '.todo-item[data-todo-id]' && todoItemMounted
+        ? [todoItem]
+        : [];
+    const todoSearchResult = {
+        dataset: {
+            searchAction: 'show-todo',
+            todoId: 't1',
+            groupId: 'todo-group-a',
+        },
+    };
+    todoSearchResult.closest = selector => selector === '.dashboard-search-result[data-search-action]'
+        ? todoSearchResult
+        : null;
+    const messageCountBeforeReveal = messages.length;
+    searchResults.dispatch('click', { target: todoSearchResult });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.slice(messageCountBeforeReveal))), [{
+        type: 'todo-reveal',
+        todoId: 't1',
+        groupId: 'todo-group-a',
+    }], 'a hidden TODO search target must be revealed by the host');
+    assert.strictEqual(todoFocusCalls, 0, 'a pending target must wait for mounted TODO HTML');
+    todoItemMounted = true;
+    assert.strictEqual(controller.applyTodoPanelUpdatedMessage({
+        type: 'todo-panel-updated',
+        version: 1,
+        html: '<div>revealed todo</div>',
+        searchCatalog: makeDashboardCatalog(),
+    }), true);
+    assert.strictEqual(todoMounted, 2, 'updated TODO HTML must invoke onTodoMounted');
+    assert.strictEqual(todoFocusCalls, 1, 'the mounted pending TODO target must receive focus');
+    assert.strictEqual(todoScrollCalls, 1, 'the mounted pending TODO target must scroll into view');
 
     storage.set('projectSteward.activeDashboardTab', 'projects');
     const searchMessages = [];
@@ -2200,6 +2389,8 @@ function runSourceContractChecks(source) {
     assert.ok(webviewContentSource.includes('class="group-title steward-section-header steward-group-header"'));
     assert.ok(webviewContentSource.includes('class="project steward-item-card"'));
     assert.ok(webviewContentSource.includes('class="project-border steward-item-accent"'));
+    assert.ok(webviewContentSource.includes('onTodoMounted: () =>'));
+    assert.ok(webviewContentSource.includes("window.__projectStewardSyncCollapseButton('todo')"));
     assert.ok(source.includes("setAttribute('aria-selected'"));
     assert.ok(source.includes("setAttribute('tabindex'"));
     assert.ok(source.includes('scrollPositions'));
@@ -2252,6 +2443,15 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'todo-collapse-groups': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-sort-priority': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-toggle-show-completed': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-reveal': async e =>"));
+    const todoRevealHandler = extensionHostSource.slice(
+        extensionHostSource.indexOf("'todo-reveal': async e =>"),
+        extensionHostSource.indexOf("'todo-update': async e =>")
+    );
+    assert.ok(todoRevealHandler.includes('todo.completed && !todoViewState.showCompleted'),
+        'host reveal must make a hidden completed TODO visible');
+    assert.ok(todoRevealHandler.includes('todoService.setGroupCollapsed(group.id, false)'),
+        'host reveal must expand the target TODO group');
     assert.ok(extensionHostSource.includes("'todo-update': async e =>"));
     assert.ok(extensionHostSource.includes('async function postTodoPanelContent('));
     assert.ok(extensionHostSource.includes("from './todos/hostMutation'"));
@@ -2259,7 +2459,7 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes('const todoMigration = todoService.migrateDataIfNeeded()'));
     assert.strictEqual(
         (extensionHostSource.match(/await runTodoPanelMutation\(/g) || []).length,
-        12,
+        13,
         'every direct TODO mutation handler must use the write-error boundary'
     );
     assert.ok(dndSource.includes('function initDnD(root)'));
@@ -2301,6 +2501,8 @@ function runSourceContractChecks(source) {
     assert.strictEqual(renderSearchBody.includes('innerHTML'), false);
     assert.strictEqual(renderSearchBody.includes('project-ai-attention-badge'), false);
     assert.strictEqual(renderSearchBody.includes('data-current-workspace'), false);
+    assert.ok(renderSearchBody.includes('dashboard-search-result-notes'));
+    assert.ok(renderSearchBody.includes("button.classList.toggle('completed'"));
     assert.ok(filterSource.includes('ctrlKey'));
     assert.ok(filterSource.includes('metaKey'));
     assert.ok(filterSource.includes('Escape'));
@@ -2587,7 +2789,13 @@ function runSourceContractChecks(source) {
     assert.ok(projectSource.includes('function isTodoInteractiveTarget('),
         'todo card expansion should ignore nested controls');
     const setTodoEditingBody = extractFunctionBody(projectSource, 'setTodoEditing');
-    assert.ok(setTodoEditingBody.includes("toggleTodoItemExpanded(item, editing)"),
+    assert.ok(setTodoEditingBody.includes('data-expanded-before-edit'),
+        'editing must record whether the TODO was expanded before editing');
+    assert.ok(setTodoEditingBody.includes('removeAttribute(\'data-expanded-before-edit\')'),
+        'canceling edit must clear the saved pre-edit expansion state');
+    assert.ok(setTodoEditingBody.includes('expandedBeforeEdit'),
+        'canceling edit must restore the saved pre-edit expansion state');
+    assert.ok(setTodoEditingBody.includes("toggleTodoItemExpanded(item, editing ? true : expandedBeforeEdit === 'true')"),
         'editing a todo should force the card into expanded state');
     assert.ok(setTodoEditingBody.includes("item.classList.toggle('editing', editing)"),
         'editing a todo should mark the whole card as editing');
@@ -2600,6 +2808,14 @@ function runSourceContractChecks(source) {
         'clicking a todo card should toggle its expanded/collapsed state');
     assert.ok(onMouseEventBody.includes("!todoItem.classList.contains('editing')"),
         'clicking an editing card should not collapse its active edit form');
+    assert.ok(projectSource.includes("data-action=\"todo-toggle-expanded\""),
+        'TODO cards need an independent focusable expand control');
+    assert.ok(projectSource.includes("e.target.closest('[data-action=\"todo-toggle-expanded\"]')"),
+        'the expand control must preserve the existing interactive-target guard');
+    assert.ok(projectSource.includes("e.target.closest('.todo-edit-form')"),
+        'Escape handling must detect the active TODO edit form');
+    assert.ok(projectSource.includes("setTodoEditing(editForm.getAttribute('data-todo-id'), false)"),
+        'Escape must cancel the active TODO edit form');
     const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
     assert.ok(changelog.includes('Add a global `TODO` Dashboard tab'));
     assert.strictEqual((source.match(/type: 'request-projects-panel'/g) || []).length, 1);
@@ -2686,8 +2902,10 @@ async function main() {
     await runTodoMutationSerializationChecks();
     await runDashboardTodoMigrationSequencingChecks();
     await runTodoHostMutationChecks();
+    runDashboardUpdateMessageChecks();
     runTodoViewModelChecks();
     runTodoOrderingInteractionChecks();
+    runTodoSearchResultRenderingChecks(source);
     runControllerChecks(source);
     runSourceContractChecks(source);
     await runDashboardMessageRouterChecks();

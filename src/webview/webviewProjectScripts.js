@@ -671,6 +671,10 @@ function initProjects() {
             if (!todoGroup)
                 return true;
             todoGroup.classList.toggle('collapsed');
+            collapseGroupAction.setAttribute(
+                'aria-expanded',
+                todoGroup.classList.contains('collapsed') ? 'false' : 'true'
+            );
             window.vscode.postMessage({
                 type: 'todo-collapse-group',
                 groupId: todoGroup.getAttribute('data-todo-group-id'),
@@ -713,6 +717,12 @@ function initProjects() {
         var editAction = e.target.closest('[data-action="todo-edit"]');
         if (editAction) {
             setTodoEditing(editAction.getAttribute('data-todo-id'), true);
+            return true;
+        }
+
+        var expandAction = e.target.closest('[data-action="todo-toggle-expanded"]');
+        if (expandAction) {
+            toggleTodoItemExpanded(expandAction.closest('.todo-item'));
             return true;
         }
 
@@ -766,7 +776,11 @@ function initProjects() {
             ? expanded
             : !item.classList.contains('expanded');
         item.classList.toggle('expanded', nextExpanded);
-        item.setAttribute('aria-expanded', nextExpanded ? 'true' : 'false');
+        var expandControl = item.querySelector('[data-action="todo-toggle-expanded"]');
+        if (expandControl) {
+            expandControl.setAttribute('aria-expanded', nextExpanded ? 'true' : 'false');
+            expandControl.setAttribute('title', nextExpanded ? 'Collapse todo' : 'Expand todo');
+        }
         syncTodoListExpandedHeight(item.closest('.todo-list'));
     }
 
@@ -803,6 +817,15 @@ function initProjects() {
         if (!item)
             return;
 
+        var wasEditing = item.classList.contains('editing');
+        var expandedBeforeEdit = item.getAttribute('data-expanded-before-edit');
+        if (editing && !wasEditing) {
+            item.setAttribute(
+                'data-expanded-before-edit',
+                item.classList.contains('expanded') ? 'true' : 'false'
+            );
+            expandedBeforeEdit = item.getAttribute('data-expanded-before-edit');
+        }
         var view = item.querySelector('.todo-item-view');
         var form = item.querySelector('.todo-edit-form');
         var list = item.closest('.todo-list');
@@ -813,7 +836,10 @@ function initProjects() {
         if (form) {
             form.hidden = !editing;
         }
-        toggleTodoItemExpanded(item, editing);
+        toggleTodoItemExpanded(item, editing ? true : expandedBeforeEdit === 'true');
+        if (!editing) {
+            item.removeAttribute('data-expanded-before-edit');
+        }
         if (list) {
             list.classList.toggle('has-editing-item', !!list.querySelector('.todo-item.editing'));
         }
@@ -1637,6 +1663,12 @@ function initProjects() {
 
     document.addEventListener("keydown", e => {
         if (e.key === "Escape") {
+            var editForm = e.target && e.target.closest ? e.target.closest('.todo-edit-form') : null;
+            if (editForm) {
+                e.preventDefault();
+                setTodoEditing(editForm.getAttribute('data-todo-id'), false);
+                return;
+            }
             closeContextMenus();
             if (batchAiSessionState.projectId && !batchAiSessionState.pending) {
                 exitAiSessionBatchManagement();

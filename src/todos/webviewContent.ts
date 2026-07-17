@@ -87,7 +87,7 @@ function renderTodoEditForm(todo: TodoItemViewModel): string {
 function renderTodoItem(todo: TodoItemViewModel): string {
     const completedClass = todo.completed ? ' completed' : '';
     const checked = todo.completed ? ' checked' : '';
-    return `<li class="todo-item steward-item-card todo-priority-${todo.priority}${completedClass}" data-todo-id="${escapeHtml(todo.id)}" aria-expanded="false">
+    return `<li class="todo-item steward-item-card todo-priority-${todo.priority}${completedClass}" data-todo-id="${escapeHtml(todo.id)}">
         <span class="todo-item-accent steward-item-accent" aria-hidden="true"></span>
         <div class="todo-item-view">
             <div class="todo-item-main">
@@ -106,6 +106,7 @@ function renderTodoItem(todo: TodoItemViewModel): string {
                     </div>
                 </div>
                 <div class="todo-item-actions">
+                    <button class="todo-icon-button todo-expand-control steward-icon-button" type="button" data-action="todo-toggle-expanded" data-todo-id="${escapeHtml(todo.id)}" aria-expanded="false" title="Expand todo" aria-label="Expand ${escapeHtml(todo.title)}">${Icons.collapse}</button>
                     <button class="todo-icon-button steward-icon-button" type="button" data-action="todo-edit" data-todo-id="${escapeHtml(todo.id)}" title="Edit todo" aria-label="Edit todo">${Icons.edit}</button>
                     <button class="todo-icon-button steward-icon-button danger" type="button" data-action="todo-delete" data-todo-id="${escapeHtml(todo.id)}" title="Delete todo" aria-label="Delete todo">${Icons.remove}</button>
                 </div>
@@ -126,9 +127,11 @@ function renderTodoGroup(group: TodoGroupViewModel): string {
 
     return `<section class="todo-group group steward-section${group.collapsed ? ' collapsed' : ''}" data-todo-group-id="${escapeHtml(group.id)}">
         <header class="todo-group-header group-title steward-group-header">
-            <div class="todo-group-title-block group-title-text" data-action="todo-collapse-group" data-todo-group-id="${escapeHtml(group.id)}" data-drag-todo-group>
-                <span class="collapse-icon" title="Open/Collapse Todo Group">${Icons.collapse}</span>
-                <h2 title="${escapeHtml(group.title)}">${escapeHtml(group.title)}</h2>
+            <div class="todo-group-title-block group-title-text">
+                <button class="todo-group-collapse-button" type="button" data-action="todo-collapse-group" data-todo-group-id="${escapeHtml(group.id)}" aria-expanded="${group.collapsed ? 'false' : 'true'}" title="${group.collapsed ? 'Expand' : 'Collapse'} todo group" aria-label="${group.collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(group.title)}">
+                    <span class="collapse-icon" aria-hidden="true">${Icons.collapse}</span>
+                </button>
+                <h2 data-drag-todo-group title="${escapeHtml(group.title)}">${escapeHtml(group.title)}</h2>
                 <span class="todo-group-count">${groupMeta}</span>
             </div>
             <div class="todo-group-actions group-actions right">
