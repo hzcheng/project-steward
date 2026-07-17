@@ -554,6 +554,13 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('data-action="todo-collapse-group"'));
     assert.ok(html.includes('data-action="todo-delete-group"'));
     assert.ok(html.includes('todo-priority-badge steward-badge'));
+    const todoTitleLineStart = html.indexOf('<div class="todo-title-line">');
+    assert.ok(todoTitleLineStart >= 0);
+    assert.ok(
+        html.indexOf('<span class="todo-title-text" title="Write &lt;spec&gt;">Write &lt;spec&gt;</span>', todoTitleLineStart)
+            < html.indexOf('<span class="todo-priority-badge steward-badge">HIGH</span>', todoTitleLineStart),
+        'todo titles should appear before their priority badges'
+    );
     assert.ok(html.includes('todo-item-footer steward-meta'));
     assert.ok(html.includes('todo-icon-button steward-icon-button'));
     assert.ok(html.includes('todo-item-content'));
@@ -1703,9 +1710,28 @@ function runSourceContractChecks(source) {
         'expanded todo items should open from the normal collapsed card height');
     assert.ok(styles.includes('.todo-item.editing .todo-edit-form'),
         'editing todo items should force the edit form to render');
-    assert.ok(styles.includes('.todo-item:not(.expanded) .todo-notes')
-        && styles.includes('.todo-item:not(.expanded) .todo-item-footer'),
-        'collapsed todo items should hide details while keeping the card size stable');
+    const collapsedNotesRule = extractCssRule(styles, '.todo-item:not(.expanded) .todo-notes');
+    assert.ok(collapsedNotesRule.includes('white-space: nowrap'));
+    assert.ok(collapsedNotesRule.includes('text-overflow: ellipsis'));
+    assert.strictEqual(collapsedNotesRule.includes('display: none'), false);
+
+    const collapsedFooterRule = extractCssRule(styles, '.todo-item:not(.expanded) .todo-item-footer');
+    assert.ok(collapsedFooterRule.includes('display: none'));
+
+    const expandedNotesRule = extractCssRule(styles, '.todo-item.expanded .todo-notes,\n.todo-item.editing .todo-notes');
+    assert.ok(expandedNotesRule.includes('white-space: pre-wrap'));
+
+    const completedRuleMatch = styles.match(/(^|\n)\s*\.todo-item\.completed\s*\{([^{}]*)\}/m);
+    const completedRule = completedRuleMatch ? completedRuleMatch[2] : '';
+    assert.strictEqual(completedRule.includes('background:'), false);
+    assert.strictEqual(completedRule.includes('opacity:'), false);
+    assert.strictEqual(styles.includes('.todo-item.completed::before'), false);
+
+    assert.ok(styles.includes('.todo-list.has-editing-item'));
+    assert.ok(styles.includes('.todo-item.editing .todo-edit-form'));
+    assert.strictEqual(styles.includes('.todo-empty-orb'), false);
+    assert.strictEqual(styles.includes('.todo-empty-primary'), false);
+    assert.strictEqual(styles.includes('.todo-empty-secondary'), false);
     assert.ok(projectSource.includes('function toggleTodoItemExpanded('),
         'todo cards should have a click-driven expanded/collapsed helper');
     assert.ok(projectSource.includes('function syncTodoListExpandedHeight('),

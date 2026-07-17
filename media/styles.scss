@@ -993,9 +993,7 @@ body .project {
 .todo-quiet-button,
 .todo-icon-button,
 .todo-square-button,
-.todo-square-toggle,
-.todo-empty-primary,
-.todo-empty-secondary {
+.todo-square-toggle {
     border: 1px solid transparent;
     border-radius: 6px;
     font-family: var(--vscode-font-family);
@@ -1041,8 +1039,7 @@ body .project {
 .todo-quiet-button:hover,
 .todo-icon-button:hover,
 .todo-square-button:hover,
-.todo-square-toggle:hover,
-.todo-empty-secondary:hover {
+.todo-square-toggle:hover {
     color: var(--vscode-foreground);
     background: var(--vscode-list-hoverBackground);
 }
@@ -1276,13 +1273,23 @@ body .project {
     opacity: 1;
 }
 
-.todo-item:not(.expanded) .todo-notes,
+.todo-item:not(.expanded) .todo-notes {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .todo-item:not(.expanded) .todo-item-footer {
     display: none;
 }
 
 .todo-item:not(.expanded) .todo-edit-form {
     display: none !important;
+}
+
+.todo-item.expanded .todo-notes,
+.todo-item.editing .todo-notes {
+    white-space: pre-wrap;
 }
 
 .todo-item-accent {
@@ -1552,66 +1559,11 @@ body .project {
 }
 
 .todo-empty-state {
-    display: grid;
-    gap: 8px;
-    justify-items: center;
-    margin: 64px 16px 0;
-    padding: 0;
+    margin: 18px 4px 0;
+    padding: 10px 4px;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
     text-align: center;
-}
-
-.todo-empty-state strong {
-    color: var(--vscode-foreground);
-    font-size: 13px;
-    font-weight: 600;
-}
-
-.todo-empty-state span {
-    max-width: 260px;
-    color: var(--vscode-descriptionForeground);
-    font-size: 12px;
-    line-height: 1.5;
-}
-
-.todo-empty-orb {
-    display: grid;
-    width: 44px;
-    height: 44px;
-    place-items: center;
-    margin-bottom: 4px;
-    border-radius: 50%;
-    color: var(--vscode-textLink-foreground);
-    background: rgba(76, 154, 255, .10);
-}
-
-.todo-empty-orb svg {
-    display: block;
-    width: 18px;
-    height: 18px;
-    fill: currentColor;
-}
-
-.todo-empty-primary,
-.todo-empty-secondary {
-    width: min(200px, 100%);
-    min-height: 30px;
-    margin-top: 2px;
-}
-
-.todo-empty-primary {
-    color: var(--vscode-button-foreground);
-    background: var(--vscode-button-background);
-    font-weight: 600;
-}
-
-.todo-empty-primary:hover {
-    background: var(--vscode-button-hoverBackground);
-}
-
-.todo-empty-secondary {
-    border-color: var(--vscode-panel-border);
-    color: var(--vscode-descriptionForeground);
-    background: transparent;
 }
 
 .open-current-workspace-group {

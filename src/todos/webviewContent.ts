@@ -100,8 +100,8 @@ function renderTodoItem(todo: TodoItemViewModel): string {
                 </label>
                 <div class="todo-item-content">
                     <div class="todo-title-line">
-                        <span class="todo-priority-badge steward-badge">${escapeHtml(todo.priorityLabel)}</span>
                         <span class="todo-title-text" title="${escapeHtml(todo.title)}">${escapeHtml(todo.title)}</span>
+                        <span class="todo-priority-badge steward-badge">${escapeHtml(todo.priorityLabel)}</span>
                     </div>
                     ${todo.notes ? `<p class="todo-notes">${escapeHtml(todo.notes)}</p>` : ''}
                     <div class="todo-item-footer steward-meta">
