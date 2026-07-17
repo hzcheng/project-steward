@@ -1728,7 +1728,12 @@ async function runDashboardTodoMigrationSequencingChecks() {
 async function runTodoHostMutationChecks() {
     const hostModulePath = path.join(root, 'out', 'todos', 'hostMutation.js');
     assert.ok(fs.existsSync(hostModulePath), 'TODO host mutation error boundary must exist');
-    const { runTodoMutation } = require(hostModulePath);
+    const {
+        renameTodoGroupWithPrompt,
+        runTodoMutation,
+        runTodoPromptMutation,
+        runTodoRequestMutation,
+    } = require(hostModulePath);
     const events = [];
     const failed = await runTodoMutation({
         mutate: async () => { throw new Error('storage full'); },
@@ -1823,6 +1828,117 @@ async function runTodoHostMutationChecks() {
         'a rejected deletion must preserve the current panel');
     assert.ok(rejectedDeletion.calls.some(call => call[0] === 'error' && /save TODO changes/i.test(call[1])));
     assert.ok(rejectedDeletion.calls.some(call => call[0] === 'log' && call[2] === 'storage rejected'));
+
+    const retryCalls = [];
+    let retryPromptCount = 0;
+    let retryWriteCount = 0;
+    const retried = await runTodoPromptMutation({
+        initialValue: 'Existing group',
+        prompt: async value => {
+            retryCalls.push(['prompt', value]);
+            retryPromptCount += 1;
+            return 'Typed group';
+        },
+        mutate: async value => {
+            retryCalls.push(['write', value]);
+            retryWriteCount += 1;
+            if (retryWriteCount === 1) throw new Error('storage rejected prompt mutation');
+        },
+        refreshPanel: async () => { retryCalls.push(['refresh']); },
+        showErrorMessage: message => retryCalls.push(['error', message]),
+        logError: (message, error) => retryCalls.push(['log', message, error.message]),
+    });
+    assert.strictEqual(retried, true);
+    assert.deepStrictEqual(retryCalls.filter(call => call[0] === 'prompt'), [
+        ['prompt', 'Existing group'],
+        ['prompt', 'Typed group'],
+    ], 'a rejected prompt mutation must reprompt with the rejected input');
+    assert.strictEqual(retryCalls.filter(call => call[0] === 'error').length, 1,
+        'the storage rejection must be shown before retrying');
+    assert.ok(retryCalls.findIndex(call => call[0] === 'error')
+        < retryCalls.map(call => call[0]).lastIndexOf('prompt'),
+    'the storage error must be visible before the retry prompt opens');
+    assert.deepStrictEqual(retryCalls.filter(call => call[0] === 'write'), [
+        ['write', 'Typed group'],
+        ['write', 'Typed group'],
+    ]);
+    assert.strictEqual(retryCalls.filter(call => call[0] === 'refresh').length, 1,
+        'a successful retry must refresh exactly once');
+
+    const cancelCalls = [];
+    let cancelPromptCount = 0;
+    const canceled = await runTodoPromptMutation({
+        prompt: async value => {
+            cancelCalls.push(['prompt', value]);
+            cancelPromptCount += 1;
+            return cancelPromptCount === 1 ? 'Keep this draft' : undefined;
+        },
+        mutate: async value => {
+            cancelCalls.push(['write', value]);
+            throw new Error('storage rejected before cancel');
+        },
+        refreshPanel: async () => { cancelCalls.push(['refresh']); },
+        showErrorMessage: message => cancelCalls.push(['error', message]),
+        logError: (message, error) => cancelCalls.push(['log', message, error.message]),
+    });
+    assert.strictEqual(canceled, false);
+    assert.deepStrictEqual(cancelCalls.filter(call => call[0] === 'prompt'), [
+        ['prompt', undefined],
+        ['prompt', 'Keep this draft'],
+    ]);
+    assert.deepStrictEqual(cancelCalls.filter(call => call[0] === 'write'), [
+        ['write', 'Keep this draft'],
+    ], 'canceling the retry prompt must not perform an extra write');
+    assert.strictEqual(cancelCalls.some(call => call[0] === 'refresh'), false);
+
+    const missingRenameCalls = [];
+    const missingRename = await renameTodoGroupWithPrompt({
+        groupId: 'missing',
+        getData: () => ({ groups: [{ id: 'group-a', title: 'Existing group' }] }),
+        prompt: async value => {
+            missingRenameCalls.push(['prompt', value]);
+            return 'Renamed';
+        },
+        renameGroup: async (groupId, value) => { missingRenameCalls.push(['write', groupId, value]); },
+        refreshPanel: async () => { missingRenameCalls.push(['refresh']); },
+        showErrorMessage: message => missingRenameCalls.push(['error', message]),
+        logError: (message, error) => missingRenameCalls.push(['log', message, error.message]),
+    });
+    assert.strictEqual(missingRename, false);
+    assert.deepStrictEqual(missingRenameCalls, [], 'a missing TODO group must not prompt, write, or refresh');
+
+    const malformedRequestCalls = [];
+    const malformedRequest = await runTodoRequestMutation({
+        requestId: 7,
+        valid: false,
+        mutate: async () => { malformedRequestCalls.push(['write']); },
+        onSuccess: async () => { malformedRequestCalls.push(['refresh']); },
+        postResult: async message => { malformedRequestCalls.push(['result', message]); },
+        showErrorMessage: message => malformedRequestCalls.push(['error', message]),
+        logError: (message, error) => malformedRequestCalls.push(['log', message, error.message]),
+    });
+    assert.strictEqual(malformedRequest, false);
+    assert.deepStrictEqual(malformedRequestCalls, [[
+        'result',
+        { type: 'todo-mutation-result', version: 1, requestId: 7, success: false },
+    ]], 'a malformed compose payload with a request ID must receive a failure ack without writing');
+
+    const successfulRequestCalls = [];
+    const successfulRequest = await runTodoRequestMutation({
+        requestId: 8,
+        valid: true,
+        mutate: async () => { successfulRequestCalls.push(['write']); },
+        onSuccess: async () => { successfulRequestCalls.push(['refresh']); },
+        postResult: async message => { successfulRequestCalls.push(['result', message]); },
+        showErrorMessage: message => successfulRequestCalls.push(['error', message]),
+        logError: (message, error) => successfulRequestCalls.push(['log', message, error.message]),
+    });
+    assert.strictEqual(successfulRequest, true);
+    assert.deepStrictEqual(successfulRequestCalls, [
+        ['write'],
+        ['refresh'],
+        ['result', { type: 'todo-mutation-result', version: 1, requestId: 8, success: true }],
+    ], 'a successful compose mutation must refresh the panel before acknowledging success');
 }
 
 function makeTodoData() {
@@ -2851,8 +2967,8 @@ async function runActiveTerminalFileReferenceChecks() {
     assert.strictEqual(terminalShowCalls, 3);
 }
 
-function createClassList() {
-    const values = new Set();
+function createClassList(initialValues = []) {
+    const values = new Set(initialValues);
     return {
         add: value => values.add(value),
         remove: value => values.delete(value),
@@ -3141,6 +3257,213 @@ function runControllerChecks(source) {
     assert.strictEqual(context.window.scrollY, 15, 'background PROJECTS mount must not move search results');
 }
 
+function runTodoEditResetInteractionChecks() {
+    const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
+    const setTodoEditingBody = extractFunctionBody(projectSource, 'setTodoEditing');
+    const title = { value: 'Initial title', defaultValue: 'Initial title' };
+    const notes = { value: 'Initial notes', defaultValue: 'Initial notes' };
+    const priorities = ['high', 'medium', 'low'].map(value => ({
+        value,
+        checked: value === 'medium',
+        defaultChecked: value === 'medium',
+    }));
+    const choices = priorities.map(input => ({
+        classList: createClassList(input.checked ? ['active'] : []),
+        querySelector: selector => selector === 'input[name="priority"]' ? input : null,
+    }));
+    const segment = {
+        querySelectorAll: selector => selector === '.todo-priority-choice' ? choices : [],
+    };
+    const form = {
+        hidden: false,
+        reset() {
+            title.value = title.defaultValue;
+            notes.value = notes.defaultValue;
+            priorities.forEach(input => { input.checked = input.defaultChecked; });
+        },
+        querySelector(selector) {
+            if (selector === '[name="title"]') return title;
+            if (selector === '[name="notes"]') return notes;
+            if (selector === '.todo-priority-segment') return segment;
+            return null;
+        },
+    };
+    const view = { hidden: false };
+    const list = {
+        classList: createClassList(['has-editing-item']),
+        querySelector: () => null,
+    };
+    const item = {
+        classList: createClassList(['editing', 'expanded']),
+        attributes: new Map([['data-expanded-before-edit', 'false']]),
+        getAttribute(name) {
+            if (name === 'data-todo-id') return 'todo-a';
+            return this.attributes.get(name) || null;
+        },
+        setAttribute(name, value) { this.attributes.set(name, String(value)); },
+        removeAttribute(name) { this.attributes.delete(name); },
+        querySelector(selector) {
+            if (selector === '.todo-item-view') return view;
+            if (selector === '.todo-edit-form') return form;
+            return null;
+        },
+        closest: selector => selector === '.todo-list' ? list : null,
+        scrollIntoView: () => undefined,
+    };
+    const document = {
+        querySelectorAll: selector => selector === '.todo-item[data-todo-id]' ? [item] : [],
+    };
+    const syncTodoPrioritySegment = currentSegment => {
+        currentSegment.querySelectorAll('.todo-priority-choice').forEach(choice => {
+            const input = choice.querySelector('input[name="priority"]');
+            choice.classList.toggle('active', input.checked === true);
+        });
+    };
+    const toggleTodoItemExpanded = (_item, expanded) => {
+        item.classList.toggle('expanded', expanded);
+    };
+    const resetTodoEditForm = currentForm => {
+        currentForm.reset();
+        syncTodoPrioritySegment(currentForm.querySelector('.todo-priority-segment'));
+    };
+    const setTodoEditing = new Function(
+        'document',
+        'toggleTodoItemExpanded',
+        'syncTodoPrioritySegment',
+        'resetTodoEditForm',
+        'todoId',
+        'editing',
+        setTodoEditingBody
+    );
+
+    title.value = 'Draft title';
+    notes.value = 'Draft notes';
+    priorities[1].checked = false;
+    priorities[2].checked = true;
+    syncTodoPrioritySegment(segment);
+    setTodoEditing(document, toggleTodoItemExpanded, syncTodoPrioritySegment, resetTodoEditForm, 'todo-a', false);
+
+    assert.strictEqual(title.value, 'Initial title', 'canceling edit must restore the rendered title value');
+    assert.strictEqual(notes.value, 'Initial notes', 'canceling edit must restore the rendered notes value');
+    assert.deepStrictEqual(priorities.map(input => input.checked), [false, true, false],
+        'canceling edit must restore the rendered priority radio state');
+    assert.deepStrictEqual(choices.map(choice => choice.classList.contains('active')), [false, true, false],
+        'canceling edit must resynchronize the active priority segment');
+    assert.strictEqual(item.classList.contains('editing'), false);
+    assert.strictEqual(item.classList.contains('expanded'), false,
+        'canceling edit must restore the pre-edit collapsed state');
+    assert.strictEqual(item.getAttribute('data-expanded-before-edit'), null);
+}
+
+function createTodoComposeFormState() {
+    const attributes = new Map();
+    const controls = {
+        title: { value: 'Draft todo' },
+        notes: { value: 'Draft notes' },
+        priority: { value: 'high', checked: true },
+        groupId: { value: 'group-a' },
+    };
+    const submitAttributes = new Map();
+    const submitButton = {
+        disabled: false,
+        getAttribute: name => submitAttributes.has(name) ? submitAttributes.get(name) : null,
+        setAttribute: (name, value) => submitAttributes.set(name, String(value)),
+        removeAttribute: name => submitAttributes.delete(name),
+    };
+    const form = {
+        controls,
+        submitButton,
+        getAttribute: name => attributes.has(name) ? attributes.get(name) : null,
+        setAttribute: (name, value) => attributes.set(name, String(value)),
+        removeAttribute: name => attributes.delete(name),
+        querySelector(selector) {
+            if (selector === '[type="submit"]') return submitButton;
+            const checked = selector.match(/^\[name="([^"]+)"\]:checked$/);
+            if (checked) {
+                const control = controls[checked[1]];
+                return control && control.checked ? control : null;
+            }
+            const named = selector.match(/^\[name="([^"]+)"\]$/);
+            return named ? controls[named[1]] || null : null;
+        },
+    };
+    return form;
+}
+
+function runTodoComposePendingInteractionChecks() {
+    const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
+    const context = {};
+    vm.runInNewContext(projectSource, context);
+    const onTodoFormSubmit = new Function(
+        'submitTodoComposeForm',
+        'getTodoFormValue',
+        'window',
+        'e',
+        extractFunctionBody(projectSource, 'onTodoFormSubmit')
+    );
+    const onWindowMessage = new Function(
+        'applyTodoMutationResult',
+        'document',
+        'e',
+        extractFunctionBody(projectSource, 'onWindowMessage')
+    );
+    const messages = [];
+    const form = createTodoComposeFormState();
+    const window = { vscode: { postMessage: message => messages.push(message) } };
+    const submitEvent = {
+        preventDefault: () => undefined,
+        target: {
+            closest: selector => selector === '.todo-add-form' ? form : null,
+        },
+    };
+
+    onTodoFormSubmit(context.submitTodoComposeForm, context.getTodoFormValue, window, submitEvent);
+    onTodoFormSubmit(context.submitTodoComposeForm, context.getTodoFormValue, window, submitEvent);
+    assert.strictEqual(messages.length, 1, 'rapid submits on one compose form must post exactly one mutation');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0])), {
+        type: 'todo-add',
+        requestId: 1,
+        title: 'Draft todo',
+        notes: 'Draft notes',
+        priority: 'high',
+        groupId: 'group-a',
+    });
+    assert.strictEqual(form.submitButton.disabled, true);
+    assert.strictEqual(form.submitButton.getAttribute('aria-busy'), 'true');
+
+    const document = {
+        querySelector: selector => selector === '.todo-add-form[data-todo-request-id="1"]' ? form : null,
+    };
+    onWindowMessage(context.applyTodoMutationResult, document, { data: {
+        type: 'todo-mutation-result', version: 1, requestId: 1, success: false,
+    } });
+    assert.strictEqual(form.submitButton.disabled, false, 'a failed mutation ack must unlock compose');
+    assert.strictEqual(form.submitButton.getAttribute('aria-busy'), null);
+    assert.strictEqual(form.controls.title.value, 'Draft todo');
+    assert.strictEqual(form.controls.notes.value, 'Draft notes');
+
+    const successForm = createTodoComposeFormState();
+    const successSubmitEvent = {
+        preventDefault: () => undefined,
+        target: {
+            closest: selector => selector === '.todo-add-form' ? successForm : null,
+        },
+    };
+    onTodoFormSubmit(context.submitTodoComposeForm, context.getTodoFormValue, window, successSubmitEvent);
+    const successRequestId = messages[1].requestId;
+    const successDocument = {
+        querySelector: selector => selector === `.todo-add-form[data-todo-request-id="${successRequestId}"]`
+            ? successForm
+            : null,
+    };
+    onWindowMessage(context.applyTodoMutationResult, successDocument, { data: {
+        type: 'todo-mutation-result', version: 1, requestId: successRequestId, success: true,
+    } });
+    assert.strictEqual(successForm.submitButton.disabled, true,
+        'a success ack arriving before panel replacement must keep compose locked');
+    assert.strictEqual(successForm.submitButton.getAttribute('aria-busy'), 'true');
+}
+
 function runSourceContractChecks(source) {
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const dndSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewDnDScripts.js'), 'utf8');
@@ -3238,13 +3561,16 @@ function runSourceContractChecks(source) {
     assert.ok(projectSource.includes('function onTodoFormSubmit('));
     const todoActionBody = extractFunctionBody(projectSource, 'onTodoAction');
     const todoFormSubmitBody = extractFunctionBody(projectSource, 'onTodoFormSubmit');
+    const todoComposeSubmitBody = extractFunctionBody(projectSource, 'submitTodoComposeForm');
     assert.ok(todoActionBody.includes('data-action="todo-cancel-add"'));
     assert.ok(todoActionBody.includes('setTodoAddFormVisible('));
     assert.ok(todoActionBody.includes('syncTodoGroupCollapseControl(todoGroup);'),
         'single-group collapse must synchronize class and accessible button state together');
-    assert.ok(todoFormSubmitBody.includes("type: 'todo-add'"));
-    assert.ok(todoFormSubmitBody.includes("groupId: getTodoFormValue(addForm, 'groupId')"));
-    assert.strictEqual(todoFormSubmitBody.includes('addForm.reset()'), false,
+    assert.ok(todoFormSubmitBody.includes('submitTodoComposeForm(addForm'));
+    assert.ok(todoComposeSubmitBody.includes("type: 'todo-add'"));
+    assert.ok(todoComposeSubmitBody.includes("groupId: getTodoFormValue(form, 'groupId')"));
+    assert.ok(todoComposeSubmitBody.includes('requestId'));
+    assert.strictEqual(todoComposeSubmitBody.includes('form.reset()'), false,
         'TODO add submissions must retain form values until the host refresh succeeds');
     assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"add-project\"]')"), false);
     assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"import-from-other-storage\"]')"), false);
@@ -3294,9 +3620,15 @@ function runSourceContractChecks(source) {
         'const todoMigration = settleMigration(() => todoService.migrateDataIfNeeded())'));
     assert.strictEqual(
         (extensionHostSource.match(/await runTodoPanelMutation\(/g) || []).length,
-        13,
-        'every direct TODO mutation handler must use the write-error boundary'
+        10,
+        'every non-prompt direct TODO mutation handler must use the write-error boundary'
     );
+    assert.ok(extensionHostSource.includes('await runTodoRequestMutation({'),
+        'compose mutations must use the request-correlated write-error boundary');
+    assert.ok(extensionHostSource.includes('await runTodoPromptMutation({'),
+        'add-group mutations must use the retrying prompt error boundary');
+    assert.ok(extensionHostSource.includes('await renameTodoGroupWithPrompt({'),
+        'rename-group mutations must check group existence before entering the retrying prompt boundary');
     assert.ok(dndSource.includes('function initDnD(root)'));
     assert.ok(dndSource.includes('function disposeDnD(root)'));
     assert.ok(dndSource.includes('root.__projectStewardDnDInitialized'));
@@ -3311,6 +3643,7 @@ function runSourceContractChecks(source) {
     assert.strictEqual(dndSource.includes('document.querySelectorAll(`${groupsContainerSelector}'), false);
     assert.ok(projectSource.includes("'collapse-group'"));
     const onWindowMessageBody = extractFunctionBody(projectSource, 'onWindowMessage');
+    assert.ok(onWindowMessageBody.includes('applyTodoMutationResult(message, document);'));
     assert.ok(onWindowMessageBody.includes('disposeDnD(todoRoot);'));
     assert.ok(onWindowMessageBody.includes('initDnD(todoRoot);'));
     assert.ok(projectSource.includes('Collapse Other Windows'));
@@ -3527,6 +3860,13 @@ function runSourceContractChecks(source) {
                 `${selector} must not own ${forbidden}`);
         }
     }
+    const todoCompletedToggleFocusRule = extractCssRule(styles, '.todo-square-toggle:focus-within');
+    assert.ok(todoCompletedToggleFocusRule.includes('outline: 1px solid var(--vscode-focusBorder)')
+        && todoCompletedToggleFocusRule.includes('outline-offset: 1px'),
+    'the hidden Show Completed checkbox must expose a visible focus ring on its label');
+    assert.ok(compiledStyles.includes('.todo-square-toggle:focus-within {')
+        && compiledStyles.includes('outline: 1px solid var(--vscode-focusBorder);'),
+    'compiled dashboard CSS must retain the Show Completed focus-within ring');
 
     const todoGroupHeaderRule = extractCssRule(styles, '.todo-group-header');
     for (const forbidden of ['border:', 'border-radius:', 'background:', 'box-shadow:']) {
@@ -3756,6 +4096,8 @@ async function main() {
     runTodoOrderingInteractionChecks();
     runTodoSearchResultRenderingChecks(source);
     runControllerChecks(source);
+    runTodoEditResetInteractionChecks();
+    runTodoComposePendingInteractionChecks();
     runSourceContractChecks(source);
     await runDashboardMessageRouterChecks();
     console.log('Dashboard Webview checks passed.');

@@ -1091,6 +1091,11 @@ body .project {
     position: relative;
 }
 
+.todo-square-toggle:focus-within {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+}
+
 .todo-square-toggle input {
     position: absolute;
     opacity: 0;

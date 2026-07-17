@@ -148,6 +148,74 @@ function collapseTodoGroups(groups, collapsed, postMessage) {
     });
 }
 
+var nextTodoMutationRequestId = 0;
+
+function getTodoFormValue(form, name) {
+    var checkedElement = form.querySelector('[name="' + name + '"]:checked');
+    if (checkedElement) {
+        return String(checkedElement.value || '').trim();
+    }
+    var element = form.querySelector('[name="' + name + '"]');
+    return element ? String(element.value || '').trim() : '';
+}
+
+function setTodoComposePending(form, pending) {
+    form.setAttribute('data-todo-pending', pending ? 'true' : 'false');
+    var submitButton = form.querySelector('[type="submit"]');
+    if (!submitButton)
+        return;
+
+    submitButton.disabled = pending;
+    if (pending) {
+        submitButton.setAttribute('aria-busy', 'true');
+    } else {
+        submitButton.removeAttribute('aria-busy');
+    }
+}
+
+function submitTodoComposeForm(form, postMessage) {
+    if (form.getAttribute('data-todo-pending') === 'true')
+        return false;
+
+    var title = getTodoFormValue(form, 'title');
+    if (!title)
+        return false;
+
+    nextTodoMutationRequestId += 1;
+    var requestId = nextTodoMutationRequestId;
+    form.setAttribute('data-todo-request-id', String(requestId));
+    setTodoComposePending(form, true);
+    postMessage({
+        type: 'todo-add',
+        requestId,
+        title,
+        notes: getTodoFormValue(form, 'notes'),
+        priority: getTodoFormValue(form, 'priority'),
+        groupId: getTodoFormValue(form, 'groupId'),
+    });
+    return true;
+}
+
+function applyTodoMutationResult(message, root) {
+    if (!message
+        || message.type !== 'todo-mutation-result'
+        || message.version !== 1
+        || !Number.isSafeInteger(message.requestId)
+        || message.requestId < 1
+        || typeof message.success !== 'boolean') {
+        return false;
+    }
+
+    var form = root.querySelector('.todo-add-form[data-todo-request-id="' + message.requestId + '"]');
+    if (!form)
+        return false;
+    if (!message.success) {
+        setTodoComposePending(form, false);
+        form.removeAttribute('data-todo-request-id');
+    }
+    return true;
+}
+
 function initProjects() {
 
     const ProjectOpenType = {
@@ -768,15 +836,6 @@ function initProjects() {
         return false;
     }
 
-    function getTodoFormValue(form, name) {
-        var checkedElement = form.querySelector('[name="' + name + '"]:checked');
-        if (checkedElement) {
-            return String(checkedElement.value || '').trim();
-        }
-        var element = form.querySelector('[name="' + name + '"]');
-        return element ? String(element.value || '').trim() : '';
-    }
-
     function syncTodoPrioritySegment(segment) {
         if (!segment)
             return;
@@ -785,6 +844,11 @@ function initProjects() {
             var input = choice.querySelector('input[name="priority"]');
             choice.classList.toggle('active', !!input && input.checked === true);
         });
+    }
+
+    function resetTodoEditForm(form) {
+        form.reset();
+        syncTodoPrioritySegment(form.querySelector('.todo-priority-segment'));
     }
 
     function syncTodoListExpandedHeight(list) {
@@ -858,6 +922,9 @@ function initProjects() {
         var view = item.querySelector('.todo-item-view');
         var form = item.querySelector('.todo-edit-form');
         var list = item.closest('.todo-list');
+        if (form && !editing) {
+            resetTodoEditForm(form);
+        }
         item.classList.toggle('editing', editing);
         if (view) {
             view.hidden = false;
@@ -885,16 +952,7 @@ function initProjects() {
         var addForm = e.target && e.target.closest ? e.target.closest('.todo-add-form') : null;
         if (addForm) {
             e.preventDefault();
-            var title = getTodoFormValue(addForm, 'title');
-            if (!title)
-                return;
-            window.vscode.postMessage({
-                type: 'todo-add',
-                title,
-                notes: getTodoFormValue(addForm, 'notes'),
-                priority: getTodoFormValue(addForm, 'priority'),
-                groupId: getTodoFormValue(addForm, 'groupId'),
-            });
+            submitTodoComposeForm(addForm, message => window.vscode.postMessage(message));
             return;
         }
 
@@ -1309,6 +1367,10 @@ function initProjects() {
 
     function onWindowMessage(e) {
         var message = e && e.data;
+        if (message && message.type === 'todo-mutation-result') {
+            applyTodoMutationResult(message, document);
+            return;
+        }
         if (message && (message.type === 'todo-panel-content' || message.type === 'todo-panel-updated')) {
             window.setTimeout(() => {
                 var todoRoot = document.querySelector('#dashboard-tab-todo');

@@ -24,6 +24,45 @@ export interface DeleteTodoWithConfirmationOptions {
     logError: (message: string, error: unknown) => unknown;
 }
 
+export interface TodoPromptMutationOptions {
+    initialValue?: string;
+    prompt: (value: string | undefined) => PromiseLike<string | undefined>;
+    mutate: (value: string) => Promise<unknown>;
+    refreshPanel: () => Promise<unknown>;
+    showErrorMessage: (message: string) => unknown;
+    logError: (message: string, error: unknown) => unknown;
+}
+
+interface TodoGroupData {
+    groups: Array<{
+        id: string;
+        title: string;
+    }>;
+}
+
+export interface RenameTodoGroupWithPromptOptions {
+    groupId: string;
+    getData: () => TodoGroupData;
+    prompt: (value: string) => PromiseLike<string | undefined>;
+    renameGroup: (groupId: string, value: string) => Promise<unknown>;
+    refreshPanel: () => Promise<unknown>;
+    showErrorMessage: (message: string) => unknown;
+    logError: (message: string, error: unknown) => unknown;
+}
+
+export interface TodoMutationResultMessage {
+    type: 'todo-mutation-result';
+    version: 1;
+    requestId: number;
+    success: boolean;
+}
+
+export interface TodoRequestMutationOptions extends TodoHostMutationOptions {
+    requestId: unknown;
+    valid: boolean;
+    postResult: (message: TodoMutationResultMessage) => PromiseLike<unknown>;
+}
+
 export async function runTodoMutation(options: TodoHostMutationOptions): Promise<boolean> {
     try {
         await options.mutate();
@@ -37,6 +76,60 @@ export async function runTodoMutation(options: TodoHostMutationOptions): Promise
 
     await options.onSuccess();
     return true;
+}
+
+export async function runTodoPromptMutation(options: TodoPromptMutationOptions): Promise<boolean> {
+    let promptValue = options.initialValue;
+    while (true) {
+        const value = await options.prompt(promptValue);
+        if (value === undefined) {
+            return false;
+        }
+        promptValue = value;
+        const succeeded = await runTodoMutation({
+            mutate: () => options.mutate(value),
+            onSuccess: options.refreshPanel,
+            showErrorMessage: options.showErrorMessage,
+            logError: options.logError,
+        });
+        if (succeeded) {
+            return true;
+        }
+    }
+}
+
+export async function runTodoRequestMutation(options: TodoRequestMutationOptions): Promise<boolean> {
+    const requestId = options.requestId;
+    if (typeof requestId !== 'number' || !Number.isSafeInteger(requestId) || requestId < 1) {
+        return false;
+    }
+
+    const succeeded = options.valid
+        ? await runTodoMutation(options)
+        : false;
+    await options.postResult({
+        type: 'todo-mutation-result',
+        version: 1,
+        requestId,
+        success: succeeded,
+    });
+    return succeeded;
+}
+
+export async function renameTodoGroupWithPrompt(options: RenameTodoGroupWithPromptOptions): Promise<boolean> {
+    const group = options.getData().groups.find(item => item.id === options.groupId);
+    if (!group) {
+        return false;
+    }
+
+    return runTodoPromptMutation({
+        initialValue: group.title,
+        prompt: value => options.prompt(value || ''),
+        mutate: value => options.renameGroup(options.groupId, value),
+        refreshPanel: options.refreshPanel,
+        showErrorMessage: options.showErrorMessage,
+        logError: options.logError,
+    });
 }
 
 export async function deleteTodoWithConfirmation(options: DeleteTodoWithConfirmationOptions): Promise<boolean> {

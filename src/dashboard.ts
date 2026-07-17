@@ -7,7 +7,13 @@ import { USER_CANCELED, RelevantExtensions, REOPEN_KEY, WSL_DEFAULT_REGEX, OPEN_
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
 import { TodoService } from './todos/service';
-import { deleteTodoWithConfirmation, runTodoMutation } from './todos/hostMutation';
+import {
+    deleteTodoWithConfirmation,
+    renameTodoGroupWithPrompt,
+    runTodoMutation,
+    runTodoPromptMutation,
+    runTodoRequestMutation,
+} from './todos/hostMutation';
 import { UnsupportedTodoDataVersionError } from './todos/types';
 import { buildTodoViewModel } from './todos/viewModel';
 import { getTodoPanelContent, getUnsupportedTodoVersionPanelContent } from './todos/webviewContent';
@@ -452,27 +458,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 await postTodoPanelContent(e.requestId as number);
             },
             'todo-add': async e => {
-                if (typeof e.title !== 'string' || !e.title.trim()) {
-                    return;
-                }
-                const title = e.title;
-                await runTodoPanelMutation(() => todoService.addTodo({
-                    title,
-                    notes: typeof e.notes === 'string' ? e.notes : '',
-                    priority: e.priority === 'high' || e.priority === 'medium' || e.priority === 'low' ? e.priority : 'medium',
-                    groupId: typeof e.groupId === 'string' ? e.groupId : undefined,
-                }));
+                const valid = typeof e.title === 'string' && Boolean(e.title.trim());
+                await runTodoRequestMutation({
+                    requestId: e.requestId,
+                    valid,
+                    mutate: () => todoService.addTodo({
+                        title: e.title as string,
+                        notes: typeof e.notes === 'string' ? e.notes : '',
+                        priority: e.priority === 'high' || e.priority === 'medium' || e.priority === 'low' ? e.priority : 'medium',
+                        groupId: typeof e.groupId === 'string' ? e.groupId : undefined,
+                    }),
+                    onSuccess: () => postTodoPanelContent(),
+                    postResult: message => provider.postMessage(message),
+                    showErrorMessage: message => vscode.window.showErrorMessage(message),
+                    logError,
+                });
             },
             'todo-add-group': async () => {
-                const title = await vscode.window.showInputBox({
-                    prompt: 'Todo group title',
-                    placeHolder: 'Group name',
-                    ignoreFocusOut: true,
+                await runTodoPromptMutation({
+                    prompt: value => vscode.window.showInputBox({
+                        prompt: 'Todo group title',
+                        placeHolder: 'Group name',
+                        value,
+                        ignoreFocusOut: true,
+                    }),
+                    mutate: title => todoService.addGroup(title),
+                    refreshPanel: () => postTodoPanelContent(),
+                    showErrorMessage: message => vscode.window.showErrorMessage(message),
+                    logError,
                 });
-                if (title === undefined) {
-                    return;
-                }
-                await runTodoPanelMutation(() => todoService.addGroup(title));
             },
             'todo-toggle': async e => {
                 if (typeof e.todoId !== 'string') {
@@ -520,19 +534,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 if (typeof e.groupId !== 'string') {
                     return;
                 }
-                const todoGroup = todoService.getData().groups.find(group => group.id === e.groupId);
-                if (!todoGroup) {
-                    return;
-                }
-                const title = await vscode.window.showInputBox({
-                    prompt: 'Todo group title',
-                    value: todoGroup.title,
-                    ignoreFocusOut: true,
+                await renameTodoGroupWithPrompt({
+                    groupId: e.groupId,
+                    getData: () => todoService.getData(),
+                    prompt: value => vscode.window.showInputBox({
+                        prompt: 'Todo group title',
+                        value,
+                        ignoreFocusOut: true,
+                    }),
+                    renameGroup: (groupId, title) => todoService.renameGroup(groupId, title),
+                    refreshPanel: () => postTodoPanelContent(),
+                    showErrorMessage: message => vscode.window.showErrorMessage(message),
+                    logError,
                 });
-                if (title === undefined) {
-                    return;
-                }
-                await runTodoPanelMutation(() => todoService.renameGroup(e.groupId as string, title));
             },
             'todo-reorder-groups': async e => {
                 if (!Array.isArray(e.groupIds)) {
