@@ -524,11 +524,21 @@ function initDashboard(options) {
             return false;
         }
 
+        var activeElement = document.activeElement;
+        var restoreShowCompletedFocus = !!activeElement
+            && panels.todo.contains(activeElement)
+            && activeElement.getAttribute('data-action') === 'todo-toggle-show-completed';
         panels.todo.innerHTML = message.html;
         todoState = 'mounted';
         replaceSearchCatalog(message.searchCatalog);
         if (typeof options.onTodoMounted === 'function') {
             options.onTodoMounted(panels.todo);
+        }
+        if (restoreShowCompletedFocus) {
+            var showCompletedToggle = panels.todo.querySelector('[data-action="todo-toggle-show-completed"]');
+            if (showCompletedToggle) {
+                showCompletedToggle.focus();
+            }
         }
         revealPendingTodoSearchTarget();
         return true;

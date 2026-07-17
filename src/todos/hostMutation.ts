@@ -55,6 +55,7 @@ export interface TodoMutationResultMessage {
     version: 1;
     requestId: number;
     success: boolean;
+    panelRefreshed?: boolean;
 }
 
 export interface TodoRequestMutationOptions extends TodoHostMutationOptions {
@@ -105,14 +106,27 @@ export async function runTodoRequestMutation(options: TodoRequestMutationOptions
     }
 
     const succeeded = options.valid
-        ? await runTodoMutation(options)
+        ? await runTodoMutation({
+            ...options,
+            onSuccess: async () => undefined,
+        })
         : false;
-    await options.postResult({
+    const result: TodoMutationResultMessage = {
         type: 'todo-mutation-result',
         version: 1,
         requestId,
         success: succeeded,
-    });
+    };
+    if (succeeded) {
+        try {
+            await options.onSuccess();
+        } catch (error) {
+            options.logError('Failed to refresh the TODO panel after saving.', error);
+            options.showErrorMessage('TODO saved, but the panel could not be refreshed.');
+            result.panelRefreshed = false;
+        }
+    }
+    await options.postResult(result);
     return succeeded;
 }
 

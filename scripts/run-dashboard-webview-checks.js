@@ -1939,6 +1939,35 @@ async function runTodoHostMutationChecks() {
         ['refresh'],
         ['result', { type: 'todo-mutation-result', version: 1, requestId: 8, success: true }],
     ], 'a successful compose mutation must refresh the panel before acknowledging success');
+
+    const failedRefreshCalls = [];
+    const savedWithoutRefresh = await runTodoRequestMutation({
+        requestId: 9,
+        valid: true,
+        mutate: async () => { failedRefreshCalls.push(['write']); },
+        onSuccess: async () => {
+            failedRefreshCalls.push(['refresh']);
+            throw new Error('panel refresh failed');
+        },
+        postResult: async message => { failedRefreshCalls.push(['result', message]); },
+        showErrorMessage: message => failedRefreshCalls.push(['error', message]),
+        logError: (message, error) => failedRefreshCalls.push(['log', message, error.message]),
+    });
+    assert.strictEqual(savedWithoutRefresh, true,
+        'a completed write must remain successful when only the panel refresh fails');
+    assert.deepStrictEqual(failedRefreshCalls, [
+        ['write'],
+        ['refresh'],
+        ['log', 'Failed to refresh the TODO panel after saving.', 'panel refresh failed'],
+        ['error', 'TODO saved, but the panel could not be refreshed.'],
+        ['result', {
+            type: 'todo-mutation-result',
+            version: 1,
+            requestId: 9,
+            success: true,
+            panelRefreshed: false,
+        }],
+    ], 'a refresh failure must acknowledge the committed write without inviting a duplicate retry');
 }
 
 function makeTodoData() {
@@ -3148,6 +3177,31 @@ function runControllerChecks(source) {
     assert.strictEqual(todoMounted, 1);
     assert.strictEqual(typeof windowListeners.message, 'function');
 
+    let showCompletedFocusCalls = 0;
+    const oldShowCompletedToggle = {
+        getAttribute: name => name === 'data-action' ? 'todo-toggle-show-completed' : null,
+    };
+    const newShowCompletedToggle = {
+        focus: () => {
+            showCompletedFocusCalls += 1;
+            context.document.activeElement = newShowCompletedToggle;
+        },
+    };
+    todoPanel.contains = element => element === oldShowCompletedToggle;
+    todoPanel.querySelector = selector => selector === '[data-action="todo-toggle-show-completed"]'
+        ? newShowCompletedToggle
+        : null;
+    context.document.activeElement = oldShowCompletedToggle;
+    assert.strictEqual(controller.applyTodoPanelUpdatedMessage({
+        type: 'todo-panel-updated',
+        version: 1,
+        html: '<div>show completed updated</div>',
+        searchCatalog: makeDashboardCatalog(),
+    }), true);
+    assert.strictEqual(showCompletedFocusCalls, 1,
+        'replacing TODO HTML must restore focus to the Show Completed control');
+    assert.strictEqual(context.document.activeElement, newShowCompletedToggle);
+
     let todoItemMounted = false;
     let todoFocusCalls = 0;
     let todoScrollCalls = 0;
@@ -3205,7 +3259,7 @@ function runControllerChecks(source) {
         html: '<div>revealed todo</div>',
         searchCatalog: makeDashboardCatalog(),
     }), true);
-    assert.strictEqual(todoMounted, 2, 'updated TODO HTML must invoke onTodoMounted');
+    assert.strictEqual(todoMounted, 3, 'updated TODO HTML must invoke onTodoMounted');
     assert.strictEqual(pendingTodoFrames.length, 1);
     todoItemMounted = false;
     pendingTodoFrames.shift()();
@@ -3373,6 +3427,10 @@ function createTodoComposeFormState() {
     const form = {
         controls,
         submitButton,
+        reset() {
+            controls.title.value = '';
+            controls.notes.value = '';
+        },
         getAttribute: name => attributes.has(name) ? attributes.get(name) : null,
         setAttribute: (name, value) => attributes.set(name, String(value)),
         removeAttribute: name => attributes.delete(name),
@@ -3442,6 +3500,34 @@ function runTodoComposePendingInteractionChecks() {
     assert.strictEqual(form.controls.title.value, 'Draft todo');
     assert.strictEqual(form.controls.notes.value, 'Draft notes');
 
+    const refreshFailedForm = createTodoComposeFormState();
+    const refreshFailedEvent = {
+        preventDefault: () => undefined,
+        target: {
+            closest: selector => selector === '.todo-add-form' ? refreshFailedForm : null,
+        },
+    };
+    onTodoFormSubmit(context.submitTodoComposeForm, context.getTodoFormValue, window, refreshFailedEvent);
+    const refreshFailedRequestId = messages[1].requestId;
+    const refreshFailedDocument = {
+        querySelector: selector => selector === `.todo-add-form[data-todo-request-id="${refreshFailedRequestId}"]`
+            ? refreshFailedForm
+            : null,
+    };
+    onWindowMessage(context.applyTodoMutationResult, refreshFailedDocument, { data: {
+        type: 'todo-mutation-result',
+        version: 1,
+        requestId: refreshFailedRequestId,
+        success: true,
+        panelRefreshed: false,
+    } });
+    assert.strictEqual(refreshFailedForm.submitButton.disabled, false,
+        'a committed write with a failed refresh must settle the compose form');
+    assert.strictEqual(refreshFailedForm.submitButton.getAttribute('aria-busy'), null);
+    assert.strictEqual(refreshFailedForm.controls.title.value, '',
+        'a committed write must clear its title so retrying cannot create a duplicate');
+    assert.strictEqual(refreshFailedForm.controls.notes.value, '');
+
     const successForm = createTodoComposeFormState();
     const successSubmitEvent = {
         preventDefault: () => undefined,
@@ -3450,7 +3536,7 @@ function runTodoComposePendingInteractionChecks() {
         },
     };
     onTodoFormSubmit(context.submitTodoComposeForm, context.getTodoFormValue, window, successSubmitEvent);
-    const successRequestId = messages[1].requestId;
+    const successRequestId = messages[2].requestId;
     const successDocument = {
         querySelector: selector => selector === `.todo-add-form[data-todo-request-id="${successRequestId}"]`
             ? successForm

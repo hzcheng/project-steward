@@ -212,6 +212,10 @@ function applyTodoMutationResult(message, root) {
     if (!message.success) {
         setTodoComposePending(form, false);
         form.removeAttribute('data-todo-request-id');
+    } else if (message.panelRefreshed === false) {
+        form.reset();
+        setTodoComposePending(form, false);
+        form.removeAttribute('data-todo-request-id');
     }
     return true;
 }
