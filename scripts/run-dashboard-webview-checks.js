@@ -502,6 +502,24 @@ function makeTodoData() {
     };
 }
 
+function makeTodoBoundaryData(todoCount) {
+    return {
+        version: 1,
+        groups: [{ id: 'boundary-group', title: 'Boundary', collapsed: false, order: 0 }],
+        todos: Array.from({ length: todoCount }, (_, index) => ({
+            id: `boundary-todo-${index}`,
+            groupId: 'boundary-group',
+            title: `Boundary todo ${index + 1}`,
+            notes: '',
+            priority: 'medium',
+            completed: false,
+            createdAt: '2026-07-16T00:00:00.000Z',
+            updatedAt: '2026-07-16T00:00:00.000Z',
+            order: index,
+        })),
+    };
+}
+
 function runTodoViewModelChecks() {
     const hiddenCompleted = todoViewModel.buildTodoViewModel(makeTodoData(), { showCompleted: false });
     assert.strictEqual(hiddenCompleted.groups.length, 2);
@@ -551,6 +569,31 @@ function runTodoViewModelChecks() {
     const defaultHtml = todoWebviewContent.getTodoPanelContent(hiddenCompleted);
     assert.ok(defaultHtml.includes('--todo-visible-items: 5;'));
     assert.ok(defaultHtml.includes('--todo-list-max-height: 318px;'));
+
+    const configuredCardCount = 5;
+    const collapsedCardHeight = 58;
+    const interCardSpacing = 7;
+    const configuredMaxHeight = 318;
+    const countRenderedTodoCards = content => (content.match(/<li class="todo-item steward-item-card\b/g) || []).length;
+    const exactBoundaryHtml = todoWebviewContent.getTodoPanelContent(
+        todoViewModel.buildTodoViewModel(makeTodoBoundaryData(configuredCardCount))
+    );
+    const overflowBoundaryHtml = todoWebviewContent.getTodoPanelContent(
+        todoViewModel.buildTodoViewModel(makeTodoBoundaryData(configuredCardCount + 1))
+    );
+    assert.strictEqual(countRenderedTodoCards(exactBoundaryHtml), configuredCardCount);
+    assert.strictEqual(countRenderedTodoCards(overflowBoundaryHtml), configuredCardCount + 1);
+    assert.ok(exactBoundaryHtml.includes('--todo-list-max-height: 318px;'));
+    assert.ok(overflowBoundaryHtml.includes('--todo-list-max-height: 318px;'));
+    assert.strictEqual(
+        (configuredCardCount * collapsedCardHeight) + ((configuredCardCount - 1) * interCardSpacing),
+        configuredMaxHeight
+    );
+    assert.ok(
+        ((configuredCardCount + 1) * collapsedCardHeight) + (configuredCardCount * interCardSpacing)
+            > configuredMaxHeight,
+        'N+1 rendered cards should exceed the unchanged N-card viewport height'
+    );
 
     const emptyHtml = todoWebviewContent.getTodoPanelContent(todoViewModel.buildTodoViewModel({ version: 1, groups: [], todos: [] }));
     assert.ok(emptyHtml.includes('todo-empty-state steward-empty-state'));
@@ -1641,6 +1684,9 @@ function runSourceContractChecks(source) {
         'todo lists should add expanded-card content to the collapsed-card viewport height');
     assert.ok(todoListRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, 'gap: 0')),
         'shared item card margins should be the only spacing source inside TODO lists');
+    const todoLastItemRule = extractCssRule(styles, '.todo-list > .steward-item-card:last-child');
+    assert.ok(cssRuleIncludesTopLevelDeclaration(todoLastItemRule, 'margin-bottom: 0'),
+        'the final configured TODO card should not add trailing margin beyond the max-height budget');
     const todoListEditingRule = extractCssRule(styles, '.todo-list.has-editing-item');
     assert.ok(todoListEditingRule.includes('max-height: none')
         && todoListEditingRule.includes('overflow-y: visible'),

@@ -1253,6 +1253,10 @@ body .project {
     list-style: none;
 }
 
+.todo-list > .steward-item-card:last-child {
+    margin-bottom: 0;
+}
+
 .todo-list.has-editing-item {
     max-height: none;
     overflow-y: visible;
