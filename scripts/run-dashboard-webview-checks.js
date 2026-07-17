@@ -28,6 +28,7 @@ const { TodoService } = require('../out/todos/service');
 const { deleteTodoWithConfirmation, runTodoMutation } = require('../out/todos/hostMutation');
 const todoViewModel = require('../out/todos/viewModel');
 const todoWebviewContent = require('../out/todos/webviewContent');
+const { buildDashboardSearchCatalog } = require('../out/webview/dashboardViewModel');
 const AsyncFunction = Object.getPrototypeOf(async function () { return undefined; }).constructor;
 
 const root = path.join(__dirname, '..');
@@ -1123,7 +1124,7 @@ async function runTodoMigrationChecks() {
 
 async function runTodoBackendSwitchBarrierChecks() {
     let useSettingsStorage = false;
-    let knownDataBackend;
+    let storageProvenance;
     const values = {
         global: { version: 1, groups: [], todos: [] },
         settings: null,
@@ -1133,11 +1134,11 @@ async function runTodoBackendSwitchBarrierChecks() {
     const firstWriteGate = new Promise(resolve => { releaseFirstWrite = resolve; });
     const dependencies = {
         globalState: {
-            get: key => key === 'todos' ? values.global : knownDataBackend,
+            get: key => key === 'todos' ? values.global : storageProvenance,
             update: async (key, value) => {
                 if (key !== 'todos') {
                     updates.push(['state', key, value]);
-                    knownDataBackend = value;
+                    storageProvenance = value;
                     return;
                 }
                 updates.push(['global', key, value]);
@@ -1180,23 +1181,46 @@ async function runTodoBackendSwitchBarrierChecks() {
         ['First global', 'Queued global', 'First settings'],
         'switching to an empty backend must copy the non-empty source before mutating the captured target');
     assert.deepStrictEqual(values.global.groups.map(group => group.title), ['First global', 'Queued global']);
-    assert.strictEqual(knownDataBackend, true,
-        'a successful backend copy must persist which backend became authoritative');
+    assert.strictEqual(storageProvenance.version, 1);
+    assert.strictEqual(storageProvenance.activeBackend, 'settings');
+    assert.match(storageProvenance.inactiveFingerprint, /^[a-f0-9]{64}$/,
+        'a successful backend copy must persist the inactive normalized data fingerprint');
+
+    const secondSettingsMutation = await service.addGroup('Second settings');
+    assert.deepStrictEqual(secondSettingsMutation.groups.map(group => group.title),
+        ['First global', 'Queued global', 'First settings', 'Second settings'],
+        'consecutive active-backend mutations must remain allowed while the inactive snapshot is unchanged');
 
     const restartedService = new TodoService(dependencies);
     const afterRestart = await restartedService.addGroup('Settings after restart');
     assert.deepStrictEqual(afterRestart.groups.map(group => group.title),
-        ['First global', 'Queued global', 'First settings', 'Settings after restart'],
+        ['First global', 'Queued global', 'First settings', 'Second settings', 'Settings after restart'],
         'restart must recognize the copied source as stale instead of manufacturing a conflict');
 
+    values.settings = makeStoredTodoData('settings-sync');
+    const afterSettingsSync = await service.addGroup('After settings sync');
+    assert.deepStrictEqual(afterSettingsSync.groups.map(group => group.title),
+        ['settings-sync', 'After settings sync'],
+        'Settings Sync may replace active data while the recorded inactive snapshot remains unchanged');
+
     useSettingsStorage = false;
+    const switchedBack = await service.addGroup('Back on global');
+    assert.deepStrictEqual(switchedBack.groups.map(group => group.title),
+        ['settings-sync', 'After settings sync', 'Back on global'],
+        'switching back to the recorded stale target must safely copy current active data before mutation');
+    assert.deepStrictEqual(values.settings.groups.map(group => group.title),
+        ['settings-sync', 'After settings sync']);
+    assert.strictEqual(storageProvenance.activeBackend, 'global');
+
+    values.settings = makeStoredTodoData('externally-modified-inactive');
     const updatesBeforeConflict = updates.length;
     await assert.rejects(
-        () => service.addGroup('Blocked by conflict'),
+        () => service.addGroup('Blocked after inactive change'),
         error => error && error.name === 'TodoStorageConflictError' && /conflict/i.test(error.message)
     );
     assert.strictEqual(updates.length, updatesBeforeConflict,
-        'switching between two different non-empty stores must reject before writing');
+        'an externally modified inactive backend must conflict before any data or provenance write');
+    assert.strictEqual(values.global.groups.some(group => group.title === 'Blocked after inactive change'), false);
 
     for (const selectedSettings of [false, true]) {
         const sharedData = makeStoredTodoData('shared-group');
@@ -2292,6 +2316,7 @@ async function runDashboardStartupControllerChecks() {
             return extensionId.endsWith('remote-ssh');
         },
         migrateDataIfNeeded: async () => migrated,
+        refreshDashboard: () => undefined,
         publishOpenProjects: () => publications.push('published'),
         showInformationMessage: message => informationMessages.push(message),
         showSteward: () => { showStewardCalls += 1; },
@@ -2336,9 +2361,82 @@ async function runDashboardStartupControllerChecks() {
     await controller.startUp();
     assert.strictEqual(showStewardCalls, 3);
 
+    let deferredTodoData = { version: 1, groups: [], todos: [] };
+    const deferredTodoService = new TodoService({
+        globalState: {
+            get: key => key === 'todos' ? deferredTodoData : undefined,
+            update: async () => undefined,
+        },
+        configuration: makeWorkspaceConfiguration({}),
+        useSettingsStorage: () => false,
+    });
+    const rebuiltCatalogs = [];
+    let releaseRefresh;
+    const refreshGate = new Promise(resolve => { releaseRefresh = resolve; });
+    const provider = {
+        refresh: async () => {
+            rebuiltCatalogs.push(buildDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
+            await refreshGate;
+        },
+    };
+    rebuiltCatalogs.push(buildDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
+    assert.deepStrictEqual(rebuiltCatalogs[0].todos, [],
+        'the provider may render its initial search catalog before TODO migration settles');
+
+    let resolveDeferredMigration;
+    const deferredMigration = new Promise(resolve => { resolveDeferredMigration = resolve; });
+    const deferredController = new DashboardStartupController({
+        stewardInfos,
+        relevantExtensions: {
+            remoteSSH: 'ms-vscode-remote.remote-ssh',
+            remoteContainers: 'ms-vscode-remote.remote-containers',
+        },
+        isExtensionInstalled: () => false,
+        migrateDataIfNeeded: () => deferredMigration,
+        refreshDashboard: () => provider.refresh(),
+        publishOpenProjects: () => undefined,
+        showInformationMessage: () => undefined,
+        showErrorMessage: () => undefined,
+        logError: () => undefined,
+        showSteward: () => undefined,
+        applyProjectColorToCurrentWindow: () => undefined,
+        getReopenReason: () => 0,
+        updateReopenReason: () => undefined,
+        reopenNoneValue: 0,
+        getWorkspaceName: () => 'workspace',
+        getVisibleEditorLanguageIds: () => [],
+    });
+    let deferredCheckSettled = false;
+    const deferredCheck = deferredController.checkDataMigration();
+    deferredCheck.then(() => { deferredCheckSettled = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(rebuiltCatalogs.length, 1,
+        'a full catalog refresh must not overtake the in-flight migration');
+
+    deferredTodoData = {
+        version: 1,
+        groups: [{ id: 'migrated-group', title: 'Migrated', collapsed: false, order: 0 }],
+        todos: [{
+            id: 'migrated-todo', groupId: 'migrated-group', title: 'Migrated TODO', notes: '',
+            priority: 'medium', completed: false, createdAt: '2026-07-17T00:00:00.000Z',
+            updatedAt: '2026-07-17T00:00:00.000Z', order: 0,
+        }],
+    };
+    resolveDeferredMigration(true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(rebuiltCatalogs.length, 2,
+        'migration settle must trigger a full provider refresh');
+    assert.deepStrictEqual(rebuiltCatalogs[1].todos.map(todo => todo.todoId), ['migrated-todo'],
+        'migration settle must rebuild the provider search catalog with migrated TODO data');
+    assert.strictEqual(deferredCheckSettled, false,
+        'migration checking must await the full dashboard refresh publication');
+    releaseRefresh();
+    await deferredCheck;
+
     const migrationErrors = [];
     const migrationLogs = [];
     const retryPublications = [];
+    const retryRefreshes = [];
     let rejectMigration;
     let migrationAttempts = 0;
     const rejectedMigration = new Promise((_resolve, reject) => { rejectMigration = reject; });
@@ -2353,6 +2451,7 @@ async function runDashboardStartupControllerChecks() {
             migrationAttempts += 1;
             return migrationAttempts === 1 ? rejectedMigration : Promise.resolve(true);
         },
+        refreshDashboard: () => retryRefreshes.push('refreshed'),
         publishOpenProjects: () => retryPublications.push('published'),
         showInformationMessage: () => undefined,
         showErrorMessage: message => migrationErrors.push(message),
@@ -2376,9 +2475,12 @@ async function runDashboardStartupControllerChecks() {
         [['Failed to migrate Project Steward data.', startupMigrationFailure]],
         'migration failure must be logged without escaping as an unhandled rejection');
     assert.deepStrictEqual(retryPublications, []);
+    assert.deepStrictEqual(retryRefreshes, []);
 
     await failureController.checkDataMigration();
     assert.strictEqual(migrationAttempts, 2);
+    assert.deepStrictEqual(retryRefreshes, ['refreshed'],
+        'a successful migration retry must resend the full dashboard catalog');
     assert.deepStrictEqual(retryPublications, ['published'],
         'a successful retry must resume post-migration publication');
 }

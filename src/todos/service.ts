@@ -1,4 +1,5 @@
 import type * as vscode from 'vscode';
+import * as crypto from 'crypto';
 
 import {
     TODO_DATA_KEY,
@@ -25,6 +26,15 @@ import {
 
 const GLOBAL_CONFIGURATION_TARGET = 1;
 const TODO_STORAGE_BACKEND_KEY = 'todoStorageBackend';
+const TODO_STORAGE_PROVENANCE_VERSION = 1;
+
+type TodoStorageBackend = 'global' | 'settings';
+
+interface TodoStorageProvenance {
+    version: typeof TODO_STORAGE_PROVENANCE_VERSION;
+    activeBackend: TodoStorageBackend;
+    inactiveFingerprint: string;
+}
 
 interface TodoMemento {
     get<T>(key: string): T;
@@ -64,6 +74,7 @@ export class TodoService {
     private readonly generateId: (prefix: string) => string;
     private mutationQueue: Promise<void> = Promise.resolve();
     private activeDataBackend: boolean | undefined;
+    private inactiveDataFingerprint: string | undefined;
 
     constructor(contextOrDependencies: vscode.ExtensionContext | TodoServiceDependencies) {
         if (isDependencies(contextOrDependencies)) {
@@ -400,49 +411,115 @@ export class TodoService {
     }
 
     private async switchDataBackend(useSettings: boolean): Promise<boolean> {
-        if (this.activeDataBackend === useSettings) {
-            this.assertSupportedDataVersions();
-            return false;
-        }
-        if (this.activeDataBackend === undefined && this.getKnownDataBackend() === useSettings) {
-            this.assertSupportedDataVersions();
-            this.activeDataBackend = useSettings;
-            return false;
-        }
-
+        const destinationRaw = this.getRawData(useSettings);
+        const sourceRaw = this.getRawData(!useSettings);
         const now = this.now();
-        const destination = normalizeTodoData(this.getRawData(useSettings), now);
-        const source = normalizeTodoData(this.getRawData(!useSettings), now);
+        const destination = normalizeTodoData(destinationRaw, now);
+        const source = normalizeTodoData(sourceRaw, now);
         const destinationHasData = this.hasData(destination);
         const sourceHasData = this.hasData(source);
+        const destinationFingerprint = this.getDataFingerprint(destinationRaw);
+        const sourceFingerprint = this.getDataFingerprint(sourceRaw);
+        const provenance = this.getStorageProvenance();
+        const rememberedBackend = provenance
+            ? this.isSettingsBackend(provenance.activeBackend)
+            : undefined;
+        const activeBackend = this.activeDataBackend ?? rememberedBackend;
 
-        if (destinationHasData && sourceHasData
-            && JSON.stringify(destination) !== JSON.stringify(source)) {
+        if (activeBackend === useSettings) {
+            const expectedInactiveFingerprint = rememberedBackend === useSettings && provenance
+                ? provenance.inactiveFingerprint
+                : this.inactiveDataFingerprint;
+            if (expectedInactiveFingerprint !== undefined) {
+                if (expectedInactiveFingerprint !== sourceFingerprint) {
+                    throw new TodoStorageConflictError();
+                }
+            } else {
+                if (destinationHasData && sourceHasData
+                    && destinationFingerprint !== sourceFingerprint) {
+                    throw new TodoStorageConflictError();
+                }
+                if (destinationHasData && sourceHasData) {
+                    await this.rememberStorageProvenance(useSettings, sourceFingerprint);
+                }
+            }
+            this.activeDataBackend = useSettings;
+            this.inactiveDataFingerprint = sourceFingerprint;
+            return false;
+        }
+
+        if (activeBackend === undefined) {
+            if (destinationHasData && sourceHasData
+                && destinationFingerprint !== sourceFingerprint) {
+                throw new TodoStorageConflictError();
+            }
+
+            const copied = !destinationHasData && sourceHasData;
+            if (copied) {
+                await this.writeData(source, useSettings);
+            }
+            if (copied || (destinationHasData && sourceHasData)) {
+                await this.rememberStorageProvenance(useSettings, sourceFingerprint);
+            }
+            this.activeDataBackend = useSettings;
+            this.inactiveDataFingerprint = sourceFingerprint;
+            return copied;
+        }
+
+        const expectedTargetFingerprint = rememberedBackend === activeBackend && provenance
+            ? provenance.inactiveFingerprint
+            : this.inactiveDataFingerprint;
+        const targetIsKnownStale = expectedTargetFingerprint === destinationFingerprint;
+        if (destinationHasData
+            && destinationFingerprint !== sourceFingerprint
+            && !targetIsKnownStale) {
             throw new TodoStorageConflictError();
         }
 
-        if (!destinationHasData && sourceHasData) {
+        const copied = destinationFingerprint !== sourceFingerprint;
+        if (copied) {
             await this.writeData(source, useSettings);
-            await this.rememberDataBackend(useSettings);
-            this.activeDataBackend = useSettings;
-            return true;
         }
-
-        if (destinationHasData && sourceHasData) {
-            await this.rememberDataBackend(useSettings);
-        }
-
+        await this.rememberStorageProvenance(useSettings, sourceFingerprint);
         this.activeDataBackend = useSettings;
-        return false;
+        this.inactiveDataFingerprint = sourceFingerprint;
+        return copied;
     }
 
-    private getKnownDataBackend(): boolean | undefined {
+    private getStorageProvenance(): TodoStorageProvenance | undefined {
         const value = this.globalState.get<unknown>(TODO_STORAGE_BACKEND_KEY);
-        return typeof value === 'boolean' ? value : undefined;
+        if (!value || typeof value !== 'object') {
+            return undefined;
+        }
+        const candidate = value as Partial<TodoStorageProvenance>;
+        if (candidate.version !== TODO_STORAGE_PROVENANCE_VERSION
+            || (candidate.activeBackend !== 'global' && candidate.activeBackend !== 'settings')
+            || typeof candidate.inactiveFingerprint !== 'string'
+            || !/^[a-f0-9]{64}$/.test(candidate.inactiveFingerprint)) {
+            return undefined;
+        }
+        return candidate as TodoStorageProvenance;
     }
 
-    private async rememberDataBackend(useSettings: boolean): Promise<void> {
-        await this.globalState.update(TODO_STORAGE_BACKEND_KEY, useSettings);
+    private async rememberStorageProvenance(
+        useSettings: boolean,
+        inactiveFingerprint: string
+    ): Promise<void> {
+        const provenance: TodoStorageProvenance = {
+            version: TODO_STORAGE_PROVENANCE_VERSION,
+            activeBackend: useSettings ? 'settings' : 'global',
+            inactiveFingerprint,
+        };
+        await this.globalState.update(TODO_STORAGE_BACKEND_KEY, provenance);
+    }
+
+    private getDataFingerprint(value: unknown): string {
+        const normalized = normalizeTodoData(value);
+        return crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+    }
+
+    private isSettingsBackend(backend: TodoStorageBackend): boolean {
+        return backend === 'settings';
     }
 
     private assertSupportedDataVersions(): void {

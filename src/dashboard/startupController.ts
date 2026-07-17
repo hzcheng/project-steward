@@ -11,6 +11,7 @@ export interface DashboardStartupControllerOptions {
     relevantExtensions?: Record<keyof RelevantExtensionInstalls, string>;
     isExtensionInstalled: (extensionId: string) => boolean;
     migrateDataIfNeeded: () => Promise<boolean>;
+    refreshDashboard: () => unknown;
     publishOpenProjects: () => void;
     showInformationMessage: (message: string) => unknown;
     showErrorMessage: (message: string) => unknown;
@@ -42,6 +43,7 @@ export class DashboardStartupController {
             return;
         }
 
+        await this.options.refreshDashboard();
         this.options.publishOpenProjects();
         this.options.showInformationMessage('Migrated Project Steward projects after changing settings.');
 

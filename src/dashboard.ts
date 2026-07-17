@@ -855,6 +855,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const [projectsMigrated, todosMigrated] = await Promise.all([projectMigration, todoMigration]);
             return projectsMigrated || todosMigrated;
         },
+        refreshDashboard: () => provider.refresh(),
         publishOpenProjects: () => openProjectWorkspaceController.publish(),
         showInformationMessage: message => vscode.window.showInformationMessage(message),
         showErrorMessage: message => vscode.window.showErrorMessage(message),

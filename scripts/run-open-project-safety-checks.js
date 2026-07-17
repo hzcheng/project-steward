@@ -1302,6 +1302,7 @@ function runOpenProjectIncrementalRenderingChecks() {
 
 async function runDashboardMigrationPublicationChecks() {
     const publications = [];
+    const refreshes = [];
     const informationMessages = [];
     let currentMetadata = 'before-migration';
     let migrated = true;
@@ -1318,6 +1319,7 @@ async function runDashboardMigrationPublicationChecks() {
             }
             return migrated;
         },
+        refreshDashboard: () => refreshes.push(currentMetadata),
         publishOpenProjects: () => publications.push(currentMetadata),
         showInformationMessage: message => informationMessages.push(message),
         showSteward: () => { showStewardCalls += 1; },
@@ -1330,6 +1332,7 @@ async function runDashboardMigrationPublicationChecks() {
     });
 
     await controller.checkDataMigration();
+    assert.deepStrictEqual(refreshes, ['after-migration']);
     assert.deepStrictEqual(publications, ['after-migration']);
     assert.strictEqual(showStewardCalls, 0, 'default startup migration must not require revealing the steward');
     assert.strictEqual(informationMessages.length, 1);
@@ -1337,11 +1340,13 @@ async function runDashboardMigrationPublicationChecks() {
     migrated = false;
     currentMetadata = 'unchanged-without-migration';
     await controller.checkDataMigration();
+    assert.deepStrictEqual(refreshes, ['after-migration'], 'no migration must not trigger a redundant refresh');
     assert.deepStrictEqual(publications, ['after-migration'], 'no migration must not trigger a redundant publish');
 
     migrated = true;
     currentMetadata = 'before-explicit-migration';
     await controller.checkDataMigration(true);
+    assert.deepStrictEqual(refreshes, ['after-migration', 'after-migration']);
     assert.deepStrictEqual(publications, ['after-migration', 'after-migration']);
     assert.strictEqual(showStewardCalls, 1);
 }
