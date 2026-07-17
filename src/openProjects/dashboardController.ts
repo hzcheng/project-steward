@@ -6,10 +6,12 @@ import { withAttentionProjects } from '../aiSessions/attentionProject';
 import { buildOpenProjectsUpdatedMessage } from '../dashboard/webviewUpdateMessages';
 import type { OpenProjectAggregate } from './protocol';
 import { projectOpenProjectCards } from './projection';
+import type { TodoSearchCatalogItem } from '../todos/types';
 
 export interface OpenProjectDashboardControllerOptions {
     getOpenProjects: () => Project[];
     getGroups: () => Group[];
+    getTodoSearchItems: () => TodoSearchCatalogItem[];
     getStewardInfos: () => StewardInfos;
     getAttentionAggregate: () => AttentionAggregate;
     getBridgeInstanceId: () => string;
@@ -91,6 +93,7 @@ export class OpenProjectDashboardController {
             collapsed: stewardInfos.openProjectsGroupCollapsed,
             stewardInfos,
             semanticRevision: this.aggregate.semanticRevision,
+            todoSearchItems: this.options.getTodoSearchItems(),
         });
         this.options.logDiagnostic('Renderer', {
             event: 'post-update-build',

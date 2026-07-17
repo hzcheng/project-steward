@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="860" viewBox="0 0 420 860" role="img" aria-labelledby="title desc">
+  <title id="title">Project Steward TODO 搜索结果效果图</title>
+  <desc id="desc">全局搜索输入 release 后隐藏 Tab 导航，搜索结果中增加 TODO RESULTS 区域，展示匹配的任务和所属分组。</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity=".25"/>
+    </filter>
+    <style>
+      .ui { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label { fill:#cfd1d6; font-size:11px; font-weight:700; letter-spacing:.7px; }
+      .title { fill:#f1f1f1; font-size:13px; font-weight:650; }
+      .desc { fill:#aeb0b5; font-size:10.5px; }
+      .meta { fill:#8d9097; font-size:10px; }
+      .priority { font-size:9px; font-weight:700; }
+    </style>
+  </defs>
+
+  <rect width="420" height="860" fill="#181818"/>
+  <rect x="0" y="0" width="420" height="34" fill="#202124"/>
+  <text class="ui label" x="18" y="22">PROJECT STEWARD</text>
+  <rect x="12" y="44" width="355" height="34" rx="17" fill="#25262a" stroke="#4c9aff"/>
+  <circle cx="31" cy="61" r="6" fill="none" stroke="#8e9198" stroke-width="1.5"/>
+  <path d="M35.5 65.5l5 5" stroke="#8e9198" stroke-width="1.5"/>
+  <text class="ui title" x="51" y="65">release</text>
+  <circle cx="388" cy="61" r="15" fill="#242529" stroke="#34363b"/>
+  <path d="M383 56l10 10m0-10l-10 10" stroke="#aeb0b5" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="0" y1="96" x2="420" y2="96" stroke="#303136"/>
+
+  <text class="ui label" x="18" y="128">TODO RESULTS</text>
+  <text class="ui meta" x="317" y="128">3 matches</text>
+
+  <rect x="16" y="147" width="388" height="86" rx="10" fill="#222328" stroke="#3a3c42" filter="url(#shadow)"/>
+  <circle cx="35" cy="174" r="8" fill="none" stroke="#d64b4b" stroke-width="1.8"/>
+  <rect x="54" y="162" width="36" height="18" rx="9" fill="#5a2323" stroke="#d64b4b"/>
+  <text class="ui priority" x="65" y="175" fill="#ffcccc">HIGH</text>
+  <text class="ui title" x="101" y="175">Draft marketplace release checklist</text>
+  <text class="ui desc" x="54" y="199">Cover VSIX artifacts, install order, and smoke notes.</text>
+  <rect x="54" y="208" width="82" height="17" rx="8.5" fill="#1b1c20" stroke="#45474e"/>
+  <text class="ui meta" x="66" y="220">Release Plan</text>
+
+  <rect x="16" y="245" width="388" height="86" rx="10" fill="#222328" stroke="#3a3c42"/>
+  <circle cx="35" cy="272" r="8" fill="none" stroke="#d7ba7d" stroke-width="1.8"/>
+  <rect x="54" y="260" width="32" height="18" rx="9" fill="#44371f" stroke="#d7ba7d"/>
+  <text class="ui priority" x="64" y="273" fill="#f1dca8">MED</text>
+  <text class="ui title" x="98" y="273">Validate release notes wording</text>
+  <text class="ui desc" x="54" y="297">Keep user-facing release items short.</text>
+  <rect x="54" y="306" width="82" height="17" rx="8.5" fill="#1b1c20" stroke="#45474e"/>
+  <text class="ui meta" x="66" y="318">Release Plan</text>
+
+  <rect x="16" y="343" width="388" height="78" rx="10" fill="#1d1e22" stroke="#303238"/>
+  <circle cx="35" cy="368" r="8" fill="#4f8f4f" stroke="#6a9955" stroke-width="1.6"/>
+  <path d="M31 368l3 3 6-7" fill="none" stroke="#e4f7e4" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text class="ui title" x="54" y="369" fill="#8d9097" text-decoration="line-through">Update release screenshots</text>
+  <text class="ui desc" x="54" y="393" fill="#72757c">Completed match appears only because search is explicit.</text>
+  <rect x="54" y="402" width="82" height="17" rx="8.5" fill="#1b1c20" stroke="#33353a"/>
+  <text class="ui meta" x="66" y="414">Release Plan</text>
+
+  <text class="ui label" x="18" y="467">OPEN PROJECTS</text>
+  <rect x="16" y="486" width="388" height="64" rx="10" fill="#222328" stroke="#3a3c42"/>
+  <rect x="16" y="505" width="4" height="28" rx="2" fill="#4c9aff"/>
+  <text class="ui title" x="36" y="511">vscode-dashboard</text>
+  <text class="ui desc" x="36" y="531">Project Steward extension</text>
+
+  <text class="ui label" x="18" y="596">SAVED PROJECTS</text>
+  <rect x="16" y="615" width="388" height="64" rx="10" fill="#222328" stroke="#3a3c42"/>
+  <rect x="16" y="634" width="4" height="28" rx="2" fill="#d7ba7d"/>
+  <text class="ui title" x="36" y="640">release-lab</text>
+  <text class="ui desc" x="36" y="660">Marketplace release automation experiments</text>
+</svg>

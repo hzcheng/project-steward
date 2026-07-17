@@ -2,6 +2,7 @@
 
 import { Group, Project, StewardInfos } from '../models';
 import type { OpenProjectAiSessionViewModel, AiSessionsUpdatedMessage } from '../aiSessions/types';
+import type { TodoSearchCatalogItem } from '../todos/types';
 import { buildDashboardSearchCatalog, DashboardSearchCatalog } from '../webview/dashboardViewModel';
 import { getOpenProjectsGroupContent } from '../webview/webviewContent';
 
@@ -20,6 +21,7 @@ export interface BuildOpenProjectsUpdatedMessageInput {
     collapsed: boolean;
     stewardInfos: StewardInfos;
     semanticRevision: string;
+    todoSearchItems: TodoSearchCatalogItem[];
 }
 
 export interface BuildAiSessionsUpdatedMessageInput {
@@ -28,6 +30,7 @@ export interface BuildAiSessionsUpdatedMessageInput {
     sequence: number;
     generatedAt: string;
     openProjects: OpenProjectAiSessionViewModel[];
+    todoSearchItems: TodoSearchCatalogItem[];
 }
 
 export function buildOpenProjectsUpdatedMessage(input: BuildOpenProjectsUpdatedMessageInput): OpenProjectsUpdatedMessage {
@@ -36,7 +39,7 @@ export function buildOpenProjectsUpdatedMessage(input: BuildOpenProjectsUpdatedM
         version: 1,
         semanticRevision: input.semanticRevision,
         projectCount: input.cards.length,
-        searchCatalog: buildDashboardSearchCatalog(input.groups, input.cards),
+        searchCatalog: buildDashboardSearchCatalog(input.groups, input.cards, input.todoSearchItems),
         html: getOpenProjectsGroupContent(
             input.cards,
             input.collapsed,
@@ -52,6 +55,6 @@ export function buildAiSessionsUpdatedMessage(input: BuildAiSessionsUpdatedMessa
         sequence: input.sequence,
         generatedAt: input.generatedAt,
         openProjects: input.openProjects,
-        searchCatalog: buildDashboardSearchCatalog(input.groups, input.cards),
+        searchCatalog: buildDashboardSearchCatalog(input.groups, input.cards, input.todoSearchItems),
     };
 }

@@ -70,14 +70,29 @@ function isOpenProjectsUpdateDomConsistent(message) {
 }
 
 function getCollapseButtonState(tab, collapsedStates) {
-    tab = tab === 'projects' ? 'projects' : 'open';
+    tab = tab === 'projects' || tab === 'todo' ? tab : 'open';
+    var labels = tab === 'todo'
+        ? {
+            empty: 'No TODO groups to collapse',
+            collapse: 'Collapse TODO Groups',
+            expand: 'Expand TODO Groups',
+        }
+        : tab === 'open'
+            ? {
+                empty: 'No other windows to collapse',
+                collapse: 'Collapse Other Windows',
+                expand: 'Expand Other Windows',
+            }
+            : {
+                empty: 'No project groups to collapse',
+                collapse: 'Collapse All Groups',
+                expand: 'Expand All Groups',
+            };
     if (!collapsedStates.length) {
         return {
             disabled: true,
             collapsed: false,
-            title: tab === 'open'
-                ? 'No other windows to collapse'
-                : 'No project groups to collapse',
+            title: labels.empty,
         };
     }
 
@@ -85,10 +100,124 @@ function getCollapseButtonState(tab, collapsedStates) {
     return {
         disabled: false,
         collapsed,
-        title: tab === 'open'
-            ? (collapsed ? 'Expand Other Windows' : 'Collapse Other Windows')
-            : (collapsed ? 'Expand All Groups' : 'Collapse All Groups'),
+        title: collapsed ? labels.expand : labels.collapse,
     };
+}
+
+function syncTodoGroupCollapseControl(group) {
+    if (!group || typeof group.querySelector !== 'function') {
+        return;
+    }
+    var control = group.querySelector('[data-action="todo-collapse-group"]');
+    if (!control) {
+        return;
+    }
+    var collapsed = group.classList.contains('collapsed');
+    var action = collapsed ? 'Expand' : 'Collapse';
+    var heading = group.querySelector('h2');
+    var groupTitle = heading ? String(heading.textContent || '').trim() : '';
+    control.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    control.setAttribute('title', action + ' todo group');
+    control.setAttribute('aria-label', action + (groupTitle ? ' ' + groupTitle : ' todo group'));
+}
+
+function syncTodoExpandControl(item, expanded) {
+    if (!item || typeof item.querySelector !== 'function') {
+        return;
+    }
+    var control = item.querySelector('[data-action="todo-toggle-expanded"]');
+    if (!control) {
+        return;
+    }
+    var action = expanded ? 'Collapse' : 'Expand';
+    var titleElement = item.querySelector('.todo-title-text');
+    var todoTitle = titleElement ? String(titleElement.textContent || '').trim() : '';
+    control.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    control.setAttribute('title', action + ' todo');
+    control.setAttribute('aria-label', action + (todoTitle ? ' ' + todoTitle : ' todo'));
+}
+
+function collapseTodoGroups(groups, collapsed, postMessage) {
+    groups.forEach(group => {
+        group.classList.toggle('collapsed', collapsed);
+        syncTodoGroupCollapseControl(group);
+    });
+    postMessage({
+        type: 'todo-collapse-groups',
+        collapsed,
+    });
+}
+
+var nextTodoMutationRequestId = 0;
+
+function getTodoFormValue(form, name) {
+    var checkedElement = form.querySelector('[name="' + name + '"]:checked');
+    if (checkedElement) {
+        return String(checkedElement.value || '').trim();
+    }
+    var element = form.querySelector('[name="' + name + '"]');
+    return element ? String(element.value || '').trim() : '';
+}
+
+function setTodoComposePending(form, pending) {
+    form.setAttribute('data-todo-pending', pending ? 'true' : 'false');
+    var submitButton = form.querySelector('[type="submit"]');
+    if (!submitButton)
+        return;
+
+    submitButton.disabled = pending;
+    if (pending) {
+        submitButton.setAttribute('aria-busy', 'true');
+    } else {
+        submitButton.removeAttribute('aria-busy');
+    }
+}
+
+function submitTodoComposeForm(form, postMessage) {
+    if (form.getAttribute('data-todo-pending') === 'true')
+        return false;
+
+    var title = getTodoFormValue(form, 'title');
+    if (!title)
+        return false;
+
+    nextTodoMutationRequestId += 1;
+    var requestId = nextTodoMutationRequestId;
+    form.setAttribute('data-todo-request-id', String(requestId));
+    setTodoComposePending(form, true);
+    postMessage({
+        type: 'todo-add',
+        requestId,
+        title,
+        notes: getTodoFormValue(form, 'notes'),
+        priority: getTodoFormValue(form, 'priority'),
+        groupId: getTodoFormValue(form, 'groupId'),
+    });
+    return true;
+}
+
+function applyTodoMutationResult(message, root) {
+    if (!message
+        || message.type !== 'todo-mutation-result'
+        || message.version !== 1
+        || !Number.isSafeInteger(message.requestId)
+        || message.requestId < 1
+        || typeof message.success !== 'boolean') {
+        return false;
+    }
+
+    var form = root.querySelector('.todo-add-form[data-todo-request-id="' + message.requestId + '"]');
+    if (!form)
+        return false;
+    if (!message.success) {
+        setTodoComposePending(form, false);
+        form.removeAttribute('data-todo-request-id');
+    } else if (message.panelRefreshed === false) {
+        form.reset();
+        setTodoComposePending(form, false);
+        form.removeAttribute('data-todo-request-id');
+    }
+    return true;
 }
 
 function initProjects() {
@@ -592,6 +721,262 @@ function initProjects() {
         syncCollapseButton();
     }
 
+    function onTodoAction(e) {
+        var addTodoAction = e.target.closest('[data-action="todo-add"]');
+        if (addTodoAction && !addTodoAction.closest('.todo-add-form')) {
+            setTodoAddFormVisible(true, addTodoAction.getAttribute('data-group-id'));
+            return true;
+        }
+
+        var addGroupAction = e.target.closest('[data-action="todo-add-group"]');
+        if (addGroupAction) {
+            window.vscode.postMessage({
+                type: 'todo-add-group',
+            });
+            return true;
+        }
+
+        var toggleAction = e.target.closest('[data-action="todo-toggle"]');
+        if (toggleAction) {
+            window.vscode.postMessage({
+                type: 'todo-toggle',
+                todoId: toggleAction.getAttribute('data-todo-id'),
+                completed: toggleAction.checked === true,
+            });
+            return true;
+        }
+
+        var deleteAction = e.target.closest('[data-action="todo-delete"]');
+        if (deleteAction) {
+            window.vscode.postMessage({
+                type: 'todo-delete',
+                todoId: deleteAction.getAttribute('data-todo-id'),
+            });
+            return true;
+        }
+
+        var deleteGroupAction = e.target.closest('[data-action="todo-delete-group"]');
+        if (deleteGroupAction) {
+            window.vscode.postMessage({
+                type: 'todo-delete-group',
+                groupId: deleteGroupAction.getAttribute('data-group-id'),
+            });
+            return true;
+        }
+
+        var renameGroupAction = e.target.closest('[data-action="todo-rename-group"]');
+        if (renameGroupAction) {
+            window.vscode.postMessage({
+                type: 'todo-rename-group',
+                groupId: renameGroupAction.getAttribute('data-group-id'),
+            });
+            return true;
+        }
+
+        var collapseGroupAction = e.target.closest('[data-action="todo-collapse-group"]');
+        if (collapseGroupAction) {
+            var todoGroup = collapseGroupAction.closest('.todo-group');
+            if (!todoGroup)
+                return true;
+            todoGroup.classList.toggle('collapsed');
+            syncTodoGroupCollapseControl(todoGroup);
+            window.vscode.postMessage({
+                type: 'todo-collapse-group',
+                groupId: todoGroup.getAttribute('data-todo-group-id'),
+                collapsed: todoGroup.classList.contains('collapsed'),
+            });
+            syncCollapseButton('todo');
+            return true;
+        }
+
+        var sortAction = e.target.closest('[data-action="todo-sort-priority"]');
+        if (sortAction) {
+            window.vscode.postMessage({
+                type: 'todo-sort-priority',
+                groupId: sortAction.getAttribute('data-group-id'),
+            });
+            return true;
+        }
+
+        var showCompletedAction = e.target.closest('[data-action="todo-toggle-show-completed"]');
+        if (showCompletedAction) {
+            window.vscode.postMessage({
+                type: 'todo-toggle-show-completed',
+                showCompleted: showCompletedAction.checked === true,
+            });
+            return true;
+        }
+
+        var focusAddAction = e.target.closest('[data-action="todo-focus-add"]');
+        if (focusAddAction) {
+            setTodoAddFormVisible(true, focusAddAction.getAttribute('data-group-id'));
+            return true;
+        }
+
+        var cancelAddAction = e.target.closest('[data-action="todo-cancel-add"]');
+        if (cancelAddAction) {
+            setTodoAddFormVisible(false);
+            return true;
+        }
+
+        var editAction = e.target.closest('[data-action="todo-edit"]');
+        if (editAction) {
+            setTodoEditing(editAction.getAttribute('data-todo-id'), true);
+            return true;
+        }
+
+        var expandAction = e.target.closest('[data-action="todo-toggle-expanded"]');
+        if (expandAction) {
+            toggleTodoItemExpanded(expandAction.closest('.todo-item'));
+            return true;
+        }
+
+        var cancelEditAction = e.target.closest('[data-action="todo-cancel-edit"]');
+        if (cancelEditAction) {
+            setTodoEditing(cancelEditAction.getAttribute('data-todo-id'), false);
+            return true;
+        }
+
+        return false;
+    }
+
+    function syncTodoPrioritySegment(segment) {
+        if (!segment)
+            return;
+
+        Array.from(segment.querySelectorAll('.todo-priority-choice')).forEach(choice => {
+            var input = choice.querySelector('input[name="priority"]');
+            choice.classList.toggle('active', !!input && input.checked === true);
+        });
+    }
+
+    function resetTodoEditForm(form) {
+        form.reset();
+        syncTodoPrioritySegment(form.querySelector('.todo-priority-segment'));
+    }
+
+    function syncTodoListExpandedHeight(list) {
+        if (!list)
+            return;
+
+        var panel = list.closest('.todo-panel');
+        var collapsedHeightValue = panel
+            ? getComputedStyle(panel).getPropertyValue('--todo-collapsed-item-height')
+            : '';
+        var collapsedHeight = parseFloat(collapsedHeightValue) || 58;
+        var expandedExtraHeight = Array.from(list.querySelectorAll('.todo-item.expanded'))
+            .reduce((total, expandedItem) => total + Math.max(0, expandedItem.offsetHeight - collapsedHeight), 0);
+        list.style.setProperty('--todo-list-expanded-extra-height', expandedExtraHeight + 'px');
+    }
+
+    function toggleTodoItemExpanded(item, expanded) {
+        if (!item)
+            return;
+
+        var nextExpanded = typeof expanded === 'boolean'
+            ? expanded
+            : !item.classList.contains('expanded');
+        item.classList.toggle('expanded', nextExpanded);
+        syncTodoExpandControl(item, nextExpanded);
+        syncTodoListExpandedHeight(item.closest('.todo-list'));
+    }
+
+    function isTodoInteractiveTarget(target) {
+        return !!(target && target.closest && target.closest('button, input, textarea, select, label, a, [data-action], .todo-edit-form'));
+    }
+
+    function setTodoAddFormVisible(visible, groupId) {
+        var form = document.querySelector('.todo-add-form');
+        if (!form)
+            return;
+
+        var groupSelect = form.querySelector('[name="groupId"]');
+        if (visible && groupSelect) {
+            groupSelect.value = groupId || '';
+        }
+        form.hidden = !visible;
+        if (!visible)
+            return;
+
+        var titleInput = form.querySelector('[name="title"]');
+        if (titleInput) {
+            titleInput.focus();
+        }
+        form.scrollIntoView({ block: 'nearest' });
+    }
+
+    function setTodoEditing(todoId, editing) {
+        if (!todoId)
+            return;
+
+        var item = Array.from(document.querySelectorAll('.todo-item[data-todo-id]'))
+            .find(candidate => candidate.getAttribute('data-todo-id') === todoId);
+        if (!item)
+            return;
+
+        var wasEditing = item.classList.contains('editing');
+        var expandedBeforeEdit = item.getAttribute('data-expanded-before-edit');
+        if (editing && !wasEditing) {
+            item.setAttribute(
+                'data-expanded-before-edit',
+                item.classList.contains('expanded') ? 'true' : 'false'
+            );
+            expandedBeforeEdit = item.getAttribute('data-expanded-before-edit');
+        }
+        var view = item.querySelector('.todo-item-view');
+        var form = item.querySelector('.todo-edit-form');
+        var list = item.closest('.todo-list');
+        if (form && !editing) {
+            resetTodoEditForm(form);
+        }
+        item.classList.toggle('editing', editing);
+        if (view) {
+            view.hidden = false;
+        }
+        if (form) {
+            form.hidden = !editing;
+        }
+        toggleTodoItemExpanded(item, editing ? true : expandedBeforeEdit === 'true');
+        if (!editing) {
+            item.removeAttribute('data-expanded-before-edit');
+        }
+        if (list) {
+            list.classList.toggle('has-editing-item', !!list.querySelector('.todo-item.editing'));
+        }
+        if (form && editing) {
+            var titleInput = form.querySelector('[name="title"]');
+            if (titleInput) {
+                titleInput.focus();
+            }
+            item.scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    function onTodoFormSubmit(e) {
+        var addForm = e.target && e.target.closest ? e.target.closest('.todo-add-form') : null;
+        if (addForm) {
+            e.preventDefault();
+            submitTodoComposeForm(addForm, message => window.vscode.postMessage(message));
+            return;
+        }
+
+        var editForm = e.target && e.target.closest ? e.target.closest('.todo-edit-form') : null;
+        if (editForm) {
+            e.preventDefault();
+            var todoId = editForm.getAttribute('data-todo-id');
+            var editTitle = getTodoFormValue(editForm, 'title');
+            if (!todoId || !editTitle)
+                return;
+            window.vscode.postMessage({
+                type: 'todo-update',
+                todoId,
+                title: editTitle,
+                notes: getTodoFormValue(editForm, 'notes'),
+                priority: getTodoFormValue(editForm, 'priority'),
+            });
+        }
+    }
+
     function onTriggerProjectAction(target, projectId) {
         var actionDiv = target.closest('[data-action]')
         if (actionDiv == null)
@@ -829,16 +1214,21 @@ function initProjects() {
             : 'open');
         var selector = activeTab === 'projects'
             ? '#dashboard-tab-projects .group[data-group-id]'
-            : '#dashboard-tab-open .open-other-windows-group[data-group-id]';
+            : activeTab === 'todo'
+                ? '#dashboard-tab-todo .todo-group[data-todo-group-id]'
+                : '#dashboard-tab-open .open-other-windows-group[data-group-id]';
         return [...document.querySelectorAll(selector)];
     }
 
     function setGroupCollapsed(group, collapsed, persist) {
         group.classList.toggle('collapsed', collapsed);
         if (persist) {
+            var isTodoGroup = group.classList.contains('todo-group');
             window.vscode.postMessage({
-                type: 'collapse-group',
-                groupId: group.getAttribute('data-group-id'),
+                type: isTodoGroup ? 'todo-collapse-group' : 'collapse-group',
+                groupId: isTodoGroup
+                    ? group.getAttribute('data-todo-group-id')
+                    : group.getAttribute('data-group-id'),
                 collapsed,
             });
         }
@@ -857,8 +1247,18 @@ function initProjects() {
     }
 
     function toggleAllGroups() {
+        var dashboard = window.__projectStewardDashboard;
+        var activeTab = dashboard && typeof dashboard.getActiveTab === 'function'
+            ? dashboard.getActiveTab()
+            : 'open';
         var groups = getActiveCollapsibleGroups();
         var shouldCollapse = groups.some(group => !group.classList.contains("collapsed"));
+
+        if (activeTab === 'todo') {
+            collapseTodoGroups(groups, shouldCollapse, message => window.vscode.postMessage(message));
+            syncCollapseButton();
+            return;
+        }
 
         groups.forEach(group => setGroupCollapsed(group, shouldCollapse, true));
         syncCollapseButton();
@@ -919,6 +1319,16 @@ function initProjects() {
             return;
         }
 
+        if (onTodoAction(e)) {
+            return;
+        }
+
+        var todoItem = e.target.closest('.todo-item[data-todo-id]');
+        if (todoItem && !todoItem.classList.contains('editing') && !isTodoInteractiveTarget(e.target)) {
+            toggleTodoItemExpanded(todoItem);
+            return;
+        }
+
         var projectDiv = e.target.closest('.project');
         if (projectDiv) {
             onInsideProjectClick(e, projectDiv);
@@ -935,6 +1345,12 @@ function initProjects() {
     function onChangeEvent(e) {
         if (!e.target)
             return;
+
+        var todoPriorityInput = e.target.closest('.todo-priority-choice input[name="priority"]');
+        if (todoPriorityInput) {
+            syncTodoPrioritySegment(todoPriorityInput.closest('.todo-priority-segment'));
+            return;
+        }
 
         var providerSelect = e.target.closest('select[data-action="select-ai-provider"]');
         if (!providerSelect)
@@ -955,6 +1371,20 @@ function initProjects() {
 
     function onWindowMessage(e) {
         var message = e && e.data;
+        if (message && message.type === 'todo-mutation-result') {
+            applyTodoMutationResult(message, document);
+            return;
+        }
+        if (message && (message.type === 'todo-panel-content' || message.type === 'todo-panel-updated')) {
+            window.setTimeout(() => {
+                var todoRoot = document.querySelector('#dashboard-tab-todo');
+                if (todoRoot && typeof initDnD === 'function' && typeof disposeDnD === 'function') {
+                    disposeDnD(todoRoot);
+                    initDnD(todoRoot);
+                    syncCollapseButton('todo');
+                }
+            }, 0);
+        }
         if (message && message.type === 'open-projects-updated') {
             if (!applyOpenProjectsUpdate(message)) {
                 requestFullRefresh('invalid-open-projects-update');
@@ -1307,6 +1737,7 @@ function initProjects() {
     });
 
     document.addEventListener('change', onChangeEvent);
+    document.addEventListener('submit', onTodoFormSubmit);
 
     document.addEventListener('mousedown', (e) => {
         if (e.target.closest('.codex-session-row')) {
@@ -1327,6 +1758,12 @@ function initProjects() {
 
     document.addEventListener("keydown", e => {
         if (e.key === "Escape") {
+            var editForm = e.target && e.target.closest ? e.target.closest('.todo-edit-form') : null;
+            if (editForm) {
+                e.preventDefault();
+                setTodoEditing(editForm.getAttribute('data-todo-id'), false);
+                return;
+            }
             closeContextMenus();
             if (batchAiSessionState.projectId && !batchAiSessionState.pending) {
                 exitAiSessionBatchManagement();

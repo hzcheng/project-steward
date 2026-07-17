@@ -645,43 +645,112 @@ body .project {
 }
 
 .dashboard-tab-list {
+    position: relative;
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 4px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
     width: 100%;
-    margin-top: 6px;
-    padding: 0 2px;
+    margin-top: 9px;
+    padding: 2px 10px 0;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, .035), rgba(255, 255, 255, 0) 72%),
+        var(--vscode-editor-background);
     box-sizing: border-box;
 }
 
+.dashboard-tab-list::before {
+    position: absolute;
+    right: 0;
+    bottom: -1px;
+    left: 0;
+    height: 1px;
+    background: rgba(255, 255, 255, .035);
+    content: "";
+    pointer-events: none;
+}
+
 .dashboard-tab-button {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     min-width: 0;
-    min-height: 30px;
-    padding: 5px 10px;
+    min-height: 34px;
+    padding: 7px 8px 8px;
     overflow: hidden;
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: 7px 7px 0 0;
     color: var(--vscode-descriptionForeground);
     background: transparent;
     font-family: var(--vscode-font-family);
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: .04em;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     cursor: pointer;
+    isolation: isolate;
+    transition: color 120ms ease, border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
 
     &[aria-selected="true"] {
-        border-color: var(--vscode-panel-border);
         color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
-        background: var(--vscode-list-activeSelectionBackground);
         font-weight: 700;
+        border-color: rgba(255, 255, 255, .045);
+        border-bottom-color: transparent;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, .045);
     }
 
     &:hover {
         color: var(--vscode-foreground);
-        background: var(--vscode-list-hoverBackground);
+        background: rgba(255, 255, 255, .035);
     }
+}
+
+.dashboard-tab-button::before {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: transparent;
+    content: "";
+}
+
+.dashboard-tab-button[aria-selected="true"]::before {
+    background: linear-gradient(180deg, rgba(255, 255, 255, .055), rgba(255, 255, 255, .018));
+}
+
+.dashboard-tab-button::after {
+    position: absolute;
+    right: 12px;
+    bottom: -1px;
+    left: 12px;
+    height: 2px;
+    border-radius: 999px 999px 0 0;
+    background: transparent;
+    content: "";
+}
+
+.dashboard-tab-button[aria-selected="true"]::after {
+    background: var(--vscode-focusBorder);
+    box-shadow: 0 0 12px rgba(76, 154, 255, .24);
+}
+
+.dashboard-tab-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 19px;
+    height: 19px;
+    color: currentColor;
+    opacity: .72;
+}
+
+.dashboard-tab-icon svg {
+    width: 19px;
+    height: 19px;
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+}
+
+.dashboard-tab-button[aria-selected="true"] .dashboard-tab-icon {
+    opacity: .95;
 }
 
 .dashboard-tab-button:focus-visible,
@@ -703,8 +772,12 @@ body .project {
 
 .dashboard-search-section {
     display: grid;
-    gap: 5px;
-    margin: 0 0 12px;
+    gap: 7px;
+    margin: 0 0 14px;
+}
+
+.dashboard-search-section[data-section-type="todo"] {
+    gap: 8px;
 }
 
 .dashboard-search-section-title {
@@ -736,12 +809,52 @@ body .project {
     }
 }
 
+.dashboard-search-section[data-section-type="todo"] .dashboard-search-result {
+    min-height: 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--vscode-editorWidget-background, var(--vscode-list-inactiveSelectionBackground));
+}
+
+.dashboard-search-section[data-section-type="todo"] .dashboard-search-result.completed {
+    color: var(--vscode-descriptionForeground);
+}
+
+.dashboard-search-section[data-section-type="todo"] .dashboard-search-result.completed .dashboard-search-result-title {
+    text-decoration: line-through;
+}
+
 .dashboard-search-result-title,
-.dashboard-search-result-meta {
+.dashboard-search-result-meta,
+.dashboard-search-result-notes {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.dashboard-search-section[data-section-type="todo"] .dashboard-search-result-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.dashboard-search-result-group {
+    max-width: 50%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dashboard-search-result-priority,
+.dashboard-search-result-status {
+    flex: 0 0 auto;
+    font-size: 10px;
+    font-weight: 650;
+}
+
+.dashboard-search-result-notes {
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
 }
 
 .dashboard-search-result-title {
@@ -752,6 +865,7 @@ body .project {
 .dashboard-search-result-meta,
 .dashboard-search-empty,
 .dashboard-projects-loading,
+.dashboard-todo-loading,
 .open-current-workspace-empty {
     color: var(--vscode-descriptionForeground);
     font-size: 11px;
@@ -759,8 +873,764 @@ body .project {
 
 .dashboard-search-empty,
 .dashboard-projects-loading,
+.dashboard-todo-loading,
 .open-current-workspace-empty {
     padding: 14px 8px;
+    text-align: center;
+}
+
+.steward-section {
+    display: grid;
+    gap: 4px;
+}
+
+.steward-section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-sizing: border-box;
+}
+
+.steward-card {
+    position: relative;
+    box-sizing: border-box;
+}
+
+.steward-card:not(.project) {
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 7px;
+    background: var(--steward-project-card-bg);
+}
+
+.steward-button,
+.steward-icon-button {
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-family: var(--vscode-font-family);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.steward-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 26px;
+    padding: 0 9px;
+}
+
+.steward-button-primary {
+    border-color: var(--vscode-button-border, transparent);
+    color: var(--vscode-button-foreground);
+    background: var(--vscode-button-background);
+    font-weight: 600;
+}
+
+.steward-button-primary:hover {
+    background: var(--vscode-button-hoverBackground);
+}
+
+.steward-icon-button {
+    display: inline-grid;
+    width: 26px;
+    height: 26px;
+    place-items: center;
+    padding: 0;
+    color: var(--vscode-descriptionForeground);
+    background: transparent;
+}
+
+.steward-icon-button:hover,
+.steward-button:not(.steward-button-primary):hover {
+    color: var(--vscode-foreground);
+    background: var(--vscode-list-hoverBackground);
+}
+
+.steward-badge {
+    border-radius: 999px;
+    color: var(--vscode-descriptionForeground);
+    background: rgba(127, 127, 127, .14);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.steward-meta {
+    color: var(--vscode-descriptionForeground);
+}
+
+.steward-empty-state {
+    color: var(--vscode-descriptionForeground);
+    text-align: center;
+}
+
+
+.todo-panel {
+    display: grid;
+    gap: 14px;
+    padding: 12px 2px 18px;
+    box-sizing: border-box;
+}
+
+/* The `hidden` attribute must win over `display: grid/flex` on todo elements. */
+.todo-panel [hidden] {
+    display: none !important;
+}
+
+.todo-group-header,
+.todo-item-main,
+.todo-title-line,
+.todo-item-actions,
+.todo-form-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.todo-page-header,
+.todo-group-header {
+    justify-content: space-between;
+}
+
+.todo-page-header {
+    min-height: 28px;
+}
+
+.todo-summary-copy {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.todo-summary-copy strong {
+    flex: 0 0 auto;
+    color: currentColor;
+    font: inherit;
+}
+
+.todo-summary-meta {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.todo-primary-button,
+.todo-secondary-button,
+.todo-quiet-button,
+.todo-icon-button,
+.todo-square-button,
+.todo-square-toggle {
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-family: var(--vscode-font-family);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.todo-primary-button,
+.todo-secondary-button,
+.todo-quiet-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 26px;
+    padding: 0 9px;
+}
+
+.todo-primary-button {
+    border-color: var(--vscode-button-border, transparent);
+    color: var(--vscode-button-foreground);
+    background: var(--vscode-button-background);
+    font-weight: 600;
+}
+
+.todo-primary-button:hover {
+    background: var(--vscode-button-hoverBackground);
+}
+
+.todo-secondary-button {
+    border-color: var(--vscode-panel-border);
+    color: var(--vscode-foreground);
+    background: transparent;
+}
+
+.todo-quiet-button {
+    color: var(--vscode-descriptionForeground);
+    background: transparent;
+}
+
+.todo-secondary-button:hover,
+.todo-quiet-button:hover,
+.todo-icon-button:hover,
+.todo-square-button:hover,
+.todo-square-toggle:hover {
+    color: var(--vscode-foreground);
+    background: var(--vscode-list-hoverBackground);
+}
+
+.todo-primary-button svg,
+.todo-quiet-button svg,
+.todo-compose-icon svg,
+.todo-icon-button svg {
+    display: block;
+    width: 12px;
+    height: 12px;
+    fill: currentColor;
+}
+
+.todo-square-toggle {
+    position: relative;
+}
+
+.todo-square-toggle:focus-within {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+}
+
+.todo-square-toggle input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.todo-square-toggle.active {
+    color: var(--vscode-textLink-foreground);
+    background: rgba(76, 154, 255, .12);
+}
+
+.todo-icon-button {
+    display: inline-grid;
+    width: 22px;
+    height: 22px;
+    place-items: center;
+    padding: 0;
+    color: var(--vscode-descriptionForeground);
+    background: transparent;
+}
+
+.todo-icon-button.danger:hover {
+    color: var(--vscode-errorForeground);
+    background: rgba(244, 135, 113, .10);
+}
+
+.todo-hidden-completed,
+.todo-group-empty,
+.todo-empty-state {
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+}
+
+.todo-hidden-completed {
+    margin: 2px 0 0;
+    text-align: center;
+}
+
+.todo-group-empty {
+    margin: 0;
+    padding: 2px 4px;
+}
+
+.todo-compose-panel,
+.todo-add-form,
+.todo-edit-panel {
+    display: grid;
+    gap: 8px;
+}
+
+.todo-add-form {
+    margin: 0 0 10px;
+}
+
+.todo-compose-panel {
+    padding: 10px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 8px;
+    background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+}
+
+.todo-compose-primary {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+}
+
+.todo-compose-icon {
+    display: grid;
+    width: 18px;
+    height: 18px;
+    place-items: center;
+    border-radius: 5px;
+    color: var(--vscode-button-foreground);
+    background: var(--vscode-button-background);
+}
+
+.todo-add-form input,
+.todo-add-form textarea,
+.todo-add-form select,
+.todo-edit-form input,
+.todo-edit-form textarea,
+.todo-edit-form select {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 5px 8px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 6px;
+    color: var(--vscode-input-foreground);
+    background: var(--vscode-input-background);
+    font-family: var(--vscode-font-family);
+    font-size: 12px;
+}
+
+.todo-add-form input:focus,
+.todo-add-form textarea:focus,
+.todo-add-form select:focus,
+.todo-edit-form input:focus,
+.todo-edit-form textarea:focus,
+.todo-edit-form select:focus {
+    border-color: var(--vscode-focusBorder);
+    outline: none;
+}
+
+.todo-add-form input,
+.todo-edit-form input,
+.todo-add-form select,
+.todo-edit-form select {
+    min-height: 28px;
+}
+
+.todo-title-input {
+    font-weight: 600;
+}
+
+.todo-add-form textarea,
+.todo-edit-form textarea {
+    line-height: 1.45;
+    resize: vertical;
+}
+
+.todo-form-row {
+    align-items: stretch;
+}
+
+.todo-form-row select {
+    flex: 1 1 0;
+}
+
+.todo-groups {
+    display: grid;
+    gap: 14px;
+}
+
+.todo-group {
+    display: grid;
+    gap: 7px;
+    margin-right: 0;
+}
+
+.todo-group.collapsed .todo-list,
+.todo-group.collapsed .todo-group-empty,
+.todo-group.collapsed .todo-hidden-completed {
+    display: none;
+}
+
+.todo-group-title-block {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.todo-group-collapse-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
+
+    &:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: 1px;
+    }
+}
+
+.todo-expand-control[aria-expanded="false"] svg {
+    transform: rotate(-90deg);
+}
+
+.todo-expand-control svg {
+    transition: transform 120ms ease;
+}
+
+.todo-group-header h2 {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: currentColor;
+    font-size: inherit;
+    font-weight: inherit;
+    letter-spacing: 0;
+    line-height: inherit;
+    text-transform: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.todo-group-count {
+    flex: 0 0 auto;
+    padding: 0;
+    border-radius: 0;
+    color: currentColor;
+    background: transparent;
+    font-size: 10px;
+    font-weight: 600;
+    opacity: .55;
+    white-space: nowrap;
+}
+
+.todo-group-action.danger:hover {
+    color: var(--vscode-errorForeground);
+}
+
+.todo-list {
+    display: grid;
+    gap: 0;
+    max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px));
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+}
+
+.todo-list > .steward-item-card:last-child {
+    margin-bottom: 0;
+}
+
+.todo-list.has-editing-item {
+    max-height: none;
+    overflow-y: visible;
+}
+
+.todo-item {
+    display: grid;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.todo-item.editing .todo-edit-form {
+    display: grid;
+}
+
+.todo-item.editing .todo-item-actions {
+    opacity: 1;
+}
+
+.todo-item:not(.expanded) .todo-notes {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.todo-item:not(.expanded) .todo-item-footer {
+    display: none;
+}
+
+.todo-item:not(.expanded) .todo-edit-form {
+    display: none !important;
+}
+
+.todo-item.expanded .todo-notes,
+.todo-item.editing .todo-notes {
+    white-space: pre-wrap;
+}
+
+.todo-item-accent {
+    color: var(--vscode-descriptionForeground);
+    background: currentColor;
+}
+
+.todo-priority-high .todo-item-accent {
+    color: var(--vscode-testing-iconFailed, var(--vscode-errorForeground));
+}
+
+.todo-priority-medium .todo-item-accent {
+    color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-terminal-ansiYellow));
+}
+
+.todo-priority-low .todo-item-accent {
+    color: var(--vscode-gitDecoration-untrackedResourceForeground, var(--vscode-descriptionForeground));
+}
+
+.todo-item-view {
+    min-width: 0;
+}
+
+.todo-item-main {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    align-items: start;
+    justify-content: space-between;
+    min-width: 0;
+}
+
+.todo-check {
+    position: relative;
+    display: inline-grid;
+    width: 18px;
+    height: 18px;
+    margin-top: 1px;
+    place-items: center;
+}
+
+.todo-check input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.todo-checkbox-visual {
+    position: relative;
+    display: block;
+    width: 15px;
+    height: 15px;
+    box-sizing: border-box;
+    border: 1.5px solid var(--vscode-descriptionForeground);
+    border-radius: 50%;
+    background: transparent;
+    opacity: .75;
+    transition: border-color 120ms ease, background-color 120ms ease, opacity 120ms ease;
+}
+
+.todo-check:hover .todo-checkbox-visual {
+    opacity: 1;
+}
+
+.todo-checkbox-visual::after {
+    content: '';
+    position: absolute;
+    top: 1px;
+    left: 4px;
+    width: 3px;
+    height: 7px;
+    border: solid var(--vscode-button-foreground);
+    border-width: 0 1.5px 1.5px 0;
+    transform: rotate(45deg);
+    opacity: 0;
+}
+
+.todo-check input:checked + .todo-checkbox-visual {
+    border-color: var(--vscode-button-background);
+    background: var(--vscode-button-background);
+    opacity: 1;
+}
+
+.todo-check input:checked + .todo-checkbox-visual::after {
+    opacity: 1;
+}
+
+.todo-check input:focus-visible + .todo-checkbox-visual {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 2px;
+}
+
+.todo-item-content {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.todo-title-line {
+    min-width: 0;
+    overflow: hidden;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.todo-title-text {
+    min-width: 0;
+    overflow: hidden;
+    display: block;
+    color: var(--vscode-foreground);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.todo-priority-badge {
+    display: inline-block;
+    flex: 0 0 auto;
+    padding: 2px 6px;
+    border-radius: 999px;
+    color: var(--vscode-descriptionForeground);
+    background: rgba(127, 127, 127, .14);
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: .04em;
+    line-height: 1.3;
+    text-transform: uppercase;
+}
+
+.todo-priority-high .todo-priority-badge {
+    color: var(--vscode-testing-iconFailed);
+    background: rgba(214, 75, 75, .16);
+}
+
+.todo-priority-medium .todo-priority-badge {
+    color: var(--vscode-gitDecoration-modifiedResourceForeground);
+    background: rgba(215, 186, 125, .15);
+}
+
+.todo-priority-low .todo-priority-badge {
+    color: var(--vscode-gitDecoration-untrackedResourceForeground);
+    background: rgba(106, 153, 85, .18);
+}
+
+.todo-notes {
+    margin: 0;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+
+.todo-item-footer {
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+    color: var(--vscode-descriptionForeground);
+    font-size: 10px;
+    opacity: .85;
+}
+
+.todo-item-actions {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    gap: 0;
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+
+.todo-item:hover .todo-item-actions,
+.todo-item:focus-within .todo-item-actions {
+    opacity: 1;
+}
+
+.todo-item.completed .todo-title-text {
+    color: var(--vscode-descriptionForeground);
+    font-weight: 500;
+    text-decoration: line-through;
+}
+
+.todo-item.completed .todo-priority-badge {
+    opacity: .55;
+}
+
+.todo-item.completed .todo-notes,
+.todo-item.completed .todo-item-footer {
+    color: var(--vscode-descriptionForeground);
+}
+
+.todo-edit-panel {
+    gap: 7px;
+    margin-top: 2px;
+    padding: 10px 0 0;
+    border-top: 1px solid var(--vscode-panel-border);
+    background: transparent;
+}
+
+.todo-edit-heading {
+    color: var(--vscode-foreground);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+
+.todo-field-label {
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+}
+
+.todo-priority-segment {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 3px;
+    padding: 3px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 8px;
+    background: var(--vscode-editor-background);
+}
+
+.todo-priority-choice {
+    display: grid;
+    min-height: 24px;
+    place-items: center;
+    color: var(--vscode-descriptionForeground);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    cursor: pointer;
+    transition: color 120ms ease;
+}
+
+.todo-priority-choice input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.todo-priority-choice span {
+    display: grid;
+    width: 100%;
+    min-height: 24px;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    box-sizing: border-box;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.todo-priority-choice:hover {
+    color: var(--vscode-foreground);
+}
+
+.todo-priority-choice.active,
+.todo-priority-choice input:checked + span {
+    border-color: var(--vscode-panel-border);
+    color: var(--vscode-foreground);
+    background: var(--vscode-list-inactiveSelectionBackground);
+}
+
+.todo-edit-actions {
+    justify-content: flex-end;
+    padding-top: 2px;
+}
+
+.todo-empty-state {
+    margin: 18px 4px 0;
+    padding: 10px 4px;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
     text-align: center;
 }
 
@@ -781,6 +1651,13 @@ body .project {
 @media (prefers-reduced-motion: reduce) {
     .open-other-windows-group .project-ai-attention-badge.attention-animate {
         animation: none;
+    }
+
+    body.steward-sidebar .steward-group-header .group-actions,
+    body.steward-sidebar .steward-item-card,
+    body.steward-sidebar .steward-item-card::before,
+    body.steward-sidebar .steward-item-accent {
+        transition: none;
     }
 }
 
@@ -902,11 +1779,75 @@ body.steward-sidebar {
     .groups-wrapper {
         width: 100%;
 
-        > .group:not(#tempGroup) .group-title {
+        > .group:not(#tempGroup) .steward-group-header {
             position: sticky;
             top: calc(var(--steward-sticky-header-height) + 4px);
             z-index: 160;
             box-shadow: 0 2px 4px rgba(0, 0, 0, .12);
+        }
+    }
+
+    .steward-group-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        width: 100%;
+        padding: 4px 6px;
+        border: 1px solid var(--vscode-panel-border);
+        border-radius: 7px;
+        color: var(--steward-foreground);
+        background: var(--vscode-list-inactiveSelectionBackground, transparent);
+        font-family: var(--vscode-font-family);
+        font-size: 15px;
+        font-weight: 750;
+        line-height: 1.25;
+        box-sizing: border-box;
+
+        .group-actions {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex: 0 0 auto;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity $defaultTransition $actionTransitionDelay;
+
+            &.right {
+                float: none;
+            }
+
+            > * {
+                display: inline-grid;
+                width: 22px;
+                height: 22px;
+                place-items: center;
+                padding: 0;
+                border: 0;
+                color: currentColor;
+                background: transparent;
+                cursor: pointer;
+            }
+
+            svg {
+                width: 14px;
+                height: 14px;
+                margin: 0;
+                fill: currentColor;
+            }
+        }
+
+        .group-actions > .danger {
+            &:hover,
+            &:focus-visible {
+                color: var(--vscode-errorForeground);
+            }
+        }
+
+        &:hover .group-actions,
+        &:focus-within .group-actions {
+            opacity: 1;
+            pointer-events: all;
         }
     }
 
@@ -921,23 +1862,6 @@ body.steward-sidebar {
 
         &:first-child {
             margin-top: 8px;
-        }
-
-        .group-title {
-            display: flex;
-            align-items: center;
-            min-width: 0;
-            width: 100%;
-            padding: 4px 6px;
-            border: 1px solid var(--vscode-panel-border);
-            border-radius: 7px;
-            color: var(--steward-foreground);
-            background: var(--vscode-list-inactiveSelectionBackground, transparent);
-            font-family: var(--vscode-font-family);
-            font-size: 15px;
-            font-weight: 750;
-            line-height: 1.25;
-            box-sizing: border-box;
         }
 
         .group-title-text {
@@ -974,14 +1898,6 @@ body.steward-sidebar {
             }
         }
 
-        .group-actions {
-            flex: 0 0 auto;
-
-            &.right {
-                float: none;
-            }
-        }
-
         .group-list {
             display: block;
             padding-top: 7px;
@@ -1003,7 +1919,8 @@ body.steward-sidebar {
         }
     }
 
-    .project {
+    .steward-item-card {
+        position: relative;
         box-sizing: border-box;
         width: calc(100% - 4px);
         height: 58px;
@@ -1031,11 +1948,104 @@ body.steward-sidebar {
             inset: 0;
             pointer-events: none;
             opacity: 0;
-            background:
-                linear-gradient(120deg, rgba(255, 255, 255, 0.10), transparent 46%);
+            background: linear-gradient(120deg, rgba(255, 255, 255, 0.10), transparent 46%);
             transition: opacity 180ms ease;
         }
 
+        &:hover,
+        &:focus-within {
+            background: var(--vscode-list-hoverBackground);
+            border-color: var(--vscode-focusBorder);
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.06),
+                0 0 0 1px rgba(255, 255, 255, 0.04),
+                0 7px 18px var(--vscode-widget-shadow);
+            transform: translateY(-1px);
+
+            &::before {
+                opacity: 1;
+            }
+        }
+
+        &.expanded,
+        &.editing,
+        &[data-codex-expanded] {
+            height: auto;
+            min-height: 58px;
+        }
+
+        &.completed {
+            opacity: .75;
+        }
+
+        &.expanded:hover,
+        &.expanded:focus-within,
+        &.editing:hover,
+        &.editing:focus-within,
+        &[data-codex-expanded]:hover,
+        &[data-codex-expanded]:focus-within {
+            background: var(
+                --vscode-sideBarSectionHeader-background,
+                var(--vscode-list-inactiveSelectionBackground, var(--vscode-sideBar-background))
+            );
+            border-color: var(--vscode-panel-border);
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, .04),
+                0 1px 4px rgba(0, 0, 0, .14);
+            transform: none;
+
+            &::before {
+                opacity: 0;
+            }
+        }
+
+        &.selected,
+        &[data-current-workspace] {
+            background: var(
+                --vscode-list-inactiveSelectionBackground,
+                var(--vscode-sideBarSectionHeader-background, var(--vscode-sideBar-background))
+            );
+            border-color: var(--vscode-focusBorder);
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.07),
+                0 0 0 1px var(--vscode-focusBorder),
+                0 4px 12px var(--vscode-widget-shadow);
+        }
+
+        &.selected:hover,
+        &.selected:focus-within,
+        &[data-current-workspace]:hover,
+        &[data-current-workspace]:focus-within {
+            border-color: var(--vscode-focusBorder);
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.08),
+                0 0 0 1px var(--vscode-focusBorder),
+                0 6px 16px var(--vscode-widget-shadow);
+        }
+    }
+
+    .steward-item-accent {
+        position: absolute;
+        left: 7px;
+        top: 31%;
+        bottom: 31%;
+        width: 4px;
+        height: auto;
+        border-radius: 999px;
+        opacity: .9;
+        pointer-events: none;
+        box-shadow: 0 0 12px var(--project-color, currentColor);
+        transition: top $defaultTransition, bottom $defaultTransition, opacity $defaultTransition;
+    }
+
+    .steward-item-card:hover .steward-item-accent,
+    .steward-item-card:focus-within .steward-item-accent {
+        top: 26%;
+        bottom: 26%;
+        opacity: 1;
+    }
+
+    .project {
         .project-aura {
             position: absolute;
             inset: -12px -18px auto 28%;
@@ -1050,45 +2060,9 @@ body.steward-sidebar {
                 transform $defaultTransition;
         }
 
-        &:hover {
-            background: var(--vscode-list-hoverBackground);
-            border-color: var(--vscode-focusBorder);
-            box-shadow:
-                inset 0 1px 0 rgba(255, 255, 255, 0.06),
-                0 0 0 1px rgba(255, 255, 255, 0.04),
-                0 7px 18px var(--vscode-widget-shadow);
-            transform: translateY(-1px);
-
-            &::before {
-                opacity: 1;
-            }
-
-            .project-aura {
-                opacity: 0.22;
-                transform: translateY(-14px) rotate(-3deg);
-            }
-        }
-
-        .project-border {
-            left: 7px;
-            top: 31%;
-            bottom: 31%;
-            width: 4px;
-            height: auto;
-            border-radius: 999px;
-            opacity: 0.9;
-            transform: none;
-            box-shadow: 0 0 12px var(--project-color, var(--vscode-focusBorder));
-            transition:
-                top $defaultTransition,
-                bottom $defaultTransition,
-                opacity $defaultTransition;
-        }
-
-        &:hover .project-border {
-            top: 26%;
-            bottom: 26%;
-            opacity: 1;
+        &:hover .project-aura {
+            opacity: 0.22;
+            transform: translateY(-14px) rotate(-3deg);
         }
 
         .project-favorite-badge {
@@ -1230,8 +2204,6 @@ body.steward-sidebar {
             }
 
             &[data-codex-expanded] {
-                height: auto;
-                min-height: 58px;
                 padding-bottom: 9px;
 
                 .codex-sessions {
@@ -1240,42 +2212,10 @@ body.steward-sidebar {
             }
 
             &[data-codex-expanded]:hover {
-                background: var(--vscode-sideBarSectionHeader-background, var(--vscode-list-inactiveSelectionBackground, var(--vscode-sideBar-background)));
-                border-color: var(--vscode-panel-border);
-                box-shadow:
-                    inset 0 1px 0 rgba(255, 255, 255, .04),
-                    0 1px 4px rgba(0, 0, 0, .14);
-                transform: none;
-
-                &::before {
-                    opacity: 0;
-                }
-
-                .project-border {
+                .steward-item-accent {
                     opacity: .9;
                 }
             }
-        }
-
-        &[data-current-workspace],
-        &[data-current-workspace][data-codex-expanded]:hover {
-            background: var(
-                --vscode-list-inactiveSelectionBackground,
-                var(--vscode-sideBarSectionHeader-background, var(--vscode-sideBar-background))
-            );
-            border-color: var(--vscode-focusBorder);
-            box-shadow:
-                inset 0 1px 0 rgba(255, 255, 255, 0.07),
-                0 0 0 1px var(--vscode-focusBorder),
-                0 4px 12px var(--vscode-widget-shadow);
-        }
-
-        &[data-current-workspace]:hover {
-            border-color: var(--vscode-focusBorder);
-            box-shadow:
-                inset 0 1px 0 rgba(255, 255, 255, 0.08),
-                0 0 0 1px var(--vscode-focusBorder),
-                0 6px 16px var(--vscode-widget-shadow);
         }
 
         .codex-sessions {
@@ -1764,6 +2704,7 @@ body.steward-sidebar {
         }
 
         &.no-projects {
+            @extend .steward-item-card;
             height: 58px;
             font-size: 1.1em;
             border: 1px dashed var(--vscode-panel-border);
@@ -1780,6 +2721,7 @@ body.steward-sidebar {
             width: 100%;
         }
     }
+
 }
 body.steward-sidebar .project .codex-session-row.attention-animate{animation:steward-ai-attention 900ms ease-in-out 3}
 @keyframes steward-ai-attention{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.02);opacity:.65}}

@@ -6,6 +6,17 @@ import { USER_CANCELED, RelevantExtensions, REOPEN_KEY, WSL_DEFAULT_REGEX, OPEN_
 
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
+import { TodoService } from './todos/service';
+import {
+    deleteTodoWithConfirmation,
+    renameTodoGroupWithPrompt,
+    runTodoMutation,
+    runTodoPromptMutation,
+    runTodoRequestMutation,
+} from './todos/hostMutation';
+import { UnsupportedTodoDataVersionError } from './todos/types';
+import { buildTodoViewModel } from './todos/viewModel';
+import { getTodoPanelContent, getUnsupportedTodoVersionPanelContent } from './todos/webviewContent';
 import FileService from './services/fileService';
 import CodexSessionService from './services/codexSessionService';
 import KimiSessionService from './services/kimiSessionService';
@@ -65,10 +76,11 @@ import { GroupCollapseController } from './dashboard/groupCollapseController';
 import { DashboardLifecycleController } from './dashboard/lifecycleController';
 import { createDashboardMessageRouter } from './dashboard/messageRouter';
 import { DashboardRuntimeController } from './dashboard/runtimeController';
-import { DashboardStartupController } from './dashboard/startupController';
+import { DashboardStartupController, settleMigration } from './dashboard/startupController';
 import { getDashboardWebviewOptions } from './dashboard/webviewOptions';
 import { OpenProjectDashboardController } from './openProjects/dashboardController';
 import { OpenProjectWorkspaceController } from './openProjects/workspaceController';
+import { buildDashboardSearchCatalog } from './webview/dashboardViewModel';
 
 type TerminalEntry = AiSessionTerminalEntry<vscode.Terminal>;
 
@@ -91,6 +103,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
+    const todoService = new TodoService(context);
+    const todoViewState = todoService.getViewState();
+    let revealedTodoId: string | undefined;
+    const todoStorageMigration = { ready: Promise.resolve<unknown>(undefined) };
     const groupCollapseController = new GroupCollapseController({
         state: context.globalState,
         projectService,
@@ -404,6 +420,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         invalidateCache: providerId => invalidateAiSessionCache(providerId),
         watchSessionChanges: (providerId, onDidChange) => getRegisteredAiSessionProvider(providerId).service.watchSessionChanges(onDidChange),
         getGroups: () => projectService.getGroups(),
+        getTodoSearchItems: () => todoService.getSearchItems(),
         getCards: getOpenProjectCards,
         getOpenProjectAiSessionViewModel,
         nextSequence: () => ++aiSessionUpdateSequence,
@@ -433,6 +450,158 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     requestId: e.requestId,
                     html: getProjectsPanelContent(projectService.getGroups(), stewardInfos),
                 });
+            },
+            'request-todo-panel': async e => {
+                if (e.version !== 1 || !Number.isSafeInteger(e.requestId) || e.requestId < 1) {
+                    return;
+                }
+                await postTodoPanelContent(e.requestId as number);
+            },
+            'todo-add': async e => {
+                const valid = typeof e.title === 'string' && Boolean(e.title.trim());
+                await runTodoRequestMutation({
+                    requestId: e.requestId,
+                    valid,
+                    mutate: () => todoService.addTodo({
+                        title: e.title as string,
+                        notes: typeof e.notes === 'string' ? e.notes : '',
+                        priority: e.priority === 'high' || e.priority === 'medium' || e.priority === 'low' ? e.priority : 'medium',
+                        groupId: typeof e.groupId === 'string' ? e.groupId : undefined,
+                    }),
+                    onSuccess: () => postTodoPanelContent(),
+                    postResult: message => provider.postMessage(message),
+                    showErrorMessage: message => vscode.window.showErrorMessage(message),
+                    logError,
+                });
+            },
+            'todo-add-group': async () => {
+                await runTodoPromptMutation({
+                    prompt: value => vscode.window.showInputBox({
+                        prompt: 'Todo group title',
+                        placeHolder: 'Group name',
+                        value,
+                        ignoreFocusOut: true,
+                    }),
+                    mutate: title => todoService.addGroup(title),
+                    refreshPanel: () => postTodoPanelContent(),
+                    showErrorMessage: message => vscode.window.showErrorMessage(message),
+                    logError,
+                });
+            },
+            'todo-toggle': async e => {
+                if (typeof e.todoId !== 'string') {
+                    return;
+                }
+                await runTodoPanelMutation(() => todoService.completeTodo(e.todoId as string, e.completed === true));
+            },
+            'todo-delete': async e => {
+                if (typeof e.todoId !== 'string') {
+                    return;
+                }
+                await deleteTodoWithConfirmation({
+                    todoId: e.todoId,
+                    getData: () => todoService.getData(),
+                    confirm: title => vscode.window.showWarningMessage(
+                        `Delete TODO "${title}"?`,
+                        { modal: true },
+                        'Delete'
+                    ),
+                    deleteTodo: todoId => todoService.deleteTodo(todoId),
+                    refreshPanel: () => postTodoPanelContent(),
+                    showErrorMessage: message => vscode.window.showErrorMessage(message),
+                    logError,
+                });
+            },
+            'todo-delete-group': async e => {
+                if (typeof e.groupId !== 'string') {
+                    return;
+                }
+                const todoGroup = todoService.getData().groups.find(group => group.id === e.groupId);
+                if (!todoGroup) {
+                    return;
+                }
+                const confirmed = await vscode.window.showWarningMessage(
+                    `Delete TODO group "${todoGroup.title}" and all of its todos?`,
+                    { modal: true },
+                    'Delete'
+                );
+                if (confirmed !== 'Delete') {
+                    return;
+                }
+                await runTodoPanelMutation(() => todoService.deleteGroup(e.groupId as string));
+            },
+            'todo-rename-group': async e => {
+                if (typeof e.groupId !== 'string') {
+                    return;
+                }
+                await renameTodoGroupWithPrompt({
+                    groupId: e.groupId,
+                    getData: () => todoService.getData(),
+                    prompt: value => vscode.window.showInputBox({
+                        prompt: 'Todo group title',
+                        value,
+                        ignoreFocusOut: true,
+                    }),
+                    renameGroup: (groupId, title) => todoService.renameGroup(groupId, title),
+                    refreshPanel: () => postTodoPanelContent(),
+                    showErrorMessage: message => vscode.window.showErrorMessage(message),
+                    logError,
+                });
+            },
+            'todo-reorder-groups': async e => {
+                if (!Array.isArray(e.groupIds)) {
+                    return;
+                }
+                await runTodoPanelMutation(() => todoService.reorderGroups(e.groupIds as string[]));
+            },
+            'todo-reorder-items': async e => {
+                if (typeof e.groupId !== 'string' || !Array.isArray(e.todoIds)) {
+                    return;
+                }
+                await runTodoPanelMutation(() => todoService.reorderTodos(e.groupId as string, e.todoIds as string[]));
+            },
+            'todo-collapse-group': async e => {
+                if (typeof e.groupId !== 'string') {
+                    return;
+                }
+                await runTodoPanelMutation(() => todoService.setGroupCollapsed(e.groupId as string, e.collapsed === true));
+            },
+            'todo-collapse-groups': async e => {
+                await runTodoPanelMutation(() => todoService.setGroupsCollapsed(e.collapsed === true));
+            },
+            'todo-sort-priority': async e => {
+                if (typeof e.groupId !== 'string') {
+                    return;
+                }
+                await runTodoPanelMutation(() => todoService.sortGroupByPriority(e.groupId as string));
+            },
+            'todo-toggle-show-completed': async e => {
+                await runTodoPanelMutation(async () => {
+                    const persistedViewState = await todoService.setShowCompleted(e.showCompleted === true);
+                    todoViewState.showCompleted = persistedViewState.showCompleted;
+                    revealedTodoId = undefined;
+                });
+            },
+            'todo-reveal': async e => {
+                if (typeof e.todoId !== 'string' || typeof e.groupId !== 'string') {
+                    return;
+                }
+                await runTodoPanelMutation(async () => {
+                    const result = await todoService.revealTodo(e.todoId as string, e.groupId as string);
+                    if (result.revealed) {
+                        revealedTodoId = e.todoId as string;
+                    }
+                });
+            },
+            'todo-update': async e => {
+                if (typeof e.todoId !== 'string' || typeof e.title !== 'string') {
+                    return;
+                }
+                await runTodoPanelMutation(() => todoService.updateTodo(e.todoId as string, {
+                    title: e.title as string,
+                    notes: typeof e.notes === 'string' ? e.notes : '',
+                    priority: e.priority === 'high' || e.priority === 'medium' || e.priority === 'low' ? e.priority : 'medium',
+                }));
             },
             'selected-project': async e => {
                 let projectId = e.projectId as string;
@@ -616,6 +785,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const openProjectDashboardController = new OpenProjectDashboardController({
         getOpenProjects,
         getGroups: () => projectService.getGroups(),
+        getTodoSearchItems: () => todoService.getSearchItems(),
         getStewardInfos: () => stewardInfos,
         getAttentionAggregate: () => aiSessionAttentionController.getEffectiveAggregate(),
         getBridgeInstanceId: () => openProjectBridgeClient.instanceId,
@@ -686,14 +856,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         get favoritesGroupCollapsed() { return groupCollapseController.getFavoritesCollapsed() },
         get openProjects() { return getOpenProjectCards() },
         get openProjectsGroupCollapsed() { return groupCollapseController.getOpenProjectsCollapsed() },
+        get todoSearchItems() { return todoService.getSearchItems() },
     };
     const dashboardStartupController = new DashboardStartupController({
         stewardInfos,
         relevantExtensions: RelevantExtensions,
         isExtensionInstalled: extensionId => vscode.extensions.getExtension(extensionId) !== undefined,
-        migrateDataIfNeeded: () => projectService.migrateDataIfNeeded(),
+        migrateDataIfNeeded: async () => {
+            const projectMigration = settleMigration(() => projectService.migrateDataIfNeeded());
+            const todoMigration = settleMigration(() => todoService.migrateDataIfNeeded());
+            todoStorageMigration.ready = todoMigration.then(() => undefined, () => undefined);
+            const [projects, todos] = await Promise.all([projectMigration, todoMigration]);
+            return { projects, todos };
+        },
+        refreshDashboard: () => provider.refresh(),
         publishOpenProjects: () => openProjectWorkspaceController.publish(),
         showInformationMessage: message => vscode.window.showInformationMessage(message),
+        showErrorMessage: message => vscode.window.showErrorMessage(message),
+        logError,
         showSteward,
         applyProjectColorToCurrentWindow,
         getReopenReason: () => context.globalState.get(REOPEN_KEY),
@@ -798,6 +978,56 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     function postActiveAiSessionTerminalChanged(identity: ActiveAiSessionTerminalIdentity | null) {
         dashboardRuntimeController.postActiveAiSessionTerminalChanged(identity);
+    }
+
+    async function postTodoPanelContent(requestId?: number) {
+        let html: string;
+        try {
+            await todoStorageMigration.ready;
+            const unsupportedVersionError = todoService.getUnsupportedVersionError();
+            if (unsupportedVersionError) {
+                throw unsupportedVersionError;
+            }
+            const todoData = todoService.getData();
+            const config = getStewardConfiguration();
+            const todoRenderOptions = {
+                maxVisibleTodosPerGroup: getMaxVisibleTodosPerGroup(config),
+            };
+            html = getTodoPanelContent(buildTodoViewModel(todoData, todoViewState, revealedTodoId), todoRenderOptions);
+        } catch (error) {
+            if (!(error instanceof UnsupportedTodoDataVersionError)) {
+                throw error;
+            }
+            html = getUnsupportedTodoVersionPanelContent(error.version);
+        }
+        await provider.postMessage(requestId
+            ? {
+                type: 'todo-panel-content',
+                version: 1,
+                requestId,
+                html,
+            }
+            : {
+                type: 'todo-panel-updated',
+                version: 1,
+                html,
+                searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), getOpenProjectCards(), todoService.getSearchItems()),
+            });
+    }
+
+    async function runTodoPanelMutation(mutate: () => Promise<unknown>): Promise<boolean> {
+        return runTodoMutation({
+            mutate,
+            onSuccess: () => postTodoPanelContent(),
+            showErrorMessage: message => vscode.window.showErrorMessage(message),
+            logError,
+        });
+    }
+
+    function getMaxVisibleTodosPerGroup(config: vscode.WorkspaceConfiguration): number {
+        const configuredItems = config.get('maxVisibleTodosPerGroup', 5);
+        const visibleItems = Math.floor(Number(configuredItems));
+        return Number.isFinite(visibleItems) && visibleItems > 0 ? visibleItems : 5;
     }
 
     function invalidateAiSessionCache(providerId: AiSessionProviderId) {

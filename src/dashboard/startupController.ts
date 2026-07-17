@@ -6,13 +6,37 @@ import { shouldOpenStewardOnStartup } from './startup';
 
 type RelevantExtensionInstalls = StewardInfos['relevantExtensionsInstalls'];
 
+export interface DashboardMigrationComponentResult {
+    migrated: boolean;
+    error?: unknown;
+}
+
+export interface DashboardMigrationResult {
+    projects: DashboardMigrationComponentResult;
+    todos: DashboardMigrationComponentResult;
+}
+
+export function settleMigration(
+    run: () => Promise<boolean> | boolean
+): Promise<DashboardMigrationComponentResult> {
+    return Promise.resolve()
+        .then(run)
+        .then(
+            migrated => ({ migrated }),
+            error => ({ migrated: false, error })
+        );
+}
+
 export interface DashboardStartupControllerOptions {
     stewardInfos: StewardInfos;
     relevantExtensions?: Record<keyof RelevantExtensionInstalls, string>;
     isExtensionInstalled: (extensionId: string) => boolean;
-    migrateDataIfNeeded: () => Promise<boolean>;
+    migrateDataIfNeeded: () => Promise<DashboardMigrationResult>;
+    refreshDashboard: () => unknown;
     publishOpenProjects: () => void;
     showInformationMessage: (message: string) => unknown;
+    showErrorMessage: (message: string) => unknown;
+    logError: (message: string, error: unknown) => unknown;
     showSteward: () => unknown;
     applyProjectColorToCurrentWindow: () => void;
     getReopenReason: () => unknown;
@@ -27,17 +51,41 @@ export class DashboardStartupController {
     }
 
     async checkDataMigration(openStewardAfterMigrate = false): Promise<void> {
-        const migrated = await this.options.migrateDataIfNeeded();
-        if (!migrated) {
+        let migration: DashboardMigrationResult;
+        try {
+            migration = await this.options.migrateDataIfNeeded();
+        } catch (error) {
+            this.options.logError('Failed to migrate Project Steward data.', error);
+            const detail = error instanceof Error ? ` ${error.message}` : '';
+            this.options.showErrorMessage(`Could not migrate Project Steward data.${detail}`);
             return;
         }
 
+        this.reportComponentError('project', migration.projects);
+        this.reportComponentError('TODO', migration.todos);
+        if (!migration.projects.migrated && !migration.todos.migrated) {
+            return;
+        }
+
+        await this.options.refreshDashboard();
         this.options.publishOpenProjects();
         this.options.showInformationMessage('Migrated Project Steward projects after changing settings.');
 
         if (openStewardAfterMigrate) {
             this.options.showSteward();
         }
+    }
+
+    private reportComponentError(
+        component: 'project' | 'TODO',
+        result: DashboardMigrationComponentResult
+    ): void {
+        if (!Object.prototype.hasOwnProperty.call(result, 'error')) {
+            return;
+        }
+        this.options.logError(`Failed to migrate Project Steward ${component} data.`, result.error);
+        const detail = result.error instanceof Error ? ` ${result.error.message}` : '';
+        this.options.showErrorMessage(`Could not migrate Project Steward ${component} data.${detail}`);
     }
 
     async startUp(): Promise<void> {

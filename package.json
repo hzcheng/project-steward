@@ -2,7 +2,7 @@
     "name": "project-steward",
     "displayName": "Project Steward",
     "description": "Organize local, SSH, and Dev Container projects in a synchronized project steward.",
-    "version": "2.0.1",
+    "version": "2.1.0",
     "publisher": "hzcheng",
     "license": "MIT",
     "icon": "media/extension_icon.png",
@@ -90,6 +90,14 @@
                     "markdownDescription": "Stores the Project Steward data if the ```projectSteward.storeProjectsInSettings``` option is set to ```true```. The raw data can be edited by using the command ```Project Steward: Edit Projects```.",
                     "default": null
                 },
+                "projectSteward.todoData": {
+                    "type": [
+                        "object",
+                        "null"
+                    ],
+                    "markdownDescription": "Stores the global Project Steward TODO list if the ```projectSteward.storeProjectsInSettings``` option is set to ```true```.",
+                    "default": null
+                },
                 "projectSteward.searchIsActiveByDefault": {
                     "type": "boolean",
                     "default": true
@@ -114,6 +122,12 @@
                     "default": 3,
                     "minimum": 1,
                     "markdownDescription": "Maximum number of AI session rows visible in an expanded project card before the session list scrolls."
+                },
+                "projectSteward.maxVisibleTodosPerGroup": {
+                    "type": "number",
+                    "default": 5,
+                    "minimum": 1,
+                    "markdownDescription": "Maximum number of TODO items visible in each TODO group before the group list scrolls."
                 },
                 "projectSteward.aiSessionAttention.enabled": {
                     "type": "boolean",

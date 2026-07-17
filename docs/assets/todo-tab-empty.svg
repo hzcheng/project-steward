@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="720" viewBox="0 0 420 720" role="img" aria-labelledby="title desc">
+  <title id="title">Project Steward TODO 空状态效果图</title>
+  <desc id="desc">TODO Tab 被选中但还没有任何分组或任务，显示创建第一个分组和第一个任务的入口。</desc>
+  <defs>
+    <linearGradient id="selectedTab" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#30333a"/>
+      <stop offset="1" stop-color="#26282e"/>
+    </linearGradient>
+    <style>
+      .ui { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label { fill:#cfd1d6; font-size:11px; font-weight:700; letter-spacing:.7px; }
+      .tab { fill:#b8bbc2; font-size:11px; font-weight:700; letter-spacing:.5px; }
+      .tabActive { fill:#fff; }
+      .title { fill:#f1f1f1; font-size:16px; font-weight:650; }
+      .desc { fill:#aeb0b5; font-size:11px; }
+    </style>
+  </defs>
+
+  <rect width="420" height="720" fill="#181818"/>
+  <rect x="0" y="0" width="420" height="34" fill="#202124"/>
+  <text class="ui label" x="18" y="22">PROJECT STEWARD</text>
+  <rect x="12" y="44" width="316" height="34" rx="17" fill="#25262a" stroke="#35373d"/>
+  <circle cx="31" cy="61" r="6" fill="none" stroke="#8e9198" stroke-width="1.5"/>
+  <path d="M35.5 65.5l5 5" stroke="#8e9198" stroke-width="1.5"/>
+  <text class="ui desc" x="51" y="65">Search projects, sessions, and todos</text>
+  <circle cx="347" cy="61" r="15" fill="#242529" stroke="#34363b"/>
+  <path d="M340 58h14m-11-5l-4 5 4 5m8 6l4-5-4-5" fill="none" stroke="#aeb0b5" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="386" cy="61" r="15" fill="#242529"/>
+  <path d="M386 52v3m0 12v3m-9-9h3m12 0h3m-14.5-5.5l2.2 2.2m6.6 6.6l2.2 2.2m0-11l-2.2 2.2m-6.6 6.6l-2.2 2.2" stroke="#aeb0b5" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="386" cy="61" r="4.5" fill="none" stroke="#aeb0b5" stroke-width="1.5"/>
+
+  <rect x="12" y="88" width="396" height="42" rx="9" fill="#111214" stroke="#34363b"/>
+  <text class="ui tab" x="54" y="113">OPEN</text>
+  <text class="ui tab" x="165" y="113">PROJECTS</text>
+  <rect x="284" y="92" width="120" height="34" rx="7" fill="url(#selectedTab)" stroke="#4c9aff"/>
+  <text class="ui tab tabActive" x="326" y="113">TODO</text>
+  <line x1="0" y1="140" x2="420" y2="140" stroke="#303136"/>
+
+  <rect x="14" y="153" width="392" height="44" rx="10" fill="#25262a" stroke="#3a3c42"/>
+  <text class="ui label" x="31" y="181">TODO</text>
+  <text class="ui desc" x="74" y="181">No groups yet · synced when Project Steward data is synced</text>
+  <rect x="361" y="162" width="31" height="26" rx="7" fill="#1c1d21" stroke="#45474e"/>
+  <path d="M376.5 169v12m-6-6h12" stroke="#c7c9ce" stroke-width="1.5" stroke-linecap="round"/>
+
+  <rect x="34" y="260" width="352" height="246" rx="18" fill="#222328" stroke="#3a3c42"/>
+  <circle cx="210" cy="323" r="36" fill="#1b1c20" stroke="#45474e"/>
+  <path d="M193 323l10 10 24-25" fill="none" stroke="#4c9aff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text class="ui title" x="126" y="388">Plan your next large task</text>
+  <text class="ui desc" x="86" y="416">Create a group, then break the work into prioritized todos.</text>
+  <rect x="102" y="448" width="216" height="38" rx="9" fill="#2d4b70" stroke="#4c9aff"/>
+  <path d="M137 459v16m-8-8h16" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round"/>
+  <text class="ui label" x="158" y="472" fill="#fff">Create first group</text>
+  <rect x="102" y="500" width="216" height="36" rx="9" fill="#1f2024" stroke="#45474e"/>
+  <path d="M133 510v14m-7-7h14" stroke="#c7c9ce" stroke-width="1.5" stroke-linecap="round"/>
+  <text class="ui desc" x="154" y="523">Add todo to Inbox</text>
+</svg>

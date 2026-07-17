@@ -90,6 +90,18 @@ const AiSessionAttentionController = require('../out/aiSessions/attentionControl
 const AiSessionProjectHydrationController = require('../out/aiSessions/projectHydrationController').AiSessionProjectHydrationController;
 Module._load = originalModuleLoad;
 
+const TODO_SEARCH_ITEMS = [{
+    key: 'todo:ai-safety',
+    todoId: 'ai-safety',
+    groupId: 'release',
+    title: 'Preserve AI catalog',
+    groupTitle: 'Release',
+    priority: 'medium',
+    completed: true,
+    notesSearchText: 'non-empty AI safety fixture',
+    searchText: 'preserve ai catalog release medium non-empty ai safety fixture',
+}];
+
 function createTestUri(value) {
     const parsed = new URL(value);
     const uriPath = decodeURIComponent(parsed.pathname);
@@ -111,6 +123,10 @@ function createTestFileUri(filePath) {
         fsPath: filePath,
         toString: () => `file://${normalizedPath}`,
     };
+}
+
+function hasClassTokens(classValue, ...tokens) {
+    return tokens.every(token => classValue.split(/\s+/).includes(token));
 }
 
 function runPathChecks() {
@@ -2212,16 +2228,22 @@ function runWebviewContentChecks() {
     const projectWindowColorService = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'projectWindowColorService.ts'), 'utf8');
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
-    const sidebarStyles = styles.slice(styles.indexOf('body.steward-sidebar'));
-    const projectBorderBlock = extractScssBlock(sidebarStyles, '.project-border');
-    const projectBorderHoverBlock = extractScssBlock(sidebarStyles, '&:hover .project-border');
-    const expandedProjectHoverBlock = extractScssBlock(sidebarStyles, '&[data-codex-expanded]:hover');
-    const expandedProjectBorderBlock = extractScssBlock(expandedProjectHoverBlock, '.project-border');
-    const compiledProjectBorderBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project .project-border');
-    const compiledProjectBorderHoverBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project:hover .project-border');
-    const compiledExpandedProjectBorderBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project[data-open-project][data-codex-expanded]:hover .project-border');
-    const currentProjectStyleBlock = extractScssBlock(sidebarStyles, '&[data-current-workspace]');
-    const compiledCurrentProjectStyleBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project[data-current-workspace]');
+    const sidebarStyles = extractExactScssBlock(styles, 'body.steward-sidebar');
+    assert.strictEqual(sidebarStyles.includes('.project[data-current-workspace]'), false,
+        'current workspace shell state must be owned by the shared item card');
+    assert.strictEqual(sidebarStyles.includes('.project-border'), false,
+        'sidebar projects must use the shared accent selector instead of project-specific rail geometry');
+    const sharedItemAccentBlock = extractExactScssBlock(sidebarStyles, '.steward-item-accent');
+    const sharedItemAccentHoverBlock = extractScssBlock(sidebarStyles, '.steward-item-card:hover .steward-item-accent');
+    const projectStyleBlock = extractExactScssBlock(sidebarStyles, '.project');
+    const openProjectStyleBlock = extractExactScssBlock(projectStyleBlock, '&[data-open-project]');
+    const expandedProjectHoverBlock = extractExactScssBlock(openProjectStyleBlock, '&[data-codex-expanded]:hover');
+    const expandedProjectAccentBlock = extractExactScssBlock(expandedProjectHoverBlock, '.steward-item-accent');
+    const compiledSharedItemAccentBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .steward-item-accent');
+    const compiledSharedItemAccentHoverBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .steward-item-card:hover .steward-item-accent');
+    const compiledExpandedProjectAccentBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .project[data-open-project][data-codex-expanded]:hover .steward-item-accent');
+    const currentItemCardStyleBlock = extractExactScssBlock(sidebarStyles, '&[data-current-workspace]');
+    const compiledCurrentItemCardStyleBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .steward-item-card[data-current-workspace]');
 
     assert.ok(webviewContent.includes('data-action="add" title="Add Project"'));
     assert.ok(webviewContent.includes('class="project no-projects" data-action="add-project" data-nodrag'));
@@ -2484,29 +2506,31 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes("options.projectAttentionMode === 'none'"));
     assert.ok(styles.includes('--project-color'));
     assert.ok(styles.includes('.project-aura'));
-    assert.ok(currentProjectStyleBlock.includes('--vscode-list-inactiveSelectionBackground'));
-    assert.ok(currentProjectStyleBlock.includes('var(--vscode-focusBorder)'));
-    assert.ok(currentProjectStyleBlock.includes('box-shadow'));
-    assert.ok(compiledCurrentProjectStyleBlock.includes('var(--vscode-focusBorder)'));
-    assert.ok(!currentProjectStyleBlock.includes('animation'));
+    assert.ok(currentItemCardStyleBlock.includes('--vscode-list-inactiveSelectionBackground'));
+    assert.ok(currentItemCardStyleBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(currentItemCardStyleBlock.includes('box-shadow'));
+    assert.ok(compiledCurrentItemCardStyleBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(!currentItemCardStyleBlock.includes('animation'));
     assert.ok(styles.indexOf('&[data-current-workspace]') > styles.indexOf('&[data-codex-expanded]:hover'));
-    assert.ok(compiledStyles.indexOf('.project[data-current-workspace]') > compiledStyles.indexOf('.project[data-open-project][data-codex-expanded]:hover'));
-    assert.ok(projectBorderBlock.includes('top: 31%'));
-    assert.ok(projectBorderBlock.includes('bottom: 31%'));
-    assert.ok(projectBorderBlock.includes('height: auto'));
-    assert.deepStrictEqual(projectBorderBlock.match(/\bheight\s*:[^;]+/g), ['height: auto']);
-    assert.ok(projectBorderHoverBlock.includes('top: 26%'));
-    assert.ok(projectBorderHoverBlock.includes('bottom: 26%'));
-    assert.ok(!/\bheight\s*:/.test(projectBorderHoverBlock));
-    assert.ok(!/\bheight\s*:/.test(expandedProjectBorderBlock));
-    assert.ok(compiledProjectBorderBlock.includes('top:31%'));
-    assert.ok(compiledProjectBorderBlock.includes('bottom:31%'));
-    assert.ok(compiledProjectBorderBlock.includes('height:auto'));
-    assert.deepStrictEqual(compiledProjectBorderBlock.match(/\bheight\s*:[^;]+/g), ['height:auto']);
-    assert.ok(compiledProjectBorderHoverBlock.includes('top:26%'));
-    assert.ok(compiledProjectBorderHoverBlock.includes('bottom:26%'));
-    assert.ok(!/\bheight\s*:/.test(compiledProjectBorderHoverBlock));
-    assert.ok(!/\bheight\s*:/.test(compiledExpandedProjectBorderBlock));
+    assert.ok(compiledStyles.indexOf('.steward-item-card[data-current-workspace]') > compiledStyles.indexOf('.steward-item-card[data-codex-expanded]:hover'));
+    assert.ok(sharedItemAccentBlock.includes('top: 31%'));
+    assert.ok(sharedItemAccentBlock.includes('bottom: 31%'));
+    assert.ok(sharedItemAccentBlock.includes('height: auto'));
+    assert.deepStrictEqual(sharedItemAccentBlock.match(/\bheight\s*:[^;]+/g), ['height: auto']);
+    assert.ok(sharedItemAccentHoverBlock.includes('top: 26%'));
+    assert.ok(sharedItemAccentHoverBlock.includes('bottom: 26%'));
+    assert.ok(!/\bheight\s*:/.test(sharedItemAccentHoverBlock));
+    assert.ok(expandedProjectAccentBlock.includes('opacity: .9'));
+    assert.ok(!/\bheight\s*:/.test(expandedProjectAccentBlock));
+    assert.ok(compiledSharedItemAccentBlock.includes('top:31%'));
+    assert.ok(compiledSharedItemAccentBlock.includes('bottom:31%'));
+    assert.ok(compiledSharedItemAccentBlock.includes('height:auto'));
+    assert.deepStrictEqual(compiledSharedItemAccentBlock.match(/\bheight\s*:[^;]+/g), ['height:auto']);
+    assert.ok(compiledSharedItemAccentHoverBlock.includes('top:26%'));
+    assert.ok(compiledSharedItemAccentHoverBlock.includes('bottom:26%'));
+    assert.ok(!/\bheight\s*:/.test(compiledSharedItemAccentHoverBlock));
+    assert.ok(compiledExpandedProjectAccentBlock.includes('opacity:.9'));
+    assert.ok(!/\bheight\s*:/.test(compiledExpandedProjectAccentBlock));
     assert.ok(webviewContent.includes('--steward-ai-session-list-max-height: ${getAiSessionListMaxHeight(config)}px;'));
     assert.ok(webviewContent.includes('Number.isFinite(visibleRows)'));
     assert.ok(styles.includes('height: var(--steward-ai-session-list-max-height, calc(3 * 42px + 2 * 2px));'));
@@ -2554,7 +2578,12 @@ function runCurrentWorkspaceRenderingChecks() {
         },
         true
     );
-    const getCardTags = (content, projectId) => content.match(new RegExp(`<div class="project"[^>]*data-id="${projectId}"[^>]*>`, 'g')) || [];
+    const getCardTags = (content, projectId) => Array.from(content.matchAll(
+        new RegExp(`<div class="([^"]*)"[^>]*data-id="${projectId}"[^>]*>`, 'g')
+    )).filter(match => hasClassTokens(match[1], 'project', 'steward-item-card')).map(match => match[0]);
+    const hasProjectAccent = (content, style) => Array.from(
+        content.matchAll(/<div class="([^"]*)" style="([^"]*)"><\/div>/g)
+    ).some(match => match[2] === style && hasClassTokens(match[1], 'project-border', 'steward-item-accent'));
     const savedTags = getCardTags(html, 'saved');
     const otherTags = getCardTags(html, 'other');
     const openTags = getCardTags(html, '__openProjects-0');
@@ -2589,9 +2618,9 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.ok(!navigationHtml.includes('Leaked Session'));
     assert.ok(!html.includes('data-injected'));
     assert.ok(!navigationHtml.includes('red;'));
-    assert.ok(navigationHtml.includes('<div class="project-border" style=""></div>'));
+    assert.ok(hasProjectAccent(navigationHtml, ''));
     assert.ok(openTags[0].includes('style="--project-color: #00aacc;"'));
-    assert.ok(html.includes('<div class="project-border" style="background: #00aacc;"></div>'));
+    assert.ok(hasProjectAccent(html, 'background: #00aacc;'));
     assert.ok(navigationHtml.includes('title="SSH Project"'));
     assert.match(navigationHtml, /class="project-description" title="Other workspace">\s*Other workspace\s*<\/p>/);
 
@@ -2671,8 +2700,9 @@ function runFavoriteRenderingChecks() {
             otherStorageHasData: false,
         }
     );
-    const renderedProjectIds = Array.from(html.matchAll(/<div class="project"[^>]*data-id="([^"]+)"[^>]*>/g))
-        .map(match => match[1]);
+    const renderedProjectIds = Array.from(html.matchAll(/<div class="([^"]*)"[^>]*data-id="([^"]+)"[^>]*>/g))
+        .filter(match => hasClassTokens(match[1], 'project', 'steward-item-card'))
+        .map(match => match[2]);
 
     assert.deepStrictEqual(renderedProjectIds, [
         'favorite-b',
@@ -2681,9 +2711,10 @@ function runFavoriteRenderingChecks() {
         'favorite-b',
         'plain',
     ]);
-    const favoriteContainer = html.match(/<div class="project-container"([^>]*)>\s*<div class="project"[^>]*data-id="favorite-b"/);
+    const favoriteContainer = html.match(/<div class="project-container"([^>]*)>\s*<div class="([^"]*)"[^>]*data-id="favorite-b"/);
     assert.ok(favoriteContainer);
     assert.ok(!favoriteContainer[1].includes('data-nodrag'));
+    assert.ok(hasClassTokens(favoriteContainer[2], 'project', 'steward-item-card'));
 }
 
 function runAttentionProjectRenderingChecks() {
@@ -3021,13 +3052,15 @@ function runBatchAiSessionWebviewChecks() {
         querySelectorAll: () => [],
         insertAdjacentHTML: () => { openAttentionBadgeInsertions++; },
     };
+    let replacedSearchCatalog = null;
     const context = {
         normalizeDashboardSearchCatalog: value => value
             && Array.isArray(value.sessions)
             && Array.isArray(value.openProjects)
             && Array.isArray(value.savedProjects)
+            && Array.isArray(value.todos)
             ? value
-            : { sessions: [], openProjects: [], savedProjects: [] },
+            : { sessions: [], openProjects: [], savedProjects: [], todos: [] },
         document: {
             body: {
                 classList: { toggle: () => {} },
@@ -3064,7 +3097,7 @@ function runBatchAiSessionWebviewChecks() {
             requestAnimationFrame: callback => callback(),
             setTimeout: callback => timeoutCallbacks.push(callback),
             vscode: { postMessage: message => messages.push(message) },
-            __projectStewardDashboard: { replaceSearchCatalog: () => undefined },
+            __projectStewardDashboard: { replaceSearchCatalog: catalog => { replacedSearchCatalog = catalog; } },
         },
     };
 
@@ -3248,7 +3281,7 @@ function runBatchAiSessionWebviewChecks() {
         type: 'ai-sessions-updated',
         version: 1,
         sequence: 1,
-        searchCatalog: { sessions: [], openProjects: [], savedProjects: [] },
+        searchCatalog: { sessions: [], openProjects: [], savedProjects: [], todos: TODO_SEARCH_ITEMS },
         openProjects: [{
             projectId: 'project-a',
             expanded: true,
@@ -3256,6 +3289,11 @@ function runBatchAiSessionWebviewChecks() {
             sessionSectionHtml: '<div class="codex-sessions">replacement</div>',
         }],
     } });
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(replacedSearchCatalog.todos)),
+        TODO_SEARCH_ITEMS,
+        'AI incremental rendering must preserve the non-empty TODO catalog replacement'
+    );
     assert.strictEqual(replacementActiveRow.hasAttribute('data-ai-session-active-terminal'), true);
     assert.strictEqual(replacementOtherRow.hasAttribute('data-ai-session-active-terminal'), false);
 
@@ -3892,6 +3930,7 @@ function runAiSessionDashboardControllerChecks() {
         invalidateCache: providerId => invalidated.push(providerId),
         watchSessionChanges: () => ({ dispose() {} }),
         getGroups: () => [],
+        getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [],
         getOpenProjectAiSessionViewModel: project => project,
         nextSequence: () => 1,
@@ -3923,6 +3962,9 @@ function runAiSessionDashboardControllerChecks() {
     assert.deepStrictEqual(refreshReasons, ['new-session', 'new-session']);
     assert.strictEqual(messages.length, 2);
     assert.deepStrictEqual(messages.map(message => message.type), ['ai-sessions-updated', 'ai-sessions-updated']);
+    assert.ok(messages.every(message => message.searchCatalog.todos.length === 1
+        && message.searchCatalog.todos[0].todoId === 'ai-safety'),
+        'AI incremental updates must preserve the non-empty TODO catalog');
     assert.deepStrictEqual(diagnostics, [{
         event: 'ai-session-message-build',
         reason: 'new-session',
@@ -3951,6 +3993,7 @@ function runAiSessionDashboardWatcherCoalescingChecks() {
         invalidateCache: () => undefined,
         watchSessionChanges: () => ({ dispose() {} }),
         getGroups: () => [],
+        getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [],
         getOpenProjectAiSessionViewModel: project => project,
         nextSequence: () => messages.length + 1,
@@ -4013,6 +4056,7 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
         invalidateCache: () => undefined,
         watchSessionChanges: () => ({ dispose() {} }),
         getGroups: () => [],
+        getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [project],
         getOpenProjectAiSessionViewModel: item => ({
             projectId: item.id,
@@ -4109,6 +4153,22 @@ function extractMethodBody(source, methodName) {
     }
 
     assert.fail(`Could not extract ${methodName}`);
+}
+
+function extractExactScssBlock(source, selector) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = source.match(new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{`, 'm'));
+    assert.ok(match, `Could not find exact SCSS selector ${selector}`);
+    const selectorIndex = match.index + match[0].lastIndexOf(selector);
+    return extractScssBlock(source.slice(selectorIndex), selector);
+}
+
+function extractExactCssBlock(source, selector) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = source.match(new RegExp(`(^|[,}])${escapedSelector}\\{`));
+    assert.ok(match, `Could not find exact CSS selector ${selector}`);
+    const selectorIndex = match.index + match[0].lastIndexOf(selector);
+    return extractScssBlock(source.slice(selectorIndex), selector);
 }
 
 function extractScssBlock(source, selector) {

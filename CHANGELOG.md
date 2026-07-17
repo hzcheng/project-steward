@@ -4,13 +4,27 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ## [Unreleased]
 
+## [2.1.0] 2026-07-17
+
 ### Added
 
+-   Add a global `TODO` Dashboard tab with groups, priorities, notes, completion state, ordering, search, and inline editing.
+-   Synchronize global TODO data through VS Code Settings Sync when project settings storage is enabled.
+-   Add a configurable maximum number of visible TODO cards per group, with scrolling for additional cards.
 -   Add a command to append the active editor file reference, including selected line ranges, to the active terminal and focus it for CLI discussions.
+
+### Changed
+
+-   Reuse shared Dashboard group headers, cards, controls, and visual tokens across projects, sessions, and TODO content.
+-   Keep compact TODO cards on one line, reveal full titles on hover, and expand cards for details and editing.
 
 ### Fixed
 
 -   Recover the Open Projects `OTHER WINDOWS` group if an incremental webview update drops the expected navigation cards.
+-   Protect TODO data during storage backend migration, Settings Sync updates, unsupported data versions, and rejected writes.
+-   Write synchronized TODO data through the primary `projectSteward` configuration instead of the merged legacy read adapter.
+-   Preserve TODO drafts and form state across validation or storage failures while preventing duplicate submissions.
+-   Restore keyboard focus after TODO panel updates and keep priority, group collapse, and completed-item controls synchronized.
 
 ## [2.0.1] 2026-07-16
 

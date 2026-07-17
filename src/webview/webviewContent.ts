@@ -75,7 +75,7 @@ export function getStewardContent(
     var openProjects = infos.openProjects || [];
     var customCss = infos.config.get('customCss') || '';
     var allGroupsCollapsed = !!infos.openProjectsGroupCollapsed;
-    var searchCatalog = serializeDashboardSearchCatalog(buildDashboardSearchCatalog(groups, openProjects));
+    var searchCatalog = serializeDashboardSearchCatalog(buildDashboardSearchCatalog(groups, openProjects, infos.todoSearchItems || []));
     var openProjectsContent = getOpenProjectsGroupContent(openProjects, infos.openProjectsGroupCollapsed, infos);
 
     return `
@@ -118,6 +118,7 @@ export function getStewardContent(
             <div class="dashboard-tab-list" role="tablist" aria-label="Project views">
                 <button type="button" id="dashboard-tab-open-button" class="dashboard-tab-button active" role="tab" aria-selected="true" aria-controls="dashboard-tab-open" tabindex="0" data-dashboard-tab="open">OPEN</button>
                 <button type="button" id="dashboard-tab-projects-button" class="dashboard-tab-button" role="tab" aria-selected="false" aria-controls="dashboard-tab-projects" tabindex="-1" data-dashboard-tab="projects">PROJECTS</button>
+                <button type="button" id="dashboard-tab-todo-button" class="dashboard-tab-button" role="tab" aria-selected="false" aria-controls="dashboard-tab-todo" tabindex="-1" data-dashboard-tab="todo">TODO</button>
             </div>
         </div>
         <main class="dashboard-content">
@@ -128,6 +129,9 @@ export function getStewardContent(
             </section>
             <section id="dashboard-tab-projects" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-projects-button" hidden>
                 <div class="dashboard-projects-loading" role="status" hidden>Loading projects…</div>
+            </section>
+            <section id="dashboard-tab-todo" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-todo-button" hidden>
+                <div class="dashboard-todo-loading" role="status" hidden>Loading todos…</div>
             </section>
             <section id="dashboard-search-results" class="dashboard-search-results" aria-label="Search results" hidden></section>
         </main>
@@ -171,6 +175,9 @@ export function getStewardContent(
                         fitProjectHeaders(panel);
                         initDnD(panel);
                         window.__projectStewardSyncCollapseButton();
+                    },
+                    onTodoMounted: () => {
+                        window.__projectStewardSyncCollapseButton('todo');
                     },
                     onActiveTabChanged: activeTab => window.__projectStewardSyncCollapseButton(activeTab),
                 });
@@ -367,9 +374,9 @@ function getGroupSection(
         : `<span class="group-title-text">${groupName}</span>`;
 
     return `
-<div class="group ${options.className} ${group.collapsed ? 'collapsed' : ''} ${group.projects.length === 0 ? 'no-projects' : ''
+<div class="group steward-section ${options.className} ${group.collapsed ? 'collapsed' : ''} ${group.projects.length === 0 ? 'no-projects' : ''
         }" data-group-id="${group.id}"${options.virtual ? ' data-virtual-group' : ''}${systemGroupAttribute}>
-    <div class="group-title">
+    <div class="group-title steward-section-header steward-group-header">
         ${groupTitleText}
         ${options.systemBadge ? `<span class="group-title-badge">${options.systemBadge}</span>` : ''}
         ${groupActions}
@@ -394,7 +401,7 @@ function getFavoritesGroup(favoriteProjects: Project[], collapsed: boolean = fal
 function getTempGroupSection() {
     return `
 <div class="group" id="tempGroup">
-    <div class="group-title" data-action="add-group">
+    <div class="group-title steward-section-header steward-group-header" data-action="add-group">
         <span>${Icons.add} New Group</span>
     </div>
     <div class="group-list">
@@ -468,7 +475,7 @@ function getProjectDiv(
 
     return `
 <div class="project-container"${options.virtual && !options.draggableVirtualProjects ? ' data-nodrag' : ''}>
-    <div class="project" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
+    <div class="project steward-item-card" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${attentionProjectKey ? ` data-attention-project-key="${attentionProjectKey}"` : ''
         }${options.virtual ? ' data-virtual-project' : ''
         }${options.readOnlyProjects || isProjectNavigation ? ' data-readonly-project' : ''
@@ -481,7 +488,7 @@ function getProjectDiv(
         }${showCurrentAttention ? ' data-current-workspace' : ''
         }>
         <div class="project-aura"></div>
-        <div class="project-border" style="${borderStyle}"></div>
+        <div class="project-border steward-item-accent" style="${borderStyle}"></div>
         ${projectAttentionBadge}
         ${favoriteBadge}
         ${saveBadge}

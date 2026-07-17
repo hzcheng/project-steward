@@ -18,6 +18,13 @@ export const INBUILT_COLOR_DEFAULTS = [
 ];
 
 export const PROJECTS_KEY = 'projects';
+export const TODO_DATA_KEY = 'todos';
+export const TODO_SETTINGS_KEY = 'todoData';
+export const TODO_VIEW_STATE_KEY = 'todoViewState';
+export const TODO_DEFAULT_GROUP_TITLE = 'Inbox';
+export const TODO_UNTITLED_GROUP_TITLE = 'Untitled Group';
+export const TODO_UNTITLED_ITEM_TITLE = 'Untitled TODO';
+export const TODO_NOTES_SEARCH_TEXT_LIMIT = 500;
 export const RECENT_COLORS_KEY = 'recentColors';
 export const PROJECT_STEWARD_CONFIG_SECTION = 'projectSteward';
 export const LEGACY_DASHBOARD_CONFIG_SECTION = 'dashboard';

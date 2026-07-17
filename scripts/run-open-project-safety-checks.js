@@ -102,6 +102,10 @@ function extractFunctionBody(source, functionName) {
     assert.fail(`could not extract function ${functionName}`);
 }
 
+function hasClassTokens(classValue, ...tokens) {
+    return tokens.every(token => classValue.split(/\s+/).includes(token));
+}
+
 function runProtocolChecks() {
     const publication = makePublication();
     const registration = makeRegistration();
@@ -988,6 +992,17 @@ function runWebviewRefreshFocusChecks() {
 async function runOpenProjectDashboardControllerChecks() {
     const diagnostics = [];
     const posted = [];
+    const todoSearchItems = [{
+        key: 'todo:open-safety',
+        todoId: 'open-safety',
+        groupId: 'release',
+        title: 'Preserve OPEN catalog',
+        groupTitle: 'Release',
+        priority: 'high',
+        completed: false,
+        notesSearchText: 'non-empty OPEN safety fixture',
+        searchText: 'preserve open catalog release high non-empty open safety fixture',
+    }];
     let nowMs = 3000;
     const controller = new OpenProjectDashboardController({
         getOpenProjects: () => [{
@@ -997,6 +1012,7 @@ async function runOpenProjectDashboardControllerChecks() {
             path: '/work/a',
         }],
         getGroups: () => [],
+        getTodoSearchItems: () => todoSearchItems,
         getStewardInfos: () => ({
             openProjectsGroupCollapsed: false,
             config: {},
@@ -1028,6 +1044,8 @@ async function runOpenProjectDashboardControllerChecks() {
 
     assert.strictEqual(posted.length, 1);
     assert.strictEqual(posted[0].type, 'open-projects-updated');
+    assert.deepStrictEqual(posted[0].searchCatalog.todos, todoSearchItems,
+        'OPEN incremental updates must preserve the non-empty TODO catalog');
     assert.deepStrictEqual(diagnostics.map(([source, event]) => [source, event.event]), [
         ['Renderer', 'open-project-cards-build'],
         ['Renderer', 'post-update-build'],
@@ -1058,6 +1076,7 @@ async function runOpenProjectDashboardControllerChecks() {
     const inFlightController = new OpenProjectDashboardController({
         getOpenProjects: () => [makeRecord({ uri: '/work/in-flight' })],
         getGroups: () => [],
+        getTodoSearchItems: () => todoSearchItems,
         getStewardInfos: () => ({
             openProjectsGroupCollapsed: false,
             config: {},
@@ -1102,6 +1121,7 @@ async function runOpenProjectDashboardControllerChecks() {
     const undeliveredController = new OpenProjectDashboardController({
         getOpenProjects: () => [makeRecord({ uri: '/work/undelivered' })],
         getGroups: () => [],
+        getTodoSearchItems: () => todoSearchItems,
         getStewardInfos: () => ({
             openProjectsGroupCollapsed: false,
             config: {},
@@ -1165,7 +1185,9 @@ function runOpenProjectIncrementalRenderingChecks() {
     const documentStub = {
         querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null,
         querySelectorAll: selector => {
-            const projectTags = wrapper.innerHTML.match(/<div class="project"[^>]*data-id=[^>]*>/g) || [];
+            const projectTags = Array.from(wrapper.innerHTML.matchAll(/<div class="([^"]*)"[^>]*data-id=[^>]*>/g))
+                .filter(match => hasClassTokens(match[1], 'project', 'steward-item-card'))
+                .map(match => match[0]);
             if (selector === '.sticky-groups-wrapper .project[data-id]') {
                 return Array.from({ length: projectTags.length }, () => ({}));
             }
@@ -1180,6 +1202,7 @@ function runOpenProjectIncrementalRenderingChecks() {
         },
     };
     let catalogReplacements = 0;
+    let replacedSearchCatalog = null;
     const applyOpenProjectsUpdate = new Function(
         'document',
         'window',
@@ -1192,10 +1215,14 @@ function runOpenProjectIncrementalRenderingChecks() {
         `
     )(
         documentStub,
-        { __projectStewardDashboard: { replaceSearchCatalog: () => { catalogReplacements += 1; } } },
-        value => value && Array.isArray(value.sessions) && Array.isArray(value.openProjects) && Array.isArray(value.savedProjects)
+        { __projectStewardDashboard: { replaceSearchCatalog: catalog => {
+            catalogReplacements += 1;
+            replacedSearchCatalog = catalog;
+        } } },
+        value => value && Array.isArray(value.sessions) && Array.isArray(value.openProjects)
+            && Array.isArray(value.savedProjects) && Array.isArray(value.todos)
             ? value
-            : { sessions: [], openProjects: [], savedProjects: [] }
+            : { sessions: [], openProjects: [], savedProjects: [], todos: [] }
     );
     assert.strictEqual(applyOpenProjectsUpdate({
         type: 'open-projects-updated',
@@ -1203,25 +1230,27 @@ function runOpenProjectIncrementalRenderingChecks() {
         semanticRevision: 'revision-2',
         projectCount: 0,
         html: '<div data-group-id="__openProjects">new</div>',
-        searchCatalog: { sessions: [], openProjects: [], savedProjects: [] },
+        searchCatalog: { sessions: [], openProjects: [], savedProjects: [], todos: [{ todoId: 'preserved' }] },
     }), true);
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.strictEqual(catalogReplacements, 1);
+    assert.deepStrictEqual(replacedSearchCatalog.todos, [{ todoId: 'preserved' }],
+        'OPEN incremental rendering must preserve the non-empty TODO catalog replacement');
     assert.strictEqual(applyOpenProjectsUpdate({
         type: 'open-projects-updated',
         version: 1,
         semanticRevision: 'revision-mismatched-count',
         projectCount: 3,
         html: '<div>bad count</div>',
-        searchCatalog: { sessions: [], openProjects: [], savedProjects: [] },
+        searchCatalog: { sessions: [], openProjects: [], savedProjects: [], todos: [{ todoId: 'preserved' }] },
     }), false, 'OPEN update must reject projectCount values that do not match the search catalog');
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.strictEqual(applyOpenProjectsUpdate({ version: 2, html: '<div>bad</div>' }), false);
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.ok(webviewScript.includes("type: 'open-projects-rendered'"));
     const validNavigationHtml = [
-        '<div class="group open-current-workspace-group"><div class="project" data-id="current"></div></div>',
-        '<div class="group open-other-windows-group"><div class="project" data-project-navigation data-id="other"></div></div>',
+        '<div class="group open-current-workspace-group"><div class="project steward-item-card" data-id="current"></div></div>',
+        '<div class="group open-other-windows-group"><div class="project steward-item-card" data-project-navigation data-id="other"></div></div>',
     ].join('');
     assert.strictEqual(applyOpenProjectsUpdate({
         type: 'open-projects-updated',
@@ -1236,6 +1265,7 @@ function runOpenProjectIncrementalRenderingChecks() {
                 { projectId: 'other', action: 'switch-open' },
             ],
             savedProjects: [],
+            todos: [{ todoId: 'preserved' }],
         },
     }), true, 'OPEN update must accept DOM that keeps OTHER WINDOWS navigation cards');
     assert.strictEqual(applyOpenProjectsUpdate({
@@ -1243,7 +1273,7 @@ function runOpenProjectIncrementalRenderingChecks() {
         version: 1,
         semanticRevision: 'revision-3',
         projectCount: 2,
-        html: '<div class="group open-current-workspace-group"><div class="project" data-id="current"></div></div>',
+        html: '<div class="group open-current-workspace-group"><div class="project steward-item-card" data-id="current"></div></div>',
         searchCatalog: {
             sessions: [],
             openProjects: [
@@ -1251,6 +1281,7 @@ function runOpenProjectIncrementalRenderingChecks() {
                 { projectId: 'other', action: 'switch-open' },
             ],
             savedProjects: [],
+            todos: [{ todoId: 'preserved' }],
         },
     }), false, 'OPEN update must reject DOM that loses OTHER WINDOWS navigation cards');
     assert.strictEqual(wrapper.innerHTML, validNavigationHtml, 'OPEN update must restore previous DOM after rejecting an inconsistent update');
@@ -1271,6 +1302,7 @@ function runOpenProjectIncrementalRenderingChecks() {
 
 async function runDashboardMigrationPublicationChecks() {
     const publications = [];
+    const refreshes = [];
     const informationMessages = [];
     let currentMetadata = 'before-migration';
     let migrated = true;
@@ -1285,8 +1317,12 @@ async function runDashboardMigrationPublicationChecks() {
             if (migrated) {
                 currentMetadata = 'after-migration';
             }
-            return migrated;
+            return {
+                projects: { migrated },
+                todos: { migrated: false },
+            };
         },
+        refreshDashboard: () => refreshes.push(currentMetadata),
         publishOpenProjects: () => publications.push(currentMetadata),
         showInformationMessage: message => informationMessages.push(message),
         showSteward: () => { showStewardCalls += 1; },
@@ -1299,6 +1335,7 @@ async function runDashboardMigrationPublicationChecks() {
     });
 
     await controller.checkDataMigration();
+    assert.deepStrictEqual(refreshes, ['after-migration']);
     assert.deepStrictEqual(publications, ['after-migration']);
     assert.strictEqual(showStewardCalls, 0, 'default startup migration must not require revealing the steward');
     assert.strictEqual(informationMessages.length, 1);
@@ -1306,11 +1343,13 @@ async function runDashboardMigrationPublicationChecks() {
     migrated = false;
     currentMetadata = 'unchanged-without-migration';
     await controller.checkDataMigration();
+    assert.deepStrictEqual(refreshes, ['after-migration'], 'no migration must not trigger a redundant refresh');
     assert.deepStrictEqual(publications, ['after-migration'], 'no migration must not trigger a redundant publish');
 
     migrated = true;
     currentMetadata = 'before-explicit-migration';
     await controller.checkDataMigration(true);
+    assert.deepStrictEqual(refreshes, ['after-migration', 'after-migration']);
     assert.deepStrictEqual(publications, ['after-migration', 'after-migration']);
     assert.strictEqual(showStewardCalls, 1);
 }
