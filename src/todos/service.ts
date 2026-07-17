@@ -172,6 +172,33 @@ export class TodoService {
         return data;
     }
 
+    async deleteGroup(id: string): Promise<TodoDataV1> {
+        const data = this.getData();
+        const groupExists = data.groups.some(group => group.id === id);
+        if (!groupExists) {
+            return data;
+        }
+
+        data.groups = data.groups
+            .filter(group => group.id !== id)
+            .map((group, index) => ({ ...group, order: index }));
+        data.todos = data.todos.filter(todo => todo.groupId !== id);
+        await this.saveData(data);
+        return data;
+    }
+
+    async setGroupCollapsed(id: string, collapsed: boolean): Promise<TodoDataV1> {
+        const data = this.getData();
+        const group = data.groups.find(item => item.id === id);
+        if (!group) {
+            return data;
+        }
+
+        group.collapsed = collapsed;
+        await this.saveData(data);
+        return data;
+    }
+
     async sortGroupByPriority(groupId: string): Promise<TodoDataV1> {
         const data = this.getData();
         const priorityRank = { high: 0, medium: 1, low: 2 };

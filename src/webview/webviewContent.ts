@@ -371,9 +371,9 @@ function getGroupSection(
         : `<span class="group-title-text">${groupName}</span>`;
 
     return `
-<div class="group ${options.className} ${group.collapsed ? 'collapsed' : ''} ${group.projects.length === 0 ? 'no-projects' : ''
+<div class="group steward-section ${options.className} ${group.collapsed ? 'collapsed' : ''} ${group.projects.length === 0 ? 'no-projects' : ''
         }" data-group-id="${group.id}"${options.virtual ? ' data-virtual-group' : ''}${systemGroupAttribute}>
-    <div class="group-title">
+    <div class="group-title steward-section-header">
         ${groupTitleText}
         ${options.systemBadge ? `<span class="group-title-badge">${options.systemBadge}</span>` : ''}
         ${groupActions}
@@ -398,7 +398,7 @@ function getFavoritesGroup(favoriteProjects: Project[], collapsed: boolean = fal
 function getTempGroupSection() {
     return `
 <div class="group" id="tempGroup">
-    <div class="group-title" data-action="add-group">
+    <div class="group-title steward-section-header" data-action="add-group">
         <span>${Icons.add} New Group</span>
     </div>
     <div class="group-list">

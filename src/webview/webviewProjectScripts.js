@@ -70,14 +70,29 @@ function isOpenProjectsUpdateDomConsistent(message) {
 }
 
 function getCollapseButtonState(tab, collapsedStates) {
-    tab = tab === 'projects' ? 'projects' : 'open';
+    tab = tab === 'projects' || tab === 'todo' ? tab : 'open';
+    var labels = tab === 'todo'
+        ? {
+            empty: 'No TODO groups to collapse',
+            collapse: 'Collapse TODO Groups',
+            expand: 'Expand TODO Groups',
+        }
+        : tab === 'open'
+            ? {
+                empty: 'No other windows to collapse',
+                collapse: 'Collapse Other Windows',
+                expand: 'Expand Other Windows',
+            }
+            : {
+                empty: 'No project groups to collapse',
+                collapse: 'Collapse All Groups',
+                expand: 'Expand All Groups',
+            };
     if (!collapsedStates.length) {
         return {
             disabled: true,
             collapsed: false,
-            title: tab === 'open'
-                ? 'No other windows to collapse'
-                : 'No project groups to collapse',
+            title: labels.empty,
         };
     }
 
@@ -85,9 +100,7 @@ function getCollapseButtonState(tab, collapsedStates) {
     return {
         disabled: false,
         collapsed,
-        title: tab === 'open'
-            ? (collapsed ? 'Expand Other Windows' : 'Collapse Other Windows')
-            : (collapsed ? 'Expand All Groups' : 'Collapse All Groups'),
+        title: collapsed ? labels.expand : labels.collapse,
     };
 }
 
@@ -629,6 +642,30 @@ function initProjects() {
             return true;
         }
 
+        var deleteGroupAction = e.target.closest('[data-action="todo-delete-group"]');
+        if (deleteGroupAction) {
+            window.vscode.postMessage({
+                type: 'todo-delete-group',
+                groupId: deleteGroupAction.getAttribute('data-group-id'),
+            });
+            return true;
+        }
+
+        var collapseGroupAction = e.target.closest('[data-action="todo-collapse-group"]');
+        if (collapseGroupAction) {
+            var todoGroup = collapseGroupAction.closest('.todo-group');
+            if (!todoGroup)
+                return true;
+            todoGroup.classList.toggle('collapsed');
+            window.vscode.postMessage({
+                type: 'todo-collapse-group',
+                groupId: todoGroup.getAttribute('data-todo-group-id'),
+                collapsed: todoGroup.classList.contains('collapsed'),
+            });
+            syncCollapseButton('todo');
+            return true;
+        }
+
         var sortAction = e.target.closest('[data-action="todo-sort-priority"]');
         if (sortAction) {
             window.vscode.postMessage({
@@ -990,16 +1027,21 @@ function initProjects() {
             : 'open');
         var selector = activeTab === 'projects'
             ? '#dashboard-tab-projects .group[data-group-id]'
-            : '#dashboard-tab-open .open-other-windows-group[data-group-id]';
+            : activeTab === 'todo'
+                ? '#dashboard-tab-todo .todo-group[data-todo-group-id]'
+                : '#dashboard-tab-open .open-other-windows-group[data-group-id]';
         return [...document.querySelectorAll(selector)];
     }
 
     function setGroupCollapsed(group, collapsed, persist) {
         group.classList.toggle('collapsed', collapsed);
         if (persist) {
+            var isTodoGroup = group.classList.contains('todo-group');
             window.vscode.postMessage({
-                type: 'collapse-group',
-                groupId: group.getAttribute('data-group-id'),
+                type: isTodoGroup ? 'todo-collapse-group' : 'collapse-group',
+                groupId: isTodoGroup
+                    ? group.getAttribute('data-todo-group-id')
+                    : group.getAttribute('data-group-id'),
                 collapsed,
             });
         }

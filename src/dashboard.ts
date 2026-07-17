@@ -493,6 +493,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 await todoService.deleteTodo(e.todoId);
                 await postTodoPanelContent();
             },
+            'todo-delete-group': async e => {
+                if (typeof e.groupId !== 'string') {
+                    return;
+                }
+                const todoGroup = todoService.getData().groups.find(group => group.id === e.groupId);
+                if (!todoGroup) {
+                    return;
+                }
+                const confirmed = await vscode.window.showWarningMessage(
+                    `Delete TODO group "${todoGroup.title}" and all of its todos?`,
+                    { modal: true },
+                    'Delete'
+                );
+                if (confirmed !== 'Delete') {
+                    return;
+                }
+                await todoService.deleteGroup(e.groupId);
+                await postTodoPanelContent();
+            },
+            'todo-collapse-group': async e => {
+                if (typeof e.groupId !== 'string') {
+                    return;
+                }
+                await todoService.setGroupCollapsed(e.groupId, e.collapsed === true);
+                await postTodoPanelContent();
+            },
             'todo-sort-priority': async e => {
                 if (typeof e.groupId !== 'string') {
                     return;

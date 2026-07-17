@@ -43,6 +43,19 @@ function extractFunctionBody(source, functionName) {
     throw new Error(`Unterminated function ${functionName}`);
 }
 
+function extractCssRule(source, selector) {
+    const start = source.indexOf(`${selector} {`);
+    assert.ok(start >= 0, `Missing CSS rule ${selector}`);
+    const braceStart = source.indexOf('{', start);
+    let depth = 0;
+    for (let index = braceStart; index < source.length; index += 1) {
+        if (source[index] === '{') depth += 1;
+        if (source[index] === '}') depth -= 1;
+        if (depth === 0) return source.slice(braceStart + 1, index);
+    }
+    throw new Error(`Unterminated CSS rule ${selector}`);
+}
+
 function makeDashboardCatalog() {
     return {
         sessions: [{
@@ -378,6 +391,10 @@ async function runTodoStoreChecks() {
 
     const renamed = await globalService.addGroup('');
     assert.strictEqual(renamed.groups[1].title, 'Untitled Group');
+    await globalService.setGroupCollapsed(renamed.groups[1].id, true);
+    assert.strictEqual(globalService.getData().groups[1].collapsed, true);
+    await globalService.deleteGroup(renamed.groups[1].id);
+    assert.strictEqual(globalService.getData().groups.some(group => group.id === renamed.groups[1].id), false);
 
     const settingsService = makeService(true);
     await settingsService.saveData({ version: 1, groups: [], todos: [] });
@@ -434,11 +451,22 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('todo-panel'));
     assert.ok(html.includes('Launch &lt;Group&gt;'));
     assert.ok(html.includes('Write &lt;spec&gt;'));
+    assert.ok(html.includes('title="Write &lt;spec&gt;"'));
     assert.strictEqual(html.includes('Done task'), false);
     assert.ok(html.includes('1 completed hidden'));
     assert.ok(html.includes('todo-summary-card'));
     assert.ok(html.includes('todo-summary-meta'));
     assert.ok(html.includes('todo-summary-actions'));
+    assert.ok(html.includes('todo-summary-card steward-card'));
+    assert.ok(html.includes('todo-group group steward-section'));
+    assert.ok(html.includes('todo-group-header group-title steward-section-header'));
+    assert.ok(html.includes('todo-group-actions group-actions'));
+    assert.ok(html.includes('data-action="todo-collapse-group"'));
+    assert.ok(html.includes('data-action="todo-delete-group"'));
+    assert.ok(html.includes('todo-item steward-card steward-card-compact'));
+    assert.ok(html.includes('todo-priority-badge steward-badge'));
+    assert.ok(html.includes('todo-item-footer steward-meta'));
+    assert.ok(html.includes('todo-icon-button steward-icon-button'));
     assert.ok(html.includes('todo-group-strip'));
     assert.ok(html.includes('todo-item-content'));
     assert.ok(html.includes('todo-item-footer'));
@@ -1218,6 +1246,7 @@ function runSourceContractChecks(source) {
     const dndSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewDnDScripts.js'), 'utf8');
     const filterSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewFilterScripts.js'), 'utf8');
     const extensionHostSource = fs.readFileSync(extensionHostPath, 'utf8');
+    const webviewContentSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewContent.ts'), 'utf8');
     const styles = fs.readFileSync(path.join(root, 'media', 'styles.scss'), 'utf8');
     const updateMessagePath = path.join(root, 'src', 'dashboard', 'webviewUpdateMessages.ts');
     assert.ok(fs.existsSync(updateMessagePath));
@@ -1244,6 +1273,9 @@ function runSourceContractChecks(source) {
     assert.strictEqual(routerSource.includes('handleRawMessage'), false);
 
     assert.ok(source.includes("projectSteward.activeDashboardTab"));
+    assert.ok(webviewContentSource.includes('class="group steward-section'));
+    assert.ok(webviewContentSource.includes('class="group-title steward-section-header'));
+    assert.ok(webviewContentSource.includes('class="project"'));
     assert.ok(source.includes("setAttribute('aria-selected'"));
     assert.ok(source.includes("setAttribute('tabindex'"));
     assert.ok(source.includes('scrollPositions'));
@@ -1263,6 +1295,8 @@ function runSourceContractChecks(source) {
     assert.ok(projectSource.includes("type: 'todo-add'"));
     assert.ok(projectSource.includes("type: 'todo-toggle'"));
     assert.ok(projectSource.includes("type: 'todo-delete'"));
+    assert.ok(projectSource.includes("type: 'todo-delete-group'"));
+    assert.ok(projectSource.includes("type: 'todo-collapse-group'"));
     assert.ok(projectSource.includes("type: 'todo-sort-priority'"));
     assert.ok(projectSource.includes("type: 'todo-toggle-show-completed'"));
     assert.ok(projectSource.includes("type: 'todo-update'"));
@@ -1272,6 +1306,8 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'todo-add': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-toggle': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-delete': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-delete-group': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-collapse-group': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-sort-priority': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-toggle-show-completed': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-update': async e =>"));
@@ -1279,7 +1315,7 @@ function runSourceContractChecks(source) {
     assert.ok(dndSource.includes('function initDnD(root)'));
     assert.ok(dndSource.includes('root.__projectStewardDnDInitialized'));
     assert.strictEqual(dndSource.includes('document.querySelectorAll(`${groupsContainerSelector}'), false);
-    assert.ok(projectSource.includes("type: 'collapse-group'"));
+    assert.ok(projectSource.includes("'collapse-group'"));
     assert.ok(projectSource.includes('Collapse Other Windows'));
     assert.ok(projectSource.includes('Expand Other Windows'));
     assert.ok(projectSource.includes('aria-disabled'));
@@ -1294,6 +1330,8 @@ function runSourceContractChecks(source) {
     assert.strictEqual(projectContext.getCollapseButtonState('open', [true]).title, 'Expand Other Windows');
     assert.strictEqual(projectContext.getCollapseButtonState('projects', [false, true]).title, 'Collapse All Groups');
     assert.strictEqual(projectContext.getCollapseButtonState('projects', [true, true]).title, 'Expand All Groups');
+    assert.strictEqual(projectContext.getCollapseButtonState('todo', [false, true]).title, 'Collapse TODO Groups');
+    assert.strictEqual(projectContext.getCollapseButtonState('todo', [true, true]).title, 'Expand TODO Groups');
 
     const renderSearchBody = extractFunctionBody(source, 'renderDashboardSearchResults');
     assert.ok(renderSearchBody.includes('textContent'));
@@ -1399,6 +1437,9 @@ function runSourceContractChecks(source) {
     assert.ok(projectSource.includes('replaceSearchCatalog(message.searchCatalog)'));
     assert.strictEqual(projectSource.includes("sessionStorage.setItem('projectSteward.activeDashboardTab', 'open')"), false);
     for (const selector of [
+        '.steward-section', '.steward-section-header', '.steward-card',
+        '.steward-card-compact', '.steward-icon-button', '.steward-badge',
+        '.steward-meta',
         '.dashboard-tab-list', '.dashboard-tab-button', '.dashboard-tab-panel',
         '.dashboard-tab-button::before',
         '.dashboard-search-results', '.dashboard-search-section', '.dashboard-search-result',
@@ -1410,6 +1451,27 @@ function runSourceContractChecks(source) {
     ]) {
         assert.ok(styles.includes(selector), `missing ${selector}`);
     }
+    assert.ok(styles.includes('.todo-item::before'), 'todo items should expose a shared project-card accent rail');
+    assert.ok(styles.includes('.todo-priority-high::before'), 'todo item priority should drive the accent rail');
+    const todoGroupHeaderRule = extractCssRule(styles, '.todo-group-header');
+    assert.ok(todoGroupHeaderRule.includes('font-size: $groupHeaderSize')
+        && todoGroupHeaderRule.includes('font-weight: 700')
+        && todoGroupHeaderRule.includes('line-height: 1.25')
+        && todoGroupHeaderRule.includes('color: var(--steward-foreground)')
+        && !todoGroupHeaderRule.includes('border:')
+        && !todoGroupHeaderRule.includes('background:'),
+        'todo group headers should share the regular group title typography');
+    const todoGroupCountRule = extractCssRule(styles, '.todo-group-count');
+    assert.ok(todoGroupCountRule.includes('color: currentColor')
+        && todoGroupCountRule.includes('background: transparent')
+        && todoGroupCountRule.includes('opacity: .55'),
+        'todo group counts should not introduce a separate badge color language');
+    const todoTitleRule = extractCssRule(styles, '.todo-title-text');
+    assert.ok(todoTitleRule.includes('display: block')
+        && todoTitleRule.includes('white-space: nowrap')
+        && todoTitleRule.includes('text-overflow: ellipsis')
+        && !todoTitleRule.includes('-webkit-line-clamp'),
+        'todo item titles should stay on one line and ellipsize');
     const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
     assert.ok(changelog.includes('Add a global `TODO` Dashboard tab'));
     assert.strictEqual((source.match(/type: 'request-projects-panel'/g) || []).length, 1);
