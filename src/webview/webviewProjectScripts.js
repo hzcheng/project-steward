@@ -714,6 +714,16 @@ function initProjects() {
         return element ? String(element.value || '').trim() : '';
     }
 
+    function syncTodoPrioritySegment(segment) {
+        if (!segment)
+            return;
+
+        Array.from(segment.querySelectorAll('.todo-priority-choice')).forEach(choice => {
+            var input = choice.querySelector('input[name="priority"]');
+            choice.classList.toggle('active', !!input && input.checked === true);
+        });
+    }
+
     function focusTodoAddForm(groupId) {
         var form = document.querySelector('.todo-add-form');
         if (!form)
@@ -1142,6 +1152,12 @@ function initProjects() {
     function onChangeEvent(e) {
         if (!e.target)
             return;
+
+        var todoPriorityInput = e.target.closest('.todo-priority-choice input[name="priority"]');
+        if (todoPriorityInput) {
+            syncTodoPrioritySegment(todoPriorityInput.closest('.todo-priority-segment'));
+            return;
+        }
 
         var providerSelect = e.target.closest('select[data-action="select-ai-provider"]');
         if (!providerSelect)

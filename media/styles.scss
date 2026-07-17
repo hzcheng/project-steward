@@ -1581,13 +1581,12 @@ body .project {
     display: grid;
     min-height: 24px;
     place-items: center;
-    border: 1px solid transparent;
-    border-radius: 6px;
     color: var(--vscode-descriptionForeground);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: .04em;
     cursor: pointer;
+    transition: color 120ms ease;
 }
 
 .todo-priority-choice input {
@@ -1596,11 +1595,23 @@ body .project {
     pointer-events: none;
 }
 
+.todo-priority-choice span {
+    display: grid;
+    width: 100%;
+    min-height: 24px;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    box-sizing: border-box;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
 .todo-priority-choice:hover {
     color: var(--vscode-foreground);
 }
 
-.todo-priority-choice.active {
+.todo-priority-choice.active,
+.todo-priority-choice input:checked + span {
     border-color: var(--vscode-panel-border);
     color: var(--vscode-foreground);
     background: var(--vscode-list-inactiveSelectionBackground);

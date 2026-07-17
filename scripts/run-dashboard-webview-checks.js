@@ -1300,6 +1300,8 @@ function runSourceContractChecks(source) {
     assert.ok(projectSource.includes("type: 'todo-sort-priority'"));
     assert.ok(projectSource.includes("type: 'todo-toggle-show-completed'"));
     assert.ok(projectSource.includes("type: 'todo-update'"));
+    assert.ok(projectSource.includes('function syncTodoPrioritySegment('));
+    assert.ok(extractFunctionBody(projectSource, 'onChangeEvent').includes('syncTodoPrioritySegment('));
     assert.ok(projectSource.includes('function onTodoFormSubmit('));
     assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"add-project\"]')"), false);
     assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"import-from-other-storage\"]')"), false);
@@ -1472,6 +1474,11 @@ function runSourceContractChecks(source) {
         && todoTitleRule.includes('text-overflow: ellipsis')
         && !todoTitleRule.includes('-webkit-line-clamp'),
         'todo item titles should stay on one line and ellipsize');
+    const todoPriorityChoiceRule = extractCssRule(styles, '.todo-priority-choice');
+    assert.ok(todoPriorityChoiceRule.includes('transition:'),
+        'todo priority choices should animate visual selected-state changes');
+    assert.ok(styles.includes('.todo-priority-choice input:checked + span'),
+        'todo priority selected state should be driven by the radio checked state');
     const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
     assert.ok(changelog.includes('Add a global `TODO` Dashboard tab'));
     assert.strictEqual((source.match(/type: 'request-projects-panel'/g) || []).length, 1);
