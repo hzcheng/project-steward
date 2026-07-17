@@ -21,6 +21,7 @@ export interface ActiveAiSessionTerminalHighlightDependencies<TTerminal, TEntry>
     resolveTerminal: (terminal: TTerminal) => ActiveAiSessionTerminalResolution<TTerminal, TEntry> | null;
     isComplete: (resolution: ActiveAiSessionTerminalResolution<TTerminal, TEntry>) => boolean;
     publish: (identity: ActiveAiSessionTerminalIdentity | null) => void;
+    onComplete?: (resolution: ActiveAiSessionTerminalResolution<TTerminal, TEntry>) => void;
     setInterval: (callback: () => void, intervalMs: number) => unknown;
     clearInterval: (handle: unknown) => void;
 }
@@ -42,8 +43,13 @@ export default class ActiveAiSessionTerminalHighlighter<TTerminal, TEntry> {
 
         let terminal = this.dependencies.getActiveTerminal();
         let resolution = terminal ? this.dependencies.resolveTerminal(terminal) : null;
-        if (!resolution || this.dependencies.isComplete(resolution)) {
+        if (!resolution) {
             this.setIdentity(null, forcePublish);
+            return;
+        }
+        if (this.dependencies.isComplete(resolution)) {
+            this.setIdentity(null, forcePublish);
+            this.dependencies.onComplete?.(resolution);
             return;
         }
 
@@ -92,9 +98,11 @@ export default class ActiveAiSessionTerminalHighlighter<TTerminal, TEntry> {
             return;
         }
         if (this.dependencies.isComplete(this.resolution)) {
+            const completedResolution = this.resolution;
             this.stopTimer();
             this.resolution = null;
             this.setIdentity(null);
+            this.dependencies.onComplete?.(completedResolution);
         }
     }
 

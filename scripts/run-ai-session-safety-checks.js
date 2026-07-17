@@ -1503,6 +1503,8 @@ function runActiveAiSessionTerminalHighlightChecks() {
     let visible = true;
     let complete = new Set();
     let published = [];
+    let completionCount = 0;
+    let completedResolution = null;
     let timers = [];
     const resolutions = new Map([
         [terminalA, { terminal: terminalA, provider: 'codex', sessionId: 'a', entry: { markerPath: 'a.done' } }],
@@ -1514,6 +1516,10 @@ function runActiveAiSessionTerminalHighlightChecks() {
         resolveTerminal: terminal => resolutions.get(terminal) || null,
         isComplete: resolution => complete.has(resolution.sessionId),
         publish: identity => published.push(identity),
+        onComplete: resolution => {
+            completionCount++;
+            completedResolution = resolution;
+        },
         setInterval: callback => {
             const handle = { callback, active: true };
             timers.push(handle);
@@ -1535,6 +1541,8 @@ function runActiveAiSessionTerminalHighlightChecks() {
     timers.find(timer => timer.active).callback();
     assert.strictEqual(published.pop(), null);
     assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+    assert.strictEqual(completionCount, 1, 'terminal completion requests an immediate attention reevaluation');
+    assert.strictEqual(completedResolution.sessionId, 'b', 'terminal completion identifies the session binding to release');
 
     complete.clear();
     activeTerminal = terminalA;
@@ -1542,6 +1550,7 @@ function runActiveAiSessionTerminalHighlightChecks() {
     highlighter.handleTerminalClosed(terminalA);
     assert.strictEqual(published.pop(), null);
     assert.strictEqual(timers.filter(timer => timer.active).length, 0);
+    assert.strictEqual(completionCount, 1, 'closing a terminal is not reported as marker completion');
 
     visible = false;
     highlighter.setVisible(false);
@@ -1619,6 +1628,13 @@ function runAiSessionTerminalResolutionChecks() {
         assert.strictEqual(service.isComplete(recoveredByEnv.entry), true, 'marker written during current run completes it');
         assert.deepStrictEqual(candidateCalls, ['codex']);
 
+        service.releaseCompletedSession('codex', 'session-env');
+        assert.strictEqual(fs.existsSync(recoveredMarkerPath), false, 'releasing a completed session removes its marker');
+        assert.strictEqual(service.getById('codex', 'session-env'), null, 'a completed shell must not be rediscovered as a running session');
+        candidateCalls.length = 0;
+        assert.strictEqual(service.resolveTerminalSession(byEnv, getCandidates), null, 'active terminal resolution must ignore a completed shell');
+        assert.deepStrictEqual(candidateCalls, ['codex']);
+
         candidateCalls.length = 0;
         assert.strictEqual(service.resolveTerminalSession(archivedByEnv, getCandidates), null);
         assert.deepStrictEqual(candidateCalls, ['codex']);
@@ -1669,6 +1685,22 @@ async function runAiSessionTerminalBindingStoreChecks() {
     });
     await second.flush();
     assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId).sessionId, 'session-new');
+
+    const released = new AiSessionTerminalBindingStore(state);
+    released.setReleased(processId, {
+        providerId: 'codex',
+        sessionId: 'session-new',
+        markerPath: '/tmp/session-new.done',
+    });
+    await released.flush();
+    assert.deepStrictEqual(new AiSessionTerminalBindingStore(state).get(processId), {
+        version: 2,
+        state: 'released',
+        providerId: 'codex',
+        sessionId: 'session-new',
+        markerPath: '/tmp/session-new.done',
+        updatedAtMs: released.get(processId).updatedAtMs,
+    });
 
     const invalidProcessId = 42009;
     stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + invalidProcessId] = {
@@ -1893,7 +1925,11 @@ async function runAiSessionTerminalPersistenceChecks() {
 
         const restoredBoundTerminal = {
             ...restoredPendingTerminal,
-            creationOptions: { name: restoredPendingTerminal.name, cwd: '/work/app' },
+            creationOptions: {
+                name: restoredPendingTerminal.name,
+                cwd: '/work/app',
+                env: { PROJECT_STEWARD_CODEX_SESSION_ID: 'session-new' },
+            },
             processId: Promise.resolve(processId),
         };
         const thirdStore = new AiSessionTerminalBindingStore(state);
@@ -1901,9 +1937,31 @@ async function runAiSessionTerminalPersistenceChecks() {
         await thirdService.restorePersistedTerminals([restoredBoundTerminal]);
         assert.strictEqual(thirdService.getById('codex', 'session-new').terminal, restoredBoundTerminal);
 
-        thirdService.handleClosedTerminal(restoredBoundTerminal);
+        thirdService.releaseCompletedSession('codex', 'session-new');
         await thirdStore.flush();
-        assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId), null);
+        assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId).state, 'released');
+
+        const releasedTerminalAfterReload = {
+            ...restoredBoundTerminal,
+            processId: Promise.resolve(processId),
+        };
+        vscodeTestState.terminals.splice(0, vscodeTestState.terminals.length, releasedTerminalAfterReload);
+        const fourthStore = new AiSessionTerminalBindingStore(state);
+        const fourthService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, fourthStore);
+        await fourthService.restorePersistedTerminals([releasedTerminalAfterReload]);
+        assert.strictEqual(
+            fourthService.getById('codex', 'session-new'),
+            null,
+            'a released session must not be rediscovered from its old shell after extension reload'
+        );
+
+        fourthService.handleClosedTerminal(releasedTerminalAfterReload);
+        await fourthStore.flush();
+        assert.strictEqual(
+            new AiSessionTerminalBindingStore(state).get(processId),
+            null,
+            'closing a released shell removes its persisted tombstone'
+        );
 
         const expiredProcessId = 49999;
         const expiredStore = new AiSessionTerminalBindingStore(state);
@@ -2322,6 +2380,7 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('const aiSessionProviders = aiSessionProviderRegistry.providers();'));
     assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
+    assert.match(dashboard, /onComplete: resolution => \{[\s\S]*?getRecoverySessionEvents\(\)[\s\S]*?aiSessionAttentionController\.acknowledge\(eventIds\);[\s\S]*?aiSessionAttentionBridgeClient\.acknowledge\(eventIds\);[\s\S]*?releaseCompletedSession\(resolution\.provider, resolution\.sessionId\);[\s\S]*?aiSessionAttentionController\.evaluate\(\);[\s\S]*?\}/);
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
     assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void aiSessionAttentionController\.evaluate\(\);[\s\S]*?\}\)/);
     assert.match(dashboard, /onDidChangeWindowState\(windowState => \{[\s\S]*?dashboardLifecycleController\.handleWindowStateChanged\(windowState\);[\s\S]*?\}\)/);

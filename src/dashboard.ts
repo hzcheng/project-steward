@@ -820,6 +820,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ),
         isComplete: resolution => aiSessionTerminalService.isComplete(resolution.entry),
         publish: identity => postActiveAiSessionTerminalChanged(identity),
+        onComplete: resolution => {
+            const sessionKey = getAiSessionKey(resolution.provider, resolution.sessionId);
+            const eventIds = aiSessionAttentionController.getRecoverySessionEvents()
+                .find(session => session.sessionKey === sessionKey)?.eventIds || [];
+            aiSessionAttentionController.acknowledge(eventIds);
+            void aiSessionAttentionBridgeClient.acknowledge(eventIds);
+            aiSessionTerminalService.releaseCompletedSession(resolution.provider, resolution.sessionId);
+            void aiSessionAttentionController.evaluate();
+        },
         setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
         clearInterval: handle => clearInterval(handle as NodeJS.Timeout),
     });

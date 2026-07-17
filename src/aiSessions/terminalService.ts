@@ -39,6 +39,7 @@ export default class AiSessionTerminalService {
     private readonly providersById = new Map<AiSessionProviderId, AiSessionProviderDefinition>();
     private readonly terminals: Partial<Record<AiSessionProviderId, Map<string, AiSessionTerminalEntry<vscode.Terminal>>>> = {};
     private readonly resumesInFlight: Partial<Record<AiSessionProviderId, Set<string>>> = {};
+    private readonly releasedTerminalSessions = new WeakMap<vscode.Terminal, Set<string>>();
     private pendingTerminals: PendingAiSessionTerminal[] = [];
 
     constructor(
@@ -109,6 +110,7 @@ export default class AiSessionTerminalService {
             ...entry,
             runStartedAtMs: Number.isFinite(entry?.runStartedAtMs) ? entry.runStartedAtMs : Date.now(),
         };
+        this.releasedTerminalSessions.get(normalizedEntry.terminal)?.delete(`${providerId}:${sessionId}`);
         this.getTerminalMap(providerId).set(sessionId, normalizedEntry);
         if (persist) {
             this.bindingStore?.setBound(normalizedEntry.terminal.processId, {
@@ -126,6 +128,21 @@ export default class AiSessionTerminalService {
         if (entry?.terminal) {
             this.bindingStore?.remove(entry.terminal.processId);
         }
+    }
+
+    releaseCompletedSession(providerId: AiSessionProviderId, sessionId: string) {
+        let entry = this.getTerminalMap(providerId).get(sessionId);
+        if (!entry?.terminal) {
+            return;
+        }
+        this.markTerminalSessionReleased(entry.terminal, providerId, sessionId);
+        this.deleteEntryMarker(entry);
+        this.getTerminalMap(providerId).delete(sessionId);
+        this.bindingStore?.setReleased(entry.terminal.processId, {
+            providerId,
+            sessionId,
+            markerPath: entry.markerPath,
+        });
     }
 
     trackPending(entry: PendingAiSessionTerminal, persist = true) {
@@ -233,6 +250,10 @@ export default class AiSessionTerminalService {
                     markerPath: binding.markerPath,
                     runStartedAtMs: binding.runStartedAtMs,
                 }, false);
+                return;
+            }
+            if (binding?.state === 'released') {
+                this.markTerminalSessionReleased(terminal, binding.providerId, binding.sessionId);
                 return;
             }
             if (binding?.state === 'pending') {
@@ -420,6 +441,7 @@ export default class AiSessionTerminalService {
                 }
             }
         }
+        this.releasedTerminalSessions.delete(terminal);
         this.removePendingForTerminal(terminal);
     }
 
@@ -437,6 +459,9 @@ export default class AiSessionTerminalService {
     }
 
     private terminalMatchesSession(providerId: AiSessionProviderId, terminal: vscode.Terminal, sessionId: string): boolean {
+        if (this.releasedTerminalSessions.get(terminal)?.has(`${providerId}:${sessionId}`)) {
+            return false;
+        }
         let provider = this.getProvider(providerId);
         if (!provider) {
             return false;
@@ -448,6 +473,19 @@ export default class AiSessionTerminalService {
 
         return terminal.name.startsWith(`${provider.terminalNamePrefix}: `)
             && terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`);
+    }
+
+    private markTerminalSessionReleased(
+        terminal: vscode.Terminal,
+        providerId: AiSessionProviderId,
+        sessionId: string
+    ): void {
+        let releasedSessions = this.releasedTerminalSessions.get(terminal);
+        if (!releasedSessions) {
+            releasedSessions = new Set<string>();
+            this.releasedTerminalSessions.set(terminal, releasedSessions);
+        }
+        releasedSessions.add(`${providerId}:${sessionId}`);
     }
 
     private getTerminalProvider(terminal: vscode.Terminal): AiSessionProviderId {
