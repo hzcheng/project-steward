@@ -556,9 +556,18 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('todo-priority-badge steward-badge'));
     const todoTitleLineStart = html.indexOf('<div class="todo-title-line">');
     assert.ok(todoTitleLineStart >= 0);
+    const todoTitleIndex = html.indexOf(
+        '<span class="todo-title-text" title="Write &lt;spec&gt;">Write &lt;spec&gt;</span>',
+        todoTitleLineStart
+    );
+    const todoPriorityIndex = html.indexOf(
+        '<span class="todo-priority-badge steward-badge">HIGH</span>',
+        todoTitleLineStart
+    );
+    assert.ok(todoTitleIndex >= 0, 'todo title should exist in its title line');
+    assert.ok(todoPriorityIndex >= 0, 'todo priority should exist in its title line');
     assert.ok(
-        html.indexOf('<span class="todo-title-text" title="Write &lt;spec&gt;">Write &lt;spec&gt;</span>', todoTitleLineStart)
-            < html.indexOf('<span class="todo-priority-badge steward-badge">HIGH</span>', todoTitleLineStart),
+        todoTitleIndex < todoPriorityIndex,
         'todo titles should appear before their priority badges'
     );
     assert.ok(html.includes('todo-item-footer steward-meta'));
@@ -1721,10 +1730,34 @@ function runSourceContractChecks(source) {
     const expandedNotesRule = extractCssRule(styles, '.todo-item.expanded .todo-notes,\n.todo-item.editing .todo-notes');
     assert.ok(expandedNotesRule.includes('white-space: pre-wrap'));
 
-    const completedRuleMatch = styles.match(/(^|\n)\s*\.todo-item\.completed\s*\{([^{}]*)\}/m);
-    const completedRule = completedRuleMatch ? completedRuleMatch[2] : '';
-    assert.strictEqual(completedRule.includes('background:'), false);
-    assert.strictEqual(completedRule.includes('opacity:'), false);
+    const completedRules = extractCssRulesContainingSelector(styles, '.todo-item.completed');
+    for (const completedRule of completedRules) {
+        assert.strictEqual(
+            cssRuleIncludesDeclaration(completedRule, 'background:'),
+            false,
+            'completed TODO selectors must not own card backgrounds'
+        );
+    }
+
+    const completedPriorityBadgeSelector = '.todo-item.completed .todo-priority-badge';
+    const completedPriorityBadgeRule = extractCssRule(
+        styles,
+        completedPriorityBadgeSelector
+    );
+    const completedPriorityBadgeSource = `${completedPriorityBadgeSelector} {${completedPriorityBadgeRule}}`;
+    assert.ok(styles.includes(completedPriorityBadgeSource));
+    const completedOpacityOwnershipStyles = styles.replace(completedPriorityBadgeSource, '');
+    const completedOpacityOwnershipRules = extractCssRulesContainingSelector(
+        completedOpacityOwnershipStyles,
+        '.todo-item.completed'
+    );
+    for (const completedRule of completedOpacityOwnershipRules) {
+        assert.strictEqual(
+            cssRuleIncludesDeclaration(completedRule, 'opacity:'),
+            false,
+            'completed TODO selectors must not own card opacity'
+        );
+    }
     assert.strictEqual(styles.includes('.todo-item.completed::before'), false);
 
     assert.ok(styles.includes('.todo-list.has-editing-item'));
