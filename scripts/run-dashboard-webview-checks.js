@@ -4,6 +4,8 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const CleanCSS = require('clean-css');
+const sass = require('sass');
 const dashboardErrorContent = require('../out/dashboard/errorContent');
 const dashboardConfiguration = require('../out/dashboard/configuration');
 const dashboardStartup = require('../out/dashboard/startup');
@@ -29,6 +31,13 @@ const root = path.join(__dirname, '..');
 const dashboardScriptPath = path.join(root, 'src', 'webview', 'webviewDashboardScripts.js');
 const projectScriptPath = path.join(root, 'src', 'webview', 'webviewProjectScripts.js');
 const extensionHostPath = path.join(root, 'src', 'dashboard.ts');
+
+function compileDashboardStyles(source) {
+    return sass.compileString(source, {
+        loadPaths: [path.join(root, 'media'), path.join(root, 'node_modules')],
+        style: 'expanded',
+    }).css;
+}
 
 function extractFunctionBody(source, functionName) {
     const start = source.indexOf(`function ${functionName}(`);
@@ -103,45 +112,9 @@ function extractCssRules(source, selector) {
     return rules;
 }
 
-function splitCssSelectorList(selectorText) {
-    const selectors = [];
-    let current = '';
-    let depth = 0;
-    let quote = '';
-    let escaped = false;
-    for (const character of selectorText) {
-        if (escaped) {
-            current += character;
-            escaped = false;
-        } else if (character === '\\') {
-            current += character;
-            escaped = true;
-        } else if (quote) {
-            current += character;
-            if (character === quote) quote = '';
-        } else if (character === '"' || character === "'") {
-            current += character;
-            quote = character;
-        } else if (character === '(' || character === '[') {
-            current += character;
-            depth += 1;
-        } else if (character === ')' || character === ']') {
-            current += character;
-            depth -= 1;
-        } else if (character === ',' && depth === 0) {
-            selectors.push(current.trim());
-            current = '';
-        } else {
-            current += character;
-        }
-    }
-    selectors.push(current.trim());
-    return selectors.filter(Boolean);
-}
-
-function extractCssRuleStructuresContainingSelector(source, selector) {
+function extractCssRulesContainingSelector(source, selector) {
     const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const selectorPattern = new RegExp(`(^|\\n)([^{}]*${escapedSelector}(?![\\w-])[^{}]*)\\{`, 'gm');
+    const selectorPattern = new RegExp(`(^|\\n)[^{}]*${escapedSelector}(?![\\w-])[^{}]*\\{`, 'gm');
     const rules = [];
     let match;
     while ((match = selectorPattern.exec(source))) {
@@ -151,10 +124,7 @@ function extractCssRuleStructuresContainingSelector(source, selector) {
             if (source[index] === '{') depth += 1;
             if (source[index] === '}') depth -= 1;
             if (depth === 0) {
-                rules.push({
-                    selectors: splitCssSelectorList(match[2].trim()),
-                    body: source.slice(braceStart + 1, index),
-                });
+                rules.push(source.slice(braceStart + 1, index));
                 selectorPattern.lastIndex = index + 1;
                 break;
             }
@@ -164,8 +134,20 @@ function extractCssRuleStructuresContainingSelector(source, selector) {
     return rules;
 }
 
-function extractCssRulesContainingSelector(source, selector) {
-    return extractCssRuleStructuresContainingSelector(source, selector).map(rule => rule.body);
+function extractCompiledCssRulesContainingSelector(source, selector) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const selectorPattern = new RegExp(`${escapedSelector}(?![\\w-])`);
+    const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
+    const rules = [];
+    let match;
+    while ((match = rulePattern.exec(source))) {
+        const selectors = match[1].split(',').map(value => value.trim()).filter(Boolean);
+        if (selectors.some(value => selectorPattern.test(value))) {
+            rules.push({ selectors, body: match[2] });
+        }
+    }
+    assert.ok(rules.length > 0, `Missing compiled CSS rules containing ${selector}`);
+    return rules;
 }
 
 function cssRuleIncludesDeclaration(rule, declaration) {
@@ -1446,7 +1428,21 @@ function runSourceContractChecks(source) {
     const filterSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewFilterScripts.js'), 'utf8');
     const extensionHostSource = fs.readFileSync(extensionHostPath, 'utf8');
     const webviewContentSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewContent.ts'), 'utf8');
-    const styles = fs.readFileSync(path.join(root, 'media', 'styles.scss'), 'utf8');
+    const stylesPath = path.join(root, 'media', 'styles.scss');
+    const generatedStylesPath = path.join(root, 'media', 'styles.css');
+    const styles = fs.readFileSync(stylesPath, 'utf8');
+    const compiledStyles = compileDashboardStyles(styles);
+    const generatedStyles = fs.readFileSync(generatedStylesPath, 'utf8');
+    const minifiedCompiledStyles = new CleanCSS({ rebaseTo: path.dirname(generatedStylesPath) }).minify({
+        [generatedStylesPath]: { styles: compiledStyles },
+    });
+    assert.deepStrictEqual(minifiedCompiledStyles.errors, [], 'compiled dashboard styles must minify without errors');
+    assert.deepStrictEqual(minifiedCompiledStyles.warnings, [], 'compiled dashboard styles must minify without warnings');
+    assert.strictEqual(
+        minifiedCompiledStyles.styles,
+        generatedStyles,
+        'generated media/styles.css must match compiled and minified media/styles.scss'
+    );
     const packageJson = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
     const updateMessagePath = path.join(root, 'src', 'dashboard', 'webviewUpdateMessages.ts');
     assert.ok(fs.existsSync(updateMessagePath));
@@ -1794,8 +1790,8 @@ function runSourceContractChecks(source) {
     const expandedNotesRule = extractCssRule(styles, '.todo-item.expanded .todo-notes,\n.todo-item.editing .todo-notes');
     assert.ok(expandedNotesRule.includes('white-space: pre-wrap'));
 
-    const completedRules = extractCssRuleStructuresContainingSelector(
-        styles,
+    const completedRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
         '.todo-item.completed'
     );
     for (const completedRule of completedRules) {
@@ -1812,7 +1808,11 @@ function runSourceContractChecks(source) {
             );
         }
     }
-    assert.strictEqual(styles.includes('.todo-item.completed::before'), false);
+    assert.strictEqual(
+        completedRules.some(rule => rule.selectors.some(selector => selector.includes('::before'))),
+        false,
+        'completed TODO selectors must not own a ::before layer'
+    );
 
     assert.ok(styles.includes('.todo-list.has-editing-item'));
     assert.ok(styles.includes('.todo-item.editing .todo-edit-form'));
