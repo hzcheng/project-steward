@@ -67,7 +67,7 @@ function renderTodoAddForm(viewModel: TodoPanelViewModel): string {
 }
 
 function renderTodoEditForm(todo: TodoItemViewModel): string {
-    return `<form class="todo-edit-form todo-edit-panel steward-card" data-todo-form="edit" data-todo-id="${escapeHtml(todo.id)}" hidden>
+    return `<form class="todo-edit-form todo-edit-panel" data-todo-form="edit" data-todo-id="${escapeHtml(todo.id)}" hidden>
         <div class="todo-edit-heading">EDIT TODO</div>
         <label class="todo-field-label">Title</label>
         <input class="todo-title-input" type="text" name="title" value="${escapeHtml(todo.title)}" aria-label="Todo title">
@@ -90,7 +90,8 @@ function renderTodoEditForm(todo: TodoItemViewModel): string {
 function renderTodoItem(todo: TodoItemViewModel): string {
     const completedClass = todo.completed ? ' completed' : '';
     const checked = todo.completed ? ' checked' : '';
-    return `<li class="todo-item steward-card steward-card-compact todo-priority-${todo.priority}${completedClass}" data-todo-id="${escapeHtml(todo.id)}" aria-expanded="false">
+    return `<li class="todo-item steward-item-card todo-priority-${todo.priority}${completedClass}" data-todo-id="${escapeHtml(todo.id)}" aria-expanded="false">
+        <span class="todo-item-accent steward-item-accent" aria-hidden="true"></span>
         <div class="todo-item-view">
             <div class="todo-item-main">
                 <label class="todo-check">
@@ -127,7 +128,7 @@ function renderTodoGroup(group: TodoGroupViewModel): string {
         : `${group.incompleteCount} open`;
 
     return `<section class="todo-group group steward-section${group.collapsed ? ' collapsed' : ''}" data-todo-group-id="${escapeHtml(group.id)}">
-        <header class="todo-group-header group-title steward-section-header todo-group-strip">
+        <header class="todo-group-header group-title steward-group-header">
             <div class="todo-group-title-block group-title-text" data-action="todo-collapse-group" data-todo-group-id="${escapeHtml(group.id)}">
                 <span class="collapse-icon" title="Open/Collapse Todo Group">${Icons.collapse}</span>
                 <h2 title="${escapeHtml(group.title)}">${escapeHtml(group.title)}</h2>
@@ -151,13 +152,7 @@ export function getTodoPanelContent(viewModel: TodoPanelViewModel, options: Todo
     if (viewModel.isEmpty) {
         return `<div class="todo-panel todo-panel-empty"${panelStyle}>
             ${renderTodoCommandBar(viewModel)}
-            <div class="todo-empty-state steward-empty-state">
-                <div class="todo-empty-orb">${Icons.manage}</div>
-                <strong>Plan your next large task</strong>
-                <span>Create a group, then break the work into prioritized todos.</span>
-                <button class="todo-empty-primary steward-button steward-button-primary" type="button" data-action="todo-add-group">Create first group</button>
-                <button class="todo-empty-secondary steward-button" type="button" data-action="todo-add">Add todo to Inbox</button>
-            </div>
+            <p class="todo-empty-state steward-empty-state">No todos yet</p>
         </div>`;
     }
 
@@ -178,18 +173,18 @@ function renderTodoCommandBar(viewModel: TodoPanelViewModel): string {
         ? 'No groups yet · synced when Project Steward data is synced'
         : `${viewModel.totalIncomplete} open · ${groupCount} ${groupCount === 1 ? 'group' : 'groups'} · ${completedState}`;
 
-    return `<div class="todo-summary-card steward-card">
+    return `<header class="todo-page-header group-title steward-group-header">
         <div class="todo-summary-copy">
             <strong>TODO</strong>
             <span class="todo-summary-meta steward-meta">${meta}</span>
         </div>
-        <div class="todo-summary-actions">
+        <div class="todo-summary-actions group-actions right">
             <button class="todo-square-button steward-icon-button" type="button" data-action="todo-add" title="Add todo" aria-label="Add todo">${Icons.add}</button>
             <button class="todo-square-button steward-icon-button" type="button" data-action="todo-add-group" title="Add group" aria-label="Add group">${Icons.manage}</button>
-            <label class="todo-square-toggle steward-icon-button ${viewModel.showCompleted ? 'active' : ''}" title="Show completed">
+            <label class="todo-square-toggle steward-icon-button ${viewModel.showCompleted ? 'active' : ''}" title="Show completed" aria-label="Show completed">
                 <input type="checkbox" data-action="todo-toggle-show-completed"${viewModel.showCompleted ? ' checked' : ''}>
                 <span>${Icons.collapseAll}</span>
             </label>
         </div>
-    </div>`;
+    </header>`;
 }

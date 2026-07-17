@@ -373,7 +373,7 @@ function getGroupSection(
     return `
 <div class="group steward-section ${options.className} ${group.collapsed ? 'collapsed' : ''} ${group.projects.length === 0 ? 'no-projects' : ''
         }" data-group-id="${group.id}"${options.virtual ? ' data-virtual-group' : ''}${systemGroupAttribute}>
-    <div class="group-title steward-section-header">
+    <div class="group-title steward-section-header steward-group-header">
         ${groupTitleText}
         ${options.systemBadge ? `<span class="group-title-badge">${options.systemBadge}</span>` : ''}
         ${groupActions}
@@ -398,7 +398,7 @@ function getFavoritesGroup(favoriteProjects: Project[], collapsed: boolean = fal
 function getTempGroupSection() {
     return `
 <div class="group" id="tempGroup">
-    <div class="group-title steward-section-header" data-action="add-group">
+    <div class="group-title steward-section-header steward-group-header" data-action="add-group">
         <span>${Icons.add} New Group</span>
     </div>
     <div class="group-list">
@@ -472,7 +472,7 @@ function getProjectDiv(
 
     return `
 <div class="project-container"${options.virtual && !options.draggableVirtualProjects ? ' data-nodrag' : ''}>
-    <div class="project" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
+    <div class="project steward-item-card" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${attentionProjectKey ? ` data-attention-project-key="${attentionProjectKey}"` : ''
         }${options.virtual ? ' data-virtual-project' : ''
         }${options.readOnlyProjects || isProjectNavigation ? ' data-readonly-project' : ''
@@ -485,7 +485,7 @@ function getProjectDiv(
         }${showCurrentAttention ? ' data-current-workspace' : ''
         }>
         <div class="project-aura"></div>
-        <div class="project-border" style="${borderStyle}"></div>
+        <div class="project-border steward-item-accent" style="${borderStyle}"></div>
         ${projectAttentionBadge}
         ${favoriteBadge}
         ${saveBadge}

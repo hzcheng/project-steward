@@ -457,20 +457,21 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('title="Write &lt;spec&gt;"'));
     assert.strictEqual(html.includes('Done task'), false);
     assert.ok(html.includes('1 completed hidden'));
-    assert.ok(html.includes('todo-summary-card'));
+    assert.ok(html.includes('todo-page-header group-title steward-group-header'));
+    assert.ok(html.includes('todo-group-header group-title steward-group-header'));
+    assert.ok(html.includes('todo-item steward-item-card'));
+    assert.ok(html.includes('todo-item-accent steward-item-accent'));
+    assert.strictEqual(html.includes('todo-summary-card'), false);
+    assert.strictEqual(html.includes('steward-card-compact'), false);
     assert.ok(html.includes('todo-summary-meta'));
     assert.ok(html.includes('todo-summary-actions'));
-    assert.ok(html.includes('todo-summary-card steward-card'));
     assert.ok(html.includes('todo-group group steward-section'));
-    assert.ok(html.includes('todo-group-header group-title steward-section-header'));
     assert.ok(html.includes('todo-group-actions group-actions'));
     assert.ok(html.includes('data-action="todo-collapse-group"'));
     assert.ok(html.includes('data-action="todo-delete-group"'));
-    assert.ok(html.includes('todo-item steward-card steward-card-compact'));
     assert.ok(html.includes('todo-priority-badge steward-badge'));
     assert.ok(html.includes('todo-item-footer steward-meta'));
     assert.ok(html.includes('todo-icon-button steward-icon-button'));
-    assert.ok(html.includes('todo-group-strip'));
     assert.ok(html.includes('todo-item-content'));
     assert.ok(html.includes('todo-item-footer'));
     assert.strictEqual(html.includes('todo-add-form'), false, 'default TODO list must not show a persistent add form');
@@ -486,10 +487,12 @@ function runTodoViewModelChecks() {
     assert.ok(defaultHtml.includes('--todo-list-max-height:'));
 
     const emptyHtml = todoWebviewContent.getTodoPanelContent(todoViewModel.buildTodoViewModel({ version: 1, groups: [], todos: [] }));
-    assert.ok(emptyHtml.includes('todo-empty-state'));
-    assert.ok(emptyHtml.includes('Plan your next large task'));
-    assert.ok(emptyHtml.includes('Create first group'));
-    assert.ok(emptyHtml.includes('Add todo to Inbox'));
+    assert.ok(emptyHtml.includes('todo-empty-state steward-empty-state'));
+    assert.ok(emptyHtml.includes('No todos yet'));
+    assert.strictEqual(emptyHtml.includes('todo-empty-orb'), false);
+    assert.strictEqual(emptyHtml.includes('Create first group'), false);
+    assert.strictEqual(emptyHtml.includes('Add todo to Inbox'), false);
+    assert.strictEqual(html.includes('todo-edit-panel steward-card'), false);
 
     const dashboardViewModel = require('../out/webview/dashboardViewModel');
     const catalog = dashboardViewModel.buildDashboardSearchCatalog([], [], todoTypes.buildTodoSearchItems(makeTodoData()));
@@ -1282,8 +1285,9 @@ function runSourceContractChecks(source) {
 
     assert.ok(source.includes("projectSteward.activeDashboardTab"));
     assert.ok(webviewContentSource.includes('class="group steward-section'));
-    assert.ok(webviewContentSource.includes('class="group-title steward-section-header'));
-    assert.ok(webviewContentSource.includes('class="project"'));
+    assert.ok(webviewContentSource.includes('class="group-title steward-section-header steward-group-header"'));
+    assert.ok(webviewContentSource.includes('class="project steward-item-card"'));
+    assert.ok(webviewContentSource.includes('class="project-border steward-item-accent"'));
     assert.ok(source.includes("setAttribute('aria-selected'"));
     assert.ok(source.includes("setAttribute('tabindex'"));
     assert.ok(source.includes('scrollPositions'));
