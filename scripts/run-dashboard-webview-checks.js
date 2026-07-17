@@ -43,6 +43,29 @@ function extractFunctionBody(source, functionName) {
     throw new Error(`Unterminated function ${functionName}`);
 }
 
+function extractHtmlElementBody(source, openingTag) {
+    const start = source.indexOf(openingTag);
+    assert.ok(start >= 0, `Missing HTML element ${openingTag}`);
+    const tagNameMatch = openingTag.match(/^<([a-z][\w-]*)\b/i);
+    assert.ok(tagNameMatch, `Invalid HTML opening tag ${openingTag}`);
+    const tagName = tagNameMatch[1];
+    const openingTagEnd = source.indexOf('>', start);
+    assert.ok(openingTagEnd >= 0, `Unterminated HTML opening tag ${openingTag}`);
+    const tagPattern = new RegExp(`<\\/?${tagName}\\b[^>]*>`, 'gi');
+    tagPattern.lastIndex = openingTagEnd + 1;
+    let depth = 1;
+    let match;
+    while ((match = tagPattern.exec(source))) {
+        if (match[0].startsWith('</')) {
+            depth -= 1;
+            if (depth === 0) return source.slice(openingTagEnd + 1, match.index);
+        } else if (!match[0].endsWith('/>')) {
+            depth += 1;
+        }
+    }
+    throw new Error(`Unterminated HTML element ${openingTag}`);
+}
+
 function extractCssRule(source, selector) {
     const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const match = source.match(new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{`, 'm'));
@@ -80,9 +103,45 @@ function extractCssRules(source, selector) {
     return rules;
 }
 
-function extractCssRulesContainingSelector(source, selector) {
+function splitCssSelectorList(selectorText) {
+    const selectors = [];
+    let current = '';
+    let depth = 0;
+    let quote = '';
+    let escaped = false;
+    for (const character of selectorText) {
+        if (escaped) {
+            current += character;
+            escaped = false;
+        } else if (character === '\\') {
+            current += character;
+            escaped = true;
+        } else if (quote) {
+            current += character;
+            if (character === quote) quote = '';
+        } else if (character === '"' || character === "'") {
+            current += character;
+            quote = character;
+        } else if (character === '(' || character === '[') {
+            current += character;
+            depth += 1;
+        } else if (character === ')' || character === ']') {
+            current += character;
+            depth -= 1;
+        } else if (character === ',' && depth === 0) {
+            selectors.push(current.trim());
+            current = '';
+        } else {
+            current += character;
+        }
+    }
+    selectors.push(current.trim());
+    return selectors.filter(Boolean);
+}
+
+function extractCssRuleStructuresContainingSelector(source, selector) {
     const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const selectorPattern = new RegExp(`(^|\\n)[^{}]*${escapedSelector}(?![\\w-])[^{}]*\\{`, 'gm');
+    const selectorPattern = new RegExp(`(^|\\n)([^{}]*${escapedSelector}(?![\\w-])[^{}]*)\\{`, 'gm');
     const rules = [];
     let match;
     while ((match = selectorPattern.exec(source))) {
@@ -92,7 +151,10 @@ function extractCssRulesContainingSelector(source, selector) {
             if (source[index] === '{') depth += 1;
             if (source[index] === '}') depth -= 1;
             if (depth === 0) {
-                rules.push(source.slice(braceStart + 1, index));
+                rules.push({
+                    selectors: splitCssSelectorList(match[2].trim()),
+                    body: source.slice(braceStart + 1, index),
+                });
                 selectorPattern.lastIndex = index + 1;
                 break;
             }
@@ -100,6 +162,10 @@ function extractCssRulesContainingSelector(source, selector) {
     }
     assert.ok(rules.length > 0, `Missing CSS rules containing ${selector}`);
     return rules;
+}
+
+function extractCssRulesContainingSelector(source, selector) {
+    return extractCssRuleStructuresContainingSelector(source, selector).map(rule => rule.body);
 }
 
 function cssRuleIncludesDeclaration(rule, declaration) {
@@ -554,15 +620,13 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('data-action="todo-collapse-group"'));
     assert.ok(html.includes('data-action="todo-delete-group"'));
     assert.ok(html.includes('todo-priority-badge steward-badge'));
-    const todoTitleLineStart = html.indexOf('<div class="todo-title-line">');
-    assert.ok(todoTitleLineStart >= 0);
-    const todoTitleIndex = html.indexOf(
-        '<span class="todo-title-text" title="Write &lt;spec&gt;">Write &lt;spec&gt;</span>',
-        todoTitleLineStart
+    const todoTitleLineOpeningTag = '<div class="todo-title-line">';
+    const todoTitleLineBody = extractHtmlElementBody(html, todoTitleLineOpeningTag);
+    const todoTitleIndex = todoTitleLineBody.indexOf(
+        '<span class="todo-title-text" title="Write &lt;spec&gt;">Write &lt;spec&gt;</span>'
     );
-    const todoPriorityIndex = html.indexOf(
-        '<span class="todo-priority-badge steward-badge">HIGH</span>',
-        todoTitleLineStart
+    const todoPriorityIndex = todoTitleLineBody.indexOf(
+        '<span class="todo-priority-badge steward-badge">HIGH</span>'
     );
     assert.ok(todoTitleIndex >= 0, 'todo title should exist in its title line');
     assert.ok(todoPriorityIndex >= 0, 'todo priority should exist in its title line');
@@ -1730,33 +1794,23 @@ function runSourceContractChecks(source) {
     const expandedNotesRule = extractCssRule(styles, '.todo-item.expanded .todo-notes,\n.todo-item.editing .todo-notes');
     assert.ok(expandedNotesRule.includes('white-space: pre-wrap'));
 
-    const completedRules = extractCssRulesContainingSelector(styles, '.todo-item.completed');
+    const completedRules = extractCssRuleStructuresContainingSelector(
+        styles,
+        '.todo-item.completed'
+    );
     for (const completedRule of completedRules) {
         assert.strictEqual(
-            cssRuleIncludesDeclaration(completedRule, 'background:'),
+            cssRuleIncludesDeclaration(completedRule.body, 'background:'),
             false,
             'completed TODO selectors must not own card backgrounds'
         );
-    }
-
-    const completedPriorityBadgeSelector = '.todo-item.completed .todo-priority-badge';
-    const completedPriorityBadgeRule = extractCssRule(
-        styles,
-        completedPriorityBadgeSelector
-    );
-    const completedPriorityBadgeSource = `${completedPriorityBadgeSelector} {${completedPriorityBadgeRule}}`;
-    assert.ok(styles.includes(completedPriorityBadgeSource));
-    const completedOpacityOwnershipStyles = styles.replace(completedPriorityBadgeSource, '');
-    const completedOpacityOwnershipRules = extractCssRulesContainingSelector(
-        completedOpacityOwnershipStyles,
-        '.todo-item.completed'
-    );
-    for (const completedRule of completedOpacityOwnershipRules) {
-        assert.strictEqual(
-            cssRuleIncludesDeclaration(completedRule, 'opacity:'),
-            false,
-            'completed TODO selectors must not own card opacity'
-        );
+        if (cssRuleIncludesDeclaration(completedRule.body, 'opacity:')) {
+            assert.deepStrictEqual(
+                completedRule.selectors,
+                ['.todo-item.completed .todo-priority-badge'],
+                'only the completed priority badge selector may own opacity'
+            );
+        }
     }
     assert.strictEqual(styles.includes('.todo-item.completed::before'), false);
 
