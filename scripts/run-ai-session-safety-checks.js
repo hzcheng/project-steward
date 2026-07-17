@@ -113,6 +113,10 @@ function createTestFileUri(filePath) {
     };
 }
 
+function hasClassTokens(classValue, ...tokens) {
+    return tokens.every(token => classValue.split(/\s+/).includes(token));
+}
+
 function runPathChecks() {
     assert.strictEqual(helpers.normalizeAiSessionComparablePath('/work/app/'), '/work/app');
     assert.strictEqual(helpers.normalizeAiSessionComparablePath('/work/My%20App/'), '/work/My App');
@@ -2554,7 +2558,12 @@ function runCurrentWorkspaceRenderingChecks() {
         },
         true
     );
-    const getCardTags = (content, projectId) => content.match(new RegExp(`<div class="project"[^>]*data-id="${projectId}"[^>]*>`, 'g')) || [];
+    const getCardTags = (content, projectId) => Array.from(content.matchAll(
+        new RegExp(`<div class="([^"]*)"[^>]*data-id="${projectId}"[^>]*>`, 'g')
+    )).filter(match => hasClassTokens(match[1], 'project', 'steward-item-card')).map(match => match[0]);
+    const hasProjectAccent = (content, style) => Array.from(
+        content.matchAll(/<div class="([^"]*)" style="([^"]*)"><\/div>/g)
+    ).some(match => match[2] === style && hasClassTokens(match[1], 'project-border', 'steward-item-accent'));
     const savedTags = getCardTags(html, 'saved');
     const otherTags = getCardTags(html, 'other');
     const openTags = getCardTags(html, '__openProjects-0');
@@ -2589,9 +2598,9 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.ok(!navigationHtml.includes('Leaked Session'));
     assert.ok(!html.includes('data-injected'));
     assert.ok(!navigationHtml.includes('red;'));
-    assert.ok(navigationHtml.includes('<div class="project-border" style=""></div>'));
+    assert.ok(hasProjectAccent(navigationHtml, ''));
     assert.ok(openTags[0].includes('style="--project-color: #00aacc;"'));
-    assert.ok(html.includes('<div class="project-border" style="background: #00aacc;"></div>'));
+    assert.ok(hasProjectAccent(html, 'background: #00aacc;'));
     assert.ok(navigationHtml.includes('title="SSH Project"'));
     assert.match(navigationHtml, /class="project-description" title="Other workspace">\s*Other workspace\s*<\/p>/);
 
@@ -2671,8 +2680,9 @@ function runFavoriteRenderingChecks() {
             otherStorageHasData: false,
         }
     );
-    const renderedProjectIds = Array.from(html.matchAll(/<div class="project"[^>]*data-id="([^"]+)"[^>]*>/g))
-        .map(match => match[1]);
+    const renderedProjectIds = Array.from(html.matchAll(/<div class="([^"]*)"[^>]*data-id="([^"]+)"[^>]*>/g))
+        .filter(match => hasClassTokens(match[1], 'project', 'steward-item-card'))
+        .map(match => match[2]);
 
     assert.deepStrictEqual(renderedProjectIds, [
         'favorite-b',
@@ -2681,9 +2691,10 @@ function runFavoriteRenderingChecks() {
         'favorite-b',
         'plain',
     ]);
-    const favoriteContainer = html.match(/<div class="project-container"([^>]*)>\s*<div class="project"[^>]*data-id="favorite-b"/);
+    const favoriteContainer = html.match(/<div class="project-container"([^>]*)>\s*<div class="([^"]*)"[^>]*data-id="favorite-b"/);
     assert.ok(favoriteContainer);
     assert.ok(!favoriteContainer[1].includes('data-nodrag'));
+    assert.ok(hasClassTokens(favoriteContainer[2], 'project', 'steward-item-card'));
 }
 
 function runAttentionProjectRenderingChecks() {

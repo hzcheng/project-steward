@@ -102,6 +102,10 @@ function extractFunctionBody(source, functionName) {
     assert.fail(`could not extract function ${functionName}`);
 }
 
+function hasClassTokens(classValue, ...tokens) {
+    return tokens.every(token => classValue.split(/\s+/).includes(token));
+}
+
 function runProtocolChecks() {
     const publication = makePublication();
     const registration = makeRegistration();
@@ -1165,7 +1169,9 @@ function runOpenProjectIncrementalRenderingChecks() {
     const documentStub = {
         querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null,
         querySelectorAll: selector => {
-            const projectTags = wrapper.innerHTML.match(/<div class="project"[^>]*data-id=[^>]*>/g) || [];
+            const projectTags = Array.from(wrapper.innerHTML.matchAll(/<div class="([^"]*)"[^>]*data-id=[^>]*>/g))
+                .filter(match => hasClassTokens(match[1], 'project', 'steward-item-card'))
+                .map(match => match[0]);
             if (selector === '.sticky-groups-wrapper .project[data-id]') {
                 return Array.from({ length: projectTags.length }, () => ({}));
             }
@@ -1220,8 +1226,8 @@ function runOpenProjectIncrementalRenderingChecks() {
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.ok(webviewScript.includes("type: 'open-projects-rendered'"));
     const validNavigationHtml = [
-        '<div class="group open-current-workspace-group"><div class="project" data-id="current"></div></div>',
-        '<div class="group open-other-windows-group"><div class="project" data-project-navigation data-id="other"></div></div>',
+        '<div class="group open-current-workspace-group"><div class="project steward-item-card" data-id="current"></div></div>',
+        '<div class="group open-other-windows-group"><div class="project steward-item-card" data-project-navigation data-id="other"></div></div>',
     ].join('');
     assert.strictEqual(applyOpenProjectsUpdate({
         type: 'open-projects-updated',
@@ -1243,7 +1249,7 @@ function runOpenProjectIncrementalRenderingChecks() {
         version: 1,
         semanticRevision: 'revision-3',
         projectCount: 2,
-        html: '<div class="group open-current-workspace-group"><div class="project" data-id="current"></div></div>',
+        html: '<div class="group open-current-workspace-group"><div class="project steward-item-card" data-id="current"></div></div>',
         searchCatalog: {
             sessions: [],
             openProjects: [
