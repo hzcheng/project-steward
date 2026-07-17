@@ -85,6 +85,21 @@ function cssRuleIncludesDeclaration(rule, declaration) {
     return new RegExp(`(^|[;{}\\n])\\s*${escapedDeclaration}`).test(rule);
 }
 
+function cssRuleIncludesTopLevelDeclaration(rule, declaration) {
+    let depth = 0;
+    let topLevelRule = '';
+    for (const character of rule) {
+        if (character === '{') {
+            depth += 1;
+        } else if (character === '}') {
+            depth -= 1;
+        } else if (depth === 0) {
+            topLevelRule += character;
+        }
+    }
+    return cssRuleIncludesDeclaration(topLevelRule, declaration);
+}
+
 function makeDashboardCatalog() {
     return {
         sessions: [{
@@ -1483,8 +1498,8 @@ function runSourceContractChecks(source) {
     assert.strictEqual(projectSource.includes("sessionStorage.setItem('projectSteward.activeDashboardTab', 'open')"), false);
     for (const selector of [
         '.steward-section', '.steward-section-header', '.steward-card',
-        '.steward-card-compact', '.steward-icon-button', '.steward-badge',
-        '.steward-meta',
+        '.steward-icon-button', '.steward-badge', '.steward-meta',
+        '.steward-item-card', '.steward-item-accent',
         '.dashboard-tab-list', '.dashboard-tab-button', '.dashboard-tab-panel',
         '.dashboard-tab-button::before',
         '.dashboard-search-results', '.dashboard-search-section', '.dashboard-search-result',
@@ -1496,9 +1511,46 @@ function runSourceContractChecks(source) {
     ]) {
         assert.ok(styles.includes(selector), `missing ${selector}`);
     }
-    assert.ok(styles.includes('.todo-item::before'), 'todo items should expose a shared project-card accent rail');
-    assert.ok(styles.includes('.todo-priority-high::before'), 'todo item priority should drive the accent rail');
     const sidebarStyles = extractCssRule(styles, 'body.steward-sidebar');
+    const sharedItemCardRule = extractCssRule(sidebarStyles, '.steward-item-card');
+    for (const declaration of [
+        'height: 58px',
+        'margin: 0 2px 7px 2px',
+        'padding: 8px 10px 8px 15px',
+        'border: 1px solid var(--vscode-panel-border)',
+        'border-radius: 18px',
+        'background: var(',
+        'box-shadow:',
+    ]) {
+        assert.ok(sharedItemCardRule.includes(declaration), `shared item card is missing ${declaration}`);
+    }
+
+    const todoItemRule = extractCssRule(styles, '.todo-item');
+    for (const forbidden of ['border:', 'border-radius:', 'background:', 'box-shadow:']) {
+        assert.strictEqual(todoItemRule.includes(forbidden), false, `TODO item must not own ${forbidden}`);
+    }
+
+    const sidebarProjectRule = extractCssRule(sidebarStyles, '.project');
+    for (const forbidden of ['height: 58px', 'border-radius: 18px', 'background: var(', 'box-shadow:']) {
+        assert.strictEqual(cssRuleIncludesTopLevelDeclaration(sidebarProjectRule, forbidden), false,
+            `project domain rule must not duplicate ${forbidden}`);
+    }
+
+    const sharedAccentRule = extractCssRule(sidebarStyles, '.steward-item-accent');
+    assert.ok(sharedAccentRule.includes('left: 7px'));
+    assert.ok(sharedAccentRule.includes('width: 4px'));
+    assert.ok(sharedAccentRule.includes('border-radius: 999px'));
+    assert.ok(sharedItemCardRule.includes('&.completed'));
+    assert.ok(sharedItemCardRule.includes('&.selected'));
+    assert.ok(sharedItemCardRule.includes('&[data-current-workspace]'));
+    assert.ok(sharedItemCardRule.includes('&[data-codex-expanded]:hover'));
+    assert.strictEqual(styles.includes('.steward-card-compact'), false);
+
+    const reducedMotionRule = extractCssRule(styles, '@media (prefers-reduced-motion: reduce)');
+    assert.ok(reducedMotionRule.includes('.steward-item-card'));
+    assert.ok(reducedMotionRule.includes('.steward-item-accent'));
+    assert.ok(reducedMotionRule.includes('transition: none'));
+
     const sharedGroupHeaderRule = extractCssRule(sidebarStyles, '.steward-group-header');
     for (const declaration of [
         'display: flex',
@@ -1567,21 +1619,14 @@ function runSourceContractChecks(source) {
         'editing a todo should remove the group list viewport limit so the full editor is visible');
     assert.ok(styles.includes('.todo-item:not(.expanded)'),
         'todo items should have a collapsed state that controls the visible-count height');
-    assert.ok(styles.includes('.todo-item.expanded'),
-        'todo items should have an expanded state for details and editing');
-    assert.ok(styles.includes('.todo-item.editing'),
-        'todo items should have an explicit editing state that cannot be hidden by collapsed styles');
-    const todoCollapsedItemRule = extractCssRule(styles, '.todo-item:not(.expanded)');
-    assert.ok(todoCollapsedItemRule.includes('height: var(--todo-collapsed-item-height, 58px)'),
+    assert.ok(sharedItemCardRule.includes('&.expanded')
+        && sharedItemCardRule.includes('&.editing'),
+        'shared item cards should own expanded and editing states');
+    assert.ok(sharedItemCardRule.includes('height: 58px'),
         'collapsed todo items should keep the same normal card height as current workspace cards');
-    const todoExpandedItemRule = extractCssRule(styles, '.todo-item.expanded');
-    assert.ok(todoExpandedItemRule.includes('height: auto')
-        && todoExpandedItemRule.includes('min-height: var(--todo-collapsed-item-height, 58px)'),
+    assert.ok(sharedItemCardRule.includes('height: auto')
+        && sharedItemCardRule.includes('min-height: 58px'),
         'expanded todo items should open from the normal collapsed card height');
-    const todoEditingItemRule = extractCssRule(styles, '.todo-item.editing');
-    assert.ok(todoEditingItemRule.includes('height: auto')
-        && todoEditingItemRule.includes('min-height: var(--todo-collapsed-item-height, 58px)'),
-        'editing todo items should force the whole card open');
     assert.ok(styles.includes('.todo-item.editing .todo-edit-form'),
         'editing todo items should force the edit form to render');
     assert.ok(styles.includes('.todo-item:not(.expanded) .todo-notes')
