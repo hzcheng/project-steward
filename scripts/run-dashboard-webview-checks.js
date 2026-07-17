@@ -1517,12 +1517,12 @@ function runSourceContractChecks(source) {
         && sharedDangerActionRule.includes('color: var(--vscode-errorForeground)'),
         'shared group header danger actions must retain their danger color on hover and keyboard focus');
 
-    const todoPageHeaderRule = extractCssRule(styles, '.todo-page-header');
+    const todoPageHeaderRules = extractCssRulesContainingSelector(styles, '.todo-page-header').join('\n');
     for (const forbidden of [
         'display:', 'width:', 'padding:', 'border:', 'border-radius:', 'background:', 'box-shadow:',
         'font-family:', 'font-size:', 'font-weight:', 'line-height:', 'box-sizing:',
     ]) {
-        assert.strictEqual(cssRuleIncludesDeclaration(todoPageHeaderRule, forbidden), false,
+        assert.strictEqual(cssRuleIncludesDeclaration(todoPageHeaderRules, forbidden), false,
             `TODO page header must not own ${forbidden}`);
     }
 
