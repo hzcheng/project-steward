@@ -1138,6 +1138,21 @@ async function runAiSessionResumeControllerChecks() {
     assert.strictEqual(rejected, true);
     assert.strictEqual(finishes.length, finishCountBeforeReject + 1);
     assert.strictEqual(synced.length, syncCountBeforeReject);
+
+    rejectResumeSend = false;
+    const releasedTerminal = makeTerminal('released-existing');
+    existingEntry = { terminal: releasedTerminal, markerPath: '/tmp/released.marker', complete: true };
+    const createdCountBeforeReleasedResume = created.length;
+    const trackedCountBeforeReleasedResume = tracked.length;
+    const sentCountBeforeReleasedResume = sent.length;
+    await controller.resumeProjectSession('project-a', 'codex', session.id);
+    assert.strictEqual(created.length, createdCountBeforeReleasedResume, 'a released terminal must be reused');
+    assert.strictEqual(tracked.length, trackedCountBeforeReleasedResume + 1);
+    assert.strictEqual(tracked[tracked.length - 1][2].terminal, releasedTerminal);
+    assert.deepStrictEqual(
+        sent[sentCountBeforeReleasedResume],
+        ['codex', releasedTerminal, session.id, '/work/a', '/tmp/released.marker']
+    );
 }
 
 async function runAiSessionAttentionControllerChecks() {
@@ -1626,11 +1641,28 @@ function runAiSessionTerminalResolutionChecks() {
         const currentMarkerAt = new Date(recoveredByEnv.entry.runStartedAtMs + 1000);
         fs.utimesSync(recoveredMarkerPath, currentMarkerAt, currentMarkerAt);
         assert.strictEqual(service.isComplete(recoveredByEnv.entry), true, 'marker written during current run completes it');
+        assert.deepStrictEqual(
+            service.getCompletedSessions().map(item => `${item.provider}:${item.sessionId}`),
+            ['codex:session-env'],
+            'completed terminals must be discoverable without being active or visible'
+        );
         assert.deepStrictEqual(candidateCalls, ['codex']);
 
         service.releaseCompletedSession('codex', 'session-env');
         assert.strictEqual(fs.existsSync(recoveredMarkerPath), false, 'releasing a completed session removes its marker');
-        assert.strictEqual(service.getById('codex', 'session-env'), null, 'a completed shell must not be rediscovered as a running session');
+        const releasedByEnv = service.getById('codex', 'session-env');
+        assert.strictEqual(releasedByEnv.terminal, byEnv, 'a completed shell remains available for an explicit resume');
+        assert.strictEqual(service.isComplete(releasedByEnv), true, 'a released shell must take the resume path');
+        assert.strictEqual(
+            service.getActiveById('codex', 'session-env'),
+            null,
+            'released shells must not generate a second terminal-exit attention event'
+        );
+        assert.deepStrictEqual(
+            service.getReleasedSessions(),
+            [{ provider: 'codex', sessionId: 'session-env' }],
+            'released sessions must remain discoverable for stale bridge-event recovery'
+        );
         candidateCalls.length = 0;
         assert.strictEqual(service.resolveTerminalSession(byEnv, getCandidates), null, 'active terminal resolution must ignore a completed shell');
         assert.deepStrictEqual(candidateCalls, ['codex']);
@@ -1646,6 +1678,12 @@ function runAiSessionTerminalResolutionChecks() {
         candidateCalls.length = 0;
         assert.strictEqual(service.resolveTerminalSession(ordinary, getCandidates), null);
         assert.deepStrictEqual(candidateCalls, []);
+
+        assert.deepStrictEqual(
+            service.handleClosedTerminal(tracked),
+            [{ provider: 'codex', sessionId: 'session-one' }],
+            'closing a tracked terminal must identify the session whose attention should be acknowledged'
+        );
     } finally {
         vscodeTestState.terminals.length = 0;
         fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1949,13 +1987,25 @@ async function runAiSessionTerminalPersistenceChecks() {
         const fourthStore = new AiSessionTerminalBindingStore(state);
         const fourthService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, fourthStore);
         await fourthService.restorePersistedTerminals([releasedTerminalAfterReload]);
+        const releasedEntryAfterReload = fourthService.getById('codex', 'session-new');
         assert.strictEqual(
-            fourthService.getById('codex', 'session-new'),
-            null,
-            'a released session must not be rediscovered from its old shell after extension reload'
+            releasedEntryAfterReload.terminal,
+            releasedTerminalAfterReload,
+            'a released shell remains reusable after extension reload'
+        );
+        assert.strictEqual(
+            fourthService.isComplete(releasedEntryAfterReload),
+            true,
+            'a restored released shell must execute resume instead of only receiving focus'
+        );
+        assert.deepStrictEqual(
+            fourthService.getReleasedSessions(),
+            [{ provider: 'codex', sessionId: 'session-new' }],
+            'released session recovery must survive extension reload'
         );
 
         fourthService.handleClosedTerminal(releasedTerminalAfterReload);
+        assert.deepStrictEqual(fourthService.getReleasedSessions(), []);
         await fourthStore.flush();
         assert.strictEqual(
             new AiSessionTerminalBindingStore(state).get(processId),
@@ -2380,7 +2430,13 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('const aiSessionProviders = aiSessionProviderRegistry.providers();'));
     assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
-    assert.match(dashboard, /onComplete: resolution => \{[\s\S]*?getRecoverySessionEvents\(\)[\s\S]*?aiSessionAttentionController\.acknowledge\(eventIds\);[\s\S]*?aiSessionAttentionBridgeClient\.acknowledge\(eventIds\);[\s\S]*?releaseCompletedSession\(resolution\.provider, resolution\.sessionId\);[\s\S]*?aiSessionAttentionController\.evaluate\(\);[\s\S]*?\}/);
+    assert.match(dashboard, /const acknowledgeAiSessionAttention = \(identity:[\s\S]*?getRecoverySessionEvents\(\)[\s\S]*?aiSessionAttentionController\.acknowledge\(eventIds\);[\s\S]*?aiSessionAttentionBridgeClient\.acknowledge\(eventIds\)/);
+    assert.match(dashboard, /const settleCompletedAiSessionTerminal = \(identity:[\s\S]*?acknowledgeAiSessionAttention\(identity\);[\s\S]*?releaseCompletedSession\(identity\.provider, identity\.sessionId\)/);
+    assert.match(dashboard, /aggregate => \{[\s\S]*?setRemoteAggregate\(aggregate\)[\s\S]*?getReleasedSessions\(\)\.forEach\(acknowledgeAiSessionAttention\)/);
+    assert.match(dashboard, /onComplete: resolution => \{[\s\S]*?settleCompletedAiSessionTerminal\(resolution\);[\s\S]*?aiSessionAttentionController\.evaluate\(\)/);
+    assert.ok(dashboard.includes('getTerminalById: (providerId, sessionId) => aiSessionTerminalService.getActiveById(providerId, sessionId)'));
+    assert.match(dashboard, /aiSessionTerminalCompletionInterval = setInterval\(\(\) => \{[\s\S]*?getCompletedSessions\(\)[\s\S]*?settleCompletedAiSessionTerminal[\s\S]*?\}, 1_000\)/);
+    assert.match(dashboard, /onDidCloseTerminal\(terminal => \{[\s\S]*?handleClosedTerminal\(terminal\)[\s\S]*?acknowledgeAiSessionAttention[\s\S]*?aiSessionAttentionController\.evaluate\(\)/);
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
     assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void aiSessionAttentionController\.evaluate\(\);[\s\S]*?\}\)/);
     assert.match(dashboard, /onDidChangeWindowState\(windowState => \{[\s\S]*?dashboardLifecycleController\.handleWindowStateChanged\(windowState\);[\s\S]*?\}\)/);
