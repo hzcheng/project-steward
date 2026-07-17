@@ -1193,4 +1193,3 @@ git commit -m "feat: add todo inline editing"
 - Placeholder scan: no `TBD`, `TODO`, `fill in details`, or undefined task references.
 - Type consistency: `TodoDataV1`, `TodoViewState`, `TodoSearchCatalogItem`, `TodoService`, `buildTodoViewModel`, and `getTodoPanelContent` are defined before use.
 - Known implementation risk: Task 4 allows prompt-based add/edit as an interim step, but Task 5 must complete inline editing before the feature is considered done.
-
