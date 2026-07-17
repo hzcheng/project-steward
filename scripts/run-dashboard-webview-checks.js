@@ -3702,6 +3702,7 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'request-projects-panel': async e =>"));
     assert.ok(extensionHostSource.includes("'request-todo-panel': async e =>"));
     assert.ok(packageJson.includes('"projectSteward.maxVisibleTodosPerGroup"'));
+    assert.ok(packageJson.includes('"projectSteward.maxVisibleProjectsPerGroup"'));
     assert.strictEqual(extensionHostSource.includes('function handleStewardMessage('), false);
     assert.ok(extensionHostSource.includes('getAiSessionProviderIds: () => getRegisteredAiSessionProviders().map(provider => provider.id)'));
     assert.ok(extensionHostSource.includes("type: 'projects-panel-content'"));
@@ -3709,6 +3710,15 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes('getProjectsPanelContent(projectService.getGroups(), stewardInfos)'));
     assert.ok(extensionHostSource.includes('getTodoPanelContent(buildTodoViewModel(todoData'));
     assert.ok(extensionHostSource.includes('getMaxVisibleTodosPerGroup(config)'));
+    assert.ok(webviewContentSource.includes("'maxVisibleProjectsPerGroup',"));
+    assert.ok(webviewContentSource.includes('DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP = 5'));
+    assert.ok(webviewContentSource.includes('--steward-max-visible-projects-per-group: ${maxVisibleProjectsPerGroup};'));
+    const projectGroupListRule = extractCssRule(
+        compiledStyles,
+        'body.steward-sidebar #dashboard-tab-projects .group-list'
+    );
+    assert.ok(projectGroupListRule.includes('max-height: calc(var(--steward-max-visible-projects-per-group, 5) * 65px)'));
+    assert.ok(projectGroupListRule.includes('overflow-y: auto'));
     assert.ok(projectSource.includes("e.target.closest('[data-action=\"add-project\"]')"));
     assert.ok(projectSource.includes("e.target.closest('[data-action=\"import-from-other-storage\"]')"));
     assert.ok(projectSource.includes("e.target.closest('[data-action=\"todo-add\"]')"));

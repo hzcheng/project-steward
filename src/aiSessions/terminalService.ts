@@ -5,7 +5,10 @@ import * as vscode from 'vscode';
 import { existsSync, mkdirSync, statSync, unlinkSync } from 'fs';
 
 import type { AiSessionProviderId, CodexSession } from '../models';
-import type { ActiveAiSessionTerminalResolution } from './activeTerminalHighlight';
+import type {
+    ActiveAiSessionTerminalIdentity,
+    ActiveAiSessionTerminalResolution,
+} from './activeTerminalHighlight';
 import AiSessionTerminalBindingStore from './terminalBindingStore';
 import { getAiSessionTerminalName } from './sessionPaths';
 import type { AiSessionProviderDefinition, AiSessionTerminalEntry } from './types';
@@ -39,6 +42,7 @@ export default class AiSessionTerminalService {
     private readonly providersById = new Map<AiSessionProviderId, AiSessionProviderDefinition>();
     private readonly terminals: Partial<Record<AiSessionProviderId, Map<string, AiSessionTerminalEntry<vscode.Terminal>>>> = {};
     private readonly resumesInFlight: Partial<Record<AiSessionProviderId, Set<string>>> = {};
+    private readonly releasedTerminalSessions = new Map<vscode.Terminal, Set<string>>();
     private pendingTerminals: PendingAiSessionTerminal[] = [];
 
     constructor(
@@ -109,6 +113,11 @@ export default class AiSessionTerminalService {
             ...entry,
             runStartedAtMs: Number.isFinite(entry?.runStartedAtMs) ? entry.runStartedAtMs : Date.now(),
         };
+        let releasedSessions = this.releasedTerminalSessions.get(normalizedEntry.terminal);
+        releasedSessions?.delete(`${providerId}:${sessionId}`);
+        if (releasedSessions?.size === 0) {
+            this.releasedTerminalSessions.delete(normalizedEntry.terminal);
+        }
         this.getTerminalMap(providerId).set(sessionId, normalizedEntry);
         if (persist) {
             this.bindingStore?.setBound(normalizedEntry.terminal.processId, {
@@ -126,6 +135,21 @@ export default class AiSessionTerminalService {
         if (entry?.terminal) {
             this.bindingStore?.remove(entry.terminal.processId);
         }
+    }
+
+    releaseCompletedSession(providerId: AiSessionProviderId, sessionId: string) {
+        let entry = this.getTerminalMap(providerId).get(sessionId);
+        if (!entry?.terminal) {
+            return;
+        }
+        this.markTerminalSessionReleased(entry.terminal, providerId, sessionId);
+        this.deleteEntryMarker(entry);
+        this.getTerminalMap(providerId).delete(sessionId);
+        this.bindingStore?.setReleased(entry.terminal.processId, {
+            providerId,
+            sessionId,
+            markerPath: entry.markerPath,
+        });
     }
 
     trackPending(entry: PendingAiSessionTerminal, persist = true) {
@@ -235,6 +259,10 @@ export default class AiSessionTerminalService {
                 }, false);
                 return;
             }
+            if (binding?.state === 'released') {
+                this.markTerminalSessionReleased(terminal, binding.providerId, binding.sessionId);
+                return;
+            }
             if (binding?.state === 'pending') {
                 if (Date.parse(binding.createdAt) < Date.now() - this.pendingTerminalTtlMs) {
                     this.bindingStore.remove(resolvedProcessId);
@@ -298,6 +326,18 @@ export default class AiSessionTerminalService {
             return trackedTerminal;
         }
 
+        let releasedTerminal = vscode.window.terminals.find(candidate =>
+            this.isTerminalSessionReleased(providerId, candidate, sessionId)
+        );
+        if (releasedTerminal) {
+            return {
+                terminal: releasedTerminal,
+                markerPath: this.getMarkerPath(providerId, sessionId),
+                runStartedAtMs: Date.now(),
+                released: true,
+            };
+        }
+
         let terminal = vscode.window.terminals.find(candidate => this.terminalMatchesSession(providerId, candidate, sessionId));
         if (!terminal) {
             return null;
@@ -311,6 +351,45 @@ export default class AiSessionTerminalService {
         this.track(providerId, sessionId, entry);
 
         return entry;
+    }
+
+    getActiveById(providerId: AiSessionProviderId, sessionId: string): AiSessionTerminalEntry<vscode.Terminal> {
+        let entry = this.getById(providerId, sessionId);
+        return entry?.released ? null : entry;
+    }
+
+    getCompletedSessions(): Array<ActiveAiSessionTerminalResolution<
+        vscode.Terminal,
+        AiSessionTerminalEntry<vscode.Terminal>
+    >> {
+        let completed: Array<ActiveAiSessionTerminalResolution<
+            vscode.Terminal,
+            AiSessionTerminalEntry<vscode.Terminal>
+        >> = [];
+        for (let providerId of this.getProviderIds()) {
+            for (let [sessionId, entry] of this.getTerminalMap(providerId)) {
+                if (this.isComplete(entry)) {
+                    completed.push({ provider: providerId, sessionId, terminal: entry.terminal, entry });
+                }
+            }
+        }
+        return completed;
+    }
+
+    getReleasedSessions(): ActiveAiSessionTerminalIdentity[] {
+        let released = new Map<string, ActiveAiSessionTerminalIdentity>();
+        for (let sessionKeys of this.releasedTerminalSessions.values()) {
+            for (let providerId of this.getProviderIds()) {
+                let prefix = `${providerId}:`;
+                for (let sessionKey of sessionKeys) {
+                    if (sessionKey.startsWith(prefix)) {
+                        let sessionId = sessionKey.substring(prefix.length);
+                        released.set(sessionKey, { provider: providerId, sessionId });
+                    }
+                }
+            }
+        }
+        return Array.from(released.values());
     }
 
     resolveTerminalSession(
@@ -385,6 +464,9 @@ export default class AiSessionTerminalService {
     }
 
     isComplete(entry: AiSessionTerminalEntry<vscode.Terminal>): boolean {
+        if (entry?.released) {
+            return true;
+        }
         try {
             if (!entry?.markerPath || !existsSync(entry.markerPath)) {
                 return false;
@@ -411,16 +493,20 @@ export default class AiSessionTerminalService {
         }
     }
 
-    handleClosedTerminal(terminal: vscode.Terminal) {
+    handleClosedTerminal(terminal: vscode.Terminal): ActiveAiSessionTerminalIdentity[] {
+        let closedSessions: ActiveAiSessionTerminalIdentity[] = [];
         for (let providerId of this.getProviderIds()) {
             for (let [sessionId, entry] of this.getTerminalMap(providerId)) {
                 if (entry.terminal === terminal) {
+                    closedSessions.push({ provider: providerId, sessionId });
                     this.deleteEntryMarker(entry);
                     this.untrack(providerId, sessionId);
                 }
             }
         }
+        this.releasedTerminalSessions.delete(terminal);
         this.removePendingForTerminal(terminal);
+        return closedSessions;
     }
 
     private trimPendingTerminals(pendingTerminals: PendingAiSessionTerminal[]): PendingAiSessionTerminal[] {
@@ -437,6 +523,9 @@ export default class AiSessionTerminalService {
     }
 
     private terminalMatchesSession(providerId: AiSessionProviderId, terminal: vscode.Terminal, sessionId: string): boolean {
+        if (this.isTerminalSessionReleased(providerId, terminal, sessionId)) {
+            return false;
+        }
         let provider = this.getProvider(providerId);
         if (!provider) {
             return false;
@@ -448,6 +537,27 @@ export default class AiSessionTerminalService {
 
         return terminal.name.startsWith(`${provider.terminalNamePrefix}: `)
             && terminal.name.endsWith(` [${sessionId.substring(0, 8)}]`);
+    }
+
+    private isTerminalSessionReleased(
+        providerId: AiSessionProviderId,
+        terminal: vscode.Terminal,
+        sessionId: string
+    ): boolean {
+        return this.releasedTerminalSessions.get(terminal)?.has(`${providerId}:${sessionId}`) === true;
+    }
+
+    private markTerminalSessionReleased(
+        terminal: vscode.Terminal,
+        providerId: AiSessionProviderId,
+        sessionId: string
+    ): void {
+        let releasedSessions = this.releasedTerminalSessions.get(terminal);
+        if (!releasedSessions) {
+            releasedSessions = new Set<string>();
+            this.releasedTerminalSessions.set(terminal, releasedSessions);
+        }
+        releasedSessions.add(`${providerId}:${sessionId}`);
     }
 
     private getTerminalProvider(terminal: vscode.Terminal): AiSessionProviderId {

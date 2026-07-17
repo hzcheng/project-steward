@@ -35,7 +35,14 @@ export interface BoundAiSessionTerminalBinding extends AiSessionTerminalBindingB
     runStartedAtMs: number;
 }
 
-export type AiSessionTerminalBinding = PendingAiSessionTerminalBinding | BoundAiSessionTerminalBinding;
+export interface ReleasedAiSessionTerminalBinding extends AiSessionTerminalBindingBase {
+    state: 'released';
+    sessionId: string;
+}
+
+export type AiSessionTerminalBinding = PendingAiSessionTerminalBinding
+    | BoundAiSessionTerminalBinding
+    | ReleasedAiSessionTerminalBinding;
 
 export type PendingAiSessionTerminalBindingInput = Omit<
     PendingAiSessionTerminalBinding,
@@ -44,6 +51,11 @@ export type PendingAiSessionTerminalBindingInput = Omit<
 
 export type BoundAiSessionTerminalBindingInput = Omit<
     BoundAiSessionTerminalBinding,
+    'version' | 'state' | 'updatedAtMs'
+>;
+
+export type ReleasedAiSessionTerminalBindingInput = Omit<
+    ReleasedAiSessionTerminalBinding,
     'version' | 'state' | 'updatedAtMs'
 >;
 
@@ -94,6 +106,19 @@ export default class AiSessionTerminalBindingStore {
             updatedAtMs: this.now(),
         });
         if (!record || record.state !== 'bound') {
+            return;
+        }
+        this.enqueueWrite(processId, record);
+    }
+
+    setReleased(processId: AiSessionTerminalProcessId, input: ReleasedAiSessionTerminalBindingInput): void {
+        let record = validateRecord({
+            ...input,
+            version: 2,
+            state: 'released',
+            updatedAtMs: this.now(),
+        });
+        if (!record || record.state !== 'released') {
             return;
         }
         this.enqueueWrite(processId, record);
@@ -162,7 +187,8 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         return null;
     }
     let record = value as Record<string, unknown>;
-    if (record.version !== 2 || (record.state !== 'pending' && record.state !== 'bound')
+    if (record.version !== 2
+        || (record.state !== 'pending' && record.state !== 'bound' && record.state !== 'released')
         || !isProviderId(record.providerId) || !isBoundedString(record.markerPath, MAX_PATH_LENGTH)
         || !isFiniteNonNegative(record.updatedAtMs)) {
         return null;
@@ -178,6 +204,19 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
             sessionId: record.sessionId,
             markerPath: record.markerPath,
             runStartedAtMs: record.runStartedAtMs,
+            updatedAtMs: record.updatedAtMs,
+        };
+    }
+    if (record.state === 'released') {
+        if (!isBoundedString(record.sessionId, MAX_ID_LENGTH)) {
+            return null;
+        }
+        return {
+            version: 2,
+            state: 'released',
+            providerId: record.providerId,
+            sessionId: record.sessionId,
+            markerPath: record.markerPath,
             updatedAtMs: record.updatedAtMs,
         };
     }

@@ -9,6 +9,7 @@ export interface AiSessionTerminalEntry<TTerminal = unknown> {
     terminal: TTerminal;
     markerPath: string;
     runStartedAtMs: number;
+    released?: boolean;
 }
 
 export interface AiSessionReadResult {

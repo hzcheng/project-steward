@@ -390,21 +390,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
     let aiSessionUpdateSequence = 0;
     let currentAiSessionRefreshReason = 'refresh';
+    let aiSessionAttentionBridgeClient: AttentionBridgeClient;
     const aiSessionAttentionController = new AiSessionAttentionController<TerminalEntry>({
         isEnabled: () => getStewardConfiguration().get<boolean>('aiSessionAttention.enabled', true) !== false,
         getOpenProjects,
         getProviders: getRegisteredAiSessionProviders,
         getProjectKey: project => getAttentionProjectKey(project.path),
-        getTerminalById: (providerId, sessionId) => aiSessionTerminalService.getById(providerId, sessionId),
+        getTerminalById: (providerId, sessionId) => aiSessionTerminalService.getActiveById(providerId, sessionId),
         isTerminalComplete: entry => aiSessionTerminalService.isComplete(entry),
         publish: (items, forceHeartbeat) => aiSessionAttentionBridgeClient.publish(items, forceHeartbeat),
         scheduleRefresh: reason => scheduleAiSessionRefresh(reason),
         postProjectsUpdated: projects => postAiSessionAttentionProjectsUpdated(projects),
         nowMs: () => Date.now(),
     });
-    const aiSessionAttentionBridgeClient = new AttentionBridgeClient(
+    const acknowledgeAiSessionAttention = (identity: ActiveAiSessionTerminalIdentity): void => {
+        const sessionKey = getAiSessionKey(identity.provider, identity.sessionId);
+        const eventIds = aiSessionAttentionController.getRecoverySessionEvents()
+            .find(session => session.sessionKey === sessionKey)?.eventIds || [];
+        aiSessionAttentionController.acknowledge(eventIds);
+        void aiSessionAttentionBridgeClient.acknowledge(eventIds);
+    };
+    const settleCompletedAiSessionTerminal = (identity: ActiveAiSessionTerminalIdentity): void => {
+        acknowledgeAiSessionAttention(identity);
+        aiSessionTerminalService.releaseCompletedSession(identity.provider, identity.sessionId);
+    };
+    aiSessionAttentionBridgeClient = new AttentionBridgeClient(
         aggregate => {
             if (aiSessionAttentionController.setRemoteAggregate(aggregate)) {
+                aiSessionTerminalService.getReleasedSessions().forEach(acknowledgeAiSessionAttention);
                 scheduleAiSessionRefresh('attention');
                 postAiSessionAttentionProjectsUpdated(aiSessionAttentionController.getProjectSummaries());
             }
@@ -820,9 +833,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ),
         isComplete: resolution => aiSessionTerminalService.isComplete(resolution.entry),
         publish: identity => postActiveAiSessionTerminalChanged(identity),
+        onComplete: resolution => {
+            settleCompletedAiSessionTerminal(resolution);
+            void aiSessionAttentionController.evaluate();
+        },
         setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
         clearInterval: handle => clearInterval(handle as NodeJS.Timeout),
     });
+    const aiSessionTerminalCompletionInterval = setInterval(() => {
+        const completedSessions = aiSessionTerminalService.getCompletedSessions();
+        if (!completedSessions.length) {
+            return;
+        }
+        completedSessions.forEach(settleCompletedAiSessionTerminal);
+        activeAiSessionTerminalHighlighter.sync();
+        void aiSessionAttentionController.evaluate();
+    }, 1_000);
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(SidebarStewardViewProvider.viewType, provider));
@@ -833,8 +859,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }));
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(terminal => {
-            aiSessionTerminalService.handleClosedTerminal(terminal);
+            const closedSessions = aiSessionTerminalService.handleClosedTerminal(terminal);
+            closedSessions.forEach(acknowledgeAiSessionAttention);
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
+            if (closedSessions.length) {
+                void aiSessionAttentionController.evaluate();
+            }
         }));
     context.subscriptions.push(activeAiSessionTerminalHighlighter);
     context.subscriptions.push(openProjectBridgeClient);
@@ -843,6 +873,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         dispose: () => {
             aiSessionDashboardController.dispose();
             clearInterval(aiSessionAttentionInterval);
+            clearInterval(aiSessionTerminalCompletionInterval);
         }
     });
 

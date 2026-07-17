@@ -21,7 +21,7 @@ interface CodexSessionMeta {
     session_id?: string;
     cwd?: string;
     timestamp?: string;
-    isSubagent?: boolean;
+    isExcluded?: boolean;
 }
 
 export interface CodexSessionReadResult {
@@ -77,7 +77,7 @@ export default class CodexSessionService {
             }
 
             let meta = this.readSessionMeta(entry.id, sessionFiles);
-            if (meta?.isSubagent) {
+            if (meta?.isExcluded) {
                 continue;
             }
 
@@ -369,7 +369,7 @@ export default class CodexSessionService {
     private addSessionsFromFiles(sessionsById: Map<string, CodexSession>, sessionFiles: Map<string, string>) {
         for (let [sessionId] of sessionFiles) {
             let meta = this.readSessionMeta(sessionId, sessionFiles);
-            if (!meta || meta.isSubagent) {
+            if (!meta || meta.isExcluded) {
                 continue;
             }
 
@@ -418,8 +418,8 @@ export default class CodexSessionService {
         return mostRecent || timestamps.find(timestamp => Boolean(timestamp)) || null;
     }
 
-    private isExplicitSubagentSource(source: unknown): boolean {
-        return Boolean(
+    private isExcludedSessionSource(source: unknown): boolean {
+        return source === 'exec' || Boolean(
             source
             && typeof source === 'object'
             && Object.prototype.hasOwnProperty.call(source, 'subagent')
@@ -457,7 +457,7 @@ export default class CodexSessionService {
                 session_id: payload.session_id,
                 cwd: payload.cwd,
                 timestamp: payload.timestamp || event.timestamp,
-                isSubagent: this.isExplicitSubagentSource(payload.source),
+                isExcluded: this.isExcludedSessionSource(payload.source),
             };
             this.sessionMetaCache.set(sessionFile, { signature, meta });
             return meta;
