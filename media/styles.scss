@@ -1855,6 +1855,13 @@ body.steward-sidebar {
             }
         }
 
+        .group-actions > .danger {
+            &:hover,
+            &:focus-visible {
+                color: var(--vscode-errorForeground);
+            }
+        }
+
         &:hover .group-actions,
         &:focus-within .group-actions {
             opacity: 1;

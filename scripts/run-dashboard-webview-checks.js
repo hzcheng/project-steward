@@ -58,6 +58,33 @@ function extractCssRule(source, selector) {
     throw new Error(`Unterminated CSS rule ${selector}`);
 }
 
+function extractCssRulesContainingSelector(source, selector) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const selectorPattern = new RegExp(`(^|\\n)[^{}]*${escapedSelector}(?![\\w-])[^{}]*\\{`, 'gm');
+    const rules = [];
+    let match;
+    while ((match = selectorPattern.exec(source))) {
+        const braceStart = source.indexOf('{', match.index);
+        let depth = 0;
+        for (let index = braceStart; index < source.length; index += 1) {
+            if (source[index] === '{') depth += 1;
+            if (source[index] === '}') depth -= 1;
+            if (depth === 0) {
+                rules.push(source.slice(braceStart + 1, index));
+                selectorPattern.lastIndex = index + 1;
+                break;
+            }
+        }
+    }
+    assert.ok(rules.length > 0, `Missing CSS rules containing ${selector}`);
+    return rules;
+}
+
+function cssRuleIncludesDeclaration(rule, declaration) {
+    const escapedDeclaration = declaration.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[;{}\\n])\\s*${escapedDeclaration}`).test(rule);
+}
+
 function makeDashboardCatalog() {
     return {
         sessions: [{
@@ -1483,6 +1510,28 @@ function runSourceContractChecks(source) {
         'font-size: 15px',
     ]) {
         assert.ok(sharedGroupHeaderRule.includes(declaration), `shared group header is missing ${declaration}`);
+    }
+    const sharedDangerActionRule = extractCssRule(sharedGroupHeaderRule, '.group-actions > .danger');
+    assert.ok(sharedDangerActionRule.includes('&:hover')
+        && sharedDangerActionRule.includes('&:focus-visible')
+        && sharedDangerActionRule.includes('color: var(--vscode-errorForeground)'),
+        'shared group header danger actions must retain their danger color on hover and keyboard focus');
+
+    const todoPageHeaderRule = extractCssRule(styles, '.todo-page-header');
+    for (const forbidden of [
+        'display:', 'width:', 'padding:', 'border:', 'border-radius:', 'background:', 'box-shadow:',
+        'font-family:', 'font-size:', 'font-weight:', 'line-height:', 'box-sizing:',
+    ]) {
+        assert.strictEqual(cssRuleIncludesDeclaration(todoPageHeaderRule, forbidden), false,
+            `TODO page header must not own ${forbidden}`);
+    }
+
+    for (const selector of ['.todo-group-action', '.todo-square-button', '.todo-square-toggle']) {
+        const todoActionRules = extractCssRulesContainingSelector(styles, selector).join('\n');
+        for (const forbidden of ['display:', 'width:', 'height:', 'min-width:', 'min-height:', 'place-items:', 'padding:']) {
+            assert.strictEqual(cssRuleIncludesDeclaration(todoActionRules, forbidden), false,
+                `${selector} must not own ${forbidden}`);
+        }
     }
 
     const todoGroupHeaderRule = extractCssRule(styles, '.todo-group-header');
