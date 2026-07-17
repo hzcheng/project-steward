@@ -1554,7 +1554,10 @@ async function runDashboardTodoMigrationSequencingChecks() {
 
     const migrationFailure = new Error('deferred TODO migration rejected');
     rejectTodoMigration(migrationFailure);
-    await assert.rejects(() => firstAttempt, error => error === migrationFailure);
+    assert.deepStrictEqual(await firstAttempt, {
+        projects: { migrated: false },
+        todos: { migrated: false, error: migrationFailure },
+    });
     await retryGate.ready;
     assert.strictEqual(failedGateSettled, true,
         'a rejected TODO migration must leave a settled, non-poisoned render gate');
@@ -1565,10 +1568,105 @@ async function runDashboardTodoMigrationSequencingChecks() {
         { migrateDataIfNeeded: async () => { retryCalls += 1; return true; } },
         retryGate
     );
-    assert.strictEqual(await retryAttempt, true);
+    assert.deepStrictEqual(await retryAttempt, {
+        projects: { migrated: false },
+        todos: { migrated: true },
+    });
     await retryGate.ready;
     assert.strictEqual(retryCalls, 1,
         'a later configuration migration must retry after a rejected TODO migration');
+
+    const makeAggregationHarness = (migrateProjects, migrateTodos) => {
+        const gate = { ready: Promise.resolve() };
+        const refreshes = [];
+        const publications = [];
+        const errors = [];
+        const logs = [];
+        const controller = new DashboardStartupController({
+            stewardInfos: {
+                relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+                config: { openOnStartup: 'never' },
+            },
+            isExtensionInstalled: () => false,
+            migrateDataIfNeeded: () => runMigration(
+                { migrateDataIfNeeded: migrateProjects },
+                { migrateDataIfNeeded: migrateTodos },
+                gate
+            ),
+            refreshDashboard: async () => { refreshes.push('refreshed'); },
+            publishOpenProjects: () => publications.push('published'),
+            showInformationMessage: () => undefined,
+            showErrorMessage: message => errors.push(message),
+            logError: (message, error) => logs.push([message, error]),
+            showSteward: () => undefined,
+            applyProjectColorToCurrentWindow: () => undefined,
+            getReopenReason: () => 0,
+            updateReopenReason: () => undefined,
+            reopenNoneValue: 0,
+            getWorkspaceName: () => 'workspace',
+            getVisibleEditorLanguageIds: () => [],
+        });
+        return { controller, gate, refreshes, publications, errors, logs };
+    };
+
+    const projectPartialError = new Error('project migration rejected after TODO success');
+    let projectPartialCalls = 0;
+    let todoPartialCalls = 0;
+    const todoSuccessHarness = makeAggregationHarness(
+        () => ++projectPartialCalls === 1 ? Promise.reject(projectPartialError) : Promise.resolve(false),
+        () => Promise.resolve(++todoPartialCalls === 1)
+    );
+    await todoSuccessHarness.controller.checkDataMigration();
+    await todoSuccessHarness.gate.ready;
+    assert.deepStrictEqual(todoSuccessHarness.refreshes, ['refreshed'],
+        'TODO true plus project rejection must retain the success and refresh exactly once');
+    assert.deepStrictEqual(todoSuccessHarness.publications, ['published']);
+    assert.deepStrictEqual(todoSuccessHarness.logs,
+        [['Failed to migrate Project Steward project data.', projectPartialError]]);
+    assert.strictEqual(todoSuccessHarness.errors.length, 1);
+    assert.ok(todoSuccessHarness.errors[0].includes('project migration rejected after TODO success'));
+    await todoSuccessHarness.controller.checkDataMigration();
+    assert.deepStrictEqual(todoSuccessHarness.refreshes, ['refreshed'],
+        'a later false plus false result must not be needed to compensate for a lost partial success');
+
+    const todoPartialError = new Error('TODO migration rejected after project success');
+    const projectSuccessHarness = makeAggregationHarness(
+        () => Promise.resolve(true),
+        () => Promise.reject(todoPartialError)
+    );
+    await projectSuccessHarness.controller.checkDataMigration();
+    await projectSuccessHarness.gate.ready;
+    assert.deepStrictEqual(projectSuccessHarness.refreshes, ['refreshed'],
+        'project true plus TODO rejection must retain the success and refresh exactly once');
+    assert.deepStrictEqual(projectSuccessHarness.logs,
+        [['Failed to migrate Project Steward TODO data.', todoPartialError]]);
+    assert.strictEqual(projectSuccessHarness.errors.length, 1);
+    assert.ok(projectSuccessHarness.errors[0].includes('TODO migration rejected after project success'));
+
+    const bothProjectError = new Error('both-reject project failure');
+    const bothTodoError = new Error('both-reject TODO failure');
+    let bothAttempts = 0;
+    const bothRejectHarness = makeAggregationHarness(
+        () => bothAttempts === 0 ? Promise.reject(bothProjectError) : Promise.resolve(false),
+        () => {
+            const firstAttempt = bothAttempts === 0;
+            bothAttempts += 1;
+            return firstAttempt ? Promise.reject(bothTodoError) : Promise.resolve(true);
+        }
+    );
+    await bothRejectHarness.controller.checkDataMigration();
+    await bothRejectHarness.gate.ready;
+    assert.deepStrictEqual(bothRejectHarness.refreshes, [],
+        'both rejected migrations must not refresh without any successful migration');
+    assert.deepStrictEqual(bothRejectHarness.logs, [
+        ['Failed to migrate Project Steward project data.', bothProjectError],
+        ['Failed to migrate Project Steward TODO data.', bothTodoError],
+    ]);
+    assert.strictEqual(bothRejectHarness.errors.length, 2);
+    await bothRejectHarness.controller.checkDataMigration();
+    await bothRejectHarness.gate.ready;
+    assert.deepStrictEqual(bothRejectHarness.refreshes, ['refreshed'],
+        'both-reject migration state must remain retryable');
 }
 
 async function runTodoHostMutationChecks() {
@@ -2305,6 +2403,10 @@ async function runDashboardStartupControllerChecks() {
         relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
         config: { openOnStartup: 'never' },
     };
+    const migrationResult = (projectsMigrated, todosMigrated = false) => ({
+        projects: { migrated: projectsMigrated },
+        todos: { migrated: todosMigrated },
+    });
     const controller = new DashboardStartupController({
         stewardInfos,
         relevantExtensions: {
@@ -2315,7 +2417,7 @@ async function runDashboardStartupControllerChecks() {
             extensionChecks.push(extensionId);
             return extensionId.endsWith('remote-ssh');
         },
-        migrateDataIfNeeded: async () => migrated,
+        migrateDataIfNeeded: async () => migrationResult(migrated),
         refreshDashboard: () => undefined,
         publishOpenProjects: () => publications.push('published'),
         showInformationMessage: message => informationMessages.push(message),
@@ -2422,7 +2524,7 @@ async function runDashboardStartupControllerChecks() {
             updatedAt: '2026-07-17T00:00:00.000Z', order: 0,
         }],
     };
-    resolveDeferredMigration(true);
+    resolveDeferredMigration(migrationResult(false, true));
     await new Promise(resolve => setImmediate(resolve));
     assert.strictEqual(rebuiltCatalogs.length, 2,
         'migration settle must trigger a full provider refresh');
@@ -2449,7 +2551,9 @@ async function runDashboardStartupControllerChecks() {
         isExtensionInstalled: () => false,
         migrateDataIfNeeded: () => {
             migrationAttempts += 1;
-            return migrationAttempts === 1 ? rejectedMigration : Promise.resolve(true);
+            return migrationAttempts === 1
+                ? rejectedMigration
+                : Promise.resolve(migrationResult(false, true));
         },
         refreshDashboard: () => retryRefreshes.push('refreshed'),
         publishOpenProjects: () => retryPublications.push('published'),

@@ -852,8 +852,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const projectMigration = projectService.migrateDataIfNeeded();
             const todoMigration = todoService.migrateDataIfNeeded();
             todoStorageMigration.ready = todoMigration.then(() => undefined, () => undefined);
-            const [projectsMigrated, todosMigrated] = await Promise.all([projectMigration, todoMigration]);
-            return projectsMigrated || todosMigrated;
+            const settledProjectMigration = projectMigration.then(
+                migrated => ({ migrated }),
+                error => ({ migrated: false, error })
+            );
+            const settledTodoMigration = todoMigration.then(
+                migrated => ({ migrated }),
+                error => ({ migrated: false, error })
+            );
+            const [projects, todos] = await Promise.all([settledProjectMigration, settledTodoMigration]);
+            return { projects, todos };
         },
         refreshDashboard: () => provider.refresh(),
         publishOpenProjects: () => openProjectWorkspaceController.publish(),

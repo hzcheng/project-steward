@@ -1317,7 +1317,10 @@ async function runDashboardMigrationPublicationChecks() {
             if (migrated) {
                 currentMetadata = 'after-migration';
             }
-            return migrated;
+            return {
+                projects: { migrated },
+                todos: { migrated: false },
+            };
         },
         refreshDashboard: () => refreshes.push(currentMetadata),
         publishOpenProjects: () => publications.push(currentMetadata),

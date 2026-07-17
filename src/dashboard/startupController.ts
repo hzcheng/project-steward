@@ -6,11 +6,21 @@ import { shouldOpenStewardOnStartup } from './startup';
 
 type RelevantExtensionInstalls = StewardInfos['relevantExtensionsInstalls'];
 
+export interface DashboardMigrationComponentResult {
+    migrated: boolean;
+    error?: unknown;
+}
+
+export interface DashboardMigrationResult {
+    projects: DashboardMigrationComponentResult;
+    todos: DashboardMigrationComponentResult;
+}
+
 export interface DashboardStartupControllerOptions {
     stewardInfos: StewardInfos;
     relevantExtensions?: Record<keyof RelevantExtensionInstalls, string>;
     isExtensionInstalled: (extensionId: string) => boolean;
-    migrateDataIfNeeded: () => Promise<boolean>;
+    migrateDataIfNeeded: () => Promise<DashboardMigrationResult>;
     refreshDashboard: () => unknown;
     publishOpenProjects: () => void;
     showInformationMessage: (message: string) => unknown;
@@ -30,16 +40,19 @@ export class DashboardStartupController {
     }
 
     async checkDataMigration(openStewardAfterMigrate = false): Promise<void> {
-        let migrated: boolean;
+        let migration: DashboardMigrationResult;
         try {
-            migrated = await this.options.migrateDataIfNeeded();
+            migration = await this.options.migrateDataIfNeeded();
         } catch (error) {
             this.options.logError('Failed to migrate Project Steward data.', error);
             const detail = error instanceof Error ? ` ${error.message}` : '';
             this.options.showErrorMessage(`Could not migrate Project Steward data.${detail}`);
             return;
         }
-        if (!migrated) {
+
+        this.reportComponentError('project', migration.projects);
+        this.reportComponentError('TODO', migration.todos);
+        if (!migration.projects.migrated && !migration.todos.migrated) {
             return;
         }
 
@@ -50,6 +63,18 @@ export class DashboardStartupController {
         if (openStewardAfterMigrate) {
             this.options.showSteward();
         }
+    }
+
+    private reportComponentError(
+        component: 'project' | 'TODO',
+        result: DashboardMigrationComponentResult
+    ): void {
+        if (!Object.prototype.hasOwnProperty.call(result, 'error')) {
+            return;
+        }
+        this.options.logError(`Failed to migrate Project Steward ${component} data.`, result.error);
+        const detail = result.error instanceof Error ? ` ${result.error.message}` : '';
+        this.options.showErrorMessage(`Could not migrate Project Steward ${component} data.${detail}`);
     }
 
     async startUp(): Promise<void> {
