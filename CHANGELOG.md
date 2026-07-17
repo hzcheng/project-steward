@@ -4,6 +4,10 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ## [Unreleased]
 
+### Fixed
+
+-   Exclude non-interactive Codex `exec` runs from Dashboard session lists.
+
 ## [2.1.0] 2026-07-17
 
 ### Added
