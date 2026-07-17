@@ -910,19 +910,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     async function postTodoPanelContent(requestId?: number) {
         const todoData = todoService.getData();
+        const config = getStewardConfiguration();
+        const todoRenderOptions = {
+            maxVisibleTodosPerGroup: getMaxVisibleTodosPerGroup(config),
+        };
         await provider.postMessage(requestId
             ? {
                 type: 'todo-panel-content',
                 version: 1,
                 requestId,
-                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState)),
+                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState), todoRenderOptions),
             }
             : {
                 type: 'todo-panel-updated',
                 version: 1,
-                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState)),
+                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState), todoRenderOptions),
                 searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), getOpenProjectCards(), buildTodoSearchItems(todoData)),
             });
+    }
+
+    function getMaxVisibleTodosPerGroup(config: vscode.WorkspaceConfiguration): number {
+        const configuredItems = config.get('maxVisibleTodosPerGroup', 5);
+        const visibleItems = Math.floor(Number(configuredItems));
+        return Number.isFinite(visibleItems) && visibleItems > 0 ? visibleItems : 5;
     }
 
     function invalidateAiSessionCache(providerId: AiSessionProviderId) {

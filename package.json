@@ -123,6 +123,12 @@
                     "minimum": 1,
                     "markdownDescription": "Maximum number of AI session rows visible in an expanded project card before the session list scrolls."
                 },
+                "projectSteward.maxVisibleTodosPerGroup": {
+                    "type": "number",
+                    "default": 5,
+                    "minimum": 1,
+                    "markdownDescription": "Maximum number of TODO items visible in each TODO group before the group list scrolls."
+                },
                 "projectSteward.aiSessionAttention.enabled": {
                     "type": "boolean",
                     "default": true,

@@ -447,8 +447,11 @@ function runTodoViewModelChecks() {
     const showCompleted = todoViewModel.buildTodoViewModel(makeTodoData(), { showCompleted: true });
     assert.strictEqual(showCompleted.groups[0].visibleTodos.length, 2);
 
-    const html = todoWebviewContent.getTodoPanelContent(hiddenCompleted);
+    const html = todoWebviewContent.getTodoPanelContent(hiddenCompleted, { maxVisibleTodosPerGroup: 7 });
     assert.ok(html.includes('todo-panel'));
+    assert.ok(html.includes('--todo-visible-items: 7;'));
+    assert.ok(html.includes('--todo-list-max-height:'));
+    assert.ok(html.includes('--todo-collapsed-item-height: 58px;'));
     assert.ok(html.includes('Launch &lt;Group&gt;'));
     assert.ok(html.includes('Write &lt;spec&gt;'));
     assert.ok(html.includes('title="Write &lt;spec&gt;"'));
@@ -477,6 +480,10 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('data-action="todo-save-edit"'));
     assert.ok(html.includes('data-action="todo-cancel-edit"'));
     assert.ok(html.includes('data-action="todo-toggle-show-completed"'));
+
+    const defaultHtml = todoWebviewContent.getTodoPanelContent(hiddenCompleted);
+    assert.ok(defaultHtml.includes('--todo-visible-items: 5;'));
+    assert.ok(defaultHtml.includes('--todo-list-max-height:'));
 
     const emptyHtml = todoWebviewContent.getTodoPanelContent(todoViewModel.buildTodoViewModel({ version: 1, groups: [], todos: [] }));
     assert.ok(emptyHtml.includes('todo-empty-state'));
@@ -1248,6 +1255,7 @@ function runSourceContractChecks(source) {
     const extensionHostSource = fs.readFileSync(extensionHostPath, 'utf8');
     const webviewContentSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewContent.ts'), 'utf8');
     const styles = fs.readFileSync(path.join(root, 'media', 'styles.scss'), 'utf8');
+    const packageJson = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
     const updateMessagePath = path.join(root, 'src', 'dashboard', 'webviewUpdateMessages.ts');
     assert.ok(fs.existsSync(updateMessagePath));
     const updateMessages = fs.readFileSync(updateMessagePath, 'utf8');
@@ -1283,12 +1291,14 @@ function runSourceContractChecks(source) {
     assert.ok(source.includes('pendingScrollRestoreTab'));
     assert.ok(extensionHostSource.includes("'request-projects-panel': async e =>"));
     assert.ok(extensionHostSource.includes("'request-todo-panel': async e =>"));
+    assert.ok(packageJson.includes('"projectSteward.maxVisibleTodosPerGroup"'));
     assert.strictEqual(extensionHostSource.includes('function handleStewardMessage('), false);
     assert.ok(extensionHostSource.includes('getAiSessionProviderIds: () => getRegisteredAiSessionProviders().map(provider => provider.id)'));
     assert.ok(extensionHostSource.includes("type: 'projects-panel-content'"));
     assert.ok(extensionHostSource.includes("type: 'todo-panel-content'"));
     assert.ok(extensionHostSource.includes('getProjectsPanelContent(projectService.getGroups(), stewardInfos)'));
     assert.ok(extensionHostSource.includes('getTodoPanelContent(buildTodoViewModel(todoData'));
+    assert.ok(extensionHostSource.includes('getMaxVisibleTodosPerGroup(config)'));
     assert.ok(projectSource.includes("e.target.closest('[data-action=\"add-project\"]')"));
     assert.ok(projectSource.includes("e.target.closest('[data-action=\"import-from-other-storage\"]')"));
     assert.ok(projectSource.includes("e.target.closest('[data-action=\"todo-add\"]')"));
@@ -1479,6 +1489,58 @@ function runSourceContractChecks(source) {
         'todo priority choices should animate visual selected-state changes');
     assert.ok(styles.includes('.todo-priority-choice input:checked + span'),
         'todo priority selected state should be driven by the radio checked state');
+    const todoListRule = extractCssRule(styles, '.todo-list');
+    assert.ok(todoListRule.includes('max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px))')
+        && todoListRule.includes('overflow-y: auto'),
+        'todo lists should scroll inside each group when they exceed the configured collapsed-card count');
+    assert.ok(todoListRule.includes('var(--todo-list-expanded-extra-height, 0px)'),
+        'todo lists should add expanded-card content to the collapsed-card viewport height');
+    const todoListEditingRule = extractCssRule(styles, '.todo-list.has-editing-item');
+    assert.ok(todoListEditingRule.includes('max-height: none')
+        && todoListEditingRule.includes('overflow-y: visible'),
+        'editing a todo should remove the group list viewport limit so the full editor is visible');
+    assert.ok(styles.includes('.todo-item:not(.expanded)'),
+        'todo items should have a collapsed state that controls the visible-count height');
+    assert.ok(styles.includes('.todo-item.expanded'),
+        'todo items should have an expanded state for details and editing');
+    assert.ok(styles.includes('.todo-item.editing'),
+        'todo items should have an explicit editing state that cannot be hidden by collapsed styles');
+    const todoCollapsedItemRule = extractCssRule(styles, '.todo-item:not(.expanded)');
+    assert.ok(todoCollapsedItemRule.includes('height: var(--todo-collapsed-item-height, 58px)'),
+        'collapsed todo items should keep the same normal card height as current workspace cards');
+    const todoExpandedItemRule = extractCssRule(styles, '.todo-item.expanded');
+    assert.ok(todoExpandedItemRule.includes('height: auto')
+        && todoExpandedItemRule.includes('min-height: var(--todo-collapsed-item-height, 58px)'),
+        'expanded todo items should open from the normal collapsed card height');
+    const todoEditingItemRule = extractCssRule(styles, '.todo-item.editing');
+    assert.ok(todoEditingItemRule.includes('height: auto')
+        && todoEditingItemRule.includes('min-height: var(--todo-collapsed-item-height, 58px)'),
+        'editing todo items should force the whole card open');
+    assert.ok(styles.includes('.todo-item.editing .todo-edit-form'),
+        'editing todo items should force the edit form to render');
+    assert.ok(styles.includes('.todo-item:not(.expanded) .todo-notes')
+        && styles.includes('.todo-item:not(.expanded) .todo-item-footer'),
+        'collapsed todo items should hide details while keeping the card size stable');
+    assert.ok(projectSource.includes('function toggleTodoItemExpanded('),
+        'todo cards should have a click-driven expanded/collapsed helper');
+    assert.ok(projectSource.includes('function syncTodoListExpandedHeight('),
+        'todo card expansion should keep the full expanded card visible inside its scrolling list');
+    assert.ok(projectSource.includes('function isTodoInteractiveTarget('),
+        'todo card expansion should ignore nested controls');
+    const setTodoEditingBody = extractFunctionBody(projectSource, 'setTodoEditing');
+    assert.ok(setTodoEditingBody.includes("toggleTodoItemExpanded(item, editing)"),
+        'editing a todo should force the card into expanded state');
+    assert.ok(setTodoEditingBody.includes("item.classList.toggle('editing', editing)"),
+        'editing a todo should mark the whole card as editing');
+    assert.ok(setTodoEditingBody.includes("list.classList.toggle('has-editing-item'"),
+        'editing a todo should make its group list fully expand until editing ends');
+    assert.ok(setTodoEditingBody.includes('view.hidden = false'),
+        'editing should retain the normal todo card header above the expanded form');
+    const onMouseEventBody = extractFunctionBody(projectSource, 'onMouseEvent');
+    assert.ok(onMouseEventBody.includes(".todo-item[data-todo-id]"),
+        'clicking a todo card should toggle its expanded/collapsed state');
+    assert.ok(onMouseEventBody.includes("!todoItem.classList.contains('editing')"),
+        'clicking an editing card should not collapse its active edit form');
     const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
     assert.ok(changelog.includes('Add a global `TODO` Dashboard tab'));
     assert.strictEqual((source.match(/type: 'request-projects-panel'/g) || []).length, 1);

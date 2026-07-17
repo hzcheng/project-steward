@@ -724,6 +724,36 @@ function initProjects() {
         });
     }
 
+    function syncTodoListExpandedHeight(list) {
+        if (!list)
+            return;
+
+        var panel = list.closest('.todo-panel');
+        var collapsedHeightValue = panel
+            ? getComputedStyle(panel).getPropertyValue('--todo-collapsed-item-height')
+            : '';
+        var collapsedHeight = parseFloat(collapsedHeightValue) || 58;
+        var expandedExtraHeight = Array.from(list.querySelectorAll('.todo-item.expanded'))
+            .reduce((total, expandedItem) => total + Math.max(0, expandedItem.offsetHeight - collapsedHeight), 0);
+        list.style.setProperty('--todo-list-expanded-extra-height', expandedExtraHeight + 'px');
+    }
+
+    function toggleTodoItemExpanded(item, expanded) {
+        if (!item)
+            return;
+
+        var nextExpanded = typeof expanded === 'boolean'
+            ? expanded
+            : !item.classList.contains('expanded');
+        item.classList.toggle('expanded', nextExpanded);
+        item.setAttribute('aria-expanded', nextExpanded ? 'true' : 'false');
+        syncTodoListExpandedHeight(item.closest('.todo-list'));
+    }
+
+    function isTodoInteractiveTarget(target) {
+        return !!(target && target.closest && target.closest('button, input, textarea, select, label, a, [data-action], .todo-edit-form'));
+    }
+
     function focusTodoAddForm(groupId) {
         var form = document.querySelector('.todo-add-form');
         if (!form)
@@ -751,17 +781,24 @@ function initProjects() {
 
         var view = item.querySelector('.todo-item-view');
         var form = item.querySelector('.todo-edit-form');
+        var list = item.closest('.todo-list');
+        item.classList.toggle('editing', editing);
         if (view) {
-            view.hidden = editing;
+            view.hidden = false;
         }
         if (form) {
             form.hidden = !editing;
-            if (editing) {
-                var titleInput = form.querySelector('[name="title"]');
-                if (titleInput) {
-                    titleInput.focus();
-                }
+        }
+        toggleTodoItemExpanded(item, editing);
+        if (list) {
+            list.classList.toggle('has-editing-item', !!list.querySelector('.todo-item.editing'));
+        }
+        if (form && editing) {
+            var titleInput = form.querySelector('[name="title"]');
+            if (titleInput) {
+                titleInput.focus();
             }
+            item.scrollIntoView({ block: 'nearest' });
         }
     }
 
@@ -1133,6 +1170,12 @@ function initProjects() {
         }
 
         if (onTodoAction(e)) {
+            return;
+        }
+
+        var todoItem = e.target.closest('.todo-item[data-todo-id]');
+        if (todoItem && !todoItem.classList.contains('editing') && !isTodoInteractiveTarget(e.target)) {
+            toggleTodoItemExpanded(todoItem);
             return;
         }
 

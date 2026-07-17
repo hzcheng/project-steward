@@ -1,11 +1,19 @@
 import { TodoGroupViewModel, TodoItemViewModel, TodoPanelViewModel } from './viewModel';
 import * as Icons from '../webview/webviewIcons';
 
+const DEFAULT_MAX_VISIBLE_TODOS_PER_GROUP = 5;
+const TODO_COLLAPSED_ITEM_HEIGHT_PX = 58;
+const TODO_LIST_GAP_PX = 7;
+
 const PRIORITIES = [
     { value: 'high', label: 'HIGH' },
     { value: 'medium', label: 'MED' },
     { value: 'low', label: 'LOW' },
 ];
+
+export interface TodoPanelRenderOptions {
+    maxVisibleTodosPerGroup?: number;
+}
 
 function escapeHtml(value: string): string {
     return String(value || '')
@@ -14,6 +22,17 @@ function escapeHtml(value: string): string {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+function normalizeMaxVisibleTodosPerGroup(value: unknown): number {
+    const visibleItems = Math.floor(Number(value));
+    return Number.isFinite(visibleItems) && visibleItems > 0 ? visibleItems : DEFAULT_MAX_VISIBLE_TODOS_PER_GROUP;
+}
+
+function getTodoPanelStyle(options: TodoPanelRenderOptions = {}): string {
+    const visibleItems = normalizeMaxVisibleTodosPerGroup(options.maxVisibleTodosPerGroup);
+    const listMaxHeight = (visibleItems * TODO_COLLAPSED_ITEM_HEIGHT_PX) + (Math.max(visibleItems - 1, 0) * TODO_LIST_GAP_PX);
+    return ` style="--todo-visible-items: ${visibleItems}; --todo-collapsed-item-height: ${TODO_COLLAPSED_ITEM_HEIGHT_PX}px; --todo-list-max-height: ${listMaxHeight}px;"`;
 }
 
 function renderPriorityOptions(selected: string): string {
@@ -71,7 +90,7 @@ function renderTodoEditForm(todo: TodoItemViewModel): string {
 function renderTodoItem(todo: TodoItemViewModel): string {
     const completedClass = todo.completed ? ' completed' : '';
     const checked = todo.completed ? ' checked' : '';
-    return `<li class="todo-item steward-card steward-card-compact todo-priority-${todo.priority}${completedClass}" data-todo-id="${escapeHtml(todo.id)}">
+    return `<li class="todo-item steward-card steward-card-compact todo-priority-${todo.priority}${completedClass}" data-todo-id="${escapeHtml(todo.id)}" aria-expanded="false">
         <div class="todo-item-view">
             <div class="todo-item-main">
                 <label class="todo-check">
@@ -127,9 +146,10 @@ function renderTodoGroup(group: TodoGroupViewModel): string {
     </section>`;
 }
 
-export function getTodoPanelContent(viewModel: TodoPanelViewModel): string {
+export function getTodoPanelContent(viewModel: TodoPanelViewModel, options: TodoPanelRenderOptions = {}): string {
+    const panelStyle = getTodoPanelStyle(options);
     if (viewModel.isEmpty) {
-        return `<div class="todo-panel todo-panel-empty">
+        return `<div class="todo-panel todo-panel-empty"${panelStyle}>
             ${renderTodoCommandBar(viewModel)}
             <div class="todo-empty-state steward-empty-state">
                 <div class="todo-empty-orb">${Icons.manage}</div>
@@ -141,7 +161,7 @@ export function getTodoPanelContent(viewModel: TodoPanelViewModel): string {
         </div>`;
     }
 
-    return `<div class="todo-panel">
+    return `<div class="todo-panel"${panelStyle}>
         ${renderTodoCommandBar(viewModel)}
         <div class="todo-groups">
             ${viewModel.groups.map(renderTodoGroup).join('')}
