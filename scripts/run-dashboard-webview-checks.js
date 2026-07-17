@@ -691,6 +691,29 @@ async function runTodoStoreChecks() {
         'the initial settings barrier must copy the non-empty global source before saving');
     assert.deepStrictEqual(configUpdates[1], ['todoData', { version: 1, groups: [], todos: [] }, 1]);
 
+    const directSettingsUpdates = [];
+    const serviceWithReadOnlyMergedConfiguration = new TodoService({
+        globalState: {
+            get: () => undefined,
+            update: async () => undefined,
+        },
+        configuration: {
+            get: (_key, fallback) => fallback,
+            update: undefined,
+        },
+        writableConfiguration: {
+            update: async (key, value, target) => directSettingsUpdates.push([key, value, target]),
+        },
+        useSettingsStorage: () => true,
+        now: () => '2026-07-16T00:00:00.000Z',
+        generateId: prefix => `${prefix}-direct-settings`,
+    });
+    await serviceWithReadOnlyMergedConfiguration.addTodo({ title: 'Persist through primary settings' });
+    assert.strictEqual(directSettingsUpdates.length, 1,
+        'settings-backed TODO writes must bypass the merged read configuration adapter');
+    assert.strictEqual(directSettingsUpdates[0][0], 'todoData');
+    assert.strictEqual(directSettingsUpdates[0][2], 1);
+
     for (const useSettingsStorage of [false, true]) {
         globalUpdates.length = 0;
         configUpdates.length = 0;
@@ -958,6 +981,63 @@ async function runTodoStorageResolutionChecks() {
             Module._load = originalLoad;
         }
     }
+
+    async function runExtensionContextSettingsWrite(rejectWrite) {
+        const primary = makeWorkspaceConfiguration(
+            { storeProjectsInSettings: true },
+            ['storeProjectsInSettings', 'update']
+        );
+        const legacy = makeWorkspaceConfiguration({}, []);
+        const settingsWrites = [];
+        const provenanceWrites = [];
+        primary.update = async (key, value, target) => {
+            settingsWrites.push([key, value, target]);
+            if (rejectWrite) throw new Error('primary settings write rejected');
+        };
+        const originalLoad = Module._load;
+        Module._load = function (request, parent, isMain) {
+            if (request === 'vscode') {
+                return {
+                    workspace: {
+                        getConfiguration: section => section === 'projectSteward' ? primary : legacy,
+                    },
+                };
+            }
+            return originalLoad.call(this, request, parent, isMain);
+        };
+        try {
+            const service = new TodoService({
+                globalState: {
+                    get: key => key === 'todos' ? makeStoredTodoData('context-source') : undefined,
+                    update: async (key, value) => provenanceWrites.push([key, value]),
+                },
+            });
+            if (rejectWrite) {
+                await assert.rejects(
+                    () => service.migrateDataIfNeeded(),
+                    /primary settings write rejected/
+                );
+            } else {
+                assert.strictEqual(await service.migrateDataIfNeeded(), true);
+            }
+        } finally {
+            Module._load = originalLoad;
+        }
+        return { settingsWrites, provenanceWrites };
+    }
+
+    const contextWrite = await runExtensionContextSettingsWrite(false);
+    assert.strictEqual(contextWrite.settingsWrites.length, 1,
+        'ExtensionContext settings writes must call the raw projectSteward configuration writer');
+    assert.strictEqual(contextWrite.settingsWrites[0][0], 'todoData');
+    assert.strictEqual(contextWrite.settingsWrites[0][2], 1);
+    assert.strictEqual(contextWrite.provenanceWrites.length, 1,
+        'a successful primary settings write may advance storage provenance');
+
+    const rejectedContextWrite = await runExtensionContextSettingsWrite(true);
+    assert.strictEqual(rejectedContextWrite.settingsWrites.length, 1);
+    assert.deepStrictEqual(rejectedContextWrite.provenanceWrites, [],
+        'a rejected primary settings write must not advance storage provenance');
 }
 
 async function runTodoMigrationChecks() {

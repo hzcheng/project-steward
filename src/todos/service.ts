@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import {
     TODO_DATA_KEY,
     TODO_DEFAULT_GROUP_TITLE,
+    PROJECT_STEWARD_CONFIG_SECTION,
     TODO_SETTINGS_KEY,
     TODO_UNTITLED_GROUP_TITLE,
     TODO_UNTITLED_ITEM_TITLE,
@@ -43,12 +44,16 @@ interface TodoMemento {
 
 interface TodoConfiguration {
     get<T>(key: string, defaultValue?: T): T;
+}
+
+interface TodoWritableConfiguration {
     update(key: string, value: unknown, target?: unknown): Thenable<void>;
 }
 
 export interface TodoServiceDependencies {
     globalState: TodoMemento;
     configuration?: TodoConfiguration;
+    writableConfiguration?: TodoWritableConfiguration;
     useSettingsStorage?: () => boolean;
     now?: () => string;
     generateId?: (prefix: string) => string;
@@ -62,6 +67,16 @@ function getWorkspaceConfiguration(): TodoConfiguration {
     return getStewardConfiguration();
 }
 
+function getWritableWorkspaceConfiguration(): TodoWritableConfiguration {
+    return require('vscode').workspace.getConfiguration(PROJECT_STEWARD_CONFIG_SECTION);
+}
+
+function isWritableConfiguration(
+    configuration: TodoConfiguration | undefined
+): configuration is TodoConfiguration & TodoWritableConfiguration {
+    return !!configuration && typeof (configuration as any).update === 'function';
+}
+
 function isDependencies(value: vscode.ExtensionContext | TodoServiceDependencies): value is TodoServiceDependencies {
     return !!value && typeof (value as TodoServiceDependencies).useSettingsStorage === 'function';
 }
@@ -69,6 +84,7 @@ function isDependencies(value: vscode.ExtensionContext | TodoServiceDependencies
 export class TodoService {
     private readonly globalState: TodoMemento;
     private readonly getConfiguration: () => TodoConfiguration;
+    private readonly getWritableConfiguration: () => TodoWritableConfiguration;
     private readonly useSettings: () => boolean;
     private readonly now: () => string;
     private readonly generateId: (prefix: string) => string;
@@ -80,6 +96,11 @@ export class TodoService {
         if (isDependencies(contextOrDependencies)) {
             this.globalState = contextOrDependencies.globalState;
             this.getConfiguration = () => contextOrDependencies.configuration || getWorkspaceConfiguration();
+            const configurationWriter = contextOrDependencies.writableConfiguration
+                || (isWritableConfiguration(contextOrDependencies.configuration)
+                    ? contextOrDependencies.configuration
+                    : undefined);
+            this.getWritableConfiguration = () => configurationWriter || getWritableWorkspaceConfiguration();
             this.useSettings = contextOrDependencies.useSettingsStorage;
             this.now = contextOrDependencies.now || (() => new Date().toISOString());
             this.generateId = contextOrDependencies.generateId || createId;
@@ -89,6 +110,7 @@ export class TodoService {
         const context = contextOrDependencies as vscode.ExtensionContext;
         this.globalState = context.globalState as TodoMemento;
         this.getConfiguration = getWorkspaceConfiguration;
+        this.getWritableConfiguration = getWritableWorkspaceConfiguration;
         this.useSettings = () => this.getConfiguration().get<boolean>('storeProjectsInSettings', true);
         this.now = () => new Date().toISOString();
         this.generateId = createId;
@@ -399,7 +421,7 @@ export class TodoService {
 
     private async writeData(data: TodoDataV1, useSettings: boolean): Promise<void> {
         if (useSettings) {
-            await this.getConfiguration().update(TODO_SETTINGS_KEY, data, GLOBAL_CONFIGURATION_TARGET);
+            await this.getWritableConfiguration().update(TODO_SETTINGS_KEY, data, GLOBAL_CONFIGURATION_TARGET);
             return;
         }
 
