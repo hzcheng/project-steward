@@ -1245,7 +1245,7 @@ body .project {
 
 .todo-list {
     display: grid;
-    gap: 7px;
+    gap: 0;
     max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px));
     margin: 0;
     padding: 0;
@@ -1895,27 +1895,6 @@ body.steward-sidebar {
         }
     }
 
-    .project {
-        .project-border {
-            top: 31%;
-            bottom: 31%;
-            height: auto;
-        }
-
-        &:hover .project-border {
-            top: 26%;
-            bottom: 26%;
-        }
-
-        &[data-open-project] {
-            &[data-codex-expanded]:hover {
-                .project-border {
-                    opacity: .9;
-                }
-            }
-        }
-    }
-
     .steward-item-card {
         position: relative;
         box-sizing: border-box;
@@ -2205,6 +2184,12 @@ body.steward-sidebar {
 
                 .codex-sessions {
                     display: block;
+                }
+            }
+
+            &[data-codex-expanded]:hover {
+                .steward-item-accent {
+                    opacity: .9;
                 }
             }
         }
@@ -2713,9 +2698,6 @@ body.steward-sidebar {
         }
     }
 
-    .project[data-current-workspace] {
-        border-color: var(--vscode-focusBorder);
-    }
 }
 body.steward-sidebar .project .codex-session-row.attention-animate{animation:steward-ai-attention 900ms ease-in-out 3}
 @keyframes steward-ai-attention{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.02);opacity:.65}}

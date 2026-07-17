@@ -58,6 +58,28 @@ function extractCssRule(source, selector) {
     throw new Error(`Unterminated CSS rule ${selector}`);
 }
 
+function extractCssRules(source, selector) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const selectorPattern = new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{`, 'gm');
+    const rules = [];
+    let match;
+    while ((match = selectorPattern.exec(source))) {
+        const braceStart = source.indexOf('{', match.index);
+        let depth = 0;
+        for (let index = braceStart; index < source.length; index += 1) {
+            if (source[index] === '{') depth += 1;
+            if (source[index] === '}') depth -= 1;
+            if (depth === 0) {
+                rules.push(source.slice(braceStart + 1, index));
+                selectorPattern.lastIndex = index + 1;
+                break;
+            }
+        }
+    }
+    assert.ok(rules.length > 0, `Missing CSS rules ${selector}`);
+    return rules;
+}
+
 function extractCssRulesContainingSelector(source, selector) {
     const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const selectorPattern = new RegExp(`(^|\\n)[^{}]*${escapedSelector}(?![\\w-])[^{}]*\\{`, 'gm');
@@ -494,7 +516,7 @@ function runTodoViewModelChecks() {
     const html = todoWebviewContent.getTodoPanelContent(hiddenCompleted, { maxVisibleTodosPerGroup: 7 });
     assert.ok(html.includes('todo-panel'));
     assert.ok(html.includes('--todo-visible-items: 7;'));
-    assert.ok(html.includes('--todo-list-max-height:'));
+    assert.ok(html.includes('--todo-list-max-height: 448px;'));
     assert.ok(html.includes('--todo-collapsed-item-height: 58px;'));
     assert.ok(html.includes('Launch &lt;Group&gt;'));
     assert.ok(html.includes('Write &lt;spec&gt;'));
@@ -528,7 +550,7 @@ function runTodoViewModelChecks() {
 
     const defaultHtml = todoWebviewContent.getTodoPanelContent(hiddenCompleted);
     assert.ok(defaultHtml.includes('--todo-visible-items: 5;'));
-    assert.ok(defaultHtml.includes('--todo-list-max-height:'));
+    assert.ok(defaultHtml.includes('--todo-list-max-height: 318px;'));
 
     const emptyHtml = todoWebviewContent.getTodoPanelContent(todoViewModel.buildTodoViewModel({ version: 1, groups: [], todos: [] }));
     assert.ok(emptyHtml.includes('todo-empty-state steward-empty-state'));
@@ -1512,7 +1534,8 @@ function runSourceContractChecks(source) {
         assert.ok(styles.includes(selector), `missing ${selector}`);
     }
     const sidebarStyles = extractCssRule(styles, 'body.steward-sidebar');
-    const sharedItemCardRule = extractCssRule(sidebarStyles, '.steward-item-card');
+    const sharedItemCardRules = extractCssRules(sidebarStyles, '.steward-item-card');
+    const sharedItemCardRule = sharedItemCardRules.join('\n');
     for (const declaration of [
         'height: 58px',
         'margin: 0 2px 7px 2px',
@@ -1522,17 +1545,19 @@ function runSourceContractChecks(source) {
         'background: var(',
         'box-shadow:',
     ]) {
-        assert.ok(sharedItemCardRule.includes(declaration), `shared item card is missing ${declaration}`);
+        assert.ok(sharedItemCardRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, declaration)),
+            `shared item card is missing ${declaration}`);
     }
 
-    const todoItemRule = extractCssRule(styles, '.todo-item');
+    const todoItemRules = extractCssRules(styles, '.todo-item');
     for (const forbidden of ['border:', 'border-radius:', 'background:', 'box-shadow:']) {
-        assert.strictEqual(todoItemRule.includes(forbidden), false, `TODO item must not own ${forbidden}`);
+        assert.strictEqual(todoItemRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, forbidden)), false,
+            `TODO item must not own ${forbidden}`);
     }
 
-    const sidebarProjectRule = extractCssRule(sidebarStyles, '.project');
+    const sidebarProjectRules = extractCssRules(sidebarStyles, '.project');
     for (const forbidden of ['height: 58px', 'border-radius: 18px', 'background: var(', 'box-shadow:']) {
-        assert.strictEqual(cssRuleIncludesTopLevelDeclaration(sidebarProjectRule, forbidden), false,
+        assert.strictEqual(sidebarProjectRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, forbidden)), false,
             `project domain rule must not duplicate ${forbidden}`);
     }
 
@@ -1607,12 +1632,15 @@ function runSourceContractChecks(source) {
         'todo priority choices should animate visual selected-state changes');
     assert.ok(styles.includes('.todo-priority-choice input:checked + span'),
         'todo priority selected state should be driven by the radio checked state');
-    const todoListRule = extractCssRule(styles, '.todo-list');
+    const todoListRules = extractCssRules(styles, '.todo-list');
+    const todoListRule = todoListRules.join('\n');
     assert.ok(todoListRule.includes('max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px))')
         && todoListRule.includes('overflow-y: auto'),
         'todo lists should scroll inside each group when they exceed the configured collapsed-card count');
     assert.ok(todoListRule.includes('var(--todo-list-expanded-extra-height, 0px)'),
         'todo lists should add expanded-card content to the collapsed-card viewport height');
+    assert.ok(todoListRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, 'gap: 0')),
+        'shared item card margins should be the only spacing source inside TODO lists');
     const todoListEditingRule = extractCssRule(styles, '.todo-list.has-editing-item');
     assert.ok(todoListEditingRule.includes('max-height: none')
         && todoListEditingRule.includes('overflow-y: visible'),

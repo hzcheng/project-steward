@@ -2216,16 +2216,22 @@ function runWebviewContentChecks() {
     const projectWindowColorService = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'projectWindowColorService.ts'), 'utf8');
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
-    const sidebarStyles = styles.slice(styles.indexOf('body.steward-sidebar'));
-    const projectBorderBlock = extractScssBlock(sidebarStyles, '.project-border');
-    const projectBorderHoverBlock = extractScssBlock(sidebarStyles, '&:hover .project-border');
-    const expandedProjectHoverBlock = extractScssBlock(sidebarStyles, '&[data-codex-expanded]:hover');
-    const expandedProjectBorderBlock = extractScssBlock(expandedProjectHoverBlock, '.project-border');
-    const compiledProjectBorderBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project .project-border');
-    const compiledProjectBorderHoverBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project:hover .project-border');
-    const compiledExpandedProjectBorderBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project[data-open-project][data-codex-expanded]:hover .project-border');
-    const currentProjectStyleBlock = extractScssBlock(sidebarStyles, '&[data-current-workspace]');
-    const compiledCurrentProjectStyleBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .project[data-current-workspace]');
+    const sidebarStyles = extractExactScssBlock(styles, 'body.steward-sidebar');
+    assert.strictEqual(sidebarStyles.includes('.project[data-current-workspace]'), false,
+        'current workspace shell state must be owned by the shared item card');
+    assert.strictEqual(sidebarStyles.includes('.project-border'), false,
+        'sidebar projects must use the shared accent selector instead of project-specific rail geometry');
+    const sharedItemAccentBlock = extractExactScssBlock(sidebarStyles, '.steward-item-accent');
+    const sharedItemAccentHoverBlock = extractScssBlock(sidebarStyles, '.steward-item-card:hover .steward-item-accent');
+    const projectStyleBlock = extractExactScssBlock(sidebarStyles, '.project');
+    const openProjectStyleBlock = extractExactScssBlock(projectStyleBlock, '&[data-open-project]');
+    const expandedProjectHoverBlock = extractExactScssBlock(openProjectStyleBlock, '&[data-codex-expanded]:hover');
+    const expandedProjectAccentBlock = extractExactScssBlock(expandedProjectHoverBlock, '.steward-item-accent');
+    const compiledSharedItemAccentBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .steward-item-accent');
+    const compiledSharedItemAccentHoverBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .steward-item-card:hover .steward-item-accent');
+    const compiledExpandedProjectAccentBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .project[data-open-project][data-codex-expanded]:hover .steward-item-accent');
+    const currentItemCardStyleBlock = extractExactScssBlock(sidebarStyles, '&[data-current-workspace]');
+    const compiledCurrentItemCardStyleBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .steward-item-card[data-current-workspace]');
 
     assert.ok(webviewContent.includes('data-action="add" title="Add Project"'));
     assert.ok(webviewContent.includes('class="project no-projects" data-action="add-project" data-nodrag'));
@@ -2488,29 +2494,31 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes("options.projectAttentionMode === 'none'"));
     assert.ok(styles.includes('--project-color'));
     assert.ok(styles.includes('.project-aura'));
-    assert.ok(currentProjectStyleBlock.includes('--vscode-list-inactiveSelectionBackground'));
-    assert.ok(currentProjectStyleBlock.includes('var(--vscode-focusBorder)'));
-    assert.ok(currentProjectStyleBlock.includes('box-shadow'));
-    assert.ok(compiledCurrentProjectStyleBlock.includes('var(--vscode-focusBorder)'));
-    assert.ok(!currentProjectStyleBlock.includes('animation'));
+    assert.ok(currentItemCardStyleBlock.includes('--vscode-list-inactiveSelectionBackground'));
+    assert.ok(currentItemCardStyleBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(currentItemCardStyleBlock.includes('box-shadow'));
+    assert.ok(compiledCurrentItemCardStyleBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(!currentItemCardStyleBlock.includes('animation'));
     assert.ok(styles.indexOf('&[data-current-workspace]') > styles.indexOf('&[data-codex-expanded]:hover'));
-    assert.ok(compiledStyles.indexOf('.project[data-current-workspace]') > compiledStyles.indexOf('.project[data-open-project][data-codex-expanded]:hover'));
-    assert.ok(projectBorderBlock.includes('top: 31%'));
-    assert.ok(projectBorderBlock.includes('bottom: 31%'));
-    assert.ok(projectBorderBlock.includes('height: auto'));
-    assert.deepStrictEqual(projectBorderBlock.match(/\bheight\s*:[^;]+/g), ['height: auto']);
-    assert.ok(projectBorderHoverBlock.includes('top: 26%'));
-    assert.ok(projectBorderHoverBlock.includes('bottom: 26%'));
-    assert.ok(!/\bheight\s*:/.test(projectBorderHoverBlock));
-    assert.ok(!/\bheight\s*:/.test(expandedProjectBorderBlock));
-    assert.ok(compiledProjectBorderBlock.includes('top:31%'));
-    assert.ok(compiledProjectBorderBlock.includes('bottom:31%'));
-    assert.ok(compiledProjectBorderBlock.includes('height:auto'));
-    assert.deepStrictEqual(compiledProjectBorderBlock.match(/\bheight\s*:[^;]+/g), ['height:auto']);
-    assert.ok(compiledProjectBorderHoverBlock.includes('top:26%'));
-    assert.ok(compiledProjectBorderHoverBlock.includes('bottom:26%'));
-    assert.ok(!/\bheight\s*:/.test(compiledProjectBorderHoverBlock));
-    assert.ok(!/\bheight\s*:/.test(compiledExpandedProjectBorderBlock));
+    assert.ok(compiledStyles.indexOf('.steward-item-card[data-current-workspace]') > compiledStyles.indexOf('.steward-item-card[data-codex-expanded]:hover'));
+    assert.ok(sharedItemAccentBlock.includes('top: 31%'));
+    assert.ok(sharedItemAccentBlock.includes('bottom: 31%'));
+    assert.ok(sharedItemAccentBlock.includes('height: auto'));
+    assert.deepStrictEqual(sharedItemAccentBlock.match(/\bheight\s*:[^;]+/g), ['height: auto']);
+    assert.ok(sharedItemAccentHoverBlock.includes('top: 26%'));
+    assert.ok(sharedItemAccentHoverBlock.includes('bottom: 26%'));
+    assert.ok(!/\bheight\s*:/.test(sharedItemAccentHoverBlock));
+    assert.ok(expandedProjectAccentBlock.includes('opacity: .9'));
+    assert.ok(!/\bheight\s*:/.test(expandedProjectAccentBlock));
+    assert.ok(compiledSharedItemAccentBlock.includes('top:31%'));
+    assert.ok(compiledSharedItemAccentBlock.includes('bottom:31%'));
+    assert.ok(compiledSharedItemAccentBlock.includes('height:auto'));
+    assert.deepStrictEqual(compiledSharedItemAccentBlock.match(/\bheight\s*:[^;]+/g), ['height:auto']);
+    assert.ok(compiledSharedItemAccentHoverBlock.includes('top:26%'));
+    assert.ok(compiledSharedItemAccentHoverBlock.includes('bottom:26%'));
+    assert.ok(!/\bheight\s*:/.test(compiledSharedItemAccentHoverBlock));
+    assert.ok(compiledExpandedProjectAccentBlock.includes('opacity:.9'));
+    assert.ok(!/\bheight\s*:/.test(compiledExpandedProjectAccentBlock));
     assert.ok(webviewContent.includes('--steward-ai-session-list-max-height: ${getAiSessionListMaxHeight(config)}px;'));
     assert.ok(webviewContent.includes('Number.isFinite(visibleRows)'));
     assert.ok(styles.includes('height: var(--steward-ai-session-list-max-height, calc(3 * 42px + 2 * 2px));'));
@@ -4120,6 +4128,22 @@ function extractMethodBody(source, methodName) {
     }
 
     assert.fail(`Could not extract ${methodName}`);
+}
+
+function extractExactScssBlock(source, selector) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = source.match(new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{`, 'm'));
+    assert.ok(match, `Could not find exact SCSS selector ${selector}`);
+    const selectorIndex = match.index + match[0].lastIndexOf(selector);
+    return extractScssBlock(source.slice(selectorIndex), selector);
+}
+
+function extractExactCssBlock(source, selector) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = source.match(new RegExp(`(^|[,}])${escapedSelector}\\{`));
+    assert.ok(match, `Could not find exact CSS selector ${selector}`);
+    const selectorIndex = match.index + match[0].lastIndexOf(selector);
+    return extractScssBlock(source.slice(selectorIndex), selector);
 }
 
 function extractScssBlock(source, selector) {
