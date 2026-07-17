@@ -686,7 +686,9 @@ async function runTodoStoreChecks() {
 
     const settingsService = makeService(true);
     await settingsService.saveData({ version: 1, groups: [], todos: [] });
-    assert.deepStrictEqual(configUpdates[0], ['todoData', { version: 1, groups: [], todos: [] }, 1]);
+    assert.deepStrictEqual(configUpdates[0][1], globalService.getData(),
+        'the initial settings barrier must copy the non-empty global source before saving');
+    assert.deepStrictEqual(configUpdates[1], ['todoData', { version: 1, groups: [], todos: [] }, 1]);
 
     for (const useSettingsStorage of [false, true]) {
         globalUpdates.length = 0;
@@ -871,10 +873,15 @@ function makeTodoServiceStorageHarness(useSettingsStorage, initialGlobalData, in
         settings: initialSettingsData,
     };
     const updates = [];
+    let knownDataBackend;
     const service = new TodoService({
         globalState: {
-            get: key => key === 'todos' ? values.global : undefined,
+            get: key => key === 'todos' ? values.global : knownDataBackend,
             update: async (key, value) => {
+                if (key !== 'todos') {
+                    knownDataBackend = value;
+                    return;
+                }
                 updates.push(['global', key, value]);
                 values.global = value;
             },
@@ -969,7 +976,10 @@ async function runTodoMigrationChecks() {
             makeStoredTodoData('global-conflict'),
             makeStoredTodoData('settings-conflict')
         );
-        assert.strictEqual(await conflict.service.migrateDataIfNeeded(), false);
+        await assert.rejects(
+            () => conflict.service.migrateDataIfNeeded(),
+            error => error && error.name === 'TodoStorageConflictError'
+        );
         assert.deepStrictEqual(conflict.updates, [], 'migration must not overwrite two non-empty stores');
     }
 
@@ -1000,6 +1010,8 @@ async function runTodoMigrationChecks() {
     }
 
     const dataMutations = [
+        service => service.saveData({ version: 1, groups: [], todos: [] }),
+        service => service.setShowCompleted(true),
         service => service.addGroup('Blocked'),
         service => service.addTodo({ title: 'Blocked' }),
         service => service.updateTodo('todo-a', { title: 'Blocked' }),
@@ -1026,7 +1038,192 @@ async function runTodoMigrationChecks() {
                 error => error && error.name === 'UnsupportedTodoDataVersionError' && error.version === 2
             );
             assert.deepStrictEqual(futureTarget.updates, [], 'CRUD on an unknown selected backend must not write');
+            const selectedValue = useSettingsStorage ? futureTarget.values.settings : futureTarget.values.global;
+            assert.deepStrictEqual(selectedValue, { version: 2, groups: [], todos: [] },
+                'future-version raw data must remain byte-for-byte isolated from TODO writes');
         }
+    }
+
+    for (const useSettingsStorage of [false, true]) {
+        const futureTarget = makeTodoServiceStorageHarness(
+            useSettingsStorage,
+            useSettingsStorage ? null : { version: 2, groups: [], todos: [] },
+            useSettingsStorage ? { version: 2, groups: [], todos: [] } : null
+        );
+        assert.deepStrictEqual(futureTarget.service.getSearchItems(), [],
+            'future-version TODO data must project an empty safe search catalog');
+        assert.deepStrictEqual(
+            useSettingsStorage ? futureTarget.values.settings : futureTarget.values.global,
+            { version: 2, groups: [], todos: [] },
+            'safe catalog projection must preserve future-version raw data'
+        );
+    }
+
+    const storageReadFailure = new Error('ordinary TODO storage read failed');
+    const failingReadService = new TodoService({
+        globalState: {
+            get: () => { throw storageReadFailure; },
+            update: async () => undefined,
+        },
+        configuration: makeWorkspaceConfiguration({}),
+        useSettingsStorage: () => false,
+    });
+    assert.throws(() => failingReadService.getSearchItems(), error => error === storageReadFailure,
+        'safe search catalogs must not swallow ordinary storage errors');
+
+    const mixedReadFailure = new Error('inactive TODO storage read failed');
+    const futureAndFailingReadService = new TodoService({
+        globalState: {
+            get: key => key === 'todos' ? { version: 2, groups: [], todos: [] } : undefined,
+            update: async () => undefined,
+        },
+        configuration: {
+            get: () => { throw mixedReadFailure; },
+            update: async () => undefined,
+        },
+        useSettingsStorage: () => false,
+    });
+    assert.throws(() => futureAndFailingReadService.getSearchItems(), error => error === mixedReadFailure,
+        'an unsupported version in one backend must not hide an ordinary read failure in the other');
+
+    const activated = makeTodoServiceStorageHarness(
+        false,
+        { version: 1, groups: [], todos: [] },
+        null
+    );
+    assert.strictEqual(await activated.service.migrateDataIfNeeded(), false);
+    activated.values.global = { version: 2, groups: [], todos: [] };
+    await assert.rejects(
+        () => activated.service.saveData({ version: 1, groups: [], todos: [] }),
+        error => error && error.name === 'UnsupportedTodoDataVersionError' && error.version === 2
+    );
+    assert.deepStrictEqual(activated.updates, [],
+        'an active backend changed to a future version must be revalidated before replacement writes');
+    assert.deepStrictEqual(activated.values.global, { version: 2, groups: [], todos: [] });
+
+    const selectedData = makeStoredTodoData('selected-group');
+    selectedData.todos.push({
+        id: 'selected-todo', groupId: 'selected-group', title: 'Selected TODO', notes: '',
+        priority: 'medium', completed: false, createdAt: '2026-07-17T00:00:00.000Z',
+        updatedAt: '2026-07-17T00:00:00.000Z', order: 0,
+    });
+    const futureSource = makeTodoServiceStorageHarness(
+        false,
+        selectedData,
+        { version: 2, groups: [], todos: [] }
+    );
+    assert.deepStrictEqual(futureSource.service.getSearchItems(), [],
+        'a future-version inactive source must isolate TODO search as well as writes');
+    assert.strictEqual(futureSource.service.getUnsupportedVersionError().version, 2);
+    futureSource.values.settings = null;
+    assert.strictEqual(futureSource.service.getUnsupportedVersionError(), undefined,
+        'live version probing must recover after future-version raw data is replaced with supported data');
+    assert.deepStrictEqual(futureSource.service.getSearchItems().map(item => item.todoId), ['selected-todo']);
+}
+
+async function runTodoBackendSwitchBarrierChecks() {
+    let useSettingsStorage = false;
+    let knownDataBackend;
+    const values = {
+        global: { version: 1, groups: [], todos: [] },
+        settings: null,
+    };
+    const updates = [];
+    let releaseFirstWrite;
+    const firstWriteGate = new Promise(resolve => { releaseFirstWrite = resolve; });
+    const dependencies = {
+        globalState: {
+            get: key => key === 'todos' ? values.global : knownDataBackend,
+            update: async (key, value) => {
+                if (key !== 'todos') {
+                    updates.push(['state', key, value]);
+                    knownDataBackend = value;
+                    return;
+                }
+                updates.push(['global', key, value]);
+                if (updates.length === 1) await firstWriteGate;
+                values.global = value;
+            },
+        },
+        configuration: {
+            get: (key, fallback) => key === 'todoData' ? values.settings : fallback,
+            update: async (key, value, target) => {
+                updates.push(['settings', key, value, target]);
+                values.settings = value;
+            },
+        },
+        useSettingsStorage: () => useSettingsStorage,
+        generateId: prefix => `${prefix}-${updates.length}`,
+    };
+    const service = new TodoService(dependencies);
+
+    const firstMutation = service.addGroup('First global');
+    await new Promise(resolve => setImmediate(resolve));
+    const queuedMutation = service.addGroup('Queued global');
+    useSettingsStorage = true;
+    await new Promise(resolve => setImmediate(resolve));
+    try {
+        assert.deepStrictEqual(updates.map(update => update[0]), ['global']);
+    } finally {
+        releaseFirstWrite();
+    }
+    await Promise.all([firstMutation, queuedMutation]);
+    assert.deepStrictEqual(values.global.groups.map(group => group.title), ['First global', 'Queued global'],
+        'a queued mutation must keep the backend captured when it was enqueued');
+    assert.strictEqual(values.settings, null,
+        'a later configuration change must not split an already-queued mutation into the new backend');
+
+    const switchedMutation = await service.addGroup('First settings');
+    assert.deepStrictEqual(switchedMutation.groups.map(group => group.title),
+        ['First global', 'Queued global', 'First settings']);
+    assert.deepStrictEqual(values.settings.groups.map(group => group.title),
+        ['First global', 'Queued global', 'First settings'],
+        'switching to an empty backend must copy the non-empty source before mutating the captured target');
+    assert.deepStrictEqual(values.global.groups.map(group => group.title), ['First global', 'Queued global']);
+    assert.strictEqual(knownDataBackend, true,
+        'a successful backend copy must persist which backend became authoritative');
+
+    const restartedService = new TodoService(dependencies);
+    const afterRestart = await restartedService.addGroup('Settings after restart');
+    assert.deepStrictEqual(afterRestart.groups.map(group => group.title),
+        ['First global', 'Queued global', 'First settings', 'Settings after restart'],
+        'restart must recognize the copied source as stale instead of manufacturing a conflict');
+
+    useSettingsStorage = false;
+    const updatesBeforeConflict = updates.length;
+    await assert.rejects(
+        () => service.addGroup('Blocked by conflict'),
+        error => error && error.name === 'TodoStorageConflictError' && /conflict/i.test(error.message)
+    );
+    assert.strictEqual(updates.length, updatesBeforeConflict,
+        'switching between two different non-empty stores must reject before writing');
+
+    for (const selectedSettings of [false, true]) {
+        const sharedData = makeStoredTodoData('shared-group');
+        const matching = makeTodoServiceStorageHarness(
+            selectedSettings,
+            JSON.parse(JSON.stringify(sharedData)),
+            JSON.parse(JSON.stringify(sharedData))
+        );
+        const result = await matching.service.addGroup('Allowed');
+        assert.deepStrictEqual(result.groups.map(group => group.title), ['shared-group', 'Allowed'],
+            'matching non-empty stores must allow a mutation on the selected backend');
+        assert.deepStrictEqual(matching.updates.map(update => update[0]),
+            [selectedSettings ? 'settings' : 'global']);
+    }
+
+    for (const selectedSettings of [false, true]) {
+        const conflict = makeTodoServiceStorageHarness(
+            selectedSettings,
+            makeStoredTodoData('global-conflict'),
+            makeStoredTodoData('settings-conflict')
+        );
+        await assert.rejects(
+            () => conflict.service.addGroup('Blocked'),
+            error => error && error.name === 'TodoStorageConflictError' && /conflict/i.test(error.message)
+        );
+        assert.deepStrictEqual(conflict.updates, [],
+            'an initial mutation must reject different non-empty stores without writing either backend');
     }
 }
 
@@ -1316,6 +1513,38 @@ async function runDashboardTodoMigrationSequencingChecks() {
     const todoPanelBody = extractFunctionBody(extensionHostSource, 'postTodoPanelContent');
     assert.ok(todoPanelBody.includes('await todoStorageMigration.ready;'),
         'TODO panel rendering must wait for the active TODO storage migration');
+
+    let rejectTodoMigration;
+    const failedTodoMigration = new Promise((_resolve, reject) => { rejectTodoMigration = reject; });
+    const retryGate = { ready: Promise.resolve() };
+    const firstAttempt = runMigration(
+        { migrateDataIfNeeded: async () => false },
+        { migrateDataIfNeeded: () => failedTodoMigration },
+        retryGate
+    );
+    let failedGateSettled = false;
+    retryGate.ready.then(() => { failedGateSettled = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(failedGateSettled, false,
+        'the TODO render gate must remain pending while migration is in progress');
+
+    const migrationFailure = new Error('deferred TODO migration rejected');
+    rejectTodoMigration(migrationFailure);
+    await assert.rejects(() => firstAttempt, error => error === migrationFailure);
+    await retryGate.ready;
+    assert.strictEqual(failedGateSettled, true,
+        'a rejected TODO migration must leave a settled, non-poisoned render gate');
+
+    let retryCalls = 0;
+    const retryAttempt = runMigration(
+        { migrateDataIfNeeded: async () => false },
+        { migrateDataIfNeeded: async () => { retryCalls += 1; return true; } },
+        retryGate
+    );
+    assert.strictEqual(await retryAttempt, true);
+    await retryGate.ready;
+    assert.strictEqual(retryCalls, 1,
+        'a later configuration migration must retry after a rejected TODO migration');
 }
 
 async function runTodoHostMutationChecks() {
@@ -1333,6 +1562,18 @@ async function runTodoHostMutationChecks() {
     assert.strictEqual(events.some(event => event === 'posted-panel'), false, 'a rejected write must preserve the current panel');
     assert.ok(events.some(event => Array.isArray(event) && event[0] === 'error' && /save TODO changes/i.test(event[1])));
     assert.ok(events.some(event => Array.isArray(event) && event[0] === 'log' && event[2] === 'storage full'));
+
+    events.length = 0;
+    await runTodoMutation({
+        mutate: async () => { throw new todoTypes.TodoStorageConflictError(); },
+        onSuccess: async () => events.push('posted-panel'),
+        showErrorMessage: message => events.push(['error', message]),
+        logError: (message, error) => events.push(['log', message, error.message]),
+    });
+    assert.ok(events.some(event => Array.isArray(event)
+        && event[0] === 'error' && /storage conflict/i.test(event[1])),
+    'a backend conflict must be visible rather than reduced to a generic write failure');
+    assert.strictEqual(events.includes('posted-panel'), false);
 
     events.length = 0;
     const succeeded = await runTodoMutation({
@@ -1589,6 +1830,15 @@ function runTodoViewModelChecks() {
     const emptyHtml = todoWebviewContent.getTodoPanelContent(todoViewModel.buildTodoViewModel({ version: 1, groups: [], todos: [] }));
     assert.ok(emptyHtml.includes('todo-empty-state steward-empty-state'));
     assert.ok(emptyHtml.includes('No todos yet'));
+
+    const unsupportedHtml = todoWebviewContent.getUnsupportedTodoVersionPanelContent(7);
+    assert.ok(unsupportedHtml.includes('data-todo-error="unsupported-version"'));
+    assert.ok(unsupportedHtml.includes('version 7'));
+    assert.ok(unsupportedHtml.toLowerCase().includes('read-only'));
+    assert.strictEqual(unsupportedHtml.includes('data-action='), false,
+        'the unsupported-version TODO panel must expose no mutation controls');
+    assert.strictEqual(unsupportedHtml.includes('<form'), false,
+        'the unsupported-version TODO panel must be read-only');
     assert.strictEqual((emptyHtml.match(/<form class="todo-add-form\b/g) || []).length, 1,
         'an empty TODO panel must expose the same compose form');
     assert.ok(emptyHtml.includes('<option value="">Inbox</option>'));
@@ -2085,6 +2335,52 @@ async function runDashboardStartupControllerChecks() {
     stewardInfos.config = { openOnStartup: 'empty workspace' };
     await controller.startUp();
     assert.strictEqual(showStewardCalls, 3);
+
+    const migrationErrors = [];
+    const migrationLogs = [];
+    const retryPublications = [];
+    let rejectMigration;
+    let migrationAttempts = 0;
+    const rejectedMigration = new Promise((_resolve, reject) => { rejectMigration = reject; });
+    const failureController = new DashboardStartupController({
+        stewardInfos,
+        relevantExtensions: {
+            remoteSSH: 'ms-vscode-remote.remote-ssh',
+            remoteContainers: 'ms-vscode-remote.remote-containers',
+        },
+        isExtensionInstalled: () => false,
+        migrateDataIfNeeded: () => {
+            migrationAttempts += 1;
+            return migrationAttempts === 1 ? rejectedMigration : Promise.resolve(true);
+        },
+        publishOpenProjects: () => retryPublications.push('published'),
+        showInformationMessage: () => undefined,
+        showErrorMessage: message => migrationErrors.push(message),
+        logError: (message, error) => migrationLogs.push([message, error]),
+        showSteward: () => undefined,
+        applyProjectColorToCurrentWindow: () => undefined,
+        getReopenReason: () => 0,
+        updateReopenReason: () => undefined,
+        reopenNoneValue: 0,
+        getWorkspaceName: () => 'workspace',
+        getVisibleEditorLanguageIds: () => [],
+    });
+    const failedCheck = failureController.checkDataMigration();
+    const startupMigrationFailure = new Error('TODO migration write failed');
+    rejectMigration(startupMigrationFailure);
+    await failedCheck;
+    assert.strictEqual(migrationErrors.length, 1,
+        'migration failure must be visible to the user');
+    assert.ok(migrationErrors[0].includes('TODO migration write failed'));
+    assert.deepStrictEqual(migrationLogs,
+        [['Failed to migrate Project Steward data.', startupMigrationFailure]],
+        'migration failure must be logged without escaping as an unhandled rejection');
+    assert.deepStrictEqual(retryPublications, []);
+
+    await failureController.checkDataMigration();
+    assert.strictEqual(migrationAttempts, 2);
+    assert.deepStrictEqual(retryPublications, ['published'],
+        'a successful retry must resume post-migration publication');
 }
 
 async function runDashboardLifecycleControllerChecks() {
@@ -2588,6 +2884,17 @@ function runSourceContractChecks(source) {
     const dndSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewDnDScripts.js'), 'utf8');
     const filterSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewFilterScripts.js'), 'utf8');
     const extensionHostSource = fs.readFileSync(extensionHostPath, 'utf8');
+    assert.strictEqual(extensionHostSource.includes('buildTodoSearchItems(todoService.getData())'), false,
+        'initial and incremental Dashboard catalogs must not parse unsupported TODO data directly');
+    assert.ok(extensionHostSource.includes('todoService.getSearchItems()'),
+        'Dashboard catalog call sites must use the future-version-safe TODO catalog');
+    const todoPanelBody = extractFunctionBody(extensionHostSource, 'postTodoPanelContent');
+    assert.ok(todoPanelBody.includes('UnsupportedTodoDataVersionError'));
+    assert.ok(todoPanelBody.includes('getUnsupportedTodoVersionPanelContent'));
+    assert.ok(todoPanelBody.includes('todoService.getUnsupportedVersionError()'),
+        'TODO panel rendering must live-probe both backends instead of caching unsupported errors');
+    assert.strictEqual(todoPanelBody.includes('todoStorageMigration.error'), false,
+        'a corrected future-version value must not leave a stale cached TODO panel error');
     const webviewContentSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewContent.ts'), 'utf8');
     const stylesPath = path.join(root, 'media', 'styles.scss');
     const generatedStylesPath = path.join(root, 'media', 'styles.css');
@@ -3173,6 +3480,7 @@ async function main() {
     await runTodoOrderingMutationChecks();
     await runTodoStorageResolutionChecks();
     await runTodoMigrationChecks();
+    await runTodoBackendSwitchBarrierChecks();
     await runTodoViewStateChecks();
     await runTodoMutationSerializationChecks();
     await runTodoRevealSingleWriteChecks();

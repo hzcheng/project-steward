@@ -8,9 +8,9 @@ import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
 import { TodoService } from './todos/service';
 import { deleteTodoWithConfirmation, runTodoMutation } from './todos/hostMutation';
-import { buildTodoSearchItems } from './todos/types';
+import { UnsupportedTodoDataVersionError } from './todos/types';
 import { buildTodoViewModel } from './todos/viewModel';
-import { getTodoPanelContent } from './todos/webviewContent';
+import { getTodoPanelContent, getUnsupportedTodoVersionPanelContent } from './todos/webviewContent';
 import FileService from './services/fileService';
 import CodexSessionService from './services/codexSessionService';
 import KimiSessionService from './services/kimiSessionService';
@@ -414,7 +414,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         invalidateCache: providerId => invalidateAiSessionCache(providerId),
         watchSessionChanges: (providerId, onDidChange) => getRegisteredAiSessionProvider(providerId).service.watchSessionChanges(onDidChange),
         getGroups: () => projectService.getGroups(),
-        getTodoSearchItems: () => buildTodoSearchItems(todoService.getData()),
+        getTodoSearchItems: () => todoService.getSearchItems(),
         getCards: getOpenProjectCards,
         getOpenProjectAiSessionViewModel,
         nextSequence: () => ++aiSessionUpdateSequence,
@@ -771,7 +771,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const openProjectDashboardController = new OpenProjectDashboardController({
         getOpenProjects,
         getGroups: () => projectService.getGroups(),
-        getTodoSearchItems: () => buildTodoSearchItems(todoService.getData()),
+        getTodoSearchItems: () => todoService.getSearchItems(),
         getStewardInfos: () => stewardInfos,
         getAttentionAggregate: () => aiSessionAttentionController.getEffectiveAggregate(),
         getBridgeInstanceId: () => openProjectBridgeClient.instanceId,
@@ -842,7 +842,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         get favoritesGroupCollapsed() { return groupCollapseController.getFavoritesCollapsed() },
         get openProjects() { return getOpenProjectCards() },
         get openProjectsGroupCollapsed() { return groupCollapseController.getOpenProjectsCollapsed() },
-        get todoSearchItems() { return buildTodoSearchItems(todoService.getData()) },
+        get todoSearchItems() { return todoService.getSearchItems() },
     };
     const dashboardStartupController = new DashboardStartupController({
         stewardInfos,
@@ -851,12 +851,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         migrateDataIfNeeded: async () => {
             const projectMigration = projectService.migrateDataIfNeeded();
             const todoMigration = todoService.migrateDataIfNeeded();
-            todoStorageMigration.ready = todoMigration;
+            todoStorageMigration.ready = todoMigration.then(() => undefined, () => undefined);
             const [projectsMigrated, todosMigrated] = await Promise.all([projectMigration, todoMigration]);
             return projectsMigrated || todosMigrated;
         },
         publishOpenProjects: () => openProjectWorkspaceController.publish(),
         showInformationMessage: message => vscode.window.showInformationMessage(message),
+        showErrorMessage: message => vscode.window.showErrorMessage(message),
+        logError,
         showSteward,
         applyProjectColorToCurrentWindow,
         getReopenReason: () => context.globalState.get(REOPEN_KEY),
@@ -964,24 +966,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     async function postTodoPanelContent(requestId?: number) {
-        await todoStorageMigration.ready;
-        const todoData = todoService.getData();
-        const config = getStewardConfiguration();
-        const todoRenderOptions = {
-            maxVisibleTodosPerGroup: getMaxVisibleTodosPerGroup(config),
-        };
+        let html: string;
+        try {
+            await todoStorageMigration.ready;
+            const unsupportedVersionError = todoService.getUnsupportedVersionError();
+            if (unsupportedVersionError) {
+                throw unsupportedVersionError;
+            }
+            const todoData = todoService.getData();
+            const config = getStewardConfiguration();
+            const todoRenderOptions = {
+                maxVisibleTodosPerGroup: getMaxVisibleTodosPerGroup(config),
+            };
+            html = getTodoPanelContent(buildTodoViewModel(todoData, todoViewState, revealedTodoId), todoRenderOptions);
+        } catch (error) {
+            if (!(error instanceof UnsupportedTodoDataVersionError)) {
+                throw error;
+            }
+            html = getUnsupportedTodoVersionPanelContent(error.version);
+        }
         await provider.postMessage(requestId
             ? {
                 type: 'todo-panel-content',
                 version: 1,
                 requestId,
-                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState, revealedTodoId), todoRenderOptions),
+                html,
             }
             : {
                 type: 'todo-panel-updated',
                 version: 1,
-                html: getTodoPanelContent(buildTodoViewModel(todoData, todoViewState, revealedTodoId), todoRenderOptions),
-                searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), getOpenProjectCards(), buildTodoSearchItems(todoData)),
+                html,
+                searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), getOpenProjectCards(), todoService.getSearchItems()),
             });
     }
 

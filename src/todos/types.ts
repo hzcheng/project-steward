@@ -78,6 +78,14 @@ export class UnsupportedTodoDataVersionError extends Error {
     }
 }
 
+export class TodoStorageConflictError extends Error {
+    constructor() {
+        super('TODO storage conflict: settings and local storage contain different non-empty data.');
+        this.name = 'TodoStorageConflictError';
+        Object.setPrototypeOf(this, TodoStorageConflictError.prototype);
+    }
+}
+
 function asObject(value: unknown): { [key: string]: unknown } {
     return value && typeof value === 'object' ? value as { [key: string]: unknown } : {};
 }

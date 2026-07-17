@@ -14,12 +14,17 @@ import {
     TodoDataV1,
     TodoGroup,
     TodoPatch,
+    TodoSearchCatalogItem,
+    TodoStorageConflictError,
     TodoViewState,
+    UnsupportedTodoDataVersionError,
+    buildTodoSearchItems,
     normalizeTodoData,
     normalizeTodoPriority,
 } from './types';
 
 const GLOBAL_CONFIGURATION_TARGET = 1;
+const TODO_STORAGE_BACKEND_KEY = 'todoStorageBackend';
 
 interface TodoMemento {
     get<T>(key: string): T;
@@ -58,6 +63,7 @@ export class TodoService {
     private readonly now: () => string;
     private readonly generateId: (prefix: string) => string;
     private mutationQueue: Promise<void> = Promise.resolve();
+    private activeDataBackend: boolean | undefined;
 
     constructor(contextOrDependencies: vscode.ExtensionContext | TodoServiceDependencies) {
         if (isDependencies(contextOrDependencies)) {
@@ -78,11 +84,44 @@ export class TodoService {
     }
 
     getData(): TodoDataV1 {
-        return normalizeTodoData(this.getRawData(this.useSettings()), this.now());
+        return this.getDataFromBackend(this.useSettings());
+    }
+
+    getSearchItems(): TodoSearchCatalogItem[] {
+        const versionError = this.getUnsupportedVersionError();
+        if (versionError) {
+            return [];
+        }
+        try {
+            return buildTodoSearchItems(this.getData());
+        } catch (error) {
+            if (error instanceof UnsupportedTodoDataVersionError) {
+                return [];
+            }
+            throw error;
+        }
+    }
+
+    getUnsupportedVersionError(): UnsupportedTodoDataVersionError | undefined {
+        try {
+            this.assertSupportedDataVersions();
+            return undefined;
+        } catch (error) {
+            if (error instanceof UnsupportedTodoDataVersionError) {
+                return error;
+            }
+            throw error;
+        }
     }
 
     saveData(data: TodoDataV1): Promise<void> {
-        return this.enqueueMutation(() => this.saveDataNow(data));
+        let normalized: TodoDataV1;
+        try {
+            normalized = normalizeTodoData(data, this.now());
+        } catch (error) {
+            return Promise.reject(error);
+        }
+        return this.enqueueDataMutation(useSettings => this.writeData(normalized, useSettings));
     }
 
     getViewState(): TodoViewState {
@@ -91,15 +130,15 @@ export class TodoService {
     }
 
     setShowCompleted(showCompleted: boolean): Promise<TodoViewState> {
-        return this.enqueueMutation(() => this.setShowCompletedNow(showCompleted));
+        return this.enqueueDataMutation(() => this.setShowCompletedNow(showCompleted));
     }
 
     revealTodo(todoId: string, groupId: string): Promise<{
         revealed: boolean;
         data: TodoDataV1;
     }> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             const todo = data.todos.find(item => item.id === todoId);
             const group = data.groups.find(item => item.id === groupId);
             if (!todo || !group || todo.groupId !== group.id) {
@@ -107,33 +146,20 @@ export class TodoService {
             }
             if (group.collapsed) {
                 group.collapsed = false;
-                await this.saveDataNow(data);
+                await this.saveDataNow(data, useSettings);
             }
             return { revealed: true, data };
         });
     }
 
     migrateDataIfNeeded(): Promise<boolean> {
-        return this.enqueueMutation(async () => {
-            const useSettings = this.useSettings();
-            const destination = normalizeTodoData(this.getRawData(useSettings), this.now());
-            if (this.hasData(destination)) {
-                return false;
-            }
-
-            const source = normalizeTodoData(this.getRawData(!useSettings), this.now());
-            if (!this.hasData(source)) {
-                return false;
-            }
-
-            await this.writeData(source, useSettings);
-            return true;
-        });
+        const useSettings = this.useSettings();
+        return this.enqueueMutation(() => this.switchDataBackend(useSettings));
     }
 
     addGroup(title?: string): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             const group: TodoGroup = {
                 id: this.generateId('todo-group'),
                 title: (title || '').trim() || TODO_UNTITLED_GROUP_TITLE,
@@ -142,14 +168,14 @@ export class TodoService {
             };
 
             data.groups.push(group);
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
 
     addTodo(input: AddTodoInput): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             const group = this.resolveTargetGroup(data, input.groupId);
             const now = this.now();
             data.todos
@@ -169,40 +195,40 @@ export class TodoService {
                 order: 0,
             });
 
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
 
     renameGroup(id: string, title: string): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             const group = data.groups.find(item => item.id === id);
             if (!group) {
                 return data;
             }
 
             group.title = (title || '').trim() || TODO_UNTITLED_GROUP_TITLE;
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
 
     reorderGroups(groupIds: string[]): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             this.assertExactOrder(data.groups.map(group => group.id), groupIds, 'TODO group');
 
             const groupsById = new Map(data.groups.map(group => [group.id, group]));
             data.groups = groupIds.map((groupId, order) => ({ ...groupsById.get(groupId)!, order }));
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
 
     reorderTodos(groupId: string, todoIds: string[]): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             if (!data.groups.some(group => group.id === groupId)) {
                 throw new Error('TODO item reorder group must exist.');
             }
@@ -223,14 +249,14 @@ export class TodoService {
             const orderedTodoIds = todoIds.concat(allTodoIds.filter(todoId => !requestedTodoIds.has(todoId)));
             const orderByTodoId = new Map(orderedTodoIds.map((todoId, order) => [todoId, order]));
             groupTodos.forEach(todo => { todo.order = orderByTodoId.get(todo.id)!; });
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
 
     updateTodo(id: string, patch: TodoPatch): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             const todo = data.todos.find(item => item.id === id);
             if (!todo) {
                 return data;
@@ -250,14 +276,14 @@ export class TodoService {
             }
             todo.updatedAt = this.now();
 
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
 
     completeTodo(id: string, completed: boolean): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             const todo = data.todos.find(item => item.id === id);
             if (!todo) {
                 return data;
@@ -267,23 +293,23 @@ export class TodoService {
             todo.completed = completed;
             todo.completedAt = completed ? now : undefined;
             todo.updatedAt = now;
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
 
     deleteTodo(id: string): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             data.todos = data.todos.filter(todo => todo.id !== id);
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
 
     deleteGroup(id: string): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             const groupExists = data.groups.some(group => group.id === id);
             if (!groupExists) {
                 return data;
@@ -293,37 +319,37 @@ export class TodoService {
                 .filter(group => group.id !== id)
                 .map((group, index) => ({ ...group, order: index }));
             data.todos = data.todos.filter(todo => todo.groupId !== id);
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
 
     setGroupCollapsed(id: string, collapsed: boolean): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             const group = data.groups.find(item => item.id === id);
             if (!group) {
                 return data;
             }
 
             group.collapsed = collapsed;
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
 
     setGroupsCollapsed(collapsed: boolean): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             data.groups.forEach(group => { group.collapsed = collapsed; });
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
 
     sortGroupByPriority(groupId: string): Promise<TodoDataV1> {
-        return this.enqueueMutation(async () => {
-            const data = this.getData();
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
             const priorityRank = { high: 0, medium: 1, low: 2 };
             const sorted = data.todos
                 .filter(todo => todo.groupId === groupId)
@@ -334,7 +360,7 @@ export class TodoService {
                 todo.updatedAt = this.now();
             });
 
-            await this.saveDataNow(data);
+            await this.saveDataNow(data, useSettings);
             return data;
         });
     }
@@ -345,9 +371,13 @@ export class TodoService {
             : this.globalState.get<unknown>(TODO_DATA_KEY);
     }
 
-    private async saveDataNow(data: TodoDataV1): Promise<void> {
+    private getDataFromBackend(useSettings: boolean): TodoDataV1 {
+        return normalizeTodoData(this.getRawData(useSettings), this.now());
+    }
+
+    private async saveDataNow(data: TodoDataV1, useSettings: boolean): Promise<void> {
         const normalized = normalizeTodoData(data, this.now());
-        await this.writeData(normalized, this.useSettings());
+        await this.writeData(normalized, useSettings);
     }
 
     private async setShowCompletedNow(showCompleted: boolean): Promise<TodoViewState> {
@@ -367,6 +397,69 @@ export class TodoService {
 
     private hasData(data: TodoDataV1): boolean {
         return data.groups.length > 0 || data.todos.length > 0;
+    }
+
+    private async switchDataBackend(useSettings: boolean): Promise<boolean> {
+        if (this.activeDataBackend === useSettings) {
+            this.assertSupportedDataVersions();
+            return false;
+        }
+        if (this.activeDataBackend === undefined && this.getKnownDataBackend() === useSettings) {
+            this.assertSupportedDataVersions();
+            this.activeDataBackend = useSettings;
+            return false;
+        }
+
+        const now = this.now();
+        const destination = normalizeTodoData(this.getRawData(useSettings), now);
+        const source = normalizeTodoData(this.getRawData(!useSettings), now);
+        const destinationHasData = this.hasData(destination);
+        const sourceHasData = this.hasData(source);
+
+        if (destinationHasData && sourceHasData
+            && JSON.stringify(destination) !== JSON.stringify(source)) {
+            throw new TodoStorageConflictError();
+        }
+
+        if (!destinationHasData && sourceHasData) {
+            await this.writeData(source, useSettings);
+            await this.rememberDataBackend(useSettings);
+            this.activeDataBackend = useSettings;
+            return true;
+        }
+
+        if (destinationHasData && sourceHasData) {
+            await this.rememberDataBackend(useSettings);
+        }
+
+        this.activeDataBackend = useSettings;
+        return false;
+    }
+
+    private getKnownDataBackend(): boolean | undefined {
+        const value = this.globalState.get<unknown>(TODO_STORAGE_BACKEND_KEY);
+        return typeof value === 'boolean' ? value : undefined;
+    }
+
+    private async rememberDataBackend(useSettings: boolean): Promise<void> {
+        await this.globalState.update(TODO_STORAGE_BACKEND_KEY, useSettings);
+    }
+
+    private assertSupportedDataVersions(): void {
+        const now = this.now();
+        const useSettings = this.useSettings();
+        const selected = this.getRawData(useSettings);
+        const other = this.getRawData(!useSettings);
+        normalizeTodoData(selected, now);
+        normalizeTodoData(other, now);
+    }
+
+    private enqueueDataMutation<T>(mutation: (useSettings: boolean) => Promise<T>): Promise<T> {
+        const useSettings = this.useSettings();
+        return this.enqueueMutation(async () => {
+            await this.switchDataBackend(useSettings);
+            return mutation(useSettings);
+        });
     }
 
     private enqueueMutation<T>(mutation: () => Promise<T>): Promise<T> {

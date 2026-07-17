@@ -1,3 +1,5 @@
+import { TodoStorageConflictError } from './types';
+
 export interface TodoHostMutationOptions {
     mutate: () => Promise<unknown>;
     onSuccess: () => Promise<unknown>;
@@ -27,7 +29,9 @@ export async function runTodoMutation(options: TodoHostMutationOptions): Promise
         await options.mutate();
     } catch (error) {
         options.logError('Failed to save TODO changes.', error);
-        options.showErrorMessage('Could not save TODO changes. Your current panel has been preserved.');
+        options.showErrorMessage(error instanceof TodoStorageConflictError
+            ? `${error.message} Your current panel has been preserved.`
+            : 'Could not save TODO changes. Your current panel has been preserved.');
         return false;
     }
 

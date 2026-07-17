@@ -24,6 +24,21 @@ function escapeHtml(value: string): string {
         .replace(/'/g, '&#39;');
 }
 
+export function getUnsupportedTodoVersionPanelContent(version: unknown): string {
+    return `<div class="todo-panel todo-panel-error" data-todo-error="unsupported-version">
+        <header class="todo-page-header group-title steward-group-header">
+            <div class="todo-summary-copy">
+                <strong>TODO</strong>
+                <span class="todo-summary-meta steward-meta">Read-only</span>
+            </div>
+        </header>
+        <div class="todo-unsupported-version steward-empty-state" role="alert">
+            <p>Stored TODO data uses unsupported version ${escapeHtml(String(version))}.</p>
+            <p>This TODO list is read-only. Update Project Steward before making changes.</p>
+        </div>
+    </div>`;
+}
+
 function normalizeMaxVisibleTodosPerGroup(value: unknown): number {
     const visibleItems = Math.floor(Number(value));
     return Number.isFinite(visibleItems) && visibleItems > 0 ? visibleItems : DEFAULT_MAX_VISIBLE_TODOS_PER_GROUP;

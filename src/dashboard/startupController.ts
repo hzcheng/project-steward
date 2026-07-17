@@ -13,6 +13,8 @@ export interface DashboardStartupControllerOptions {
     migrateDataIfNeeded: () => Promise<boolean>;
     publishOpenProjects: () => void;
     showInformationMessage: (message: string) => unknown;
+    showErrorMessage: (message: string) => unknown;
+    logError: (message: string, error: unknown) => unknown;
     showSteward: () => unknown;
     applyProjectColorToCurrentWindow: () => void;
     getReopenReason: () => unknown;
@@ -27,7 +29,15 @@ export class DashboardStartupController {
     }
 
     async checkDataMigration(openStewardAfterMigrate = false): Promise<void> {
-        const migrated = await this.options.migrateDataIfNeeded();
+        let migrated: boolean;
+        try {
+            migrated = await this.options.migrateDataIfNeeded();
+        } catch (error) {
+            this.options.logError('Failed to migrate Project Steward data.', error);
+            const detail = error instanceof Error ? ` ${error.message}` : '';
+            this.options.showErrorMessage(`Could not migrate Project Steward data.${detail}`);
+            return;
+        }
         if (!migrated) {
             return;
         }
