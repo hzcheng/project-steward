@@ -85,8 +85,7 @@ function renderTodoItem(todo: TodoItemViewModel): string {
                     </div>
                     ${todo.notes ? `<p class="todo-notes">${escapeHtml(todo.notes)}</p>` : ''}
                     <div class="todo-item-footer">
-                        <span>${todo.completed ? 'Completed item' : 'Manual order'}</span>
-                        ${todo.completed && todo.completedAt ? `<span>${escapeHtml(todo.completedAt.slice(0, 10))}</span>` : ''}
+                        <span>${todo.completed && todo.completedAt ? `Completed ${escapeHtml(todo.completedAt.slice(0, 10))}` : `Added ${escapeHtml((todo.createdAt || '').slice(0, 10))}`}</span>
                     </div>
                 </div>
                 <div class="todo-item-actions">
