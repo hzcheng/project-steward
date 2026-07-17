@@ -99,6 +99,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const projectService = new ProjectService(context, colorService);
     const todoService = new TodoService(context);
     const todoViewState = todoService.getViewState();
+    const todoStorageMigration = { ready: Promise.resolve<unknown>(undefined) };
     const groupCollapseController = new GroupCollapseController({
         state: context.globalState,
         projectService,
@@ -795,8 +796,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         relevantExtensions: RelevantExtensions,
         isExtensionInstalled: extensionId => vscode.extensions.getExtension(extensionId) !== undefined,
         migrateDataIfNeeded: async () => {
-            const projectsMigrated = await projectService.migrateDataIfNeeded();
-            const todosMigrated = await todoService.migrateDataIfNeeded();
+            const projectMigration = projectService.migrateDataIfNeeded();
+            const todoMigration = todoService.migrateDataIfNeeded();
+            todoStorageMigration.ready = todoMigration;
+            const [projectsMigrated, todosMigrated] = await Promise.all([projectMigration, todoMigration]);
             return projectsMigrated || todosMigrated;
         },
         publishOpenProjects: () => openProjectWorkspaceController.publish(),
@@ -908,6 +911,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     async function postTodoPanelContent(requestId?: number) {
+        await todoStorageMigration.ready;
         const todoData = todoService.getData();
         const config = getStewardConfiguration();
         const todoRenderOptions = {

@@ -27,6 +27,7 @@ const todoTypes = require('../out/todos/types');
 const { TodoService } = require('../out/todos/service');
 const todoViewModel = require('../out/todos/viewModel');
 const todoWebviewContent = require('../out/todos/webviewContent');
+const AsyncFunction = Object.getPrototypeOf(async function () { return undefined; }).constructor;
 
 const root = path.join(__dirname, '..');
 const dashboardScriptPath = path.join(root, 'src', 'webview', 'webviewDashboardScripts.js');
@@ -51,6 +52,20 @@ function extractFunctionBody(source, functionName) {
         if (depth === 0) return source.slice(braceStart + 1, index);
     }
     throw new Error(`Unterminated function ${functionName}`);
+}
+
+function extractAsyncArrowPropertyBody(source, propertyName) {
+    const signature = `${propertyName}: async () => {`;
+    const start = source.indexOf(signature);
+    assert.ok(start >= 0, `Missing async property ${propertyName}`);
+    const braceStart = source.indexOf('{', start);
+    let depth = 0;
+    for (let index = braceStart; index < source.length; index += 1) {
+        if (source[index] === '{') depth += 1;
+        if (source[index] === '}') depth -= 1;
+        if (depth === 0) return source.slice(braceStart + 1, index);
+    }
+    throw new Error(`Unterminated async property ${propertyName}`);
 }
 
 function extractHtmlElementBody(source, openingTag) {
@@ -422,6 +437,39 @@ async function runTodoStoreChecks() {
         { version: 1, groups: [], todos: [] },
         'unversioned v1-shaped TODO data should remain readable'
     );
+    assert.deepStrictEqual(
+        todoTypes.normalizeTodoData({
+            groups: [{ id: 'legacy-group', title: 'Legacy Group', collapsed: false, order: 0 }],
+            todos: [{
+                id: 'legacy-todo',
+                groupId: 'legacy-group',
+                title: 'Keep legacy data',
+                notes: 'preserved',
+                priority: 'high',
+                completed: false,
+                createdAt: '2026-07-16T00:00:00.000Z',
+                updatedAt: '2026-07-16T00:00:00.000Z',
+                order: 0,
+            }],
+        }),
+        {
+            version: 1,
+            groups: [{ id: 'legacy-group', title: 'Legacy Group', collapsed: false, order: 0 }],
+            todos: [{
+                id: 'legacy-todo',
+                groupId: 'legacy-group',
+                title: 'Keep legacy data',
+                notes: 'preserved',
+                priority: 'high',
+                completed: false,
+                createdAt: '2026-07-16T00:00:00.000Z',
+                updatedAt: '2026-07-16T00:00:00.000Z',
+                completedAt: undefined,
+                order: 0,
+            }],
+        },
+        'non-empty unversioned v1 TODO data should be preserved'
+    );
 
     const normalized = todoTypes.normalizeTodoData({
         version: 1,
@@ -663,6 +711,44 @@ async function runTodoMigrationChecks() {
         );
         assert.deepStrictEqual(futureSource.updates, [], 'unknown migration data must not update either backend');
     }
+
+    for (const useSettingsStorage of [false, true]) {
+        const futureTarget = makeTodoServiceStorageHarness(
+            useSettingsStorage,
+            useSettingsStorage ? makeStoredTodoData('global-source') : { version: 2, groups: [], todos: [] },
+            useSettingsStorage ? { version: 2, groups: [], todos: [] } : makeStoredTodoData('settings-source')
+        );
+        await assert.rejects(
+            () => futureTarget.service.migrateDataIfNeeded(),
+            error => error && error.name === 'UnsupportedTodoDataVersionError' && error.version === 2
+        );
+        assert.deepStrictEqual(futureTarget.updates, [], 'an unknown selected migration target must never be overwritten');
+    }
+
+    const dataMutations = [
+        service => service.addGroup('Blocked'),
+        service => service.addTodo({ title: 'Blocked' }),
+        service => service.updateTodo('todo-a', { title: 'Blocked' }),
+        service => service.completeTodo('todo-a', true),
+        service => service.deleteTodo('todo-a'),
+        service => service.deleteGroup('group-a'),
+        service => service.setGroupCollapsed('group-a', true),
+        service => service.sortGroupByPriority('group-a'),
+    ];
+    for (const useSettingsStorage of [false, true]) {
+        for (const mutate of dataMutations) {
+            const futureTarget = makeTodoServiceStorageHarness(
+                useSettingsStorage,
+                useSettingsStorage ? null : { version: 2, groups: [], todos: [] },
+                useSettingsStorage ? { version: 2, groups: [], todos: [] } : null
+            );
+            await assert.rejects(
+                () => mutate(futureTarget.service),
+                error => error && error.name === 'UnsupportedTodoDataVersionError' && error.version === 2
+            );
+            assert.deepStrictEqual(futureTarget.updates, [], 'CRUD on an unknown selected backend must not write');
+        }
+    }
 }
 
 async function runTodoViewStateChecks() {
@@ -720,6 +806,80 @@ async function runTodoMutationSerializationChecks() {
     }
     await Promise.all([firstMutation, secondMutation]);
     assert.deepStrictEqual(service.getData().groups.map(group => group.title), ['First', 'Second']);
+
+    let recoveredData = { version: 1, groups: [], todos: [] };
+    let writeAttempt = 0;
+    const recoveringService = new TodoService({
+        globalState: {
+            get: () => recoveredData,
+            update: async (_key, value) => {
+                writeAttempt += 1;
+                if (writeAttempt === 1) {
+                    throw new Error('first write rejected');
+                }
+                recoveredData = value;
+            },
+        },
+        configuration: makeWorkspaceConfiguration({}),
+        useSettingsStorage: () => false,
+        generateId: prefix => `${prefix}-${writeAttempt}`,
+    });
+    const rejectedMutation = recoveringService.addGroup('Rejected');
+    const recoveredMutation = recoveringService.addGroup('Recovered');
+    await assert.rejects(() => rejectedMutation, /first write rejected/);
+    await recoveredMutation;
+    assert.strictEqual(writeAttempt, 2);
+    assert.deepStrictEqual(recoveringService.getData().groups.map(group => group.title), ['Recovered']);
+}
+
+async function runDashboardTodoMigrationSequencingChecks() {
+    const extensionHostSource = fs.readFileSync(extensionHostPath, 'utf8');
+    const migrationBody = extractAsyncArrowPropertyBody(extensionHostSource, 'migrateDataIfNeeded');
+    const runMigration = new AsyncFunction(
+        'projectService',
+        'todoService',
+        'todoStorageMigration',
+        migrationBody
+    );
+    const events = [];
+    let resolveProjectMigration;
+    const projectMigration = new Promise(resolve => { resolveProjectMigration = resolve; });
+    let migratedTodoData = [];
+    const todoStorageMigration = { ready: Promise.resolve() };
+    const migration = runMigration(
+        {
+            migrateDataIfNeeded: () => {
+                events.push('project-started');
+                return projectMigration;
+            },
+        },
+        {
+            migrateDataIfNeeded: async () => {
+                events.push('todo-started');
+                migratedTodoData = ['migrated'];
+                return true;
+            },
+        },
+        todoStorageMigration
+    );
+    let migrationSettled = false;
+    migration.then(() => { migrationSettled = true; });
+
+    try {
+        assert.deepStrictEqual(events, ['project-started', 'todo-started'],
+            'TODO migration must start before the deferred project migration resolves');
+        await todoStorageMigration.ready;
+        assert.deepStrictEqual(migratedTodoData, ['migrated'],
+            'the first TODO render gate must wait for migrated destination data');
+        assert.strictEqual(migrationSettled, false, 'project migration should still be pending');
+    } finally {
+        resolveProjectMigration(false);
+        await migration;
+    }
+
+    const todoPanelBody = extractFunctionBody(extensionHostSource, 'postTodoPanelContent');
+    assert.ok(todoPanelBody.includes('await todoStorageMigration.ready;'),
+        'TODO panel rendering must wait for the active TODO storage migration');
 }
 
 async function runTodoHostMutationChecks() {
@@ -1749,7 +1909,7 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes('async function postTodoPanelContent('));
     assert.ok(extensionHostSource.includes("from './todos/hostMutation'"));
     assert.ok(extensionHostSource.includes('const todoViewState = todoService.getViewState();'));
-    assert.ok(extensionHostSource.includes('await todoService.migrateDataIfNeeded()'));
+    assert.ok(extensionHostSource.includes('const todoMigration = todoService.migrateDataIfNeeded()'));
     assert.strictEqual(
         (extensionHostSource.match(/await runTodoPanelMutation\(/g) || []).length,
         9,
@@ -2163,6 +2323,7 @@ async function main() {
     await runTodoMigrationChecks();
     await runTodoViewStateChecks();
     await runTodoMutationSerializationChecks();
+    await runDashboardTodoMigrationSequencingChecks();
     await runTodoHostMutationChecks();
     runTodoViewModelChecks();
     runControllerChecks(source);
