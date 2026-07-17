@@ -7,7 +7,7 @@ import { USER_CANCELED, RelevantExtensions, REOPEN_KEY, WSL_DEFAULT_REGEX, OPEN_
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
 import { TodoService } from './todos/service';
-import { runTodoMutation } from './todos/hostMutation';
+import { deleteTodoWithConfirmation, runTodoMutation } from './todos/hostMutation';
 import { buildTodoSearchItems } from './todos/types';
 import { buildTodoViewModel } from './todos/viewModel';
 import { getTodoPanelContent } from './todos/webviewContent';
@@ -482,19 +482,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 if (typeof e.todoId !== 'string') {
                     return;
                 }
-                const todo = todoService.getData().todos.find(item => item.id === e.todoId);
-                if (!todo) {
-                    return;
-                }
-                const confirmed = await vscode.window.showWarningMessage(
-                    `Delete TODO "${todo.title}"?`,
-                    { modal: true },
-                    'Delete'
-                );
-                if (confirmed !== 'Delete') {
-                    return;
-                }
-                await runTodoPanelMutation(() => todoService.deleteTodo(e.todoId as string));
+                await deleteTodoWithConfirmation({
+                    todoId: e.todoId,
+                    getData: () => todoService.getData(),
+                    confirm: title => vscode.window.showWarningMessage(
+                        `Delete TODO "${title}"?`,
+                        { modal: true },
+                        'Delete'
+                    ),
+                    deleteTodo: todoId => todoService.deleteTodo(todoId),
+                    refreshPanel: () => postTodoPanelContent(),
+                    showErrorMessage: message => vscode.window.showErrorMessage(message),
+                    logError,
+                });
             },
             'todo-delete-group': async e => {
                 if (typeof e.groupId !== 'string') {

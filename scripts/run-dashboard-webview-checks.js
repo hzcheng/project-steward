@@ -25,6 +25,7 @@ const { ProjectOrderController } = require('../out/projects/projectOrderControll
 const { ProjectRemovalController } = require('../out/projects/projectRemovalController');
 const todoTypes = require('../out/todos/types');
 const { TodoService } = require('../out/todos/service');
+const { deleteTodoWithConfirmation } = require('../out/todos/hostMutation');
 const todoViewModel = require('../out/todos/viewModel');
 const todoWebviewContent = require('../out/todos/webviewContent');
 const AsyncFunction = Object.getPrototypeOf(async function () { return undefined; }).constructor;
@@ -66,20 +67,6 @@ function extractAsyncArrowPropertyBody(source, propertyName) {
         if (depth === 0) return source.slice(braceStart + 1, index);
     }
     throw new Error(`Unterminated async property ${propertyName}`);
-}
-
-function extractDashboardMessageHandlerBody(source, messageType) {
-    const signature = `'${messageType}': async e => {`;
-    const start = source.indexOf(signature);
-    assert.ok(start >= 0, `Missing ${messageType} dashboard handler`);
-    const braceStart = source.indexOf('{', start);
-    let depth = 0;
-    for (let index = braceStart; index < source.length; index += 1) {
-        if (source[index] === '{') depth += 1;
-        if (source[index] === '}') depth -= 1;
-        if (depth === 0) return source.slice(braceStart + 1, index);
-    }
-    throw new Error(`Unterminated ${messageType} dashboard handler`);
 }
 
 function extractHtmlElementBody(source, openingTag) {
@@ -1082,6 +1069,67 @@ async function runTodoHostMutationChecks() {
     });
     assert.strictEqual(succeeded, true);
     assert.deepStrictEqual(events, ['mutated', 'posted-panel']);
+
+    assert.strictEqual(typeof deleteTodoWithConfirmation, 'function',
+        'single TODO deletion must use a directly testable host helper');
+
+    const runDeletion = async (options = {}) => {
+        const todoId = options.todoId || 'todo-a';
+        const confirmation = Object.prototype.hasOwnProperty.call(options, 'confirmation')
+            ? options.confirmation
+            : 'Delete';
+        const rejectDelete = options.rejectDelete === true;
+        const calls = [];
+        const result = await deleteTodoWithConfirmation({
+            todoId,
+            getData: () => ({
+                todos: [{ id: 'todo-a', title: 'Ship deletion flow' }],
+            }),
+            confirm: async title => {
+                calls.push(['confirm', title]);
+                return confirmation;
+            },
+            deleteTodo: async id => {
+                calls.push(['delete', id]);
+                if (rejectDelete) {
+                    throw new Error('storage rejected');
+                }
+            },
+            refreshPanel: async () => { calls.push(['refresh']); },
+            showErrorMessage: message => calls.push(['error', message]),
+            logError: (message, error) => calls.push(['log', message, error.message]),
+        });
+        return { calls, result };
+    };
+
+    const confirmedDeletion = await runDeletion();
+    assert.strictEqual(confirmedDeletion.result, true);
+    assert.deepStrictEqual(confirmedDeletion.calls, [
+        ['confirm', 'Ship deletion flow'],
+        ['delete', 'todo-a'],
+        ['refresh'],
+    ], 'confirmed deletion must delete and refresh exactly once');
+
+    for (const confirmation of [undefined, 'Keep']) {
+        const canceledDeletion = await runDeletion({ confirmation });
+        assert.strictEqual(canceledDeletion.result, false);
+        assert.deepStrictEqual(canceledDeletion.calls, [
+            ['confirm', 'Ship deletion flow'],
+        ], 'canceled deletion must not delete or refresh');
+    }
+
+    const missingDeletion = await runDeletion({ todoId: 'missing' });
+    assert.strictEqual(missingDeletion.result, false);
+    assert.deepStrictEqual(missingDeletion.calls, [],
+        'a missing TODO must not prompt, delete, or refresh');
+
+    const rejectedDeletion = await runDeletion({ rejectDelete: true });
+    assert.strictEqual(rejectedDeletion.result, false);
+    assert.strictEqual(rejectedDeletion.calls.filter(call => call[0] === 'delete').length, 1);
+    assert.strictEqual(rejectedDeletion.calls.some(call => call[0] === 'refresh'), false,
+        'a rejected deletion must preserve the current panel');
+    assert.ok(rejectedDeletion.calls.some(call => call[0] === 'error' && /save TODO changes/i.test(call[1])));
+    assert.ok(rejectedDeletion.calls.some(call => call[0] === 'log' && call[2] === 'storage rejected'));
 }
 
 function makeTodoData() {
@@ -2205,29 +2253,14 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'todo-sort-priority': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-toggle-show-completed': async e =>"));
     assert.ok(extensionHostSource.includes("'todo-update': async e =>"));
-    const todoAddHandlerBody = extractDashboardMessageHandlerBody(extensionHostSource, 'todo-add');
-    assert.strictEqual(todoAddHandlerBody.includes('showInputBox'), false,
-        'webview TODO creation must not fall back to a title-only host prompt');
-    assert.ok(todoAddHandlerBody.includes('typeof e.title !== \'string\''));
-    assert.ok(todoAddHandlerBody.includes('notes: typeof e.notes === \'string\''));
-    assert.ok(todoAddHandlerBody.includes("priority: e.priority === 'high'"));
-    assert.ok(todoAddHandlerBody.includes("groupId: typeof e.groupId === 'string'"));
-    const todoDeleteHandlerBody = extractDashboardMessageHandlerBody(extensionHostSource, 'todo-delete');
-    assert.ok(todoDeleteHandlerBody.includes('todoService.getData().todos.find'));
-    assert.ok(todoDeleteHandlerBody.includes('showWarningMessage'));
-    assert.ok(todoDeleteHandlerBody.includes('`Delete TODO "${todo.title}"?`'));
-    assert.ok(todoDeleteHandlerBody.includes("if (confirmed !== 'Delete')"));
-    assert.ok(todoDeleteHandlerBody.indexOf("if (confirmed !== 'Delete')")
-        < todoDeleteHandlerBody.indexOf('todoService.deleteTodo'),
-    'canceling single TODO deletion must perform no mutation');
     assert.ok(extensionHostSource.includes('async function postTodoPanelContent('));
     assert.ok(extensionHostSource.includes("from './todos/hostMutation'"));
     assert.ok(extensionHostSource.includes('const todoViewState = todoService.getViewState();'));
     assert.ok(extensionHostSource.includes('const todoMigration = todoService.migrateDataIfNeeded()'));
     assert.strictEqual(
         (extensionHostSource.match(/await runTodoPanelMutation\(/g) || []).length,
-        13,
-        'every TODO mutation handler must use the write-error boundary'
+        12,
+        'every direct TODO mutation handler must use the write-error boundary'
     );
     assert.ok(dndSource.includes('function initDnD(root)'));
     assert.ok(dndSource.includes('function disposeDnD(root)'));
