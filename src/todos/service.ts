@@ -91,10 +91,31 @@ export class TodoService {
     }
 
     setShowCompleted(showCompleted: boolean): Promise<TodoViewState> {
+        return this.enqueueMutation(() => this.setShowCompletedNow(showCompleted));
+    }
+
+    revealTodo(todoId: string, groupId: string): Promise<{
+        revealed: boolean;
+        data: TodoDataV1;
+        viewState: TodoViewState;
+    }> {
         return this.enqueueMutation(async () => {
-            const viewState = { showCompleted };
-            await this.globalState.update(TODO_VIEW_STATE_KEY, viewState);
-            return viewState;
+            const data = this.getData();
+            let viewState = this.getViewState();
+            const todo = data.todos.find(item => item.id === todoId);
+            const group = data.groups.find(item => item.id === groupId);
+            if (!todo || !group || todo.groupId !== group.id) {
+                return { revealed: false, data, viewState };
+            }
+
+            if (todo.completed && !viewState.showCompleted) {
+                viewState = await this.setShowCompletedNow(true);
+            }
+            if (group.collapsed) {
+                group.collapsed = false;
+                await this.saveDataNow(data);
+            }
+            return { revealed: true, data, viewState };
         });
     }
 
@@ -333,6 +354,12 @@ export class TodoService {
     private async saveDataNow(data: TodoDataV1): Promise<void> {
         const normalized = normalizeTodoData(data, this.now());
         await this.writeData(normalized, this.useSettings());
+    }
+
+    private async setShowCompletedNow(showCompleted: boolean): Promise<TodoViewState> {
+        const viewState = { showCompleted };
+        await this.globalState.update(TODO_VIEW_STATE_KEY, viewState);
+        return viewState;
     }
 
     private async writeData(data: TodoDataV1, useSettings: boolean): Promise<void> {

@@ -1202,6 +1202,7 @@ function runOpenProjectIncrementalRenderingChecks() {
         },
     };
     let catalogReplacements = 0;
+    let replacedSearchCatalog = null;
     const applyOpenProjectsUpdate = new Function(
         'document',
         'window',
@@ -1214,7 +1215,10 @@ function runOpenProjectIncrementalRenderingChecks() {
         `
     )(
         documentStub,
-        { __projectStewardDashboard: { replaceSearchCatalog: () => { catalogReplacements += 1; } } },
+        { __projectStewardDashboard: { replaceSearchCatalog: catalog => {
+            catalogReplacements += 1;
+            replacedSearchCatalog = catalog;
+        } } },
         value => value && Array.isArray(value.sessions) && Array.isArray(value.openProjects)
             && Array.isArray(value.savedProjects) && Array.isArray(value.todos)
             ? value
@@ -1230,6 +1234,8 @@ function runOpenProjectIncrementalRenderingChecks() {
     }), true);
     assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
     assert.strictEqual(catalogReplacements, 1);
+    assert.deepStrictEqual(replacedSearchCatalog.todos, [{ todoId: 'preserved' }],
+        'OPEN incremental rendering must preserve the non-empty TODO catalog replacement');
     assert.strictEqual(applyOpenProjectsUpdate({
         type: 'open-projects-updated',
         version: 1,

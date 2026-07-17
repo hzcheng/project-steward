@@ -104,8 +104,44 @@ function getCollapseButtonState(tab, collapsedStates) {
     };
 }
 
+function syncTodoGroupCollapseControl(group) {
+    if (!group || typeof group.querySelector !== 'function') {
+        return;
+    }
+    var control = group.querySelector('[data-action="todo-collapse-group"]');
+    if (!control) {
+        return;
+    }
+    var collapsed = group.classList.contains('collapsed');
+    var action = collapsed ? 'Expand' : 'Collapse';
+    var heading = group.querySelector('h2');
+    var groupTitle = heading ? String(heading.textContent || '').trim() : '';
+    control.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    control.setAttribute('title', action + ' todo group');
+    control.setAttribute('aria-label', action + (groupTitle ? ' ' + groupTitle : ' todo group'));
+}
+
+function syncTodoExpandControl(item, expanded) {
+    if (!item || typeof item.querySelector !== 'function') {
+        return;
+    }
+    var control = item.querySelector('[data-action="todo-toggle-expanded"]');
+    if (!control) {
+        return;
+    }
+    var action = expanded ? 'Collapse' : 'Expand';
+    var titleElement = item.querySelector('.todo-title-text');
+    var todoTitle = titleElement ? String(titleElement.textContent || '').trim() : '';
+    control.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    control.setAttribute('title', action + ' todo');
+    control.setAttribute('aria-label', action + (todoTitle ? ' ' + todoTitle : ' todo'));
+}
+
 function collapseTodoGroups(groups, collapsed, postMessage) {
-    groups.forEach(group => group.classList.toggle('collapsed', collapsed));
+    groups.forEach(group => {
+        group.classList.toggle('collapsed', collapsed);
+        syncTodoGroupCollapseControl(group);
+    });
     postMessage({
         type: 'todo-collapse-groups',
         collapsed,
@@ -671,10 +707,7 @@ function initProjects() {
             if (!todoGroup)
                 return true;
             todoGroup.classList.toggle('collapsed');
-            collapseGroupAction.setAttribute(
-                'aria-expanded',
-                todoGroup.classList.contains('collapsed') ? 'false' : 'true'
-            );
+            syncTodoGroupCollapseControl(todoGroup);
             window.vscode.postMessage({
                 type: 'todo-collapse-group',
                 groupId: todoGroup.getAttribute('data-todo-group-id'),
@@ -776,11 +809,7 @@ function initProjects() {
             ? expanded
             : !item.classList.contains('expanded');
         item.classList.toggle('expanded', nextExpanded);
-        var expandControl = item.querySelector('[data-action="todo-toggle-expanded"]');
-        if (expandControl) {
-            expandControl.setAttribute('aria-expanded', nextExpanded ? 'true' : 'false');
-            expandControl.setAttribute('title', nextExpanded ? 'Collapse todo' : 'Expand todo');
-        }
+        syncTodoExpandControl(item, nextExpanded);
         syncTodoListExpandedHeight(item.closest('.todo-list'));
     }
 

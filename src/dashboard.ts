@@ -570,20 +570,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 if (typeof e.todoId !== 'string' || typeof e.groupId !== 'string') {
                     return;
                 }
-                const todoData = todoService.getData();
-                const todo = todoData.todos.find(item => item.id === e.todoId);
-                const group = todoData.groups.find(item => item.id === e.groupId);
-                if (!todo || !group || todo.groupId !== group.id) {
-                    return;
-                }
                 await runTodoPanelMutation(async () => {
-                    if (todo.completed && !todoViewState.showCompleted) {
-                        const persistedViewState = await todoService.setShowCompleted(true);
-                        todoViewState.showCompleted = persistedViewState.showCompleted;
-                    }
-                    if (group.collapsed) {
-                        await todoService.setGroupCollapsed(group.id, false);
-                    }
+                    const result = await todoService.revealTodo(e.todoId as string, e.groupId as string);
+                    todoViewState.showCompleted = result.viewState.showCompleted;
                 });
             },
             'todo-update': async e => {

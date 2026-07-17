@@ -1265,12 +1265,10 @@ body .project {
     }
 }
 
-.todo-group-collapse-button[aria-expanded="false"] .collapse-icon,
 .todo-expand-control[aria-expanded="false"] svg {
     transform: rotate(-90deg);
 }
 
-.todo-group-collapse-button .collapse-icon,
 .todo-expand-control svg {
     transition: transform 120ms ease;
 }

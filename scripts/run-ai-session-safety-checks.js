@@ -3052,13 +3052,15 @@ function runBatchAiSessionWebviewChecks() {
         querySelectorAll: () => [],
         insertAdjacentHTML: () => { openAttentionBadgeInsertions++; },
     };
+    let replacedSearchCatalog = null;
     const context = {
         normalizeDashboardSearchCatalog: value => value
             && Array.isArray(value.sessions)
             && Array.isArray(value.openProjects)
             && Array.isArray(value.savedProjects)
+            && Array.isArray(value.todos)
             ? value
-            : { sessions: [], openProjects: [], savedProjects: [] },
+            : { sessions: [], openProjects: [], savedProjects: [], todos: [] },
         document: {
             body: {
                 classList: { toggle: () => {} },
@@ -3095,7 +3097,7 @@ function runBatchAiSessionWebviewChecks() {
             requestAnimationFrame: callback => callback(),
             setTimeout: callback => timeoutCallbacks.push(callback),
             vscode: { postMessage: message => messages.push(message) },
-            __projectStewardDashboard: { replaceSearchCatalog: () => undefined },
+            __projectStewardDashboard: { replaceSearchCatalog: catalog => { replacedSearchCatalog = catalog; } },
         },
     };
 
@@ -3287,6 +3289,11 @@ function runBatchAiSessionWebviewChecks() {
             sessionSectionHtml: '<div class="codex-sessions">replacement</div>',
         }],
     } });
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(replacedSearchCatalog.todos)),
+        TODO_SEARCH_ITEMS,
+        'AI incremental rendering must preserve the non-empty TODO catalog replacement'
+    );
     assert.strictEqual(replacementActiveRow.hasAttribute('data-ai-session-active-terminal'), true);
     assert.strictEqual(replacementOtherRow.hasAttribute('data-ai-session-active-terminal'), false);
 

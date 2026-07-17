@@ -25,7 +25,7 @@ const { ProjectOrderController } = require('../out/projects/projectOrderControll
 const { ProjectRemovalController } = require('../out/projects/projectRemovalController');
 const todoTypes = require('../out/todos/types');
 const { TodoService } = require('../out/todos/service');
-const { deleteTodoWithConfirmation } = require('../out/todos/hostMutation');
+const { deleteTodoWithConfirmation, runTodoMutation } = require('../out/todos/hostMutation');
 const todoViewModel = require('../out/todos/viewModel');
 const todoWebviewContent = require('../out/todos/webviewContent');
 const AsyncFunction = Object.getPrototypeOf(async function () { return undefined; }).constructor;
@@ -1012,6 +1012,7 @@ async function runTodoMigrationChecks() {
         service => service.setGroupCollapsed('group-a', true),
         service => service.setGroupsCollapsed(true),
         service => service.sortGroupByPriority('group-a'),
+        service => service.revealTodo('todo-a', 'group-a'),
     ];
     for (const useSettingsStorage of [false, true]) {
         for (const mutate of dataMutations) {
@@ -1108,6 +1109,104 @@ async function runTodoMutationSerializationChecks() {
     await recoveredMutation;
     assert.strictEqual(writeAttempt, 2);
     assert.deepStrictEqual(recoveringService.getData().groups.map(group => group.title), ['Recovered']);
+}
+
+async function runTodoRevealSerializationChecks() {
+    const values = new Map([
+        ['todos', {
+            version: 1,
+            groups: [{ id: 'group-a', title: 'Release', collapsed: true, order: 0 }],
+            todos: [{
+                id: 'todo-a', groupId: 'group-a', title: 'Ship release', notes: '', priority: 'high',
+                completed: true, createdAt: '2026-07-17T00:00:00.000Z',
+                updatedAt: '2026-07-17T00:00:00.000Z', completedAt: '2026-07-17T00:00:00.000Z', order: 0,
+            }],
+        }],
+        ['todoViewState', { showCompleted: false }],
+    ]);
+    const events = [];
+    let releaseRevealViewWrite;
+    const revealViewWriteGate = new Promise(resolve => { releaseRevealViewWrite = resolve; });
+    const service = new TodoService({
+        globalState: {
+            get: key => values.get(key),
+            update: async (key, value) => {
+                events.push(['write-start', key, value]);
+                if (key === 'todoViewState' && value.showCompleted === true) {
+                    await revealViewWriteGate;
+                }
+                values.set(key, value);
+                events.push(['write-end', key, value]);
+            },
+        },
+        configuration: makeWorkspaceConfiguration({}),
+        useSettingsStorage: () => false,
+    });
+
+    const revealPromise = runTodoMutation({
+        mutate: async () => {
+            const result = await service.revealTodo('todo-a', 'group-a');
+            events.push(['reveal-result', result.revealed, result.viewState.showCompleted]);
+        },
+        onSuccess: async () => { events.push(['refresh']); },
+        showErrorMessage: message => events.push(['error', message]),
+        logError: (message, error) => events.push(['log', message, error.message]),
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    const togglePromise = service.setShowCompleted(false).then(() => {
+        events.push(['toggle-result']);
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(events.map(event => event.slice(0, 2)), [
+        ['write-start', 'todoViewState'],
+    ], 'show-completed toggles must not enter the reveal queue operation between its writes');
+
+    releaseRevealViewWrite();
+    await Promise.all([revealPromise, togglePromise]);
+    const eventSummaries = events.map(event => event.slice(0, 2));
+    assert.deepStrictEqual(eventSummaries.slice(0, 4), [
+        ['write-start', 'todoViewState'],
+        ['write-end', 'todoViewState'],
+        ['write-start', 'todos'],
+        ['write-end', 'todos'],
+    ], 'all reveal writes must remain contiguous inside one queue operation');
+    const revealDataWriteEnd = eventSummaries.findIndex(event =>
+        event[0] === 'write-end' && event[1] === 'todos'
+    );
+    const refreshIndex = eventSummaries.findIndex(event => event[0] === 'refresh');
+    const todoViewWriteStarts = eventSummaries
+        .map((event, index) => event[0] === 'write-start' && event[1] === 'todoViewState' ? index : -1)
+        .filter(index => index >= 0);
+    assert.ok(refreshIndex > revealDataWriteEnd,
+        'host refresh must happen only after the reveal operation succeeds');
+    assert.ok(todoViewWriteStarts[1] > revealDataWriteEnd,
+        'the queued toggle write must start only after all reveal writes finish');
+    assert.strictEqual(values.get('todos').groups[0].collapsed, false);
+    assert.strictEqual(values.get('todoViewState').showCompleted, false);
+
+    const failureEvents = [];
+    const failingService = new TodoService({
+        globalState: {
+            get: key => key === 'todos' ? values.get('todos') : { showCompleted: false },
+            update: async key => {
+                if (key === 'todos') throw new Error('reveal data write failed');
+            },
+        },
+        configuration: makeWorkspaceConfiguration({}),
+        useSettingsStorage: () => false,
+    });
+    values.get('todos').groups[0].collapsed = true;
+    const failureResult = await runTodoMutation({
+        mutate: () => failingService.revealTodo('todo-a', 'group-a'),
+        onSuccess: async () => { failureEvents.push('refresh'); },
+        showErrorMessage: message => failureEvents.push(['error', message]),
+        logError: (message, error) => failureEvents.push(['log', message, error.message]),
+    });
+    assert.strictEqual(failureResult, false);
+    assert.strictEqual(failureEvents.includes('refresh'), false,
+        'a failed reveal operation must not refresh away the current panel');
+    assert.ok(failureEvents.some(event => Array.isArray(event)
+        && event[0] === 'log' && event[2] === 'reveal data write failed'));
 }
 
 async function runDashboardTodoMigrationSequencingChecks() {
@@ -1461,7 +1560,18 @@ function runTodoOrderingInteractionChecks() {
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const projectContext = {};
     vm.runInNewContext(projectSource, projectContext);
-    const groups = [createElement('todo-group-a'), createElement('todo-group-b')];
+    const groups = ['Release', 'Backlog'].map((title, index) => {
+        const group = createElement(`todo-group-${index}`);
+        const button = createElement(`todo-group-${index}-collapse`);
+        const heading = { textContent: title };
+        group.querySelector = selector => {
+            if (selector === '[data-action="todo-collapse-group"]') return button;
+            if (selector === 'h2') return heading;
+            return null;
+        };
+        group.collapseButton = button;
+        return group;
+    });
     const bulkMessages = [];
     projectContext.collapseTodoGroups(groups, true, message => bulkMessages.push(message));
     assert.deepStrictEqual(
@@ -1470,6 +1580,47 @@ function runTodoOrderingInteractionChecks() {
         'global TODO collapse must post one bulk message'
     );
     assert.deepStrictEqual(groups.map(group => group.classList.contains('collapsed')), [true, true]);
+    assert.deepStrictEqual(groups.map(group => ({
+        expanded: group.collapseButton.getAttribute('aria-expanded'),
+        title: group.collapseButton.getAttribute('title'),
+        label: group.collapseButton.getAttribute('aria-label'),
+    })), [
+        { expanded: 'false', title: 'Expand todo group', label: 'Expand Release' },
+        { expanded: 'false', title: 'Expand todo group', label: 'Expand Backlog' },
+    ], 'bulk collapse must keep every group button synchronized with its class');
+    projectContext.collapseTodoGroups(groups, false, message => bulkMessages.push(message));
+    assert.deepStrictEqual(groups.map(group => ({
+        collapsed: group.classList.contains('collapsed'),
+        expanded: group.collapseButton.getAttribute('aria-expanded'),
+        title: group.collapseButton.getAttribute('title'),
+        label: group.collapseButton.getAttribute('aria-label'),
+    })), [
+        { collapsed: false, expanded: 'true', title: 'Collapse todo group', label: 'Collapse Release' },
+        { collapsed: false, expanded: 'true', title: 'Collapse todo group', label: 'Collapse Backlog' },
+    ]);
+    assert.strictEqual(bulkMessages.length, 2, 'each bulk class transition must post exactly one message');
+
+    const expandButton = createElement('todo-expand');
+    const todoItem = {
+        classList: createClassList(),
+        querySelector: selector => {
+            if (selector === '[data-action="todo-toggle-expanded"]') return expandButton;
+            if (selector === '.todo-title-text') return { textContent: 'Ship release' };
+            return null;
+        },
+    };
+    projectContext.syncTodoExpandControl(todoItem, true);
+    assert.deepStrictEqual({
+        expanded: expandButton.getAttribute('aria-expanded'),
+        title: expandButton.getAttribute('title'),
+        label: expandButton.getAttribute('aria-label'),
+    }, { expanded: 'true', title: 'Collapse todo', label: 'Collapse Ship release' });
+    projectContext.syncTodoExpandControl(todoItem, false);
+    assert.deepStrictEqual({
+        expanded: expandButton.getAttribute('aria-expanded'),
+        title: expandButton.getAttribute('title'),
+        label: expandButton.getAttribute('aria-label'),
+    }, { expanded: 'false', title: 'Expand todo', label: 'Expand Ship release' });
 
     const dndSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewDnDScripts.js'), 'utf8');
     const dndContext = {};
@@ -2267,6 +2418,8 @@ function runControllerChecks(source) {
     let todoItemMounted = false;
     let todoFocusCalls = 0;
     let todoScrollCalls = 0;
+    const pendingTodoFrames = [];
+    context.requestAnimationFrame = callback => pendingTodoFrames.push(callback);
     const todoGroup = {
         classList: createClassList(),
         querySelector: selector => selector === '[data-action="todo-collapse-group"]'
@@ -2274,11 +2427,15 @@ function runControllerChecks(source) {
             : null,
     };
     const todoItem = {
+        isConnected: true,
         getAttribute: name => name === 'data-todo-id' ? 't1' : null,
         setAttribute: () => undefined,
         removeAttribute: () => undefined,
         closest: selector => selector === '.todo-group' ? todoGroup : null,
-        focus: () => { todoFocusCalls += 1; },
+        focus: () => {
+            todoFocusCalls += 1;
+            context.document.activeElement = todoItem;
+        },
         scrollIntoView: () => { todoScrollCalls += 1; },
         addEventListener: () => undefined,
     };
@@ -2297,6 +2454,11 @@ function runControllerChecks(source) {
         : null;
     const messageCountBeforeReveal = messages.length;
     searchResults.dispatch('click', { target: todoSearchResult });
+    assert.strictEqual(messages.length, messageCountBeforeReveal,
+        'pending TODO targets must wait for requestAnimationFrame before querying the DOM');
+    assert.strictEqual(pendingTodoFrames.length, 2,
+        'tab scroll restoration and pending TODO resolution should each use their own frame');
+    while (pendingTodoFrames.length) pendingTodoFrames.shift()();
     assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.slice(messageCountBeforeReveal))), [{
         type: 'todo-reveal',
         todoId: 't1',
@@ -2311,8 +2473,32 @@ function runControllerChecks(source) {
         searchCatalog: makeDashboardCatalog(),
     }), true);
     assert.strictEqual(todoMounted, 2, 'updated TODO HTML must invoke onTodoMounted');
+    assert.strictEqual(pendingTodoFrames.length, 1);
+    todoItemMounted = false;
+    pendingTodoFrames.shift()();
+    assert.strictEqual(todoFocusCalls, 0,
+        'a DOM replacement before the frame must not focus the detached search target');
+    todoItemMounted = true;
+    assert.strictEqual(controller.applyTodoPanelUpdatedMessage({
+        type: 'todo-panel-updated',
+        version: 1,
+        html: '<div>revealed todo after mutation</div>',
+        searchCatalog: makeDashboardCatalog(),
+    }), true);
+    assert.strictEqual(pendingTodoFrames.length, 1,
+        'a later TODO mount must retry a pending target lost to DOM replacement');
+    pendingTodoFrames.shift()();
     assert.strictEqual(todoFocusCalls, 1, 'the mounted pending TODO target must receive focus');
     assert.strictEqual(todoScrollCalls, 1, 'the mounted pending TODO target must scroll into view');
+    assert.strictEqual(context.document.activeElement, todoItem);
+    assert.strictEqual(controller.applyTodoPanelUpdatedMessage({
+        type: 'todo-panel-updated',
+        version: 1,
+        html: '<div>post-focus mutation</div>',
+        searchCatalog: makeDashboardCatalog(),
+    }), true);
+    assert.strictEqual(pendingTodoFrames.length, 0,
+        'a successfully focused TODO target must clear pending state exactly once');
 
     storage.set('projectSteward.activeDashboardTab', 'projects');
     const searchMessages = [];
@@ -2426,6 +2612,8 @@ function runSourceContractChecks(source) {
     const todoFormSubmitBody = extractFunctionBody(projectSource, 'onTodoFormSubmit');
     assert.ok(todoActionBody.includes('data-action="todo-cancel-add"'));
     assert.ok(todoActionBody.includes('setTodoAddFormVisible('));
+    assert.ok(todoActionBody.includes('syncTodoGroupCollapseControl(todoGroup);'),
+        'single-group collapse must synchronize class and accessible button state together');
     assert.ok(todoFormSubmitBody.includes("type: 'todo-add'"));
     assert.ok(todoFormSubmitBody.includes("groupId: getTodoFormValue(addForm, 'groupId')"));
     assert.strictEqual(todoFormSubmitBody.includes('addForm.reset()'), false,
@@ -2448,10 +2636,12 @@ function runSourceContractChecks(source) {
         extensionHostSource.indexOf("'todo-reveal': async e =>"),
         extensionHostSource.indexOf("'todo-update': async e =>")
     );
-    assert.ok(todoRevealHandler.includes('todo.completed && !todoViewState.showCompleted'),
-        'host reveal must make a hidden completed TODO visible');
-    assert.ok(todoRevealHandler.includes('todoService.setGroupCollapsed(group.id, false)'),
-        'host reveal must expand the target TODO group');
+    assert.ok(todoRevealHandler.includes('await todoService.revealTodo('),
+        'host reveal must delegate parsing and all writes to one TodoService queue operation');
+    assert.strictEqual(todoRevealHandler.includes('todoService.getData()'), false,
+        'host reveal must not parse stale TODO/group state outside the service queue');
+    assert.strictEqual(todoRevealHandler.includes('todoService.setShowCompleted('), false);
+    assert.strictEqual(todoRevealHandler.includes('todoService.setGroupCollapsed('), false);
     assert.ok(extensionHostSource.includes("'todo-update': async e =>"));
     assert.ok(extensionHostSource.includes('async function postTodoPanelContent('));
     assert.ok(extensionHostSource.includes("from './todos/hostMutation'"));
@@ -2753,6 +2943,16 @@ function runSourceContractChecks(source) {
     const expandedNotesRule = extractCssRule(styles, '.todo-item.expanded .todo-notes,\n.todo-item.editing .todo-notes');
     assert.ok(expandedNotesRule.includes('white-space: pre-wrap'));
 
+    assert.ok(compiledStyles.includes('.group.collapsed .collapse-icon svg'),
+        'collapsed groups must keep the existing SVG rotation path');
+    assert.strictEqual(
+        compiledStyles.includes('.todo-group-collapse-button[aria-expanded=false] .collapse-icon'),
+        false,
+        'TODO group collapse must not add a parent transform on top of the existing SVG rotation'
+    );
+    assert.ok(compiledStyles.includes('.todo-expand-control[aria-expanded=false] svg'),
+        'the independent TODO expand control must retain its own SVG rotation');
+
     const completedRules = extractCompiledCssRulesContainingSelector(
         compiledStyles,
         '.todo-item.completed'
@@ -2788,6 +2988,8 @@ function runSourceContractChecks(source) {
         'todo card expansion should keep the full expanded card visible inside its scrolling list');
     assert.ok(projectSource.includes('function isTodoInteractiveTarget('),
         'todo card expansion should ignore nested controls');
+    assert.ok(extractFunctionBody(projectSource, 'toggleTodoItemExpanded').includes('syncTodoExpandControl(item, nextExpanded);'),
+        'todo expansion must synchronize aria-expanded, title, and aria-label');
     const setTodoEditingBody = extractFunctionBody(projectSource, 'setTodoEditing');
     assert.ok(setTodoEditingBody.includes('data-expanded-before-edit'),
         'editing must record whether the TODO was expanded before editing');
@@ -2900,6 +3102,7 @@ async function main() {
     await runTodoMigrationChecks();
     await runTodoViewStateChecks();
     await runTodoMutationSerializationChecks();
+    await runTodoRevealSerializationChecks();
     await runDashboardTodoMigrationSequencingChecks();
     await runTodoHostMutationChecks();
     runDashboardUpdateMessageChecks();

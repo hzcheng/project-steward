@@ -409,6 +409,7 @@ function initDashboard(options) {
                 todoId: String(button.dataset.todoId || ''),
                 groupId: String(button.dataset.groupId || ''),
                 revealRequested: false,
+                focusScheduled: false,
             };
             if (typeof options.clearSearch === 'function') {
                 options.clearSearch();
@@ -423,29 +424,47 @@ function initDashboard(options) {
     }
 
     function revealPendingTodoSearchTarget() {
-        if (!pendingTodoSearchTarget || !panels.todo) {
+        if (!pendingTodoSearchTarget || !panels.todo || pendingTodoSearchTarget.focusScheduled) {
             return false;
         }
-        var todoItem = Array.from(panels.todo.querySelectorAll('.todo-item[data-todo-id]'))
-            .find(item => item.getAttribute('data-todo-id') === pendingTodoSearchTarget.todoId);
-        var todoGroup = todoItem && todoItem.closest ? todoItem.closest('.todo-group') : null;
-        if (!todoItem || (todoGroup && todoGroup.classList.contains('collapsed'))) {
-            if (!pendingTodoSearchTarget.revealRequested) {
-                pendingTodoSearchTarget.revealRequested = true;
-                options.postMessage({
-                    type: 'todo-reveal',
-                    todoId: pendingTodoSearchTarget.todoId,
-                    groupId: pendingTodoSearchTarget.groupId,
-                });
-            }
-            return false;
-        }
-
-        pendingTodoSearchTarget = null;
+        var scheduledTarget = pendingTodoSearchTarget;
+        scheduledTarget.focusScheduled = true;
         requestAnimationFrame(() => {
+            if (pendingTodoSearchTarget !== scheduledTarget) {
+                return;
+            }
+            scheduledTarget.focusScheduled = false;
+            var todoItem = Array.from(panels.todo.querySelectorAll('.todo-item[data-todo-id]'))
+                .find(item => item.getAttribute('data-todo-id') === scheduledTarget.todoId);
+            var todoGroup = todoItem && todoItem.closest ? todoItem.closest('.todo-group') : null;
+            if (!todoItem || (todoGroup && todoGroup.classList.contains('collapsed'))) {
+                if (!scheduledTarget.revealRequested) {
+                    scheduledTarget.revealRequested = true;
+                    options.postMessage({
+                        type: 'todo-reveal',
+                        todoId: scheduledTarget.todoId,
+                        groupId: scheduledTarget.groupId,
+                    });
+                }
+                return;
+            }
+            if (!todoItem.isConnected) {
+                return;
+            }
+
             todoItem.setAttribute('tabindex', '-1');
-            todoItem.scrollIntoView({ block: 'nearest' });
-            todoItem.focus();
+            try {
+                todoItem.scrollIntoView({ block: 'nearest' });
+                todoItem.focus();
+            } catch (_error) {
+                todoItem.removeAttribute('tabindex');
+                return;
+            }
+            if (!todoItem.isConnected || document.activeElement !== todoItem) {
+                todoItem.removeAttribute('tabindex');
+                return;
+            }
+            pendingTodoSearchTarget = null;
             todoItem.addEventListener('blur', () => todoItem.removeAttribute('tabindex'), { once: true });
         });
         return true;
