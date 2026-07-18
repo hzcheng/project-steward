@@ -85,7 +85,9 @@ type TmuxOperation =
     | 'get-session-options'
     | 'get-window-options'
     | 'set-session-options'
-    | 'set-window-options';
+    | 'set-window-options'
+    | 'configure-managed-window'
+    | 'clear-pending-metadata';
 
 type MetadataOptionKey = keyof typeof TMUX_METADATA_OPTIONS;
 
@@ -299,6 +301,36 @@ export class TmuxClient {
                 'set-option', '-w', '-t', target, TMUX_METADATA_OPTIONS[key], value,
             ]);
         }
+    }
+
+    async configureManagedWindow(sessionName: string, windowName: string): Promise<void> {
+        await this.requireAvailable();
+        const target = windowTarget(sessionName, windowName);
+        for (const option of ['automatic-rename', 'allow-rename', 'remain-on-exit']) {
+            await this.runResultChecked('configure-managed-window', [
+                'set-option', '-w', '-t', target, option, 'off',
+            ]);
+        }
+    }
+
+    async clearPendingMetadata(locator: AiSessionTmuxLocator): Promise<void> {
+        await this.requireAvailable();
+        if (locator.layout === 'project') {
+            if (!locator.windowName) {
+                throw new TypeError('A project tmux locator must identify a window.');
+            }
+            await this.runResultChecked('clear-pending-metadata', [
+                'set-option', '-uw', '-t', windowTarget(locator.sessionName, locator.windowName),
+                TMUX_METADATA_OPTIONS.pendingId,
+            ]);
+            return;
+        }
+        if (locator.windowName) {
+            throw new TypeError('A session tmux locator must not identify a window.');
+        }
+        await this.runResultChecked('clear-pending-metadata', [
+            'set-option', '-u', '-t', locator.sessionName, TMUX_METADATA_OPTIONS.pendingId,
+        ]);
     }
 
     private async probeAvailability(): Promise<TmuxAvailability> {

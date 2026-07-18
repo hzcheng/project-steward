@@ -1,6 +1,7 @@
 'use strict';
 
 import type { AiSessionProviderId } from '../models';
+import type { AiSessionLaunchSpec } from './launchSpec';
 
 export type AiSessionRuntimeBackendId = 'vscode' | 'tmux';
 export type AiSessionTmuxLayout = 'project' | 'session';
@@ -89,4 +90,39 @@ export interface AiSessionRuntimeBackend<TTerminal = unknown> {
     find(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot<TTerminal>[];
     focus(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void>;
     detach(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void>;
+}
+
+export interface AiSessionResumeRuntimeRequest {
+    identity: AiSessionRuntimeIdentity & { sessionId: string };
+    projectName: string;
+    terminalName: string;
+    launch: AiSessionLaunchSpec;
+}
+
+export interface AiSessionCreateRuntimeRequest {
+    identity: AiSessionRuntimeIdentity & { pendingId: string };
+    projectName: string;
+    terminalName: string;
+    createdAt: string;
+    excludedSessionIds: string[];
+    title?: string;
+    launch: AiSessionLaunchSpec;
+}
+
+export interface AiSessionRuntimeActionResult<TTerminal = unknown> {
+    status: 'started' | 'focused' | 'cancelled' | 'settings' | 'conflict';
+    runtime?: AiSessionRuntimeSnapshot<TTerminal>;
+    conflicts?: AiSessionRuntimeSnapshot<TTerminal>[];
+}
+
+export interface AiSessionExecutableRuntimeBackend<TTerminal = unknown> extends AiSessionRuntimeBackend<TTerminal> {
+    ensureResume(
+        request: AiSessionResumeRuntimeRequest,
+        layout?: AiSessionTmuxLayout
+    ): Promise<AiSessionRuntimeSnapshot<TTerminal>>;
+    ensurePending(
+        request: AiSessionCreateRuntimeRequest,
+        layout?: AiSessionTmuxLayout
+    ): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>>;
+    promotePending(pendingId: string, sessionId: string): Promise<AiSessionRuntimeSnapshot<TTerminal>[]>;
 }

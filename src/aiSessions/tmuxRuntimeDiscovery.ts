@@ -293,32 +293,50 @@ function parseRowMetadata(row: DiscoveryWindowRecord): AiSessionManagedTmuxMetad
         return null;
     }
     if (row.sessionMetadata.layout === 'project' && row.windowMetadata.layout === 'project') {
-        const sessionProof = parseManagedTmuxMetadata({
-            ...row.windowMetadata,
-            managed: row.sessionMetadata.managed,
-            version: row.sessionMetadata.version,
-            layout: row.sessionMetadata.layout,
-            projectKey: row.sessionMetadata.projectKey,
-        });
+        if (!isProjectSessionOwnershipBase(row.sessionMetadata)
+            || row.windowMetadata.projectKey !== undefined) {
+            return null;
+        }
         const windowProof = parseManagedTmuxMetadata({
             ...row.windowMetadata,
             projectKey: row.sessionMetadata.projectKey,
         });
-        return sessionProof && sessionProof.layout === 'project'
-            && windowProof && windowProof.layout === 'project'
+        return windowProof && windowProof.layout === 'project'
             ? windowProof
             : null;
     }
     if (row.sessionMetadata.layout === 'session' && row.windowMetadata.layout === 'session') {
         const sessionProof = parseManagedTmuxMetadata(row.sessionMetadata);
-        const windowProof = parseManagedTmuxMetadata(row.windowMetadata);
         return sessionProof && sessionProof.layout === 'session'
-            && windowProof && windowProof.layout === 'session'
-            && managedMetadataIdentityKey(sessionProof) === managedMetadataIdentityKey(windowProof)
+            && isSessionWindowOwnershipBase(row.windowMetadata)
             ? sessionProof
             : null;
     }
     return null;
+}
+
+function isProjectSessionOwnershipBase(values: Record<string, string>): boolean {
+    return values.managed === '1'
+        && values.version === '1'
+        && values.layout === 'project'
+        && typeof values.projectKey === 'string'
+        && values.provider === undefined
+        && values.sessionId === undefined
+        && values.pendingId === undefined
+        && values.createdAt === undefined
+        && values.marker === undefined;
+}
+
+function isSessionWindowOwnershipBase(values: Record<string, string>): boolean {
+    return values.managed === '1'
+        && values.version === '1'
+        && values.layout === 'session'
+        && values.projectKey === undefined
+        && values.provider === undefined
+        && values.sessionId === undefined
+        && values.pendingId === undefined
+        && values.createdAt === undefined
+        && values.marker === undefined;
 }
 
 function actualLocator(
@@ -398,17 +416,6 @@ function knownIdentityKey(known: TmuxKnownRuntimeBinding): string {
         projectKey: known.projectKey,
         cwd: '',
         sessionId: known.sessionId,
-    });
-}
-
-function managedMetadataIdentityKey(metadata: AiSessionManagedTmuxMetadata): string {
-    return identityKey({
-        provider: metadata.provider,
-        projectKey: metadata.projectKey,
-        cwd: '',
-        ...(metadata.sessionId !== undefined
-            ? { sessionId: metadata.sessionId }
-            : { pendingId: metadata.pendingId }),
     });
 }
 
