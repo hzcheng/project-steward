@@ -50,7 +50,9 @@ The following commands were run from the feature worktree after the final runtim
 - `artifacts/project-steward-2.1.0.vsix` and `artifacts/project-steward-attention-ui-bridge-0.1.2.vsix` were rebuilt successfully.
 - The main VSIX was installed successfully with the active VS Code Server's `code-server --install-extension` command.
 - SHA-256 for the worktree and installed `dist/dashboard.js` matched after installation: `66f5287033cbab1dbbe86fc1eb13f450497ba8b90ce656df348b1ad1d23be633`.
-- The already-running Extension Host predates this installation. It was deliberately not restarted because that would interrupt the user's current VS Code window and terminals.
+- The user subsequently reloaded the VS Code windows. New Remote Extension Hosts started at 10:58 and 10:59 and both activated `hzcheng.project-steward` through `onView:projectSteward.steward`.
+- The new Project Steward instances hydrated Codex, Kimi, and Claude history for one-project and three-project workspaces, delivered incremental Webview updates, and exchanged navigation-only cross-window registrations. No Project Steward runtime error was logged.
+- VS Code itself logged stale workspace-lock and empty-JSON errors before extension activation. The same hosts recovered their locks, activated Project Steward, and continued normal hydration and heartbeat processing, so these startup messages are recorded as environment noise rather than a feature failure.
 
 ## Extension Development Host interaction matrix
 
@@ -58,18 +60,18 @@ The table distinguishes deterministic automated coverage from live UI inspection
 
 | # | Interaction | Automated evidence | Fresh-host live result |
 | --- | --- | --- | --- |
-| 1 | No Active Session defaults to `SESSIONS`. | PASS | NOT RUN — Reload Window required. |
-| 2 | Active Sessions default to `ACTIVE` only before a manual choice. | PASS | NOT RUN — Reload Window required. |
-| 3 | Codex, Kimi, and Claude Active rows appear together. | PASS | NOT RUN — requires live terminals for each provider. |
-| 4 | Active history rows remain listed and focus without duplication. | PASS | NOT RUN — Reload Window required. |
-| 5 | `NEW` always opens provider selection, then optional title. | PASS | NOT RUN — Reload Window required. |
-| 6 | `Starting` upgrades without duplication. | PASS | NOT RUN — Reload Window required. |
-| 7 | Close confirmation cancels safely and closes only after confirmation. | PASS | NOT RUN — Reload Window required. |
-| 8 | Active Archive and batch selection are unavailable. | PASS | NOT RUN — Reload Window required. |
-| 9 | Reload restores Terminal ownership before default-tab selection. | PASS | NOT RUN — this case itself requires a controlled reload. |
-| 10 | 260px/400px, keyboard-only, high contrast, and reduced motion are usable. | PARTIAL | NOT RUN — visual and assistive-technology inspection required. |
-| 11 | `OTHER WINDOWS` exposes no Session details. | PASS | NOT RUN — requires a second VS Code window. |
+| 1 | No Active Session defaults to `SESSIONS`. | PASS | NOT OBSERVED — requires a project with no Active Session. |
+| 2 | Active Sessions default to `ACTIVE` only before a manual choice. | PASS | NOT OBSERVED — client-side selected tab is not present in server logs. |
+| 3 | Codex, Kimi, and Claude Active rows appear together. | PASS | NOT OBSERVED — history for all providers loaded, but live rows require terminals for each provider. |
+| 4 | Active history rows remain listed and focus without duplication. | PASS | NOT OBSERVED — requires client interaction. |
+| 5 | `NEW` always opens provider selection, then optional title. | PASS | NOT OBSERVED — requires client interaction. |
+| 6 | `Starting` upgrades without duplication. | PASS | NOT OBSERVED — requires creating a live Session. |
+| 7 | Close confirmation cancels safely and closes only after confirmation. | PASS | NOT OBSERVED — requires client interaction with a disposable Terminal. |
+| 8 | Active Archive and batch selection are unavailable. | PASS | NOT OBSERVED — requires client inspection. |
+| 9 | Reload restores Terminal ownership before default-tab selection. | PASS | PARTIAL — fresh-host activation and hydration observed; selected-tab pixels were not observable from the server. |
+| 10 | 260px/400px, keyboard-only, high contrast, and reduced motion are usable. | PARTIAL | NOT OBSERVED — visual and assistive-technology inspection required. |
+| 11 | `OTHER WINDOWS` exposes no Session details. | PASS | PARTIAL — two live registrations and navigation-card delivery observed; client pixels were not observable from the server. |
 
 ## Remaining manual gate
 
-Reload the VS Code window so the installed build is loaded, then execute the live matrix above. In particular, acceptance criterion 18 is not considered fully verified until the width, theme, keyboard, and reduced-motion cases have been observed in the real Webview.
+The final build is now loaded and producing normal runtime logs. Execute the remaining client-side interactions in the matrix above. In particular, acceptance criterion 18 is not considered fully verified until the width, theme, keyboard, and reduced-motion cases have been observed in the real Webview.
