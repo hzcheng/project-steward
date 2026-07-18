@@ -18,6 +18,7 @@ const terminalBindingStore = require('../out/aiSessions/terminalBindingStore');
 const AiSessionTerminalBindingStore = terminalBindingStore.default;
 const AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX = terminalBindingStore.AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX;
 const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').default;
+const AiSessionExecutionMonitor = require('../out/aiSessions/executionMonitor').default;
 const attentionPayload = require('../out/aiSessions/attentionPayload');
 const attentionAggregate = require('../out/aiSessions/attentionAggregate');
 const attentionProject = require('../out/aiSessions/attentionProject');
@@ -90,6 +91,7 @@ const AiSessionCommandController = require('../out/aiSessions/commandController'
 const AiSessionCreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
 const AiSessionResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const AiSessionAttentionController = require('../out/aiSessions/attentionController').AiSessionAttentionController;
+const AiSessionExecutionController = require('../out/aiSessions/executionController').AiSessionExecutionController;
 const AiSessionProjectHydrationController = require('../out/aiSessions/projectHydrationController').AiSessionProjectHydrationController;
 Module._load = originalModuleLoad;
 
@@ -1532,6 +1534,88 @@ async function runAiSessionAttentionControllerChecks() {
     assert.deepStrictEqual(controller.getLocalSnapshot(), {});
     assert.deepStrictEqual(published[published.length - 1], { items: [], forceHeartbeat: true });
     assert.deepStrictEqual(scheduled.slice(-1), ['attention']);
+}
+
+async function runAiSessionExecutionControllerChecks() {
+    let activeSessions = [{
+        provider: 'codex',
+        sessionId: 'session-a',
+        runStartedAtMs: 900,
+    }];
+    let signal = {
+        token: 'codex:run:session-a',
+        phase: 'running',
+        executionState: 'running',
+        occurredAtMs: 1100,
+    };
+    const providerCalls = { codex: [], kimi: [], claude: [] };
+    const providersForTest = [{
+        id: 'codex',
+        service: {
+            getLifecycleSignals: requests => {
+                providerCalls.codex.push(requests.map(request => ({ ...request })));
+                return { 'session-a': signal };
+            },
+        },
+    }, {
+        id: 'kimi',
+        service: {
+            getLifecycleSignals: requests => {
+                providerCalls.kimi.push(requests.map(request => ({ ...request })));
+                return {};
+            },
+        },
+    }, {
+        id: 'claude',
+        service: {
+            getLifecycleSignals: requests => {
+                providerCalls.claude.push(requests.map(request => ({ ...request })));
+                return {};
+            },
+        },
+    }];
+    const scheduled = [];
+    const options = {
+        getActiveSessions: () => activeSessions,
+        getProviders: () => providersForTest,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        scheduleRefresh: reason => scheduled.push(reason),
+        nowMs: () => 1000,
+    };
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(options, 'isEnabled'), false);
+    const controller = new AiSessionExecutionController(options);
+
+    await controller.evaluate();
+    assert.deepStrictEqual(scheduled, ['execution']);
+    assert.deepStrictEqual(providerCalls.codex, [[{ sessionId: 'session-a', runStartedAtMs: 900 }]]);
+    assert.deepStrictEqual(providerCalls.kimi, []);
+    assert.deepStrictEqual(providerCalls.claude, []);
+    assert.strictEqual(controller.getSnapshot()['codex:session-a'].state, 'running');
+
+    await controller.evaluate();
+    assert.deepStrictEqual(scheduled, ['execution'], 'repeating a signal does not schedule a refresh');
+
+    signal = {
+        token: 'codex:stop:session-a',
+        phase: 'needsAttention',
+        reason: 'completed',
+        executionState: 'stopped',
+        occurredAtMs: 1200,
+    };
+    await controller.evaluate();
+    assert.deepStrictEqual(scheduled, ['execution', 'execution']);
+    assert.strictEqual(controller.getSnapshot()['codex:session-a'].state, 'stopped');
+
+    activeSessions = [];
+    await controller.evaluate();
+    assert.deepStrictEqual(controller.getSnapshot(), {});
+    assert.strictEqual(providerCalls.codex.length, 3, 'providers without active requests are not queried');
+    assert.deepStrictEqual(providerCalls.kimi, []);
+    assert.deepStrictEqual(providerCalls.claude, []);
+
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'executionController.ts'), 'utf8');
+    assert.ok(!source.includes('isEnabled'), 'execution controller has no attention enablement option');
+    assert.ok(!source.toLowerCase().includes('attention'), 'execution controller never reads attention configuration');
 }
 
 async function runAiSessionProjectHydrationControllerChecks() {
@@ -5661,6 +5745,33 @@ function runAttentionMonitorChecks() {
     assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'needsAttention');
 }
 
+function runAiSessionExecutionMonitorChecks() {
+    let now = 1000;
+    const monitor = new AiSessionExecutionMonitor({ now: () => now });
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1' }]), []);
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'stopped');
+
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: {
+        token: 'run-1', phase: 'running', executionState: 'running', occurredAtMs: 1100,
+    } }]), ['codex:s1']);
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'running');
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: {
+        token: 'run-1', phase: 'running', executionState: 'running', occurredAtMs: 1100,
+    } }]), [], 'same token is idempotent');
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: {
+        token: 'old-stop', phase: 'needsAttention', reason: 'completed', executionState: 'stopped', occurredAtMs: 1099,
+    } }]), [], 'older signal cannot overwrite current execution state');
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'running');
+
+    now = 1200;
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: {
+        token: 'stop-2', phase: 'needsAttention', reason: 'input-required', executionState: 'stopped', occurredAtMs: 1200,
+    } }]), ['codex:s1']);
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'stopped');
+    monitor.evaluate([]);
+    assert.deepStrictEqual(monitor.getSnapshot(), {});
+}
+
 function runAttentionPayloadChecks() {
     const payload = attentionPayload.createAttentionPayload([{ projectId: 'a'.repeat(64), sessionKey: 'k', state: 'needsAttention', eventId: 'e', reason: 'input-required', observedAtMs: 10 }], 20);
     assert.deepStrictEqual(attentionPayload.parseAttentionPayload(attentionPayload.serializeAttentionPayload(payload)), payload);
@@ -6475,6 +6586,7 @@ async function main() {
     await runAiSessionResumeControllerChecks();
     await runAiSessionTerminalCommandControllerChecks();
     await runAiSessionAttentionControllerChecks();
+    await runAiSessionExecutionControllerChecks();
     await runAiSessionProjectHydrationControllerChecks();
     runKeyChecks();
     runBatchAiSessionArchiveChecks();
@@ -6508,6 +6620,7 @@ async function main() {
     runCommandBuilderChecks();
     runLifecycleParserChecks();
     runAttentionMonitorChecks();
+    runAiSessionExecutionMonitorChecks();
     runAttentionPayloadChecks();
     await runProductionAttentionStoreClockChecks();
     await runProductionAttentionStoreLifecycleChecks();
