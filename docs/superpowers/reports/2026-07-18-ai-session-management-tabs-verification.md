@@ -54,6 +54,14 @@ The following commands were run from the feature worktree after the final runtim
 - The new Project Steward instances hydrated Codex, Kimi, and Claude history for one-project and three-project workspaces, delivered incremental Webview updates, and exchanged navigation-only cross-window registrations. No Project Steward runtime error was logged.
 - VS Code itself logged stale workspace-lock and empty-JSON errors before extension activation. The same hosts recovered their locks, activated Project Steward, and continued normal hydration and heartbeat processing, so these startup messages are recorded as environment noise rather than a feature failure.
 
+### Post-reload live action evidence
+
+- The shared New Session flow was used for both Kimi and Claude. Each action produced provider-specific `new-session` scans and a pending Active projection before the incremental Webview update.
+- The Kimi flow changed `pendingTerminalCount` from 0 to 1 and back to 0 while Kimi history changed from two to three Sessions. This is direct runtime evidence that the Starting row resolved to one real history Session without leaving a duplicate pending row.
+- The Claude flow entered pending state and later returned to zero without fabricating a history entry when no new Claude Session was resolved.
+- An inactive Codex history Session was resumed at 11:06 with the expected project cwd. Process inspection found one matching `codex resume` process chain for that provider/session identity.
+- With both windows live, the one-project host rendered four cards: one current-project card and three navigation-only cards, with `hasOtherWindowsGroup: true`. No Session model is part of the cross-window registration payload.
+
 ## Extension Development Host interaction matrix
 
 The table distinguishes deterministic automated coverage from live UI inspection. The live column is not marked PASS unless the freshly installed extension was loaded into a new/reloaded host and observed directly.
@@ -63,14 +71,14 @@ The table distinguishes deterministic automated coverage from live UI inspection
 | 1 | No Active Session defaults to `SESSIONS`. | PASS | NOT OBSERVED — requires a project with no Active Session. |
 | 2 | Active Sessions default to `ACTIVE` only before a manual choice. | PASS | NOT OBSERVED — client-side selected tab is not present in server logs. |
 | 3 | Codex, Kimi, and Claude Active rows appear together. | PASS | NOT OBSERVED — history for all providers loaded, but live rows require terminals for each provider. |
-| 4 | Active history rows remain listed and focus without duplication. | PASS | NOT OBSERVED — requires client interaction. |
-| 5 | `NEW` always opens provider selection, then optional title. | PASS | NOT OBSERVED — requires client interaction. |
-| 6 | `Starting` upgrades without duplication. | PASS | NOT OBSERVED — requires creating a live Session. |
+| 4 | Active history rows remain listed and focus without duplication. | PASS | PARTIAL — one inactive Codex history Session resumed into exactly one process chain; Active-row focus still needs direct observation. |
+| 5 | `NEW` always opens provider selection, then optional title. | PASS | PARTIAL — live Kimi and Claude provider-specific New flows observed; prompt pixels and optional-title choice were not observable from the server. |
+| 6 | `Starting` upgrades without duplication. | PASS | PASS — Kimi pending 0→1→0 while history changed 2→3 exactly once. |
 | 7 | Close confirmation cancels safely and closes only after confirmation. | PASS | NOT OBSERVED — requires client interaction with a disposable Terminal. |
 | 8 | Active Archive and batch selection are unavailable. | PASS | NOT OBSERVED — requires client inspection. |
 | 9 | Reload restores Terminal ownership before default-tab selection. | PASS | PARTIAL — fresh-host activation and hydration observed; selected-tab pixels were not observable from the server. |
 | 10 | 260px/400px, keyboard-only, high contrast, and reduced motion are usable. | PARTIAL | NOT OBSERVED — visual and assistive-technology inspection required. |
-| 11 | `OTHER WINDOWS` exposes no Session details. | PASS | PARTIAL — two live registrations and navigation-card delivery observed; client pixels were not observable from the server. |
+| 11 | `OTHER WINDOWS` exposes no Session details. | PASS | PASS (runtime/protocol) — two live registrations rendered one current card plus three navigation-only cards; the payload has no Session fields. |
 
 ## Remaining manual gate
 
