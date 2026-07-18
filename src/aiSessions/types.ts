@@ -9,7 +9,33 @@ export interface AiSessionTerminalEntry<TTerminal = unknown> {
     terminal: TTerminal;
     markerPath: string;
     runStartedAtMs: number;
+    cwd?: string;
     released?: boolean;
+}
+
+export type AiSessionTabId = 'active' | 'sessions';
+export type ActiveAiSessionStatus = 'starting' | 'running' | 'focused' | 'needsAttention';
+
+export interface AiSessionActiveTerminalRuntime {
+    provider: AiSessionProviderId;
+    sessionId: string;
+    cwd?: string;
+    runStartedAtMs: number;
+}
+
+export interface ActiveAiSessionViewModel {
+    key: string;
+    provider: AiSessionProviderId;
+    sessionId?: string;
+    name: string;
+    status: ActiveAiSessionStatus;
+    focused: boolean;
+    needsAttention: boolean;
+    pending: boolean;
+    updatedAt?: string;
+    createdAt?: string;
+    pinned?: boolean;
+    attentionEventId?: string;
 }
 
 export interface AiSessionReadResult {

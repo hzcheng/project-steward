@@ -61,6 +61,7 @@ export function resolvePendingAiSessionTerminals<TTerminal = unknown>(
             terminal: pendingTerminal.terminal,
             markerPath: pendingTerminal.markerPath,
             runStartedAtMs: Date.parse(pendingTerminal.createdAt),
+            cwd: pendingTerminal.cwd,
         });
         options.setAlias(pendingTerminal.provider, session.id, pendingTerminal.title);
         claimedSessionKeys.add(options.getSessionKey(pendingTerminal.provider, session.id));

@@ -11,6 +11,7 @@ const commands = require('../out/aiSessions/commandBuilders');
 const helpers = require('../out/aiSessions/sessionHelpers');
 const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
+const activeSessionProjection = require('../out/aiSessions/activeSessionProjection');
 const lifecycle = require('../out/aiSessions/lifecycle');
 const jsonlTail = require('../out/aiSessions/jsonlTail');
 const terminalBindingStore = require('../out/aiSessions/terminalBindingStore');
@@ -611,6 +612,7 @@ function runPendingTerminalResolverChecks() {
     assert.strictEqual(tracked[0][2].terminal, pendingTerminals[0].terminal);
     assert.strictEqual(tracked[0][2].markerPath, '/tmp/new.done');
     assert.strictEqual(tracked[0][2].runStartedAtMs, Date.parse('2026-07-15T10:00:00Z'));
+    assert.strictEqual(tracked[0][2].cwd, '/work/app');
     assert.deepStrictEqual(aliases, [['codex', 'new', 'Created Alias']]);
     assert.deepStrictEqual(replacements, [[pendingTerminals[1]]]);
     assert.strictEqual(synced, 1);
@@ -881,6 +883,93 @@ async function runProjectStateStoreChecks() {
     ]);
 }
 
+function runActiveAiSessionProjectionChecks() {
+    const projects = [{
+        id: 'app',
+        path: '/work/app',
+        codexSessions: [{ id: 'c1', name: 'Codex live', updatedAt: '2026-07-18T01:00:00Z' }],
+        kimiSessions: [{
+            id: 'k1',
+            name: 'Kimi waiting',
+            updatedAt: '2026-07-18T02:00:00Z',
+            attention: { eventId: 'e1', reason: 'input-required', unread: true },
+        }],
+        claudeSessions: [],
+    }];
+    const projected = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects,
+        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
+        activeTerminals: [
+            { provider: 'codex', sessionId: 'c1', cwd: '/work/app', runStartedAtMs: 10 },
+            { provider: 'kimi', sessionId: 'k1', cwd: '/work/app', runStartedAtMs: 20 },
+        ],
+        pendingTerminals: [{
+            provider: 'claude',
+            cwd: '/work/app',
+            createdAt: '2026-07-18T03:00:00Z',
+            title: 'New Claude',
+        }],
+        focusedIdentity: { provider: 'codex', sessionId: 'c1' },
+        getProjectCwd: project => project.path,
+        normalizePath: value => value && value.replace(/\/$/, ''),
+    });
+
+    assert.deepStrictEqual(projected[0].activeAiSessions.map(item => item.status), [
+        'needsAttention', 'focused', 'starting',
+    ]);
+    assert.deepStrictEqual(projected[0].activeAiSessions.map(item => item.provider), ['kimi', 'codex', 'claude']);
+    assert.strictEqual(projected[0].activeAiSessions[0].focused, false);
+    assert.strictEqual(projected[0].codexSessions[0].active, true);
+    assert.strictEqual(projected[0].codexSessions[0].focused, true);
+    assert.strictEqual(projected[0].kimiSessions[0].active, true);
+    assert.strictEqual(projected[0].activeAiSessionTab, 'active');
+    assert.strictEqual(projects[0].codexSessions[0].active, undefined, 'projection must not mutate hydration input');
+
+    const withoutHistory = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{ id: 'historyless', path: '/work/historyless', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
+        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
+        activeTerminals: [{
+            provider: 'claude',
+            sessionId: '1234567890abcdef',
+            cwd: '/work/historyless/',
+            runStartedAtMs: 30,
+        }],
+        pendingTerminals: [],
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value && value.replace(/\/$/, ''),
+    });
+    assert.strictEqual(withoutHistory[0].activeAiSessions.length, 1);
+    assert.strictEqual(withoutHistory[0].activeAiSessions[0].provider, 'claude');
+    assert.ok(withoutHistory[0].activeAiSessions[0].name.includes('12345678'));
+    assert.deepStrictEqual(withoutHistory[0].claudeSessions, []);
+
+    const stableStarting = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{ id: 'stable', path: '/work/stable', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
+        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
+        activeTerminals: [],
+        pendingTerminals: [
+            { provider: 'kimi', cwd: '/work/stable', createdAt: '2026-07-18T03:00:00Z', title: 'First' },
+            { provider: 'codex', cwd: '/work/stable', createdAt: '2026-07-18T03:01:00Z', title: 'Second' },
+        ],
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.deepStrictEqual(stableStarting[0].activeAiSessions.map(item => item.name), ['First', 'Second']);
+
+    const empty = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{ id: 'empty', path: '/work/empty', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
+        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
+        activeTerminals: [],
+        pendingTerminals: [],
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.strictEqual(empty[0].activeAiSessionTab, 'sessions');
+}
+
 async function runAiSessionCommandControllerChecks() {
     const projects = [
         { id: 'project-a', path: '/work/a' },
@@ -1113,6 +1202,7 @@ async function runAiSessionResumeControllerChecks() {
     assert.deepStrictEqual(tracked[0][0], 'codex');
     assert.strictEqual(tracked[0][2].markerPath, `/tmp/codex-${session.id}.marker`);
     assert.strictEqual(tracked[0][2].runStartedAtMs, 123456);
+    assert.strictEqual(tracked[0][2].cwd, '/work/a');
     assert.deepStrictEqual(sent[0], ['codex', tracked[0][2].terminal, session.id, null, `/tmp/codex-${session.id}.marker`]);
     assert.deepStrictEqual(finishes.slice(-1)[0], ['codex', session.id]);
     assert.deepStrictEqual(synced, ['sync']);
@@ -1720,9 +1810,31 @@ async function runAiSessionTerminalBindingStoreChecks() {
         sessionId: 'session-new',
         markerPath: '/tmp/session-new.done',
         runStartedAtMs: 1784102400000,
+        cwd: '/work/app',
     });
     await second.flush();
     assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId).sessionId, 'session-new');
+    assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId).cwd, '/work/app');
+
+    const legacyBoundProcessId = 42010;
+    stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + legacyBoundProcessId] = {
+        version: 2,
+        state: 'bound',
+        providerId: 'kimi',
+        sessionId: 'legacy-session',
+        markerPath: '/tmp/legacy.done',
+        runStartedAtMs: 10,
+        updatedAtMs: 11,
+    };
+    assert.deepStrictEqual(new AiSessionTerminalBindingStore(state).get(legacyBoundProcessId), {
+        version: 2,
+        state: 'bound',
+        providerId: 'kimi',
+        sessionId: 'legacy-session',
+        markerPath: '/tmp/legacy.done',
+        runStartedAtMs: 10,
+        updatedAtMs: 11,
+    });
 
     const released = new AiSessionTerminalBindingStore(state);
     released.setReleased(processId, {
@@ -1958,6 +2070,7 @@ async function runAiSessionTerminalPersistenceChecks() {
             terminal: restoredPendingTerminal,
             markerPath: path.join(tempRoot, 'session-new.done'),
             runStartedAtMs: 1784102400000,
+            cwd: '/work/app',
         });
         await secondStore.flush();
 
@@ -1974,6 +2087,16 @@ async function runAiSessionTerminalPersistenceChecks() {
         const thirdService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, thirdStore);
         await thirdService.restorePersistedTerminals([restoredBoundTerminal]);
         assert.strictEqual(thirdService.getById('codex', 'session-new').terminal, restoredBoundTerminal);
+        assert.strictEqual(thirdService.getById('codex', 'session-new').cwd, '/work/app');
+        const activeSnapshot = thirdService.getActiveSessions();
+        assert.deepStrictEqual(activeSnapshot, [{
+            provider: 'codex',
+            sessionId: 'session-new',
+            cwd: '/work/app',
+            runStartedAtMs: 1784102400000,
+        }]);
+        activeSnapshot[0].cwd = '/mutated';
+        assert.strictEqual(thirdService.getActiveSessions()[0].cwd, '/work/app');
 
         thirdService.releaseCompletedSession('codex', 'session-new');
         await thirdStore.flush();
@@ -5838,6 +5961,7 @@ async function main() {
     runAliasStoreChecks();
     runAliasControllerChecks();
     await runProjectStateStoreChecks();
+    runActiveAiSessionProjectionChecks();
     await runAiSessionCommandControllerChecks();
     await runAiSessionCreationControllerChecks();
     await runAiSessionResumeControllerChecks();

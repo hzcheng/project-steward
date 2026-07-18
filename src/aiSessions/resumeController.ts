@@ -39,6 +39,7 @@ export interface AiSessionResumeTrackEntry<TTerminal extends AiSessionResumeTerm
     terminal: TTerminal;
     markerPath: string;
     runStartedAtMs: number;
+    cwd?: string;
 }
 
 export interface AiSessionResumeControllerOptions<
@@ -154,7 +155,14 @@ export class AiSessionResumeController<
                 }
             }
 
-            this.options.track(providerId, session.id, { terminal, markerPath, runStartedAtMs: this.options.nowMs() });
+            this.options.track(providerId, session.id, {
+                terminal,
+                markerPath,
+                runStartedAtMs: this.options.nowMs(),
+                cwd: this.options.normalizeProjectPath(
+                    this.options.getComparableCwd(providerId, session)
+                ) || undefined,
+            });
             terminal.show();
             await this.options.sendResumeCommand(providerId, terminal, session.id, cwd, markerPath);
             this.options.syncActiveTerminal();
