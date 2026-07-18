@@ -815,6 +815,53 @@ async function runTmuxDiscoveryChecks() {
     await Promise.all([ordinaryRefresh, forcedRefresh]);
     assert.strictEqual(inFlightLists, 1);
 
+    const invalidatedGate = deferred();
+    let invalidatedLists = 0;
+    const invalidatedDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => {
+            invalidatedLists++;
+            return invalidatedLists === 1 ? invalidatedGate.promise : [finalRow];
+        } },
+        bindingStore: {
+            listPending: async () => [], listKnown: async () => [],
+            reconcileKnown: async () => undefined,
+        },
+        markerIsCurrent: () => false,
+        nowMs: () => 1000,
+        cacheTtlMs: 500,
+    });
+    const invalidatedRefresh = invalidatedDiscovery.refresh();
+    invalidatedDiscovery.invalidate();
+    const invalidatedJoinedRefresh = invalidatedDiscovery.refresh(true);
+    assert.strictEqual(invalidatedLists, 1);
+    invalidatedGate.resolve([finalRow]);
+    await Promise.all([invalidatedRefresh, invalidatedJoinedRefresh]);
+    assert.strictEqual(invalidatedLists, 1);
+    await invalidatedDiscovery.refresh();
+    assert.strictEqual(invalidatedLists, 2);
+    await invalidatedDiscovery.refresh();
+    assert.strictEqual(invalidatedLists, 2);
+
+    let failedCacheLists = 0;
+    const failedCacheDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => {
+            failedCacheLists++;
+            if (failedCacheLists === 1) throw new Error('uncached list failure');
+            return [finalRow];
+        } },
+        bindingStore: {
+            listPending: async () => [], listKnown: async () => [],
+            reconcileKnown: async () => undefined,
+        },
+        markerIsCurrent: () => false,
+        nowMs: () => 1000,
+        cacheTtlMs: 500,
+    });
+    await assert.rejects(failedCacheDiscovery.refresh(), /uncached list failure/);
+    await failedCacheDiscovery.refresh();
+    await failedCacheDiscovery.refresh();
+    assert.strictEqual(failedCacheLists, 2);
+
     const pendingIdentity = {
         provider: 'kimi', projectKey: 'pending-project', cwd: '/work/pending', pendingId: 'p1',
     };

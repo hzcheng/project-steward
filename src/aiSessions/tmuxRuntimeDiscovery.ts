@@ -65,6 +65,7 @@ export class TmuxRuntimeDiscovery {
     private inactive: AiSessionRuntimeSnapshot[] = [];
     private diagnostics: AiSessionTmuxDiscoveryDiagnostic[] = [];
     private successfulAtMs: number | null = null;
+    private cacheGeneration = 0;
     private inFlight: Promise<void> | null = null;
 
     constructor(private readonly options: TmuxRuntimeDiscoveryOptions) {
@@ -83,7 +84,7 @@ export class TmuxRuntimeDiscovery {
             return Promise.resolve();
         }
 
-        const refresh = this.refreshUncached();
+        const refresh = this.refreshUncached(this.cacheGeneration);
         this.inFlight = refresh.then(
             () => { this.inFlight = null; },
             error => {
@@ -118,15 +119,18 @@ export class TmuxRuntimeDiscovery {
 
     invalidate(): void {
         this.successfulAtMs = null;
+        this.cacheGeneration++;
     }
 
-    private async refreshUncached(): Promise<void> {
+    private async refreshUncached(cacheGeneration: number): Promise<void> {
         const result = await this.enumerate();
         this.active = result.active.map(cloneRuntime);
         this.pending = result.pending.map(clonePendingRuntime);
         this.inactive = result.inactive.map(cloneRuntime);
         this.diagnostics = result.diagnostics.map(cloneDiagnostic);
-        this.successfulAtMs = this.nowMs();
+        if (this.cacheGeneration === cacheGeneration) {
+            this.successfulAtMs = this.nowMs();
+        }
     }
 
     private async enumerate(): Promise<DiscoveryResult> {
