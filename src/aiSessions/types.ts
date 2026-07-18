@@ -109,6 +109,10 @@ export interface OpenProjectAiSessionViewModel {
     searchText?: string;
     aiSessionCount?: number;
     attentionCount?: number;
+    defaultTab: AiSessionTabId;
+    activeSessions: ActiveAiSessionViewModel[];
+    activeSessionCount: number;
+    activeAttentionCount: number;
     sessionSectionHtml?: string;
 }
 

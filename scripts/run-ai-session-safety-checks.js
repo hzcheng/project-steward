@@ -1635,6 +1635,10 @@ function runActiveAiSessionTerminalHighlightChecks() {
 
     highlighter.sync();
     assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a' });
+    const firstIdentity = highlighter.getIdentity();
+    assert.deepStrictEqual(firstIdentity, { provider: 'codex', sessionId: 'a' });
+    firstIdentity.sessionId = 'mutated';
+    assert.deepStrictEqual(highlighter.getIdentity(), { provider: 'codex', sessionId: 'a' });
     assert.strictEqual(timers.filter(timer => timer.active).length, 1);
 
     activeTerminal = terminalB;
@@ -3921,6 +3925,17 @@ function runOpenProjectAiSessionViewModelBuilderChecks() {
         ],
         claudeSessions: [],
         kimiSessionsUnavailable: true,
+        activeAiSessionTab: 'active',
+        activeAiSessions: [
+            {
+                key: 'codex:c1', provider: 'codex', sessionId: 'c1', name: 'Codex One',
+                status: 'running', focused: false, needsAttention: false, pending: false,
+            },
+            {
+                key: 'kimi:k1', provider: 'kimi', sessionId: 'k1', name: 'Kimi One',
+                status: 'needsAttention', focused: false, needsAttention: true, pending: false,
+            },
+        ],
     };
     const model = aiSessionViewModels.buildOpenProjectAiSessionViewModel({
         project,
@@ -3965,6 +3980,10 @@ function runOpenProjectAiSessionViewModelBuilderChecks() {
     assert.strictEqual(model.searchText, 'search:Project A');
     assert.strictEqual(model.aiSessionCount, 2);
     assert.strictEqual(model.attentionCount, 1);
+    assert.strictEqual(model.defaultTab, 'active');
+    assert.strictEqual(model.activeSessionCount, 2);
+    assert.strictEqual(model.activeAttentionCount, 1);
+    assert.deepStrictEqual(model.activeSessions.map(item => item.key), ['codex:c1', 'kimi:k1']);
     assert.strictEqual(model.sessionSectionHtml, 'html:project-a');
 
     const explicitAttentionModel = aiSessionViewModels.buildOpenProjectAiSessionViewModel({

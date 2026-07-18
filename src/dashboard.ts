@@ -32,7 +32,8 @@ import AttentionBridgeClient from './aiSessions/attentionBridgeClient';
 import { getAttentionProjectKey } from './aiSessions/attentionProject';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { getAiSessionKey } from './aiSessions/sessionHelpers';
-import { createAiSessionProviderRegistry, getAiSessionProviderLabel } from './aiSessions/providers';
+import { AI_SESSION_PROVIDER_DEFINITIONS, createAiSessionProviderRegistry, getAiSessionProviderLabel } from './aiSessions/providers';
+import { applyAiSessionRuntimeProjection } from './aiSessions/activeSessionProjection';
 import { getOpenProjectAiSessionKey, getOpenProjectTerminalCwd as getOpenProjectAiSessionTerminalCwd, normalizeAiSessionProjectPath } from './aiSessions/projectCandidates';
 import { getAiSessionComparableCwd as getProviderAiSessionComparableCwd, getAiSessionTerminalCwd as getProviderAiSessionTerminalCwd, getAiSessionTerminalName as getProviderAiSessionTerminalName, getProjectAiSessions as getProviderProjectAiSessions } from './aiSessions/sessionPaths';
 import { getAiSessionIdsForCwd } from './aiSessions/pendingTerminals';
@@ -1082,7 +1083,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function getOpenProjects(): Project[] {
-        return aiSessionProjectHydrationController.hydrate(openProjectWorkspaceController.getRawOpenProjects());
+        const hydrated = aiSessionProjectHydrationController.hydrate(openProjectWorkspaceController.getRawOpenProjects());
+        return applyAiSessionRuntimeProjection({
+            projects: hydrated,
+            providers: AI_SESSION_PROVIDER_DEFINITIONS,
+            activeTerminals: aiSessionTerminalService.getActiveSessions(),
+            pendingTerminals: aiSessionTerminalService.getPendingTerminals(),
+            focusedIdentity: activeAiSessionTerminalHighlighter.getIdentity(),
+            getProjectCwd: getOpenProjectAiSessionTerminalCwd,
+            normalizePath: normalizeAiSessionProjectPath,
+        });
     }
 
     function getOpenProjectCards(): Project[] {
