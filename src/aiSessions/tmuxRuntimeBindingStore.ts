@@ -1,7 +1,7 @@
 'use strict';
 
 import { createHash, randomBytes } from 'crypto';
-import { promises as fs } from 'fs';
+import { constants as fsConstants, promises as fs } from 'fs';
 import * as path from 'path';
 import type { AiSessionProviderId } from '../models';
 import type {
@@ -20,6 +20,7 @@ const MAX_KNOWN_RECORDS = 512;
 const PENDING_TTL_MS = 24 * 60 * 60 * 1000;
 const KNOWN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+const READ_ONLY_NO_FOLLOW = fsConstants.O_RDONLY | ((fsConstants as Record<string, number>).O_NOFOLLOW || 0);
 
 export interface TmuxPendingRuntimeBinding {
     version: 1;
@@ -49,37 +50,36 @@ export interface TmuxKnownRuntimeBinding {
 type TmuxRuntimeBinding = TmuxPendingRuntimeBinding | TmuxKnownRuntimeBinding;
 
 export class TmuxRuntimeBindingStore {
-    private writeQueue: Promise<void> = Promise.resolve();
+    private operationQueue: Promise<void> = Promise.resolve();
 
     constructor(
         private readonly root: string,
         private readonly now: () => number = () => Date.now()
     ) { }
 
-    async listPending(): Promise<TmuxPendingRuntimeBinding[]> {
-        await this.writeQueue;
-        return this.listPendingUnlocked();
+    listPending(): Promise<TmuxPendingRuntimeBinding[]> {
+        return this.serialize(() => this.listPendingUnlocked());
     }
 
-    async listKnown(): Promise<TmuxKnownRuntimeBinding[]> {
-        await this.writeQueue;
-        return this.listKnownUnlocked(true);
+    listKnown(): Promise<TmuxKnownRuntimeBinding[]> {
+        return this.serialize(() => this.listKnownUnlocked(true));
     }
 
-    async getKnown(provider: AiSessionProviderId, sessionId: string): Promise<TmuxKnownRuntimeBinding | null> {
-        await this.writeQueue;
-        if (!isProviderId(provider) || !isBoundedString(sessionId, MAX_ID_LENGTH)) {
-            return null;
-        }
-        const filePath = this.recordPath('known', provider, sessionId);
-        const record = validateKnownRecord(await readJsonRegularFile(filePath));
-        if (!record || isKnownExpired(record, this.now())) {
-            if (record) {
-                await removeFile(filePath);
+    getKnown(provider: AiSessionProviderId, sessionId: string): Promise<TmuxKnownRuntimeBinding | null> {
+        return this.serialize(async () => {
+            if (!isProviderId(provider) || !isBoundedString(sessionId, MAX_ID_LENGTH)) {
+                return null;
             }
-            return null;
-        }
-        return cloneKnown(record);
+            const filePath = this.recordPath('known', provider, sessionId);
+            const record = validateKnownRecord(await readJsonRegularFile(filePath));
+            if (!record || isKnownExpired(record, this.now())) {
+                if (record) {
+                    await removeFile(filePath);
+                }
+                return null;
+            }
+            return cloneKnown(record);
+        });
     }
 
     setPending(record: TmuxPendingRuntimeBinding): Promise<void> {
@@ -87,7 +87,7 @@ export class TmuxRuntimeBindingStore {
         if (!validated || isPendingExpired(validated, this.now())) {
             return Promise.resolve();
         }
-        return this.enqueue(async () => {
+        return this.serialize(async () => {
             await this.writeRecord(this.recordPath('pending', validated.pendingId), validated);
         });
     }
@@ -96,7 +96,7 @@ export class TmuxRuntimeBindingStore {
         if (!isBoundedString(pendingId, MAX_ID_LENGTH)) {
             return Promise.resolve();
         }
-        return this.enqueue(() => removeFile(this.recordPath('pending', pendingId)));
+        return this.serialize(() => removeFile(this.recordPath('pending', pendingId)));
     }
 
     setKnown(record: TmuxKnownRuntimeBinding): Promise<void> {
@@ -104,7 +104,7 @@ export class TmuxRuntimeBindingStore {
         if (!validated || isKnownExpired(validated, this.now())) {
             return Promise.resolve();
         }
-        return this.enqueue(async () => {
+        return this.serialize(async () => {
             await this.writeRecord(this.recordPath('known', validated.provider, validated.sessionId), validated);
             await this.listKnownUnlocked(true);
         });
@@ -114,11 +114,11 @@ export class TmuxRuntimeBindingStore {
         if (!isProviderId(provider) || !isBoundedString(sessionId, MAX_ID_LENGTH)) {
             return Promise.resolve();
         }
-        return this.enqueue(() => removeFile(this.recordPath('known', provider, sessionId)));
+        return this.serialize(() => removeFile(this.recordPath('known', provider, sessionId)));
     }
 
     reconcileKnown(live: readonly AiSessionRuntimeSnapshot[]): Promise<void> {
-        return this.enqueue(async () => {
+        return this.serialize(async () => {
             for (const runtime of live) {
                 const sessionId = runtime.identity && runtime.identity.sessionId;
                 if (runtime.backend !== 'tmux' || !runtime.tmux || !sessionId) {
@@ -142,17 +142,17 @@ export class TmuxRuntimeBindingStore {
         });
     }
 
-    private enqueue(operation: () => Promise<void>): Promise<void> {
-        const result = this.writeQueue.then(operation);
-        this.writeQueue = result.catch(() => undefined);
+    private serialize<T>(operation: () => Promise<T>): Promise<T> {
+        const result = this.operationQueue.then(operation);
+        this.operationQueue = result.then(() => undefined, () => undefined);
         return result;
     }
 
     private async listPendingUnlocked(): Promise<TmuxPendingRuntimeBinding[]> {
         const records: TmuxPendingRuntimeBinding[] = [];
-        for (const filePath of await listJsonRegularFiles(this.root)) {
+        for (const filePath of await listJsonFiles(this.root)) {
             const record = validatePendingRecord(await readJsonRegularFile(filePath));
-            if (!record) {
+            if (!record || !isCanonicalRecordPath(filePath, record)) {
                 continue;
             }
             if (isPendingExpired(record, this.now())) {
@@ -168,9 +168,9 @@ export class TmuxRuntimeBindingStore {
 
     private async listKnownUnlocked(pruneToCap: boolean): Promise<TmuxKnownRuntimeBinding[]> {
         const entries: Array<{ filePath: string; record: TmuxKnownRuntimeBinding }> = [];
-        for (const filePath of await listJsonRegularFiles(this.root)) {
+        for (const filePath of await listJsonFiles(this.root)) {
             const record = validateKnownRecord(await readJsonRegularFile(filePath));
-            if (!record) {
+            if (!record || !isCanonicalRecordPath(filePath, record)) {
                 continue;
             }
             if (isKnownExpired(record, this.now())) {
@@ -192,10 +192,7 @@ export class TmuxRuntimeBindingStore {
     }
 
     private recordPath(kind: 'pending' | 'known', ...identity: string[]): string {
-        const digest = createHash('sha256')
-            .update(JSON.stringify([RECORD_VERSION, kind, ...identity]), 'utf8')
-            .digest('hex');
-        return path.join(this.root, `${kind}-${digest}.json`);
+        return path.join(this.root, getRecordFilename(kind, ...identity));
     }
 
     private async writeRecord(filePath: string, record: TmuxRuntimeBinding): Promise<void> {
@@ -221,7 +218,7 @@ export class TmuxRuntimeBindingStore {
     }
 }
 
-async function listJsonRegularFiles(root: string): Promise<string[]> {
+async function listJsonFiles(root: string): Promise<string[]> {
     let names: string[];
     try {
         names = await fs.readdir(root);
@@ -231,39 +228,48 @@ async function listJsonRegularFiles(root: string): Promise<string[]> {
         }
         throw error;
     }
-    const files: string[] = [];
-    for (const name of names) {
-        if (!name.endsWith('.json')) {
-            continue;
-        }
-        const filePath = path.join(root, name);
-        try {
-            const stat = await fs.lstat(filePath);
-            if (stat.isFile() && stat.size > 0 && stat.size <= MAX_RECORD_BYTES) {
-                files.push(filePath);
-            }
-        } catch (error) {
-            if (!isNodeError(error, 'ENOENT')) {
-                throw error;
-            }
-        }
-    }
-    return files;
+    return names.filter(name => name.endsWith('.json')).map(name => path.join(root, name));
 }
 
 async function readJsonRegularFile(filePath: string): Promise<unknown> {
+    let handle: fs.FileHandle | undefined;
     try {
-        const stat = await fs.lstat(filePath);
+        handle = await fs.open(filePath, READ_ONLY_NO_FOLLOW);
+        const stat = await handle.stat();
         if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_RECORD_BYTES) {
             return null;
         }
-        return JSON.parse(await fs.readFile(filePath, 'utf8'));
+        if (!(fsConstants as Record<string, number>).O_NOFOLLOW) {
+            const pathStat = await fs.lstat(filePath);
+            if (!pathStat.isFile()) {
+                return null;
+            }
+        }
+        return JSON.parse(await handle.readFile({ encoding: 'utf8' }));
     } catch (error) {
-        if (isNodeError(error, 'ENOENT') || error instanceof SyntaxError) {
+        if (isNodeError(error, 'ENOENT') || isNodeError(error, 'ELOOP') || error instanceof SyntaxError) {
             return null;
         }
         throw error;
+    } finally {
+        if (handle) {
+            await handle.close();
+        }
     }
+}
+
+function isCanonicalRecordPath(filePath: string, record: TmuxRuntimeBinding): boolean {
+    const identity = record.state === 'pending'
+        ? [record.pendingId]
+        : [record.provider, record.sessionId];
+    return path.basename(filePath) === getRecordFilename(record.state, ...identity);
+}
+
+function getRecordFilename(kind: 'pending' | 'known', ...identity: string[]): string {
+    const digest = createHash('sha256')
+        .update(JSON.stringify([RECORD_VERSION, kind, ...identity]), 'utf8')
+        .digest('hex');
+    return `${kind}-${digest}.json`;
 }
 
 async function removeFile(filePath: string): Promise<void> {

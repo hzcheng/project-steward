@@ -26,6 +26,26 @@ function quotePowerShellLiteral(value) {
     return `'${String(value).replace(/'/g, `''`)}'`;
 }
 
+function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+}
+
+function runtimeRecordFilename(record) {
+    const identity = record.state === 'pending'
+        ? [record.pendingId]
+        : [record.provider, record.sessionId];
+    const digest = crypto.createHash('sha256')
+        .update(JSON.stringify([1, record.state, ...identity]), 'utf8')
+        .digest('hex');
+    return `${record.state}-${digest}.json`;
+}
+
 function runRuntimeConfigurationChecks() {
     assert.deepStrictEqual(runtimeConfiguration.readAiSessionRuntimeConfiguration(config({})), {
         mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux',
@@ -315,14 +335,117 @@ async function runTmuxStoreChecks() {
         assert.strictEqual(await store.getKnown('codex', 'expired'), null);
         assert.strictEqual(await store.getKnown('codex', 'expired-at-boundary'), null);
 
+        const delayedRecordPath = path.join(root, runtimeRecordFilename(known('s-old', now - 2)));
+        const originalReadFile = fs.promises.readFile;
+        const originalStoreOpen = fs.promises.open;
+        const readStarted = deferred();
+        const releaseRead = deferred();
+        let readDelayed = false;
+        const delayTargetRead = async filePath => {
+            if (!readDelayed && path.resolve(String(filePath)) === path.resolve(delayedRecordPath)) {
+                readDelayed = true;
+                readStarted.resolve();
+                await releaseRead.promise;
+            }
+        };
+        fs.promises.readFile = async (filePath, ...args) => {
+            await delayTargetRead(filePath);
+            return originalReadFile.call(fs.promises, filePath, ...args);
+        };
+        fs.promises.open = async (filePath, flags, ...args) => {
+            const handle = await originalStoreOpen.call(fs.promises, filePath, flags, ...args);
+            if (path.resolve(String(filePath)) === path.resolve(delayedRecordPath)) {
+                const handleReadFile = handle.readFile.bind(handle);
+                handle.readFile = async (...readArgs) => {
+                    await delayTargetRead(filePath);
+                    return handleReadFile(...readArgs);
+                };
+            }
+            return handle;
+        };
+        const queuedSetRecord = known('queued-set', now);
+        const queuedLiveIdentity = {
+            identity: { provider: 'kimi', projectKey: 'pk-queued', cwd: '/queued', sessionId: 'queued-live' },
+            backend: 'tmux',
+            state: 'active',
+            markerPath: '/tmp/queued.done',
+            runStartedAtMs: now - 100,
+            attached: false,
+            tmux: { layout: 'session', sessionName: 'project-steward-s-kimi-queued' },
+        };
+        let queuedSetSettled = false;
+        let queuedReconcileSettled = false;
+        try {
+            const delayedList = store.listKnown();
+            await readStarted.promise;
+            const queuedSet = store.setKnown(queuedSetRecord).then(() => { queuedSetSettled = true; });
+            const queuedReconcile = store.reconcileKnown([queuedLiveIdentity]).then(() => {
+                queuedReconcileSettled = true;
+            });
+            await new Promise(resolve => setTimeout(resolve, 50));
+            const setSettledDuringRead = queuedSetSettled;
+            const reconcileSettledDuringRead = queuedReconcileSettled;
+            releaseRead.resolve();
+            await Promise.all([delayedList, queuedSet, queuedReconcile]);
+            assert.strictEqual(setSettledDuringRead, false);
+            assert.strictEqual(reconcileSettledDuringRead, false);
+        } finally {
+            releaseRead.resolve();
+            fs.promises.readFile = originalReadFile;
+            fs.promises.open = originalStoreOpen;
+        }
+        assert.ok(await store.getKnown('codex', 'queued-set'));
+        assert.ok(await store.getKnown('kimi', 'queued-live'));
+
+        const queueRecoveryRoot = path.join(root, 'queue-recovery');
+        fs.writeFileSync(queueRecoveryRoot, 'not a directory');
+        const queueRecoveryStore = new runtimeStoreModule.TmuxRuntimeBindingStore(queueRecoveryRoot, () => now);
+        await assert.rejects(queueRecoveryStore.listKnown(), error => error && error.code === 'ENOTDIR');
+        fs.unlinkSync(queueRecoveryRoot);
+        await queueRecoveryStore.setKnown(known('after-read-error', now));
+        assert.ok(await queueRecoveryStore.getKnown('codex', 'after-read-error'));
+
+        const noncanonicalPath = path.join(root, 'arbitrary-valid-name.json');
+        fs.writeFileSync(noncanonicalPath, JSON.stringify(known('noncanonical', now)));
+        assert.strictEqual((await store.listKnown()).some(record => record.sessionId === 'noncanonical'), false);
+        assert.strictEqual(fs.existsSync(noncanonicalPath), true);
+
+        const raceRoot = path.join(root, 'read-race');
+        const raceStore = new runtimeStoreModule.TmuxRuntimeBindingStore(raceRoot, () => now);
+        const originalRaceRecord = known('read-race', now);
+        await raceStore.setKnown(originalRaceRecord);
+        const raceRecordPath = path.join(raceRoot, runtimeRecordFilename(originalRaceRecord));
+        const replacementRecordPath = path.join(root, 'read-race-replacement');
+        fs.writeFileSync(replacementRecordPath, JSON.stringify(known('read-race', now - 123)));
+        const originalLstat = fs.promises.lstat;
+        let targetLstatCount = 0;
+        fs.promises.lstat = async (filePath, ...args) => {
+            const stat = await originalLstat.call(fs.promises, filePath, ...args);
+            if (path.resolve(String(filePath)) === path.resolve(raceRecordPath)
+                && ++targetLstatCount === 1) {
+                fs.unlinkSync(raceRecordPath);
+                fs.symlinkSync(replacementRecordPath, raceRecordPath);
+            }
+            return stat;
+        };
+        let raceRecords;
+        try {
+            raceRecords = await raceStore.listKnown();
+        } finally {
+            fs.promises.lstat = originalLstat;
+            fs.rmSync(raceRoot, { recursive: true, force: true });
+            fs.rmSync(replacementRecordPath, { force: true });
+        }
+        assert.strictEqual(raceRecords.length, 1);
+        assert.strictEqual(raceRecords[0].lastSeenAtMs, now);
+
         for (let index = 0; index < 513; index++) {
-            fs.writeFileSync(path.join(root, `cap-${index}.json`), JSON.stringify(
-                known(`cap-${index}`, now - 1000 + index)
-            ));
+            const capRecord = known(`cap-${index}`, now - 1000 + index);
+            fs.writeFileSync(path.join(root, runtimeRecordFilename(capRecord)), JSON.stringify(capRecord));
         }
         const cappedKnown = await store.listKnown();
         assert.strictEqual(cappedKnown.length, 512);
-        assert.strictEqual(cappedKnown[0].sessionId, 's-new');
+        assert.strictEqual(cappedKnown[0].sessionId, 'queued-set');
         assert.ok(cappedKnown.some(record => record.sessionId === 'cap-512'));
         assert.strictEqual(cappedKnown.some(record => record.sessionId === 'cap-0'), false);
 
@@ -405,10 +528,102 @@ async function runTmuxStoreChecks() {
         const lockDirectory = path.join(root, 'ai-session-tmux-locks');
         assert.deepStrictEqual(fs.readdirSync(lockDirectory), []);
 
+        const raceKey = 'owner-cleanup-race';
+        const raceDigest = crypto.createHash('sha256').update(raceKey, 'utf8').digest('hex');
+        const raceLockPath = path.join(lockDirectory, `${raceDigest}.lock`);
+        const oldEntered = deferred();
+        const releaseOld = deferred();
+        const oldLock = creationLock.withTmuxCreationLock(root, raceKey, async () => {
+            oldEntered.resolve();
+            await releaseOld.promise;
+        });
+        await oldEntered.promise;
+        const oldArtifact = fs.statSync(raceLockPath).isDirectory()
+            ? path.join(raceLockPath, fs.readdirSync(raceLockPath)[0])
+            : raceLockPath;
+        const originalUnlink = fs.promises.unlink;
+        const originalRmdir = fs.promises.rmdir;
+        const cleanupPaused = deferred();
+        const allowCleanup = deferred();
+        let pausedCleanup = false;
+        fs.promises.unlink = async target => {
+            if (!pausedCleanup && path.resolve(String(target)) === path.resolve(oldArtifact)) {
+                pausedCleanup = true;
+                cleanupPaused.resolve();
+                await allowCleanup.promise;
+            }
+            return originalUnlink.call(fs.promises, target);
+        };
+        let replacementLock;
+        let thirdLock;
+        try {
+            releaseOld.resolve();
+            await cleanupPaused.promise;
+            await originalUnlink.call(fs.promises, oldArtifact);
+            if (fs.existsSync(raceLockPath) && fs.statSync(raceLockPath).isDirectory()) {
+                await originalRmdir.call(fs.promises, raceLockPath);
+            }
+
+            const replacementEntered = deferred();
+            const releaseReplacement = deferred();
+            replacementLock = creationLock.withTmuxCreationLock(root, raceKey, async () => {
+                replacementEntered.resolve();
+                await releaseReplacement.promise;
+            });
+            await replacementEntered.promise;
+            allowCleanup.resolve();
+            await oldLock;
+
+            const replacementSurvived = fs.existsSync(raceLockPath);
+            let thirdEntered = false;
+            thirdLock = creationLock.withTmuxCreationLock(root, raceKey, async () => { thirdEntered = true; });
+            await new Promise(resolve => setTimeout(resolve, 100));
+            const thirdEnteredWhileReplacementOwned = thirdEntered;
+            releaseReplacement.resolve();
+            await replacementLock;
+            await thirdLock;
+            assert.strictEqual(replacementSurvived, true);
+            assert.strictEqual(thirdEnteredWhileReplacementOwned, false);
+        } finally {
+            fs.promises.unlink = originalUnlink;
+            releaseOld.resolve();
+            allowCleanup.resolve();
+        }
+
+        const originalOpen = fs.promises.open;
+        let injectedHandleClosed = false;
+        let injected = false;
+        fs.promises.open = async (filePath, flags, ...args) => {
+            const handle = await originalOpen.call(fs.promises, filePath, flags, ...args);
+            if (!injected && flags === 'wx' && String(filePath).startsWith(lockDirectory)) {
+                injected = true;
+                const originalClose = handle.close.bind(handle);
+                handle.writeFile = async () => { throw new Error('injected lock initialization failure'); };
+                handle.close = async () => {
+                    injectedHandleClosed = true;
+                    return originalClose();
+                };
+            }
+            return handle;
+        };
+        try {
+            await assert.rejects(
+                creationLock.withTmuxCreationLock(root, 'initialization-failure', async () => undefined),
+                /injected lock initialization failure/
+            );
+        } finally {
+            fs.promises.open = originalOpen;
+        }
+        assert.strictEqual(injectedHandleClosed, true);
+        assert.deepStrictEqual(fs.readdirSync(lockDirectory), []);
+
         const lockName = `${crypto.createHash('sha256').update('stale-key', 'utf8').digest('hex')}.lock`;
         const staleLockPath = path.join(lockDirectory, lockName);
-        fs.writeFileSync(staleLockPath, 'stale');
+        fs.mkdirSync(staleLockPath);
+        const staleClaimPath = path.join(staleLockPath, `${'0'.repeat(64)}.claim`);
+        fs.writeFileSync(staleClaimPath, 'stale');
         const staleTime = new Date(Date.now() - 31000);
+        fs.utimesSync(staleClaimPath, staleTime, staleTime);
         fs.utimesSync(staleLockPath, staleTime, staleTime);
         let recovered = false;
         await creationLock.withTmuxCreationLock(root, 'stale-key', async () => { recovered = true; });
