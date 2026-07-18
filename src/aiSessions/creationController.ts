@@ -5,10 +5,12 @@ import type * as vscode from 'vscode';
 import type { AiSessionProviderId, Project } from '../models';
 import { sanitizeAiSessionAlias } from './aliasStore';
 import type { AiSessionLaunchSpec } from './launchSpec';
+import { isValidAiSessionRuntimeIdentityId } from './runtimeTypes';
 import type {
     AiSessionCreateRuntimeRequest,
     AiSessionPendingRuntimeSnapshot,
     AiSessionRuntimeActionResult,
+    AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
 
 export interface NewAiSessionFields {
@@ -37,32 +39,43 @@ export interface PendingAiSessionTerminal {
 
 export interface AiSessionCreationRuntimeCoordinator {
     create(request: AiSessionCreateRuntimeRequest): Promise<AiSessionRuntimeActionResult<vscode.Terminal>>;
+    getActive(): AiSessionRuntimeSnapshot<vscode.Terminal>[];
     getPending(): AiSessionPendingRuntimeSnapshot<vscode.Terminal>[];
 }
 
-export interface AiSessionCreationControllerOptions {
+export interface AiSessionCreationControllerCommonOptions {
     isProviderId: (value: string) => value is AiSessionProviderId;
     getOpenProjects: () => Project[];
     pickProvider: () => Thenable<AiSessionProviderId | undefined>;
     getProviderLabel: (providerId: AiSessionProviderId) => string;
     getProvider: (providerId: AiSessionProviderId) => AiSessionCreationProvider;
-    getProjectKey?: (project: Project) => string;
-    createPendingId?: () => string;
     getTerminalCwd: (project: Project) => string;
-    getUsableTerminalCwd: (cwd: string) => string | null;
     showInputBox: (options: vscode.InputBoxOptions) => Thenable<string | undefined>;
     showActiveTab: (projectId: string) => Thenable<unknown> | Promise<unknown>;
-    announceStatus?: (projectId: string, message: string) => Thenable<unknown> | Promise<unknown>;
     showWarningMessage: (message: string, ...items: string[]) => Thenable<string | undefined>;
     refresh: () => void;
+    getExistingSessionIdsForCwd: (providerId: AiSessionProviderId, cwd: string) => string[];
+    getPendingMarkerPath: (providerId: AiSessionProviderId) => string;
+    scheduleNewSessionRefresh: (providerId: AiSessionProviderId) => void;
+    nowMs: () => number;
+}
+
+export interface AiSessionCreationRuntimeControllerOptions extends AiSessionCreationControllerCommonOptions {
+    runtimeCoordinator: AiSessionCreationRuntimeCoordinator;
+    getProjectKey: (project: Project) => string;
+    createPendingId: () => string;
+    announceStatus: (projectId: string, message: string) => Thenable<unknown> | Promise<unknown>;
+}
+
+export interface AiSessionCreationLegacyControllerOptions extends AiSessionCreationControllerCommonOptions {
+    runtimeCoordinator?: undefined;
+    getUsableTerminalCwd: (cwd: string) => string | null;
     createTerminal: (options: {
         name: string;
         cwd: string | null;
         cwdFailureMessage: string;
         cwdWarningMessage: string;
     }) => CreatedAiSessionTerminal;
-    getExistingSessionIdsForCwd: (providerId: AiSessionProviderId, cwd: string) => string[];
-    getPendingMarkerPath: (providerId: AiSessionProviderId) => string;
     trackPendingTerminal: (pending: PendingAiSessionTerminal) => void;
     sendNewSessionCommand: (
         providerId: AiSessionProviderId,
@@ -71,15 +84,18 @@ export interface AiSessionCreationControllerOptions {
         title: string,
         markerPath: string
     ) => Thenable<unknown>;
-    scheduleNewSessionRefresh: (providerId: AiSessionProviderId) => void;
-    nowMs: () => number;
-    runtimeCoordinator?: AiSessionCreationRuntimeCoordinator;
 }
+
+export type AiSessionCreationControllerOptions = AiSessionCreationRuntimeControllerOptions
+    | AiSessionCreationLegacyControllerOptions;
 
 export class AiSessionCreationController {
     private creating = false;
+    private readonly options: AiSessionCreationControllerOptions;
 
-    constructor(private readonly options: AiSessionCreationControllerOptions) {
+    constructor(options: AiSessionCreationControllerOptions) {
+        validateControllerOptions(options);
+        this.options = options;
     }
 
     async createSession(projectId: string): Promise<void> {
@@ -128,8 +144,8 @@ export class AiSessionCreationController {
         project: Project,
         fields: NewAiSessionFields
     ): Promise<void> {
-        if (this.options.runtimeCoordinator) {
-            await this.createRuntimeSession(providerId, project, fields);
+        if (isRuntimeOptions(this.options)) {
+            await this.createRuntimeSession(providerId, project, fields, this.options);
             return;
         }
 
@@ -166,24 +182,30 @@ export class AiSessionCreationController {
     private async createRuntimeSession(
         providerId: AiSessionProviderId,
         project: Project,
-        fields: NewAiSessionFields
+        fields: NewAiSessionFields,
+        options: AiSessionCreationRuntimeControllerOptions
     ): Promise<void> {
-        const coordinator = this.options.runtimeCoordinator as AiSessionCreationRuntimeCoordinator;
-        const sessionProvider = this.options.getProvider(providerId);
-        if (!sessionProvider.buildNewSessionLaunchSpec || !this.options.createPendingId) {
+        const coordinator = options.runtimeCoordinator;
+        const sessionProvider = options.getProvider(providerId);
+        if (!sessionProvider.buildNewSessionLaunchSpec) {
             throw new Error('AI session runtime creation is not configured.');
         }
-        const cwd = this.options.getTerminalCwd(project);
-        const projectKey = this.options.getProjectKey
-            ? this.options.getProjectKey(project)
-            : project.id;
-        const pendingId = this.options.createPendingId();
-        if (!pendingId) {
+        const cwd = options.getTerminalCwd(project);
+        const projectKey = options.getProjectKey(project);
+        const pendingId = options.createPendingId();
+        if (!isValidAiSessionRuntimeIdentityId(pendingId)) {
             throw new Error('AI session pending identity is invalid.');
         }
-        const existingSessionIds = this.options.getExistingSessionIdsForCwd(providerId, cwd).slice();
-        const createdAt = new Date(this.options.nowMs()).toISOString();
-        const markerPath = this.options.getPendingMarkerPath(providerId);
+        const pendingIdInUse = [
+            ...coordinator.getPending(),
+            ...coordinator.getActive(),
+        ].some(runtime => runtime?.identity.pendingId === pendingId);
+        if (pendingIdInUse) {
+            throw new Error('AI session pending identity is already in use.');
+        }
+        const existingSessionIds = options.getExistingSessionIdsForCwd(providerId, cwd).slice();
+        const createdAt = new Date(options.nowMs()).toISOString();
+        const markerPath = options.getPendingMarkerPath(providerId);
         const terminalName = `${sessionProvider.terminalNamePrefix}: ${project.name || 'New Session'}`;
         const launch = cloneLaunchSpec(
             sessionProvider.buildNewSessionLaunchSpec(cwd, fields.title, markerPath)
@@ -202,15 +224,14 @@ export class AiSessionCreationController {
             return;
         }
         if (result.status === 'conflict') {
-            this.options.refresh();
-            await this.options.announceStatus?.(project.id, 'Multiple live runtimes match this AI session.');
+            options.refresh();
+            await options.announceStatus(project.id, 'Multiple live runtimes match this AI session.');
             return;
         }
-        await this.options.showActiveTab(project.id);
-        this.options.refresh();
-        this.options.scheduleNewSessionRefresh(providerId);
+        await options.showActiveTab(project.id);
+        options.refresh();
+        options.scheduleNewSessionRefresh(providerId);
     }
-
 }
 
 function cloneLaunchSpec(launch: AiSessionLaunchSpec): AiSessionLaunchSpec {
@@ -218,4 +239,26 @@ function cloneLaunchSpec(launch: AiSessionLaunchSpec): AiSessionLaunchSpec {
         ...launch,
         args: [...launch.args],
     };
+}
+
+function isRuntimeOptions(
+    options: AiSessionCreationControllerOptions
+): options is AiSessionCreationRuntimeControllerOptions {
+    return options.runtimeCoordinator !== undefined;
+}
+
+function validateControllerOptions(options: AiSessionCreationControllerOptions): void {
+    if (options?.runtimeCoordinator === undefined) {
+        return;
+    }
+    const runtimeOptions = options as AiSessionCreationRuntimeControllerOptions;
+    const coordinator = runtimeOptions.runtimeCoordinator;
+    if (typeof coordinator.create !== 'function'
+        || typeof coordinator.getActive !== 'function'
+        || typeof coordinator.getPending !== 'function'
+        || typeof runtimeOptions.getProjectKey !== 'function'
+        || typeof runtimeOptions.createPendingId !== 'function'
+        || typeof runtimeOptions.announceStatus !== 'function') {
+        throw new Error('AI session creation runtime controller options are invalid.');
+    }
 }

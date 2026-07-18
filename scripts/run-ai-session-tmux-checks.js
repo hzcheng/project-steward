@@ -607,6 +607,10 @@ function runLaunchSpecChecks() {
 }
 
 function runTmuxLayoutChecks() {
+    assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentityId('pending-codex_1.2:3'), true);
+    for (const invalidId of ['', '   ', 'pending id', 'pending\ncontrol', '../unsafe', 'x'.repeat(513)]) {
+        assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentityId(invalidId), false);
+    }
     const identity = { provider: 'codex', projectKey: 'project-key', cwd: '/work/app', sessionId: 'session-1' };
     const project = new tmuxLayout.ProjectTmuxLayout().getLocator(identity);
     const session = new tmuxLayout.SessionTmuxLayout().getLocator(identity);
@@ -4982,10 +4986,16 @@ async function runRuntimeControllerChecks() {
         codexSessions: [{ id: 'direct-session' }, { id: 'tmux-session' }],
         kimiSessions: [], claudeSessions: [],
     };
+    const otherProject = {
+        id: 'other-project', name: 'Other Project', path: '/other',
+        codexSessions: [{ id: 'direct-session' }, { id: 'tmux-session' }, { id: 'legacy-session' }],
+        kimiSessions: [], claudeSessions: [],
+    };
+    const directTerminalHandle = { name: 'direct-terminal-handle' };
     const direct = {
         identity: { provider: 'codex', sessionId: 'direct-session', projectKey: 'pk', cwd: '/work' },
         backend: 'vscode', state: 'active', markerPath: '/tmp/direct.done',
-        runStartedAtMs: 1, attached: true,
+        runStartedAtMs: 1, attached: true, terminal: directTerminalHandle,
     };
     const tmux = {
         identity: { provider: 'codex', sessionId: 'tmux-session', projectKey: 'pk', cwd: '/work' },
@@ -4993,7 +5003,12 @@ async function runRuntimeControllerChecks() {
         runStartedAtMs: 2, attached: false,
         tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-a' },
     };
-    const runtimes = [direct, tmux];
+    const legacy = {
+        identity: { provider: 'codex', sessionId: 'legacy-session', projectKey: '', cwd: '' },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/legacy.done',
+        runStartedAtMs: 3, attached: true, terminal: { name: 'legacy-terminal-handle' },
+    };
+    const runtimes = [direct, tmux, legacy];
     const coordinator = {
         focused: [], detached: [],
         getById(provider, sessionId) {
@@ -5007,9 +5022,9 @@ async function runRuntimeControllerChecks() {
     const confirmations = [];
     const controller = new TerminalCommandController({
         isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
-        getOpenProjects: () => [project],
+        getOpenProjects: () => [project, otherProject],
         getProjectSessions: (candidate, provider) => candidate[`${provider}Sessions`] || [],
-        getProjectKey: () => 'pk',
+        getProjectKey: candidate => candidate.id === 'project' ? 'pk' : 'other-pk',
         getProjectCwd: candidate => candidate.path,
         normalizePath: value => value,
         runtimeCoordinator: coordinator,
@@ -5017,6 +5032,7 @@ async function runRuntimeControllerChecks() {
             confirmations.push([message, action]);
             return action;
         },
+        announceStatus: async () => undefined,
         showErrorMessage: async () => undefined,
         getProviderLabel: provider => provider.toUpperCase(),
         refresh: () => undefined,
@@ -5026,6 +5042,18 @@ async function runRuntimeControllerChecks() {
     assert.deepStrictEqual(coordinator.focused, [{
         provider: 'codex', sessionId: 'direct-session', projectKey: 'pk', cwd: '/work',
     }]);
+    await controller.focusActive('other-project', 'codex', 'direct-session');
+    assert.strictEqual(coordinator.focused.length, 1,
+        'duplicate history must not override an authoritative runtime project identity');
+    await controller.focusActive('other-project', 'codex', 'legacy-session');
+    assert.deepStrictEqual(coordinator.focused[1], {
+        provider: 'codex', sessionId: 'legacy-session', projectKey: '', cwd: '',
+    }, 'history may scope only a genuinely unattributed legacy runtime');
+    await controller.closeTerminal({
+        projectId: 'other-project', providerId: 'codex', sessionId: 'direct-session',
+    });
+    assert.strictEqual(coordinator.detached.length, 0,
+        'duplicate history must not authorize detach from the wrong project');
     const directRequest = Object.freeze({
         projectId: 'project', providerId: 'codex', sessionId: 'direct-session',
     });
@@ -5045,7 +5073,124 @@ async function runRuntimeControllerChecks() {
         'Detaching this CODEX terminal will leave the AI task running in tmux.', 'Detach Terminal',
     ]);
     assert.strictEqual(coordinator.detached.length, 2);
-    assert.deepStrictEqual(runtimes, [direct, tmux], 'controller calls must not mutate runtime snapshots');
+    assert.deepStrictEqual(runtimes, [direct, tmux, legacy], 'controller calls must not mutate runtime snapshots');
+
+    const directRaceRuntime = terminal => ({
+        identity: { provider: 'codex', sessionId: 'race-session', projectKey: 'pk', cwd: '/work' },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/race.done',
+        runStartedAtMs: 1, attached: true, terminal,
+    });
+    const tmuxRaceRuntime = (sessionName = 'managed-a', windowName = 'window-a') => ({
+        identity: { provider: 'codex', sessionId: 'race-session', projectKey: 'pk', cwd: '/work' },
+        backend: 'tmux', state: 'active', markerPath: '/tmp/race.done',
+        runStartedAtMs: 1, attached: false,
+        tmux: { layout: 'project', sessionName, windowName },
+    });
+    async function runDetachRaceCase(initialRuntime, mutateDuringConfirm, options = {}) {
+        const state = {
+            active: initialRuntime.identity.sessionId ? initialRuntime : null,
+            pending: initialRuntime.identity.pendingId ? [initialRuntime] : [],
+            conflict: false,
+        };
+        const detached = [];
+        const detachObservedRuntimes = [];
+        const announced = [];
+        const refreshed = [];
+        const errors = [];
+        let activeLookups = 0;
+        const raceCoordinator = {
+            getById: (provider, sessionId) => {
+                activeLookups++;
+                const selected = !state.conflict && state.active
+                    && state.active.identity.provider === provider
+                    && state.active.identity.sessionId === sessionId ? state.active : null;
+                if (selected && options.mutateAfterResolve && activeLookups === 2) {
+                    Promise.resolve().then(() => { state.active = options.mutateAfterResolve; });
+                }
+                return selected;
+            },
+            getPending: () => state.pending.slice(),
+            focus: async () => undefined,
+            detach: async identity => {
+                detachObservedRuntimes.push(state.active || state.pending[0] || null);
+                detached.push({ ...identity });
+            },
+        };
+        const raceController = new TerminalCommandController({
+            isProviderId: value => value === 'codex',
+            getOpenProjects: () => [project],
+            getProjectSessions: () => [{ id: 'race-session' }],
+            runtimeCoordinator: raceCoordinator,
+            getProjectKey: () => 'pk',
+            getProjectCwd: () => '/work',
+            normalizePath: value => value,
+            confirmRuntimeClose: async (_message, action) => {
+                if (options.confirmError) {
+                    throw new Error('confirm failed');
+                }
+                if (mutateDuringConfirm) {
+                    mutateDuringConfirm(state);
+                }
+                return options.cancel ? undefined : action;
+            },
+            announceStatus: async (projectId, message) => announced.push([projectId, message]),
+            showErrorMessage: async message => errors.push(message),
+            getProviderLabel: () => 'CODEX',
+            refresh: () => refreshed.push('refresh'),
+        });
+        const request = initialRuntime.identity.pendingId
+            ? { projectId: 'project', providerId: 'codex', pendingCreatedAt: initialRuntime.createdAt }
+            : { projectId: 'project', providerId: 'codex', sessionId: initialRuntime.identity.sessionId };
+        await raceController.closeTerminal(request);
+        return { detached, detachObservedRuntimes, announced, refreshed, errors };
+    }
+
+    const staleRaceCases = [
+        ['disappeared', tmuxRaceRuntime(), state => { state.active = null; }],
+        ['conflict', tmuxRaceRuntime(), state => { state.conflict = true; }],
+        ['tmux-to-direct', tmuxRaceRuntime(), state => {
+            state.active = directRaceRuntime({ handle: 'replacement-direct' });
+        }],
+        ['direct-to-tmux', directRaceRuntime({ handle: 'source-direct' }), state => {
+            state.active = tmuxRaceRuntime();
+        }],
+        ['direct-handle', directRaceRuntime({ handle: 'source-direct' }), state => {
+            state.active = directRaceRuntime({ handle: 'replacement-direct' });
+        }],
+        ['tmux-locator', tmuxRaceRuntime(), state => {
+            state.active = tmuxRaceRuntime('managed-b', 'window-b');
+        }],
+    ];
+    for (const [label, initialRuntime, mutate] of staleRaceCases) {
+        const outcome = await runDetachRaceCase(initialRuntime, mutate);
+        assert.strictEqual(outcome.detached.length, 0, `${label} confirmation race must not detach`);
+        assert.strictEqual(outcome.refreshed.length, 1, `${label} confirmation race must refresh`);
+        assert.deepStrictEqual(outcome.announced, [[
+            'project', 'The AI session runtime changed before terminal confirmation.',
+        ]], `${label} confirmation race must announce the safe state`);
+    }
+    const stableRace = await runDetachRaceCase(tmuxRaceRuntime(), null);
+    assert.strictEqual(stableRace.detached.length, 1, 'an unchanged tmux selection detaches exactly once');
+    const noAwaitSource = directRaceRuntime({ handle: 'no-await-source' });
+    const noAwaitRace = await runDetachRaceCase(noAwaitSource, null, {
+        mutateAfterResolve: directRaceRuntime({ handle: 'no-await-replacement' }),
+    });
+    assert.strictEqual(noAwaitRace.detachObservedRuntimes[0], noAwaitSource,
+        'the coordinator detach call must happen synchronously after the confirmed runtime is resolved');
+    const cancelledRace = await runDetachRaceCase(tmuxRaceRuntime(), null, { cancel: true });
+    assert.strictEqual(cancelledRace.detached.length, 0);
+    assert.strictEqual(cancelledRace.refreshed.length, 0);
+    const confirmErrorRace = await runDetachRaceCase(tmuxRaceRuntime(), null, { confirmError: true });
+    assert.strictEqual(confirmErrorRace.detached.length, 0);
+    assert.deepStrictEqual(confirmErrorRace.errors, ['Could not confirm the AI session terminal action.']);
+    const pendingRaceRuntime = {
+        identity: { provider: 'codex', pendingId: 'race-pending', projectKey: 'pk', cwd: '/work' },
+        backend: 'tmux', state: 'pending', markerPath: '/tmp/pending.done',
+        runStartedAtMs: 1, attached: false, createdAt: '2026-07-19T05:00:00.000Z',
+        excludedSessionIds: [], tmux: { layout: 'session', sessionName: 'pending-managed-a' },
+    };
+    const pendingRace = await runDetachRaceCase(pendingRaceRuntime, null);
+    assert.strictEqual(pendingRace.detached.length, 1, 'an unchanged pending selection detaches exactly once');
 
     const createRequests = [];
     const createdAt = '2026-07-19T04:00:00.000Z';
@@ -5090,6 +5235,7 @@ async function runRuntimeControllerChecks() {
                     },
                 };
             },
+            getActive: () => [],
             getPending: () => [],
             focus: async () => undefined,
         },
@@ -5119,6 +5265,7 @@ async function runRuntimeControllerChecks() {
         normalizeProjectPath: value => value,
         getMarkerPath: () => '/tmp/resume.done',
         showWarningMessage: () => undefined,
+        announceStatus: async () => undefined,
         refresh: () => undefined,
         showActiveTab: () => undefined,
         runtimeCoordinator: {

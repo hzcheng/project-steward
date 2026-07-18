@@ -3,6 +3,16 @@
 import type { AiSessionProviderId } from '../models';
 import type { AiSessionLaunchSpec } from './launchSpec';
 
+const MAX_RUNTIME_IDENTITY_ID_LENGTH = 512;
+const SAFE_RUNTIME_IDENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+
+export function isValidAiSessionRuntimeIdentityId(value: unknown): value is string {
+    return typeof value === 'string'
+        && value.length > 0
+        && value.length <= MAX_RUNTIME_IDENTITY_ID_LENGTH
+        && SAFE_RUNTIME_IDENTITY_ID.test(value);
+}
+
 export type AiSessionRuntimeBackendId = 'vscode' | 'tmux';
 export type AiSessionTmuxLayout = 'project' | 'session';
 export type AiSessionRuntimeState = 'pending' | 'active' | 'completed' | 'stopped' | 'conflict';

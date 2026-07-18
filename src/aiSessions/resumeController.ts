@@ -52,16 +52,31 @@ export interface AiSessionResumeTrackEntry<TTerminal extends AiSessionResumeTerm
     cwd?: string;
 }
 
-export interface AiSessionResumeControllerOptions<
-    TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal,
-    TEntry extends AiSessionResumeTerminalEntry<TTerminal> = AiSessionResumeTerminalEntry<TTerminal>
-> {
+export interface AiSessionResumeControllerCommonOptions {
     getOpenProjects: () => Project[];
     getProvider: (providerId: AiSessionProviderId) => AiSessionResumeProvider | null;
     getProjectSession: (project: Project, providerId: AiSessionProviderId, sessionId: string) => CodexSession | null | undefined;
     getTerminalCwd: (providerId: AiSessionProviderId, session: CodexSession, project: Project) => string;
-    getProjectKey?: (project: Project) => string;
     getTerminalName: (providerId: AiSessionProviderId, session: CodexSession) => string;
+    getMarkerPath: (providerId: AiSessionProviderId, sessionId: string) => string;
+    showWarningMessage: (message: string) => unknown;
+    refresh: () => void;
+    showActiveTab: (projectId: string) => unknown;
+}
+
+export interface AiSessionResumeRuntimeControllerOptions<
+    TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal
+> extends AiSessionResumeControllerCommonOptions {
+    runtimeCoordinator: AiSessionResumeRuntimeCoordinator<TTerminal>;
+    getProjectKey: (project: Project) => string;
+    announceStatus: (projectId: string, message: string) => Thenable<unknown> | Promise<unknown>;
+}
+
+export interface AiSessionResumeLegacyControllerOptions<
+    TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal,
+    TEntry extends AiSessionResumeTerminalEntry<TTerminal> = AiSessionResumeTerminalEntry<TTerminal>
+> extends AiSessionResumeControllerCommonOptions {
+    runtimeCoordinator?: undefined;
     getComparableCwd: (providerId: AiSessionProviderId, session: CodexSession) => string;
     getUsableTerminalCwd: (cwd: string) => string | null;
     normalizeProjectPath: (cwd: string) => string | null;
@@ -69,7 +84,6 @@ export interface AiSessionResumeControllerOptions<
     isTerminalComplete: (entry: TEntry) => boolean;
     beginResume: (providerId: AiSessionProviderId, sessionId: string) => boolean;
     finishResume: (providerId: AiSessionProviderId, sessionId: string) => void;
-    getMarkerPath: (providerId: AiSessionProviderId, sessionId: string) => string;
     findPendingTerminalForSession: (
         providerId: AiSessionProviderId,
         sessionId: string,
@@ -92,21 +106,26 @@ export interface AiSessionResumeControllerOptions<
         cwd: string | null,
         markerPath: string
     ) => Thenable<void> | Promise<void>;
-    showWarningMessage: (message: string) => unknown;
-    announceStatus?: (projectId: string, message: string) => Thenable<unknown> | Promise<unknown>;
     syncActiveTerminal: () => void;
-    refresh: () => void;
-    showActiveTab: (projectId: string) => unknown;
     logError: (message: string, error: unknown) => void;
     nowMs: () => number;
-    runtimeCoordinator?: AiSessionResumeRuntimeCoordinator<TTerminal>;
 }
+
+export type AiSessionResumeControllerOptions<
+    TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal,
+    TEntry extends AiSessionResumeTerminalEntry<TTerminal> = AiSessionResumeTerminalEntry<TTerminal>
+> = AiSessionResumeRuntimeControllerOptions<TTerminal>
+    | AiSessionResumeLegacyControllerOptions<TTerminal, TEntry>;
 
 export class AiSessionResumeController<
     TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal,
     TEntry extends AiSessionResumeTerminalEntry<TTerminal> = AiSessionResumeTerminalEntry<TTerminal>
 > {
-    constructor(private readonly options: AiSessionResumeControllerOptions<TTerminal, TEntry>) {
+    private readonly options: AiSessionResumeControllerOptions<TTerminal, TEntry>;
+
+    constructor(options: AiSessionResumeControllerOptions<TTerminal, TEntry>) {
+        validateControllerOptions(options);
+        this.options = options;
     }
 
     async resumeProjectSession(
@@ -130,8 +149,8 @@ export class AiSessionResumeController<
             return;
         }
 
-        if (this.options.runtimeCoordinator) {
-            await this.resumeRuntime(project, providerId, session, sessionProvider);
+        if (isRuntimeOptions(this.options)) {
+            await this.resumeRuntime(project, providerId, session, sessionProvider, this.options);
             return;
         }
 
@@ -205,17 +224,15 @@ export class AiSessionResumeController<
         project: Project,
         providerId: AiSessionProviderId,
         session: CodexSession,
-        sessionProvider: AiSessionResumeProvider
+        sessionProvider: AiSessionResumeProvider,
+        options: AiSessionResumeRuntimeControllerOptions<TTerminal>
     ): Promise<void> {
         if (!sessionProvider.buildResumeLaunchSpec) {
             throw new Error('AI session runtime resume is not configured.');
         }
-        const cwd = this.options.getTerminalCwd(providerId, session, project);
-        const projectKey = this.options.getProjectKey
-            ? this.options.getProjectKey(project)
-            : this.options.normalizeProjectPath(this.options.getTerminalCwd(providerId, session, project))
-                || project.id;
-        const markerPath = this.options.getMarkerPath(providerId, session.id);
+        const cwd = options.getTerminalCwd(providerId, session, project);
+        const projectKey = options.getProjectKey(project);
+        const markerPath = options.getMarkerPath(providerId, session.id);
         const launch = cloneLaunchSpec(
             sessionProvider.buildResumeLaunchSpec(session.id, cwd, markerPath)
         );
@@ -227,25 +244,23 @@ export class AiSessionResumeController<
                 cwd,
             },
             projectName: project.name || 'AI Session',
-            terminalName: this.options.getTerminalName(providerId, session),
+            terminalName: options.getTerminalName(providerId, session),
             launch,
         };
-        const result = await this.options.runtimeCoordinator!.resume(request);
+        const result = await options.runtimeCoordinator.resume(request);
         if (result.status === 'cancelled' || result.status === 'settings') {
             return;
         }
         if (result.status === 'conflict') {
-            this.options.refresh();
-            if (this.options.announceStatus) {
-                await this.options.announceStatus(
-                    project.id,
-                    'Multiple live runtimes match this AI session.'
-                );
-            }
+            options.refresh();
+            await options.announceStatus(
+                project.id,
+                'Multiple live runtimes match this AI session.'
+            );
             return;
         }
-        await this.options.showActiveTab(project.id);
-        this.options.refresh();
+        await options.showActiveTab(project.id);
+        options.refresh();
     }
 }
 
@@ -254,4 +269,26 @@ function cloneLaunchSpec(launch: AiSessionLaunchSpec): AiSessionLaunchSpec {
         ...launch,
         args: [...launch.args],
     };
+}
+
+function isRuntimeOptions<
+    TTerminal extends AiSessionResumeTerminal,
+    TEntry extends AiSessionResumeTerminalEntry<TTerminal>
+>(options: AiSessionResumeControllerOptions<TTerminal, TEntry>):
+options is AiSessionResumeRuntimeControllerOptions<TTerminal> {
+    return options.runtimeCoordinator !== undefined;
+}
+
+function validateControllerOptions<
+    TTerminal extends AiSessionResumeTerminal,
+    TEntry extends AiSessionResumeTerminalEntry<TTerminal>
+>(options: AiSessionResumeControllerOptions<TTerminal, TEntry>): void {
+    if (options?.runtimeCoordinator === undefined) {
+        return;
+    }
+    if (typeof options.runtimeCoordinator.resume !== 'function'
+        || typeof (options as AiSessionResumeRuntimeControllerOptions<TTerminal>).getProjectKey !== 'function'
+        || typeof (options as AiSessionResumeRuntimeControllerOptions<TTerminal>).announceStatus !== 'function') {
+        throw new Error('AI session resume runtime controller options are invalid.');
+    }
 }

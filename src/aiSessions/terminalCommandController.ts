@@ -14,12 +14,33 @@ export interface AiSessionTerminalCommandRuntimeCoordinator<TTerminal> {
     detach(identity: AiSessionRuntimeIdentity): Promise<void>;
 }
 
-export interface AiSessionTerminalCommandControllerOptions<
-    TTerminal extends { show(): void; dispose(): void }
-> {
+export interface AiSessionTerminalCommandControllerCommonOptions {
     isProviderId(value: string): value is AiSessionProviderId;
     getOpenProjects(): Project[];
     getProjectSessions(project: Project, providerId: AiSessionProviderId): CodexSession[];
+    getProjectCwd(project: Project): string;
+    normalizePath(value: string): string;
+    showErrorMessage(message: string): Thenable<unknown> | Promise<unknown>;
+    getProviderLabel(providerId: AiSessionProviderId): string;
+    refresh(): void;
+}
+
+export interface AiSessionTerminalCommandRuntimeControllerOptions<
+    TTerminal extends { show(): void; dispose(): void }
+> extends AiSessionTerminalCommandControllerCommonOptions {
+    runtimeCoordinator: AiSessionTerminalCommandRuntimeCoordinator<TTerminal>;
+    getProjectKey: (project: Project) => string;
+    confirmRuntimeClose(
+        message: string,
+        action: 'Close Terminal' | 'Detach Terminal'
+    ): Thenable<string | undefined> | Promise<string | undefined>;
+    announceStatus(projectId: string, message: string): Thenable<unknown> | Promise<unknown>;
+}
+
+export interface AiSessionTerminalCommandLegacyControllerOptions<
+    TTerminal extends { show(): void; dispose(): void }
+> extends AiSessionTerminalCommandControllerCommonOptions {
+    runtimeCoordinator?: undefined;
     getActiveTerminal(
         providerId: AiSessionProviderId,
         sessionId: string
@@ -30,19 +51,13 @@ export interface AiSessionTerminalCommandControllerOptions<
         cwd: string;
         createdAt: string;
     }>;
-    runtimeCoordinator?: AiSessionTerminalCommandRuntimeCoordinator<TTerminal>;
-    getProjectKey?: (project: Project) => string;
-    getProjectCwd(project: Project): string;
-    normalizePath(value: string): string;
     confirmClose(providerLabel: string): Thenable<string | undefined> | Promise<string | undefined>;
-    confirmRuntimeClose?: (
-        message: string,
-        action: 'Close Terminal' | 'Detach Terminal'
-    ) => Thenable<string | undefined> | Promise<string | undefined>;
-    showErrorMessage(message: string): Thenable<unknown> | Promise<unknown>;
-    getProviderLabel(providerId: AiSessionProviderId): string;
-    refresh(): void;
 }
+
+export type AiSessionTerminalCommandControllerOptions<
+    TTerminal extends { show(): void; dispose(): void }
+> = AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
+    | AiSessionTerminalCommandLegacyControllerOptions<TTerminal>;
 
 export interface CloseAiSessionTerminalRequest {
     projectId: string;
@@ -54,34 +69,39 @@ export interface CloseAiSessionTerminalRequest {
 export class AiSessionTerminalCommandController<
     TTerminal extends { show(): void; dispose(): void }
 > {
-    constructor(private readonly options: AiSessionTerminalCommandControllerOptions<TTerminal>) { }
+    private readonly options: AiSessionTerminalCommandControllerOptions<TTerminal>;
+
+    constructor(options: AiSessionTerminalCommandControllerOptions<TTerminal>) {
+        validateControllerOptions(options);
+        this.options = options;
+    }
 
     async focusActive(projectId: string, providerId: string, sessionId: string): Promise<void> {
         if (!sessionId || !this.options.isProviderId(providerId)) {
             return;
         }
-        if (this.options.runtimeCoordinator) {
-            const runtime = this.getScopedActiveRuntime(projectId, providerId, sessionId);
+        if (isRuntimeOptions(this.options)) {
+            const runtime = this.getScopedActiveRuntime(projectId, providerId, sessionId, this.options);
             if (runtime) {
                 await this.options.runtimeCoordinator.focus({ ...runtime.identity });
             }
             return;
         }
-        this.getScopedActiveTerminal(projectId, providerId, sessionId)?.show();
+        this.getScopedActiveTerminal(projectId, providerId, sessionId, this.options)?.show();
     }
 
     async focusPending(projectId: string, providerId: string, createdAt: string): Promise<void> {
         if (!createdAt || !this.options.isProviderId(providerId)) {
             return;
         }
-        if (this.options.runtimeCoordinator) {
-            const runtime = this.getScopedPendingRuntime(projectId, providerId, createdAt);
+        if (isRuntimeOptions(this.options)) {
+            const runtime = this.getScopedPendingRuntime(projectId, providerId, createdAt, this.options);
             if (runtime) {
                 await this.options.runtimeCoordinator.focus({ ...runtime.identity });
             }
             return;
         }
-        this.getScopedPendingTerminal(projectId, providerId, createdAt)?.show();
+        this.getScopedPendingTerminal(projectId, providerId, createdAt, this.options)?.show();
     }
 
     async closeTerminal(request: CloseAiSessionTerminalRequest): Promise<void> {
@@ -93,22 +113,29 @@ export class AiSessionTerminalCommandController<
         if (hasSessionId === hasPendingCreatedAt) {
             return;
         }
-        if (this.options.runtimeCoordinator) {
+        if (isRuntimeOptions(this.options)) {
             const runtime = hasSessionId
-                ? this.getScopedActiveRuntime(request.projectId, request.providerId, request.sessionId as string)
+                ? this.getScopedActiveRuntime(
+                    request.projectId, request.providerId, request.sessionId as string, this.options
+                )
                 : this.getScopedPendingRuntime(
                     request.projectId,
                     request.providerId,
-                    request.pendingCreatedAt as string
+                    request.pendingCreatedAt as string,
+                    this.options
                 );
             if (runtime) {
-                await this.detachRuntime(request.providerId, runtime);
+                await this.detachRuntime(request, request.providerId, runtime, this.options);
             }
             return;
         }
         const terminal = hasSessionId
-            ? this.getScopedActiveTerminal(request.projectId, request.providerId, request.sessionId)
-            : this.getScopedPendingTerminal(request.projectId, request.providerId, request.pendingCreatedAt);
+            ? this.getScopedActiveTerminal(
+                request.projectId, request.providerId, request.sessionId, this.options
+            )
+            : this.getScopedPendingTerminal(
+                request.projectId, request.providerId, request.pendingCreatedAt, this.options
+            );
         if (!terminal) {
             return;
         }
@@ -128,39 +155,78 @@ export class AiSessionTerminalCommandController<
     }
 
     private async detachRuntime(
+        request: CloseAiSessionTerminalRequest,
         providerId: AiSessionProviderId,
-        runtime: AiSessionRuntimeSnapshot<TTerminal>
+        runtime: AiSessionRuntimeSnapshot<TTerminal>,
+        options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
     ): Promise<void> {
+        const selectionToken = createSelectionToken(runtime);
+        if (!selectionToken) {
+            await this.handleChangedRuntime(request.projectId, options);
+            return;
+        }
         const action = runtime.backend === 'tmux' ? 'Detach Terminal' : 'Close Terminal';
-        const providerLabel = this.options.getProviderLabel(providerId);
+        const providerLabel = options.getProviderLabel(providerId);
         const message = runtime.backend === 'tmux'
             ? `Detaching this ${providerLabel} terminal will leave the AI task running in tmux.`
             : `Closing this ${providerLabel} terminal may interrupt a running AI task.`;
-        const confirmation = this.options.confirmRuntimeClose
-            ? await this.options.confirmRuntimeClose(message, action)
-            : await this.options.confirmClose(providerLabel);
+        let confirmation: string | undefined;
+        try {
+            confirmation = await options.confirmRuntimeClose(message, action);
+        } catch (error) {
+            await options.showErrorMessage('Could not confirm the AI session terminal action.');
+            return;
+        }
         if (confirmation !== action) {
             return;
         }
-        try {
-            await this.options.runtimeCoordinator!.detach({ ...runtime.identity });
-        } catch (error) {
-            await this.options.showErrorMessage(runtime.backend === 'tmux'
-                ? 'Could not detach the AI session terminal.'
-                : 'Could not close the AI session terminal.');
+        const currentRuntime = request.sessionId
+            ? this.getScopedActiveRuntime(
+                request.projectId, providerId, request.sessionId, options
+            )
+            : this.getScopedPendingRuntime(
+                request.projectId, providerId, request.pendingCreatedAt as string, options
+            );
+        const currentToken = currentRuntime ? createSelectionToken(currentRuntime) : null;
+        if (!currentRuntime || !currentToken || !selectionTokensEqual(selectionToken, currentToken)) {
+            await this.handleChangedRuntime(request.projectId, options);
             return;
         }
-        this.options.refresh();
+        try {
+            const detach = options.runtimeCoordinator.detach({ ...currentRuntime.identity });
+            await detach;
+        } catch (error) {
+            await options.showErrorMessage(runtime.backend === 'tmux'
+                ? 'Could not detach the AI session terminal.'
+                : 'Could not close the AI session terminal.');
+            options.refresh();
+            return;
+        }
+        options.refresh();
+    }
+
+    private async handleChangedRuntime(
+        projectId: string,
+        options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
+    ): Promise<void> {
+        options.refresh();
+        await options.announceStatus(
+            projectId,
+            'The AI session runtime changed before terminal confirmation.'
+        );
     }
 
     private getScopedActiveRuntime(
         projectId: string,
         providerId: AiSessionProviderId,
-        sessionId: string
+        sessionId: string,
+        options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
     ): AiSessionRuntimeSnapshot<TTerminal> | null {
-        const project = this.options.getOpenProjects().find(candidate => candidate.id === projectId);
-        const runtime = this.options.runtimeCoordinator?.getById(providerId, sessionId) || null;
-        return project && runtime && this.runtimeBelongsToProject(project, providerId, sessionId, runtime)
+        const project = options.getOpenProjects().find(candidate => candidate.id === projectId);
+        const runtime = options.runtimeCoordinator.getById(providerId, sessionId);
+        return project && runtime && this.runtimeBelongsToProject(
+            project, providerId, sessionId, runtime, options
+        )
             ? cloneRuntime(runtime)
             : null;
     }
@@ -168,16 +234,17 @@ export class AiSessionTerminalCommandController<
     private getScopedPendingRuntime(
         projectId: string,
         providerId: AiSessionProviderId,
-        createdAt: string
+        createdAt: string,
+        options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
     ): AiSessionPendingRuntimeSnapshot<TTerminal> | null {
-        const project = this.options.getOpenProjects().find(candidate => candidate.id === projectId);
+        const project = options.getOpenProjects().find(candidate => candidate.id === projectId);
         if (!project) {
             return null;
         }
-        const matches = (this.options.runtimeCoordinator?.getPending() || []).filter(runtime => {
+        const matches = options.runtimeCoordinator.getPending().filter(runtime => {
             return runtime.identity.provider === providerId
                 && runtime.createdAt === createdAt
-                && this.runtimeBelongsToProject(project, providerId, undefined, runtime);
+                && this.runtimeBelongsToProject(project, providerId, undefined, runtime, options);
         });
         return matches.length === 1 ? clonePendingRuntime(matches[0]) : null;
     }
@@ -186,35 +253,39 @@ export class AiSessionTerminalCommandController<
         project: Project,
         providerId: AiSessionProviderId,
         sessionId: string | undefined,
-        runtime: AiSessionRuntimeSnapshot<TTerminal>
+        runtime: AiSessionRuntimeSnapshot<TTerminal>,
+        options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
     ): boolean {
         const belongsToHistory = !!sessionId
-            && (this.options.getProjectSessions(project, providerId) || [])
+            && (options.getProjectSessions(project, providerId) || [])
                 .some(session => session.id === sessionId);
-        const projectCwd = this.options.normalizePath(this.options.getProjectCwd(project));
-        const runtimeCwd = this.options.normalizePath(runtime.identity.cwd);
-        const projectKey = this.options.getProjectKey
-            ? this.options.getProjectKey(project)
-            : projectCwd || project.id;
-        return belongsToHistory
-            || (!!projectKey && runtime.identity.projectKey === projectKey)
-            || (!!projectCwd && runtimeCwd === projectCwd);
+        const projectCwd = options.normalizePath(options.getProjectCwd(project));
+        const runtimeCwd = options.normalizePath(runtime.identity.cwd);
+        const projectKey = options.getProjectKey(project);
+        if (runtime.identity.projectKey) {
+            return runtime.identity.projectKey === projectKey;
+        }
+        if (runtimeCwd) {
+            return runtimeCwd === projectCwd;
+        }
+        return belongsToHistory;
     }
 
     private getScopedActiveTerminal(
         projectId: string,
         providerId: AiSessionProviderId,
-        sessionId: string
+        sessionId: string,
+        options: AiSessionTerminalCommandLegacyControllerOptions<TTerminal>
     ): TTerminal | null {
-        const project = this.options.getOpenProjects().find(candidate => candidate.id === projectId);
-        const entry = this.options.getActiveTerminal(providerId, sessionId);
+        const project = options.getOpenProjects().find(candidate => candidate.id === projectId);
+        const entry = options.getActiveTerminal(providerId, sessionId);
         if (!project || !entry?.terminal) {
             return null;
         }
-        const belongsToHistory = (this.options.getProjectSessions(project, providerId) || [])
+        const belongsToHistory = (options.getProjectSessions(project, providerId) || [])
             .some(session => session.id === sessionId);
-        const projectCwd = this.options.normalizePath(this.options.getProjectCwd(project));
-        const bindingCwd = entry.cwd ? this.options.normalizePath(entry.cwd) : '';
+        const projectCwd = options.normalizePath(options.getProjectCwd(project));
+        const bindingCwd = entry.cwd ? options.normalizePath(entry.cwd) : '';
         return belongsToHistory || (projectCwd && bindingCwd === projectCwd)
             ? entry.terminal
             : null;
@@ -223,17 +294,18 @@ export class AiSessionTerminalCommandController<
     private getScopedPendingTerminal(
         projectId: string,
         providerId: AiSessionProviderId,
-        createdAt: string
+        createdAt: string,
+        options: AiSessionTerminalCommandLegacyControllerOptions<TTerminal>
     ): TTerminal | null {
-        const project = this.options.getOpenProjects().find(candidate => candidate.id === projectId);
+        const project = options.getOpenProjects().find(candidate => candidate.id === projectId);
         if (!project) {
             return null;
         }
-        const projectCwd = this.options.normalizePath(this.options.getProjectCwd(project));
-        const pending = this.options.getPendingTerminals().find(candidate => {
+        const projectCwd = options.normalizePath(options.getProjectCwd(project));
+        const pending = options.getPendingTerminals().find(candidate => {
             return candidate.provider === providerId
                 && candidate.createdAt === createdAt
-                && this.options.normalizePath(candidate.cwd) === projectCwd;
+                && options.normalizePath(candidate.cwd) === projectCwd;
         });
         return pending?.terminal || null;
     }
@@ -258,4 +330,89 @@ function clonePendingRuntime<TTerminal>(
         createdAt: runtime.createdAt,
         excludedSessionIds: [...runtime.excludedSessionIds],
     };
+}
+
+interface RuntimeIdentityToken {
+    provider: AiSessionProviderId;
+    projectKey: string;
+    cwd: string;
+    sessionId?: string;
+    pendingId?: string;
+}
+
+type RuntimeSelectionToken<TTerminal> = {
+    backend: 'vscode';
+    identity: RuntimeIdentityToken;
+    terminal: TTerminal;
+} | {
+    backend: 'tmux';
+    identity: RuntimeIdentityToken;
+    tmux: {
+        layout: 'project' | 'session';
+        sessionName: string;
+        windowName?: string;
+    };
+};
+
+function createSelectionToken<TTerminal>(
+    runtime: AiSessionRuntimeSnapshot<TTerminal>
+): RuntimeSelectionToken<TTerminal> | null {
+    const identity = { ...runtime.identity };
+    if (runtime.backend === 'vscode') {
+        return runtime.terminal
+            ? { backend: 'vscode', identity, terminal: runtime.terminal }
+            : null;
+    }
+    return runtime.tmux
+        ? { backend: 'tmux', identity, tmux: { ...runtime.tmux } }
+        : null;
+}
+
+function selectionTokensEqual<TTerminal>(
+    left: RuntimeSelectionToken<TTerminal>,
+    right: RuntimeSelectionToken<TTerminal>
+): boolean {
+    if (left.backend !== right.backend || !identitiesEqual(left.identity, right.identity)) {
+        return false;
+    }
+    if (left.backend === 'vscode' && right.backend === 'vscode') {
+        return left.terminal === right.terminal;
+    }
+    return left.backend === 'tmux' && right.backend === 'tmux'
+        && left.tmux.layout === right.tmux.layout
+        && left.tmux.sessionName === right.tmux.sessionName
+        && left.tmux.windowName === right.tmux.windowName;
+}
+
+function identitiesEqual(left: RuntimeIdentityToken, right: RuntimeIdentityToken): boolean {
+    return left.provider === right.provider
+        && left.projectKey === right.projectKey
+        && left.cwd === right.cwd
+        && left.sessionId === right.sessionId
+        && left.pendingId === right.pendingId;
+}
+
+function isRuntimeOptions<TTerminal extends { show(): void; dispose(): void }>(
+    options: AiSessionTerminalCommandControllerOptions<TTerminal>
+): options is AiSessionTerminalCommandRuntimeControllerOptions<TTerminal> {
+    return options.runtimeCoordinator !== undefined;
+}
+
+function validateControllerOptions<TTerminal extends { show(): void; dispose(): void }>(
+    options: AiSessionTerminalCommandControllerOptions<TTerminal>
+): void {
+    if (options?.runtimeCoordinator === undefined) {
+        return;
+    }
+    const coordinator = options.runtimeCoordinator;
+    const runtimeOptions = options as AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>;
+    if (typeof coordinator.getById !== 'function'
+        || typeof coordinator.getPending !== 'function'
+        || typeof coordinator.focus !== 'function'
+        || typeof coordinator.detach !== 'function'
+        || typeof runtimeOptions.getProjectKey !== 'function'
+        || typeof runtimeOptions.confirmRuntimeClose !== 'function'
+        || typeof runtimeOptions.announceStatus !== 'function') {
+        throw new Error('AI session terminal runtime controller options are invalid.');
+    }
 }

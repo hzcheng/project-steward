@@ -1624,6 +1624,24 @@ async function runAiSessionTerminalCommandControllerChecks() {
 }
 
 async function runAiSessionRuntimeControllerChecks() {
+    const controllerRoot = path.join(__dirname, '..', 'src', 'aiSessions');
+    const controllerContracts = [
+        ['creationController.ts', 'AiSessionCreationRuntimeControllerOptions', 'AiSessionCreationLegacyControllerOptions'],
+        ['resumeController.ts', 'AiSessionResumeRuntimeControllerOptions', 'AiSessionResumeLegacyControllerOptions'],
+        ['terminalCommandController.ts', 'AiSessionTerminalCommandRuntimeControllerOptions', 'AiSessionTerminalCommandLegacyControllerOptions'],
+    ];
+    for (const [fileName, runtimeName, legacyName] of controllerContracts) {
+        const source = fs.readFileSync(path.join(controllerRoot, fileName), 'utf8');
+        assert.ok(source.includes(`export interface ${runtimeName}`));
+        assert.ok(source.includes(`export interface ${legacyName}`));
+        assert.ok(source.includes(`| ${legacyName}`), `${fileName} must export a discriminated runtime/legacy union`);
+    }
+    assert.throws(() => new AiSessionCreationController({ runtimeCoordinator: {} }),
+        /runtime controller options are invalid/);
+    assert.throws(() => new AiSessionResumeController({ runtimeCoordinator: {} }),
+        /runtime controller options are invalid/);
+    assert.throws(() => new AiSessionTerminalCommandController({ runtimeCoordinator: {} }),
+        /runtime controller options are invalid/);
     const session = Object.freeze({
         id: 'session-a', name: 'Session A', cwd: '/work/a', updatedAt: '2026-07-19T03:00:00Z',
     });
@@ -1639,6 +1657,7 @@ async function runAiSessionRuntimeControllerChecks() {
     const createRequests = [];
     const createResults = [];
     const pending = [];
+    const activeCreationRuntimes = [];
     const creationWarnings = [];
     const creationAnnouncements = [];
     const creationTabs = [];
@@ -1656,10 +1675,11 @@ async function runAiSessionRuntimeControllerChecks() {
             }
             return createResults.shift();
         },
+        getActive: () => activeCreationRuntimes.slice(),
         getPending: () => pending.slice(),
     };
     let nextPending = 0;
-    let invalidPendingId = false;
+    let pendingIdOverride = null;
     const creation = new AiSessionCreationController({
         isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
         getOpenProjects: () => [project],
@@ -1670,7 +1690,7 @@ async function runAiSessionRuntimeControllerChecks() {
             buildNewSessionLaunchSpec: () => launchSpec,
         }),
         getProjectKey: () => 'project-key-a',
-        createPendingId: () => invalidPendingId ? '' : `pending-${++nextPending}`,
+        createPendingId: () => pendingIdOverride === null ? `pending-${++nextPending}` : pendingIdOverride,
         getTerminalCwd: () => '/work/a',
         getUsableTerminalCwd: cwd => cwd,
         showInputBox: async () => '  Test Title  ',
@@ -1729,9 +1749,10 @@ async function runAiSessionRuntimeControllerChecks() {
     assert.strictEqual(timeouts.length, 0,
         'runtime pending sessions must not be removed by a short feedback timeout');
 
-    pending.push(pendingRuntime('tmux', 'pending-2'));
-    createResults.push({ status: 'started', runtime: pending[0] });
+    const tmuxPendingRuntime = pendingRuntime('tmux', 'pending-2');
+    createResults.push({ status: 'started', runtime: tmuxPendingRuntime });
     await creation.createSession('project-a');
+    pending.push(tmuxPendingRuntime);
     assert.strictEqual(createRequests[1].identity.pendingId, 'pending-2');
     assert.strictEqual(timeouts.length, 0,
         'elapsed time must not own the runtime pending lifecycle');
@@ -1763,7 +1784,7 @@ async function runAiSessionRuntimeControllerChecks() {
     assert.strictEqual(createRequests.length, 7, 'a failed create must release the controller guard');
     assert.strictEqual(timeouts.length, sideEffectsBeforeFallback.timeouts,
         'failed and cancelled creates must not leave pending feedback timers');
-    invalidPendingId = true;
+    pendingIdOverride = '';
     const effectsBeforeInvalidPendingId = {
         requests: createRequests.length,
         tabs: creationTabs.length,
@@ -1779,6 +1800,25 @@ async function runAiSessionRuntimeControllerChecks() {
         scheduled: scheduled.length,
         timeouts: timeouts.length,
     }, effectsBeforeInvalidPendingId, 'an invalid pending ID must fail before runtime side effects');
+    for (const malformedId of ['   ', 'pending id', 'pending\ncontrol', '../unsafe', 'x'.repeat(513)]) {
+        pendingIdOverride = malformedId;
+        await assert.rejects(creation.createSession('project-a'), /pending identity is invalid/);
+    }
+    pendingIdOverride = 'duplicate-pending';
+    pending.push(pendingRuntime('tmux', pendingIdOverride));
+    await assert.rejects(creation.createSession('project-a'), /pending identity is already in use/);
+    pending.length = 0;
+    activeCreationRuntimes.push({
+        ...pendingRuntime('vscode', pendingIdOverride), state: 'active',
+    });
+    await assert.rejects(creation.createSession('project-a'), /pending identity is already in use/);
+    assert.deepStrictEqual({
+        requests: createRequests.length,
+        tabs: creationTabs.length,
+        refreshes: creationRefreshes.length,
+        scheduled: scheduled.length,
+        timeouts: timeouts.length,
+    }, effectsBeforeInvalidPendingId, 'malformed and duplicate pending IDs fail before runtime side effects');
     assert.strictEqual(timeouts.length, 0,
         'runtime creation must retain unresolved pending sessions for discovery or terminal closure');
 
