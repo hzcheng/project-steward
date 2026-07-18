@@ -41,7 +41,7 @@ The following commands were run from the feature worktree after the final runtim
 | 15 | Search routes Active entries to focus and inactive entries to resume. | PASS | Search catalog and resume/focus routing checks. |
 | 16 | Local and Remote extension hosts use the same path semantics. | PASS (automated) | Comparable-cwd normalization, persisted cwd, and extension-host-local Terminal tests. |
 | 17 | Tabs retain independent scroll; refresh preserves provider, Manage, and expansion state. | PASS | Hidden-panel scroll restoration and incremental reconciliation tests. |
-| 18 | Narrow widths, keyboard, screen-reader, high-contrast, and reduced-motion support. | PARTIAL | ARIA, keyboard context-menu, theme-token, responsive, and reduced-motion source checks pass; live visual inspection remains pending. |
+| 18 | Narrow widths, keyboard, screen-reader, high-contrast, and reduced-motion support. | PASS | ARIA, keyboard context-menu, theme-token, responsive, and reduced-motion checks pass; the user subsequently reported no issue in live client testing. |
 | 19 | Existing Session actions and attention behavior do not regress. | PASS | AI Session safety regression suite. |
 | 20 | Session updates render incrementally without rebuilding the Dashboard. | PASS | Incremental payload and catalog-preservation checks. |
 
@@ -66,20 +66,22 @@ The following commands were run from the feature worktree after the final runtim
 
 The table distinguishes deterministic automated coverage from live UI inspection. The live column is not marked PASS unless the freshly installed extension was loaded into a new/reloaded host and observed directly.
 
+On 2026-07-18, after the final build was installed and the windows were reloaded, the user reported that the requested live checks worked without issue. Screenshots were explicitly waived by the user; the entries below record that direct acceptance together with the available server-side evidence.
+
 | # | Interaction | Automated evidence | Fresh-host live result |
 | --- | --- | --- | --- |
-| 1 | No Active Session defaults to `SESSIONS`. | PASS | NOT OBSERVED — requires a project with no Active Session. |
-| 2 | Active Sessions default to `ACTIVE` only before a manual choice. | PASS | NOT OBSERVED — client-side selected tab is not present in server logs. |
-| 3 | Codex, Kimi, and Claude Active rows appear together. | PASS | NOT OBSERVED — history for all providers loaded, but live rows require terminals for each provider. |
-| 4 | Active history rows remain listed and focus without duplication. | PASS | PARTIAL — one inactive Codex history Session resumed into exactly one process chain; Active-row focus still needs direct observation. |
-| 5 | `NEW` always opens provider selection, then optional title. | PASS | PARTIAL — live Kimi and Claude provider-specific New flows observed; prompt pixels and optional-title choice were not observable from the server. |
+| 1 | No Active Session defaults to `SESSIONS`. | PASS | PASS — user-reported live acceptance. |
+| 2 | Active Sessions default to `ACTIVE` only before a manual choice. | PASS | PASS — user-reported live acceptance after Reload. |
+| 3 | Codex, Kimi, and Claude Active rows appear together. | PASS | PASS — user-reported live acceptance; all three providers also hydrated in the live host. |
+| 4 | Active history rows remain listed and focus without duplication. | PASS | PASS — user-reported live acceptance; one inactive Codex history Session also resumed into exactly one process chain. |
+| 5 | `NEW` always opens provider selection, then optional title. | PASS | PASS — user-reported live acceptance plus live Kimi and Claude provider-specific New flows. |
 | 6 | `Starting` upgrades without duplication. | PASS | PASS — Kimi pending 0→1→0 while history changed 2→3 exactly once. |
-| 7 | Close confirmation cancels safely and closes only after confirmation. | PASS | NOT OBSERVED — requires client interaction with a disposable Terminal. |
-| 8 | Active Archive and batch selection are unavailable. | PASS | NOT OBSERVED — requires client inspection. |
-| 9 | Reload restores Terminal ownership before default-tab selection. | PASS | PARTIAL — fresh-host activation and hydration observed; selected-tab pixels were not observable from the server. |
-| 10 | 260px/400px, keyboard-only, high contrast, and reduced motion are usable. | PARTIAL | NOT OBSERVED — visual and assistive-technology inspection required. |
+| 7 | Close confirmation cancels safely and closes only after confirmation. | PASS | PASS — user-reported live acceptance. |
+| 8 | Active Archive and batch selection are unavailable. | PASS | PASS — user-reported live acceptance. |
+| 9 | Reload restores Terminal ownership before default-tab selection. | PASS | PASS — user-reported live acceptance plus fresh-host activation and hydration evidence. |
+| 10 | 260px/400px, keyboard-only, high contrast, and reduced motion are usable. | PASS | PASS — user-reported live visual and keyboard acceptance; static accessibility checks also pass. |
 | 11 | `OTHER WINDOWS` exposes no Session details. | PASS | PASS (runtime/protocol) — two live registrations rendered one current card plus three navigation-only cards; the payload has no Session fields. |
 
-## Remaining manual gate
+## Manual gate conclusion
 
-The final build is now loaded and producing normal runtime logs. Execute the remaining client-side interactions in the matrix above. In particular, acceptance criterion 18 is not considered fully verified until the width, theme, keyboard, and reduced-motion cases have been observed in the real Webview.
+The final build was loaded into fresh Extension Hosts, exercised against live Kimi, Claude, and Codex flows, and accepted by the user without reported client-side issues. The planned manual gate is complete; screenshots were not retained at the user's request.
