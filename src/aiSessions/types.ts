@@ -97,6 +97,8 @@ export interface AiSessionViewModel {
     cwd?: string;
     workDir?: string;
     pinned?: boolean;
+    active?: boolean;
+    focused?: boolean;
 }
 
 export interface OpenProjectAiSessionViewModel {

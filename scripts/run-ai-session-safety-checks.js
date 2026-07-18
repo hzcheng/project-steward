@@ -2687,6 +2687,47 @@ function runWebviewContentChecks() {
     const compiledExpandedProjectAccentBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .project[data-open-project][data-codex-expanded]:hover .steward-item-accent');
     const currentItemCardStyleBlock = extractExactScssBlock(sidebarStyles, '&[data-current-workspace]');
     const compiledCurrentItemCardStyleBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .steward-item-card[data-current-workspace]');
+    const sessionTabsHtml = webviewContentModule.getAiSessionsDiv({
+        id: 'project-a',
+        activeAiSessionProvider: 'codex',
+        activeAiSessionTab: 'active',
+        codexSessions: [{ id: 'c1', name: 'Codex live', active: true }],
+        kimiSessions: [{ id: 'k1', name: 'Kimi history' }],
+        claudeSessions: [],
+        activeAiSessions: [
+            {
+                key: 'codex:c1', provider: 'codex', sessionId: 'c1', name: 'Codex live',
+                status: 'focused', focused: true, needsAttention: false, pending: false,
+            },
+            {
+                key: 'kimi:k2', provider: 'kimi', sessionId: 'k2', name: 'Kimi waiting',
+                status: 'needsAttention', focused: false, needsAttention: true, pending: false,
+                attentionEventId: 'attention-1',
+            },
+            {
+                key: 'claude:c3', provider: 'claude', sessionId: 'c3', name: 'Claude running',
+                status: 'running', focused: false, needsAttention: false, pending: false,
+            },
+            {
+                key: 'pending:claude:2026-07-18T03:00:00Z', provider: 'claude', name: 'New Claude',
+                status: 'starting', focused: false, needsAttention: false, pending: true,
+                createdAt: '2026-07-18T03:00:00Z',
+            },
+        ],
+    });
+    assert.ok(sessionTabsHtml.includes('class="ai-session-module-header"'));
+    assert.ok(sessionTabsHtml.includes('data-action="create-ai-session"'));
+    assert.ok(!sessionTabsHtml.includes('data-action="create-ai-session" data-provider='));
+    assert.ok(sessionTabsHtml.includes('role="tablist" aria-label="AI Session views"'));
+    assert.ok(sessionTabsHtml.includes('data-ai-session-tab="active"'));
+    assert.ok(sessionTabsHtml.includes('data-ai-session-tab="sessions"'));
+    assert.ok(sessionTabsHtml.includes('id="ai-session-active-project-a"'));
+    assert.ok(sessionTabsHtml.includes('id="ai-session-history-project-a"'));
+    assert.ok(sessionTabsHtml.includes('data-session-status="needsAttention"'));
+    assert.ok(sessionTabsHtml.includes('data-session-pending'));
+    assert.ok(sessionTabsHtml.includes('data-session-active'));
+    assert.ok(sessionTabsHtml.includes('Close the active terminal before archiving.'));
+    assert.ok(sessionTabsHtml.includes('aria-live="polite"'));
 
     assert.ok(webviewContent.includes('data-action="add" title="Add Project"'));
     assert.ok(webviewContent.includes('class="project no-projects" data-action="add-project" data-nodrag'));
@@ -3216,15 +3257,41 @@ function runAttentionProjectRenderingChecks() {
                 codexSessions: [{
                     id: 'codex-one',
                     name: 'Codex One',
+                    active: true,
                     attention: { eventId: 'local-event', reason: 'input-required', unread: true },
+                }],
+                activeAiSessions: [{
+                    key: 'codex:codex-one', provider: 'codex', sessionId: 'codex-one', name: 'Codex One',
+                    status: 'needsAttention', focused: false, needsAttention: true, pending: false,
                 }],
             }],
         },
         true
     );
     assert.ok(!openProjectHtml.includes('class="project-ai-attention-badge"'));
-    assert.ok(openProjectHtml.includes('class="project-codex-badge has-attention"'));
-    assert.ok(openProjectHtml.includes('class="ai-session-attention-count">1</b>'));
+    assert.ok(openProjectHtml.includes('class="project-codex-badge"'));
+    assert.ok(!openProjectHtml.includes('project-codex-badge has-attention'));
+    assert.ok(openProjectHtml.includes('class="ai-session-total-count">AI 1</span>'));
+    assert.ok(openProjectHtml.includes('class="ai-session-active-count" aria-label="1 active AI session">'));
+    assert.ok(openProjectHtml.includes('class="ai-session-attention-count" aria-label="1 AI session needs attention">1</b>'));
+
+    const quietProjectHtml = webviewContentModule.getStewardContent(
+        { extensionPath: '/extension' },
+        { cspSource: 'test-source', asWebviewUri: uri => uri.toString() },
+        [],
+        {
+            config,
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            otherStorageHasData: false,
+            openProjects: [{
+                id: 'quiet-project', name: 'Quiet', path: '/work/quiet', color: '#00aacc',
+                codexSessions: [{ id: 'history', name: 'History' }], activeAiSessions: [],
+            }],
+        },
+        true
+    );
+    assert.ok(!quietProjectHtml.includes('class="ai-session-active-count"'));
+    assert.ok(!quietProjectHtml.includes('class="ai-session-attention-count"'));
 }
 
 function runFavoriteDndChecks() {
