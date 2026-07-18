@@ -232,12 +232,18 @@ function createTmuxBackendHarness(options = {}) {
         },
         getExecutablePath: () => '/opt/tmux',
         setExecutablePath: () => undefined,
-        listWindows: async () => windows.map(row => ({
-            ...row,
-            sessionMetadata: { ...row.sessionMetadata },
-            windowMetadata: { ...row.windowMetadata },
-            metadata: { ...row.metadata },
-        })),
+        listWindows: async () => {
+            operations.push({ type: 'list-windows' });
+            if (options.listWindowsError) {
+                throw options.listWindowsError;
+            }
+            return windows.map(row => ({
+                ...row,
+                sessionMetadata: { ...row.sessionMetadata },
+                windowMetadata: { ...row.windowMetadata },
+                metadata: { ...row.metadata },
+            }));
+        },
         hasSession: async name => {
             const exists = windows.some(item => item.sessionName === name);
             if (options.concurrentProjectBootstrap) {
@@ -4502,6 +4508,129 @@ async function runRuntimeCoordinatorChecks() {
         fakeResumeRequest('boundary-unavailable'))).status, 'started');
     assert.strictEqual(boundaryChoices, 1);
     assert.strictEqual(boundaryDirect.ensureResumeCalls, 1);
+
+    for (const choice of ['direct', 'settings', 'cancel']) {
+        const hintedRefreshBoundary = createTmuxBackendHarness({
+            availability: { available: false, category: 'not-found', message: 'tmux unavailable' },
+        });
+        const hintedRefreshDirect = createFakeRuntimeBackend('vscode');
+        let hintedRefreshChoices = 0;
+        let hintedRefreshClears = 0;
+        const hintedRefreshCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+            direct: hintedRefreshDirect,
+            tmux: new tmuxBackendModule.TmuxRuntimeBackend(hintedRefreshBoundary.dependencies),
+            getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: '/bad/tmux' }),
+            chooseTmuxFallback: async context => {
+                hintedRefreshChoices++;
+                assert.strictEqual(context.knownHint, true);
+                assert.ok(context.error instanceof runtimeTypesModule.TmuxRuntimeUnavailableError);
+                return choice;
+            },
+            hasKnownTmuxHint: async () => true,
+            clearKnownTmuxHint: async () => { hintedRefreshClears++; },
+        });
+        const hintedRefreshResult = await hintedRefreshCoordinator.resume(
+            fakeResumeRequest(`hinted-refresh-${choice}`)
+        );
+        assert.strictEqual(hintedRefreshResult.status,
+            choice === 'settings' ? 'settings' : 'cancelled');
+        assert.strictEqual(hintedRefreshChoices, 1);
+        assert.strictEqual(hintedRefreshDirect.ensureResumeCalls, 0);
+        assert.strictEqual(hintedRefreshClears, 0);
+        assert.strictEqual(hintedRefreshBoundary.operations.some(item => item.type === 'lock'), false);
+        assert.strictEqual(hintedRefreshBoundary.operations.some(item => item.type === 'new-session'), false);
+    }
+
+    const acceptedRefreshBoundary = createTmuxBackendHarness({
+        availability: { available: false, category: 'permission-denied', message: 'tmux denied' },
+    });
+    const acceptedRefreshDirect = createFakeRuntimeBackend('vscode');
+    let acceptedRefreshClears = 0;
+    const acceptedRefreshCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: acceptedRefreshDirect,
+        tmux: new tmuxBackendModule.TmuxRuntimeBackend(acceptedRefreshBoundary.dependencies),
+        getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: '/bad/tmux' }),
+        chooseTmuxFallback: async context => {
+            assert.strictEqual(context.knownHint, true);
+            return 'direct-anyway';
+        },
+        hasKnownTmuxHint: async () => true,
+        clearKnownTmuxHint: async () => { acceptedRefreshClears++; },
+    });
+    assert.strictEqual((await acceptedRefreshCoordinator.resume(
+        fakeResumeRequest('hinted-refresh-accepted'))).status, 'started');
+    assert.strictEqual(acceptedRefreshDirect.ensureResumeCalls, 1);
+    assert.strictEqual(acceptedRefreshClears, 1);
+
+    const failedRefreshBoundary = createTmuxBackendHarness({
+        availability: { available: false, category: 'timeout', message: 'tmux probe timeout' },
+    });
+    const failedRefreshDirect = createFakeRuntimeBackend('vscode', {
+        ensureError: new Error('direct refresh fallback failed'),
+    });
+    let failedRefreshClears = 0;
+    const failedRefreshCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: failedRefreshDirect,
+        tmux: new tmuxBackendModule.TmuxRuntimeBackend(failedRefreshBoundary.dependencies),
+        getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: '/bad/tmux' }),
+        chooseTmuxFallback: async () => 'direct-anyway',
+        hasKnownTmuxHint: async () => true,
+        clearKnownTmuxHint: async () => { failedRefreshClears++; },
+    });
+    await assert.rejects(failedRefreshCoordinator.resume(
+        fakeResumeRequest('hinted-refresh-direct-failed')), /direct refresh fallback failed/);
+    assert.strictEqual(failedRefreshDirect.ensureResumeCalls, 1);
+    assert.strictEqual(failedRefreshClears, 0);
+
+    for (const category of ['not-found', 'permission-denied', 'timeout']) {
+        const cachedProbeBoundary = createTmuxBackendHarness({
+            listWindowsError: new tmuxClientModule.TmuxClientError('list-windows', category),
+        });
+        const cachedProbeDirect = createFakeRuntimeBackend('vscode');
+        let cachedProbeClears = 0;
+        const cachedProbeCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+            direct: cachedProbeDirect,
+            tmux: new tmuxBackendModule.TmuxRuntimeBackend(cachedProbeBoundary.dependencies),
+            getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+            chooseTmuxFallback: async context => {
+                assert.strictEqual(context.knownHint, true);
+                assert.ok(context.error instanceof runtimeTypesModule.TmuxRuntimeUnavailableError);
+                return 'direct-anyway';
+            },
+            hasKnownTmuxHint: async () => true,
+            clearKnownTmuxHint: async () => { cachedProbeClears++; },
+        });
+        assert.strictEqual((await cachedProbeCoordinator.resume(
+            fakeResumeRequest(`cached-probe-${category}`))).status, 'started');
+        assert.strictEqual(cachedProbeDirect.ensureResumeCalls, 1);
+        assert.strictEqual(cachedProbeClears, 1);
+        assert.strictEqual(cachedProbeBoundary.operations.filter(
+            item => item.type === 'availability').length, 1);
+        assert.strictEqual(cachedProbeBoundary.operations.filter(
+            item => item.type === 'list-windows').length, 1);
+        assert.strictEqual(cachedProbeBoundary.operations.some(item => item.type === 'lock'), false);
+    }
+
+    for (const refreshError of [
+        new Error('plain discovery failure'),
+        new tmuxClientModule.TmuxClientError('list-windows', 'invalid-output'),
+    ]) {
+        const failedReadBoundary = createTmuxBackendHarness({ listWindowsError: refreshError });
+        const failedReadDirect = createFakeRuntimeBackend('vscode');
+        let failedReadChoices = 0;
+        const failedReadCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+            direct: failedReadDirect,
+            tmux: new tmuxBackendModule.TmuxRuntimeBackend(failedReadBoundary.dependencies),
+            getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+            chooseTmuxFallback: async () => { failedReadChoices++; return 'direct-anyway'; },
+            hasKnownTmuxHint: async () => true,
+            clearKnownTmuxHint: async () => { throw new Error('must not clear'); },
+        });
+        await assert.rejects(failedReadCoordinator.resume(
+            fakeResumeRequest(`failed-read-${failedReadChoices}`)), error => error === refreshError);
+        assert.strictEqual(failedReadChoices, 0);
+        assert.strictEqual(failedReadDirect.ensureResumeCalls, 0);
+    }
 
     for (const boundaryOptions of [
         { ambiguousCreateCount: 1 },

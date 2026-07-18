@@ -157,6 +157,10 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             return { status: 'focused', runtime: cloneRuntime(runtime) };
         }
 
+        if (refresh.tmuxError && !this.isTmuxUnavailable(refresh.tmuxError)) {
+            throw refresh.tmuxError;
+        }
+
         const configuration = snapshotConfiguration(this.dependencies.getConfiguration());
         const knownHint = this.isTmuxUnavailable(refresh.tmuxError)
             && !!this.dependencies.hasKnownTmuxHint
@@ -200,6 +204,10 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         if (existing.length === 1) {
             await this.backendFor(existing[0]).focus(existing[0]);
             return { status: 'focused', runtime: cloneRuntime(existing[0]) };
+        }
+
+        if (refresh.tmuxError && !this.isTmuxUnavailable(refresh.tmuxError)) {
+            throw refresh.tmuxError;
         }
 
         const configuration = snapshotConfiguration(this.dependencies.getConfiguration());

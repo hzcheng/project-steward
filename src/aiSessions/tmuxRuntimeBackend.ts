@@ -71,8 +71,14 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
 
     constructor(private readonly dependencies: TmuxRuntimeBackendDependencies<TTerminal>) { }
 
-    refresh(force: boolean = false): Promise<void> {
-        return this.dependencies.discovery.refresh(force);
+    async refresh(force: boolean = false): Promise<void> {
+        await this.requireAvailable();
+        try {
+            await this.dependencies.discovery.refresh(force);
+        } catch (error) {
+            const unavailable = readOnlyRefreshUnavailableError(error);
+            throw unavailable || error;
+        }
     }
 
     getActive(): AiSessionRuntimeSnapshot<TTerminal>[] {
@@ -1484,6 +1490,29 @@ function unavailableReason(category: string): TmuxRuntimeUnavailableReason {
         default:
             return 'probe-failed';
     }
+}
+
+function readOnlyRefreshUnavailableError(error: unknown): TmuxRuntimeUnavailableError | null {
+    if (!(error instanceof TmuxClientError)
+        || !isReadOnlyTmuxOperation(error.operation)
+        || (error.category !== 'not-found'
+            && error.category !== 'permission-denied'
+            && error.category !== 'timeout')) {
+        return null;
+    }
+    return new TmuxRuntimeUnavailableError(
+        unavailableReason(error.category),
+        error.message
+    );
+}
+
+function isReadOnlyTmuxOperation(operation: string): boolean {
+    return operation === 'check-version'
+        || operation === 'list-commands'
+        || operation === 'list-windows'
+        || operation === 'has-session'
+        || operation === 'get-session-options'
+        || operation === 'get-window-options';
 }
 
 function consumedPendingError(record: TmuxConsumedPendingBinding): Error {
