@@ -67,6 +67,7 @@ export class TmuxRuntimeDiscovery {
     private successfulAtMs: number | null = null;
     private cacheGeneration = 0;
     private inFlight: Promise<void> | null = null;
+    private forcedAfterInFlight: Promise<void> | null = null;
 
     constructor(private readonly options: TmuxRuntimeDiscoveryOptions) {
         this.nowMs = options.nowMs || (() => Date.now());
@@ -77,22 +78,57 @@ export class TmuxRuntimeDiscovery {
 
     refresh(force: boolean = false): Promise<void> {
         if (this.inFlight) {
-            return this.inFlight;
+            if (!force) {
+                return this.inFlight;
+            }
+            if (!this.forcedAfterInFlight) {
+                const joined = this.inFlight;
+                const startFresh = () => this.startRefresh();
+                const forced = joined.then(startFresh, startFresh);
+                let tracked: Promise<void>;
+                tracked = forced.then(
+                    () => {
+                        if (this.forcedAfterInFlight === tracked) {
+                            this.forcedAfterInFlight = null;
+                        }
+                    },
+                    error => {
+                        if (this.forcedAfterInFlight === tracked) {
+                            this.forcedAfterInFlight = null;
+                        }
+                        throw error;
+                    }
+                );
+                this.forcedAfterInFlight = tracked;
+            }
+            return this.forcedAfterInFlight;
         }
         if (!force && this.successfulAtMs !== null
             && this.nowMs() - this.successfulAtMs < this.cacheTtlMs) {
             return Promise.resolve();
         }
 
+        return this.startRefresh();
+    }
+
+    private startRefresh(): Promise<void> {
         const refresh = this.refreshUncached(this.cacheGeneration);
-        this.inFlight = refresh.then(
-            () => { this.inFlight = null; },
+        let tracked: Promise<void>;
+        tracked = refresh.then(
+            () => {
+                if (this.inFlight === tracked) {
+                    this.inFlight = null;
+                }
+            },
             error => {
-                this.inFlight = null;
+                if (this.inFlight === tracked) {
+                    this.inFlight = null;
+                }
                 throw error;
             }
         );
-        return this.inFlight;
+        this.inFlight = tracked;
+        return tracked;
     }
 
     getActive(): AiSessionRuntimeSnapshot[] {
