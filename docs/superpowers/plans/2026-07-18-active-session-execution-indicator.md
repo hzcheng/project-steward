@@ -249,7 +249,7 @@ Expected: monitor/controller checks pass and repeated signals do not schedule re
 - Modify: `src/aiSessions/activeSessionProjection.ts:1-190`
 
 **Interfaces:**
-- Consumes: `ApplyAiSessionRuntimeProjectionInput.executionSnapshot`.
+- Introduces: optional `ApplyAiSessionRuntimeProjectionInput.executionSnapshot` so the unchanged Dashboard remains compilable until Task 4 supplies the live snapshot and tightens it to required.
 - Produces: `ActiveAiSessionViewModel.executionState: 'starting' | 'running' | 'stopped'`.
 - Temporarily preserves: overloaded `ActiveAiSessionStatus` and `ActiveAiSessionViewModel.status` only as a renderer compatibility field until Task 5 removes both in the same TDD cycle as the renderer migration.
 
@@ -309,7 +309,7 @@ export interface ActiveAiSessionViewModel {
 }
 ```
 
-In `activeSessionProjection.ts`, add `executionSnapshot: Record<string, AiSessionExecutionSnapshot>` to the input. Bound models use `input.executionSnapshot[key]?.state || 'stopped'`; pending models use `starting`. Continue populating the legacy `status` field only for the unchanged renderer; do not use it as the source of execution truth.
+In `activeSessionProjection.ts`, add `executionSnapshot?: Record<string, AiSessionExecutionSnapshot>` to the input. Bound models use `(input.executionSnapshot || {})[key]?.state || 'stopped'`; pending models use `starting`. The field is temporarily optional only because the Dashboard wiring belongs to Task 4. Continue populating the legacy `status` field only for the unchanged renderer; do not use it as the source of execution truth.
 
 Remove `getStatusRank()`. Implement sort rank directly from the orthogonal booleans:
 
@@ -340,6 +340,7 @@ Expected: projection tests pass, including default-stopped and unchanged-order a
 
 **Files:**
 - Modify: `scripts/run-ai-session-safety-checks.js:2670-2860,4190-4210`
+- Modify: `src/aiSessions/activeSessionProjection.ts:12-25`
 - Modify: `src/dashboard.ts:45-65,460-505,920-975,1181-1195`
 
 **Interfaces:**
@@ -404,7 +405,7 @@ In `getOpenProjects()`, add:
             executionSnapshot: aiSessionExecutionController.getSnapshot(),
 ```
 
-Keep the hydration, active/pending Terminal ownership, focused identity, CWD matching, and path normalization inputs unchanged.
+Once the Dashboard supplies that value, make `ApplyAiSessionRuntimeProjectionInput.executionSnapshot` required by removing the temporary `?` and simplify bound lookup to `input.executionSnapshot[key]?.state || 'stopped'`. Keep the hydration, active/pending Terminal ownership, focused identity, CWD matching, and path normalization inputs unchanged.
 
 - [ ] **Step 5: Verify GREEN and commit**
 
@@ -414,7 +415,7 @@ Run:
 npm run test:safety
 npm run test:dashboard
 git diff --check
-git add src/dashboard.ts scripts/run-ai-session-safety-checks.js
+git add src/aiSessions/activeSessionProjection.ts src/dashboard.ts scripts/run-ai-session-safety-checks.js
 git commit -m "feat: wire active session execution monitoring"
 ```
 
