@@ -202,7 +202,6 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         }
         return this.dependencies.withCreationLock<AiSessionRuntimeSnapshot<TTerminal>[]>(
             pendingLifecycleLockKey(pendingId), async () => {
-            await this.requireAvailable();
             const storedIntent = await this.dependencies.runtimeStore.getPromotingByPendingId(pendingId);
             const storedLiveBinding = await this.dependencies.runtimeStore.getPending(pendingId);
             if (storedIntent && storedLiveBinding
@@ -217,6 +216,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             if (storedIntent && storedIntent.finalSessionId !== sessionId) {
                 throw new Error('The pending tmux runtime has a conflicting promotion in progress.');
             }
+            await this.requireAvailable();
             await this.dependencies.discovery.refresh(true);
             const pendingIdentityValue = identityFromPendingBinding(storedPending);
             const consumedByPendingId = await this.dependencies.runtimeStore.getConsumedByPendingId(pendingId);

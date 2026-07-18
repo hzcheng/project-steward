@@ -3396,9 +3396,13 @@ async function runTmuxBackendChecks() {
         );
         assert.strictEqual(recoveryHarness.operations.filter(item =>
             item.type === 'new-session' || item.type === 'new-window').length, createCountBeforeBlockedEnsure);
+        const availabilityBeforeRecoveredPromotion = recoveryHarness.operations.filter(item =>
+            item.type === 'availability').length;
         const recoveredPromotion = await new backendModule.TmuxRuntimeBackend(recoveryHarness.dependencies)
             .promotePending(recoveryRequest.identity.pendingId, `promotion-recovery-final-${recoveryLayout}`);
         assert.strictEqual(recoveredPromotion.length, 1);
+        assert.strictEqual(recoveryHarness.operations.filter(item =>
+            item.type === 'availability').length, availabilityBeforeRecoveredPromotion + 1);
         assert.strictEqual(recoveryHarness.promoting.size, 0);
         assert.strictEqual(recoveryHarness.pending.size, 0);
         assert.strictEqual(recoveryHarness.consumed.size, 1);
@@ -3449,11 +3453,18 @@ async function runTmuxBackendChecks() {
         item.type === 'remove-pending').length;
     const removeIntentBeforeIntentLiveRetry = intentLiveHarness.operations.filter(item =>
         item.type === 'remove-promoting').length;
+    const operationsBeforeIntentLiveRetry = intentLiveHarness.operations.length;
+    const availabilityBeforeIntentLiveRetry = intentLiveHarness.operations.filter(item =>
+        item.type === 'availability').length;
     await assert.rejects(
         new backendModule.TmuxRuntimeBackend(intentLiveHarness.dependencies)
             .promotePending(identityB.pendingId, intentLiveFinalId),
         /conflicting.*(binding|contract|promotion)|intent.*live/i
     );
+    assert.strictEqual(intentLiveHarness.operations.filter(item =>
+        item.type === 'availability').length, availabilityBeforeIntentLiveRetry);
+    assert.deepStrictEqual(intentLiveHarness.operations.slice(operationsBeforeIntentLiveRetry)
+        .map(item => item.type), ['lock-queued', 'lock']);
     assert.deepStrictEqual(Array.from(intentLiveHarness.promoting.values())[0], intentA);
     assert.deepStrictEqual(intentLiveHarness.pending.get(identityB.pendingId), bindingB);
     assert.strictEqual(intentLiveHarness.consumed.size, 0);
