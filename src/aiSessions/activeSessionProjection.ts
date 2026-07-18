@@ -18,7 +18,7 @@ export interface ApplyAiSessionRuntimeProjectionInput {
     providers: Record<AiSessionProviderId, ProjectionProvider>;
     activeTerminals: AiSessionActiveTerminalRuntime[];
     pendingTerminals: Array<Pick<PendingAiSessionTerminal, 'provider' | 'cwd' | 'createdAt' | 'title'>>;
-    executionSnapshot?: Record<string, AiSessionExecutionSnapshot>;
+    executionSnapshot: Record<string, AiSessionExecutionSnapshot>;
     focusedIdentity: ActiveAiSessionTerminalIdentity | null;
     getProjectCwd(project: Project): string;
     normalizePath(value: string): string;
@@ -94,7 +94,7 @@ function projectWithRuntime(
             sessionId: runtime.sessionId,
             name: session?.name || `${provider?.label || 'AI'} ${shortSessionId(runtime.sessionId)}`,
             status: getEstablishedStatus(needsAttention, focused),
-            executionState: (input.executionSnapshot || {})[key]?.state || 'stopped',
+            executionState: input.executionSnapshot[key]?.state || 'stopped',
             focused,
             needsAttention,
             pending: false,

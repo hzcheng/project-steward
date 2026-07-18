@@ -53,6 +53,7 @@ import { AiSessionArchiveController } from './aiSessions/archiveController';
 import { AiSessionResumeController } from './aiSessions/resumeController';
 import { AiSessionTerminalCommandController } from './aiSessions/terminalCommandController';
 import { AiSessionAttentionController } from './aiSessions/attentionController';
+import { AiSessionExecutionController } from './aiSessions/executionController';
 import { AiSessionProjectHydrationController } from './aiSessions/projectHydrationController';
 import { getLastPartOfPath, isUriString, parsePathAsUri } from './projects/openProjectService';
 import { getWorkspacePath as resolveWorkspacePath } from './projects/workspaceHelpers';
@@ -472,6 +473,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         postProjectsUpdated: projects => postAiSessionAttentionProjectsUpdated(projects),
         nowMs: () => Date.now(),
     });
+    const aiSessionExecutionController = new AiSessionExecutionController({
+        getActiveSessions: () => aiSessionTerminalService.getActiveSessions(),
+        getProviders: getRegisteredAiSessionProviders,
+        getSessionKey: getAiSessionKey,
+        scheduleRefresh: reason => scheduleAiSessionRefresh(reason),
+        nowMs: () => Date.now(),
+    });
     const acknowledgeAiSessionAttention = (identity: ActiveAiSessionTerminalIdentity): void => {
         const sessionKey = getAiSessionKey(identity.provider, identity.sessionId);
         const eventIds = aiSessionAttentionController.getRecoverySessionEvents()
@@ -495,6 +503,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
     const aiSessionAttentionInterval = setInterval(() => { void aiSessionAttentionController.evaluate(); }, 10_000);
     setTimeout(() => { void aiSessionAttentionController.evaluate(); }, 0);
+    const aiSessionExecutionInterval = setInterval(() => { aiSessionExecutionController.evaluate(); }, 1_000);
+    setTimeout(() => { aiSessionExecutionController.evaluate(); }, 0);
     const openProjectAiSessionViewModelBuilder = createOpenProjectAiSessionViewModelBuilder();
     const aiSessionDashboardController = new AiSessionDashboardController({
         providerIds: aiSessionProviders.map(provider => provider.id),
@@ -956,6 +966,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const hadPendingTerminal = aiSessionTerminalService.getPendingTerminals()
                 .some(pending => pending.terminal === terminal);
             const closedSessions = aiSessionTerminalService.handleClosedTerminal(terminal);
+            aiSessionExecutionController.evaluate();
             closedSessions.forEach(acknowledgeAiSessionAttention);
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
             if (closedSessions.length || hadPendingTerminal) {
@@ -970,6 +981,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         dispose: () => {
             aiSessionDashboardController.dispose();
             clearInterval(aiSessionAttentionInterval);
+            clearInterval(aiSessionExecutionInterval);
             clearInterval(aiSessionTerminalCompletionInterval);
         }
     });
@@ -1185,6 +1197,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             providers: AI_SESSION_PROVIDER_DEFINITIONS,
             activeTerminals: aiSessionTerminalService.getActiveSessions(),
             pendingTerminals: aiSessionTerminalService.getPendingTerminals(),
+            executionSnapshot: aiSessionExecutionController.getSnapshot(),
             focusedIdentity: activeAiSessionTerminalHighlighter.getIdentity(),
             getProjectCwd: getOpenProjectAiSessionTerminalCwd,
             normalizePath: normalizeAiSessionProjectPath,
