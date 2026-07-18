@@ -660,9 +660,13 @@ async function runTmuxStoreChecks() {
             await releaseOld.promise;
         });
         await oldEntered.promise;
-        const oldArtifact = fs.statSync(raceLockPath).isDirectory()
-            ? path.join(raceLockPath, fs.readdirSync(raceLockPath)[0])
-            : raceLockPath;
+        const childArtifacts = fs.statSync(raceLockPath).isDirectory()
+            ? fs.readdirSync(raceLockPath).map(name => path.join(raceLockPath, name))
+            : [];
+        const directArtifacts = fs.readdirSync(lockDirectory)
+            .filter(name => name.startsWith(`${raceDigest}.`) && name.endsWith('.claim'))
+            .map(name => path.join(lockDirectory, name));
+        const oldArtifact = childArtifacts[0] || directArtifacts[0] || raceLockPath;
         const originalUnlink = fs.promises.unlink;
         const originalRmdir = fs.promises.rmdir;
         const cleanupPaused = deferred();
@@ -739,11 +743,59 @@ async function runTmuxStoreChecks() {
         assert.strictEqual(injectedHandleClosed, true);
         assert.deepStrictEqual(fs.readdirSync(lockDirectory), []);
 
-        const lockName = `${crypto.createHash('sha256').update('stale-key', 'utf8').digest('hex')}.lock`;
+        const symlinkKey = 'symlinked-lock-container';
+        const symlinkDigest = crypto.createHash('sha256').update(symlinkKey, 'utf8').digest('hex');
+        const symlinkLockPath = path.join(lockDirectory, `${symlinkDigest}.lock`);
+        const externalLockDirectory = path.join(root, 'external-lock-target');
+        fs.mkdirSync(externalLockDirectory);
+        const externalClaimPath = path.join(externalLockDirectory, `${'a'.repeat(64)}.claim`);
+        fs.writeFileSync(externalClaimPath, 'external claim must survive');
+        const externalClaimBefore = fs.readFileSync(externalClaimPath, 'utf8');
+        const oldExternalTime = new Date(Date.now() - 31000);
+        fs.utimesSync(externalClaimPath, oldExternalTime, oldExternalTime);
+        fs.symlinkSync(externalLockDirectory, symlinkLockPath, 'dir');
+        let symlinkOperationRan = false;
+        await assert.rejects(creationLock.withTmuxCreationLock(root, symlinkKey, async () => {
+            symlinkOperationRan = true;
+        }));
+        assert.strictEqual(symlinkOperationRan, false);
+        assert.strictEqual(fs.readFileSync(externalClaimPath, 'utf8'), externalClaimBefore);
+        assert.deepStrictEqual(fs.readdirSync(externalLockDirectory), [path.basename(externalClaimPath)]);
+        fs.unlinkSync(symlinkLockPath);
+        fs.rmSync(externalLockDirectory, { recursive: true, force: true });
+
+        const identityKey = 'replacement-container-identity';
+        const identityDigest = crypto.createHash('sha256').update(identityKey, 'utf8').digest('hex');
+        const identityLockPath = path.join(lockDirectory, `${identityDigest}.lock`);
+        const displacedIdentityPath = path.join(lockDirectory, `${identityDigest}.displaced`);
+        const identityEntered = deferred();
+        const releaseIdentity = deferred();
+        const identityLock = creationLock.withTmuxCreationLock(root, identityKey, async () => {
+            identityEntered.resolve();
+            await releaseIdentity.promise;
+        });
+        await identityEntered.promise;
+        fs.renameSync(identityLockPath, displacedIdentityPath);
+        fs.mkdirSync(identityLockPath);
+        const replacementIdentity = fs.lstatSync(identityLockPath);
+        releaseIdentity.resolve();
+        await identityLock;
+        const survivingIdentity = fs.lstatSync(identityLockPath);
+        assert.strictEqual(survivingIdentity.dev, replacementIdentity.dev);
+        assert.strictEqual(survivingIdentity.ino, replacementIdentity.ino);
+        fs.rmdirSync(identityLockPath);
+        fs.rmSync(displacedIdentityPath, { recursive: true, force: true });
+
+        const staleDigest = crypto.createHash('sha256').update('stale-key', 'utf8').digest('hex');
+        const lockName = `${staleDigest}.lock`;
         const staleLockPath = path.join(lockDirectory, lockName);
         fs.mkdirSync(staleLockPath);
-        const staleClaimPath = path.join(staleLockPath, `${'0'.repeat(64)}.claim`);
-        fs.writeFileSync(staleClaimPath, 'stale');
+        const staleIdentity = fs.lstatSync(staleLockPath);
+        const staleClaimPath = path.join(lockDirectory, `${staleDigest}.${'0'.repeat(64)}.claim`);
+        fs.writeFileSync(staleClaimPath, JSON.stringify({
+            version: 1, dev: staleIdentity.dev, ino: staleIdentity.ino,
+            birthtimeMs: staleIdentity.birthtimeMs,
+        }));
         const staleTime = new Date(Date.now() - 31000);
         fs.utimesSync(staleClaimPath, staleTime, staleTime);
         fs.utimesSync(staleLockPath, staleTime, staleTime);
@@ -751,6 +803,7 @@ async function runTmuxStoreChecks() {
         await creationLock.withTmuxCreationLock(root, 'stale-key', async () => { recovered = true; });
         assert.strictEqual(recovered, true);
         assert.strictEqual(fs.existsSync(staleLockPath), false);
+        assert.strictEqual(fs.existsSync(staleClaimPath), false);
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
