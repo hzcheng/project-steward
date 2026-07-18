@@ -5075,6 +5075,108 @@ async function runRuntimeControllerChecks() {
     assert.strictEqual(coordinator.detached.length, 2);
     assert.deepStrictEqual(runtimes, [direct, tmux, legacy], 'controller calls must not mutate runtime snapshots');
 
+    const normalizeCanonicalPath = value => value
+        .replace(/\\/g, '/')
+        .replace(/\/+$/, '')
+        .toLowerCase();
+    const requestedFallbackProject = {
+        id: 'repo-project', name: 'Repo Project', path: '/REPO/',
+        codexSessions: [
+            { id: 'legacy-inferred-session' },
+            { id: 'key-owned-by-other-session' },
+            { id: 'cwd-owned-by-other-session' },
+        ],
+        kimiSessions: [], claudeSessions: [],
+    };
+    const explicitOtherProject = {
+        id: 'other-repo-project', name: 'Other Repo Project', path: '/OTHER-REPO/',
+        codexSessions: [], kimiSessions: [], claudeSessions: [],
+    };
+    const inferredRuntime = {
+        identity: {
+            provider: 'codex', sessionId: 'legacy-inferred-session',
+            projectKey: '/repo/subdir', cwd: '/repo/subdir/',
+        },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/legacy-inferred.done',
+        runStartedAtMs: 4, attached: true, terminal: { name: 'legacy-inferred-terminal' },
+    };
+    const keyOwnedByOtherRuntime = {
+        identity: {
+            provider: 'codex', sessionId: 'key-owned-by-other-session',
+            projectKey: 'canonical:/other-repo', cwd: '/repo/subdir',
+        },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/key-owned-other.done',
+        runStartedAtMs: 5, attached: true, terminal: { name: 'key-owned-other-terminal' },
+    };
+    const cwdOwnedByOtherRuntime = {
+        identity: {
+            provider: 'codex', sessionId: 'cwd-owned-by-other-session',
+            projectKey: 'legacy:/unmatched', cwd: '/other-repo///',
+        },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/cwd-owned-other.done',
+        runStartedAtMs: 6, attached: true, terminal: { name: 'cwd-owned-other-terminal' },
+    };
+    const fallbackRuntimes = [inferredRuntime, keyOwnedByOtherRuntime, cwdOwnedByOtherRuntime];
+    const fallbackFocused = [];
+    const fallbackDetached = [];
+    const fallbackConfirmations = [];
+    const fallbackCoordinator = {
+        getById: (provider, sessionId) => fallbackRuntimes.find(runtime => {
+            return runtime.identity.provider === provider && runtime.identity.sessionId === sessionId;
+        }) || null,
+        getPending: () => [],
+        focus: async identity => fallbackFocused.push({ ...identity }),
+        detach: async identity => fallbackDetached.push({ ...identity }),
+    };
+    const fallbackController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getOpenProjects: () => [requestedFallbackProject, explicitOtherProject],
+        getProjectSessions: (candidate, provider) => candidate[`${provider}Sessions`] || [],
+        getProjectKey: candidate => `canonical:${normalizeCanonicalPath(candidate.path)}`,
+        getProjectCwd: candidate => candidate.path,
+        normalizePath: normalizeCanonicalPath,
+        runtimeCoordinator: fallbackCoordinator,
+        confirmRuntimeClose: async (_message, action) => {
+            fallbackConfirmations.push(action);
+            return action;
+        },
+        announceStatus: async () => undefined,
+        showErrorMessage: async () => undefined,
+        getProviderLabel: provider => provider.toUpperCase(),
+        refresh: () => undefined,
+    });
+
+    await fallbackController.focusActive('repo-project', 'codex', 'legacy-inferred-session');
+    assert.deepStrictEqual(fallbackFocused, [{ ...inferredRuntime.identity }],
+        'legacy inferred non-empty identity fields may use requested history when no open project matches');
+    await fallbackController.closeTerminal({
+        projectId: 'repo-project', providerId: 'codex', sessionId: 'legacy-inferred-session',
+    });
+    assert.deepStrictEqual(fallbackDetached, [{ ...inferredRuntime.identity }],
+        'legacy inferred runtime detach may use requested history when no open project matches');
+    assert.deepStrictEqual(fallbackConfirmations, ['Close Terminal']);
+
+    await fallbackController.focusActive('repo-project', 'codex', 'key-owned-by-other-session');
+    await fallbackController.closeTerminal({
+        projectId: 'repo-project', providerId: 'codex', sessionId: 'key-owned-by-other-session',
+    });
+    assert.strictEqual(fallbackFocused.length, 1,
+        'history must not override a projectKey owned by another open project');
+    assert.strictEqual(fallbackDetached.length, 1,
+        'detach must reject a projectKey owned by another open project');
+    assert.strictEqual(fallbackConfirmations.length, 1,
+        'wrong-project runtime must be rejected before confirmation');
+
+    await fallbackController.focusActive('repo-project', 'codex', 'cwd-owned-by-other-session');
+    assert.strictEqual(fallbackFocused.length, 1,
+        'history must not override a normalized cwd owned by another open project');
+    await fallbackController.focusActive('other-repo-project', 'codex', 'key-owned-by-other-session');
+    await fallbackController.focusActive('other-repo-project', 'codex', 'cwd-owned-by-other-session');
+    assert.deepStrictEqual(fallbackFocused.slice(1), [
+        { ...keyOwnedByOtherRuntime.identity },
+        { ...cwdOwnedByOtherRuntime.identity },
+    ], 'canonical project keys and normalized cwd values must resolve across all open projects');
+
     const directRaceRuntime = terminal => ({
         identity: { provider: 'codex', sessionId: 'race-session', projectKey: 'pk', cwd: '/work' },
         backend: 'vscode', state: 'active', markerPath: '/tmp/race.done',

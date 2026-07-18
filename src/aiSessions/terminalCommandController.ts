@@ -222,10 +222,10 @@ export class AiSessionTerminalCommandController<
         sessionId: string,
         options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
     ): AiSessionRuntimeSnapshot<TTerminal> | null {
-        const project = options.getOpenProjects().find(candidate => candidate.id === projectId);
+        const ownership = this.getRuntimeProjectOwnership(projectId, options);
         const runtime = options.runtimeCoordinator.getById(providerId, sessionId);
-        return project && runtime && this.runtimeBelongsToProject(
-            project, providerId, sessionId, runtime, options
+        return ownership && runtime && this.runtimeBelongsToProject(
+            ownership, providerId, sessionId, runtime, options
         )
             ? cloneRuntime(runtime)
             : null;
@@ -237,38 +237,58 @@ export class AiSessionTerminalCommandController<
         createdAt: string,
         options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
     ): AiSessionPendingRuntimeSnapshot<TTerminal> | null {
-        const project = options.getOpenProjects().find(candidate => candidate.id === projectId);
-        if (!project) {
+        const ownership = this.getRuntimeProjectOwnership(projectId, options);
+        if (!ownership) {
             return null;
         }
         const matches = options.runtimeCoordinator.getPending().filter(runtime => {
             return runtime.identity.provider === providerId
                 && runtime.createdAt === createdAt
-                && this.runtimeBelongsToProject(project, providerId, undefined, runtime, options);
+                && this.runtimeBelongsToProject(ownership, providerId, undefined, runtime, options);
         });
         return matches.length === 1 ? clonePendingRuntime(matches[0]) : null;
     }
 
+    private getRuntimeProjectOwnership(
+        projectId: string,
+        options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
+    ): RuntimeProjectOwnership | null {
+        const openProjects = options.getOpenProjects().map(project => ({
+            project,
+            canonicalKey: options.getProjectKey(project),
+            normalizedCwd: options.normalizePath(options.getProjectCwd(project)),
+        }));
+        const requested = openProjects.find(candidate => candidate.project.id === projectId);
+        return requested ? { requested, openProjects } : null;
+    }
+
     private runtimeBelongsToProject(
-        project: Project,
+        ownership: RuntimeProjectOwnership,
         providerId: AiSessionProviderId,
         sessionId: string | undefined,
         runtime: AiSessionRuntimeSnapshot<TTerminal>,
         options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
     ): boolean {
-        const belongsToHistory = !!sessionId
-            && (options.getProjectSessions(project, providerId) || [])
-                .some(session => session.id === sessionId);
-        const projectCwd = options.normalizePath(options.getProjectCwd(project));
-        const runtimeCwd = options.normalizePath(runtime.identity.cwd);
-        const projectKey = options.getProjectKey(project);
         if (runtime.identity.projectKey) {
-            return runtime.identity.projectKey === projectKey;
+            const projectKeyOwner = ownership.openProjects.find(candidate => {
+                return candidate.canonicalKey === runtime.identity.projectKey;
+            });
+            if (projectKeyOwner) {
+                return projectKeyOwner === ownership.requested;
+            }
         }
+        const runtimeCwd = options.normalizePath(runtime.identity.cwd);
         if (runtimeCwd) {
-            return runtimeCwd === projectCwd;
+            const cwdOwner = ownership.openProjects.find(candidate => {
+                return candidate.normalizedCwd === runtimeCwd;
+            });
+            if (cwdOwner) {
+                return cwdOwner === ownership.requested;
+            }
         }
-        return belongsToHistory;
+        return !!sessionId
+            && (options.getProjectSessions(ownership.requested.project, providerId) || [])
+                .some(session => session.id === sessionId);
     }
 
     private getScopedActiveTerminal(
@@ -330,6 +350,17 @@ function clonePendingRuntime<TTerminal>(
         createdAt: runtime.createdAt,
         excludedSessionIds: [...runtime.excludedSessionIds],
     };
+}
+
+interface RuntimeProjectDescriptor {
+    project: Project;
+    canonicalKey: string;
+    normalizedCwd: string;
+}
+
+interface RuntimeProjectOwnership {
+    requested: RuntimeProjectDescriptor;
+    openProjects: RuntimeProjectDescriptor[];
 }
 
 interface RuntimeIdentityToken {
@@ -410,6 +441,7 @@ function validateControllerOptions<TTerminal extends { show(): void; dispose(): 
         || typeof coordinator.getPending !== 'function'
         || typeof coordinator.focus !== 'function'
         || typeof coordinator.detach !== 'function'
+        || typeof runtimeOptions.getOpenProjects !== 'function'
         || typeof runtimeOptions.getProjectKey !== 'function'
         || typeof runtimeOptions.confirmRuntimeClose !== 'function'
         || typeof runtimeOptions.announceStatus !== 'function') {

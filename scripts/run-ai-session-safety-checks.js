@@ -1642,6 +1642,18 @@ async function runAiSessionRuntimeControllerChecks() {
         /runtime controller options are invalid/);
     assert.throws(() => new AiSessionTerminalCommandController({ runtimeCoordinator: {} }),
         /runtime controller options are invalid/);
+    assert.throws(() => new AiSessionTerminalCommandController({
+        runtimeCoordinator: {
+            getById: () => null,
+            getPending: () => [],
+            focus: async () => undefined,
+            detach: async () => undefined,
+        },
+        getProjectKey: () => 'project-key',
+        confirmRuntimeClose: async () => undefined,
+        announceStatus: async () => undefined,
+    }), /runtime controller options are invalid/,
+    'runtime terminal options must enumerate every open project for ownership resolution');
     const session = Object.freeze({
         id: 'session-a', name: 'Session A', cwd: '/work/a', updatedAt: '2026-07-19T03:00:00Z',
     });
