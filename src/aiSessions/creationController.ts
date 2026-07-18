@@ -4,6 +4,12 @@ import type * as vscode from 'vscode';
 
 import type { AiSessionProviderId, Project } from '../models';
 import { sanitizeAiSessionAlias } from './aliasStore';
+import type { AiSessionLaunchSpec } from './launchSpec';
+import type {
+    AiSessionCreateRuntimeRequest,
+    AiSessionPendingRuntimeSnapshot,
+    AiSessionRuntimeActionResult,
+} from './runtimeTypes';
 
 export interface NewAiSessionFields {
     title: string;
@@ -12,6 +18,7 @@ export interface NewAiSessionFields {
 export interface AiSessionCreationProvider {
     label: string;
     terminalNamePrefix: string;
+    buildNewSessionLaunchSpec?: (cwd: string, title: string, markerPath: string) => AiSessionLaunchSpec;
 }
 
 export interface CreatedAiSessionTerminal {
@@ -28,16 +35,24 @@ export interface PendingAiSessionTerminal {
     title?: string;
 }
 
+export interface AiSessionCreationRuntimeCoordinator {
+    create(request: AiSessionCreateRuntimeRequest): Promise<AiSessionRuntimeActionResult<vscode.Terminal>>;
+    getPending(): AiSessionPendingRuntimeSnapshot<vscode.Terminal>[];
+}
+
 export interface AiSessionCreationControllerOptions {
     isProviderId: (value: string) => value is AiSessionProviderId;
     getOpenProjects: () => Project[];
     pickProvider: () => Thenable<AiSessionProviderId | undefined>;
     getProviderLabel: (providerId: AiSessionProviderId) => string;
     getProvider: (providerId: AiSessionProviderId) => AiSessionCreationProvider;
+    getProjectKey?: (project: Project) => string;
+    createPendingId?: () => string;
     getTerminalCwd: (project: Project) => string;
     getUsableTerminalCwd: (cwd: string) => string | null;
     showInputBox: (options: vscode.InputBoxOptions) => Thenable<string | undefined>;
     showActiveTab: (projectId: string) => Thenable<unknown> | Promise<unknown>;
+    announceStatus?: (projectId: string, message: string) => Thenable<unknown> | Promise<unknown>;
     showWarningMessage: (message: string, ...items: string[]) => Thenable<string | undefined>;
     refresh: () => void;
     createTerminal: (options: {
@@ -58,6 +73,7 @@ export interface AiSessionCreationControllerOptions {
     ) => Thenable<unknown>;
     scheduleNewSessionRefresh: (providerId: AiSessionProviderId) => void;
     nowMs: () => number;
+    runtimeCoordinator?: AiSessionCreationRuntimeCoordinator;
 }
 
 export class AiSessionCreationController {
@@ -112,6 +128,11 @@ export class AiSessionCreationController {
         project: Project,
         fields: NewAiSessionFields
     ): Promise<void> {
+        if (this.options.runtimeCoordinator) {
+            await this.createRuntimeSession(providerId, project, fields);
+            return;
+        }
+
         const sessionProvider = this.options.getProvider(providerId);
         const cwd = this.options.getUsableTerminalCwd(this.options.getTerminalCwd(project));
         const pendingTerminalCwd = cwd || this.options.getTerminalCwd(project);
@@ -141,4 +162,60 @@ export class AiSessionCreationController {
         await this.options.sendNewSessionCommand(providerId, terminal, cwd, fields.title, markerPath);
         this.options.scheduleNewSessionRefresh(providerId);
     }
+
+    private async createRuntimeSession(
+        providerId: AiSessionProviderId,
+        project: Project,
+        fields: NewAiSessionFields
+    ): Promise<void> {
+        const coordinator = this.options.runtimeCoordinator as AiSessionCreationRuntimeCoordinator;
+        const sessionProvider = this.options.getProvider(providerId);
+        if (!sessionProvider.buildNewSessionLaunchSpec || !this.options.createPendingId) {
+            throw new Error('AI session runtime creation is not configured.');
+        }
+        const cwd = this.options.getTerminalCwd(project);
+        const projectKey = this.options.getProjectKey
+            ? this.options.getProjectKey(project)
+            : project.id;
+        const pendingId = this.options.createPendingId();
+        if (!pendingId) {
+            throw new Error('AI session pending identity is invalid.');
+        }
+        const existingSessionIds = this.options.getExistingSessionIdsForCwd(providerId, cwd).slice();
+        const createdAt = new Date(this.options.nowMs()).toISOString();
+        const markerPath = this.options.getPendingMarkerPath(providerId);
+        const terminalName = `${sessionProvider.terminalNamePrefix}: ${project.name || 'New Session'}`;
+        const launch = cloneLaunchSpec(
+            sessionProvider.buildNewSessionLaunchSpec(cwd, fields.title, markerPath)
+        );
+        const request: AiSessionCreateRuntimeRequest = {
+            identity: { provider: providerId, projectKey, cwd, pendingId },
+            projectName: project.name || 'New Session',
+            terminalName,
+            createdAt,
+            excludedSessionIds: existingSessionIds,
+            title: fields.title,
+            launch,
+        };
+        const result = await coordinator.create(request);
+        if (result.status === 'cancelled' || result.status === 'settings') {
+            return;
+        }
+        if (result.status === 'conflict') {
+            this.options.refresh();
+            await this.options.announceStatus?.(project.id, 'Multiple live runtimes match this AI session.');
+            return;
+        }
+        await this.options.showActiveTab(project.id);
+        this.options.refresh();
+        this.options.scheduleNewSessionRefresh(providerId);
+    }
+
+}
+
+function cloneLaunchSpec(launch: AiSessionLaunchSpec): AiSessionLaunchSpec {
+    return {
+        ...launch,
+        args: [...launch.args],
+    };
 }

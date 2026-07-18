@@ -19,6 +19,9 @@ const coordinatorModule = require('../out/aiSessions/runtimeCoordinator');
 const runtimeTypesModule = require('../out/aiSessions/runtimeTypes');
 const tmuxBackendModule = require('../out/aiSessions/tmuxRuntimeBackend');
 const activeSessionProjection = require('../out/aiSessions/activeSessionProjection');
+const CreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
+const ResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
+const TerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
 
 function config(values) {
     return { get: (key, fallback) => Object.prototype.hasOwnProperty.call(values, key) ? values[key] : fallback };
@@ -4973,6 +4976,164 @@ async function runRuntimeProjectionChecks() {
 
 }
 
+async function runRuntimeControllerChecks() {
+    const project = {
+        id: 'project', name: 'Project', path: '/work',
+        codexSessions: [{ id: 'direct-session' }, { id: 'tmux-session' }],
+        kimiSessions: [], claudeSessions: [],
+    };
+    const direct = {
+        identity: { provider: 'codex', sessionId: 'direct-session', projectKey: 'pk', cwd: '/work' },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/direct.done',
+        runStartedAtMs: 1, attached: true,
+    };
+    const tmux = {
+        identity: { provider: 'codex', sessionId: 'tmux-session', projectKey: 'pk', cwd: '/work' },
+        backend: 'tmux', state: 'active', markerPath: '/tmp/tmux.done',
+        runStartedAtMs: 2, attached: false,
+        tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-a' },
+    };
+    const runtimes = [direct, tmux];
+    const coordinator = {
+        focused: [], detached: [],
+        getById(provider, sessionId) {
+            return runtimes.find(runtime => runtime.identity.provider === provider
+                && runtime.identity.sessionId === sessionId) || null;
+        },
+        getPending: () => [],
+        focus: async identity => coordinator.focused.push({ ...identity }),
+        detach: async identity => coordinator.detached.push({ ...identity }),
+    };
+    const confirmations = [];
+    const controller = new TerminalCommandController({
+        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
+        getOpenProjects: () => [project],
+        getProjectSessions: (candidate, provider) => candidate[`${provider}Sessions`] || [],
+        getProjectKey: () => 'pk',
+        getProjectCwd: candidate => candidate.path,
+        normalizePath: value => value,
+        runtimeCoordinator: coordinator,
+        confirmRuntimeClose: async (message, action) => {
+            confirmations.push([message, action]);
+            return action;
+        },
+        showErrorMessage: async () => undefined,
+        getProviderLabel: provider => provider.toUpperCase(),
+        refresh: () => undefined,
+    });
+
+    await controller.focusActive('project', 'codex', 'direct-session');
+    assert.deepStrictEqual(coordinator.focused, [{
+        provider: 'codex', sessionId: 'direct-session', projectKey: 'pk', cwd: '/work',
+    }]);
+    const directRequest = Object.freeze({
+        projectId: 'project', providerId: 'codex', sessionId: 'direct-session',
+    });
+    await controller.closeTerminal(directRequest);
+    assert.deepStrictEqual(directRequest, {
+        projectId: 'project', providerId: 'codex', sessionId: 'direct-session',
+    });
+    assert.deepStrictEqual(confirmations[0], [
+        'Closing this CODEX terminal may interrupt a running AI task.', 'Close Terminal',
+    ]);
+    assert.strictEqual(coordinator.detached.length, 1);
+
+    await controller.closeTerminal({
+        projectId: 'project', providerId: 'codex', sessionId: 'tmux-session',
+    });
+    assert.deepStrictEqual(confirmations[1], [
+        'Detaching this CODEX terminal will leave the AI task running in tmux.', 'Detach Terminal',
+    ]);
+    assert.strictEqual(coordinator.detached.length, 2);
+    assert.deepStrictEqual(runtimes, [direct, tmux], 'controller calls must not mutate runtime snapshots');
+
+    const createRequests = [];
+    const createdAt = '2026-07-19T04:00:00.000Z';
+    const creation = new CreationController({
+        isProviderId: value => value === 'codex',
+        getOpenProjects: () => [project],
+        pickProvider: async () => 'codex',
+        getProviderLabel: () => 'Codex',
+        getProvider: () => ({
+            label: 'Codex', terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: (cwd, title, markerPath) => ({
+                executable: 'codex', args: ['new', title], cwd, markerPath,
+            }),
+        }),
+        getProjectKey: () => 'pk',
+        createPendingId: () => 'pending-controller',
+        getTerminalCwd: candidate => candidate.path,
+        getUsableTerminalCwd: cwd => cwd,
+        showInputBox: async () => 'Title',
+        showActiveTab: async () => undefined,
+        announceStatus: async () => undefined,
+        showWarningMessage: async () => undefined,
+        refresh: () => undefined,
+        getExistingSessionIdsForCwd: () => ['old'],
+        getPendingMarkerPath: () => '/tmp/pending.done',
+        scheduleNewSessionRefresh: () => undefined,
+        normalizeProjectPath: value => value,
+        setTimeout: () => ({}),
+        clearTimeout: () => undefined,
+        bindingTimeoutMs: 15_000,
+        nowMs: () => Date.parse(createdAt),
+        runtimeCoordinator: {
+            create: async request => {
+                createRequests.push(request);
+                return {
+                    status: 'started',
+                    runtime: {
+                        identity: { ...request.identity }, backend: 'tmux', state: 'pending',
+                        markerPath: request.launch.markerPath, runStartedAtMs: Date.parse(request.createdAt),
+                        attached: false, createdAt: request.createdAt,
+                        excludedSessionIds: [...request.excludedSessionIds], title: request.title,
+                    },
+                };
+            },
+            getPending: () => [],
+            focus: async () => undefined,
+        },
+    });
+    await creation.createSession('project');
+    assert.strictEqual(createRequests.length, 1);
+    assert.strictEqual(createRequests[0].identity.pendingId, 'pending-controller');
+    assert.strictEqual(createRequests[0].createdAt, createdAt);
+
+    const resumeRequests = [];
+    const resume = new ResumeController({
+        getOpenProjects: () => [project],
+        getProvider: () => ({
+            label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: (sessionId, cwd, markerPath) => ({
+                executable: 'codex', args: ['resume', sessionId], cwd, markerPath,
+            }),
+        }),
+        getProjectSession: (_project, _provider, sessionId) => ({
+            id: sessionId, name: 'Tmux session', cwd: '/work', updatedAt: createdAt,
+        }),
+        getProjectKey: () => 'pk',
+        getTerminalCwd: () => '/work',
+        getTerminalName: () => 'Codex: Tmux session',
+        getComparableCwd: () => '/work',
+        getUsableTerminalCwd: cwd => cwd,
+        normalizeProjectPath: value => value,
+        getMarkerPath: () => '/tmp/resume.done',
+        showWarningMessage: () => undefined,
+        refresh: () => undefined,
+        showActiveTab: () => undefined,
+        runtimeCoordinator: {
+            resume: async request => {
+                resumeRequests.push(request);
+                return { status: 'focused', runtime: tmux };
+            },
+        },
+    });
+    await resume.resumeProjectSession('project', 'codex', 'tmux-session');
+    assert.deepStrictEqual(resumeRequests[0].identity, {
+        provider: 'codex', sessionId: 'tmux-session', projectKey: 'pk', cwd: '/work',
+    });
+}
+
 async function main() {
     runRuntimeConfigurationChecks();
     runLaunchSpecChecks();
@@ -4984,6 +5145,7 @@ async function main() {
     await runDirectBackendChecks();
     await runRuntimeCoordinatorChecks();
     await runRuntimeProjectionChecks();
+    await runRuntimeControllerChecks();
     console.log('AI session tmux checks passed.');
 }
 

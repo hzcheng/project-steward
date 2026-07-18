@@ -1,6 +1,11 @@
 'use strict';
 
 import type { AiSessionProviderId, CodexSession, Project } from '../models';
+import type { AiSessionLaunchSpec } from './launchSpec';
+import type {
+    AiSessionResumeRuntimeRequest,
+    AiSessionRuntimeActionResult,
+} from './runtimeTypes';
 
 export interface AiSessionResumeTerminal {
     show(): void;
@@ -14,6 +19,11 @@ export interface AiSessionResumeTerminalEntry<TTerminal extends AiSessionResumeT
 export interface AiSessionResumeProvider {
     label: string;
     terminalEnvKey: string;
+    buildResumeLaunchSpec?: (sessionId: string, cwd: string, markerPath: string) => AiSessionLaunchSpec;
+}
+
+export interface AiSessionResumeRuntimeCoordinator<TTerminal> {
+    resume(request: AiSessionResumeRuntimeRequest): Promise<AiSessionRuntimeActionResult<TTerminal>>;
 }
 
 export interface AiSessionResumeCreateTerminalOptions {
@@ -50,6 +60,7 @@ export interface AiSessionResumeControllerOptions<
     getProvider: (providerId: AiSessionProviderId) => AiSessionResumeProvider | null;
     getProjectSession: (project: Project, providerId: AiSessionProviderId, sessionId: string) => CodexSession | null | undefined;
     getTerminalCwd: (providerId: AiSessionProviderId, session: CodexSession, project: Project) => string;
+    getProjectKey?: (project: Project) => string;
     getTerminalName: (providerId: AiSessionProviderId, session: CodexSession) => string;
     getComparableCwd: (providerId: AiSessionProviderId, session: CodexSession) => string;
     getUsableTerminalCwd: (cwd: string) => string | null;
@@ -82,11 +93,13 @@ export interface AiSessionResumeControllerOptions<
         markerPath: string
     ) => Thenable<void> | Promise<void>;
     showWarningMessage: (message: string) => unknown;
+    announceStatus?: (projectId: string, message: string) => Thenable<unknown> | Promise<unknown>;
     syncActiveTerminal: () => void;
     refresh: () => void;
     showActiveTab: (projectId: string) => unknown;
     logError: (message: string, error: unknown) => void;
     nowMs: () => number;
+    runtimeCoordinator?: AiSessionResumeRuntimeCoordinator<TTerminal>;
 }
 
 export class AiSessionResumeController<
@@ -114,6 +127,11 @@ export class AiSessionResumeController<
         const session = project ? this.options.getProjectSession(project, providerId, sessionId) : null;
         if (!project || !session) {
             this.options.showWarningMessage(`Selected ${sessionProvider.label} session not found.`);
+            return;
+        }
+
+        if (this.options.runtimeCoordinator) {
+            await this.resumeRuntime(project, providerId, session, sessionProvider);
             return;
         }
 
@@ -182,4 +200,58 @@ export class AiSessionResumeController<
             this.options.finishResume(providerId, session.id);
         }
     }
+
+    private async resumeRuntime(
+        project: Project,
+        providerId: AiSessionProviderId,
+        session: CodexSession,
+        sessionProvider: AiSessionResumeProvider
+    ): Promise<void> {
+        if (!sessionProvider.buildResumeLaunchSpec) {
+            throw new Error('AI session runtime resume is not configured.');
+        }
+        const cwd = this.options.getTerminalCwd(providerId, session, project);
+        const projectKey = this.options.getProjectKey
+            ? this.options.getProjectKey(project)
+            : this.options.normalizeProjectPath(this.options.getTerminalCwd(providerId, session, project))
+                || project.id;
+        const markerPath = this.options.getMarkerPath(providerId, session.id);
+        const launch = cloneLaunchSpec(
+            sessionProvider.buildResumeLaunchSpec(session.id, cwd, markerPath)
+        );
+        const request: AiSessionResumeRuntimeRequest = {
+            identity: {
+                provider: providerId,
+                sessionId: session.id,
+                projectKey,
+                cwd,
+            },
+            projectName: project.name || 'AI Session',
+            terminalName: this.options.getTerminalName(providerId, session),
+            launch,
+        };
+        const result = await this.options.runtimeCoordinator!.resume(request);
+        if (result.status === 'cancelled' || result.status === 'settings') {
+            return;
+        }
+        if (result.status === 'conflict') {
+            this.options.refresh();
+            if (this.options.announceStatus) {
+                await this.options.announceStatus(
+                    project.id,
+                    'Multiple live runtimes match this AI session.'
+                );
+            }
+            return;
+        }
+        await this.options.showActiveTab(project.id);
+        this.options.refresh();
+    }
+}
+
+function cloneLaunchSpec(launch: AiSessionLaunchSpec): AiSessionLaunchSpec {
+    return {
+        ...launch,
+        args: [...launch.args],
+    };
 }

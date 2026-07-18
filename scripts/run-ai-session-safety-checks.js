@@ -1623,6 +1623,251 @@ async function runAiSessionTerminalCommandControllerChecks() {
     assert.strictEqual(refreshes.length, 2);
 }
 
+async function runAiSessionRuntimeControllerChecks() {
+    const session = Object.freeze({
+        id: 'session-a', name: 'Session A', cwd: '/work/a', updatedAt: '2026-07-19T03:00:00Z',
+    });
+    const project = Object.freeze({
+        id: 'project-a', name: 'Project A', path: '/work/a',
+        codexSessions: Object.freeze([session]), kimiSessions: Object.freeze([]), claudeSessions: Object.freeze([]),
+    });
+    const existingIds = Object.freeze(['existing-a', 'existing-b']);
+    const launchSpec = Object.freeze({
+        executable: 'codex', args: Object.freeze(['new', 'Test Title']),
+        cwd: '/work/a', markerPath: '/tmp/new.marker',
+    });
+    const createRequests = [];
+    const createResults = [];
+    const pending = [];
+    const creationWarnings = [];
+    const creationAnnouncements = [];
+    const creationTabs = [];
+    const creationRefreshes = [];
+    const scheduled = [];
+    const timeouts = [];
+    let createError = null;
+    const creationCoordinator = {
+        create: async request => {
+            createRequests.push(request);
+            if (createError) {
+                const error = createError;
+                createError = null;
+                throw error;
+            }
+            return createResults.shift();
+        },
+        getPending: () => pending.slice(),
+    };
+    let nextPending = 0;
+    let invalidPendingId = false;
+    const creation = new AiSessionCreationController({
+        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
+        getOpenProjects: () => [project],
+        pickProvider: async () => 'codex',
+        getProviderLabel: () => 'Codex',
+        getProvider: () => ({
+            label: 'Codex', terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: () => launchSpec,
+        }),
+        getProjectKey: () => 'project-key-a',
+        createPendingId: () => invalidPendingId ? '' : `pending-${++nextPending}`,
+        getTerminalCwd: () => '/work/a',
+        getUsableTerminalCwd: cwd => cwd,
+        showInputBox: async () => '  Test Title  ',
+        showActiveTab: async projectId => creationTabs.push(projectId),
+        announceStatus: async (projectId, message) => creationAnnouncements.push([projectId, message]),
+        showWarningMessage: async (message, ...items) => {
+            creationWarnings.push([message, items]);
+            return 'Focus Terminal';
+        },
+        refresh: () => creationRefreshes.push('refresh'),
+        getExistingSessionIdsForCwd: () => existingIds,
+        getPendingMarkerPath: () => '/tmp/new.marker',
+        scheduleNewSessionRefresh: provider => scheduled.push(provider),
+        normalizeProjectPath: value => value,
+        setTimeout: (callback, delayMs) => {
+            const timeout = { callback, delayMs, cleared: false };
+            timeouts.push(timeout);
+            return timeout;
+        },
+        clearTimeout: timeout => { timeout.cleared = true; },
+        bindingTimeoutMs: 15_000,
+        nowMs: () => Date.parse('2026-07-19T04:00:00.000Z'),
+        runtimeCoordinator: creationCoordinator,
+    });
+
+    const pendingRuntime = (backend, pendingId) => ({
+        identity: { provider: 'codex', pendingId, projectKey: 'project-key-a', cwd: '/work/a' },
+        backend, state: 'pending', markerPath: '/tmp/new.marker',
+        runStartedAtMs: Date.parse('2026-07-19T04:00:00.000Z'), attached: backend === 'vscode',
+        createdAt: '2026-07-19T04:00:00.000Z', excludedSessionIds: [...existingIds], title: 'Test Title',
+        ...(backend === 'tmux' ? {
+            tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: `pending-codex-${pendingId}` },
+        } : {}),
+    });
+    createResults.push({ status: 'started', runtime: pendingRuntime('vscode', 'pending-1') });
+    await creation.createSession('project-a');
+    assert.deepStrictEqual(createRequests[0], {
+        identity: {
+            provider: 'codex', projectKey: 'project-key-a', cwd: '/work/a', pendingId: 'pending-1',
+        },
+        projectName: 'Project A',
+        terminalName: 'Codex: Project A',
+        createdAt: '2026-07-19T04:00:00.000Z',
+        excludedSessionIds: ['existing-a', 'existing-b'],
+        title: 'Test Title',
+        launch: {
+            executable: 'codex', args: ['new', 'Test Title'], cwd: '/work/a', markerPath: '/tmp/new.marker',
+        },
+    });
+    assert.deepStrictEqual(existingIds, ['existing-a', 'existing-b']);
+    assert.deepStrictEqual(launchSpec, {
+        executable: 'codex', args: ['new', 'Test Title'], cwd: '/work/a', markerPath: '/tmp/new.marker',
+    });
+    assert.deepStrictEqual(creationTabs, ['project-a']);
+    assert.deepStrictEqual(scheduled, ['codex']);
+    assert.strictEqual(timeouts.length, 0,
+        'runtime pending sessions must not be removed by a short feedback timeout');
+
+    pending.push(pendingRuntime('tmux', 'pending-2'));
+    createResults.push({ status: 'started', runtime: pending[0] });
+    await creation.createSession('project-a');
+    assert.strictEqual(createRequests[1].identity.pendingId, 'pending-2');
+    assert.strictEqual(timeouts.length, 0,
+        'elapsed time must not own the runtime pending lifecycle');
+    assert.deepStrictEqual(creationAnnouncements, []);
+    assert.deepStrictEqual(creationWarnings, []);
+
+    const sideEffectsBeforeFallback = {
+        tabs: creationTabs.length, refreshes: creationRefreshes.length,
+        scheduled: scheduled.length, timeouts: timeouts.length,
+    };
+    createResults.push({ status: 'cancelled' }, { status: 'settings' }, {
+        status: 'conflict', conflicts: [pendingRuntime('vscode', 'pending-conflict')],
+    });
+    await creation.createSession('project-a');
+    await creation.createSession('project-a');
+    await creation.createSession('project-a');
+    assert.strictEqual(creationTabs.length, sideEffectsBeforeFallback.tabs);
+    assert.strictEqual(scheduled.length, sideEffectsBeforeFallback.scheduled);
+    assert.strictEqual(timeouts.length, sideEffectsBeforeFallback.timeouts);
+    assert.strictEqual(creationRefreshes.length, sideEffectsBeforeFallback.refreshes + 1);
+    assert.deepStrictEqual(creationAnnouncements.slice(-1)[0], [
+        'project-a', 'Multiple live runtimes match this AI session.',
+    ]);
+
+    createError = new Error('create failed');
+    await assert.rejects(creation.createSession('project-a'), /create failed/);
+    createResults.push({ status: 'cancelled' });
+    await creation.createSession('project-a');
+    assert.strictEqual(createRequests.length, 7, 'a failed create must release the controller guard');
+    assert.strictEqual(timeouts.length, sideEffectsBeforeFallback.timeouts,
+        'failed and cancelled creates must not leave pending feedback timers');
+    invalidPendingId = true;
+    const effectsBeforeInvalidPendingId = {
+        requests: createRequests.length,
+        tabs: creationTabs.length,
+        refreshes: creationRefreshes.length,
+        scheduled: scheduled.length,
+        timeouts: timeouts.length,
+    };
+    await assert.rejects(creation.createSession('project-a'), /pending identity is invalid/);
+    assert.deepStrictEqual({
+        requests: createRequests.length,
+        tabs: creationTabs.length,
+        refreshes: creationRefreshes.length,
+        scheduled: scheduled.length,
+        timeouts: timeouts.length,
+    }, effectsBeforeInvalidPendingId, 'an invalid pending ID must fail before runtime side effects');
+    assert.strictEqual(timeouts.length, 0,
+        'runtime creation must retain unresolved pending sessions for discovery or terminal closure');
+
+    const resumeRequests = [];
+    const resumeResults = [];
+    const resumeTabs = [];
+    const resumeRefreshes = [];
+    const resumeAnnouncements = [];
+    const resumeWarnings = [];
+    const resumeSpec = Object.freeze({
+        executable: 'codex', args: Object.freeze(['resume', session.id]),
+        cwd: '/work/a', markerPath: '/tmp/resume.marker',
+    });
+    let resumeError = null;
+    const resume = new AiSessionResumeController({
+        getOpenProjects: () => [project],
+        getProvider: () => ({
+            label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: () => resumeSpec,
+        }),
+        getProjectSession: (_project, provider, id) => provider === 'codex' && id === session.id ? session : null,
+        getProjectKey: () => 'project-key-a',
+        getTerminalCwd: () => '/work/a',
+        getTerminalName: () => 'Codex: Session A',
+        getComparableCwd: () => '/work/a',
+        getUsableTerminalCwd: cwd => cwd,
+        normalizeProjectPath: value => value,
+        getMarkerPath: () => '/tmp/resume.marker',
+        showWarningMessage: message => resumeWarnings.push(message),
+        announceStatus: async (projectId, message) => resumeAnnouncements.push([projectId, message]),
+        refresh: () => resumeRefreshes.push('refresh'),
+        showActiveTab: projectId => resumeTabs.push(projectId),
+        runtimeCoordinator: {
+            resume: async request => {
+                resumeRequests.push(request);
+                if (resumeError) {
+                    const error = resumeError;
+                    resumeError = null;
+                    throw error;
+                }
+                return resumeResults.shift();
+            },
+        },
+    });
+
+    resumeResults.push({ status: 'started', runtime: {
+        identity: { provider: 'codex', sessionId: session.id, projectKey: 'project-key-a', cwd: '/work/a' },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/resume.marker',
+        runStartedAtMs: 1, attached: true,
+    } }, { status: 'focused', runtime: {
+        identity: { provider: 'codex', sessionId: session.id, projectKey: 'project-key-a', cwd: '/work/a' },
+        backend: 'tmux', state: 'active', markerPath: '/tmp/resume.marker',
+        runStartedAtMs: 1, attached: false,
+        tmux: { layout: 'session', sessionName: 'project-steward-s-codex-a' },
+    } }, { status: 'cancelled' }, { status: 'settings' }, {
+        status: 'conflict', conflicts: [],
+    });
+    for (let index = 0; index < 5; index++) {
+        await resume.resumeProjectSession('project-a', 'codex', session.id);
+    }
+    assert.deepStrictEqual(resumeRequests[0], {
+        identity: {
+            provider: 'codex', sessionId: session.id, projectKey: 'project-key-a', cwd: '/work/a',
+        },
+        projectName: 'Project A',
+        terminalName: 'Codex: Session A',
+        launch: {
+            executable: 'codex', args: ['resume', session.id], cwd: '/work/a', markerPath: '/tmp/resume.marker',
+        },
+    });
+    assert.deepStrictEqual(session, {
+        id: 'session-a', name: 'Session A', cwd: '/work/a', updatedAt: '2026-07-19T03:00:00Z',
+    });
+    assert.deepStrictEqual(resumeSpec, {
+        executable: 'codex', args: ['resume', session.id], cwd: '/work/a', markerPath: '/tmp/resume.marker',
+    });
+    assert.deepStrictEqual(resumeTabs, ['project-a', 'project-a']);
+    assert.strictEqual(resumeRefreshes.length, 3,
+        'started, focused, and conflict results refresh; fallback cancellations do not');
+    assert.deepStrictEqual(resumeAnnouncements, [[
+        'project-a', 'Multiple live runtimes match this AI session.',
+    ]]);
+    assert.deepStrictEqual(resumeWarnings, []);
+    resumeError = new Error('resume failed');
+    await assert.rejects(resume.resumeProjectSession('project-a', 'codex', session.id), /resume failed/);
+    assert.strictEqual(resumeTabs.length, 2);
+    assert.strictEqual(resumeRefreshes.length, 3);
+}
+
 async function runAiSessionAttentionControllerChecks() {
     let nowMs = 1000;
     let enabled = true;
@@ -7498,6 +7743,7 @@ async function main() {
     await runAiSessionCreationControllerChecks();
     await runAiSessionResumeControllerChecks();
     await runAiSessionTerminalCommandControllerChecks();
+    await runAiSessionRuntimeControllerChecks();
     await runAiSessionAttentionControllerChecks();
     await runAiSessionExecutionControllerChecks();
     await runAiSessionProjectHydrationControllerChecks();
