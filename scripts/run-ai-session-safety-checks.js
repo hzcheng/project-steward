@@ -32,6 +32,7 @@ const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const AiSessionPinController = require('../out/aiSessions/pinController').default;
 const providers = require('../out/aiSessions/providers');
 const providerAvailability = require('../out/aiSessions/providerAvailability');
+const AiSessionTerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
 const CodexSessionService = require('../out/services/codexSessionService').default;
 const KimiSessionService = require('../out/services/kimiSessionService').default;
 const ClaudeSessionService = require('../out/services/claudeSessionService').default;
@@ -1216,6 +1217,7 @@ async function runAiSessionResumeControllerChecks() {
     const sent = [];
     const synced = [];
     const pendingLookups = [];
+    const runtimeRefreshes = [];
     let existingEntry = null;
     let beginResult = true;
     let createCwdAccepted = false;
@@ -1257,6 +1259,7 @@ async function runAiSessionResumeControllerChecks() {
         },
         showWarningMessage: message => warnings.push(message),
         syncActiveTerminal: () => synced.push('sync'),
+        refresh: () => runtimeRefreshes.push('refresh'),
         logError() {},
         nowMs: () => 123456,
     });
@@ -1272,6 +1275,7 @@ async function runAiSessionResumeControllerChecks() {
     await controller.resumeProjectSession('project-a', 'codex', session.id);
     assert.deepStrictEqual(shown, ['existing-running']);
     assert.strictEqual(begins.length, 0);
+    assert.strictEqual(runtimeRefreshes.length, 1);
 
     existingEntry = null;
     beginResult = false;
@@ -1291,6 +1295,7 @@ async function runAiSessionResumeControllerChecks() {
     assert.deepStrictEqual(sent[0], ['codex', tracked[0][2].terminal, session.id, null, `/tmp/codex-${session.id}.marker`]);
     assert.deepStrictEqual(finishes.slice(-1)[0], ['codex', session.id]);
     assert.deepStrictEqual(synced, ['sync']);
+    assert.strictEqual(runtimeRefreshes.length, 2);
 
     createCwdAccepted = true;
     pendingTerminal = { terminal: makeTerminal('pending'), markerPath: '/tmp/pending.marker' };
@@ -1328,6 +1333,99 @@ async function runAiSessionResumeControllerChecks() {
         sent[sentCountBeforeReleasedResume],
         ['codex', releasedTerminal, session.id, '/work/a', '/tmp/released.marker']
     );
+}
+
+async function runAiSessionTerminalCommandControllerChecks() {
+    const activeTerminal = {
+        showCalls: 0,
+        disposeCalls: 0,
+        show() { this.showCalls++; },
+        dispose() { this.disposeCalls++; },
+    };
+    const historylessTerminal = {
+        showCalls: 0,
+        disposeCalls: 0,
+        show() { this.showCalls++; },
+        dispose() { this.disposeCalls++; },
+    };
+    const pendingTerminal = {
+        showCalls: 0,
+        disposeCalls: 0,
+        show() { this.showCalls++; },
+        dispose() { this.disposeCalls++; },
+    };
+    const failingTerminal = {
+        show() {},
+        dispose() { throw new Error('dispose failed'); },
+    };
+    const projects = [
+        { id: 'app', path: '/work/app', codexSessions: [{ id: 'c1' }], kimiSessions: [], claudeSessions: [] },
+        { id: 'other', path: '/work/other', codexSessions: [], kimiSessions: [], claudeSessions: [] },
+    ];
+    const activeEntries = new Map([
+        ['codex:c1', { terminal: activeTerminal, cwd: '/work/app' }],
+        ['kimi:historyless', { terminal: historylessTerminal, cwd: '/work/app/' }],
+        ['claude:failing', { terminal: failingTerminal, cwd: '/work/app' }],
+    ]);
+    const pending = [{
+        provider: 'claude', terminal: pendingTerminal, cwd: '/work/app', createdAt: '2026-07-18T03:00:00Z',
+    }];
+    const refreshes = [];
+    const errors = [];
+    let confirmation;
+    const controller = new AiSessionTerminalCommandController({
+        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
+        getOpenProjects: () => projects,
+        getProjectSessions: (project, providerId) => project[`${providerId}Sessions`] || [],
+        getActiveTerminal: (providerId, sessionId) => activeEntries.get(`${providerId}:${sessionId}`) || null,
+        getPendingTerminals: () => pending,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value && value.replace(/\/$/, ''),
+        confirmClose: async () => confirmation,
+        showErrorMessage: async message => errors.push(message),
+        getProviderLabel: providerId => providerId.toUpperCase(),
+        refresh: () => refreshes.push('refresh'),
+    });
+
+    await controller.focusPending('app', 'claude', '2026-07-18T03:00:00Z');
+    assert.strictEqual(pendingTerminal.showCalls, 1);
+    await controller.focusActive('app', 'codex', 'c1');
+    assert.strictEqual(activeTerminal.showCalls, 1);
+    await controller.focusActive('app', 'kimi', 'historyless');
+    assert.strictEqual(historylessTerminal.showCalls, 1, 'matching binding cwd scopes a historyless active session');
+
+    await controller.focusActive('other', 'codex', 'c1');
+    await controller.focusActive('app', 'codex', 'missing');
+    await controller.focusActive('app', 'invalid', 'c1');
+    await controller.focusPending('other', 'claude', '2026-07-18T03:00:00Z');
+    await controller.focusPending('app', 'claude', 'missing');
+    assert.strictEqual(activeTerminal.showCalls, 1);
+    assert.strictEqual(pendingTerminal.showCalls, 1);
+
+    confirmation = undefined;
+    await controller.closeTerminal({ projectId: 'app', providerId: 'codex', sessionId: 'c1' });
+    assert.strictEqual(activeTerminal.disposeCalls, 0);
+
+    confirmation = 'Close Terminal';
+    await controller.closeTerminal({ projectId: 'app', providerId: 'codex', sessionId: 'c1' });
+    assert.strictEqual(activeTerminal.disposeCalls, 1);
+    assert.strictEqual(refreshes.length, 1);
+
+    await controller.closeTerminal({
+        projectId: 'app', providerId: 'claude', pendingCreatedAt: '2026-07-18T03:00:00Z',
+    });
+    assert.strictEqual(pendingTerminal.disposeCalls, 1);
+    assert.strictEqual(refreshes.length, 2);
+
+    await controller.closeTerminal({ projectId: 'other', providerId: 'codex', sessionId: 'c1' });
+    await controller.closeTerminal({
+        projectId: 'app', providerId: 'codex', sessionId: 'c1', pendingCreatedAt: '2026-07-18T03:00:00Z',
+    });
+    assert.strictEqual(activeTerminal.disposeCalls, 1);
+
+    await controller.closeTerminal({ projectId: 'app', providerId: 'claude', sessionId: 'failing' });
+    assert.deepStrictEqual(errors, ['Could not close the AI session terminal.']);
+    assert.strictEqual(refreshes.length, 2);
 }
 
 async function runAiSessionAttentionControllerChecks() {
@@ -6095,6 +6193,7 @@ async function main() {
     await runAiSessionCommandControllerChecks();
     await runAiSessionCreationControllerChecks();
     await runAiSessionResumeControllerChecks();
+    await runAiSessionTerminalCommandControllerChecks();
     await runAiSessionAttentionControllerChecks();
     await runAiSessionProjectHydrationControllerChecks();
     runKeyChecks();

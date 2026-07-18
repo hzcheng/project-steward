@@ -82,6 +82,7 @@ export interface AiSessionResumeControllerOptions<
     ) => Thenable<void> | Promise<void>;
     showWarningMessage: (message: string) => unknown;
     syncActiveTerminal: () => void;
+    refresh: () => void;
     logError: (message: string, error: unknown) => void;
     nowMs: () => number;
 }
@@ -118,6 +119,7 @@ export class AiSessionResumeController<
         const existingTerminal = this.options.getExistingTerminal(providerId, session);
         if (existingTerminal && !this.options.isTerminalComplete(existingTerminal)) {
             existingTerminal.terminal.show();
+            this.options.refresh();
             return;
         }
 
@@ -163,6 +165,7 @@ export class AiSessionResumeController<
                     this.options.getComparableCwd(providerId, session)
                 ) || undefined,
             });
+            this.options.refresh();
             terminal.show();
             await this.options.sendResumeCommand(providerId, terminal, session.id, cwd, markerPath);
             this.options.syncActiveTerminal();

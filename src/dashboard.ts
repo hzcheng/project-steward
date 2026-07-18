@@ -52,6 +52,7 @@ import { AiSessionCreationController } from './aiSessions/creationController';
 import { AI_SESSION_CREATION_BIND_TIMEOUT_MS } from './aiSessions/creationController';
 import { AiSessionArchiveController } from './aiSessions/archiveController';
 import { AiSessionResumeController } from './aiSessions/resumeController';
+import { AiSessionTerminalCommandController } from './aiSessions/terminalCommandController';
 import { AiSessionAttentionController } from './aiSessions/attentionController';
 import { AiSessionProjectHydrationController } from './aiSessions/projectHydrationController';
 import { getLastPartOfPath, isUriString, parsePathAsUri } from './projects/openProjectService';
@@ -421,6 +422,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         syncActiveTerminal: () => activeAiSessionTerminalHighlighter.sync(),
         logUnexpectedError: (operation, error, failedSessionId) => logError(`Batch AI session archive failed during ${operation}${failedSessionId ? ` (${failedSessionId})` : ''}.`, error),
     });
+    const aiSessionTerminalCommandController = new AiSessionTerminalCommandController<vscode.Terminal>({
+        isProviderId: isAiSessionProviderId,
+        getOpenProjects,
+        getProjectSessions: (project, providerId) => getProviderProjectAiSessions(project, providerId, aiSessionProviders),
+        getActiveTerminal: (providerId, sessionId) => aiSessionTerminalService.getActiveById(providerId, sessionId),
+        getPendingTerminals: () => aiSessionTerminalService.getPendingTerminals(),
+        getProjectCwd: getOpenProjectAiSessionTerminalCwd,
+        normalizePath: normalizeAiSessionProjectPath,
+        confirmClose: providerLabel => vscode.window.showWarningMessage(
+            `Closing this ${providerLabel} terminal may interrupt a running AI task.`,
+            { modal: true },
+            'Close Terminal'
+        ),
+        showErrorMessage: message => vscode.window.showErrorMessage(message),
+        getProviderLabel: getAiSessionProviderLabel,
+        refresh: refreshAiSessionViewsIncrementally,
+    });
     const aiSessionResumeController = new AiSessionResumeController<vscode.Terminal, TerminalEntry>({
         getOpenProjects,
         getProvider: getRegisteredAiSessionProvider,
@@ -441,6 +459,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         sendResumeCommand: (providerId, terminal, sessionId, cwd, markerPath) => aiSessionTerminalService.sendResumeCommand(providerId, terminal, sessionId, cwd, markerPath),
         showWarningMessage: message => vscode.window.showWarningMessage(message),
         syncActiveTerminal: () => activeAiSessionTerminalHighlighter.sync(),
+        refresh: refreshAiSessionViewsIncrementally,
         logError,
         nowMs: () => Date.now(),
     });
@@ -727,6 +746,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             'create-ai-session': async e => {
                 await aiSessionCreationController.createSession(e.projectId as string);
             },
+            'focus-ai-session-terminal': async e => {
+                await aiSessionTerminalCommandController.focusActive(
+                    e.projectId as string,
+                    e.provider as string,
+                    e.sessionId as string
+                );
+            },
+            'focus-pending-ai-session': async e => {
+                await aiSessionTerminalCommandController.focusPending(
+                    e.projectId as string,
+                    e.provider as string,
+                    e.createdAt as string
+                );
+            },
+            'close-ai-session-terminal': async e => {
+                await aiSessionTerminalCommandController.closeTerminal({
+                    projectId: e.projectId as string,
+                    providerId: e.provider as string,
+                    sessionId: e.sessionId as string,
+                    pendingCreatedAt: e.pendingCreatedAt as string,
+                });
+            },
             'toggle-ai-session-pin': async e => {
                 await aiSessionCommandController.togglePin(e.provider as string, e.sessionId as string);
             },
@@ -891,6 +932,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         publish: identity => postActiveAiSessionTerminalChanged(identity),
         onComplete: resolution => {
             settleCompletedAiSessionTerminal(resolution);
+            refreshAiSessionViewsIncrementally();
             void aiSessionAttentionController.evaluate();
         },
         setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
@@ -902,6 +944,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
         }
         completedSessions.forEach(settleCompletedAiSessionTerminal);
+        refreshAiSessionViewsIncrementally();
         activeAiSessionTerminalHighlighter.sync();
         void aiSessionAttentionController.evaluate();
     }, 1_000);
@@ -915,6 +958,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTerminal(() => {
             activeAiSessionTerminalHighlighter.sync();
+            refreshAiSessionViewsIncrementally();
             void aiSessionAttentionController.evaluate();
         }));
     context.subscriptions.push(
@@ -923,6 +967,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             closedSessions.forEach(acknowledgeAiSessionAttention);
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
             if (closedSessions.length) {
+                refreshAiSessionViewsIncrementally();
                 void aiSessionAttentionController.evaluate();
             }
         }));
