@@ -1,6 +1,7 @@
 'use strict';
 
 export type AiSessionAttentionReason = 'completed' | 'aborted' | 'failed' | 'input-required';
+export type AiSessionExecutionState = 'running' | 'stopped';
 export type AiSessionLifecyclePhase = 'running' | 'needsAttention';
 
 export interface AiSessionLifecycleRequest {
@@ -12,6 +13,7 @@ export interface AiSessionLifecycleSignal {
     token: string;
     phase: AiSessionLifecyclePhase;
     reason?: AiSessionAttentionReason;
+    executionState: AiSessionExecutionState;
     occurredAtMs: number;
 }
 
@@ -37,7 +39,7 @@ function parseLines(
         }
 
         let signal = parseEvent(event, occurredAtMs);
-        if (signal) {
+        if (signal && (!latest || signal.occurredAtMs >= latest.occurredAtMs)) {
             latest = signal;
         }
     }
@@ -61,7 +63,7 @@ function getToken(provider: string, eventType: string, occurredAtMs: number, id:
 }
 
 function running(provider: string, eventType: string, occurredAtMs: number, id?: unknown): AiSessionLifecycleSignal {
-    return { token: getToken(provider, eventType, occurredAtMs, id), phase: 'running', occurredAtMs };
+    return { token: getToken(provider, eventType, occurredAtMs, id), phase: 'running', executionState: 'running', occurredAtMs };
 }
 
 function attention(
@@ -71,7 +73,7 @@ function attention(
     reason: AiSessionAttentionReason,
     id?: unknown
 ): AiSessionLifecycleSignal {
-    return { token: getToken(provider, eventType, occurredAtMs, id), phase: 'needsAttention', reason, occurredAtMs };
+    return { token: getToken(provider, eventType, occurredAtMs, id), phase: 'needsAttention', reason, executionState: 'stopped', occurredAtMs };
 }
 
 export function parseCodexLifecycleLines(lines: readonly string[], runStartedAtMs: number): AiSessionLifecycleSignal | null {

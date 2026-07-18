@@ -5513,7 +5513,15 @@ function runLifecycleParserChecks() {
     ], runStartedAtMs);
     assert.strictEqual(codexSignal.phase, 'needsAttention');
     assert.strictEqual(codexSignal.reason, 'completed');
+    assert.strictEqual(codexSignal.executionState, 'stopped');
     assert.ok(codexSignal.token.includes('task_complete'));
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:08.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'newer' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:07.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'older' } }),
+    ], runStartedAtMs).executionState, 'stopped', 'event time wins over physical line order');
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:09.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'next' } }),
+    ], runStartedAtMs).executionState, 'running');
     assert.strictEqual(lifecycle.parseCodexLifecycleLines([
         JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'event_msg', payload: { type: 'turn_aborted', turn_id: 'turn-2' } }),
     ], runStartedAtMs).reason, 'aborted');
@@ -5541,6 +5549,12 @@ function runLifecycleParserChecks() {
         JSON.stringify({ timestamp: 1784073604, message: { type: 'TurnEnd', payload: {} } }),
     ], runStartedAtMs).reason, 'completed');
     assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073604, message: { type: 'TurnEnd', payload: {} } }),
+    ], runStartedAtMs).executionState, 'stopped');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073605, message: { type: 'TurnBegin', payload: {} } }),
+    ], runStartedAtMs).executionState, 'running');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
         JSON.stringify({ timestamp: 1784073605, message: { type: 'ApprovalRequest', payload: { id: 'approval-1' } } }),
     ], runStartedAtMs).reason, 'input-required');
     assert.strictEqual(lifecycle.parseKimiLifecycleLines([
@@ -5553,6 +5567,10 @@ function runLifecycleParserChecks() {
         JSON.stringify({ timestamp: '2026-07-15T00:00:02.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn', content: [] } }),
     ], runStartedAtMs);
     assert.strictEqual(claudeSignal.reason, 'completed');
+    assert.strictEqual(claudeSignal.executionState, 'stopped');
+    assert.strictEqual(lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:02.000Z', type: 'user', message: { role: 'user' } }),
+    ], runStartedAtMs).executionState, 'running');
     assert.strictEqual(lifecycle.parseClaudeLifecycleLines([
         JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'stop_sequence', content: [] } }),
     ], runStartedAtMs).reason, 'completed');
