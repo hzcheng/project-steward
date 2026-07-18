@@ -251,7 +251,7 @@ Expected: monitor/controller checks pass and repeated signals do not schedule re
 **Interfaces:**
 - Consumes: `ApplyAiSessionRuntimeProjectionInput.executionSnapshot`.
 - Produces: `ActiveAiSessionViewModel.executionState: 'starting' | 'running' | 'stopped'`.
-- Removes: overloaded `ActiveAiSessionStatus` and `ActiveAiSessionViewModel.status`.
+- Temporarily preserves: overloaded `ActiveAiSessionStatus` and `ActiveAiSessionViewModel.status` only as a renderer compatibility field until Task 5 removes both in the same TDD cycle as the renderer migration.
 
 - [ ] **Step 1: Rewrite projection tests around three orthogonal axes**
 
@@ -264,7 +264,7 @@ Pass this snapshot in the primary projection fixture:
         },
 ```
 
-Replace the status assertion with:
+Keep the existing status assertion as a renderer-compatibility regression and add:
 
 ```js
     assert.deepStrictEqual(projected[0].activeAiSessions.map(item => ({
@@ -289,17 +289,18 @@ Run:
 npm run test-compile && node scripts/run-ai-session-safety-checks.js
 ```
 
-Expected: FAIL because the projection ignores `executionSnapshot` and still returns `status`.
+Expected: FAIL because the projection ignores `executionSnapshot` and does not return `executionState`.
 
-- [ ] **Step 3: Replace overloaded status with an execution field**
+- [ ] **Step 3: Add the execution field and decouple ordering from overloaded status**
 
-In `src/aiSessions/types.ts`, remove `ActiveAiSessionStatus`, import `AiSessionExecutionState` as a type, and define:
+In `src/aiSessions/types.ts`, import `AiSessionExecutionState` as a type and define:
 
 ```ts
 export type ActiveAiSessionExecutionState = 'starting' | AiSessionExecutionState;
 
 export interface ActiveAiSessionViewModel {
     // existing identity/name fields
+    // Keep status through Task 4 so the unchanged renderer still compiles.
     executionState: ActiveAiSessionExecutionState;
     focused: boolean;
     needsAttention: boolean;
@@ -308,9 +309,9 @@ export interface ActiveAiSessionViewModel {
 }
 ```
 
-In `activeSessionProjection.ts`, add `executionSnapshot: Record<string, AiSessionExecutionSnapshot>` to the input. Bound models use `input.executionSnapshot[key]?.state || 'stopped'`; pending models use `starting`.
+In `activeSessionProjection.ts`, add `executionSnapshot: Record<string, AiSessionExecutionSnapshot>` to the input. Bound models use `input.executionSnapshot[key]?.state || 'stopped'`; pending models use `starting`. Continue populating the legacy `status` field only for the unchanged renderer; do not use it as the source of execution truth.
 
-Remove `getEstablishedStatus()` and `getStatusRank()`. Implement sort rank directly from the orthogonal booleans:
+Remove `getStatusRank()`. Implement sort rank directly from the orthogonal booleans:
 
 ```ts
 function getPriorityRank(model: ActiveAiSessionViewModel): number {
@@ -331,7 +332,7 @@ git add src/aiSessions/types.ts src/aiSessions/activeSessionProjection.ts script
 git commit -m "feat: project active session execution state"
 ```
 
-Expected: projection tests pass, including default-stopped and unchanged-order assertions.
+Expected: projection tests pass, including default-stopped and unchanged-order assertions; the legacy renderer continues compiling until its Task 5 migration.
 
 ---
 
@@ -425,6 +426,8 @@ Expected: both suites pass; source assertions prove execution evaluation remains
 
 **Files:**
 - Modify: `scripts/run-ai-session-safety-checks.js:2670-2790,2890-2940`
+- Modify: `src/aiSessions/types.ts:1-40`
+- Modify: `src/aiSessions/activeSessionProjection.ts:1-190`
 - Modify: `src/webview/webviewContent.ts:740-778`
 - Modify: `media/styles.scss` in the sidebar `.codex-session-row` section
 - Regenerate: `media/styles.css`
@@ -435,7 +438,7 @@ Expected: both suites pass; source assertions prove execution evaluation remains
 
 - [ ] **Step 1: Rewrite rendering fixtures and add failing HTML/style assertions**
 
-Replace every ACTIVE fixture `status` with `executionState`: focused Codex `running`, attention Kimi `stopped`, normal Claude `running`, pending Claude `starting`.
+Replace every ACTIVE fixture `status` with `executionState`: focused Codex `running`, attention Kimi `stopped`, normal Claude `running`, pending Claude `starting`. This is the point where the compatibility `status` field is removed from the model and projection.
 
 Assert all three attributes and labels exist:
 
@@ -480,6 +483,8 @@ In `getActiveAiSessionRow(...)`, map the three states:
 ```
 
 Set `data-execution-state="${model.executionState}"` on the ACTIVE row and remove `data-session-status`. Add `data-session-needs-attention` whenever `model.needsAttention` is true; preserve the existing event-id-dependent `data-ai-session-attention` attribute for attention synchronization and preserve `data-session-focused` for focus styling.
+
+In the same step, remove `ActiveAiSessionStatus` and `ActiveAiSessionViewModel.status` from `src/aiSessions/types.ts`; remove `getEstablishedStatus()` and all `status` assignments from `activeSessionProjection.ts`. The renderer and model therefore migrate atomically and the task remains independently compilable.
 
 - [ ] **Step 4: Add static, theme-aware styles**
 
@@ -530,7 +535,7 @@ Expected: HTML, Sass, compiled CSS, accessibility, orthogonal combination, and C
 Run:
 
 ```bash
-git add src/webview/webviewContent.ts media/styles.scss media/styles.css scripts/run-ai-session-safety-checks.js
+git add src/aiSessions/types.ts src/aiSessions/activeSessionProjection.ts src/webview/webviewContent.ts media/styles.scss media/styles.css scripts/run-ai-session-safety-checks.js
 git commit -m "feat: show active session execution indicator"
 ```
 
