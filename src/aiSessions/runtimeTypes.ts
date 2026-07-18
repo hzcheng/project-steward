@@ -20,16 +20,36 @@ export interface AiSessionTmuxLocator {
     windowName?: string;
 }
 
-export interface AiSessionManagedTmuxMetadata {
+export interface AiSessionManagedTmuxMetadataBase {
     version: 1;
     layout: AiSessionTmuxLayout;
     projectKey: string;
     provider: AiSessionProviderId;
-    sessionId?: string;
-    pendingId?: string;
     createdAt?: string;
     marker?: string;
 }
+
+export type AiSessionManagedTmuxMetadata = AiSessionManagedTmuxMetadataBase & (
+    { sessionId: string; pendingId?: never }
+    | { pendingId: string; sessionId?: never }
+);
+
+// Keep the normalized ownership contract aligned with the runtime parser.
+type AssertFalse<T extends false> = T;
+type ManagedTmuxMetadataRejectsBothIds = AssertFalse<{
+    version: 1;
+    layout: 'project';
+    projectKey: string;
+    provider: 'codex';
+    sessionId: string;
+    pendingId: string;
+} extends AiSessionManagedTmuxMetadata ? true : false>;
+type ManagedTmuxMetadataRejectsMissingIds = AssertFalse<{
+    version: 1;
+    layout: 'project';
+    projectKey: string;
+    provider: 'codex';
+} extends AiSessionManagedTmuxMetadata ? true : false>;
 
 export interface AiSessionRuntimeSnapshot<TTerminal = unknown> {
     identity: AiSessionRuntimeIdentity;

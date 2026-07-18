@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import type { AiSessionProviderId } from '../models';
 import type {
     AiSessionManagedTmuxMetadata,
+    AiSessionManagedTmuxMetadataBase,
     AiSessionRuntimeIdentity,
     AiSessionTmuxLayout,
     AiSessionTmuxLocator,
@@ -92,35 +93,35 @@ export function parseManagedTmuxMetadata(values: unknown): AiSessionManagedTmuxM
         return null;
     }
 
-    const hasSessionId = record.sessionId !== undefined;
-    const hasPendingId = record.pendingId !== undefined;
-    if (hasSessionId === hasPendingId) {
+    const createdAt = record.createdAt;
+    if (createdAt !== undefined
+        && (!isBoundedString(createdAt, MAX_CREATED_AT_LENGTH)
+            || !Number.isFinite(Date.parse(createdAt)))) {
         return null;
     }
-    if (hasSessionId && !isBoundedString(record.sessionId, MAX_ID_LENGTH)) {
-        return null;
-    }
-    if (hasPendingId && !isBoundedString(record.pendingId, MAX_ID_LENGTH)) {
-        return null;
-    }
-    if (record.createdAt !== undefined
-        && (!isBoundedString(record.createdAt, MAX_CREATED_AT_LENGTH)
-            || !Number.isFinite(Date.parse(record.createdAt)))) {
-        return null;
-    }
-    if (record.marker !== undefined && !isBoundedString(record.marker, MAX_MARKER_LENGTH)) {
+    const marker = record.marker;
+    if (marker !== undefined && !isBoundedString(marker, MAX_MARKER_LENGTH)) {
         return null;
     }
 
-    return {
+    const base: AiSessionManagedTmuxMetadataBase = {
         version: METADATA_VERSION,
         layout: record.layout,
         projectKey: record.projectKey,
         provider: record.provider,
-        ...(hasSessionId ? { sessionId: record.sessionId as string } : { pendingId: record.pendingId as string }),
-        ...(record.createdAt !== undefined ? { createdAt: record.createdAt as string } : {}),
-        ...(record.marker !== undefined ? { marker: record.marker as string } : {}),
+        ...(createdAt !== undefined ? { createdAt } : {}),
+        ...(marker !== undefined ? { marker } : {}),
     };
+    if (record.sessionId !== undefined) {
+        if (record.pendingId !== undefined || !isBoundedString(record.sessionId, MAX_ID_LENGTH)) {
+            return null;
+        }
+        return { ...base, sessionId: record.sessionId };
+    }
+    if (!isBoundedString(record.pendingId, MAX_ID_LENGTH)) {
+        return null;
+    }
+    return { ...base, pendingId: record.pendingId };
 }
 
 function getProjectSessionName(projectKey: string): string {
