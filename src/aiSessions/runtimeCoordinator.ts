@@ -12,6 +12,7 @@ import type {
     AiSessionRuntimeIdentity,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
+import { TmuxRuntimeUnavailableError } from './runtimeTypes';
 
 export type AiSessionTmuxFallbackChoice = 'direct' | 'direct-anyway' | 'settings' | 'cancel';
 
@@ -32,7 +33,6 @@ export interface AiSessionRuntimeCoordinatorDependencies<TTerminal> {
     chooseTmuxFallback(context: AiSessionTmuxFallbackContext): Promise<AiSessionTmuxFallbackChoice>;
     hasKnownTmuxHint?(identity: AiSessionRuntimeIdentity): Promise<boolean>;
     clearKnownTmuxHint?(identity: AiSessionRuntimeIdentity): Promise<void>;
-    isTmuxUnavailable?(error: unknown): boolean;
     chooseConflict?(runtimes: AiSessionRuntimeSnapshot<TTerminal>[]): Promise<AiSessionRuntimeSnapshot<TTerminal> | undefined>;
 }
 
@@ -120,7 +120,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
     }
 
     async focus(identity: AiSessionRuntimeIdentity): Promise<void> {
-        const matches = this.findMatches(identity);
+        const matches = this.matchesForIdentity(identity);
         if (matches.length !== 1) {
             return;
         }
@@ -128,13 +128,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
     }
 
     async detach(identity: AiSessionRuntimeIdentity): Promise<void> {
-        const finalMatches = identity.sessionId ? this.findMatches(identity) : [];
-        const pendingMatches = identity.pendingId
-            ? this.getPending().filter(runtime => samePendingIdentity(runtime.identity, identity))
-            : [];
-        const matches: AiSessionRuntimeSnapshot<TTerminal>[] = finalMatches.length
-            ? finalMatches
-            : pendingMatches;
+        const matches = this.matchesForIdentity(identity);
         if (matches.length !== 1) {
             return;
         }
@@ -164,7 +158,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         }
 
         const configuration = snapshotConfiguration(this.dependencies.getConfiguration());
-        const knownHint = !!refresh.tmuxError
+        const knownHint = this.isTmuxUnavailable(refresh.tmuxError)
             && !!this.dependencies.hasKnownTmuxHint
             && await this.dependencies.hasKnownTmuxHint({ ...request.identity });
         if (knownHint) {
@@ -293,16 +287,21 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             && runtime.identity.sessionId === identity.sessionId);
     }
 
+    private matchesForIdentity(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot<TTerminal>[] {
+        if (identity?.sessionId) {
+            return this.findMatches(identity);
+        }
+        return identity?.pendingId
+            ? this.getPending().filter(runtime => samePendingIdentity(runtime.identity, identity))
+            : [];
+    }
+
     private backendFor(runtime: AiSessionRuntimeSnapshot<TTerminal>): ClosableRuntimeBackend<TTerminal> {
         return runtime.backend === 'tmux' ? this.dependencies.tmux : this.dependencies.direct;
     }
 
     private isTmuxUnavailable(error: unknown): boolean {
-        if (this.dependencies.isTmuxUnavailable) {
-            return this.dependencies.isTmuxUnavailable(error);
-        }
-        const message = error instanceof Error ? error.message : String(error || '');
-        return /unavailable|not[- ]found|ENOENT|EACCES|permission|POSIX|unsupported|timed? ?out/i.test(message);
+        return error instanceof TmuxRuntimeUnavailableError;
     }
 
     private singleFlight(
@@ -378,8 +377,21 @@ function cloneActionResult<TTerminal>(
 ): AiSessionRuntimeActionResult<TTerminal> {
     return {
         status: result.status,
-        ...(result.runtime ? { runtime: cloneRuntime(result.runtime) } : {}),
-        ...(result.conflicts ? { conflicts: result.conflicts.map(cloneRuntime) } : {}),
+        ...(result.runtime ? { runtime: cloneActionRuntime(result.runtime) } : {}),
+        ...(result.conflicts ? { conflicts: result.conflicts.map(cloneActionRuntime) } : {}),
+    };
+}
+
+function cloneActionRuntime<TTerminal>(
+    runtime: AiSessionRuntimeSnapshot<TTerminal>
+): AiSessionRuntimeSnapshot<TTerminal> {
+    const pending = runtime as AiSessionPendingRuntimeSnapshot<TTerminal>;
+    if (typeof pending.createdAt !== 'string' || !Array.isArray(pending.excludedSessionIds)) {
+        return cloneRuntime(runtime);
+    }
+    return {
+        ...clonePendingRuntime(pending),
+        state: runtime.state,
     };
 }
 

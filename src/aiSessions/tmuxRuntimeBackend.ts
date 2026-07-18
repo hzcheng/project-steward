@@ -12,7 +12,9 @@ import type {
     AiSessionRuntimeSnapshot,
     AiSessionTmuxLayout,
     AiSessionTmuxLocator,
+    TmuxRuntimeUnavailableReason,
 } from './runtimeTypes';
+import { TmuxRuntimeUnavailableError } from './runtimeTypes';
 import { getTmuxRuntimeKey, ProjectTmuxLayout, SessionTmuxLayout } from './tmuxLayout';
 import { TmuxAttachBinding, TmuxAttachBindingStore } from './tmuxAttachBindingStore';
 import { TmuxClient, TmuxClientError } from './tmuxClient';
@@ -873,11 +875,25 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
 
     private async requireAvailable(): Promise<void> {
         if (this.dependencies.platform === 'win32') {
-            throw new Error('Managed tmux runtimes require a POSIX extension host.');
+            throw new TmuxRuntimeUnavailableError(
+                'unsupported-platform',
+                'Managed tmux runtimes require a POSIX extension host.'
+            );
         }
-        const availability = await this.dependencies.client.checkAvailability();
+        let availability;
+        try {
+            availability = await this.dependencies.client.checkAvailability();
+        } catch (error) {
+            throw new TmuxRuntimeUnavailableError(
+                'probe-failed',
+                error instanceof Error ? error.message : 'The tmux availability probe failed.'
+            );
+        }
         if ('category' in availability) {
-            throw new Error(availability.message);
+            throw new TmuxRuntimeUnavailableError(
+                unavailableReason(availability.category),
+                availability.message
+            );
         }
     }
 
@@ -1451,6 +1467,23 @@ function isProvenNoCreate(error: unknown): boolean {
     return error instanceof TmuxClientError
         && (error.category === 'nonzero-exit' || error.category === 'argument-list-too-long')
         && (error.operation === 'create-session' || error.operation === 'create-window');
+}
+
+function unavailableReason(category: string): TmuxRuntimeUnavailableReason {
+    switch (category) {
+        case 'not-found':
+            return 'not-found';
+        case 'permission-denied':
+            return 'permission-denied';
+        case 'timeout':
+            return 'probe-timeout';
+        case 'invalid-version':
+            return 'invalid-version';
+        case 'missing-capability':
+            return 'missing-capability';
+        default:
+            return 'probe-failed';
+    }
 }
 
 function consumedPendingError(record: TmuxConsumedPendingBinding): Error {

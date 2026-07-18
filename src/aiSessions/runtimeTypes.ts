@@ -7,6 +7,28 @@ export type AiSessionRuntimeBackendId = 'vscode' | 'tmux';
 export type AiSessionTmuxLayout = 'project' | 'session';
 export type AiSessionRuntimeState = 'pending' | 'active' | 'completed' | 'stopped' | 'conflict';
 
+export type TmuxRuntimeUnavailableReason =
+    | 'unsupported-platform'
+    | 'not-found'
+    | 'permission-denied'
+    | 'probe-timeout'
+    | 'invalid-version'
+    | 'missing-capability'
+    | 'probe-failed';
+
+export class TmuxRuntimeUnavailableError extends Error {
+    readonly code = 'TMUX_RUNTIME_UNAVAILABLE';
+
+    constructor(
+        public readonly reason: TmuxRuntimeUnavailableReason,
+        message: string
+    ) {
+        super(message);
+        this.name = 'TmuxRuntimeUnavailableError';
+        Object.setPrototypeOf(this, TmuxRuntimeUnavailableError.prototype);
+    }
+}
+
 export interface AiSessionRuntimeIdentity {
     provider: AiSessionProviderId;
     projectKey: string;

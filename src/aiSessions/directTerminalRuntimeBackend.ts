@@ -111,13 +111,24 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
 
     async ensureResume(request: AiSessionResumeRuntimeRequest): Promise<AiSessionRuntimeSnapshot<TTerminal>> {
         const input = snapshotResumeRequest(request);
-        const existing = this.find(input.identity);
-        if (existing.length === 1) {
-            await this.focus(existing[0]);
-            return cloneRuntime(existing[0]);
-        }
-        if (existing.length > 1) {
+        const tracked = this.terminalService.getTrackedTerminalEntries().filter(entry =>
+            entry.provider === input.identity.provider && entry.sessionId === input.identity.sessionId);
+        if (tracked.length > 1) {
             throw new Error('Multiple Direct Terminal runtimes match this AI session.');
+        }
+        if (tracked.length === 1) {
+            const existing = tracked[0];
+            const completed = existing.released || this.terminalService.isComplete(existing);
+            if (!completed) {
+                const runtime = this.activeSnapshot(existing);
+                await this.focus(runtime);
+                return cloneRuntime(runtime);
+            }
+            this.terminalService.focusTerminal(existing.terminal);
+            await this.terminalService.sendRuntimeLaunch(existing.terminal, input.launch, {
+                deleteMarkerBeforeLaunch: true,
+            });
+            return this.retrackResume(input, existing.terminal);
         }
 
         const created = this.terminalService.createTerminal({
@@ -131,12 +142,20 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             logError: () => undefined,
         });
         this.terminalService.focusTerminal(created.terminal);
-        await this.terminalService.sendRuntimeLaunch(created.terminal, input.launch, {
+        await this.terminalService.sendRuntimeLaunch(created.terminal,
+            launchForCreatedTerminal(input.launch, created.cwdAccepted), {
             deleteMarkerBeforeLaunch: true,
         });
+        return this.retrackResume(input, created.terminal);
+    }
+
+    private retrackResume(
+        input: AiSessionResumeRuntimeRequest,
+        terminal: TTerminal
+    ): AiSessionRuntimeSnapshot<TTerminal> {
         const runStartedAtMs = this.nowMs();
         this.terminalService.track(input.identity.provider, input.identity.sessionId, {
-            terminal: created.terminal,
+            terminal,
             markerPath: input.launch.markerPath || '',
             runStartedAtMs,
             cwd: input.identity.cwd,
@@ -148,7 +167,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         return this.activeSnapshot({
             provider: input.identity.provider,
             sessionId: input.identity.sessionId,
-            terminal: created.terminal,
+            terminal,
             markerPath: input.launch.markerPath || '',
             runStartedAtMs,
             cwd: input.identity.cwd,
@@ -190,7 +209,8 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         });
         this.terminalService.trackPending(pending);
         this.terminalService.focusTerminal(created.terminal);
-        await this.terminalService.sendRuntimeLaunch(created.terminal, input.launch, {
+        await this.terminalService.sendRuntimeLaunch(created.terminal,
+            launchForCreatedTerminal(input.launch, created.cwdAccepted), {
             persistPendingBeforeLaunch: true,
         });
         return this.pendingSnapshot(pending);
@@ -319,6 +339,14 @@ function snapshotCreateRequest(request: AiSessionCreateRuntimeRequest): AiSessio
         excludedSessionIds: [...request.excludedSessionIds],
         launch: { ...request.launch, args: [...request.launch.args] },
     };
+}
+
+function launchForCreatedTerminal(launch: AiSessionLaunchSpec, cwdAccepted: boolean): AiSessionLaunchSpec {
+    if (cwdAccepted) {
+        return { ...launch, args: [...launch.args] };
+    }
+    const { cwd: _cwd, ...withoutCwd } = launch;
+    return { ...withoutCwd, args: [...launch.args] };
 }
 
 function cloneRuntime<TTerminal>(runtime: AiSessionRuntimeSnapshot<TTerminal>): AiSessionRuntimeSnapshot<TTerminal> {
