@@ -1,11 +1,16 @@
 'use strict';
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const launchSpec = require('../out/aiSessions/launchSpec');
 const commandBuilders = require('../out/aiSessions/commandBuilders');
 const runtimeConfiguration = require('../out/aiSessions/runtimeConfiguration');
 const tmuxLayout = require('../out/aiSessions/tmuxLayout');
+const runtimeStoreModule = require('../out/aiSessions/tmuxRuntimeBindingStore');
+const attachStoreModule = require('../out/aiSessions/tmuxAttachBindingStore');
+const creationLock = require('../out/aiSessions/tmuxCreationLock');
 
 function config(values) {
     return { get: (key, fallback) => Object.prototype.hasOwnProperty.call(values, key) ? values[key] : fallback };
@@ -244,7 +249,185 @@ function runTmuxLayoutChecks() {
     }
 }
 
-runRuntimeConfigurationChecks();
-runLaunchSpecChecks();
-runTmuxLayoutChecks();
-console.log('AI session tmux checks passed.');
+async function runTmuxStoreChecks() {
+    const now = Date.parse('2026-07-18T10:00:00Z');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-tmux-store-'));
+    try {
+        const store = new runtimeStoreModule.TmuxRuntimeBindingStore(root, () => now);
+        const pending = (pendingId, createdAt, overrides = {}) => ({
+            version: 1,
+            state: 'pending',
+            pendingId,
+            provider: 'codex',
+            projectKey: 'pk',
+            cwd: '/work',
+            createdAt,
+            excludedSessionIds: [],
+            layout: 'project',
+            locator: {
+                layout: 'project',
+                sessionName: 'project-steward-p-a',
+                windowName: `pending-codex-${pendingId}`,
+            },
+            ...overrides,
+        });
+        const known = (sessionId, lastSeenAtMs, overrides = {}) => ({
+            version: 1,
+            state: 'known',
+            provider: 'codex',
+            sessionId,
+            projectKey: 'pk',
+            layout: 'project',
+            locator: {
+                layout: 'project',
+                sessionName: 'project-steward-p-a',
+                windowName: `ai-codex-${sessionId}`,
+            },
+            lastSeenAtMs,
+            ...overrides,
+        });
+
+        await store.setPending(pending('p-new', '2026-07-18T09:59:00Z'));
+        await store.setPending(pending('p-old', '2026-07-18T09:58:00Z'));
+        assert.deepStrictEqual((await store.listPending()).map(record => record.pendingId), ['p-old', 'p-new']);
+        assert.ok(fs.readdirSync(root).every(name => !name.includes('p-old') && !name.includes('p-new')));
+
+        fs.writeFileSync(path.join(root, 'bad.json'), '{bad');
+        fs.writeFileSync(path.join(root, 'unsupported.json'), JSON.stringify({ version: 99 }));
+        fs.writeFileSync(path.join(root, 'oversize.json'), ' '.repeat(1024 * 1024 + 1));
+        fs.symlinkSync('/etc/passwd', path.join(root, 'ignored.json'));
+        fs.mkdirSync(path.join(root, 'directory.json'));
+        assert.deepStrictEqual((await store.listPending()).map(record => record.pendingId), ['p-old', 'p-new']);
+
+        await store.setPending(pending('expired', '2026-07-17T09:59:59Z'));
+        await store.setPending(pending('expired-at-boundary', '2026-07-17T10:00:00Z'));
+        await store.setPending(pending('too-many-exclusions', '2026-07-18T09:59:30Z', {
+            excludedSessionIds: Array.from({ length: 1001 }, (_, index) => `s${index}`),
+        }));
+        assert.deepStrictEqual((await store.listPending()).map(record => record.pendingId), ['p-old', 'p-new']);
+
+        await store.setKnown(known('s-old', now - 2));
+        await store.setKnown(known('s-new', now - 1));
+        await store.setKnown(known('expired', now - (30 * 24 * 60 * 60 * 1000) - 1));
+        await store.setKnown(known('expired-at-boundary', now - (30 * 24 * 60 * 60 * 1000)));
+        assert.deepStrictEqual((await store.listKnown()).map(record => record.sessionId), ['s-new', 's-old']);
+        assert.strictEqual((await store.getKnown('codex', 's-old')).locator.windowName, 'ai-codex-s-old');
+        assert.strictEqual(await store.getKnown('codex', 'expired'), null);
+        assert.strictEqual(await store.getKnown('codex', 'expired-at-boundary'), null);
+
+        for (let index = 0; index < 513; index++) {
+            fs.writeFileSync(path.join(root, `cap-${index}.json`), JSON.stringify(
+                known(`cap-${index}`, now - 1000 + index)
+            ));
+        }
+        const cappedKnown = await store.listKnown();
+        assert.strictEqual(cappedKnown.length, 512);
+        assert.strictEqual(cappedKnown[0].sessionId, 's-new');
+        assert.ok(cappedKnown.some(record => record.sessionId === 'cap-512'));
+        assert.strictEqual(cappedKnown.some(record => record.sessionId === 'cap-0'), false);
+
+        await store.reconcileKnown([{
+            identity: { provider: 'kimi', projectKey: 'pk-live', cwd: '/live', sessionId: 'live' },
+            backend: 'tmux',
+            state: 'active',
+            markerPath: '/tmp/live.done',
+            runStartedAtMs: now - 100,
+            attached: false,
+            tmux: { layout: 'session', sessionName: 'project-steward-s-kimi-live' },
+        }, {
+            identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 'ignored-vscode' },
+            backend: 'vscode',
+            state: 'active',
+            markerPath: '/tmp/vscode.done',
+            runStartedAtMs: now - 100,
+            attached: true,
+        }]);
+        const live = await store.getKnown('kimi', 'live');
+        assert.strictEqual(live.lastSeenAtMs, now);
+        assert.strictEqual(live.layout, 'session');
+        assert.strictEqual(await store.getKnown('codex', 'ignored-vscode'), null);
+
+        await store.removePending('p-old');
+        await store.removeKnown('kimi', 'live');
+        assert.deepStrictEqual((await store.listPending()).map(record => record.pendingId), ['p-new']);
+        assert.strictEqual(await store.getKnown('kimi', 'live'), null);
+        assert.ok(fs.readdirSync(root).every(name => !name.endsWith('.tmp')));
+
+        const state = new Map();
+        const bindingState = {
+            get: (key, fallback) => state.has(key) ? state.get(key) : fallback,
+            update: async (key, value) => value === undefined ? state.delete(key) : state.set(key, value),
+        };
+        const attach = new attachStoreModule.TmuxAttachBindingStore(bindingState);
+        const binding = {
+            version: 1,
+            layout: 'project',
+            projectKey: 'pk',
+            sessionName: 'project-steward-p-a',
+            windowName: 'ai-codex-a',
+            provider: 'codex',
+            sessionId: 's1',
+            terminalNamePrefix: 'Project Steward:',
+        };
+        attach.set(Promise.resolve(41), binding);
+        await attach.flush();
+        assert.deepStrictEqual(attach.get(41), binding);
+        assert.deepStrictEqual([...state.keys()], ['aiSessionTmuxAttachProcessBinding.v1.41']);
+        const minimalBinding = {
+            version: 1,
+            layout: 'project',
+            projectKey: 'pk',
+            sessionName: 'project-steward-p-a',
+            terminalNamePrefix: 'Project Steward:',
+        };
+        attach.set(Promise.resolve(44), minimalBinding);
+        await attach.flush();
+        assert.deepStrictEqual(attach.get(44), minimalBinding);
+        attach.remove(Promise.resolve(44));
+        attach.set(Promise.resolve(0), binding);
+        attach.set(Promise.resolve(42), { ...binding, layout: 'session' });
+        attach.set(Promise.resolve(43), { ...binding, windowName: undefined, terminalNamePrefix: '' });
+        await attach.flush();
+        assert.strictEqual(state.size, 1);
+        attach.remove(Promise.resolve(41));
+        await attach.flush();
+        assert.strictEqual(state.size, 0);
+
+        let inside = 0;
+        let highestInside = 0;
+        await Promise.all([1, 2].map(() => creationLock.withTmuxCreationLock(root, 'same-key', async () => {
+            inside++;
+            highestInside = Math.max(highestInside, inside);
+            await new Promise(resolve => setTimeout(resolve, 10));
+            inside--;
+        })));
+        assert.strictEqual(highestInside, 1);
+        const lockDirectory = path.join(root, 'ai-session-tmux-locks');
+        assert.deepStrictEqual(fs.readdirSync(lockDirectory), []);
+
+        const lockName = `${crypto.createHash('sha256').update('stale-key', 'utf8').digest('hex')}.lock`;
+        const staleLockPath = path.join(lockDirectory, lockName);
+        fs.writeFileSync(staleLockPath, 'stale');
+        const staleTime = new Date(Date.now() - 31000);
+        fs.utimesSync(staleLockPath, staleTime, staleTime);
+        let recovered = false;
+        await creationLock.withTmuxCreationLock(root, 'stale-key', async () => { recovered = true; });
+        assert.strictEqual(recovered, true);
+        assert.strictEqual(fs.existsSync(staleLockPath), false);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
+async function main() {
+    runRuntimeConfigurationChecks();
+    runLaunchSpecChecks();
+    runTmuxLayoutChecks();
+    await runTmuxStoreChecks();
+    console.log('AI session tmux checks passed.');
+}
+
+main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+});
