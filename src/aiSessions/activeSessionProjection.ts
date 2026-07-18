@@ -2,9 +2,9 @@
 
 import type { AiSessionProviderId, CodexSession, Project } from '../models';
 import type { ActiveAiSessionTerminalIdentity } from './activeTerminalHighlight';
+import type { AiSessionExecutionSnapshot } from './executionMonitor';
 import type { PendingAiSessionTerminal } from './terminalService';
 import type {
-    ActiveAiSessionStatus,
     ActiveAiSessionViewModel,
     AiSessionActiveTerminalRuntime,
     AiSessionProviderDefinition,
@@ -17,6 +17,7 @@ export interface ApplyAiSessionRuntimeProjectionInput {
     providers: Record<AiSessionProviderId, ProjectionProvider>;
     activeTerminals: AiSessionActiveTerminalRuntime[];
     pendingTerminals: Array<Pick<PendingAiSessionTerminal, 'provider' | 'cwd' | 'createdAt' | 'title'>>;
+    executionSnapshot: Record<string, AiSessionExecutionSnapshot>;
     focusedIdentity: ActiveAiSessionTerminalIdentity | null;
     getProjectCwd(project: Project): string;
     normalizePath(value: string): string;
@@ -91,7 +92,7 @@ function projectWithRuntime(
             provider: runtime.provider,
             sessionId: runtime.sessionId,
             name: session?.name || `${provider?.label || 'AI'} ${shortSessionId(runtime.sessionId)}`,
-            status: getEstablishedStatus(needsAttention, focused),
+            executionState: input.executionSnapshot[key]?.state || 'stopped',
             focused,
             needsAttention,
             pending: false,
@@ -109,7 +110,7 @@ function projectWithRuntime(
             key: `pending:${pending.provider}:${pending.createdAt}`,
             provider: pending.provider,
             name: pending.title || `New ${provider?.label || 'AI'} session`,
-            status: 'starting',
+            executionState: 'starting',
             focused: false,
             needsAttention: false,
             pending: true,
@@ -156,23 +157,19 @@ function getProviders(providers: Record<AiSessionProviderId, ProjectionProvider>
         .filter(Boolean);
 }
 
-function getEstablishedStatus(needsAttention: boolean, focused: boolean): ActiveAiSessionStatus {
-    return needsAttention ? 'needsAttention' : focused ? 'focused' : 'running';
-}
-
 function compareActiveSessions(left: SortableActiveAiSessionViewModel, right: SortableActiveAiSessionViewModel): number {
-    const rankDifference = getStatusRank(left.status) - getStatusRank(right.status);
+    const rankDifference = getPriorityRank(left) - getPriorityRank(right);
     if (rankDifference !== 0) {
         return rankDifference;
     }
-    if (left.status === 'starting') {
+    if (left.pending) {
         return left.activityMs - right.activityMs || left.sourceOrder - right.sourceOrder;
     }
     return right.activityMs - left.activityMs || left.sourceOrder - right.sourceOrder;
 }
 
-function getStatusRank(status: ActiveAiSessionStatus): number {
-    return status === 'needsAttention' ? 0 : status === 'focused' ? 1 : status === 'running' ? 2 : 3;
+function getPriorityRank(model: ActiveAiSessionViewModel): number {
+    return model.needsAttention ? 0 : model.focused ? 1 : model.pending ? 3 : 2;
 }
 
 function getActivityMs(updatedAt: string | undefined, runStartedAtMs: number): number {

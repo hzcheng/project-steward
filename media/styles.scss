@@ -2641,7 +2641,7 @@ body.steward-sidebar {
             }
         }
 
-        .codex-session-row[data-session-status="focused"] {
+        .codex-session-row[data-session-focused] {
             border-color: var(--vscode-focusBorder);
             box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
 
@@ -2654,7 +2654,7 @@ body.steward-sidebar {
             }
         }
 
-        .codex-session-row[data-session-status="needsAttention"] {
+        .codex-session-row[data-session-needs-attention] {
             border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
             color: var(--vscode-errorForeground);
 
@@ -2667,6 +2667,29 @@ body.steward-sidebar {
             .codex-session-name {
                 color: var(--vscode-errorForeground);
             }
+        }
+
+        .ai-session-execution-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }
+
+        .ai-session-execution-dot {
+            flex: 0 0 auto;
+            width: 6px;
+            height: 6px;
+            border-radius: 999px;
+            background: currentColor;
+        }
+
+        .codex-session-row[data-execution-state="running"] .ai-session-execution-status {
+            color: var(--vscode-terminal-ansiGreen, #89d185);
+        }
+
+        .codex-session-row[data-execution-state="stopped"] .ai-session-execution-status,
+        .codex-session-row[data-execution-state="starting"] .ai-session-execution-status {
+            color: var(--vscode-descriptionForeground);
         }
 
         .codex-session-row[data-session-pending] {

@@ -67,6 +67,7 @@ export class AiSessionAttentionController<TEntry extends AiSessionAttentionTermi
                     token: `terminal-exit:${owned.terminal.runStartedAtMs}`,
                     phase: 'needsAttention' as const,
                     reason: 'completed' as const,
+                    executionState: 'stopped' as const,
                     occurredAtMs: owned.terminal.runStartedAtMs,
                 }
                 : signalsByProvider[owned.providerId][owned.session.id];

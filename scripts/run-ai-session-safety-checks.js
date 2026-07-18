@@ -18,6 +18,7 @@ const terminalBindingStore = require('../out/aiSessions/terminalBindingStore');
 const AiSessionTerminalBindingStore = terminalBindingStore.default;
 const AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX = terminalBindingStore.AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX;
 const AiSessionAttentionMonitor = require('../out/aiSessions/attentionMonitor').default;
+const AiSessionExecutionMonitor = require('../out/aiSessions/executionMonitor').default;
 const attentionPayload = require('../out/aiSessions/attentionPayload');
 const attentionAggregate = require('../out/aiSessions/attentionAggregate');
 const attentionProject = require('../out/aiSessions/attentionProject');
@@ -90,6 +91,7 @@ const AiSessionCommandController = require('../out/aiSessions/commandController'
 const AiSessionCreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
 const AiSessionResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const AiSessionAttentionController = require('../out/aiSessions/attentionController').AiSessionAttentionController;
+const AiSessionExecutionController = require('../out/aiSessions/executionController').AiSessionExecutionController;
 const AiSessionProjectHydrationController = require('../out/aiSessions/projectHydrationController').AiSessionProjectHydrationController;
 Module._load = originalModuleLoad;
 
@@ -912,13 +914,25 @@ function runActiveAiSessionProjectionChecks() {
             createdAt: '2026-07-18T03:00:00Z',
             title: 'New Claude',
         }],
+        executionSnapshot: {
+            'codex:c1': { state: 'running', stateChangedAt: 100 },
+            'kimi:k1': { state: 'stopped', stateChangedAt: 200 },
+        },
         focusedIdentity: { provider: 'codex', sessionId: 'c1' },
         getProjectCwd: project => project.path,
         normalizePath: value => value && value.replace(/\/$/, ''),
     });
 
-    assert.deepStrictEqual(projected[0].activeAiSessions.map(item => item.status), [
-        'needsAttention', 'focused', 'starting',
+    assert.ok(projected[0].activeAiSessions.every(item => !Object.prototype.hasOwnProperty.call(item, 'status')));
+    assert.deepStrictEqual(projected[0].activeAiSessions.map(item => ({
+        provider: item.provider,
+        executionState: item.executionState,
+        focused: item.focused,
+        needsAttention: item.needsAttention,
+    })), [
+        { provider: 'kimi', executionState: 'stopped', focused: false, needsAttention: true },
+        { provider: 'codex', executionState: 'running', focused: true, needsAttention: false },
+        { provider: 'claude', executionState: 'starting', focused: false, needsAttention: false },
     ]);
     assert.deepStrictEqual(projected[0].activeAiSessions.map(item => item.provider), ['kimi', 'codex', 'claude']);
     assert.strictEqual(projected[0].activeAiSessions[0].focused, false);
@@ -927,6 +941,32 @@ function runActiveAiSessionProjectionChecks() {
     assert.strictEqual(projected[0].kimiSessions[0].active, true);
     assert.strictEqual(projected[0].activeAiSessionTab, 'active');
     assert.strictEqual(projects[0].codexSessions[0].active, undefined, 'projection must not mutate hydration input');
+
+    const swappedExecutionStates = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects,
+        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
+        activeTerminals: [
+            { provider: 'codex', sessionId: 'c1', cwd: '/work/app', runStartedAtMs: 10 },
+            { provider: 'kimi', sessionId: 'k1', cwd: '/work/app', runStartedAtMs: 20 },
+        ],
+        pendingTerminals: [{
+            provider: 'claude',
+            cwd: '/work/app',
+            createdAt: '2026-07-18T03:00:00Z',
+            title: 'New Claude',
+        }],
+        executionSnapshot: {
+            'codex:c1': { state: 'stopped', stateChangedAt: 300 },
+            'kimi:k1': { state: 'running', stateChangedAt: 400 },
+        },
+        focusedIdentity: { provider: 'codex', sessionId: 'c1' },
+        getProjectCwd: project => project.path,
+        normalizePath: value => value && value.replace(/\/$/, ''),
+    });
+    assert.deepStrictEqual(
+        swappedExecutionStates[0].activeAiSessions.map(item => item.provider),
+        ['kimi', 'codex', 'claude']
+    );
 
     const withoutHistory = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'historyless', path: '/work/historyless', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
@@ -938,12 +978,14 @@ function runActiveAiSessionProjectionChecks() {
             runStartedAtMs: 30,
         }],
         pendingTerminals: [],
+        executionSnapshot: {},
         focusedIdentity: null,
         getProjectCwd: project => project.path,
         normalizePath: value => value && value.replace(/\/$/, ''),
     });
     assert.strictEqual(withoutHistory[0].activeAiSessions.length, 1);
     assert.strictEqual(withoutHistory[0].activeAiSessions[0].provider, 'claude');
+    assert.strictEqual(withoutHistory[0].activeAiSessions[0].executionState, 'stopped');
     assert.ok(withoutHistory[0].activeAiSessions[0].name.includes('12345678'));
     assert.deepStrictEqual(withoutHistory[0].claudeSessions, []);
 
@@ -955,6 +997,7 @@ function runActiveAiSessionProjectionChecks() {
             { provider: 'kimi', cwd: '/work/stable', createdAt: '2026-07-18T03:00:00Z', title: 'First' },
             { provider: 'codex', cwd: '/work/stable', createdAt: '2026-07-18T03:01:00Z', title: 'Second' },
         ],
+        executionSnapshot: {},
         focusedIdentity: null,
         getProjectCwd: project => project.path,
         normalizePath: value => value,
@@ -966,6 +1009,7 @@ function runActiveAiSessionProjectionChecks() {
         providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
         activeTerminals: [],
         pendingTerminals: [],
+        executionSnapshot: {},
         focusedIdentity: null,
         getProjectCwd: project => project.path,
         normalizePath: value => value,
@@ -1532,6 +1576,88 @@ async function runAiSessionAttentionControllerChecks() {
     assert.deepStrictEqual(controller.getLocalSnapshot(), {});
     assert.deepStrictEqual(published[published.length - 1], { items: [], forceHeartbeat: true });
     assert.deepStrictEqual(scheduled.slice(-1), ['attention']);
+}
+
+async function runAiSessionExecutionControllerChecks() {
+    let activeSessions = [{
+        provider: 'codex',
+        sessionId: 'session-a',
+        runStartedAtMs: 900,
+    }];
+    let signal = {
+        token: 'codex:run:session-a',
+        phase: 'running',
+        executionState: 'running',
+        occurredAtMs: 1100,
+    };
+    const providerCalls = { codex: [], kimi: [], claude: [] };
+    const providersForTest = [{
+        id: 'codex',
+        service: {
+            getLifecycleSignals: requests => {
+                providerCalls.codex.push(requests.map(request => ({ ...request })));
+                return { 'session-a': signal };
+            },
+        },
+    }, {
+        id: 'kimi',
+        service: {
+            getLifecycleSignals: requests => {
+                providerCalls.kimi.push(requests.map(request => ({ ...request })));
+                return {};
+            },
+        },
+    }, {
+        id: 'claude',
+        service: {
+            getLifecycleSignals: requests => {
+                providerCalls.claude.push(requests.map(request => ({ ...request })));
+                return {};
+            },
+        },
+    }];
+    const scheduled = [];
+    const options = {
+        getActiveSessions: () => activeSessions,
+        getProviders: () => providersForTest,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        scheduleRefresh: reason => scheduled.push(reason),
+        nowMs: () => 1000,
+    };
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(options, 'isEnabled'), false);
+    const controller = new AiSessionExecutionController(options);
+
+    await controller.evaluate();
+    assert.deepStrictEqual(scheduled, ['execution']);
+    assert.deepStrictEqual(providerCalls.codex, [[{ sessionId: 'session-a', runStartedAtMs: 900 }]]);
+    assert.deepStrictEqual(providerCalls.kimi, []);
+    assert.deepStrictEqual(providerCalls.claude, []);
+    assert.strictEqual(controller.getSnapshot()['codex:session-a'].state, 'running');
+
+    await controller.evaluate();
+    assert.deepStrictEqual(scheduled, ['execution'], 'repeating a signal does not schedule a refresh');
+
+    signal = {
+        token: 'codex:stop:session-a',
+        phase: 'needsAttention',
+        reason: 'completed',
+        executionState: 'stopped',
+        occurredAtMs: 1200,
+    };
+    await controller.evaluate();
+    assert.deepStrictEqual(scheduled, ['execution', 'execution']);
+    assert.strictEqual(controller.getSnapshot()['codex:session-a'].state, 'stopped');
+
+    activeSessions = [];
+    await controller.evaluate();
+    assert.deepStrictEqual(controller.getSnapshot(), {});
+    assert.strictEqual(providerCalls.codex.length, 3, 'providers without active requests are not queried');
+    assert.deepStrictEqual(providerCalls.kimi, []);
+    assert.deepStrictEqual(providerCalls.claude, []);
+
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'executionController.ts'), 'utf8');
+    assert.ok(!source.includes('isEnabled'), 'execution controller has no attention enablement option');
+    assert.ok(!source.toLowerCase().includes('attention'), 'execution controller never reads attention configuration');
 }
 
 async function runAiSessionProjectHydrationControllerChecks() {
@@ -2676,9 +2802,14 @@ function runWebviewContentChecks() {
     const projectHydrationControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydrationController.ts'), 'utf8');
     const hydrateOpenProjectsFunction = extractMethodBody(projectHydrationControllerSource, 'hydrate');
     const attentionControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'attentionController.ts'), 'utf8');
+    const attentionMonitorSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'attentionMonitor.ts'), 'utf8');
+    const executionControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'executionController.ts'), 'utf8');
+    const activeSessionProjectionSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'activeSessionProjection.ts'), 'utf8');
     const dashboardRuntimeControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'runtimeController.ts'), 'utf8');
     const dashboardLifecycleControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'lifecycleController.ts'), 'utf8');
     const evaluateAttentionFunction = extractMethodBody(attentionControllerSource, 'evaluate');
+    const evaluateAttentionMonitorFunction = extractMethodBody(attentionMonitorSource, 'evaluate');
+    const evaluateExecutionFunction = extractMethodBody(executionControllerSource, 'evaluate');
     const archiveControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'archiveController.ts'), 'utf8');
     const singleArchiveFunction = extractMethodBody(archiveControllerSource, 'archiveSession');
     const batchArchiveFunction = extractMethodBody(archiveControllerSource, 'archiveSessions');
@@ -2713,20 +2844,20 @@ function runWebviewContentChecks() {
         activeAiSessions: [
             {
                 key: 'codex:c1', provider: 'codex', sessionId: 'c1', name: 'Codex live',
-                status: 'focused', focused: true, needsAttention: false, pending: false,
+                executionState: 'running', focused: true, needsAttention: false, pending: false,
             },
             {
                 key: 'kimi:k2', provider: 'kimi', sessionId: 'k2', name: 'Kimi waiting',
-                status: 'needsAttention', focused: false, needsAttention: true, pending: false,
+                executionState: 'stopped', focused: false, needsAttention: true, pending: false,
                 attentionEventId: 'attention-1',
             },
             {
                 key: 'claude:c3', provider: 'claude', sessionId: 'c3', name: 'Claude running',
-                status: 'running', focused: false, needsAttention: false, pending: false,
+                executionState: 'running', focused: false, needsAttention: false, pending: false,
             },
             {
                 key: 'pending:claude:2026-07-18T03:00:00Z', provider: 'claude', name: 'New Claude',
-                status: 'starting', focused: false, needsAttention: false, pending: true,
+                executionState: 'starting', focused: false, needsAttention: false, pending: true,
                 createdAt: '2026-07-18T03:00:00Z',
             },
         ],
@@ -2739,7 +2870,21 @@ function runWebviewContentChecks() {
     assert.ok(sessionTabsHtml.includes('data-ai-session-tab="sessions"'));
     assert.ok(sessionTabsHtml.includes('id="ai-session-active-project-a"'));
     assert.ok(sessionTabsHtml.includes('id="ai-session-history-project-a"'));
-    assert.ok(sessionTabsHtml.includes('data-session-status="needsAttention"'));
+    assert.ok(sessionTabsHtml.includes('data-execution-state="running"'));
+    assert.ok(sessionTabsHtml.includes('data-execution-state="stopped"'));
+    assert.ok(sessionTabsHtml.includes('data-execution-state="starting"'));
+    assert.ok(sessionTabsHtml.includes('class="ai-session-execution-status"'));
+    assert.ok(sessionTabsHtml.includes('class="ai-session-execution-dot"'));
+    assert.ok(sessionTabsHtml.includes('aria-label="AI is currently executing"'));
+    assert.ok(sessionTabsHtml.includes('aria-label="AI is not currently executing"'));
+    assert.ok(sessionTabsHtml.includes('aria-label="Waiting for AI activity"'));
+    assert.ok(sessionTabsHtml.includes('aria-hidden="true"></span>Running</span>'));
+    assert.ok(sessionTabsHtml.includes('aria-hidden="true"></span>Stopped</span>'));
+    assert.ok(sessionTabsHtml.includes('aria-hidden="true"></span>Starting</span>'));
+    assert.ok(sessionTabsHtml.includes('AI session needs attention'));
+    assert.ok(sessionTabsHtml.includes('data-session-focused'));
+    assert.ok(sessionTabsHtml.includes('data-session-needs-attention'));
+    assert.ok(!sessionTabsHtml.includes('data-session-status='));
     assert.ok(sessionTabsHtml.includes('data-session-pending'));
     assert.ok(sessionTabsHtml.includes('data-session-active'));
     assert.ok(sessionTabsHtml.includes('Close the active terminal before archiving.'));
@@ -2793,6 +2938,20 @@ function runWebviewContentChecks() {
     assert.ok(webviewProjectScripts.includes('message.sessionEvents'));
     assert.ok(dashboard.includes("import { AiSessionAttentionController } from './aiSessions/attentionController';"));
     assert.ok(dashboard.includes('const aiSessionAttentionController = new AiSessionAttentionController<TerminalEntry>({'));
+    assert.ok(dashboard.includes("import { AiSessionExecutionController } from './aiSessions/executionController';"));
+    assert.ok(dashboard.includes('const aiSessionExecutionController = new AiSessionExecutionController({'));
+    assert.ok(dashboard.includes('getActiveSessions: () => aiSessionTerminalService.getActiveSessions()'));
+    assert.ok(dashboard.includes('executionSnapshot: aiSessionExecutionController.getSnapshot()'));
+    assert.match(dashboard, /aiSessionExecutionInterval = setInterval\(\(\) => \{ aiSessionExecutionController\.evaluate\(\); \}, 1_000\)/);
+    assert.match(dashboard, /setTimeout\(\(\) => \{ aiSessionExecutionController\.evaluate\(\); \}, 0\)/);
+    assert.ok(dashboard.includes('clearInterval(aiSessionExecutionInterval)'));
+    assert.match(dashboard, /onDidCloseTerminal\(terminal => \{[\s\S]*?handleClosedTerminal\(terminal\);[\s\S]*?aiSessionExecutionController\.evaluate\(\);/);
+    assert.ok(!evaluateExecutionFunction.includes('isEnabled'));
+    assert.ok(!evaluateExecutionFunction.includes('attention'));
+    assert.ok(evaluateAttentionFunction.includes('if (!this.options.isEnabled())'));
+    assert.ok(evaluateAttentionMonitorFunction.includes('signal.phase'));
+    assert.ok(activeSessionProjectionSource.includes('executionSnapshot: Record<string, AiSessionExecutionSnapshot>;'));
+    assert.ok(activeSessionProjectionSource.includes("executionState: input.executionSnapshot[key]?.state || 'stopped'"));
     assert.ok(!dashboard.includes('function getEffectiveAiSessionAttentionAggregate('));
     assert.ok(!dashboard.includes('function getAiSessionAttentionRecoverySessionEvents('));
     assert.ok(!dashboard.includes('async function evaluateAiSessionAttention('));
@@ -2916,8 +3075,27 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes("join(' · ')"));
     assert.ok(styles.includes('.codex-session-actions'));
     assert.ok(styles.includes('.ai-session-tabs'));
-    assert.ok(styles.includes('[data-session-status="focused"]'));
-    assert.ok(styles.includes('[data-session-status="needsAttention"]'));
+    assert.ok(styles.includes('.ai-session-execution-status'));
+    assert.ok(styles.includes('.ai-session-execution-dot'));
+    assert.ok(!extractScssBlock(styles, '.ai-session-execution-dot').includes('animation'));
+    assert.ok(styles.includes('[data-execution-state="running"] .ai-session-execution-status'));
+    assert.ok(styles.includes('var(--vscode-terminal-ansiGreen, #89d185)'));
+    assert.ok(styles.includes('[data-execution-state="stopped"] .ai-session-execution-status'));
+    assert.ok(styles.includes('[data-execution-state="starting"] .ai-session-execution-status'));
+    assert.ok(styles.includes('color: var(--vscode-descriptionForeground);'));
+    assert.ok(styles.includes('[data-session-focused]'));
+    assert.ok(styles.includes('[data-session-needs-attention]'));
+    assert.ok(!styles.includes('[data-session-status='));
+    assert.ok(compiledStyles.includes('.ai-session-execution-status'));
+    assert.ok(compiledStyles.includes('.ai-session-execution-dot'));
+    assert.ok(compiledStyles.includes('[data-execution-state=running] .ai-session-execution-status'));
+    assert.ok(compiledStyles.includes('var(--vscode-terminal-ansiGreen,#89d185)'));
+    assert.ok(compiledStyles.includes('[data-execution-state=stopped] .ai-session-execution-status'));
+    assert.ok(compiledStyles.includes('[data-execution-state=starting] .ai-session-execution-status'));
+    assert.ok(compiledStyles.includes('var(--vscode-descriptionForeground)'));
+    assert.ok(compiledStyles.includes('[data-session-focused]'));
+    assert.ok(compiledStyles.includes('[data-session-needs-attention]'));
+    assert.ok(!compiledStyles.includes('[data-session-status='));
     assert.ok(styles.includes('[data-session-pending]'));
     assert.ok(styles.includes('@media (max-width: 280px)'));
     assert.ok(styles.includes('@media (prefers-reduced-motion: reduce)'));
@@ -3291,7 +3469,7 @@ function runAttentionProjectRenderingChecks() {
                 }],
                 activeAiSessions: [{
                     key: 'codex:codex-one', provider: 'codex', sessionId: 'codex-one', name: 'Codex One',
-                    status: 'needsAttention', focused: false, needsAttention: true, pending: false,
+                    executionState: 'stopped', focused: false, needsAttention: true, pending: false,
                 }],
             }],
         },
@@ -4399,11 +4577,11 @@ function runOpenProjectAiSessionViewModelBuilderChecks() {
         activeAiSessions: [
             {
                 key: 'codex:c1', provider: 'codex', sessionId: 'c1', name: 'Codex One',
-                status: 'running', focused: false, needsAttention: false, pending: false,
+                executionState: 'running', focused: false, needsAttention: false, pending: false,
             },
             {
                 key: 'kimi:k1', provider: 'kimi', sessionId: 'k1', name: 'Kimi One',
-                status: 'needsAttention', focused: false, needsAttention: true, pending: false,
+                executionState: 'stopped', focused: false, needsAttention: true, pending: false,
             },
         ],
     };
@@ -5513,7 +5691,15 @@ function runLifecycleParserChecks() {
     ], runStartedAtMs);
     assert.strictEqual(codexSignal.phase, 'needsAttention');
     assert.strictEqual(codexSignal.reason, 'completed');
+    assert.strictEqual(codexSignal.executionState, 'stopped');
     assert.ok(codexSignal.token.includes('task_complete'));
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:08.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'newer' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:07.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'older' } }),
+    ], runStartedAtMs).executionState, 'stopped', 'event time wins over physical line order');
+    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:09.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'next' } }),
+    ], runStartedAtMs).executionState, 'running');
     assert.strictEqual(lifecycle.parseCodexLifecycleLines([
         JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'event_msg', payload: { type: 'turn_aborted', turn_id: 'turn-2' } }),
     ], runStartedAtMs).reason, 'aborted');
@@ -5541,6 +5727,12 @@ function runLifecycleParserChecks() {
         JSON.stringify({ timestamp: 1784073604, message: { type: 'TurnEnd', payload: {} } }),
     ], runStartedAtMs).reason, 'completed');
     assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073604, message: { type: 'TurnEnd', payload: {} } }),
+    ], runStartedAtMs).executionState, 'stopped');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+        JSON.stringify({ timestamp: 1784073605, message: { type: 'TurnBegin', payload: {} } }),
+    ], runStartedAtMs).executionState, 'running');
+    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
         JSON.stringify({ timestamp: 1784073605, message: { type: 'ApprovalRequest', payload: { id: 'approval-1' } } }),
     ], runStartedAtMs).reason, 'input-required');
     assert.strictEqual(lifecycle.parseKimiLifecycleLines([
@@ -5553,6 +5745,10 @@ function runLifecycleParserChecks() {
         JSON.stringify({ timestamp: '2026-07-15T00:00:02.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn', content: [] } }),
     ], runStartedAtMs);
     assert.strictEqual(claudeSignal.reason, 'completed');
+    assert.strictEqual(claudeSignal.executionState, 'stopped');
+    assert.strictEqual(lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:02.000Z', type: 'user', message: { role: 'user' } }),
+    ], runStartedAtMs).executionState, 'running');
     assert.strictEqual(lifecycle.parseClaudeLifecycleLines([
         JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'stop_sequence', content: [] } }),
     ], runStartedAtMs).reason, 'completed');
@@ -5641,6 +5837,33 @@ function runAttentionMonitorChecks() {
     assert.strictEqual(events.length, 0, 'returning to the owning terminal does not acknowledge or replay the event');
     assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].event.eventId, hiddenEventId);
     assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'needsAttention');
+}
+
+function runAiSessionExecutionMonitorChecks() {
+    let now = 1000;
+    const monitor = new AiSessionExecutionMonitor({ now: () => now });
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1' }]), []);
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'stopped');
+
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: {
+        token: 'run-1', phase: 'running', executionState: 'running', occurredAtMs: 1100,
+    } }]), ['codex:s1']);
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'running');
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: {
+        token: 'run-1', phase: 'running', executionState: 'running', occurredAtMs: 1100,
+    } }]), [], 'same token is idempotent');
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: {
+        token: 'old-stop', phase: 'needsAttention', reason: 'completed', executionState: 'stopped', occurredAtMs: 1099,
+    } }]), [], 'older signal cannot overwrite current execution state');
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'running');
+
+    now = 1200;
+    assert.deepStrictEqual(monitor.evaluate([{ key: 'codex:s1', signal: {
+        token: 'stop-2', phase: 'needsAttention', reason: 'input-required', executionState: 'stopped', occurredAtMs: 1200,
+    } }]), ['codex:s1']);
+    assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'stopped');
+    monitor.evaluate([]);
+    assert.deepStrictEqual(monitor.getSnapshot(), {});
 }
 
 function runAttentionPayloadChecks() {
@@ -6457,6 +6680,7 @@ async function main() {
     await runAiSessionResumeControllerChecks();
     await runAiSessionTerminalCommandControllerChecks();
     await runAiSessionAttentionControllerChecks();
+    await runAiSessionExecutionControllerChecks();
     await runAiSessionProjectHydrationControllerChecks();
     runKeyChecks();
     runBatchAiSessionArchiveChecks();
@@ -6490,6 +6714,7 @@ async function main() {
     runCommandBuilderChecks();
     runLifecycleParserChecks();
     runAttentionMonitorChecks();
+    runAiSessionExecutionMonitorChecks();
     runAttentionPayloadChecks();
     await runProductionAttentionStoreClockChecks();
     await runProductionAttentionStoreLifecycleChecks();
