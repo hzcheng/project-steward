@@ -600,7 +600,7 @@ function runPendingTerminalResolverChecks() {
                 sessions: [
                     { id: 'old', cwd: '/work/app', updatedAt: '2026-07-15T10:01:00Z' },
                     { id: 'claimed', cwd: '/work/app', updatedAt: '2026-07-15T10:02:00Z' },
-                    { id: 'new', cwd: '/work/app', updatedAt: '2026-07-15T10:03:00Z' },
+                    { id: 'new', cwd: '/work/app', updatedAt: '2026-07-15T10:00:56Z' },
                 ],
             },
         },
@@ -1131,12 +1131,6 @@ async function runAiSessionCreationControllerChecks() {
         nowMs: () => Date.parse('2026-07-18T04:00:00.000Z'),
     });
 
-    controller.watchPending({
-        provider: 'codex', terminal: { show() {} }, markerPath: '/tmp/invalid.marker',
-        cwd: '/work/a', createdAt: 'invalid', excludedSessionIds: [],
-    }, 'project-a');
-    assert.strictEqual(timeoutQueue.length, 0, 'an invalid restored timestamp must not schedule an immediate timeout');
-
     await controller.createSession('missing');
     assert.deepStrictEqual(warnings, [['Open project not found.', []]]);
     assert.strictEqual(terminals.length, 0);
@@ -1164,8 +1158,8 @@ async function runAiSessionCreationControllerChecks() {
     assert.strictEqual(terminals[0].terminal.showCalls, 1);
     assert.deepStrictEqual(activeTabRequests, ['project-a']);
     assert.strictEqual(refreshes.length, 1);
-    assert.strictEqual(timeoutQueue[0].delayMs, 15_000);
-    pendingKeys.delete(`codex:${tracked[0].createdAt}`);
+    assert.strictEqual(timeoutQueue.length, 0, 'creating a session must not schedule pending removal');
+    assert.strictEqual(pendingKeys.has(`codex:${tracked[0].createdAt}`), true);
 
     usableCwd = null;
     nextProvider = 'kimi';
@@ -1174,21 +1168,14 @@ async function runAiSessionCreationControllerChecks() {
     assert.deepStrictEqual(existingSessionInputs[1], ['kimi', '/work/a']);
     assert.strictEqual(tracked[1].cwd, '/work/a');
     assert.deepStrictEqual(sent[1], ['kimi', terminals[1].terminal, null, '', '/tmp/kimi.marker']);
-    assert.strictEqual(timeoutQueue[1].delayMs, 15_000);
-
-    warningAction = 'Focus Terminal';
-    await timeoutQueue[1].callback();
-    assert.deepStrictEqual(removed, [['kimi', tracked[1].createdAt]]);
-    assert.deepStrictEqual(announcements, [['project-a', 'Could not detect the new session']]);
-    assert.deepStrictEqual(warnings[warnings.length - 1], [
-        'Could not detect the new session', ['Focus Terminal'],
-    ]);
-    assert.strictEqual(terminals[1].terminal.showCalls, 2);
+    assert.strictEqual(timeoutQueue.length, 0, 'elapsed time must not own the pending lifecycle');
+    assert.strictEqual(pendingKeys.has(`kimi:${tracked[1].createdAt}`), true);
+    assert.deepStrictEqual(removed, []);
+    assert.deepStrictEqual(announcements, []);
+    assert.deepStrictEqual(warnings, [['Open project not found.', []]]);
+    assert.strictEqual(terminals[1].terminal.showCalls, 1);
     assert.strictEqual(terminals[1].terminal.disposeCalls, 0);
-    assert.strictEqual(refreshes.length, 3);
-
-    controller.dispose();
-    assert.strictEqual(timeoutQueue[0].cleared, true, 'dispose clears an unresolved pending timeout');
+    assert.strictEqual(refreshes.length, 2);
 }
 
 function runAiSessionProviderAvailabilityChecks() {
@@ -1971,6 +1958,19 @@ function runAiSessionTerminalResolutionChecks() {
         candidateCalls.length = 0;
         assert.strictEqual(service.resolveTerminalSession(ordinary, getCandidates), null);
         assert.deepStrictEqual(candidateCalls, []);
+
+        const pending = { name: 'Codex: Pending', creationOptions: {}, processId: Promise.resolve(42099) };
+        service.trackPending({
+            provider: 'codex',
+            terminal: pending,
+            markerPath: path.join(tempRoot, 'pending.done'),
+            cwd: '/work/app',
+            createdAt: new Date().toISOString(),
+            excludedSessionIds: [],
+        }, false);
+        assert.strictEqual(service.getPendingTerminals().length, 1);
+        assert.deepStrictEqual(service.handleClosedTerminal(pending), []);
+        assert.strictEqual(service.getPendingTerminals().length, 0, 'closing a Terminal removes its unresolved pending row');
 
         assert.deepStrictEqual(
             service.handleClosedTerminal(tracked),

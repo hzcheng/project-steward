@@ -28,8 +28,6 @@ export interface PendingAiSessionTerminal {
     title?: string;
 }
 
-export const AI_SESSION_CREATION_BIND_TIMEOUT_MS = 15_000;
-
 export interface AiSessionCreationControllerOptions {
     isProviderId: (value: string) => value is AiSessionProviderId;
     getOpenProjects: () => Project[];
@@ -40,7 +38,6 @@ export interface AiSessionCreationControllerOptions {
     getUsableTerminalCwd: (cwd: string) => string | null;
     showInputBox: (options: vscode.InputBoxOptions) => Thenable<string | undefined>;
     showActiveTab: (projectId: string) => Thenable<unknown> | Promise<unknown>;
-    announceStatus: (projectId: string, message: string) => Thenable<unknown> | Promise<unknown>;
     showWarningMessage: (message: string, ...items: string[]) => Thenable<string | undefined>;
     refresh: () => void;
     createTerminal: (options: {
@@ -60,18 +57,11 @@ export interface AiSessionCreationControllerOptions {
         markerPath: string
     ) => Thenable<unknown>;
     scheduleNewSessionRefresh: (providerId: AiSessionProviderId) => void;
-    isPending: (providerId: AiSessionProviderId, createdAt: string) => boolean;
-    removePending: (providerId: AiSessionProviderId, createdAt: string) => void;
-    normalizeProjectPath: (cwd: string) => string | null;
-    setTimeout: (callback: () => void, delayMs: number) => unknown;
-    clearTimeout: (handle: unknown) => void;
-    bindingTimeoutMs: number;
     nowMs: () => number;
 }
 
 export class AiSessionCreationController {
     private creating = false;
-    private readonly pendingTimeouts = new Map<string, unknown>();
 
     constructor(private readonly options: AiSessionCreationControllerOptions) {
     }
@@ -99,38 +89,6 @@ export class AiSessionCreationController {
         } finally {
             this.creating = false;
         }
-    }
-
-    watchPending(pending: PendingAiSessionTerminal, projectId?: string): void {
-        if (!pending || !this.options.isProviderId(pending.provider) || !pending.createdAt) {
-            return;
-        }
-        const key = this.getPendingKey(pending.provider, pending.createdAt);
-        if (this.pendingTimeouts.has(key)) {
-            return;
-        }
-        const resolvedProjectId = projectId || this.findPendingProjectId(pending.cwd);
-        if (!resolvedProjectId) {
-            return;
-        }
-        const createdAtMs = Date.parse(pending.createdAt);
-        if (!Number.isFinite(createdAtMs)) {
-            return;
-        }
-        const elapsedMs = Math.max(0, this.options.nowMs() - createdAtMs);
-        const delayMs = Math.max(0, this.options.bindingTimeoutMs - elapsedMs);
-        const handle = this.options.setTimeout(
-            () => this.handlePendingTimeout(pending, resolvedProjectId, key),
-            delayMs
-        );
-        this.pendingTimeouts.set(key, handle);
-    }
-
-    dispose(): void {
-        for (const handle of this.pendingTimeouts.values()) {
-            this.options.clearTimeout(handle);
-        }
-        this.pendingTimeouts.clear();
     }
 
     private async queryNewSessionFields(providerId: AiSessionProviderId): Promise<NewAiSessionFields | null> {
@@ -167,7 +125,7 @@ export class AiSessionCreationController {
         const existingSessionIds = this.options.getExistingSessionIdsForCwd(providerId, pendingTerminalCwd);
         const createdAt = new Date(this.options.nowMs()).toISOString();
         const markerPath = this.options.getPendingMarkerPath(providerId);
-        const pending = {
+        this.options.trackPendingTerminal({
             provider: providerId,
             terminal,
             markerPath,
@@ -175,45 +133,12 @@ export class AiSessionCreationController {
             createdAt,
             excludedSessionIds: existingSessionIds,
             title: fields.title,
-        };
-        this.options.trackPendingTerminal(pending);
-        this.watchPending(pending, project.id);
+        });
 
         await this.options.showActiveTab(project.id);
         this.options.refresh();
         terminal.show();
         await this.options.sendNewSessionCommand(providerId, terminal, cwd, fields.title, markerPath);
         this.options.scheduleNewSessionRefresh(providerId);
-    }
-
-    private async handlePendingTimeout(
-        pending: PendingAiSessionTerminal,
-        projectId: string,
-        key: string
-    ): Promise<void> {
-        this.pendingTimeouts.delete(key);
-        if (!this.options.isPending(pending.provider, pending.createdAt)) {
-            return;
-        }
-        this.options.removePending(pending.provider, pending.createdAt);
-        this.options.refresh();
-        const message = 'Could not detect the new session';
-        await this.options.announceStatus(projectId, message);
-        const action = await this.options.showWarningMessage(message, 'Focus Terminal');
-        if (action === 'Focus Terminal') {
-            pending.terminal.show();
-        }
-    }
-
-    private findPendingProjectId(cwd: string): string | null {
-        const targetCwd = this.options.normalizeProjectPath(cwd);
-        const project = this.options.getOpenProjects().find(candidate => {
-            return this.options.normalizeProjectPath(this.options.getTerminalCwd(candidate)) === targetCwd;
-        });
-        return project?.id || null;
-    }
-
-    private getPendingKey(providerId: AiSessionProviderId, createdAt: string): string {
-        return `${providerId}:${createdAt}`;
     }
 }
