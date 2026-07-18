@@ -39,12 +39,16 @@ interface SortableActiveAiSessionViewModel extends ActiveAiSessionViewModel {
     sourceOrder: number;
 }
 
+interface ProjectablePendingRuntime extends AiSessionPendingRuntimeSnapshot {
+    projectionConflict?: boolean;
+}
+
 export function applyAiSessionRuntimeProjection(input: ApplyAiSessionRuntimeProjectionInput): Project[] {
     const projectCwds = input.projects.map(project => normalize(input, input.getProjectCwd(project)));
     const activeRuntimes = deduplicateActiveRuntimes(resolveActiveRuntimes(input));
-    const pendingRuntimes = resolvePendingRuntimes(input);
+    const pendingRuntimes = deduplicatePendingRuntimes(resolvePendingRuntimes(input));
     const activeByProject = input.projects.map(() => [] as AiSessionRuntimeSnapshot[]);
-    const pendingByProject = input.projects.map(() => [] as AiSessionPendingRuntimeSnapshot[]);
+    const pendingByProject = input.projects.map(() => [] as ProjectablePendingRuntime[]);
 
     for (const runtime of activeRuntimes) {
         const projectIndex = findRuntimeProjectIndex(runtime, input, projectCwds);
@@ -71,7 +75,7 @@ export function applyAiSessionRuntimeProjection(input: ApplyAiSessionRuntimeProj
 function projectWithRuntime(
     project: Project,
     activeRuntimes: AiSessionRuntimeSnapshot[],
-    pendingRuntimes: AiSessionPendingRuntimeSnapshot[],
+    pendingRuntimes: ProjectablePendingRuntime[],
     input: ApplyAiSessionRuntimeProjectionInput
 ): Project {
     const activeKeys = new Set(activeRuntimes
@@ -79,6 +83,11 @@ function projectWithRuntime(
         .map(runtime => getSessionKey(runtime.identity.provider, runtime.identity.sessionId)));
     const focusedKey = input.focusedIdentity?.sessionId
         ? getSessionKey(input.focusedIdentity.provider, input.focusedIdentity.sessionId)
+        : null;
+    const focusedPendingId = input.focusedIdentity && 'pendingId' in input.focusedIdentity
+        ? input.focusedIdentity.pendingId : undefined;
+    const focusedPendingKey = focusedPendingId
+        ? getPendingKey(input.focusedIdentity.provider, focusedPendingId)
         : null;
     const clonedProject = { ...project } as Project;
     const sessionsByProvider = new Map<AiSessionProviderId, CodexSession[]>();
@@ -131,18 +140,22 @@ function projectWithRuntime(
     const pendingModels: SortableActiveAiSessionViewModel[] = pendingRuntimes.map((pending, index) => {
         const providerId = pending.identity.provider;
         const provider = input.providers[providerId];
+        const pendingId = pending.identity.pendingId || pending.createdAt;
+        const focused = focusedPendingKey === getPendingKey(providerId, pendingId);
+        const conflict = pending.projectionConflict === true;
         return {
-            key: `pending:${providerId}:${pending.identity.pendingId || pending.createdAt}`,
+            key: getPendingKey(providerId, pendingId),
             provider: providerId,
             name: pending.title || `New ${provider?.label || 'AI'} session`,
             executionState: 'starting',
-            status: 'starting',
-            focused: false,
+            status: conflict ? 'conflict' : focused ? 'focused' : 'starting',
+            focused,
             needsAttention: false,
             pending: true,
             backend: pending.backend,
             ...(pending.tmux?.layout ? { tmuxLayout: pending.tmux.layout } : {}),
             attached: pending.attached,
+            ...(conflict ? { conflict: true } : {}),
             createdAt: pending.createdAt,
             activityMs: parseTimestamp(pending.createdAt),
             sourceOrder: index,
@@ -223,6 +236,54 @@ function deduplicateActiveRuntimes(runtimes: AiSessionRuntimeSnapshot[]): AiSess
     return [...byIdentity.values(), ...withoutFinalIdentity];
 }
 
+function deduplicatePendingRuntimes(
+    runtimes: AiSessionPendingRuntimeSnapshot[]
+): ProjectablePendingRuntime[] {
+    const byIdentity = new Map<string, AiSessionPendingRuntimeSnapshot[]>();
+    const withoutPendingIdentity: AiSessionPendingRuntimeSnapshot[] = [];
+    for (const runtime of runtimes) {
+        const pendingId = runtime.identity.pendingId;
+        if (!pendingId) {
+            withoutPendingIdentity.push(runtime);
+            continue;
+        }
+        const key = getPendingKey(runtime.identity.provider, pendingId);
+        const group = byIdentity.get(key) || [];
+        group.push(runtime);
+        byIdentity.set(key, group);
+    }
+    const deduplicated = Array.from(byIdentity.values()).map(group => {
+        const representative = group.slice().sort(comparePendingRepresentatives)[0];
+        return group.length === 1 ? representative : {
+            ...representative,
+            identity: { ...representative.identity },
+            ...(representative.tmux ? { tmux: { ...representative.tmux } } : {}),
+            excludedSessionIds: [...representative.excludedSessionIds],
+            projectionConflict: true,
+        };
+    });
+    return [...deduplicated, ...withoutPendingIdentity];
+}
+
+function comparePendingRepresentatives(
+    left: AiSessionPendingRuntimeSnapshot,
+    right: AiSessionPendingRuntimeSnapshot
+): number {
+    return getPendingRepresentativeKey(left).localeCompare(getPendingRepresentativeKey(right));
+}
+
+function getPendingRepresentativeKey(runtime: AiSessionPendingRuntimeSnapshot): string {
+    return [
+        runtime.backend === 'tmux' ? '0' : '1',
+        runtime.tmux?.layout || '',
+        runtime.tmux?.sessionName || '',
+        runtime.tmux?.windowName || '',
+        runtime.attached ? '0' : '1',
+        runtime.identity.projectKey,
+        runtime.identity.cwd,
+    ].join('\u0000');
+}
+
 function findRuntimeProjectIndex(
     runtime: AiSessionRuntimeSnapshot,
     input: ApplyAiSessionRuntimeProjectionInput,
@@ -294,6 +355,10 @@ function normalize(input: ApplyAiSessionRuntimeProjectionInput, value: string | 
 
 function getSessionKey(provider: AiSessionProviderId, sessionId: string): string {
     return `${provider}:${sessionId}`;
+}
+
+function getPendingKey(provider: AiSessionProviderId, pendingId: string): string {
+    return `pending:${provider}:${pendingId}`;
 }
 
 function shortSessionId(sessionId: string): string {

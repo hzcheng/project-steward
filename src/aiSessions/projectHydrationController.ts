@@ -109,10 +109,16 @@ export interface AiSessionProjectHydrationControllerOptions<TTerminal = unknown>
 export class AiSessionProjectHydrationController<TTerminal = unknown> {
     private cache: {
         signature: string;
+        generation: number;
         projects: Project[];
         diagnostic: Record<string, unknown>;
     } | null = null;
     private cacheClearScheduled = false;
+    private hydrationGeneration = 0;
+    private readonly pendingPromotionFlights = new Map<
+        string,
+        Promise<AiSessionRuntimeSnapshot<TTerminal>[]>
+    >();
 
     constructor(private readonly options: AiSessionProjectHydrationControllerOptions<TTerminal>) {
     }
@@ -167,25 +173,11 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             return this.cache.projects;
         }
 
+        const generation = ++this.hydrationGeneration;
         const sessionResults = this.getAiSessionResults(candidatePaths, reason, maxFiles);
-        void resolvePendingAiSessionTerminals({
-            activeRuntimes: runtimeProjection.activeRuntimes,
-            pendingRuntimes: runtimeProjection.pendingRuntimes,
-            sessionResults,
-            providers,
-            getSessionKey: this.options.getSessionKey,
-            runtimeCoordinator: runtimeProjection.runtimeCoordinator,
-            setAlias: this.options.setAlias,
-            syncActiveRuntime: this.options.syncActiveTerminal,
-            claimedSessionKeys: runtimeProjection.claimedSessionKeys,
-        }).catch(error => this.logDiagnostic({
-            event: 'ai-session-pending-runtime-promotion-failed',
-            reason,
-            category: error instanceof Error ? error.name : typeof error,
-        }));
         const assignments = this.getAiSessionAssignments(assignmentCandidates, sessionResults);
-        const hydrated = hydrateOpenProjectsWithAiSessions({
-            projects: openProjects,
+        const hydrateProjects = (projects: Project[]) => hydrateOpenProjectsWithAiSessions({
+            projects,
             providers,
             sessionResults,
             assignments,
@@ -198,6 +190,22 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             includeLocalAttention: !this.options.hasRemoteAttentionAggregate(),
             getProjectKey: this.options.getProjectKey,
         });
+        let hydrated: Project[] = null;
+        const resolution = resolvePendingAiSessionTerminals({
+            activeRuntimes: runtimeProjection.activeRuntimes,
+            pendingRuntimes: runtimeProjection.pendingRuntimes,
+            sessionResults,
+            providers,
+            getSessionKey: this.options.getSessionKey,
+            runtimeCoordinator: this.getSingleFlightRuntimeCoordinator(
+                runtimeProjection.pendingRuntimes,
+                runtimeProjection.runtimeCoordinator
+            ),
+            setAlias: this.options.setAlias,
+            syncActiveRuntime: () => undefined,
+            claimedSessionKeys: runtimeProjection.claimedSessionKeys,
+        });
+        hydrated = hydrateProjects(openProjects);
         const diagnostic = {
             event: 'ai-session-hydration',
             reason,
@@ -211,9 +219,36 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
         };
         this.cache = {
             signature,
+            generation,
             projects: hydrated,
             diagnostic,
         };
+        void resolution.then(result => {
+            if (result.failures.length) {
+                this.logDiagnostic({
+                    event: 'ai-session-pending-runtime-promotion-result',
+                    reason,
+                    generation,
+                    attempted: result.attempted,
+                    promotedCount: result.promoted.length,
+                    failureReasons: result.failures.map(failure => failure.reason),
+                });
+            }
+            if (!result.promoted.length || generation !== this.hydrationGeneration) {
+                return;
+            }
+            const refreshed = hydrateProjects(hydrated.map(project => ({ ...project } as Project)));
+            replaceProjectProjection(hydrated, refreshed);
+            if (this.cache?.generation === generation && this.cache.projects === hydrated) {
+                this.cache = null;
+            }
+            this.options.syncActiveTerminal();
+        }).catch(error => this.logDiagnostic({
+            event: 'ai-session-pending-runtime-promotion-failed',
+            reason,
+            generation,
+            category: error instanceof Error ? error.name : typeof error,
+        }));
         this.scheduleCacheClear();
         this.logDiagnostic({
             ...diagnostic,
@@ -287,7 +322,7 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             };
         });
         const runtimeCoordinator: PendingAiSessionRuntimeCoordinator<TTerminal> = {
-            promotePending: async (pendingId, sessionId) => {
+            promotePending: (pendingId, sessionId) => {
                 const pending = pendingById.get(pendingId);
                 if (!pending) {
                     return [];
@@ -302,7 +337,20 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
                     this.options.terminalService.getPendingTerminals()
                         .filter(candidate => candidate.terminal !== pending.terminal)
                 );
-                return [];
+                return [{
+                    identity: {
+                        provider: pending.provider,
+                        projectKey: pending.cwd,
+                        cwd: pending.cwd,
+                        sessionId,
+                    },
+                    backend: 'vscode',
+                    state: 'active',
+                    markerPath: pending.markerPath,
+                    runStartedAtMs: finiteTimestamp(pending.createdAt),
+                    attached: true,
+                    terminal: pending.terminal,
+                }];
             },
         };
         return {
@@ -311,6 +359,49 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             runtimeCoordinator,
             claimedSessionKeys: this.options.terminalService.getTrackedSessionKeys(this.options.getSessionKey),
         };
+    }
+
+    private getSingleFlightRuntimeCoordinator(
+        pendingRuntimes: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[],
+        coordinator: PendingAiSessionRuntimeCoordinator<TTerminal>
+    ): PendingAiSessionRuntimeCoordinator<TTerminal> {
+        const pendingById = new Map<string, AiSessionPendingRuntimeSnapshot<TTerminal>>();
+        for (const pending of pendingRuntimes) {
+            if (pending.identity.pendingId && !pendingById.has(pending.identity.pendingId)) {
+                pendingById.set(pending.identity.pendingId, pending);
+            }
+        }
+        return {
+            promotePending: (pendingId, sessionId) => {
+                const pending = pendingById.get(pendingId);
+                const flightKey = getPendingPromotionFlightKey(pending, pendingId, sessionId);
+                const existing = this.pendingPromotionFlights.get(flightKey);
+                if (existing) {
+                    return existing.then(cloneRuntimeArray);
+                }
+
+                const promotion = coordinator.promotePending(pendingId, sessionId);
+                if (!isPromiseLike(promotion)) {
+                    return cloneRuntimeArray(promotion);
+                }
+                const flight = Promise.resolve(promotion).then(cloneRuntimeArray);
+                this.pendingPromotionFlights.set(flightKey, flight);
+                flight.then(
+                    () => this.releasePendingPromotionFlight(flightKey, flight),
+                    () => this.releasePendingPromotionFlight(flightKey, flight)
+                );
+                return flight.then(cloneRuntimeArray);
+            },
+        };
+    }
+
+    private releasePendingPromotionFlight(
+        key: string,
+        flight: Promise<AiSessionRuntimeSnapshot<TTerminal>[]>
+    ): void {
+        if (this.pendingPromotionFlights.get(key) === flight) {
+            this.pendingPromotionFlights.delete(key);
+        }
     }
 
     private getAiSessionResults(
@@ -467,4 +558,36 @@ function clonePendingRuntime<TTerminal>(
 function finiteTimestamp(value: string): number {
     const parsed = Date.parse(value);
     return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getPendingPromotionFlightKey<TTerminal>(
+    pending: AiSessionPendingRuntimeSnapshot<TTerminal> | undefined,
+    pendingId: string,
+    sessionId: string
+): string {
+    const identity = pending?.identity;
+    return JSON.stringify([
+        identity?.provider || '',
+        identity?.projectKey || '',
+        identity?.cwd || '',
+        pendingId,
+        sessionId,
+    ]);
+}
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+    return !!value && typeof (value as Promise<T>).then === 'function';
+}
+
+function cloneRuntimeArray<TTerminal>(
+    runtimes: readonly AiSessionRuntimeSnapshot<TTerminal>[]
+): AiSessionRuntimeSnapshot<TTerminal>[] {
+    return (runtimes || []).map(cloneRuntime);
+}
+
+function replaceProjectProjection(target: Project[], replacement: Project[]): void {
+    for (let index = 0; index < replacement.length; index++) {
+        target[index] = replacement[index];
+    }
+    target.length = replacement.length;
 }

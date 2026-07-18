@@ -4867,6 +4867,61 @@ async function runRuntimeProjectionChecks() {
     assert.strictEqual(historyFallback[0].activeAiSessions.length, 0);
     assert.strictEqual(historyFallback[1].activeAiSessions.length, 1);
 
+    const tmuxPending = {
+        identity: { provider: 'codex', pendingId: 'pending-focus', projectKey: 'pk', cwd: '/work' },
+        backend: 'tmux', state: 'pending', markerPath: '/tmp/pending-focus.done',
+        runStartedAtMs: Date.parse('2026-07-18T10:00:00Z'), attached: false,
+        tmux: { layout: 'session', sessionName: 'project-steward-pending-codex-a' },
+        createdAt: '2026-07-18T10:00:00Z', excludedSessionIds: [], title: 'Pending Focus',
+    };
+    const focusedPending = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
+        providers: providerFixtures,
+        activeRuntimes: [],
+        pendingRuntimes: [tmuxPending],
+        focusedIdentity: { provider: 'codex', pendingId: 'pending-focus', projectKey: 'other', cwd: '/other' },
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.strictEqual(focusedPending[0].activeAiSessions[0].focused, true);
+    assert.strictEqual(focusedPending[0].activeAiSessions[0].status, 'focused');
+    assert.strictEqual(focusedPending[0].activeAiSessions[0].backend, 'tmux');
+    assert.strictEqual(focusedPending[0].activeAiSessions[0].tmuxLayout, 'session');
+    assert.strictEqual(focusedPending[0].activeAiSessions[0].attached, false);
+
+    const duplicatePending = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
+        providers: providerFixtures,
+        activeRuntimes: [],
+        pendingRuntimes: [{
+            ...tmuxPending,
+            identity: { ...tmuxPending.identity },
+            backend: 'vscode', attached: true, tmux: undefined,
+        }, tmuxPending],
+        focusedIdentity: { provider: 'codex', pendingId: 'pending-focus', projectKey: 'pk', cwd: '/work' },
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.strictEqual(duplicatePending[0].activeAiSessions.length, 1);
+    assert.strictEqual(duplicatePending[0].activeAiSessions[0].status, 'conflict');
+    assert.strictEqual(duplicatePending[0].activeAiSessions[0].conflict, true);
+    assert.strictEqual(duplicatePending[0].activeAiSessions[0].backend, 'tmux');
+    assert.strictEqual(duplicatePending[0].activeAiSessions[0].tmuxLayout, 'session');
+    assert.strictEqual(duplicatePending[0].activeAiSessions[0].attached, false);
+
+    const legacyOnly = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
+        providers: providerFixtures,
+        activeTerminals: [{ provider: 'codex', sessionId: 'legacy', cwd: '/work', runStartedAtMs: 1 }],
+        pendingTerminals: [{ provider: 'kimi', cwd: '/work', createdAt: '2026-07-18T10:00:00Z' }],
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.strictEqual(legacyOnly[0].activeAiSessions.length, 2);
+    assert.ok(legacyOnly[0].activeAiSessions.every(model => model.backend === 'vscode'));
+    assert.ok(legacyOnly[0].activeAiSessions.every(model => model.attached === true));
+
     const noLegacyFallback = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
         providers: providerFixtures,

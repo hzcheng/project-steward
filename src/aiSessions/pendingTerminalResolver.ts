@@ -14,7 +14,33 @@ type AiSessionPendingRuntimeProvider = Pick<
 >;
 
 export interface PendingAiSessionRuntimeCoordinator<TTerminal = unknown> {
-    promotePending(pendingId: string, sessionId: string): Promise<AiSessionRuntimeSnapshot<TTerminal>[]>;
+    promotePending(
+        pendingId: string,
+        sessionId: string
+    ): AiSessionRuntimeSnapshot<TTerminal>[] | Promise<AiSessionRuntimeSnapshot<TTerminal>[]>;
+}
+
+export type PendingAiSessionPromotionFailureReason =
+    | 'missing-runtime'
+    | 'ambiguous-runtime'
+    | 'conflict'
+    | 'identity-mismatch'
+    | 'promotion-error';
+
+export interface PendingAiSessionPromotionIdentity {
+    pendingId: string;
+    provider: AiSessionProviderId;
+    sessionId: string;
+}
+
+export interface PendingAiSessionPromotionFailure extends PendingAiSessionPromotionIdentity {
+    reason: PendingAiSessionPromotionFailureReason;
+}
+
+export interface ResolvePendingAiSessionTerminalsResult {
+    attempted: number;
+    promoted: PendingAiSessionPromotionIdentity[];
+    failures: PendingAiSessionPromotionFailure[];
 }
 
 export interface ResolvePendingAiSessionTerminalsOptions<TTerminal = unknown> {
@@ -31,10 +57,15 @@ export interface ResolvePendingAiSessionTerminalsOptions<TTerminal = unknown> {
 
 export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
     options: ResolvePendingAiSessionTerminalsOptions<TTerminal>
-): Promise<boolean> {
+): Promise<ResolvePendingAiSessionTerminalsResult> {
     const pendingRuntimes = options.pendingRuntimes.map(clonePendingRuntime);
+    const result: ResolvePendingAiSessionTerminalsResult = {
+        attempted: 0,
+        promoted: [],
+        failures: [],
+    };
     if (!pendingRuntimes.length) {
-        return false;
+        return result;
     }
 
     const claimedSessionKeys = new Set(options.claimedSessionKeys || []);
@@ -47,7 +78,6 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
         }
     }
 
-    let matchedPendingRuntime = false;
     for (const pendingRuntime of pendingRuntimes) {
         const pendingId = pendingRuntime.identity.pendingId;
         const sessionResult = options.sessionResults[pendingRuntime.identity.provider];
@@ -65,16 +95,64 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
             continue;
         }
 
-        await options.runtimeCoordinator.promotePending(pendingId, session.id);
+        result.attempted++;
+        const promotionIdentity = {
+            pendingId,
+            provider: pendingRuntime.identity.provider,
+            sessionId: session.id,
+        };
+        let promotedRuntimes: AiSessionRuntimeSnapshot<TTerminal>[];
+        try {
+            const promotion = options.runtimeCoordinator.promotePending(pendingId, session.id);
+            promotedRuntimes = isPromiseLike(promotion) ? await promotion : promotion;
+        } catch (_error) {
+            result.failures.push({ ...promotionIdentity, reason: 'promotion-error' });
+            continue;
+        }
+        const failureReason = getPromotionFailureReason(
+            promotedRuntimes,
+            pendingRuntime.identity.provider,
+            session.id
+        );
+        if (failureReason) {
+            result.failures.push({ ...promotionIdentity, reason: failureReason });
+            continue;
+        }
+
         options.setAlias(pendingRuntime.identity.provider, session.id, pendingRuntime.title);
         claimedSessionKeys.add(options.getSessionKey(pendingRuntime.identity.provider, session.id));
-        matchedPendingRuntime = true;
+        result.promoted.push(promotionIdentity);
     }
 
-    if (matchedPendingRuntime) {
+    if (result.promoted.length) {
         options.syncActiveRuntime();
     }
-    return matchedPendingRuntime;
+    return result;
+}
+
+function getPromotionFailureReason<TTerminal>(
+    runtimes: readonly AiSessionRuntimeSnapshot<TTerminal>[],
+    provider: AiSessionProviderId,
+    sessionId: string
+): PendingAiSessionPromotionFailureReason | null {
+    if (!Array.isArray(runtimes) || runtimes.length === 0) {
+        return 'missing-runtime';
+    }
+    if (runtimes.length !== 1) {
+        return 'ambiguous-runtime';
+    }
+    const runtime = runtimes[0];
+    if (runtime.state === 'conflict') {
+        return 'conflict';
+    }
+    if (runtime.identity.provider !== provider || runtime.identity.sessionId !== sessionId) {
+        return 'identity-mismatch';
+    }
+    return null;
+}
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+    return !!value && typeof (value as Promise<T>).then === 'function';
 }
 
 function clonePendingRuntime<TTerminal>(

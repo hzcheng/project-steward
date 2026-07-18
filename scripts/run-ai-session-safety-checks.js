@@ -568,68 +568,124 @@ async function runPendingTerminalResolverChecks() {
     const providerDefinitions = [
         { id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions', terminalCwdFields: ['cwd'] },
     ];
-    const pendingRuntimes = [
-        {
-            identity: { provider: 'codex', pendingId: 'pending-new', projectKey: '/work/app', cwd: '/work/app' },
-            backend: 'vscode',
-            state: 'pending',
-            markerPath: '/tmp/new.done',
-            runStartedAtMs: Date.parse('2026-07-15T10:00:00Z'),
-            attached: true,
-            createdAt: '2026-07-15T10:00:00Z',
-            excludedSessionIds: ['old'],
-            title: 'Created Alias',
-        },
-        {
-            identity: { provider: 'codex', pendingId: 'pending-other', projectKey: '/work/other', cwd: '/work/other' },
-            backend: 'vscode',
-            state: 'pending',
-            markerPath: '/tmp/pending.done',
-            runStartedAtMs: Date.parse('2026-07-15T10:00:00Z'),
-            attached: true,
-            createdAt: '2026-07-15T10:00:00Z',
-            excludedSessionIds: [],
-        },
-    ];
-    const promotions = [];
-    const aliases = [];
-    let synced = 0;
+    function pending(pendingId, cwd, createdAt, title) {
+        return {
+            identity: { provider: 'codex', pendingId, projectKey: cwd, cwd },
+            backend: 'vscode', state: 'pending', markerPath: `/tmp/${pendingId}.done`,
+            runStartedAtMs: Date.parse(createdAt), attached: true,
+            createdAt, excludedSessionIds: [], ...(title === undefined ? {} : { title }),
+        };
+    }
+    function finalRuntime(pendingRuntime, sessionId, overrides = {}) {
+        return {
+            identity: {
+                provider: pendingRuntime.identity.provider,
+                sessionId,
+                projectKey: pendingRuntime.identity.projectKey,
+                cwd: pendingRuntime.identity.cwd,
+            },
+            backend: pendingRuntime.backend,
+            state: 'active',
+            markerPath: pendingRuntime.markerPath,
+            runStartedAtMs: pendingRuntime.runStartedAtMs,
+            attached: pendingRuntime.attached,
+            ...overrides,
+        };
+    }
+    function resolverOptions(pendingRuntimes, promotePending, aliases, sync) {
+        return {
+            pendingRuntimes,
+            activeRuntimes: [],
+            sessionResults: {
+                codex: {
+                    available: true, scannedFiles: 3, parsedFiles: 3,
+                    sessions: pendingRuntimes.map((runtime, index) => ({
+                        id: `session-${index}`,
+                        cwd: runtime.identity.cwd,
+                        updatedAt: new Date(Date.parse(runtime.createdAt) + 1000).toISOString(),
+                    })),
+                },
+            },
+            providers: providerDefinitions,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            runtimeCoordinator: { promotePending },
+            setAlias: (providerId, sessionId, alias) => aliases.push([providerId, sessionId, alias]),
+            syncActiveRuntime: sync,
+        };
+    }
 
-    const matched = await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals({
-        pendingRuntimes,
-        activeRuntimes: [{
-            identity: { provider: 'codex', sessionId: 'claimed', projectKey: '/work/app', cwd: '/work/app' },
-            backend: 'vscode', state: 'active', markerPath: '/tmp/claimed.done',
-            runStartedAtMs: 1, attached: true,
-        }],
-        sessionResults: {
-            codex: {
-                available: true,
-                scannedFiles: 3,
-                parsedFiles: 3,
-                sessions: [
-                    { id: 'old', cwd: '/work/app', updatedAt: '2026-07-15T10:01:00Z' },
-                    { id: 'claimed', cwd: '/work/app', updatedAt: '2026-07-15T10:02:00Z' },
-                    { id: 'new', cwd: '/work/app', updatedAt: '2026-07-15T10:00:56Z' },
-                ],
-            },
-        },
-        providers: providerDefinitions,
-        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
-        runtimeCoordinator: {
-            promotePending: async (pendingId, sessionId) => {
-                promotions.push([pendingId, sessionId]);
-                return [];
-            },
-        },
-        setAlias: (providerId, sessionId, alias) => aliases.push([providerId, sessionId, alias]),
-        syncActiveRuntime: () => { synced++; },
+    const validPending = pending('pending-valid', '/work/valid', '2026-07-15T10:00:00Z', 'Created Alias');
+    const validAliases = [];
+    let validSyncs = 0;
+    const validResult = await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
+        resolverOptions([validPending], async (_pendingId, sessionId) => [
+            finalRuntime(validPending, sessionId),
+        ], validAliases, () => { validSyncs++; })
+    );
+    assert.deepStrictEqual(validResult, {
+        attempted: 1,
+        promoted: [{ pendingId: 'pending-valid', provider: 'codex', sessionId: 'session-0' }],
+        failures: [],
     });
+    assert.deepStrictEqual(validAliases, [['codex', 'session-0', 'Created Alias']]);
+    assert.strictEqual(validSyncs, 1);
 
-    assert.strictEqual(matched, true);
-    assert.deepStrictEqual(promotions, [['pending-new', 'new']]);
-    assert.deepStrictEqual(aliases, [['codex', 'new', 'Created Alias']]);
-    assert.strictEqual(synced, 1);
+    const invalidCases = [{
+        reason: 'missing-runtime',
+        promote: async () => [],
+    }, {
+        reason: 'ambiguous-runtime',
+        promote: async (_pendingId, sessionId) => [
+            finalRuntime(validPending, sessionId), finalRuntime(validPending, sessionId),
+        ],
+    }, {
+        reason: 'conflict',
+        promote: async (_pendingId, sessionId) => [
+            finalRuntime(validPending, sessionId, { state: 'conflict' }),
+        ],
+    }, {
+        reason: 'identity-mismatch',
+        promote: async () => [finalRuntime(validPending, 'other-session')],
+    }, {
+        reason: 'promotion-error',
+        promote: async () => { throw new Error('promotion failed'); },
+    }];
+    for (const invalidCase of invalidCases) {
+        const aliases = [];
+        let syncs = 0;
+        const result = await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
+            resolverOptions([validPending], invalidCase.promote, aliases, () => { syncs++; })
+        );
+        assert.strictEqual(result.attempted, 1);
+        assert.deepStrictEqual(result.promoted, []);
+        assert.deepStrictEqual(result.failures, [{
+            pendingId: 'pending-valid', provider: 'codex', sessionId: 'session-0', reason: invalidCase.reason,
+        }]);
+        assert.deepStrictEqual(aliases, []);
+        assert.strictEqual(syncs, 0);
+    }
+
+    const first = pending('pending-first', '/work/first', '2026-07-15T11:00:00Z', 'First Alias');
+    const second = pending('pending-second', '/work/second', '2026-07-15T12:00:00Z', 'Second Alias');
+    const partialAliases = [];
+    let partialSyncs = 0;
+    const partial = await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
+        resolverOptions([first, second], async (pendingId, sessionId) => {
+            if (pendingId === 'pending-second') {
+                throw new Error('later promotion failed');
+            }
+            return [finalRuntime(first, sessionId)];
+        }, partialAliases, () => { partialSyncs++; })
+    );
+    assert.deepStrictEqual(partial, {
+        attempted: 2,
+        promoted: [{ pendingId: 'pending-first', provider: 'codex', sessionId: 'session-0' }],
+        failures: [{
+            pendingId: 'pending-second', provider: 'codex', sessionId: 'session-1', reason: 'promotion-error',
+        }],
+    });
+    assert.deepStrictEqual(partialAliases, [['codex', 'session-0', 'First Alias']]);
+    assert.strictEqual(partialSyncs, 1, 'partial success must synchronize exactly once');
 }
 
 function runScanOptionChecks() {
@@ -1774,7 +1830,17 @@ async function runAiSessionProjectHydrationControllerChecks() {
             terminalService.replacePendingTerminals(
                 terminalService.pending.filter(candidate => candidate !== entry)
             );
-            return [];
+            return [{
+                identity: {
+                    provider: entry.provider,
+                    sessionId,
+                    projectKey: entry.cwd,
+                    cwd: entry.cwd,
+                },
+                backend: 'vscode', state: 'active', markerPath: entry.markerPath,
+                runStartedAtMs: Date.parse(entry.createdAt), attached: true,
+                terminal: entry.terminal,
+            }];
         },
     };
     const aliasesSet = [];
@@ -1870,6 +1936,9 @@ async function runAiSessionProjectHydrationControllerChecks() {
         title: ' Pending Alias ',
     }];
     const hydrated = controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A' }]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     await Promise.resolve();
 
     assert.deepStrictEqual(readOptions[0], {
@@ -1998,6 +2067,174 @@ async function runAiSessionProjectHydrationControllerChecks() {
     assert.strictEqual(manualPending.cwd, '/work/a');
     assert.deepStrictEqual(manualPending.excludedSessionIds, ['session-a', 'session-b']);
     assert.strictEqual(manualPending.title, 'Manual Title');
+}
+
+async function runAiSessionProjectHydrationPromotionChecks() {
+    const providersForTest = [{
+        id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions',
+        projectSessionsUnavailableKey: 'codexSessionsUnavailable', terminalCwdFields: ['cwd'],
+    }, {
+        id: 'kimi', terminalNamePrefix: 'Kimi', projectSessionsKey: 'kimiSessions',
+        projectSessionsUnavailableKey: 'kimiSessionsUnavailable', terminalCwdFields: ['cwd'],
+    }, {
+        id: 'claude', terminalNamePrefix: 'Claude', projectSessionsKey: 'claudeSessions',
+        projectSessionsUnavailableKey: 'claudeSessionsUnavailable', terminalCwdFields: ['cwd'],
+    }];
+    const session = {
+        id: 'session-final', name: 'Original Name', cwd: '/work/app',
+        updatedAt: '2026-07-18T10:01:00Z',
+    };
+    const pendingRuntime = {
+        identity: { provider: 'codex', pendingId: 'pending-runtime', projectKey: 'pk', cwd: '/work/app' },
+        backend: 'tmux', state: 'pending', markerPath: '/tmp/pending.done',
+        runStartedAtMs: Date.parse('2026-07-18T10:00:00Z'), attached: false,
+        tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'pending-codex-a' },
+        createdAt: '2026-07-18T10:00:00Z', excludedSessionIds: [], title: 'Promoted Alias',
+    };
+    const finalRuntime = {
+        identity: { provider: 'codex', sessionId: session.id, projectKey: 'pk', cwd: '/work/app' },
+        backend: 'tmux', state: 'active', markerPath: '/tmp/pending.done',
+        runStartedAtMs: pendingRuntime.runStartedAtMs, attached: false,
+        tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-a' },
+    };
+
+    function createHarness(options = {}) {
+        const aliases = {};
+        const aliasesSet = [];
+        const syncs = [];
+        const diagnostics = [];
+        const terminalService = {
+            pending: options.legacyPending ? [options.legacyPending] : [],
+            tracked: [],
+            getPendingTerminals() { return this.pending; },
+            getTrackedSessionKeys() { return new Set(); },
+            track(providerId, sessionId, entry) { this.tracked.push([providerId, sessionId, entry]); },
+            replacePendingTerminals(pending) { this.pending = pending; },
+            trackPending(pending) { this.pending.push(pending); },
+        };
+        const controller = new AiSessionProjectHydrationController({
+            getWorkspaceFile: () => null,
+            getWorkspaceFolders: () => null,
+            getRefreshReason: () => 'refresh',
+            incrementalScanMaxFiles: 123,
+            getProviders: () => providersForTest,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            readCoordinator: {
+                getResults: () => ({
+                    codex: { available: true, scannedFiles: 1, parsedFiles: 1, sessions: [session] },
+                    kimi: { available: true, scannedFiles: 0, parsedFiles: 0, sessions: [] },
+                    claude: { available: true, scannedFiles: 0, parsedFiles: 0, sessions: [] },
+                }),
+                getAssignments: () => ({
+                    codex: new Map([['project-a', [session]]]),
+                    kimi: new Map(),
+                    claude: new Map(),
+                }),
+            },
+            terminalService,
+            ...(options.runtimeCoordinator ? { runtimeCoordinator: options.runtimeCoordinator } : {}),
+            setAlias: (providerId, sessionId, alias) => {
+                aliases[`${providerId}:${sessionId}`] = alias;
+                aliasesSet.push([providerId, sessionId, alias]);
+            },
+            syncActiveTerminal: () => syncs.push('sync'),
+            getSessionComparableCwd: (_providerId, item) => item.cwd,
+            getExpandedProjects: () => new Set(),
+            getActiveProviders: () => ({}),
+            getPinnedSessions: () => new Set(),
+            getAliases: () => ({ ...aliases }),
+            getAttentionAggregate: () => ({
+                protocolVersion: 1, aggregateRevision: '3'.repeat(64),
+                generatedAtMs: 1, sessions: [],
+            }),
+            getLocalAttentionBySession: () => ({}),
+            hasRemoteAttentionAggregate: () => false,
+            getProjectKey: project => `key:${project.path}`,
+            normalizeProjectPath: value => value,
+            logDiagnostic: event => diagnostics.push(event),
+        });
+        return { controller, terminalService, aliases, aliasesSet, syncs, diagnostics };
+    }
+    function project(name = 'Project') {
+        return [{ id: 'project-a', path: '/work/app', name }];
+    }
+    async function flushSettlements() {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+    }
+
+    let resolveDelayed;
+    let delayedCalls = 0;
+    const delayedPromotion = new Promise(resolve => { resolveDelayed = resolve; });
+    const delayedCoordinator = {
+        getActive: () => [],
+        getPending: () => [pendingRuntime],
+        promotePending: () => { delayedCalls++; return delayedPromotion; },
+    };
+    const delayed = createHarness({ runtimeCoordinator: delayedCoordinator });
+    const first = delayed.controller.hydrate(project());
+    const second = delayed.controller.hydrate(project());
+    assert.strictEqual(delayedCalls, 1, 'same pending hydration must share one promotion');
+    assert.strictEqual(first, second, 'same-generation hydration should share the cached projection');
+    assert.strictEqual(first[0].codexSessions[0].name, 'Original Name');
+    resolveDelayed([finalRuntime]);
+    await flushSettlements();
+    assert.strictEqual(first[0].codexSessions[0].name, 'Promoted Alias');
+    assert.strictEqual(second[0].codexSessions[0].name, 'Promoted Alias');
+    assert.deepStrictEqual(delayed.aliasesSet, [['codex', 'session-final', 'Promoted Alias']]);
+    assert.deepStrictEqual(delayed.syncs, ['sync']);
+
+    let resolveGeneration;
+    let generationCalls = 0;
+    const generationPromotion = new Promise(resolve => { resolveGeneration = resolve; });
+    const generationCoordinator = {
+        getActive: () => [],
+        getPending: () => [pendingRuntime],
+        promotePending: () => { generationCalls++; return generationPromotion; },
+    };
+    const generations = createHarness({ runtimeCoordinator: generationCoordinator });
+    const stale = generations.controller.hydrate(project('Stale generation'));
+    const current = generations.controller.hydrate(project('Current generation'));
+    assert.strictEqual(generationCalls, 1, 'different hydration generations must share the pending promotion');
+    resolveGeneration([finalRuntime]);
+    await flushSettlements();
+    assert.strictEqual(current[0].name, 'Current generation');
+    assert.strictEqual(current[0].codexSessions[0].name, 'Promoted Alias');
+    assert.strictEqual(stale[0].codexSessions[0].name, 'Original Name', 'stale settlement must not overwrite an old generation');
+    assert.deepStrictEqual(generations.syncs, ['sync']);
+
+    let retryCalls = 0;
+    const retryCoordinator = {
+        getActive: () => [],
+        getPending: () => [pendingRuntime],
+        promotePending: async () => {
+            retryCalls++;
+            if (retryCalls === 1) {
+                throw new Error('first promotion failed');
+            }
+            return [finalRuntime];
+        },
+    };
+    const retry = createHarness({ runtimeCoordinator: retryCoordinator });
+    retry.controller.hydrate(project());
+    await flushSettlements();
+    const retried = retry.controller.hydrate(project('Retry generation'));
+    await flushSettlements();
+    assert.strictEqual(retryCalls, 2, 'rejected single-flight must clear so promotion can retry');
+    assert.strictEqual(retried[0].codexSessions[0].name, 'Promoted Alias');
+    assert.deepStrictEqual(retry.syncs, ['sync']);
+
+    const legacyPending = {
+        provider: 'codex', terminal: { name: 'Legacy pending' }, markerPath: '/tmp/legacy.done',
+        cwd: '/work/app', createdAt: '2026-07-18T10:00:00Z', excludedSessionIds: [],
+        title: 'Legacy Alias',
+    };
+    const legacy = createHarness({ legacyPending });
+    const legacyHydrated = legacy.controller.hydrate(project('Legacy'));
+    assert.strictEqual(legacyHydrated[0].codexSessions[0].name, 'Legacy Alias',
+        'legacy Direct promotion must make the alias visible before hydrate returns');
+    assert.deepStrictEqual(legacy.aliasesSet, [['codex', 'session-final', 'Legacy Alias']]);
 }
 
 function runKeyChecks() {
@@ -7072,6 +7309,7 @@ async function main() {
     await runAiSessionAttentionControllerChecks();
     await runAiSessionExecutionControllerChecks();
     await runAiSessionProjectHydrationControllerChecks();
+    await runAiSessionProjectHydrationPromotionChecks();
     runKeyChecks();
     runBatchAiSessionArchiveChecks();
     runActiveAiSessionTerminalHighlightChecks();
