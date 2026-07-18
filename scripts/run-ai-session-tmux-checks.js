@@ -738,19 +738,28 @@ async function runTmuxDiscoveryChecks() {
         provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1',
     };
     const finalLocator = new tmuxLayout.ProjectTmuxLayout().getLocator(finalIdentity);
-    const finalMetadata = {
+    const finalSessionMetadata = {
         managed: '1', version: '1', layout: 'project', projectKey: 'pk',
+    };
+    const finalWindowMetadata = {
+        managed: '1', version: '1', layout: 'project',
         provider: 'codex', sessionId: 's1', marker: '/tmp/s1.done',
         createdAt: '2026-07-18T10:00:00Z',
     };
     const finalRow = {
-        ...finalLocator, windowId: '@1', active: false, metadata: finalMetadata,
+        ...finalLocator, windowId: '@1', active: false,
+        sessionMetadata: finalSessionMetadata,
+        windowMetadata: finalWindowMetadata,
+        metadata: { ...finalSessionMetadata, ...finalWindowMetadata },
     };
     let now = 1000;
     let lists = 0;
     const reconciled = [];
     const discovery = new discoveryModule.TmuxRuntimeDiscovery({
-        client: { listWindows: async () => { lists++; return [finalRow]; } },
+        client: { listWindows: async () => {
+            lists++;
+            return [finalRow, { ...finalRow, windowId: '@1-duplicate' }];
+        } },
         bindingStore: {
             listPending: async () => [],
             listKnown: async () => [],
@@ -773,6 +782,7 @@ async function runTmuxDiscoveryChecks() {
         tmux: finalLocator,
     }]);
     assert.strictEqual(reconciled.length, 1);
+    assert.strictEqual(reconciled[0].length, 1);
     await discovery.refresh(true);
     assert.strictEqual(lists, 2);
     assert.strictEqual(discovery.find(finalIdentity).length, 1);
@@ -822,7 +832,9 @@ async function runTmuxDiscoveryChecks() {
     const pendingDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [{
             ...pendingLocator, windowId: '@2', active: true,
-            sessionMetadata: { projectKey: 'pending-project' },
+            sessionMetadata: {
+                managed: '1', version: '1', layout: 'project', projectKey: 'pending-project',
+            },
             windowMetadata: pendingWindowMetadata,
             metadata: { projectKey: 'pending-project', ...pendingWindowMetadata },
         }] },
@@ -858,12 +870,28 @@ async function runTmuxDiscoveryChecks() {
         managed: '1', version: '1', layout: 'project', provider: 'claude',
         sessionId: 'collision-session', marker: '/tmp/collision.done',
     };
-    let collisionReconciled;
+    const collisionKnown = {
+        version: 1, state: 'known', provider: 'claude', sessionId: 'collision-session',
+        projectKey: 'collision-project', layout: 'project', locator: collisionExpected,
+        lastSeenAtMs: 900,
+    };
+    const collisionReconciled = [];
+    const collisionRemoved = [];
     const collisionDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [
             {
                 ...collisionActual, windowId: '@3', active: true,
-                sessionMetadata: { projectKey: 'collision-project' },
+                sessionMetadata: {
+                    managed: '1', version: '1', layout: 'project', projectKey: 'collision-project',
+                },
+                windowMetadata: collisionMetadata,
+                metadata: { projectKey: 'collision-project', ...collisionMetadata },
+            },
+            {
+                ...collisionActual, windowId: '@3-duplicate', active: false,
+                sessionMetadata: {
+                    managed: '1', version: '1', layout: 'project', projectKey: 'collision-project',
+                },
                 windowMetadata: collisionMetadata,
                 metadata: { projectKey: 'collision-project', ...collisionMetadata },
             },
@@ -873,7 +901,7 @@ async function runTmuxDiscoveryChecks() {
                     managed: '1', version: '1', layout: 'project',
                     projectKey: 'collision-project',
                 },
-                windowMetadata: { provider: 'claude', sessionId: 'collision-session' },
+                windowMetadata: collisionMetadata,
                 metadata: {
                     managed: '1', version: '1', layout: 'project',
                     projectKey: 'collision-project', provider: 'claude', sessionId: 'collision-session',
@@ -885,8 +913,9 @@ async function runTmuxDiscoveryChecks() {
             },
         ] },
         bindingStore: {
-            listPending: async () => [], listKnown: async () => [],
-            reconcileKnown: async runtimes => { collisionReconciled = runtimes; },
+            listPending: async () => [], listKnown: async () => [collisionKnown],
+            reconcileKnown: async runtimes => { collisionReconciled.push(runtimes); },
+            removeKnown: async (...identity) => { collisionRemoved.push(identity); },
         },
         markerIsCurrent: () => false,
     });
@@ -894,7 +923,9 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(collisionDiscovery.getActive(), []);
     assert.deepStrictEqual(collisionDiscovery.getPending(), []);
     assert.deepStrictEqual(collisionDiscovery.find(collisionIdentity), []);
-    assert.deepStrictEqual(collisionReconciled, []);
+    assert.deepStrictEqual(collisionDiscovery.getInactive(), []);
+    assert.deepStrictEqual(collisionReconciled, [[]]);
+    assert.deepStrictEqual(collisionRemoved, []);
     assert.deepStrictEqual(collisionDiscovery.getDiagnostics(), [{
         kind: 'tmux-locator-collision', identity: collisionIdentity,
         actual: collisionActual, expected: collisionExpected,
@@ -906,6 +937,39 @@ async function runTmuxDiscoveryChecks() {
         kind: 'tmux-locator-collision', identity: collisionIdentity,
         actual: collisionActual, expected: collisionExpected,
     });
+
+    const pendingCollisionActual = {
+        ...pendingLocator, windowName: `${pendingLocator.windowName}-occupied`,
+    };
+    const pendingCollisionReconciled = [];
+    const pendingCollisionRemoved = [];
+    const pendingCollisionDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [{
+            ...pendingCollisionActual, windowId: '@pending-collision', active: false,
+            sessionMetadata: {
+                managed: '1', version: '1', layout: 'project', projectKey: 'pending-project',
+            },
+            windowMetadata: pendingWindowMetadata,
+            metadata: { projectKey: 'pending-project', ...pendingWindowMetadata },
+        }] },
+        bindingStore: {
+            listPending: async () => [pendingBinding], listKnown: async () => [],
+            reconcileKnown: async runtimes => { pendingCollisionReconciled.push(runtimes); },
+            removeKnown: async (...identity) => { pendingCollisionRemoved.push(identity); },
+        },
+        markerIsCurrent: () => false,
+    });
+    await pendingCollisionDiscovery.refresh();
+    assert.deepStrictEqual(pendingCollisionDiscovery.getPending(), []);
+    assert.deepStrictEqual(pendingCollisionDiscovery.getInactive(), []);
+    assert.deepStrictEqual(pendingCollisionReconciled, [[]]);
+    assert.deepStrictEqual(pendingCollisionRemoved, []);
+    assert.deepStrictEqual(pendingCollisionDiscovery.getDiagnostics(), [{
+        kind: 'tmux-locator-collision',
+        identity: { ...pendingIdentity, cwd: '' },
+        actual: pendingCollisionActual,
+        expected: pendingLocator,
+    }]);
 
     const sessionIdentity = {
         provider: 'codex', projectKey: 'session-project', cwd: '', sessionId: 'session-layout-id',
@@ -919,11 +983,11 @@ async function runTmuxDiscoveryChecks() {
         client: { listWindows: async () => [
             {
                 ...sessionLocator, windowName: 'shell', windowId: '@6', active: false,
-                sessionMetadata, windowMetadata: {}, metadata: sessionMetadata,
+                sessionMetadata, windowMetadata: sessionMetadata, metadata: sessionMetadata,
             },
             {
-                ...sessionLocator, windowName: 'unowned', windowId: '@7', active: true,
-                sessionMetadata: {}, windowMetadata: sessionMetadata, metadata: sessionMetadata,
+                ...sessionLocator, windowName: 'logs', windowId: '@7', active: true,
+                sessionMetadata, windowMetadata: sessionMetadata, metadata: sessionMetadata,
             },
         ] },
         bindingStore: {
@@ -936,6 +1000,55 @@ async function runTmuxDiscoveryChecks() {
     assert.strictEqual(sessionDiscovery.getActive().length, 1);
     assert.strictEqual(sessionDiscovery.getActive()[0].attached, false);
 
+    const mergedOnlyDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [{
+            ...finalLocator, windowId: '@merged-only', active: true,
+            metadata: { ...finalSessionMetadata, ...finalWindowMetadata },
+        }] },
+        bindingStore: {
+            listPending: async () => [], listKnown: async () => [],
+            reconcileKnown: async () => undefined,
+        },
+        markerIsCurrent: () => false,
+    });
+    await mergedOnlyDiscovery.refresh();
+    assert.deepStrictEqual(mergedOnlyDiscovery.getActive(), []);
+
+    const invalidProjectScopeDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [{
+            ...finalLocator, windowId: '@invalid-project-scope', active: true,
+            sessionMetadata: { projectKey: 'pk' },
+            windowMetadata: finalWindowMetadata,
+            metadata: { ...finalSessionMetadata, ...finalWindowMetadata },
+        }] },
+        bindingStore: {
+            listPending: async () => [], listKnown: async () => [],
+            reconcileKnown: async () => undefined,
+        },
+        markerIsCurrent: () => false,
+    });
+    await invalidProjectScopeDiscovery.refresh();
+    assert.deepStrictEqual(invalidProjectScopeDiscovery.getActive(), []);
+
+    const disagreeingWindowMetadata = {
+        ...sessionMetadata, sessionId: 'different-session-layout-id',
+    };
+    const disagreeingSessionDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [{
+            ...sessionLocator, windowName: 'shell', windowId: '@disagreeing-session', active: true,
+            sessionMetadata,
+            windowMetadata: disagreeingWindowMetadata,
+            metadata: { ...sessionMetadata, ...disagreeingWindowMetadata },
+        }] },
+        bindingStore: {
+            listPending: async () => [], listKnown: async () => [],
+            reconcileKnown: async () => undefined,
+        },
+        markerIsCurrent: () => false,
+    });
+    await disagreeingSessionDiscovery.refresh();
+    assert.deepStrictEqual(disagreeingSessionDiscovery.getActive(), []);
+
     const known = {
         version: 1, state: 'known', provider: 'codex', sessionId: 's1', projectKey: 'pk',
         layout: 'project', locator: finalLocator, lastSeenAtMs: 900,
@@ -946,7 +1059,7 @@ async function runTmuxDiscoveryChecks() {
     const lifecycleDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => lifecycleRows },
         bindingStore: {
-            listPending: async () => [], listKnown: async () => [known],
+            listPending: async () => [], listKnown: async () => [known, known],
             reconcileKnown: async () => undefined,
             removeKnown: async (provider, sessionId) => { removedKnown.push([provider, sessionId]); },
         },
@@ -958,7 +1071,14 @@ async function runTmuxDiscoveryChecks() {
     await lifecycleDiscovery.refresh();
     lifecycleRows = [];
     await lifecycleDiscovery.refresh(true);
-    assert.strictEqual(lifecycleDiscovery.getActive()[0].state, 'completed');
+    assert.deepStrictEqual(lifecycleDiscovery.getActive(), []);
+    assert.deepStrictEqual(lifecycleDiscovery.find(finalIdentity), []);
+    assert.strictEqual(lifecycleDiscovery.getInactive()[0].state, 'completed');
+    const inactiveCopy = lifecycleDiscovery.getInactive();
+    inactiveCopy[0].identity.sessionId = 'mutated';
+    inactiveCopy[0].tmux.sessionName = 'mutated';
+    assert.strictEqual(lifecycleDiscovery.getInactive()[0].identity.sessionId, 's1');
+    assert.strictEqual(lifecycleDiscovery.getInactive()[0].tmux.sessionName, finalLocator.sessionName);
     assert.deepStrictEqual(markerChecks, [[
         '/tmp/s1.done', Date.parse('2026-07-18T10:00:00Z'),
     ]]);
@@ -978,7 +1098,8 @@ async function runTmuxDiscoveryChecks() {
     await stoppedDiscovery.refresh();
     stoppedRows = [];
     await stoppedDiscovery.refresh(true);
-    assert.strictEqual(stoppedDiscovery.getActive()[0].state, 'stopped');
+    assert.deepStrictEqual(stoppedDiscovery.getActive(), []);
+    assert.strictEqual(stoppedDiscovery.getInactive()[0].state, 'stopped');
     assert.deepStrictEqual(stoppedRemoved, [['codex', 's1']]);
 
     let failList = false;
@@ -1010,6 +1131,53 @@ async function runTmuxDiscoveryChecks() {
     assert.strictEqual(failureRemovals, 0);
     await assert.rejects(failureDiscovery.refresh(), /ambiguous list failure/);
     assert.strictEqual(failedLists, 3);
+
+    const listFailureMutations = [];
+    const listFailureDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => { throw new Error('list failure before reads'); } },
+        bindingStore: {
+            listPending: async () => [], listKnown: async () => [],
+            reconcileKnown: async runtimes => { listFailureMutations.push(['reconcile', runtimes]); },
+            removeKnown: async (...identity) => { listFailureMutations.push(['remove', identity]); },
+        },
+        markerIsCurrent: () => false,
+    });
+    await assert.rejects(listFailureDiscovery.refresh(), /list failure before reads/);
+    assert.deepStrictEqual(listFailureMutations, []);
+
+    const readFailureMutations = [];
+    const readFailureDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [finalRow] },
+        bindingStore: {
+            listPending: async () => { throw new Error('binding read failure'); },
+            listKnown: async () => [known],
+            reconcileKnown: async runtimes => { readFailureMutations.push(['reconcile', runtimes]); },
+            removeKnown: async (...identity) => { readFailureMutations.push(['remove', identity]); },
+        },
+        markerIsCurrent: () => false,
+    });
+    await assert.rejects(readFailureDiscovery.refresh(), /binding read failure/);
+    assert.deepStrictEqual(readFailureMutations, []);
+
+    let markerFailureRows = [finalRow];
+    const markerFailureMutations = [];
+    const markerFailureDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => markerFailureRows },
+        bindingStore: {
+            listPending: async () => [], listKnown: async () => [known],
+            reconcileKnown: async runtimes => { markerFailureMutations.push(['reconcile', runtimes]); },
+            removeKnown: async (...identity) => { markerFailureMutations.push(['remove', identity]); },
+        },
+        markerIsCurrent: () => { throw new Error('marker read failure'); },
+    });
+    await markerFailureDiscovery.refresh();
+    const markerFailureActive = markerFailureDiscovery.getActive();
+    const markerMutationsBeforeFailure = markerFailureMutations.slice();
+    markerFailureRows = [];
+    await assert.rejects(markerFailureDiscovery.refresh(true), /marker read failure/);
+    assert.deepStrictEqual(markerFailureMutations, markerMutationsBeforeFailure);
+    assert.deepStrictEqual(markerFailureDiscovery.getActive(), markerFailureActive);
+    assert.deepStrictEqual(markerFailureDiscovery.getInactive(), []);
 }
 
 async function runTmuxStoreChecks() {

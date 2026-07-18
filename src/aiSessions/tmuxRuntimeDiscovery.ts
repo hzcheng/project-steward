@@ -1,6 +1,7 @@
 'use strict';
 
 import type {
+    AiSessionManagedTmuxMetadata,
     AiSessionPendingRuntimeSnapshot,
     AiSessionRuntimeIdentity,
     AiSessionRuntimeSnapshot,
@@ -26,8 +27,8 @@ interface DiscoveryWindowRecord {
     windowId: string;
     active: boolean;
     metadata: Record<string, string>;
-    sessionMetadata?: Record<string, string>;
-    windowMetadata?: Record<string, string>;
+    sessionMetadata: Record<string, string>;
+    windowMetadata: Record<string, string>;
 }
 
 interface TmuxDiscoveryClient {
@@ -52,6 +53,7 @@ export interface TmuxRuntimeDiscoveryOptions {
 interface DiscoveryResult {
     active: AiSessionRuntimeSnapshot[];
     pending: AiSessionPendingRuntimeSnapshot[];
+    inactive: AiSessionRuntimeSnapshot[];
     diagnostics: AiSessionTmuxDiscoveryDiagnostic[];
 }
 
@@ -60,6 +62,7 @@ export class TmuxRuntimeDiscovery {
     private readonly cacheTtlMs: number;
     private active: AiSessionRuntimeSnapshot[] = [];
     private pending: AiSessionPendingRuntimeSnapshot[] = [];
+    private inactive: AiSessionRuntimeSnapshot[] = [];
     private diagnostics: AiSessionTmuxDiscoveryDiagnostic[] = [];
     private successfulAtMs: number | null = null;
     private inFlight: Promise<void> | null = null;
@@ -99,6 +102,10 @@ export class TmuxRuntimeDiscovery {
         return this.pending.map(clonePendingRuntime);
     }
 
+    getInactive(): AiSessionRuntimeSnapshot[] {
+        return this.inactive.map(cloneRuntime);
+    }
+
     getDiagnostics(): AiSessionTmuxDiscoveryDiagnostic[] {
         return this.diagnostics.map(cloneDiagnostic);
     }
@@ -117,6 +124,7 @@ export class TmuxRuntimeDiscovery {
         const result = await this.enumerate();
         this.active = result.active.map(cloneRuntime);
         this.pending = result.pending.map(clonePendingRuntime);
+        this.inactive = result.inactive.map(cloneRuntime);
         this.diagnostics = result.diagnostics.map(cloneDiagnostic);
         this.successfulAtMs = this.nowMs();
     }
@@ -133,9 +141,11 @@ export class TmuxRuntimeDiscovery {
         ]);
         const pendingByLocator = groupPendingByLocator(pendingBindings);
         const previousActive = this.active.filter(runtime => runtime.state === 'active');
-        const active: AiSessionRuntimeSnapshot[] = [];
-        const pending: AiSessionPendingRuntimeSnapshot[] = [];
-        const diagnostics: AiSessionTmuxDiscoveryDiagnostic[] = [];
+        const activeByKey = new Map<string, AiSessionRuntimeSnapshot>();
+        const pendingByKey = new Map<string, AiSessionPendingRuntimeSnapshot>();
+        const diagnosticsByKey = new Map<string, AiSessionTmuxDiscoveryDiagnostic>();
+        const collisionIdentityKeys = new Set<string>();
+        const actualLocatorsByIdentity = new Map<string, Set<string>>();
 
         for (const row of rows) {
             const parsed = parseRowMetadata(row);
@@ -155,13 +165,22 @@ export class TmuxRuntimeDiscovery {
                     : { pendingId: parsed.pendingId }),
             };
             const expected = expectedLocator(identity, parsed.layout);
+            const parsedIdentityKey = identityKey(identity);
+            const actualLocators = actualLocatorsByIdentity.get(parsedIdentityKey) || new Set<string>();
+            actualLocators.add(locatorKey(actual));
+            actualLocatorsByIdentity.set(parsedIdentityKey, actualLocators);
+            if (actualLocators.size > 1) {
+                collisionIdentityKeys.add(parsedIdentityKey);
+            }
             if (!locatorsEqual(actual, expected)) {
-                diagnostics.push({
+                collisionIdentityKeys.add(parsedIdentityKey);
+                const diagnostic: AiSessionTmuxDiscoveryDiagnostic = {
                     kind: 'tmux-locator-collision',
                     identity,
                     actual,
                     expected,
-                });
+                };
+                diagnosticsByKey.set(diagnosticKey(diagnostic), diagnostic);
                 continue;
             }
 
@@ -169,7 +188,7 @@ export class TmuxRuntimeDiscovery {
                 if (!pendingBinding) {
                     continue;
                 }
-                pending.push({
+                const snapshot: AiSessionPendingRuntimeSnapshot = {
                     identity,
                     backend: 'tmux',
                     state: 'pending',
@@ -180,11 +199,12 @@ export class TmuxRuntimeDiscovery {
                     createdAt: pendingBinding.createdAt,
                     excludedSessionIds: [...pendingBinding.excludedSessionIds],
                     ...(pendingBinding.title === undefined ? {} : { title: pendingBinding.title }),
-                });
+                };
+                pendingByKey.set(runtimeProjectionKey(snapshot), snapshot);
                 continue;
             }
 
-            active.push({
+            const snapshot: AiSessionRuntimeSnapshot = {
                 identity,
                 backend: 'tmux',
                 state: 'active',
@@ -192,31 +212,52 @@ export class TmuxRuntimeDiscovery {
                 runStartedAtMs: parsed.createdAt ? Date.parse(parsed.createdAt) : 0,
                 attached: false,
                 tmux: { ...actual },
-            });
+            };
+            activeByKey.set(runtimeProjectionKey(snapshot), snapshot);
         }
 
-        const terminal = await this.classifyVanishedKnown(
-            knownBindings.slice(0, Math.max(0, MAX_DISCOVERY_ROWS - active.length)),
-            active,
-            previousActive
+        const active = [...activeByKey.values()];
+        const pending = [...pendingByKey.values()];
+        const liveActive = active.filter(runtime => !collisionIdentityKeys.has(identityKey(runtime.identity)));
+        const livePending = pending.filter(runtime => !collisionIdentityKeys.has(identityKey(runtime.identity)));
+        const inactive = await this.classifyVanishedKnown(
+            knownBindings.slice(0, Math.max(0, MAX_DISCOVERY_ROWS - liveActive.length)),
+            liveActive,
+            previousActive,
+            collisionIdentityKeys
         );
-        await this.options.bindingStore.reconcileKnown(active.map(cloneRuntime));
-        for (const runtime of terminal) {
+        await this.options.bindingStore.reconcileKnown(liveActive.map(cloneRuntime));
+        for (const runtime of inactive) {
             const sessionId = runtime.identity.sessionId;
             if (sessionId && this.options.bindingStore.removeKnown) {
                 await this.options.bindingStore.removeKnown(runtime.identity.provider, sessionId);
             }
         }
-        return { active: [...active, ...terminal], pending, diagnostics };
+        return {
+            active: liveActive,
+            pending: livePending,
+            inactive,
+            diagnostics: [...diagnosticsByKey.values()],
+        };
     }
 
     private async classifyVanishedKnown(
         knownBindings: readonly TmuxKnownRuntimeBinding[],
         live: readonly AiSessionRuntimeSnapshot[],
-        previousActive: readonly AiSessionRuntimeSnapshot[]
+        previousActive: readonly AiSessionRuntimeSnapshot[],
+        collisionIdentityKeys: ReadonlySet<string>
     ): Promise<AiSessionRuntimeSnapshot[]> {
         const terminal: AiSessionRuntimeSnapshot[] = [];
+        const seenKnown = new Set<string>();
         for (const known of knownBindings) {
+            const knownKey = knownProjectionKey(known);
+            if (seenKnown.has(knownKey)) {
+                continue;
+            }
+            seenKnown.add(knownKey);
+            if (collisionIdentityKeys.has(knownIdentityKey(known))) {
+                continue;
+            }
             if (live.some(runtime => finalIdentityMatchesKnown(runtime.identity, known))) {
                 continue;
             }
@@ -243,22 +284,35 @@ export class TmuxRuntimeDiscovery {
     }
 }
 
-function parseRowMetadata(row: DiscoveryWindowRecord) {
-    const hasSplitMetadata = Object.prototype.hasOwnProperty.call(row, 'sessionMetadata')
-        || Object.prototype.hasOwnProperty.call(row, 'windowMetadata');
-    if (!hasSplitMetadata) {
-        return parseManagedTmuxMetadata(row.metadata);
+function parseRowMetadata(row: DiscoveryWindowRecord): AiSessionManagedTmuxMetadata | null {
+    if (!row.sessionMetadata || !row.windowMetadata) {
+        return null;
     }
-    const sessionMetadata = row.sessionMetadata || {};
-    const windowMetadata = row.windowMetadata || {};
-    if (windowMetadata.layout === 'project') {
-        return parseManagedTmuxMetadata({
-            ...windowMetadata,
-            projectKey: sessionMetadata.projectKey,
+    if (row.sessionMetadata.layout === 'project' && row.windowMetadata.layout === 'project') {
+        const sessionProof = parseManagedTmuxMetadata({
+            ...row.windowMetadata,
+            managed: row.sessionMetadata.managed,
+            version: row.sessionMetadata.version,
+            layout: row.sessionMetadata.layout,
+            projectKey: row.sessionMetadata.projectKey,
         });
+        const windowProof = parseManagedTmuxMetadata({
+            ...row.windowMetadata,
+            projectKey: row.sessionMetadata.projectKey,
+        });
+        return sessionProof && sessionProof.layout === 'project'
+            && windowProof && windowProof.layout === 'project'
+            ? windowProof
+            : null;
     }
-    if (sessionMetadata.layout === 'session') {
-        return parseManagedTmuxMetadata(sessionMetadata);
+    if (row.sessionMetadata.layout === 'session' && row.windowMetadata.layout === 'session') {
+        const sessionProof = parseManagedTmuxMetadata(row.sessionMetadata);
+        const windowProof = parseManagedTmuxMetadata(row.windowMetadata);
+        return sessionProof && sessionProof.layout === 'session'
+            && windowProof && windowProof.layout === 'session'
+            && managedMetadataIdentityKey(sessionProof) === managedMetadataIdentityKey(windowProof)
+            ? sessionProof
+            : null;
     }
     return null;
 }
@@ -323,6 +377,54 @@ function finalIdentityMatchesKnown(
     return identity.provider === known.provider
         && identity.projectKey === known.projectKey
         && identity.sessionId === known.sessionId;
+}
+
+function identityKey(identity: AiSessionRuntimeIdentity): string {
+    return JSON.stringify([
+        identity.provider,
+        identity.projectKey,
+        identity.sessionId !== undefined ? 'session' : 'pending',
+        identity.sessionId !== undefined ? identity.sessionId : identity.pendingId,
+    ]);
+}
+
+function knownIdentityKey(known: TmuxKnownRuntimeBinding): string {
+    return identityKey({
+        provider: known.provider,
+        projectKey: known.projectKey,
+        cwd: '',
+        sessionId: known.sessionId,
+    });
+}
+
+function managedMetadataIdentityKey(metadata: AiSessionManagedTmuxMetadata): string {
+    return identityKey({
+        provider: metadata.provider,
+        projectKey: metadata.projectKey,
+        cwd: '',
+        ...(metadata.sessionId !== undefined
+            ? { sessionId: metadata.sessionId }
+            : { pendingId: metadata.pendingId }),
+    });
+}
+
+function runtimeProjectionKey(runtime: AiSessionRuntimeSnapshot): string {
+    return JSON.stringify([
+        identityKey(runtime.identity),
+        runtime.tmux ? locatorKey(runtime.tmux) : '',
+    ]);
+}
+
+function knownProjectionKey(known: TmuxKnownRuntimeBinding): string {
+    return JSON.stringify([knownIdentityKey(known), locatorKey(known.locator)]);
+}
+
+function diagnosticKey(diagnostic: AiSessionTmuxDiscoveryDiagnostic): string {
+    return JSON.stringify([
+        identityKey(diagnostic.identity),
+        locatorKey(diagnostic.actual),
+        locatorKey(diagnostic.expected),
+    ]);
 }
 
 function identitiesMatch(runtime: AiSessionRuntimeIdentity, requested: AiSessionRuntimeIdentity): boolean {
