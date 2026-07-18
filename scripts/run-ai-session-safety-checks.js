@@ -8,6 +8,7 @@ const os = require('os');
 const path = require('path');
 const vm = require('vm');
 const commands = require('../out/aiSessions/commandBuilders');
+const launchSpec = require('../out/aiSessions/launchSpec');
 const helpers = require('../out/aiSessions/sessionHelpers');
 const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
@@ -3116,7 +3117,10 @@ function runWebviewContentChecks() {
     assert.ok(!extractScssBlock(styles, '.codex-session-row').includes('translateY(-1px)'));
     assert.ok(webviewContent.includes('visibleRows * 42'));
     assert.ok(styles.includes('calc(3 * 42px + 2 * 2px)'));
-    assert.ok(!packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode']);
+    assert.deepStrictEqual(
+        packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode'].enum,
+        ['vscode', 'tmux']
+    );
     assert.ok(projectHydrationControllerSource.includes('getAliases: () => Record<string, string>;'));
     assert.ok(hydrateOpenProjectsFunction.includes('aliases: this.options.getAliases()'));
     assert.ok(!projectHydrationControllerSource.includes('pruneAiSessionAliases('));
@@ -5701,6 +5705,22 @@ function runProviderLifecycleServiceChecks() {
 }
 
 function runCommandBuilderChecks() {
+    assert.deepStrictEqual(
+        commands.buildClaudeNewSessionLaunchSpec('/work/app', "Useful; 'Title'", '/tmp/claude.done'),
+        {
+            executable: 'claude',
+            args: ['--name', "Useful; 'Title'"],
+            cwd: '/work/app',
+            markerPath: '/tmp/claude.done',
+        }
+    );
+    assert.strictEqual(
+        launchSpec.serializeDirectLaunchCommand(
+            commands.buildKimiNewSessionLaunchSpec('/work/app', "owner's task", null),
+            'linux'
+        ),
+        "kimi --work-dir '/work/app' --prompt 'owner'\\''s task'"
+    );
     assert.strictEqual(
         commands.buildCodexResumeCommand('abc123', '/work/My App', null, 'linux'),
         "codex resume --cd '/work/My App' 'abc123'"

@@ -4,6 +4,7 @@ import type { AiSessionProviderId, CodexSession } from '../models';
 import type { BatchAiSessionArchiveResult } from './archiveBatch';
 import type { AiSessionExecutionState, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
 import type { DashboardSearchCatalog } from '../webview/dashboardViewModel';
+import type { AiSessionLaunchSpec } from './launchSpec';
 
 export interface AiSessionTerminalEntry<TTerminal = unknown> {
     terminal: TTerminal;
@@ -74,6 +75,8 @@ export interface AiSessionProviderDefinition {
     projectSessionsKey: 'codexSessions' | 'kimiSessions' | 'claudeSessions';
     projectSessionsUnavailableKey: 'codexSessionsUnavailable' | 'kimiSessionsUnavailable' | 'claudeSessionsUnavailable';
     terminalCwdFields: Array<'cwd' | 'workDir'>;
+    buildResumeLaunchSpec: (sessionId: string, cwd: string, markerPath: string) => AiSessionLaunchSpec;
+    buildNewSessionLaunchSpec: (cwd: string, title: string, markerPath: string) => AiSessionLaunchSpec;
     buildResumeCommand: (sessionId: string, cwd: string, markerPath: string) => string;
     buildNewSessionCommand: (cwd: string, title: string, markerPath: string) => string;
 }
