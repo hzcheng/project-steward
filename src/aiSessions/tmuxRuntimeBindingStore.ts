@@ -2,6 +2,7 @@
 
 import { createHash, randomBytes } from 'crypto';
 import { constants as fsConstants, promises as fs } from 'fs';
+import type { Stats } from 'fs';
 import * as path from 'path';
 import type { AiSessionProviderId } from '../models';
 import type {
@@ -20,7 +21,10 @@ const MAX_KNOWN_RECORDS = 512;
 const PENDING_TTL_MS = 24 * 60 * 60 * 1000;
 const KNOWN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
-const READ_ONLY_NO_FOLLOW = fsConstants.O_RDONLY | ((fsConstants as Record<string, number>).O_NOFOLLOW || 0);
+const NO_FOLLOW_FLAG = (fsConstants as Record<string, number>).O_NOFOLLOW || 0;
+const NON_BLOCKING_FLAG = (fsConstants as Record<string, number>).O_NONBLOCK || 0;
+const READ_ONLY_FALLBACK = fsConstants.O_RDONLY | NON_BLOCKING_FLAG;
+const READ_ONLY_NO_FOLLOW = READ_ONLY_FALLBACK | NO_FOLLOW_FLAG;
 
 export interface TmuxPendingRuntimeBinding {
     version: 1;
@@ -234,16 +238,19 @@ async function listJsonFiles(root: string): Promise<string[]> {
 async function readJsonRegularFile(filePath: string): Promise<unknown> {
     let handle: fs.FileHandle | undefined;
     try {
-        handle = await fs.open(filePath, READ_ONLY_NO_FOLLOW);
-        const stat = await handle.stat();
-        if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_RECORD_BYTES) {
+        const pathStat = await fs.lstat(filePath);
+        if (!pathStat.isFile() || pathStat.size <= 0 || pathStat.size > MAX_RECORD_BYTES) {
             return null;
         }
-        if (!(fsConstants as Record<string, number>).O_NOFOLLOW) {
-            const pathStat = await fs.lstat(filePath);
-            if (!pathStat.isFile()) {
-                return null;
-            }
+        handle = await openRecordFile(filePath);
+        const handleStat = await handle.stat();
+        if (!handleStat.isFile() || handleStat.size <= 0 || handleStat.size > MAX_RECORD_BYTES) {
+            return null;
+        }
+        const openedPathStat = await fs.lstat(filePath);
+        if (!openedPathStat.isFile() || openedPathStat.size <= 0 || openedPathStat.size > MAX_RECORD_BYTES
+            || !isSameFile(pathStat, handleStat) || !isSameFile(openedPathStat, handleStat)) {
+            return null;
         }
         return JSON.parse(await handle.readFile({ encoding: 'utf8' }));
     } catch (error) {
@@ -256,6 +263,27 @@ async function readJsonRegularFile(filePath: string): Promise<unknown> {
             await handle.close();
         }
     }
+}
+
+function isSameFile(pathStat: Stats, handleStat: Stats): boolean {
+    return pathStat.dev === handleStat.dev && pathStat.ino === handleStat.ino;
+}
+
+async function openRecordFile(filePath: string): Promise<fs.FileHandle> {
+    if (NO_FOLLOW_FLAG) {
+        try {
+            return await fs.open(filePath, READ_ONLY_NO_FOLLOW);
+        } catch (error) {
+            if (!isUnsupportedNoFollowError(error)) {
+                throw error;
+            }
+        }
+    }
+    return fs.open(filePath, READ_ONLY_FALLBACK);
+}
+
+function isUnsupportedNoFollowError(error: unknown): boolean {
+    return isNodeError(error, 'EINVAL') || isNodeError(error, 'ENOTSUP') || isNodeError(error, 'EOPNOTSUPP');
 }
 
 function isCanonicalRecordPath(filePath: string, record: TmuxRuntimeBinding): boolean {

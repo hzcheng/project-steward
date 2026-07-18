@@ -1,5 +1,6 @@
 'use strict';
 const assert = require('assert');
+const childProcess = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -410,6 +411,128 @@ async function runTmuxStoreChecks() {
         assert.strictEqual((await store.listKnown()).some(record => record.sessionId === 'noncanonical'), false);
         assert.strictEqual(fs.existsSync(noncanonicalPath), true);
 
+        const fifoRoot = path.join(root, 'fifo-records');
+        fs.mkdirSync(fifoRoot);
+        const fifoPath = path.join(fifoRoot, 'blocked.json');
+        const mkfifo = childProcess.spawnSync('mkfifo', [fifoPath]);
+        if (mkfifo.status === 0) {
+            let fifoWriterError;
+            const writerTimer = setTimeout(() => {
+                try {
+                    const descriptor = fs.openSync(fifoPath, 'w');
+                    fs.closeSync(descriptor);
+                } catch (error) {
+                    fifoWriterError = error;
+                }
+            }, 200);
+            const fifoStore = new runtimeStoreModule.TmuxRuntimeBindingStore(fifoRoot, () => now);
+            const startedAt = Date.now();
+            assert.deepStrictEqual(await fifoStore.listKnown(), []);
+            const elapsedMs = Date.now() - startedAt;
+            clearTimeout(writerTimer);
+            assert.strictEqual(fifoWriterError, undefined);
+            assert.ok(elapsedMs < 150, `FIFO enumeration blocked for ${elapsedMs}ms`);
+        }
+
+        if (fs.constants.O_NOFOLLOW) {
+            const unsupportedRoot = path.join(root, 'unsupported-no-follow');
+            const unsupportedStore = new runtimeStoreModule.TmuxRuntimeBindingStore(unsupportedRoot, () => now);
+            const unsupportedRecord = known('unsupported-no-follow', now);
+            await unsupportedStore.setKnown(unsupportedRecord);
+            const unsupportedPath = path.join(unsupportedRoot, runtimeRecordFilename(unsupportedRecord));
+            const unsupportedOriginalOpen = fs.promises.open;
+            let noFollowRejected = false;
+            let fallbackFlags;
+            fs.promises.open = async (filePath, flags, ...args) => {
+                if (path.resolve(String(filePath)) === path.resolve(unsupportedPath)) {
+                    if (!noFollowRejected) {
+                        noFollowRejected = true;
+                        const error = new Error('injected unsupported O_NOFOLLOW');
+                        error.code = 'EINVAL';
+                        throw error;
+                    }
+                    fallbackFlags = flags;
+                }
+                return unsupportedOriginalOpen.call(fs.promises, filePath, flags, ...args);
+            };
+            let unsupportedRecords;
+            try {
+                unsupportedRecords = await unsupportedStore.listKnown();
+            } finally {
+                fs.promises.open = unsupportedOriginalOpen;
+            }
+            assert.strictEqual(noFollowRejected, true);
+            assert.strictEqual(unsupportedRecords.length, 1);
+            assert.strictEqual(unsupportedRecords[0].sessionId, 'unsupported-no-follow');
+            if (fs.constants.O_NONBLOCK) {
+                assert.strictEqual((fallbackFlags & fs.constants.O_NONBLOCK) !== 0, true);
+            }
+            assert.strictEqual((fallbackFlags & fs.constants.O_NOFOLLOW) === 0, true);
+        }
+
+        const mismatchRoot = path.join(root, 'fallback-mismatch');
+        const mismatchStore = new runtimeStoreModule.TmuxRuntimeBindingStore(mismatchRoot, () => now);
+        const mismatchRecord = known('fallback-mismatch', now);
+        await mismatchStore.setKnown(mismatchRecord);
+        const mismatchPath = path.join(mismatchRoot, runtimeRecordFilename(mismatchRecord));
+        const mismatchReplacementPath = path.join(root, 'fallback-mismatch-replacement');
+        fs.writeFileSync(mismatchReplacementPath, JSON.stringify(known('fallback-mismatch', now - 456)));
+        const mismatchOriginalOpen = fs.promises.open;
+        let mismatchNoFollowRejected = false;
+        let mismatchHandleClosed = false;
+        fs.promises.open = async (filePath, flags, ...args) => {
+            if (path.resolve(String(filePath)) === path.resolve(mismatchPath)) {
+                if (!mismatchNoFollowRejected && fs.constants.O_NOFOLLOW) {
+                    mismatchNoFollowRejected = true;
+                    const error = new Error('injected unsupported O_NOFOLLOW before mismatch');
+                    error.code = 'EOPNOTSUPP';
+                    throw error;
+                }
+                const handle = await mismatchOriginalOpen.call(
+                    fs.promises, mismatchReplacementPath, flags, ...args
+                );
+                const close = handle.close.bind(handle);
+                handle.close = async () => {
+                    mismatchHandleClosed = true;
+                    return close();
+                };
+                return handle;
+            }
+            return mismatchOriginalOpen.call(fs.promises, filePath, flags, ...args);
+        };
+        let mismatchRecords;
+        try {
+            mismatchRecords = await mismatchStore.listKnown();
+        } finally {
+            fs.promises.open = mismatchOriginalOpen;
+        }
+        assert.strictEqual(mismatchNoFollowRejected, Boolean(fs.constants.O_NOFOLLOW));
+        assert.strictEqual(mismatchHandleClosed, true);
+        assert.deepStrictEqual(mismatchRecords, []);
+
+        const permissionRoot = path.join(root, 'permission-error');
+        const permissionStore = new runtimeStoreModule.TmuxRuntimeBindingStore(permissionRoot, () => now);
+        const permissionRecord = known('permission-error', now);
+        await permissionStore.setKnown(permissionRecord);
+        const permissionPath = path.join(permissionRoot, runtimeRecordFilename(permissionRecord));
+        const permissionOriginalOpen = fs.promises.open;
+        let permissionOpenAttempts = 0;
+        fs.promises.open = async (filePath, flags, ...args) => {
+            if (path.resolve(String(filePath)) === path.resolve(permissionPath)) {
+                permissionOpenAttempts++;
+                const error = new Error('injected permission failure');
+                error.code = 'EACCES';
+                throw error;
+            }
+            return permissionOriginalOpen.call(fs.promises, filePath, flags, ...args);
+        };
+        try {
+            await assert.rejects(permissionStore.listKnown(), error => error && error.code === 'EACCES');
+        } finally {
+            fs.promises.open = permissionOriginalOpen;
+        }
+        assert.strictEqual(permissionOpenAttempts, 1);
+
         const raceRoot = path.join(root, 'read-race');
         const raceStore = new runtimeStoreModule.TmuxRuntimeBindingStore(raceRoot, () => now);
         const originalRaceRecord = known('read-race', now);
@@ -436,8 +559,7 @@ async function runTmuxStoreChecks() {
             fs.rmSync(raceRoot, { recursive: true, force: true });
             fs.rmSync(replacementRecordPath, { force: true });
         }
-        assert.strictEqual(raceRecords.length, 1);
-        assert.strictEqual(raceRecords[0].lastSeenAtMs, now);
+        assert.deepStrictEqual(raceRecords, []);
 
         for (let index = 0; index < 513; index++) {
             const capRecord = known(`cap-${index}`, now - 1000 + index);
