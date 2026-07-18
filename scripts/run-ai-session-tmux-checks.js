@@ -600,6 +600,102 @@ async function runTmuxClientChecks() {
         }
         return true;
     });
+
+    const rejectedGetterCases = [
+        {
+            secret: 'rejected-code-getter-secret',
+            value: new Proxy({}, {
+                get: (_target, property) => {
+                    if (property === 'code') {
+                        throw new Error('rejected-code-getter-secret');
+                    }
+                    return undefined;
+                },
+            }),
+        },
+        {
+            secret: 'rejected-killed-getter-secret',
+            value: Object.defineProperties({}, {
+                code: { value: 'UNKNOWN', enumerable: true },
+                killed: {
+                    enumerable: true,
+                    get: () => { throw new Error('rejected-killed-getter-secret'); },
+                },
+            }),
+        },
+    ];
+    for (const rejectedCase of rejectedGetterCases) {
+        const rejectedGetterClient = new tmuxClientModule.TmuxClient('tmux', {
+            run: async (_file, args) => {
+                if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+                if (args[0] === 'list-commands') {
+                    return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+                }
+                throw rejectedCase.value;
+            },
+        });
+        await assert.rejects(rejectedGetterClient.hasSession('s'), error => {
+            assert.ok(error instanceof tmuxClientModule.TmuxClientError);
+            assert.notStrictEqual(error, rejectedCase.value);
+            assert.strictEqual(error.operation, 'has-session');
+            assert.strictEqual(error.category, 'unsupported');
+            const publicError = `${error.name} ${error.message} ${error.stack} ${JSON.stringify(error)}`;
+            assert.strictEqual(publicError.includes(rejectedCase.secret), false);
+            return true;
+        });
+    }
+
+    const fulfilledGetterSecrets = {
+        message: 'fulfilled-getter-message-secret',
+        operation: 'fulfilled-getter-operation-secret',
+        category: 'fulfilled-getter-category-secret',
+    };
+    const fulfilledGetterError = new tmuxClientModule.TmuxClientError(
+        fulfilledGetterSecrets.operation, fulfilledGetterSecrets.category
+    );
+    fulfilledGetterError.message = fulfilledGetterSecrets.message;
+    const fulfilledResultProxy = new Proxy({}, {
+        get: (_target, property) => {
+            if (property === 'exitCode') {
+                throw fulfilledGetterError;
+            }
+            return '';
+        },
+    });
+    const fulfilledGetterClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return fulfilledResultProxy;
+        },
+    });
+    await assert.rejects(fulfilledGetterClient.hasSession('s'), error => {
+        assert.ok(error instanceof tmuxClientModule.TmuxClientError);
+        assert.notStrictEqual(error, fulfilledGetterError);
+        assert.strictEqual(error.operation, 'has-session');
+        assert.strictEqual(error.category, 'invalid-output');
+        const publicError = `${error.name} ${error.message} ${error.stack} ${JSON.stringify(error)}`;
+        for (const value of Object.values(fulfilledGetterSecrets)) {
+            assert.strictEqual(publicError.includes(value), false);
+        }
+        return true;
+    });
+
+    const availabilityGetterSecret = 'availability-getter-secret';
+    const availabilityGetterClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async () => new Proxy({}, {
+            get: () => { throw new Error(availabilityGetterSecret); },
+        }),
+    });
+    const getterAvailability = await availabilityGetterClient.checkAvailability();
+    assert.deepStrictEqual(getterAvailability, {
+        available: false,
+        category: 'command-failed',
+        message: 'The configured tmux could not complete an availability check.',
+    });
+    assert.strictEqual(JSON.stringify(getterAvailability).includes(availabilityGetterSecret), false);
 }
 
 async function runTmuxStoreChecks() {

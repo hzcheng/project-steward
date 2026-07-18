@@ -133,14 +133,15 @@ class ExecFileTmuxCommandRunner implements TmuxCommandRunner {
                     resolve({ exitCode: 0, ...output });
                     return;
                 }
-                if (typeof error.code === 'number') {
-                    resolve({ exitCode: error.code, ...output });
+                const errorSnapshot = snapshotProcessError(error);
+                if (errorSnapshot && typeof errorSnapshot.code === 'number') {
+                    resolve({ exitCode: errorSnapshot.code, ...output });
                     return;
                 }
                 resolve({
                     exitCode: null,
                     ...output,
-                    failureCategory: classifyProcessError(error),
+                    failureCategory: classifyProcessErrorSnapshot(errorSnapshot),
                 });
             });
         });
@@ -388,7 +389,11 @@ export class TmuxClient {
         } catch (error) {
             throw new TmuxClientError(operation, classifyUnknownRunnerError(error));
         }
-        return normalizeCommandResult(result, operation);
+        try {
+            return normalizeCommandResult(result, operation);
+        } catch (_error) {
+            throw new TmuxClientError(operation, 'invalid-output');
+        }
     }
 }
 
@@ -404,13 +409,33 @@ function normalizeExecutablePath(value: unknown): string {
 }
 
 function normalizeCommandResult(result: TmuxCommandResult, operation: TmuxOperation): TmuxCommandResult {
-    if (!result || (result.exitCode !== null && !Number.isInteger(result.exitCode))
-        || typeof result.stdout !== 'string' || typeof result.stderr !== 'string'
-        || (result.exitCode === null && !isCommandFailureCategory(result.failureCategory))
-        || (result.exitCode !== null && result.failureCategory !== undefined)) {
+    let exitCode: unknown;
+    let stdout: unknown;
+    let stderr: unknown;
+    let failureCategory: unknown;
+    try {
+        exitCode = result.exitCode;
+        stdout = result.stdout;
+        stderr = result.stderr;
+        failureCategory = result.failureCategory;
+    } catch (_error) {
         throw new TmuxClientError(operation, 'invalid-output');
     }
-    return result;
+    const validExitCode = exitCode === null
+        || (typeof exitCode === 'number' && Number.isInteger(exitCode));
+    if (!validExitCode || typeof stdout !== 'string' || typeof stderr !== 'string'
+        || (exitCode === null && !isCommandFailureCategory(failureCategory))
+        || (exitCode !== null && failureCategory !== undefined)) {
+        throw new TmuxClientError(operation, 'invalid-output');
+    }
+    return {
+        exitCode: exitCode as number | null,
+        stdout,
+        stderr,
+        ...(failureCategory !== undefined
+            ? { failureCategory: failureCategory as TmuxCommandFailureCategory }
+            : {}),
+    };
 }
 
 function isCommandFailureCategory(value: unknown): value is TmuxCommandFailureCategory {
@@ -420,24 +445,45 @@ function isCommandFailureCategory(value: unknown): value is TmuxCommandFailureCa
         || value === 'unsupported';
 }
 
-function classifyProcessError(error: { code?: string | number; killed?: boolean }): TmuxCommandFailureCategory {
-    if (error.code === 'ENOENT') {
+interface ProcessErrorSnapshot {
+    code?: string | number;
+    killed: boolean;
+}
+
+function snapshotProcessError(error: unknown): ProcessErrorSnapshot | null {
+    if (!error || (typeof error !== 'object' && typeof error !== 'function')) {
+        return null;
+    }
+    try {
+        const code = (error as { code?: unknown }).code;
+        const killed = (error as { killed?: unknown }).killed;
+        return {
+            ...(typeof code === 'string' || typeof code === 'number' ? { code } : {}),
+            killed: killed === true,
+        };
+    } catch (_error) {
+        return null;
+    }
+}
+
+function classifyProcessErrorSnapshot(snapshot: ProcessErrorSnapshot | null): TmuxCommandFailureCategory {
+    if (!snapshot) {
+        return 'unsupported';
+    }
+    if (snapshot.code === 'ENOENT') {
         return 'not-found';
     }
-    if (error.code === 'EACCES' || error.code === 'EPERM') {
+    if (snapshot.code === 'EACCES' || snapshot.code === 'EPERM') {
         return 'permission-denied';
     }
-    if (error.killed || error.code === 'ETIMEDOUT') {
+    if (snapshot.killed || snapshot.code === 'ETIMEDOUT') {
         return 'timeout';
     }
     return 'unsupported';
 }
 
 function classifyUnknownRunnerError(error: unknown): TmuxCommandFailureCategory {
-    if (error && typeof error === 'object') {
-        return classifyProcessError(error as { code?: string | number; killed?: boolean });
-    }
-    return 'unsupported';
+    return classifyProcessErrorSnapshot(snapshotProcessError(error));
 }
 
 function unavailable(category: TmuxUnavailableCategory): TmuxAvailability {
