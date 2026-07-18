@@ -9,7 +9,33 @@ export interface AiSessionTerminalEntry<TTerminal = unknown> {
     terminal: TTerminal;
     markerPath: string;
     runStartedAtMs: number;
+    cwd?: string;
     released?: boolean;
+}
+
+export type AiSessionTabId = 'active' | 'sessions';
+export type ActiveAiSessionStatus = 'starting' | 'running' | 'focused' | 'needsAttention';
+
+export interface AiSessionActiveTerminalRuntime {
+    provider: AiSessionProviderId;
+    sessionId: string;
+    cwd?: string;
+    runStartedAtMs: number;
+}
+
+export interface ActiveAiSessionViewModel {
+    key: string;
+    provider: AiSessionProviderId;
+    sessionId?: string;
+    name: string;
+    status: ActiveAiSessionStatus;
+    focused: boolean;
+    needsAttention: boolean;
+    pending: boolean;
+    updatedAt?: string;
+    createdAt?: string;
+    pinned?: boolean;
+    attentionEventId?: string;
 }
 
 export interface AiSessionReadResult {
@@ -41,6 +67,7 @@ export interface AiSessionService {
 export interface AiSessionProviderDefinition {
     id: AiSessionProviderId;
     label: string;
+    commandName: string;
     terminalNamePrefix: string;
     terminalEnvKey: string;
     markerDirName: string;
@@ -70,6 +97,8 @@ export interface AiSessionViewModel {
     cwd?: string;
     workDir?: string;
     pinned?: boolean;
+    active?: boolean;
+    focused?: boolean;
 }
 
 export interface OpenProjectAiSessionViewModel {
@@ -83,6 +112,10 @@ export interface OpenProjectAiSessionViewModel {
     searchText?: string;
     aiSessionCount?: number;
     attentionCount?: number;
+    defaultTab: AiSessionTabId;
+    activeSessions: ActiveAiSessionViewModel[];
+    activeSessionCount: number;
+    activeAttentionCount: number;
     sessionSectionHtml?: string;
 }
 

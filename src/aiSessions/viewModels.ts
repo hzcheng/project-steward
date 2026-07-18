@@ -24,6 +24,7 @@ const DEFAULT_VIEW_MODEL_CACHE_MAX_ENTRIES = 500;
 
 export function buildOpenProjectAiSessionViewModel(input: BuildOpenProjectAiSessionViewModelInput): OpenProjectAiSessionViewModel {
     const { project, providers } = input;
+    const activeSessions = (project.activeAiSessions || []).map(session => ({ ...session }));
     let sessionsByProvider: Partial<Record<AiSessionProviderId, AiSessionViewModel[]>> = {};
     let summaries = providers.map(provider => {
         let providerId = provider.id;
@@ -55,6 +56,10 @@ export function buildOpenProjectAiSessionViewModel(input: BuildOpenProjectAiSess
         attentionCount: project.aiSessionAttentionCount ?? providers.reduce((count, provider) => {
             return count + (project[provider.projectSessionsKey] || []).filter((session: CodexSession) => session.attention?.unread).length;
         }, 0),
+        defaultTab: project.activeAiSessionTab || (activeSessions.length ? 'active' : 'sessions'),
+        activeSessions,
+        activeSessionCount: activeSessions.length,
+        activeAttentionCount: activeSessions.filter(session => session.needsAttention).length,
         sessionSectionHtml: input.renderSessionSection(project),
     };
 }

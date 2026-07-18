@@ -17,6 +17,7 @@ export const AI_SESSION_PROVIDER_DEFINITIONS: Record<AiSessionProviderId, AiSess
     codex: {
         id: 'codex',
         label: 'Codex',
+        commandName: 'codex',
         terminalNamePrefix: 'Codex',
         terminalEnvKey: 'PROJECT_STEWARD_CODEX_SESSION_ID',
         markerDirName: 'codex-session-terminals',
@@ -29,6 +30,7 @@ export const AI_SESSION_PROVIDER_DEFINITIONS: Record<AiSessionProviderId, AiSess
     kimi: {
         id: 'kimi',
         label: 'Kimi',
+        commandName: 'kimi',
         terminalNamePrefix: 'Kimi',
         terminalEnvKey: 'PROJECT_STEWARD_KIMI_SESSION_ID',
         markerDirName: 'kimi-session-terminals',
@@ -41,6 +43,7 @@ export const AI_SESSION_PROVIDER_DEFINITIONS: Record<AiSessionProviderId, AiSess
     claude: {
         id: 'claude',
         label: 'Claude',
+        commandName: 'claude',
         terminalNamePrefix: 'Claude',
         terminalEnvKey: 'PROJECT_STEWARD_CLAUDE_SESSION_ID',
         markerDirName: 'claude-session-terminals',

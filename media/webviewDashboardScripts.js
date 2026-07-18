@@ -136,6 +136,12 @@ function renderDashboardSearchResults(container, sections) {
                 button.dataset.provider = String(item.provider || '');
                 button.dataset.sessionId = String(item.sessionId || '');
                 metadata.textContent = [item.projectName, item.provider].filter(Boolean).join(' · ');
+                if (item.active === true) {
+                    var activeBadge = document.createElement('span');
+                    activeBadge.className = 'dashboard-search-result-status active';
+                    activeBadge.textContent = 'Active';
+                    metadata.appendChild(activeBadge);
+                }
             } else if (section.type === 'open-project') {
                 button.dataset.searchAction = item.action === 'open-current'
                     ? 'show-current-project'

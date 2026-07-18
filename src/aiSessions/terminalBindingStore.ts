@@ -33,6 +33,7 @@ export interface BoundAiSessionTerminalBinding extends AiSessionTerminalBindingB
     state: 'bound';
     sessionId: string;
     runStartedAtMs: number;
+    cwd?: string;
 }
 
 export interface ReleasedAiSessionTerminalBinding extends AiSessionTerminalBindingBase {
@@ -197,6 +198,12 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         if (!isBoundedString(record.sessionId, MAX_ID_LENGTH) || !isFiniteNonNegative(record.runStartedAtMs)) {
             return null;
         }
+        const cwd = record.cwd === undefined
+            ? undefined
+            : isBoundedString(record.cwd, MAX_PATH_LENGTH) ? record.cwd : null;
+        if (cwd === null) {
+            return null;
+        }
         return {
             version: 2,
             state: 'bound',
@@ -204,6 +211,7 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
             sessionId: record.sessionId,
             markerPath: record.markerPath,
             runStartedAtMs: record.runStartedAtMs,
+            ...(cwd ? { cwd } : {}),
             updatedAtMs: record.updatedAtMs,
         };
     }

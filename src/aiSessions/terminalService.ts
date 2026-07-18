@@ -11,7 +11,7 @@ import type {
 } from './activeTerminalHighlight';
 import AiSessionTerminalBindingStore from './terminalBindingStore';
 import { getAiSessionTerminalName } from './sessionPaths';
-import type { AiSessionProviderDefinition, AiSessionTerminalEntry } from './types';
+import type { AiSessionActiveTerminalRuntime, AiSessionProviderDefinition, AiSessionTerminalEntry } from './types';
 
 export interface AiSessionTerminalCreateOptions {
     name: string;
@@ -125,6 +125,7 @@ export default class AiSessionTerminalService {
                 sessionId,
                 markerPath: normalizedEntry.markerPath,
                 runStartedAtMs: normalizedEntry.runStartedAtMs,
+                ...(normalizedEntry.cwd ? { cwd: normalizedEntry.cwd } : {}),
             });
         }
     }
@@ -196,6 +197,42 @@ export default class AiSessionTerminalService {
         return [...this.pendingTerminals];
     }
 
+    hasPending(providerId: AiSessionProviderId, createdAt: string): boolean {
+        return this.getPendingTerminals().some(entry => {
+            return entry.provider === providerId && entry.createdAt === createdAt;
+        });
+    }
+
+    removePending(providerId: AiSessionProviderId, createdAt: string): void {
+        const removed = this.pendingTerminals.filter(entry => {
+            return entry.provider === providerId && entry.createdAt === createdAt;
+        });
+        this.pendingTerminals = this.pendingTerminals.filter(entry => {
+            return entry.provider !== providerId || entry.createdAt !== createdAt;
+        });
+        for (const entry of removed) {
+            this.deleteMarker(entry.markerPath);
+            this.bindingStore?.remove(entry.terminal.processId);
+        }
+    }
+
+    getActiveSessions(): AiSessionActiveTerminalRuntime[] {
+        let result: AiSessionActiveTerminalRuntime[] = [];
+        for (let providerId of this.getProviderIds()) {
+            for (let [sessionId, entry] of this.getTerminalMap(providerId)) {
+                if (!entry.released && !this.isComplete(entry)) {
+                    result.push({
+                        provider: providerId,
+                        sessionId,
+                        ...(entry.cwd ? { cwd: entry.cwd } : {}),
+                        runStartedAtMs: entry.runStartedAtMs,
+                    });
+                }
+            }
+        }
+        return result;
+    }
+
     findPendingTerminalForSession(
         providerId: AiSessionProviderId,
         sessionId: string,
@@ -256,6 +293,7 @@ export default class AiSessionTerminalService {
                     terminal,
                     markerPath: binding.markerPath,
                     runStartedAtMs: binding.runStartedAtMs,
+                    ...(binding.cwd ? { cwd: binding.cwd } : {}),
                 }, false);
                 return;
             }

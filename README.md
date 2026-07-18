@@ -59,7 +59,9 @@ Use the star on each project card to pin or unpin a project. Favorites appear in
 
 ### AI Sessions
 
-Open project cards can expand to show recent active Codex, Kimi, or Claude sessions related to that project. Use the provider selector on an open project card to switch between providers.
+Open a current-workspace project card to switch between `ACTIVE` and `SESSIONS`. `ACTIVE` collects every Codex, Kimi, and Claude session that is open in a live VS Code terminal. `SESSIONS` keeps the complete history for the selected provider, including sessions that are already active. Clicking an active session focuses its terminal; clicking an inactive history entry resumes it.
+
+Use `NEW` to choose Codex, Kimi, or Claude explicitly before Project Steward opens the terminal. Active sessions must be closed before they can be archived.
 
 Selecting a session opens a VS Code terminal and runs the matching resume command for that provider. Project Steward avoids opening duplicate terminals for the same session. If a matching terminal is still running, it focuses that terminal; if the prior session terminal has completed, it reuses the terminal and runs the resume command again.
 

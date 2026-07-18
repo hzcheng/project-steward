@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import type { TodoSearchCatalogItem } from './todos/types';
 import { StorageOption, VSCODE_REMOTE_PREFIX, WSL_DEFAULT_REGEX } from "./constants";
 import type { AiSessionAttentionReason } from './aiSessions/lifecycle';
+import type { ActiveAiSessionViewModel, AiSessionTabId } from './aiSessions/types';
 
 export class Group {
     id: string;
@@ -41,6 +42,8 @@ export class Project {
     activeAiSessionProvider?: AiSessionProviderId;
     aiSessionAttentionCount?: number;
     aiSessionAttentionEventIds?: string[];
+    activeAiSessions?: ActiveAiSessionViewModel[];
+    activeAiSessionTab?: AiSessionTabId;
     openProjectCardKind?: 'current' | 'projectNavigation';
     openProjectSourceInstanceId?: string;
     openProjectEnvironmentLabel?: string;
@@ -166,6 +169,8 @@ export interface CodexSession {
     workDir?: string;
     provider?: AiSessionProviderId;
     pinned?: boolean;
+    active?: boolean;
+    focused?: boolean;
     attention?: { eventId: string; reason: AiSessionAttentionReason; unread: boolean };
 }
 

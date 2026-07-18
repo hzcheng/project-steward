@@ -4,9 +4,25 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ## [Unreleased]
 
+## [2.1.1] 2026-07-18
+
+### Added
+
+-   Add project-card `ACTIVE` and `SESSIONS` tabs: `ACTIVE` aggregates live Codex, Kimi, and Claude terminals while `SESSIONS` keeps the complete selected-provider history.
+-   Add a shared New Session action that explicitly asks for Codex, Kimi, or Claude instead of inheriting the history provider filter.
+-   Add focused, attention, running, and starting states for Active Sessions, plus confirmed Terminal closing without removing history.
+
+### Changed
+
+-   Focus existing Active Session terminals without duplication, and move successfully resumed history Sessions into `ACTIVE`.
+-   Preserve per-project tab choice, provider, Manage state, expansion state, and independent scroll positions across incremental updates.
+-   Keep Active Sessions unavailable for single or batch archive until their Terminal is closed.
+
 ### Fixed
 
 -   Exclude non-interactive Codex `exec` runs from Dashboard session lists.
+-   Keep Active Session projection synchronized with Terminal close, pending creation, attention, focus, and Extension Host reload events.
+-   Preserve adaptive tab fallback when the final Active Session closes and prevent failed resumes from stealing the Active tab.
 
 ## [2.1.0] 2026-07-17
 

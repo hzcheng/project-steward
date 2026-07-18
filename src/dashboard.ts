@@ -1,5 +1,6 @@
 'use strict';
 import * as vscode from 'vscode';
+import { existsSync } from 'fs';
 import { Project, GroupOrder, ProjectRemoteType, StewardInfos, ProjectOpenType, ReopenStewardReason, CodexSession, AiSessionProviderId, isAiSessionProviderId } from './models';
 import { getAiSessionsDiv, getProjectSearchText, getProjectsPanelContent, getStewardContent } from './webview/webviewContent';
 import { USER_CANCELED, RelevantExtensions, REOPEN_KEY, WSL_DEFAULT_REGEX, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY } from './constants';
@@ -32,7 +33,9 @@ import AttentionBridgeClient from './aiSessions/attentionBridgeClient';
 import { getAttentionProjectKey } from './aiSessions/attentionProject';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { getAiSessionKey } from './aiSessions/sessionHelpers';
-import { createAiSessionProviderRegistry, getAiSessionProviderLabel } from './aiSessions/providers';
+import { AI_SESSION_PROVIDER_DEFINITIONS, createAiSessionProviderRegistry, getAiSessionProviderLabel } from './aiSessions/providers';
+import { applyAiSessionRuntimeProjection } from './aiSessions/activeSessionProjection';
+import { isCommandAvailableOnPath } from './aiSessions/providerAvailability';
 import { getOpenProjectAiSessionKey, getOpenProjectTerminalCwd as getOpenProjectAiSessionTerminalCwd, normalizeAiSessionProjectPath } from './aiSessions/projectCandidates';
 import { getAiSessionComparableCwd as getProviderAiSessionComparableCwd, getAiSessionTerminalCwd as getProviderAiSessionTerminalCwd, getAiSessionTerminalName as getProviderAiSessionTerminalName, getProjectAiSessions as getProviderProjectAiSessions } from './aiSessions/sessionPaths';
 import { getAiSessionIdsForCwd } from './aiSessions/pendingTerminals';
@@ -46,8 +49,10 @@ import type { AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessio
 import { AiSessionDashboardController } from './aiSessions/dashboardController';
 import { AiSessionCommandController } from './aiSessions/commandController';
 import { AiSessionCreationController } from './aiSessions/creationController';
+import { AI_SESSION_CREATION_BIND_TIMEOUT_MS } from './aiSessions/creationController';
 import { AiSessionArchiveController } from './aiSessions/archiveController';
 import { AiSessionResumeController } from './aiSessions/resumeController';
+import { AiSessionTerminalCommandController } from './aiSessions/terminalCommandController';
 import { AiSessionAttentionController } from './aiSessions/attentionController';
 import { AiSessionProjectHydrationController } from './aiSessions/projectHydrationController';
 import { getLastPartOfPath, isUriString, parsePathAsUri } from './projects/openProjectService';
@@ -311,15 +316,60 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         showInformationMessage: message => vscode.window.showInformationMessage(message),
         refresh: refreshAiSessionViewsIncrementally,
     });
+    const pickAiSessionProvider = async (): Promise<AiSessionProviderId | undefined> => {
+        while (true) {
+            const picks = getRegisteredAiSessionProviders().map(providerDefinition => {
+                const available = isCommandAvailableOnPath(
+                    providerDefinition.commandName,
+                    process.env,
+                    process.platform,
+                    existsSync
+                );
+                return {
+                    label: available ? providerDefinition.label : `$(circle-slash) ${providerDefinition.label}`,
+                    description: available
+                        ? `Open a new ${providerDefinition.label} session`
+                        : `Unavailable — ${providerDefinition.commandName} was not found on PATH`,
+                    providerId: providerDefinition.id,
+                    available,
+                };
+            });
+            const quickPickOptions: vscode.QuickPickOptions = {
+                placeHolder: 'Select an AI provider',
+                ignoreFocusOut: true,
+            };
+            (quickPickOptions as vscode.QuickPickOptions & { title?: string }).title = 'Select an AI provider';
+            const selected = await vscode.window.showQuickPick(picks, quickPickOptions);
+            if (!selected) {
+                return undefined;
+            }
+            if (selected.available) {
+                return selected.providerId;
+            }
+            await vscode.window.showWarningMessage(selected.description);
+        }
+    };
     const aiSessionCreationController = new AiSessionCreationController({
         isProviderId: isAiSessionProviderId,
         getOpenProjects,
+        pickProvider: pickAiSessionProvider,
         getProviderLabel: getAiSessionProviderLabel,
         getProvider: getRegisteredAiSessionProvider,
         getTerminalCwd: getOpenProjectAiSessionTerminalCwd,
         getUsableTerminalCwd,
         showInputBox: options => vscode.window.showInputBox(options),
-        showWarningMessage: message => vscode.window.showWarningMessage(message),
+        showActiveTab: projectId => provider.postMessage({
+            type: 'ai-session-tab-selection-requested',
+            projectId,
+            tab: 'active',
+        }),
+        announceStatus: (projectId, message) => provider.postMessage({
+            type: 'ai-session-status-announcement',
+            projectId,
+            message,
+        }),
+        showWarningMessage: (message, ...items) => vscode.window.showWarningMessage(message, ...items),
+        refresh: refreshAiSessionViewsIncrementally,
         createTerminal: options => aiSessionTerminalService.createTerminal({
             ...options,
             logError,
@@ -341,6 +391,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ),
         sendNewSessionCommand: (providerId, terminal, cwd, title, markerPath) => aiSessionTerminalService.sendNewSessionCommand(providerId, terminal, cwd, title, markerPath),
         scheduleNewSessionRefresh: scheduleNewAiSessionRefresh,
+        isPending: (providerId, createdAt) => aiSessionTerminalService.hasPending(providerId, createdAt),
+        removePending: (providerId, createdAt) => aiSessionTerminalService.removePending(providerId, createdAt),
+        normalizeProjectPath: normalizeAiSessionProjectPath,
+        setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+        clearTimeout: handle => clearTimeout(handle as NodeJS.Timeout),
+        bindingTimeoutMs: AI_SESSION_CREATION_BIND_TIMEOUT_MS,
+        nowMs: () => Date.now(),
     });
     const aiSessionArchiveController = new AiSessionArchiveController<AiSessionTerminalEntry<vscode.Terminal>>({
         isProviderId: isAiSessionProviderId,
@@ -365,6 +422,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         syncActiveTerminal: () => activeAiSessionTerminalHighlighter.sync(),
         logUnexpectedError: (operation, error, failedSessionId) => logError(`Batch AI session archive failed during ${operation}${failedSessionId ? ` (${failedSessionId})` : ''}.`, error),
     });
+    const aiSessionTerminalCommandController = new AiSessionTerminalCommandController<vscode.Terminal>({
+        isProviderId: isAiSessionProviderId,
+        getOpenProjects,
+        getProjectSessions: (project, providerId) => getProviderProjectAiSessions(project, providerId, aiSessionProviders),
+        getActiveTerminal: (providerId, sessionId) => aiSessionTerminalService.getActiveById(providerId, sessionId),
+        getPendingTerminals: () => aiSessionTerminalService.getPendingTerminals(),
+        getProjectCwd: getOpenProjectAiSessionTerminalCwd,
+        normalizePath: normalizeAiSessionProjectPath,
+        confirmClose: providerLabel => vscode.window.showWarningMessage(
+            `Closing this ${providerLabel} terminal may interrupt a running AI task.`,
+            { modal: true },
+            'Close Terminal'
+        ),
+        showErrorMessage: message => vscode.window.showErrorMessage(message),
+        getProviderLabel: getAiSessionProviderLabel,
+        refresh: refreshAiSessionViewsIncrementally,
+    });
     const aiSessionResumeController = new AiSessionResumeController<vscode.Terminal, TerminalEntry>({
         getOpenProjects,
         getProvider: getRegisteredAiSessionProvider,
@@ -382,9 +456,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         findPendingTerminalForSession: (providerId, sessionId, cwd, updatedAt) => aiSessionTerminalService.findPendingTerminalForSession(providerId, sessionId, cwd, updatedAt),
         createTerminal: options => aiSessionTerminalService.createTerminal(options),
         track: (providerId, sessionId, entry) => aiSessionTerminalService.track(providerId, sessionId, entry),
+        claimPendingTerminal: terminal => aiSessionTerminalService.removePendingForTerminal(terminal),
         sendResumeCommand: (providerId, terminal, sessionId, cwd, markerPath) => aiSessionTerminalService.sendResumeCommand(providerId, terminal, sessionId, cwd, markerPath),
         showWarningMessage: message => vscode.window.showWarningMessage(message),
         syncActiveTerminal: () => activeAiSessionTerminalHighlighter.sync(),
+        refresh: refreshAiSessionViewsIncrementally,
+        showActiveTab: projectId => provider.postMessage({
+            type: 'ai-session-tab-selection-requested',
+            projectId,
+            tab: 'active',
+        }),
         logError,
         nowMs: () => Date.now(),
     });
@@ -669,7 +750,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 await aiSessionCommandController.selectProvider(e.projectId as string, e.provider as string);
             },
             'create-ai-session': async e => {
-                await aiSessionCreationController.createSession(e.projectId as string, e.provider as string);
+                await aiSessionCreationController.createSession(e.projectId as string);
+            },
+            'focus-ai-session-terminal': async e => {
+                await aiSessionTerminalCommandController.focusActive(
+                    e.projectId as string,
+                    e.provider as string,
+                    e.sessionId as string
+                );
+            },
+            'focus-pending-ai-session': async e => {
+                await aiSessionTerminalCommandController.focusPending(
+                    e.projectId as string,
+                    e.provider as string,
+                    e.createdAt as string
+                );
+            },
+            'close-ai-session-terminal': async e => {
+                await aiSessionTerminalCommandController.closeTerminal({
+                    projectId: e.projectId as string,
+                    providerId: e.provider as string,
+                    sessionId: e.sessionId as string,
+                    pendingCreatedAt: e.pendingCreatedAt as string,
+                });
             },
             'toggle-ai-session-pin': async e => {
                 await aiSessionCommandController.togglePin(e.provider as string, e.sessionId as string);
@@ -835,6 +938,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         publish: identity => postActiveAiSessionTerminalChanged(identity),
         onComplete: resolution => {
             settleCompletedAiSessionTerminal(resolution);
+            refreshAiSessionViewsIncrementally();
             void aiSessionAttentionController.evaluate();
         },
         setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
@@ -846,27 +950,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
         }
         completedSessions.forEach(settleCompletedAiSessionTerminal);
+        refreshAiSessionViewsIncrementally();
         activeAiSessionTerminalHighlighter.sync();
         void aiSessionAttentionController.evaluate();
     }, 1_000);
+
+    aiSessionTerminalService.getPendingTerminals().forEach(pending => {
+        aiSessionCreationController.watchPending(pending);
+    });
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(SidebarStewardViewProvider.viewType, provider));
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTerminal(() => {
             activeAiSessionTerminalHighlighter.sync();
+            refreshAiSessionViewsIncrementally();
             void aiSessionAttentionController.evaluate();
         }));
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(terminal => {
+            const hadPendingTerminal = aiSessionTerminalService.getPendingTerminals()
+                .some(pending => pending.terminal === terminal);
             const closedSessions = aiSessionTerminalService.handleClosedTerminal(terminal);
             closedSessions.forEach(acknowledgeAiSessionAttention);
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
-            if (closedSessions.length) {
+            if (closedSessions.length || hadPendingTerminal) {
+                refreshAiSessionViewsIncrementally();
                 void aiSessionAttentionController.evaluate();
             }
         }));
     context.subscriptions.push(activeAiSessionTerminalHighlighter);
+    context.subscriptions.push(aiSessionCreationController);
     context.subscriptions.push(openProjectBridgeClient);
     context.subscriptions.push(aiSessionAttentionBridgeClient);
     context.subscriptions.push({
@@ -1082,7 +1196,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function getOpenProjects(): Project[] {
-        return aiSessionProjectHydrationController.hydrate(openProjectWorkspaceController.getRawOpenProjects());
+        const hydrated = aiSessionProjectHydrationController.hydrate(openProjectWorkspaceController.getRawOpenProjects());
+        return applyAiSessionRuntimeProjection({
+            projects: hydrated,
+            providers: AI_SESSION_PROVIDER_DEFINITIONS,
+            activeTerminals: aiSessionTerminalService.getActiveSessions(),
+            pendingTerminals: aiSessionTerminalService.getPendingTerminals(),
+            focusedIdentity: activeAiSessionTerminalHighlighter.getIdentity(),
+            getProjectCwd: getOpenProjectAiSessionTerminalCwd,
+            normalizePath: normalizeAiSessionProjectPath,
+        });
     }
 
     function getOpenProjectCards(): Project[] {

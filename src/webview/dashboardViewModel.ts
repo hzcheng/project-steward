@@ -15,6 +15,7 @@ export interface DashboardSearchSessionItem {
     sessionId: string;
     name: string;
     updatedAt?: string;
+    active?: boolean;
 }
 
 export interface DashboardSearchProjectItem {
@@ -84,6 +85,7 @@ export function buildDashboardSearchCatalog(
             sessionId: session.id,
             name: session.name || session.id,
             updatedAt: session.updatedAt,
+            active: session.active === true,
         })));
     });
 

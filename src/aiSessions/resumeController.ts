@@ -39,6 +39,7 @@ export interface AiSessionResumeTrackEntry<TTerminal extends AiSessionResumeTerm
     terminal: TTerminal;
     markerPath: string;
     runStartedAtMs: number;
+    cwd?: string;
 }
 
 export interface AiSessionResumeControllerOptions<
@@ -72,6 +73,7 @@ export interface AiSessionResumeControllerOptions<
         sessionId: string,
         entry: AiSessionResumeTrackEntry<TTerminal>
     ) => void;
+    claimPendingTerminal: (terminal: TTerminal) => void;
     sendResumeCommand: (
         providerId: AiSessionProviderId,
         terminal: TTerminal,
@@ -81,6 +83,8 @@ export interface AiSessionResumeControllerOptions<
     ) => Thenable<void> | Promise<void>;
     showWarningMessage: (message: string) => unknown;
     syncActiveTerminal: () => void;
+    refresh: () => void;
+    showActiveTab: (projectId: string) => unknown;
     logError: (message: string, error: unknown) => void;
     nowMs: () => number;
 }
@@ -117,6 +121,8 @@ export class AiSessionResumeController<
         const existingTerminal = this.options.getExistingTerminal(providerId, session);
         if (existingTerminal && !this.options.isTerminalComplete(existingTerminal)) {
             existingTerminal.terminal.show();
+            await this.options.showActiveTab(projectId);
+            this.options.refresh();
             return;
         }
 
@@ -126,6 +132,7 @@ export class AiSessionResumeController<
 
         const terminalName = this.options.getTerminalName(providerId, session);
         let terminal = existingTerminal?.terminal;
+        let usedPendingTerminal = false;
         const terminalEnv = { [sessionProvider.terminalEnvKey]: session.id };
         let markerPath = existingTerminal?.markerPath || this.options.getMarkerPath(providerId, session.id);
 
@@ -138,6 +145,7 @@ export class AiSessionResumeController<
                 if (pendingTerminal) {
                     terminal = pendingTerminal.terminal;
                     markerPath = pendingTerminal.markerPath;
+                    usedPendingTerminal = true;
                 } else {
                     const createResult = this.options.createTerminal({
                         name: terminalName,
@@ -154,10 +162,22 @@ export class AiSessionResumeController<
                 }
             }
 
-            this.options.track(providerId, session.id, { terminal, markerPath, runStartedAtMs: this.options.nowMs() });
             terminal.show();
             await this.options.sendResumeCommand(providerId, terminal, session.id, cwd, markerPath);
+            if (usedPendingTerminal) {
+                this.options.claimPendingTerminal(terminal);
+            }
+            this.options.track(providerId, session.id, {
+                terminal,
+                markerPath,
+                runStartedAtMs: this.options.nowMs(),
+                cwd: this.options.normalizeProjectPath(
+                    this.options.getComparableCwd(providerId, session)
+                ) || undefined,
+            });
             this.options.syncActiveTerminal();
+            await this.options.showActiveTab(projectId);
+            this.options.refresh();
         } finally {
             this.options.finishResume(providerId, session.id);
         }

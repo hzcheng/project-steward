@@ -65,6 +65,10 @@ export default class ActiveAiSessionTerminalHighlighter<TTerminal, TEntry> {
         this.sync(true);
     }
 
+    getIdentity(): ActiveAiSessionTerminalIdentity | null {
+        return this.currentIdentity ? { ...this.currentIdentity } : null;
+    }
+
     setVisible(visible: boolean) {
         if (visible) {
             this.sync(true);
