@@ -5,6 +5,7 @@ const path = require('path');
 const launchSpec = require('../out/aiSessions/launchSpec');
 const commandBuilders = require('../out/aiSessions/commandBuilders');
 const runtimeConfiguration = require('../out/aiSessions/runtimeConfiguration');
+const tmuxLayout = require('../out/aiSessions/tmuxLayout');
 
 function config(values) {
     return { get: (key, fallback) => Object.prototype.hasOwnProperty.call(values, key) ? values[key] : fallback };
@@ -152,6 +153,98 @@ function runLaunchSpecChecks() {
     );
 }
 
+function runTmuxLayoutChecks() {
+    const identity = { provider: 'codex', projectKey: 'project-key', cwd: '/work/app', sessionId: 'session-1' };
+    const project = new tmuxLayout.ProjectTmuxLayout().getLocator(identity);
+    const session = new tmuxLayout.SessionTmuxLayout().getLocator(identity);
+    assert.deepStrictEqual(project, {
+        layout: 'project',
+        sessionName: 'project-steward-p-857b61585ca6ee92',
+        windowName: 'ai-codex-391f442b59834258',
+    });
+    assert.deepStrictEqual(session, {
+        layout: 'session',
+        sessionName: 'project-steward-s-codex-391f442b59834258',
+    });
+    assert.strictEqual(new tmuxLayout.ProjectTmuxLayout().getLocator(identity).sessionName, project.sessionName);
+    const pendingIdentity = { ...identity, sessionId: undefined, pendingId: 'p1' };
+    assert.deepStrictEqual(new tmuxLayout.ProjectTmuxLayout().getPendingLocator(pendingIdentity), {
+        layout: 'project',
+        sessionName: 'project-steward-p-857b61585ca6ee92',
+        windowName: 'pending-codex-20634e8befb9ebc9',
+    });
+    assert.deepStrictEqual(new tmuxLayout.SessionTmuxLayout().getPendingLocator(pendingIdentity), {
+        layout: 'session',
+        sessionName: 'project-steward-pending-codex-20634e8befb9ebc9',
+    });
+    assert.deepStrictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '1', layout: 'project', projectKey: 'project-key', provider: 'codex', sessionId: 'session-1'
+    }), {
+        version: 1, layout: 'project', projectKey: 'project-key', provider: 'codex', sessionId: 'session-1'
+    });
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({ managed: '1', version: '99' }), null);
+
+    assert.deepStrictEqual(tmuxLayout.TMUX_METADATA_OPTIONS, {
+        managed: '@project-steward-managed',
+        version: '@project-steward-version',
+        layout: '@project-steward-layout',
+        projectKey: '@project-steward-project-key',
+        provider: '@project-steward-provider',
+        sessionId: '@project-steward-session-id',
+        pendingId: '@project-steward-pending-id',
+        createdAt: '@project-steward-created-at',
+        marker: '@project-steward-marker',
+    });
+    assert.strictEqual(tmuxLayout.getTmuxRuntimeKey(identity), '[1,"codex","project-key","session","session-1"]');
+    assert.strictEqual(tmuxLayout.getTmuxRuntimeKey({ ...identity, sessionId: undefined, pendingId: 'p1' }), '[1,"codex","project-key","pending","p1"]');
+    assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, sessionId: '' }));
+    assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, provider: 'other' }));
+    assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, projectKey: 'x'.repeat(513) }));
+    assert.throws(() => new tmuxLayout.SessionTmuxLayout().getLocator({ ...identity, sessionId: 'session\u001f1' }));
+    assert.throws(() => new tmuxLayout.SessionTmuxLayout().getPendingLocator({ ...identity, sessionId: undefined, pendingId: '' }));
+    assert.throws(() => tmuxLayout.getTmuxRuntimeKey({ ...identity, sessionId: undefined, pendingId: undefined }));
+    assert.throws(() => tmuxLayout.getTmuxRuntimeKey({ ...identity, pendingId: 'p1' }));
+    assert.deepStrictEqual(new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, pendingId: 'ignored' }), project);
+    assert.deepStrictEqual(new tmuxLayout.SessionTmuxLayout().getPendingLocator({ ...pendingIdentity, sessionId: 'ignored' }), {
+        layout: 'session', sessionName: 'project-steward-pending-codex-20634e8befb9ebc9'
+    });
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '1', layout: 'other', projectKey: 'project-key', provider: 'codex', sessionId: 'session-1'
+    }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'other', sessionId: 'session-1'
+    }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex', sessionId: 'session\n1'
+    }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex'
+    }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex',
+        sessionId: 'session-1', pendingId: 'p1'
+    }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex',
+        pendingId: 'p1', createdAt: '2026-07-18T01:02:03.000Z', marker: '/tmp/p1.done'
+    }).pendingId, 'p1');
+    for (const invalidField of [
+        { projectKey: 'x'.repeat(513) },
+        { sessionId: 'x'.repeat(513) },
+        { createdAt: 'x'.repeat(201) },
+        { createdAt: 'not-a-date' },
+        { marker: 'x'.repeat(4097) },
+        { marker: '' },
+        { marker: '/tmp/control\u007f' },
+    ]) {
+        assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+            managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex',
+            sessionId: 'session-1', ...invalidField
+        }), null);
+    }
+}
+
 runRuntimeConfigurationChecks();
 runLaunchSpecChecks();
+runTmuxLayoutChecks();
 console.log('AI session tmux checks passed.');

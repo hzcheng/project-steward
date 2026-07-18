@@ -20,6 +20,17 @@ export interface AiSessionTmuxLocator {
     windowName?: string;
 }
 
+export interface AiSessionManagedTmuxMetadata {
+    version: 1;
+    layout: AiSessionTmuxLayout;
+    projectKey: string;
+    provider: AiSessionProviderId;
+    sessionId?: string;
+    pendingId?: string;
+    createdAt?: string;
+    marker?: string;
+}
+
 export interface AiSessionRuntimeSnapshot<TTerminal = unknown> {
     identity: AiSessionRuntimeIdentity;
     backend: AiSessionRuntimeBackendId;
