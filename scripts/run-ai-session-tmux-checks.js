@@ -9,6 +9,7 @@ const launchSpec = require('../out/aiSessions/launchSpec');
 const commandBuilders = require('../out/aiSessions/commandBuilders');
 const runtimeConfiguration = require('../out/aiSessions/runtimeConfiguration');
 const tmuxLayout = require('../out/aiSessions/tmuxLayout');
+const tmuxClientModule = require('../out/aiSessions/tmuxClient');
 const runtimeStoreModule = require('../out/aiSessions/tmuxRuntimeBindingStore');
 const attachStoreModule = require('../out/aiSessions/tmuxAttachBindingStore');
 const creationLock = require('../out/aiSessions/tmuxCreationLock');
@@ -268,6 +269,273 @@ function runTmuxLayoutChecks() {
             sessionId: 'session-1', ...invalidField
         }), null);
     }
+}
+
+async function runTmuxClientChecks() {
+    const requiredCommands = [
+        'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
+        'select-window', 'attach-session',
+    ];
+    const calls = [];
+    const runner = {
+        run: async (file, args) => {
+            calls.push({ file, args });
+            if (args[0] === '-V') {
+                return { exitCode: 0, stdout: 'tmux 3.2a\n', stderr: '' };
+            }
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: `${requiredCommands.join('\n')}\n`, stderr: '' };
+            }
+            if (args[0] === 'list-windows') {
+                return { exitCode: 1, stdout: '', stderr: 'no server running on /tmp/tmux' };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    };
+    const client = new tmuxClientModule.TmuxClient('/opt/bin/tmux', runner);
+    assert.deepStrictEqual(await client.checkAvailability(), { available: true, version: '3.2a' });
+    assert.deepStrictEqual(await client.checkAvailability(), { available: true, version: '3.2a' });
+    assert.strictEqual(calls.filter(call => call.args[0] === '-V').length, 1);
+    assert.deepStrictEqual(await client.listWindows(), []);
+    await client.selectWindow({
+        layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-b',
+    });
+    assert.deepStrictEqual(calls[calls.length - 1], {
+        file: '/opt/bin/tmux', args: ['select-window', '-t', 'project-steward-p-a:ai-codex-b'],
+    });
+    assert.ok(calls.every(call => Array.isArray(call.args)));
+
+    const metadataCalls = [];
+    const optionValues = {
+        'session-a|managed': '1',
+        'session-a|version': '1',
+        'session-a|layout': 'project',
+        'session-a|projectKey': 'project-key',
+        'session-a:window-a|provider': 'codex',
+        'session-a:window-a|sessionId': 'session-id',
+        'session-a:window-a|marker': '/tmp/done marker',
+    };
+    const metadataRunner = {
+        run: async (file, args) => {
+            metadataCalls.push({ file, args });
+            if (args[0] === '-V') {
+                return { exitCode: 0, stdout: 'tmux 3.4\n', stderr: '' };
+            }
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.map(name => `${name} [-flags]`).join('\n'), stderr: '' };
+            }
+            if (args[0] === 'list-windows') {
+                return {
+                    exitCode: 0,
+                    stdout: 'session-a\u001fwindow-a\u001f@12\u001f1\n',
+                    stderr: '',
+                };
+            }
+            if (args[0] === 'show-options') {
+                const target = args[args.indexOf('-t') + 1];
+                const optionName = args[args.length - 1];
+                const key = Object.keys(tmuxLayout.TMUX_METADATA_OPTIONS)
+                    .find(name => tmuxLayout.TMUX_METADATA_OPTIONS[name] === optionName);
+                const value = optionValues[`${target}|${key}`];
+                return { exitCode: 0, stdout: value === undefined ? '' : `${value}\n`, stderr: '' };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    };
+    const metadataClient = new tmuxClientModule.TmuxClient('  /opt/tmux tools/tmux  ', metadataRunner);
+    assert.strictEqual(metadataClient.getExecutablePath(), '/opt/tmux tools/tmux');
+    assert.deepStrictEqual(await metadataClient.listWindows(), [{
+        sessionName: 'session-a',
+        windowName: 'window-a',
+        windowId: '@12',
+        active: true,
+        metadata: {
+            managed: '1',
+            version: '1',
+            layout: 'project',
+            projectKey: 'project-key',
+            provider: 'codex',
+            sessionId: 'session-id',
+            marker: '/tmp/done marker',
+        },
+    }]);
+    assert.deepStrictEqual(await metadataClient.getSessionOptions('session-a'), {
+        managed: '1', version: '1', layout: 'project', projectKey: 'project-key',
+    });
+    assert.deepStrictEqual(await metadataClient.getWindowOptions('session-a', 'window-a'), {
+        provider: 'codex', sessionId: 'session-id', marker: '/tmp/done marker',
+    });
+    await metadataClient.setSessionOptions('session-a', { managed: '1', version: '1' });
+    await metadataClient.setWindowOptions('session-a', 'window-a', {
+        provider: 'codex', sessionId: 'session-id',
+    });
+    assert.ok(metadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
+        'set-option', '-t', 'session-a', '@project-steward-managed', '1',
+    ])));
+    assert.ok(metadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
+        'set-option', '-w', '-t', 'session-a:window-a', '@project-steward-session-id', 'session-id',
+    ])));
+    await assert.rejects(
+        metadataClient.setSessionOptions('session-a', { status: 'global-option-not-allowed' }),
+        /metadata option/
+    );
+
+    await metadataClient.createSession('s', 'w', '/work/space here', 'exec secret-tool --token credential');
+    await metadataClient.createWindow('s', 'w2', '/work/space here', 'exec secret-tool --token credential');
+    await metadataClient.renameSession('s', 's2');
+    await metadataClient.renameWindow('s2', 'w2', 'w3');
+    await metadataClient.selectWindow({ layout: 'session', sessionName: 's2' });
+    assert.deepStrictEqual(metadataCalls.slice(-5).map(call => call.args), [
+        ['new-session', '-d', '-s', 's', '-n', 'w', '-c', '/work/space here', 'exec secret-tool --token credential'],
+        ['new-window', '-d', '-t', 's', '-n', 'w2', '-c', '/work/space here', 'exec secret-tool --token credential'],
+        ['rename-session', '-t', 's', 's2'],
+        ['rename-window', '-t', 's2:w2', 'w3'],
+        ['select-window', '-t', 's2'],
+    ]);
+
+    const hasSessionRunner = {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            if (args[0] === 'has-session') {
+                return { exitCode: 1, stdout: '', stderr: "can't find session: absent" };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    };
+    assert.strictEqual(await new tmuxClientModule.TmuxClient('tmux', hasSessionRunner).hasSession('absent'), false);
+
+    const pathCalls = [];
+    const pathRunner = {
+        run: async (file, args) => {
+            pathCalls.push({ file, args });
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    };
+    const pathClient = new tmuxClientModule.TmuxClient('tmux', pathRunner);
+    await pathClient.checkAvailability();
+    pathClient.setExecutablePath('  /new path/tmux  ');
+    assert.strictEqual(pathClient.getExecutablePath(), '/new path/tmux');
+    await pathClient.hasSession('s');
+    assert.strictEqual(pathCalls.filter(call => call.args[0] === '-V').length, 2);
+    assert.ok(pathCalls.slice(-3).every(call => call.file === '/new path/tmux'));
+    pathClient.setExecutablePath('/new path/tmux');
+    await pathClient.checkAvailability();
+    assert.strictEqual(pathCalls.filter(call => call.args[0] === '-V').length, 3);
+    assert.throws(() => pathClient.setExecutablePath('   '), /executable/);
+
+    const missingCapabilityClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => args[0] === '-V'
+            ? { exitCode: 0, stdout: 'tmux 3.2\n', stderr: '' }
+            : { exitCode: 0, stdout: requiredCommands.filter(name => name !== 'attach-session').join('\n'), stderr: '' },
+    });
+    assert.deepStrictEqual(await missingCapabilityClient.checkAvailability(), {
+        available: false,
+        category: 'missing-capability',
+        message: 'The configured tmux does not provide all required commands.',
+    });
+
+    const invalidVersionClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async () => ({ exitCode: 0, stdout: 'tmux   \n', stderr: 'credential=never-report' }),
+    });
+    assert.deepStrictEqual(await invalidVersionClient.checkAvailability(), {
+        available: false,
+        category: 'invalid-version',
+        message: 'The configured tmux returned an unrecognized version.',
+    });
+    const unsafeVersionClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async () => ({
+            exitCode: 0,
+            stdout: 'tmux 3.3 token=credential\n',
+            stderr: '',
+        }),
+    });
+    assert.deepStrictEqual(await unsafeVersionClient.checkAvailability(), {
+        available: false,
+        category: 'invalid-version',
+        message: 'The configured tmux returned an unrecognized version.',
+    });
+
+    const secret = 'prompt=do-not-report token=credential';
+    const failingRunner = {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return { exitCode: 42, stdout: `stdout ${secret}`, stderr: `stderr ${secret}` };
+        },
+    };
+    const failingClient = new tmuxClientModule.TmuxClient('/secret/path/tmux', failingRunner);
+    await assert.rejects(
+        failingClient.createSession('secret-session', 'secret-window', '/secret/cwd', secret),
+        error => {
+            assert.ok(error instanceof tmuxClientModule.TmuxClientError);
+            assert.strictEqual(error.operation, 'create-session');
+            assert.strictEqual(error.category, 'nonzero-exit');
+            const publicError = `${error.message} ${JSON.stringify(error)}`;
+            for (const sensitive of [secret, '/secret/path/tmux', 'secret-session', 'secret-window', '/secret/cwd']) {
+                assert.strictEqual(publicError.includes(sensitive), false);
+            }
+            assert.strictEqual(publicError.includes('stdout'), false);
+            assert.strictEqual(publicError.includes('stderr'), false);
+            return true;
+        }
+    );
+
+    const notFoundClient = new tmuxClientModule.TmuxClient('/secret/missing-tmux', {
+        run: async () => {
+            const error = new Error(`spawn /secret/missing-tmux ENOENT ${secret}`);
+            error.code = 'ENOENT';
+            throw error;
+        },
+    });
+    const notFoundAvailability = await notFoundClient.checkAvailability();
+    assert.strictEqual(notFoundAvailability.category, 'not-found');
+    assert.strictEqual(JSON.stringify(notFoundAvailability).includes('/secret'), false);
+    assert.strictEqual(JSON.stringify(notFoundAvailability).includes(secret), false);
+
+    const malformedClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return { exitCode: 0, stdout: `session\u001fwindow\u001f@1\u001f1\u001f${secret}\n`, stderr: '' };
+        },
+    });
+    await assert.rejects(malformedClient.listWindows(), error => {
+        assert.ok(error instanceof tmuxClientModule.TmuxClientError);
+        assert.strictEqual(error.operation, 'list-windows');
+        assert.strictEqual(error.category, 'invalid-output');
+        assert.strictEqual(error.message.includes(secret), false);
+        return true;
+    });
+
+    const malformedFailureCategory = 'prompt=do-not-report';
+    const malformedResultClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return {
+                exitCode: null, stdout: '', stderr: '', failureCategory: malformedFailureCategory,
+            };
+        },
+    });
+    await assert.rejects(malformedResultClient.hasSession('s'), error => {
+        assert.strictEqual(error.operation, 'has-session');
+        assert.strictEqual(error.category, 'invalid-output');
+        assert.strictEqual(error.message.includes(malformedFailureCategory), false);
+        return true;
+    });
 }
 
 async function runTmuxStoreChecks() {
@@ -834,6 +1102,7 @@ async function main() {
     runRuntimeConfigurationChecks();
     runLaunchSpecChecks();
     runTmuxLayoutChecks();
+    await runTmuxClientChecks();
     await runTmuxStoreChecks();
     console.log('AI session tmux checks passed.');
 }
