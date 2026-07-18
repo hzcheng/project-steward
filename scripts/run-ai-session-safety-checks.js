@@ -31,6 +31,7 @@ const ProductionAttentionStore = require('../extensions/attention-ui-bridge/out/
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const AiSessionPinController = require('../out/aiSessions/pinController').default;
 const providers = require('../out/aiSessions/providers');
+const providerAvailability = require('../out/aiSessions/providerAvailability');
 const CodexSessionService = require('../out/services/codexSessionService').default;
 const KimiSessionService = require('../out/services/kimiSessionService').default;
 const ClaudeSessionService = require('../out/services/claudeSessionService').default;
@@ -1046,20 +1047,35 @@ async function runAiSessionCommandControllerChecks() {
 }
 
 async function runAiSessionCreationControllerChecks() {
-    const projects = [
-        { id: 'project-a', name: 'Project A', path: '/work/a' },
-    ];
+    const projects = [{ id: 'project-a', name: 'Project A', path: '/work/a' }];
     const warnings = [];
+    const announcements = [];
     const terminals = [];
     const tracked = [];
+    const pendingKeys = new Set();
+    const removed = [];
     const sent = [];
     const scheduled = [];
     const existingSessionInputs = [];
-    let nextInputValue = '  Test Title  ';
+    const activeTabRequests = [];
+    const refreshes = [];
+    const timeoutQueue = [];
+    const providerPicks = [];
+    const inputValues = ['  Test Title  ', ''];
+    let nextProvider;
+    let resolveDeferredProvider;
+    let warningAction;
     let usableCwd = '/work/a';
     const controller = new AiSessionCreationController({
         isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
         getOpenProjects: () => projects,
+        pickProvider: async () => {
+            providerPicks.push('pick');
+            if (nextProvider === 'deferred') {
+                return new Promise(resolve => { resolveDeferredProvider = resolve; });
+            }
+            return nextProvider;
+        },
         getProviderLabel: providerId => providerId.toUpperCase(),
         getProvider: providerId => ({
             id: providerId,
@@ -1068,10 +1084,22 @@ async function runAiSessionCreationControllerChecks() {
         }),
         getTerminalCwd: project => project.path,
         getUsableTerminalCwd: () => usableCwd,
-        showInputBox: async () => nextInputValue,
-        showWarningMessage: message => warnings.push(message),
+        showInputBox: async () => inputValues.shift(),
+        showActiveTab: async projectId => activeTabRequests.push(projectId),
+        announceStatus: async (projectId, message) => announcements.push([projectId, message]),
+        showWarningMessage: async (message, ...items) => {
+            warnings.push([message, items]);
+            return warningAction;
+        },
+        refresh: () => refreshes.push('refresh'),
         createTerminal: options => {
-            const terminal = { name: options.name, showCalls: 0, show() { this.showCalls += 1; } };
+            const terminal = {
+                name: options.name,
+                showCalls: 0,
+                disposeCalls: 0,
+                show() { this.showCalls += 1; },
+                dispose() { this.disposeCalls += 1; },
+            };
             terminals.push({ terminal, options });
             return { terminal, cwdAccepted: true };
         },
@@ -1080,24 +1108,49 @@ async function runAiSessionCreationControllerChecks() {
             return [`existing:${providerId}:${cwd}`];
         },
         getPendingMarkerPath: providerId => `/tmp/${providerId}.marker`,
-        trackPendingTerminal: pending => tracked.push(pending),
+        trackPendingTerminal: pending => {
+            tracked.push(pending);
+            pendingKeys.add(`${pending.provider}:${pending.createdAt}`);
+        },
         sendNewSessionCommand: async (providerId, terminal, cwd, title, markerPath) => sent.push([providerId, terminal, cwd, title, markerPath]),
         scheduleNewSessionRefresh: providerId => scheduled.push(providerId),
+        isPending: (providerId, createdAt) => pendingKeys.has(`${providerId}:${createdAt}`),
+        removePending: (providerId, createdAt) => {
+            pendingKeys.delete(`${providerId}:${createdAt}`);
+            removed.push([providerId, createdAt]);
+        },
+        setTimeout: (callback, delayMs) => {
+            const timeout = { callback, delayMs, cleared: false };
+            timeoutQueue.push(timeout);
+            return timeout;
+        },
+        clearTimeout: timeout => { timeout.cleared = true; },
+        bindingTimeoutMs: 15_000,
+        nowMs: () => Date.parse('2026-07-18T04:00:00.000Z'),
     });
 
-    await controller.createSession('missing', 'codex');
-    assert.deepStrictEqual(warnings, ['Open project not found.']);
+    controller.watchPending({
+        provider: 'codex', terminal: { show() {} }, markerPath: '/tmp/invalid.marker',
+        cwd: '/work/a', createdAt: 'invalid', excludedSessionIds: [],
+    }, 'project-a');
+    assert.strictEqual(timeoutQueue.length, 0, 'an invalid restored timestamp must not schedule an immediate timeout');
+
+    await controller.createSession('missing');
+    assert.deepStrictEqual(warnings, [['Open project not found.', []]]);
     assert.strictEqual(terminals.length, 0);
 
-    await controller.createSession('project-a', 'invalid');
+    nextProvider = undefined;
+    await controller.createSession('project-a');
     assert.strictEqual(terminals.length, 0);
 
-    nextInputValue = undefined;
-    await controller.createSession('project-a', 'codex');
-    assert.strictEqual(terminals.length, 0);
-
-    nextInputValue = '  Test Title  ';
-    await controller.createSession('project-a', 'codex');
+    nextProvider = 'deferred';
+    const firstCreate = controller.createSession('project-a');
+    await Promise.resolve();
+    const duplicateCreate = controller.createSession('project-a');
+    await Promise.resolve();
+    assert.strictEqual(providerPicks.length, 2, 'a duplicate request must not open another picker');
+    resolveDeferredProvider('codex');
+    await Promise.all([firstCreate, duplicateCreate]);
     assert.strictEqual(terminals[0].options.name, 'codex-terminal: Project A');
     assert.strictEqual(terminals[0].options.cwd, '/work/a');
     assert.strictEqual(tracked[0].provider, 'codex');
@@ -1107,14 +1160,46 @@ async function runAiSessionCreationControllerChecks() {
     assert.deepStrictEqual(sent[0], ['codex', terminals[0].terminal, '/work/a', 'Test Title', '/tmp/codex.marker']);
     assert.deepStrictEqual(scheduled, ['codex']);
     assert.strictEqual(terminals[0].terminal.showCalls, 1);
+    assert.deepStrictEqual(activeTabRequests, ['project-a']);
+    assert.strictEqual(refreshes.length, 1);
+    assert.strictEqual(timeoutQueue[0].delayMs, 15_000);
+    pendingKeys.delete(`codex:${tracked[0].createdAt}`);
 
     usableCwd = null;
-    nextInputValue = '';
-    await controller.createSession('project-a', 'kimi');
+    nextProvider = 'kimi';
+    await controller.createSession('project-a');
     assert.strictEqual(terminals[1].options.cwd, null);
     assert.deepStrictEqual(existingSessionInputs[1], ['kimi', '/work/a']);
     assert.strictEqual(tracked[1].cwd, '/work/a');
     assert.deepStrictEqual(sent[1], ['kimi', terminals[1].terminal, null, '', '/tmp/kimi.marker']);
+    assert.strictEqual(timeoutQueue[1].delayMs, 15_000);
+
+    warningAction = 'Focus Terminal';
+    await timeoutQueue[1].callback();
+    assert.deepStrictEqual(removed, [['kimi', tracked[1].createdAt]]);
+    assert.deepStrictEqual(announcements, [['project-a', 'Could not detect the new session']]);
+    assert.deepStrictEqual(warnings[warnings.length - 1], [
+        'Could not detect the new session', ['Focus Terminal'],
+    ]);
+    assert.strictEqual(terminals[1].terminal.showCalls, 2);
+    assert.strictEqual(terminals[1].terminal.disposeCalls, 0);
+    assert.strictEqual(refreshes.length, 3);
+
+    controller.dispose();
+    assert.strictEqual(timeoutQueue[0].cleared, true, 'dispose clears an unresolved pending timeout');
+}
+
+function runAiSessionProviderAvailabilityChecks() {
+    const exists = value => value === '/bin/codex' || value === 'C:\\Tools\\kimi.CMD';
+    assert.strictEqual(providerAvailability.isCommandAvailableOnPath(
+        'codex', { PATH: '/bin:/usr/bin' }, 'linux', exists
+    ), true);
+    assert.strictEqual(providerAvailability.isCommandAvailableOnPath(
+        'claude', { PATH: '/bin:/usr/bin' }, 'linux', exists
+    ), false);
+    assert.strictEqual(providerAvailability.isCommandAvailableOnPath(
+        'kimi', { Path: 'C:\\Tools', PATHEXT: '.EXE;.CMD' }, 'win32', exists
+    ), true);
 }
 
 async function runAiSessionResumeControllerChecks() {
@@ -2069,6 +2154,31 @@ async function runAiSessionTerminalPersistenceChecks() {
         await secondService.restorePersistedTerminals([restoredPendingTerminal]);
         assert.strictEqual(secondService.getPendingTerminals().length, 1);
         assert.strictEqual(secondService.getPendingTerminals()[0].terminal, restoredPendingTerminal);
+
+        const timedOutProcessId = 42011;
+        const timedOutCreatedAt = new Date(Date.parse(createdAt) + 1).toISOString();
+        const timedOutTerminal = {
+            name: 'Kimi: Timed out',
+            creationOptions: { name: 'Kimi: Timed out', cwd: '/work/app' },
+            processId: Promise.resolve(timedOutProcessId),
+            disposeCalls: 0,
+            dispose() { this.disposeCalls++; },
+        };
+        secondService.trackPending({
+            provider: 'kimi',
+            terminal: timedOutTerminal,
+            markerPath: path.join(tempRoot, 'timed-out.done'),
+            cwd: '/work/app',
+            createdAt: timedOutCreatedAt,
+            excludedSessionIds: [],
+        });
+        await secondStore.flush();
+        assert.strictEqual(secondService.hasPending('kimi', timedOutCreatedAt), true);
+        secondService.removePending('kimi', timedOutCreatedAt);
+        await secondStore.flush();
+        assert.strictEqual(secondService.hasPending('kimi', timedOutCreatedAt), false);
+        assert.strictEqual(timedOutTerminal.disposeCalls, 0);
+        assert.strictEqual(secondStore.get(timedOutProcessId), null);
 
         secondService.track('codex', 'session-new', {
             terminal: restoredPendingTerminal,
@@ -5981,6 +6091,7 @@ async function main() {
     runAliasControllerChecks();
     await runProjectStateStoreChecks();
     runActiveAiSessionProjectionChecks();
+    runAiSessionProviderAvailabilityChecks();
     await runAiSessionCommandControllerChecks();
     await runAiSessionCreationControllerChecks();
     await runAiSessionResumeControllerChecks();

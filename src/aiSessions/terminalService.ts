@@ -197,6 +197,25 @@ export default class AiSessionTerminalService {
         return [...this.pendingTerminals];
     }
 
+    hasPending(providerId: AiSessionProviderId, createdAt: string): boolean {
+        return this.getPendingTerminals().some(entry => {
+            return entry.provider === providerId && entry.createdAt === createdAt;
+        });
+    }
+
+    removePending(providerId: AiSessionProviderId, createdAt: string): void {
+        const removed = this.pendingTerminals.filter(entry => {
+            return entry.provider === providerId && entry.createdAt === createdAt;
+        });
+        this.pendingTerminals = this.pendingTerminals.filter(entry => {
+            return entry.provider !== providerId || entry.createdAt !== createdAt;
+        });
+        for (const entry of removed) {
+            this.deleteMarker(entry.markerPath);
+            this.bindingStore?.remove(entry.terminal.processId);
+        }
+    }
+
     getActiveSessions(): AiSessionActiveTerminalRuntime[] {
         let result: AiSessionActiveTerminalRuntime[] = [];
         for (let providerId of this.getProviderIds()) {

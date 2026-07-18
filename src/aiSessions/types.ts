@@ -67,6 +67,7 @@ export interface AiSessionService {
 export interface AiSessionProviderDefinition {
     id: AiSessionProviderId;
     label: string;
+    commandName: string;
     terminalNamePrefix: string;
     terminalEnvKey: string;
     markerDirName: string;
