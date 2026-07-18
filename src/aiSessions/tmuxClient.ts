@@ -196,7 +196,7 @@ export class TmuxClient {
                 sessionMetadata.set(row.sessionName, sessionOptions);
             }
             const windowOptions = await this.readMetadataOptions(
-                'get-window-options', ['show-options', '-qvw', '-t', windowTarget(row.sessionName, row.windowName)]
+                'get-window-options', ['show-options', '-qvw', '-t', row.windowId]
             );
             records.push({
                 ...row,
@@ -358,8 +358,9 @@ export class TmuxClient {
     }
 
     private async invokeForAvailability(args: string[]): Promise<TmuxCommandResult> {
+        let result: TmuxCommandResult;
         try {
-            return normalizeCommandResult(await this.runner.run(this.executablePath, args), 'check-version');
+            result = await this.runner.run(this.executablePath, args);
         } catch (error) {
             return {
                 exitCode: null,
@@ -368,17 +369,26 @@ export class TmuxClient {
                 failureCategory: classifyUnknownRunnerError(error),
             };
         }
+        try {
+            return normalizeCommandResult(result, 'check-version');
+        } catch (_error) {
+            return {
+                exitCode: null,
+                stdout: '',
+                stderr: '',
+                failureCategory: 'unsupported',
+            };
+        }
     }
 
     private async invoke(operation: TmuxOperation, args: string[]): Promise<TmuxCommandResult> {
+        let result: TmuxCommandResult;
         try {
-            return normalizeCommandResult(await this.runner.run(this.executablePath, args), operation);
+            result = await this.runner.run(this.executablePath, args);
         } catch (error) {
-            if (error instanceof TmuxClientError) {
-                throw error;
-            }
             throw new TmuxClientError(operation, classifyUnknownRunnerError(error));
         }
+        return normalizeCommandResult(result, operation);
     }
 }
 

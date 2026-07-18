@@ -311,9 +311,14 @@ async function runTmuxClientChecks() {
         'session-a|version': '1',
         'session-a|layout': 'project',
         'session-a|projectKey': 'project-key',
-        'session-a:window-a|provider': 'codex',
-        'session-a:window-a|sessionId': 'session-id',
-        'session-a:window-a|marker': '/tmp/done marker',
+        '@12|provider': 'codex',
+        '@12|sessionId': 'session-id-12',
+        '@12|marker': '/tmp/done-12 marker',
+        '@13|provider': 'kimi',
+        '@13|sessionId': 'session-id-13',
+        '@13|marker': '/tmp/done-13 marker',
+        'session-a:window-a|provider': 'claude',
+        'session-a:window-a|sessionId': 'public-window-lookup',
     };
     const metadataRunner = {
         run: async (file, args) => {
@@ -327,7 +332,10 @@ async function runTmuxClientChecks() {
             if (args[0] === 'list-windows') {
                 return {
                     exitCode: 0,
-                    stdout: 'session-a\u001fwindow-a\u001f@12\u001f1\n',
+                    stdout: [
+                        'session-a\u001fwindow-a\u001f@12\u001f1',
+                        'session-a\u001fwindow-a\u001f@13\u001f0',
+                    ].join('\n') + '\n',
                     stderr: '',
                 };
             }
@@ -344,26 +352,49 @@ async function runTmuxClientChecks() {
     };
     const metadataClient = new tmuxClientModule.TmuxClient('  /opt/tmux tools/tmux  ', metadataRunner);
     assert.strictEqual(metadataClient.getExecutablePath(), '/opt/tmux tools/tmux');
-    assert.deepStrictEqual(await metadataClient.listWindows(), [{
-        sessionName: 'session-a',
-        windowName: 'window-a',
-        windowId: '@12',
-        active: true,
-        metadata: {
-            managed: '1',
-            version: '1',
-            layout: 'project',
-            projectKey: 'project-key',
-            provider: 'codex',
-            sessionId: 'session-id',
-            marker: '/tmp/done marker',
+    assert.deepStrictEqual(await metadataClient.listWindows(), [
+        {
+            sessionName: 'session-a',
+            windowName: 'window-a',
+            windowId: '@12',
+            active: true,
+            metadata: {
+                managed: '1',
+                version: '1',
+                layout: 'project',
+                projectKey: 'project-key',
+                provider: 'codex',
+                sessionId: 'session-id-12',
+                marker: '/tmp/done-12 marker',
+            },
         },
-    }]);
+        {
+            sessionName: 'session-a',
+            windowName: 'window-a',
+            windowId: '@13',
+            active: false,
+            metadata: {
+                managed: '1',
+                version: '1',
+                layout: 'project',
+                projectKey: 'project-key',
+                provider: 'kimi',
+                sessionId: 'session-id-13',
+                marker: '/tmp/done-13 marker',
+            },
+        },
+    ]);
+    const listingMetadataCalls = metadataCalls.slice();
+    for (const windowId of ['@12', '@13']) {
+        assert.ok(listingMetadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
+            'show-options', '-qvw', '-t', windowId, '@project-steward-provider',
+        ])));
+    }
     assert.deepStrictEqual(await metadataClient.getSessionOptions('session-a'), {
         managed: '1', version: '1', layout: 'project', projectKey: 'project-key',
     });
     assert.deepStrictEqual(await metadataClient.getWindowOptions('session-a', 'window-a'), {
-        provider: 'codex', sessionId: 'session-id', marker: '/tmp/done marker',
+        provider: 'claude', sessionId: 'public-window-lookup',
     });
     await metadataClient.setSessionOptions('session-a', { managed: '1', version: '1' });
     await metadataClient.setWindowOptions('session-a', 'window-a', {
@@ -534,6 +565,39 @@ async function runTmuxClientChecks() {
         assert.strictEqual(error.operation, 'has-session');
         assert.strictEqual(error.category, 'invalid-output');
         assert.strictEqual(error.message.includes(malformedFailureCategory), false);
+        return true;
+    });
+
+    const forgedSecrets = {
+        message: 'message=forged-secret',
+        operation: 'operation=forged-secret',
+        category: 'category=forged-secret',
+        name: 'name=forged-secret',
+        stack: 'stack=forged-secret',
+        code: 'code=forged-secret',
+    };
+    const forgedError = new tmuxClientModule.TmuxClientError(
+        forgedSecrets.operation, forgedSecrets.category
+    );
+    Object.assign(forgedError, forgedSecrets);
+    const forgedErrorClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            throw forgedError;
+        },
+    });
+    await assert.rejects(forgedErrorClient.hasSession('s'), error => {
+        assert.ok(error instanceof tmuxClientModule.TmuxClientError);
+        assert.notStrictEqual(error, forgedError);
+        assert.strictEqual(error.operation, 'has-session');
+        assert.strictEqual(error.category, 'unsupported');
+        const publicError = `${error.name} ${error.message} ${error.stack} ${JSON.stringify(error)}`;
+        for (const value of Object.values(forgedSecrets)) {
+            assert.strictEqual(publicError.includes(value), false);
+        }
         return true;
     });
 }
