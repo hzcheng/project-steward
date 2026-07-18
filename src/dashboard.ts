@@ -49,7 +49,6 @@ import type { AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessio
 import { AiSessionDashboardController } from './aiSessions/dashboardController';
 import { AiSessionCommandController } from './aiSessions/commandController';
 import { AiSessionCreationController } from './aiSessions/creationController';
-import { AI_SESSION_CREATION_BIND_TIMEOUT_MS } from './aiSessions/creationController';
 import { AiSessionArchiveController } from './aiSessions/archiveController';
 import { AiSessionResumeController } from './aiSessions/resumeController';
 import { AiSessionTerminalCommandController } from './aiSessions/terminalCommandController';
@@ -363,11 +362,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             projectId,
             tab: 'active',
         }),
-        announceStatus: (projectId, message) => provider.postMessage({
-            type: 'ai-session-status-announcement',
-            projectId,
-            message,
-        }),
         showWarningMessage: (message, ...items) => vscode.window.showWarningMessage(message, ...items),
         refresh: refreshAiSessionViewsIncrementally,
         createTerminal: options => aiSessionTerminalService.createTerminal({
@@ -391,12 +385,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ),
         sendNewSessionCommand: (providerId, terminal, cwd, title, markerPath) => aiSessionTerminalService.sendNewSessionCommand(providerId, terminal, cwd, title, markerPath),
         scheduleNewSessionRefresh: scheduleNewAiSessionRefresh,
-        isPending: (providerId, createdAt) => aiSessionTerminalService.hasPending(providerId, createdAt),
-        removePending: (providerId, createdAt) => aiSessionTerminalService.removePending(providerId, createdAt),
-        normalizeProjectPath: normalizeAiSessionProjectPath,
-        setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
-        clearTimeout: handle => clearTimeout(handle as NodeJS.Timeout),
-        bindingTimeoutMs: AI_SESSION_CREATION_BIND_TIMEOUT_MS,
         nowMs: () => Date.now(),
     });
     const aiSessionArchiveController = new AiSessionArchiveController<AiSessionTerminalEntry<vscode.Terminal>>({
@@ -955,10 +943,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void aiSessionAttentionController.evaluate();
     }, 1_000);
 
-    aiSessionTerminalService.getPendingTerminals().forEach(pending => {
-        aiSessionCreationController.watchPending(pending);
-    });
-
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(SidebarStewardViewProvider.viewType, provider));
     context.subscriptions.push(
@@ -980,7 +964,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
         }));
     context.subscriptions.push(activeAiSessionTerminalHighlighter);
-    context.subscriptions.push(aiSessionCreationController);
     context.subscriptions.push(openProjectBridgeClient);
     context.subscriptions.push(aiSessionAttentionBridgeClient);
     context.subscriptions.push({
