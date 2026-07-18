@@ -88,11 +88,13 @@ function captureAiSessionViewState(projectDiv) {
 }
 
 function restoreAiSessionViewState(projectDiv, viewState, requestedTab) {
-    var selectedTab = selectAiSessionTabDom(projectDiv, requestedTab);
     var activeList = projectDiv.querySelector('.ai-session-active-panel .codex-sessions-list');
     var historyList = projectDiv.querySelector('.ai-session-history-panel .codex-sessions-list');
-    if (activeList) activeList.scrollTop = Math.min(viewState.activeScrollTop, Math.max(0, activeList.scrollHeight - activeList.clientHeight));
-    if (historyList) historyList.scrollTop = Math.min(viewState.historyScrollTop, Math.max(0, historyList.scrollHeight - historyList.clientHeight));
+    selectAiSessionTabDom(projectDiv, 'active');
+    restoreAiSessionListScroll(activeList, viewState.activeScrollTop);
+    selectAiSessionTabDom(projectDiv, 'sessions');
+    restoreAiSessionListScroll(historyList, viewState.historyScrollTop);
+    var selectedTab = selectAiSessionTabDom(projectDiv, requestedTab);
     if (!viewState.restoreFocus) return;
 
     if (viewState.focusedTab) {
@@ -113,6 +115,13 @@ function restoreAiSessionViewState(projectDiv, viewState, requestedTab) {
     });
     var selectedPanel = projectDiv.querySelector('[data-ai-session-panel="' + normalizeAiSessionTab(requestedTab) + '"]');
     (match || selectedPanel?.querySelector('.codex-session-row') || selectedTab)?.focus();
+}
+
+function restoreAiSessionListScroll(list, requestedScrollTop) {
+    if (!list) return;
+    var scrollTop = Number.isFinite(requestedScrollTop) ? Math.max(0, requestedScrollTop) : 0;
+    var maxScrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
+    list.scrollTop = Math.min(scrollTop, maxScrollTop);
 }
 
 function applyOpenProjectsUpdate(message) {

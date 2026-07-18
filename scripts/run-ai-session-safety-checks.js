@@ -3705,6 +3705,60 @@ function runBatchAiSessionWebviewChecks() {
         'project-b': 'sessions',
     });
     assert.strictEqual(webviewState.unrelated, 'preserved');
+
+    const createTabElement = tabId => {
+        const attributes = { 'data-ai-session-tab': tabId };
+        return {
+            getAttribute: attribute => attributes[attribute] || null,
+            setAttribute: (attribute, value) => { attributes[attribute] = String(value); },
+            focus: () => {},
+        };
+    };
+    const activeListState = { scrollTop: 0, scrollHeight: 100, clientHeight: 40 };
+    const historyListState = { scrollTop: 0, scrollHeight: 0, clientHeight: 0 };
+    const createTabPanel = (tabId, list) => {
+        const attributes = { 'data-ai-session-panel': tabId };
+        return {
+            getAttribute: attribute => attributes[attribute] || null,
+            toggleAttribute: (attribute, force) => {
+                if (force) attributes[attribute] = '';
+                else delete attributes[attribute];
+                if (attribute === 'hidden') {
+                    list.scrollHeight = force ? 0 : 100;
+                    list.clientHeight = force ? 0 : 40;
+                }
+            },
+            querySelector: () => null,
+        };
+    };
+    const activeTabElement = createTabElement('active');
+    const sessionsTabElement = createTabElement('sessions');
+    const activePanelElement = createTabPanel('active', activeListState);
+    const historyPanelElement = createTabPanel('sessions', historyListState);
+    const tabStateProject = {
+        querySelector: selector => {
+            if (selector === '.codex-sessions') return { setAttribute: () => {} };
+            if (selector === '.ai-session-active-panel .codex-sessions-list') return activeListState;
+            if (selector === '.ai-session-history-panel .codex-sessions-list') return historyListState;
+            if (selector === '[data-ai-session-panel="active"]') return activePanelElement;
+            return null;
+        },
+        querySelectorAll: selector => {
+            if (selector === '[data-ai-session-tab]') return [activeTabElement, sessionsTabElement];
+            if (selector === '[data-ai-session-panel]') return [activePanelElement, historyPanelElement];
+            if (selector === '.codex-session-row') return [];
+            return [];
+        },
+    };
+    context.restoreAiSessionViewState(tabStateProject, {
+        activeScrollTop: 17,
+        historyScrollTop: 29,
+        restoreFocus: false,
+    }, 'active');
+    assert.strictEqual(activeListState.scrollTop, 17);
+    assert.strictEqual(historyListState.scrollTop, 29, 'a hidden Session Tab must retain its own scroll position');
+    assert.strictEqual(activeTabElement.getAttribute('aria-selected'), 'true');
+    assert.strictEqual(sessionsTabElement.getAttribute('aria-selected'), 'false');
     context.initProjects();
 
     const messageListenerIndex = source.indexOf("window.addEventListener('message', onWindowMessage)");
