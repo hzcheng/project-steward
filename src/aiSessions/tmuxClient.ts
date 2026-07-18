@@ -41,6 +41,7 @@ export type TmuxClientErrorCategory =
     | 'not-found'
     | 'permission-denied'
     | 'timeout'
+    | 'argument-list-too-long'
     | 'nonzero-exit'
     | 'invalid-output'
     | 'unsupported';
@@ -49,6 +50,7 @@ export type TmuxCommandFailureCategory =
     | 'not-found'
     | 'permission-denied'
     | 'timeout'
+    | 'argument-list-too-long'
     | 'unsupported';
 
 export interface TmuxCommandResult {
@@ -478,6 +480,7 @@ function isCommandFailureCategory(value: unknown): value is TmuxCommandFailureCa
     return value === 'not-found'
         || value === 'permission-denied'
         || value === 'timeout'
+        || value === 'argument-list-too-long'
         || value === 'unsupported';
 }
 
@@ -514,6 +517,9 @@ function classifyProcessErrorSnapshot(snapshot: ProcessErrorSnapshot | null): Tm
     }
     if (snapshot.killed || snapshot.code === 'ETIMEDOUT') {
         return 'timeout';
+    }
+    if (snapshot.code === 'E2BIG') {
+        return 'argument-list-too-long';
     }
     return 'unsupported';
 }
