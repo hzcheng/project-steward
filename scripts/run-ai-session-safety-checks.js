@@ -644,6 +644,30 @@ async function runPendingTerminalResolverChecks() {
             finalRuntime(validPending, sessionId, { state: 'conflict' }),
         ],
     }, {
+        reason: 'conflict',
+        promote: async (_pendingId, sessionId) => [
+            finalRuntime(validPending, sessionId),
+            finalRuntime(validPending, sessionId, { state: 'conflict' }),
+        ],
+    }, {
+        reason: 'non-active-runtime',
+        promote: async (_pendingId, sessionId) => [
+            finalRuntime(validPending, sessionId, { state: 'stopped' }),
+        ],
+    }, {
+        reason: 'non-active-runtime',
+        promote: async (_pendingId, sessionId) => [
+            finalRuntime(validPending, sessionId, { state: 'completed' }),
+        ],
+    }, {
+        reason: 'non-active-runtime',
+        promote: async (_pendingId, sessionId) => [
+            finalRuntime(validPending, sessionId, { state: 'pending' }),
+        ],
+    }, {
+        reason: 'invalid-runtime',
+        promote: async () => [null],
+    }, {
         reason: 'identity-mismatch',
         promote: async () => [finalRuntime(validPending, 'other-session')],
     }, {
@@ -2137,7 +2161,10 @@ async function runAiSessionProjectHydrationPromotionChecks() {
                 aliases[`${providerId}:${sessionId}`] = alias;
                 aliasesSet.push([providerId, sessionId, alias]);
             },
-            syncActiveTerminal: () => syncs.push('sync'),
+            syncActiveTerminal: () => {
+                syncs.push('sync');
+                options.onSync?.();
+            },
             getSessionComparableCwd: (_providerId, item) => item.cwd,
             getExpandedProjects: () => new Set(),
             getActiveProviders: () => ({}),
@@ -2202,7 +2229,71 @@ async function runAiSessionProjectHydrationPromotionChecks() {
     assert.strictEqual(current[0].name, 'Current generation');
     assert.strictEqual(current[0].codexSessions[0].name, 'Promoted Alias');
     assert.strictEqual(stale[0].codexSessions[0].name, 'Original Name', 'stale settlement must not overwrite an old generation');
+    assert.deepStrictEqual(generations.aliasesSet, [['codex', 'session-final', 'Promoted Alias']],
+        'different hydration generations must settle the alias once');
     assert.deepStrictEqual(generations.syncs, ['sync']);
+
+    let resolveCancelled;
+    let cancelledCalls = 0;
+    const cancelledPromotion = new Promise(resolve => { resolveCancelled = resolve; });
+    const cancelled = createHarness({
+        runtimeCoordinator: {
+            getActive: () => [],
+            getPending: () => [pendingRuntime],
+            promotePending: () => { cancelledCalls++; return cancelledPromotion; },
+        },
+    });
+    const cancelledProjection = cancelled.controller.hydrate(project('Cancelled generation'));
+    cancelled.controller.hydrate([]);
+    resolveCancelled([finalRuntime]);
+    await flushSettlements();
+    assert.strictEqual(cancelledCalls, 1);
+    assert.strictEqual(cancelledProjection[0].codexSessions[0].name, 'Original Name');
+    assert.deepStrictEqual(cancelled.aliasesSet, [], 'an absent pending identity must retire the old settlement');
+    assert.deepStrictEqual(cancelled.syncs, [], 'an invalidated generation must not synchronize');
+
+    let reentered = false;
+    let reentrantController;
+    let reentrantCalls = 0;
+    const reentrant = createHarness({
+        runtimeCoordinator: {
+            getActive: () => [],
+            getPending: () => [pendingRuntime],
+            promotePending: () => { reentrantCalls++; return [finalRuntime]; },
+        },
+        onSync: () => {
+            if (!reentered) {
+                reentered = true;
+                reentrantController.hydrate(project('Synchronous reentry'));
+            }
+        },
+    });
+    reentrantController = reentrant.controller;
+    reentrant.controller.hydrate(project('Initial sync'));
+    await flushSettlements();
+    assert.strictEqual(reentrantCalls, 1, 'synchronous sync reentry must retain the successful settlement memo');
+    assert.deepStrictEqual(reentrant.aliasesSet, [['codex', 'session-final', 'Promoted Alias']]);
+    assert.deepStrictEqual(reentrant.syncs, ['sync']);
+
+    let visiblePending = [pendingRuntime];
+    let lifecycleCalls = 0;
+    const lifecycle = createHarness({
+        runtimeCoordinator: {
+            getActive: () => [],
+            getPending: () => visiblePending,
+            promotePending: () => { lifecycleCalls++; return [finalRuntime]; },
+        },
+    });
+    lifecycle.controller.hydrate(project('First lifecycle'));
+    await flushSettlements();
+    visiblePending = [];
+    lifecycle.controller.hydrate(project('Pending absent'));
+    visiblePending = [pendingRuntime];
+    lifecycle.controller.hydrate(project('Second lifecycle'));
+    await flushSettlements();
+    assert.strictEqual(lifecycleCalls, 2, 'a successful settlement memo must clear after pending disappears');
+    assert.strictEqual(lifecycle.aliasesSet.length, 2);
+    assert.strictEqual(lifecycle.syncs.length, 2);
 
     let retryCalls = 0;
     const retryCoordinator = {
@@ -3263,7 +3354,8 @@ function runWebviewContentChecks() {
     assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
     const pendingTerminalResolverSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'pendingTerminalResolver.ts'), 'utf8');
     const resumeControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'resumeController.ts'), 'utf8');
-    assert.ok(pendingTerminalResolverSource.includes('runtimeCoordinator.promotePending(pendingId, session.id)'));
+    assert.ok(pendingTerminalResolverSource.includes('runtimeCoordinator.promotePending('));
+    assert.ok(pendingTerminalResolverSource.includes('options.settlePending'));
     assert.ok(!pendingTerminalResolverSource.includes('.terminal'));
     assert.ok(resumeControllerSource.includes('runStartedAtMs: this.options.nowMs()'));
     assert.ok(dashboard.includes('nowMs: () => Date.now()'));
@@ -4745,7 +4837,8 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(pendingTerminalsSource.includes('export function getAiSessionIdsForCwd('));
     assert.ok(pendingTerminalsSource.includes('export function findPendingAiSessionTerminalMatch('));
     assert.ok(pendingTerminalResolverSource.includes('export async function resolvePendingAiSessionTerminals'));
-    assert.ok(pendingTerminalResolverSource.includes('runtimeCoordinator.promotePending(pendingId, session.id)'));
+    assert.ok(pendingTerminalResolverSource.includes('runtimeCoordinator.promotePending('));
+    assert.ok(pendingTerminalResolverSource.includes('options.settlePending'));
     assert.ok(!pendingTerminalResolverSource.includes('replacePendingTerminals'));
     assert.ok(terminalCandidatesSource.includes('export function getAiSessionTerminalCandidates('));
     assert.ok(terminalCandidatesSource.includes("reason: 'terminal-candidates'"));

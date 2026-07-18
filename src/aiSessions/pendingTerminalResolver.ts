@@ -24,8 +24,20 @@ export type PendingAiSessionPromotionFailureReason =
     | 'missing-runtime'
     | 'ambiguous-runtime'
     | 'conflict'
+    | 'invalid-runtime'
+    | 'non-active-runtime'
     | 'identity-mismatch'
+    | 'stale-pending'
     | 'promotion-error';
+
+export interface PendingAiSessionPromotionSettlement {
+    failureReason: PendingAiSessionPromotionFailureReason | null;
+}
+
+export type PendingAiSessionPromotionSettler<TTerminal = unknown> = (
+    pendingRuntime: AiSessionPendingRuntimeSnapshot<TTerminal>,
+    sessionId: string
+) => PendingAiSessionPromotionSettlement | Promise<PendingAiSessionPromotionSettlement>;
 
 export interface PendingAiSessionPromotionIdentity {
     pendingId: string;
@@ -53,6 +65,7 @@ export interface ResolvePendingAiSessionTerminalsOptions<TTerminal = unknown> {
     setAlias: (providerId: AiSessionProviderId, sessionId: string, alias: string) => void;
     syncActiveRuntime: () => void;
     claimedSessionKeys?: ReadonlySet<string>;
+    settlePending?: PendingAiSessionPromotionSettler<TTerminal>;
 }
 
 export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
@@ -101,25 +114,21 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
             provider: pendingRuntime.identity.provider,
             sessionId: session.id,
         };
-        let promotedRuntimes: AiSessionRuntimeSnapshot<TTerminal>[];
+        let settlement: PendingAiSessionPromotionSettlement;
         try {
-            const promotion = options.runtimeCoordinator.promotePending(pendingId, session.id);
-            promotedRuntimes = isPromiseLike(promotion) ? await promotion : promotion;
+            const pendingSettlement = options.settlePending
+                ? options.settlePending(pendingRuntime, session.id)
+                : settlePendingAiSessionPromotion(options, pendingRuntime, session.id);
+            settlement = isPromiseLike(pendingSettlement) ? await pendingSettlement : pendingSettlement;
         } catch (_error) {
             result.failures.push({ ...promotionIdentity, reason: 'promotion-error' });
             continue;
         }
-        const failureReason = getPromotionFailureReason(
-            promotedRuntimes,
-            pendingRuntime.identity.provider,
-            session.id
-        );
-        if (failureReason) {
-            result.failures.push({ ...promotionIdentity, reason: failureReason });
+        if (settlement.failureReason) {
+            result.failures.push({ ...promotionIdentity, reason: settlement.failureReason });
             continue;
         }
 
-        options.setAlias(pendingRuntime.identity.provider, session.id, pendingRuntime.title);
         claimedSessionKeys.add(options.getSessionKey(pendingRuntime.identity.provider, session.id));
         result.promoted.push(promotionIdentity);
     }
@@ -130,25 +139,73 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
     return result;
 }
 
-function getPromotionFailureReason<TTerminal>(
-    runtimes: readonly AiSessionRuntimeSnapshot<TTerminal>[],
+function settlePendingAiSessionPromotion<TTerminal>(
+    options: ResolvePendingAiSessionTerminalsOptions<TTerminal>,
+    pendingRuntime: AiSessionPendingRuntimeSnapshot<TTerminal>,
+    sessionId: string
+): PendingAiSessionPromotionSettlement | Promise<PendingAiSessionPromotionSettlement> {
+    const promotion = options.runtimeCoordinator.promotePending(
+        pendingRuntime.identity.pendingId,
+        sessionId
+    );
+    const settle = (runtimes: unknown): PendingAiSessionPromotionSettlement => {
+        const failureReason = getPendingAiSessionPromotionFailureReason(
+            runtimes,
+            pendingRuntime.identity.provider,
+            sessionId
+        );
+        if (!failureReason) {
+            options.setAlias(pendingRuntime.identity.provider, sessionId, pendingRuntime.title);
+        }
+        return { failureReason };
+    };
+    return isPromiseLike(promotion) ? promotion.then(settle) : settle(promotion);
+}
+
+export function getPendingAiSessionPromotionFailureReason(
+    runtimes: unknown,
     provider: AiSessionProviderId,
     sessionId: string
 ): PendingAiSessionPromotionFailureReason | null {
     if (!Array.isArray(runtimes) || runtimes.length === 0) {
         return 'missing-runtime';
     }
+    if (runtimes.some(runtime => isRecord(runtime) && runtime.state === 'conflict')) {
+        return 'conflict';
+    }
     if (runtimes.length !== 1) {
         return 'ambiguous-runtime';
     }
     const runtime = runtimes[0];
-    if (runtime.state === 'conflict') {
-        return 'conflict';
+    if (!isRuntimeSnapshot(runtime)) {
+        return 'invalid-runtime';
+    }
+    if (runtime.state !== 'active') {
+        return 'non-active-runtime';
     }
     if (runtime.identity.provider !== provider || runtime.identity.sessionId !== sessionId) {
         return 'identity-mismatch';
     }
     return null;
+}
+
+function isRuntimeSnapshot(value: unknown): value is AiSessionRuntimeSnapshot<unknown> {
+    if (!isRecord(value) || !isRecord(value.identity)) {
+        return false;
+    }
+    return typeof value.identity.provider === 'string'
+        && typeof value.identity.projectKey === 'string'
+        && typeof value.identity.cwd === 'string'
+        && typeof value.identity.sessionId === 'string'
+        && (value.backend === 'vscode' || value.backend === 'tmux')
+        && typeof value.state === 'string'
+        && typeof value.markerPath === 'string'
+        && typeof value.runStartedAtMs === 'number'
+        && typeof value.attached === 'boolean';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object';
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {

@@ -4909,6 +4909,39 @@ async function runRuntimeProjectionChecks() {
     assert.strictEqual(duplicatePending[0].activeAiSessions[0].tmuxLayout, 'session');
     assert.strictEqual(duplicatePending[0].activeAiSessions[0].attached, false);
 
+    const tiedPendingLeft = {
+        ...tmuxPending,
+        identity: { ...tmuxPending.identity },
+        title: 'Alpha title',
+        createdAt: '2026-07-18T11:00:00Z',
+        runStartedAtMs: 11,
+        markerPath: '/tmp/alpha.done',
+        excludedSessionIds: ['alpha'],
+    };
+    const tiedPendingRight = {
+        ...tmuxPending,
+        identity: { ...tmuxPending.identity },
+        title: 'Zulu title',
+        createdAt: '2026-07-18T09:00:00Z',
+        runStartedAtMs: 99,
+        markerPath: '/tmp/zulu.done',
+        excludedSessionIds: ['zulu'],
+    };
+    const projectPendingDuplicates = pendingRuntimes => activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
+        providers: providerFixtures,
+        activeRuntimes: [],
+        pendingRuntimes,
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.deepStrictEqual(
+        projectPendingDuplicates([tiedPendingLeft, tiedPendingRight]),
+        projectPendingDuplicates([tiedPendingRight, tiedPendingLeft]),
+        'pending conflict projection must be identical when the input order is reversed'
+    );
+
     const legacyOnly = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
         providers: providerFixtures,

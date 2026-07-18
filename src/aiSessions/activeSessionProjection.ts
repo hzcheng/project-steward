@@ -269,19 +269,30 @@ function comparePendingRepresentatives(
     left: AiSessionPendingRuntimeSnapshot,
     right: AiSessionPendingRuntimeSnapshot
 ): number {
-    return getPendingRepresentativeKey(left).localeCompare(getPendingRepresentativeKey(right));
+    const leftKey = getPendingRepresentativeKey(left);
+    const rightKey = getPendingRepresentativeKey(right);
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
 }
 
 function getPendingRepresentativeKey(runtime: AiSessionPendingRuntimeSnapshot): string {
-    return [
-        runtime.backend === 'tmux' ? '0' : '1',
-        runtime.tmux?.layout || '',
-        runtime.tmux?.sessionName || '',
-        runtime.tmux?.windowName || '',
-        runtime.attached ? '0' : '1',
+    return JSON.stringify([
+        runtime.backend === 'tmux' ? 0 : 1,
+        runtime.backend,
+        runtime.state,
+        runtime.identity.provider,
+        runtime.identity.pendingId || '',
         runtime.identity.projectKey,
         runtime.identity.cwd,
-    ].join('\u0000');
+        runtime.title === undefined ? null : runtime.title,
+        runtime.createdAt,
+        String(runtime.runStartedAtMs),
+        runtime.markerPath,
+        runtime.attached,
+        runtime.tmux?.layout || null,
+        runtime.tmux?.sessionName || null,
+        runtime.tmux?.windowName || null,
+        runtime.excludedSessionIds,
+    ]);
 }
 
 function findRuntimeProjectIndex(

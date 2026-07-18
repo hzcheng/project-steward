@@ -7,8 +7,15 @@ import { buildAttentionSessionIndex } from './attentionProject';
 import type { AiSessionAttentionSnapshot } from './attentionMonitor';
 import { getAiSessionCandidatePaths, getAiSessionOpenProjectCandidates } from './projectCandidates';
 import { hydrateOpenProjectsWithAiSessions } from './projectHydration';
-import { resolvePendingAiSessionTerminals } from './pendingTerminalResolver';
-import type { PendingAiSessionRuntimeCoordinator } from './pendingTerminalResolver';
+import {
+    getPendingAiSessionPromotionFailureReason,
+    resolvePendingAiSessionTerminals,
+} from './pendingTerminalResolver';
+import type {
+    PendingAiSessionPromotionIdentity,
+    PendingAiSessionPromotionSettlement,
+    PendingAiSessionRuntimeCoordinator,
+} from './pendingTerminalResolver';
 import { getAiSessionScanMaxFiles } from './scanOptions';
 import type { AiSessionPendingRuntimeSnapshot, AiSessionRuntimeSnapshot } from './runtimeTypes';
 import type {
@@ -55,6 +62,18 @@ interface ProjectHydrationRuntimeCoordinator<TTerminal>
 extends PendingAiSessionRuntimeCoordinator<TTerminal> {
     getActive(): AiSessionRuntimeSnapshot<TTerminal>[];
     getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[];
+}
+
+interface PendingPromotionSettlementMemo<TTerminal> {
+    key: string;
+    pendingIdentityKey: string;
+    provider: AiSessionProviderId;
+    pendingId: string;
+    sessionId: string;
+    live: boolean;
+    status: 'pending' | 'success';
+    syncConsumed: boolean;
+    settlement?: PendingAiSessionPromotionSettlement | Promise<PendingAiSessionPromotionSettlement>;
 }
 
 export interface AiSessionProjectHydrationReadCoordinator {
@@ -115,10 +134,7 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
     } | null = null;
     private cacheClearScheduled = false;
     private hydrationGeneration = 0;
-    private readonly pendingPromotionFlights = new Map<
-        string,
-        Promise<AiSessionRuntimeSnapshot<TTerminal>[]>
-    >();
+    private readonly pendingPromotionSettlements = new Map<string, PendingPromotionSettlementMemo<TTerminal>>();
 
     constructor(private readonly options: AiSessionProjectHydrationControllerOptions<TTerminal>) {
     }
@@ -128,6 +144,9 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
         const reason = this.options.getRefreshReason();
         const providers = this.options.getProviders();
         if (!openProjects.length) {
+            ++this.hydrationGeneration;
+            this.cache = null;
+            this.reconcilePendingPromotionSettlements([]);
             this.logDiagnostic({
                 event: 'ai-session-hydration',
                 reason,
@@ -149,6 +168,7 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
         const assignmentCandidates = getAiSessionOpenProjectCandidates(openProjects, workspaceFile, workspaceFolders);
         const maxFiles = getAiSessionScanMaxFiles(reason, this.options.incrementalScanMaxFiles);
         const runtimeProjection = this.getRuntimeProjection();
+        this.reconcilePendingPromotionSettlements(runtimeProjection.pendingRuntimes);
         const pendingRuntimeCount = runtimeProjection.pendingRuntimes.length;
         const aggregate = this.options.getAttentionAggregate();
         const localAttentionBySession = this.options.getLocalAttentionBySession();
@@ -197,13 +217,15 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             sessionResults,
             providers,
             getSessionKey: this.options.getSessionKey,
-            runtimeCoordinator: this.getSingleFlightRuntimeCoordinator(
-                runtimeProjection.pendingRuntimes,
-                runtimeProjection.runtimeCoordinator
-            ),
+            runtimeCoordinator: runtimeProjection.runtimeCoordinator,
             setAlias: this.options.setAlias,
             syncActiveRuntime: () => undefined,
             claimedSessionKeys: runtimeProjection.claimedSessionKeys,
+            settlePending: (pendingRuntime, sessionId) => this.settlePendingPromotion(
+                pendingRuntime,
+                sessionId,
+                runtimeProjection.runtimeCoordinator
+            ),
         });
         hydrated = hydrateProjects(openProjects);
         const diagnostic = {
@@ -235,6 +257,9 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
                 });
             }
             if (!result.promoted.length || generation !== this.hydrationGeneration) {
+                return;
+            }
+            if (!this.consumePendingPromotionSettlements(result.promoted)) {
                 return;
             }
             const refreshed = hydrateProjects(hydrated.map(project => ({ ...project } as Project)));
@@ -361,46 +386,112 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
         };
     }
 
-    private getSingleFlightRuntimeCoordinator(
-        pendingRuntimes: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[],
+    private settlePendingPromotion(
+        pendingRuntime: AiSessionPendingRuntimeSnapshot<TTerminal>,
+        sessionId: string,
         coordinator: PendingAiSessionRuntimeCoordinator<TTerminal>
-    ): PendingAiSessionRuntimeCoordinator<TTerminal> {
-        const pendingById = new Map<string, AiSessionPendingRuntimeSnapshot<TTerminal>>();
-        for (const pending of pendingRuntimes) {
-            if (pending.identity.pendingId && !pendingById.has(pending.identity.pendingId)) {
-                pendingById.set(pending.identity.pendingId, pending);
-            }
+    ): PendingAiSessionPromotionSettlement | Promise<PendingAiSessionPromotionSettlement> {
+        const pendingId = pendingRuntime.identity.pendingId;
+        if (!pendingId) {
+            return { failureReason: 'missing-runtime' };
         }
-        return {
-            promotePending: (pendingId, sessionId) => {
-                const pending = pendingById.get(pendingId);
-                const flightKey = getPendingPromotionFlightKey(pending, pendingId, sessionId);
-                const existing = this.pendingPromotionFlights.get(flightKey);
-                if (existing) {
-                    return existing.then(cloneRuntimeArray);
-                }
+        const pendingIdentityKey = getPendingIdentityKey(pendingRuntime);
+        const key = getPendingPromotionSettlementKey(pendingIdentityKey, sessionId);
+        const existing = this.pendingPromotionSettlements.get(key);
+        if (existing?.settlement) {
+            return existing.settlement;
+        }
 
-                const promotion = coordinator.promotePending(pendingId, sessionId);
-                if (!isPromiseLike(promotion)) {
-                    return cloneRuntimeArray(promotion);
-                }
-                const flight = Promise.resolve(promotion).then(cloneRuntimeArray);
-                this.pendingPromotionFlights.set(flightKey, flight);
-                flight.then(
-                    () => this.releasePendingPromotionFlight(flightKey, flight),
-                    () => this.releasePendingPromotionFlight(flightKey, flight)
-                );
-                return flight.then(cloneRuntimeArray);
-            },
+        const entry: PendingPromotionSettlementMemo<TTerminal> = {
+            key,
+            pendingIdentityKey,
+            provider: pendingRuntime.identity.provider,
+            pendingId,
+            sessionId,
+            live: true,
+            status: 'pending',
+            syncConsumed: false,
         };
+        this.pendingPromotionSettlements.set(key, entry);
+
+        const settle = (runtimes: unknown): PendingAiSessionPromotionSettlement => {
+            if (!entry.live || this.pendingPromotionSettlements.get(key) !== entry) {
+                return { failureReason: 'stale-pending' };
+            }
+            const failureReason = getPendingAiSessionPromotionFailureReason(
+                runtimes,
+                pendingRuntime.identity.provider,
+                sessionId
+            );
+            if (failureReason) {
+                this.retirePendingPromotionSettlement(entry);
+                return { failureReason };
+            }
+
+            entry.status = 'success';
+            try {
+                this.options.setAlias(pendingRuntime.identity.provider, sessionId, pendingRuntime.title);
+            } catch (error) {
+                this.retirePendingPromotionSettlement(entry);
+                throw error;
+            }
+            return { failureReason: null };
+        };
+        try {
+            const promotion = coordinator.promotePending(pendingId, sessionId);
+            if (!isPromiseLike(promotion)) {
+                entry.settlement = settle(promotion);
+                return entry.settlement;
+            }
+            entry.settlement = Promise.resolve(promotion).then(settle, error => {
+                this.retirePendingPromotionSettlement(entry);
+                throw error;
+            });
+            return entry.settlement;
+        } catch (error) {
+            this.retirePendingPromotionSettlement(entry);
+            throw error;
+        }
     }
 
-    private releasePendingPromotionFlight(
-        key: string,
-        flight: Promise<AiSessionRuntimeSnapshot<TTerminal>[]>
+    private reconcilePendingPromotionSettlements(
+        pendingRuntimes: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[]
     ): void {
-        if (this.pendingPromotionFlights.get(key) === flight) {
-            this.pendingPromotionFlights.delete(key);
+        const presentIdentities = new Set(pendingRuntimes
+            .filter(runtime => !!runtime.identity.pendingId)
+            .map(getPendingIdentityKey));
+        for (const entry of this.pendingPromotionSettlements.values()) {
+            if (!presentIdentities.has(entry.pendingIdentityKey)) {
+                this.retirePendingPromotionSettlement(entry);
+            }
+        }
+    }
+
+    private consumePendingPromotionSettlements(
+        promoted: readonly PendingAiSessionPromotionIdentity[]
+    ): boolean {
+        let consumed = false;
+        for (const identity of promoted) {
+            const entry = Array.from(this.pendingPromotionSettlements.values()).find(candidate => {
+                return candidate.live
+                    && candidate.status === 'success'
+                    && !candidate.syncConsumed
+                    && candidate.provider === identity.provider
+                    && candidate.pendingId === identity.pendingId
+                    && candidate.sessionId === identity.sessionId;
+            });
+            if (entry) {
+                entry.syncConsumed = true;
+                consumed = true;
+            }
+        }
+        return consumed;
+    }
+
+    private retirePendingPromotionSettlement(entry: PendingPromotionSettlementMemo<TTerminal>): void {
+        entry.live = false;
+        if (this.pendingPromotionSettlements.get(entry.key) === entry) {
+            this.pendingPromotionSettlements.delete(entry.key);
         }
     }
 
@@ -560,29 +651,26 @@ function finiteTimestamp(value: string): number {
     return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function getPendingPromotionFlightKey<TTerminal>(
-    pending: AiSessionPendingRuntimeSnapshot<TTerminal> | undefined,
-    pendingId: string,
+function getPendingIdentityKey<TTerminal>(
+    pending: AiSessionPendingRuntimeSnapshot<TTerminal>
+): string {
+    return JSON.stringify([
+        pending.identity.provider,
+        pending.identity.projectKey,
+        pending.identity.cwd,
+        pending.identity.pendingId || '',
+    ]);
+}
+
+function getPendingPromotionSettlementKey(
+    pendingIdentityKey: string,
     sessionId: string
 ): string {
-    const identity = pending?.identity;
-    return JSON.stringify([
-        identity?.provider || '',
-        identity?.projectKey || '',
-        identity?.cwd || '',
-        pendingId,
-        sessionId,
-    ]);
+    return JSON.stringify([pendingIdentityKey, sessionId]);
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
     return !!value && typeof (value as Promise<T>).then === 'function';
-}
-
-function cloneRuntimeArray<TTerminal>(
-    runtimes: readonly AiSessionRuntimeSnapshot<TTerminal>[]
-): AiSessionRuntimeSnapshot<TTerminal>[] {
-    return (runtimes || []).map(cloneRuntime);
 }
 
 function replaceProjectProjection(target: Project[], replacement: Project[]): void {
