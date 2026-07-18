@@ -923,9 +923,7 @@ function runActiveAiSessionProjectionChecks() {
         normalizePath: value => value && value.replace(/\/$/, ''),
     });
 
-    assert.deepStrictEqual(projected[0].activeAiSessions.map(item => item.status), [
-        'needsAttention', 'focused', 'starting',
-    ]);
+    assert.ok(projected[0].activeAiSessions.every(item => !Object.prototype.hasOwnProperty.call(item, 'status')));
     assert.deepStrictEqual(projected[0].activeAiSessions.map(item => ({
         provider: item.provider,
         executionState: item.executionState,
@@ -2846,20 +2844,20 @@ function runWebviewContentChecks() {
         activeAiSessions: [
             {
                 key: 'codex:c1', provider: 'codex', sessionId: 'c1', name: 'Codex live',
-                status: 'focused', focused: true, needsAttention: false, pending: false,
+                executionState: 'running', focused: true, needsAttention: false, pending: false,
             },
             {
                 key: 'kimi:k2', provider: 'kimi', sessionId: 'k2', name: 'Kimi waiting',
-                status: 'needsAttention', focused: false, needsAttention: true, pending: false,
+                executionState: 'stopped', focused: false, needsAttention: true, pending: false,
                 attentionEventId: 'attention-1',
             },
             {
                 key: 'claude:c3', provider: 'claude', sessionId: 'c3', name: 'Claude running',
-                status: 'running', focused: false, needsAttention: false, pending: false,
+                executionState: 'running', focused: false, needsAttention: false, pending: false,
             },
             {
                 key: 'pending:claude:2026-07-18T03:00:00Z', provider: 'claude', name: 'New Claude',
-                status: 'starting', focused: false, needsAttention: false, pending: true,
+                executionState: 'starting', focused: false, needsAttention: false, pending: true,
                 createdAt: '2026-07-18T03:00:00Z',
             },
         ],
@@ -2872,7 +2870,21 @@ function runWebviewContentChecks() {
     assert.ok(sessionTabsHtml.includes('data-ai-session-tab="sessions"'));
     assert.ok(sessionTabsHtml.includes('id="ai-session-active-project-a"'));
     assert.ok(sessionTabsHtml.includes('id="ai-session-history-project-a"'));
-    assert.ok(sessionTabsHtml.includes('data-session-status="needsAttention"'));
+    assert.ok(sessionTabsHtml.includes('data-execution-state="running"'));
+    assert.ok(sessionTabsHtml.includes('data-execution-state="stopped"'));
+    assert.ok(sessionTabsHtml.includes('data-execution-state="starting"'));
+    assert.ok(sessionTabsHtml.includes('class="ai-session-execution-status"'));
+    assert.ok(sessionTabsHtml.includes('class="ai-session-execution-dot"'));
+    assert.ok(sessionTabsHtml.includes('aria-label="AI is currently executing"'));
+    assert.ok(sessionTabsHtml.includes('aria-label="AI is not currently executing"'));
+    assert.ok(sessionTabsHtml.includes('aria-label="Waiting for AI activity"'));
+    assert.ok(sessionTabsHtml.includes('aria-hidden="true"></span>Running</span>'));
+    assert.ok(sessionTabsHtml.includes('aria-hidden="true"></span>Stopped</span>'));
+    assert.ok(sessionTabsHtml.includes('aria-hidden="true"></span>Starting</span>'));
+    assert.ok(sessionTabsHtml.includes('AI session needs attention'));
+    assert.ok(sessionTabsHtml.includes('data-session-focused'));
+    assert.ok(sessionTabsHtml.includes('data-session-needs-attention'));
+    assert.ok(!sessionTabsHtml.includes('data-session-status='));
     assert.ok(sessionTabsHtml.includes('data-session-pending'));
     assert.ok(sessionTabsHtml.includes('data-session-active'));
     assert.ok(sessionTabsHtml.includes('Close the active terminal before archiving.'));
@@ -3063,8 +3075,27 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes("join(' · ')"));
     assert.ok(styles.includes('.codex-session-actions'));
     assert.ok(styles.includes('.ai-session-tabs'));
-    assert.ok(styles.includes('[data-session-status="focused"]'));
-    assert.ok(styles.includes('[data-session-status="needsAttention"]'));
+    assert.ok(styles.includes('.ai-session-execution-status'));
+    assert.ok(styles.includes('.ai-session-execution-dot'));
+    assert.ok(!extractScssBlock(styles, '.ai-session-execution-dot').includes('animation'));
+    assert.ok(styles.includes('[data-execution-state="running"] .ai-session-execution-status'));
+    assert.ok(styles.includes('var(--vscode-terminal-ansiGreen, #89d185)'));
+    assert.ok(styles.includes('[data-execution-state="stopped"] .ai-session-execution-status'));
+    assert.ok(styles.includes('[data-execution-state="starting"] .ai-session-execution-status'));
+    assert.ok(styles.includes('color: var(--vscode-descriptionForeground);'));
+    assert.ok(styles.includes('[data-session-focused]'));
+    assert.ok(styles.includes('[data-session-needs-attention]'));
+    assert.ok(!styles.includes('[data-session-status='));
+    assert.ok(compiledStyles.includes('.ai-session-execution-status'));
+    assert.ok(compiledStyles.includes('.ai-session-execution-dot'));
+    assert.ok(compiledStyles.includes('[data-execution-state=running] .ai-session-execution-status'));
+    assert.ok(compiledStyles.includes('var(--vscode-terminal-ansiGreen,#89d185)'));
+    assert.ok(compiledStyles.includes('[data-execution-state=stopped] .ai-session-execution-status'));
+    assert.ok(compiledStyles.includes('[data-execution-state=starting] .ai-session-execution-status'));
+    assert.ok(compiledStyles.includes('var(--vscode-descriptionForeground)'));
+    assert.ok(compiledStyles.includes('[data-session-focused]'));
+    assert.ok(compiledStyles.includes('[data-session-needs-attention]'));
+    assert.ok(!compiledStyles.includes('[data-session-status='));
     assert.ok(styles.includes('[data-session-pending]'));
     assert.ok(styles.includes('@media (max-width: 280px)'));
     assert.ok(styles.includes('@media (prefers-reduced-motion: reduce)'));
@@ -3438,7 +3469,7 @@ function runAttentionProjectRenderingChecks() {
                 }],
                 activeAiSessions: [{
                     key: 'codex:codex-one', provider: 'codex', sessionId: 'codex-one', name: 'Codex One',
-                    status: 'needsAttention', focused: false, needsAttention: true, pending: false,
+                    executionState: 'stopped', focused: false, needsAttention: true, pending: false,
                 }],
             }],
         },
@@ -4546,11 +4577,11 @@ function runOpenProjectAiSessionViewModelBuilderChecks() {
         activeAiSessions: [
             {
                 key: 'codex:c1', provider: 'codex', sessionId: 'c1', name: 'Codex One',
-                status: 'running', focused: false, needsAttention: false, pending: false,
+                executionState: 'running', focused: false, needsAttention: false, pending: false,
             },
             {
                 key: 'kimi:k1', provider: 'kimi', sessionId: 'k1', name: 'Kimi One',
-                status: 'needsAttention', focused: false, needsAttention: true, pending: false,
+                executionState: 'stopped', focused: false, needsAttention: true, pending: false,
             },
         ],
     };

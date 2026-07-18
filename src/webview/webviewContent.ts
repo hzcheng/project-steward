@@ -743,11 +743,14 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     var sessionId = escapeAttribute(model.sessionId || '');
     var shortSessionId = sessionId ? `#${escapeAttribute(sessionId.substring(0, 8))}` : '';
     var createdAt = escapeAttribute(formatCodexSessionUpdatedAt(model.updatedAt || model.createdAt));
-    var statusLabel = model.status === 'needsAttention' ? 'Needs attention'
-        : model.status === 'focused' ? 'Focused'
-            : model.status === 'starting' ? 'Starting'
-                : 'Running';
-    var metadata = [providerLabel, statusLabel, createdAt, shortSessionId].filter(Boolean).join(' · ');
+    var executionLabel = model.executionState === 'running' ? 'Running'
+        : model.executionState === 'starting' ? 'Starting'
+            : 'Stopped';
+    var executionAriaLabel = model.executionState === 'running' ? 'AI is currently executing'
+        : model.executionState === 'starting' ? 'Waiting for AI activity'
+            : 'AI is not currently executing';
+    var executionStatus = `<span class="ai-session-execution-status" aria-label="${executionAriaLabel}"><span class="ai-session-execution-dot" aria-hidden="true"></span>${executionLabel}</span>`;
+    var metadata = [providerLabel, executionStatus, createdAt, shortSessionId].filter(Boolean).join(' · ');
     var attentionIndicator = model.needsAttention
         ? '<span class="ai-session-attention-indicator" title="AI session needs attention" aria-label="AI session needs attention"></span>'
         : '';
@@ -762,7 +765,7 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     var attentionAttributes = model.needsAttention && model.attentionEventId
         ? ` data-ai-session-attention data-session-event-id="${escapeAttribute(model.attentionEventId)}"`
         : '';
-    return `<div class="codex-session-row active-ai-session-row" data-session-provider="${model.provider}" data-session-status="${model.status}"${pendingAttributes}${model.pinned ? ' data-session-pinned' : ''}${model.focused ? ' data-session-focused' : ''}${attentionAttributes} tabindex="0" title="${model.pending ? 'Focus pending' : 'Focus'} ${providerLabel} Session">
+    return `<div class="codex-session-row active-ai-session-row" data-session-provider="${model.provider}" data-execution-state="${model.executionState}"${pendingAttributes}${model.pinned ? ' data-session-pinned' : ''}${model.focused ? ' data-session-focused' : ''}${model.needsAttention ? ' data-session-needs-attention' : ''}${attentionAttributes} tabindex="0" title="${model.pending ? 'Focus pending' : 'Focus'} ${providerLabel} Session">
         ${attentionIndicator}
         <span class="codex-session-icon">${Icons.terminalLine}</span>
         <span class="codex-session-text">

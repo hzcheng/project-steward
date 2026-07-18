@@ -5,7 +5,6 @@ import type { ActiveAiSessionTerminalIdentity } from './activeTerminalHighlight'
 import type { AiSessionExecutionSnapshot } from './executionMonitor';
 import type { PendingAiSessionTerminal } from './terminalService';
 import type {
-    ActiveAiSessionStatus,
     ActiveAiSessionViewModel,
     AiSessionActiveTerminalRuntime,
     AiSessionProviderDefinition,
@@ -93,7 +92,6 @@ function projectWithRuntime(
             provider: runtime.provider,
             sessionId: runtime.sessionId,
             name: session?.name || `${provider?.label || 'AI'} ${shortSessionId(runtime.sessionId)}`,
-            status: getEstablishedStatus(needsAttention, focused),
             executionState: input.executionSnapshot[key]?.state || 'stopped',
             focused,
             needsAttention,
@@ -112,7 +110,6 @@ function projectWithRuntime(
             key: `pending:${pending.provider}:${pending.createdAt}`,
             provider: pending.provider,
             name: pending.title || `New ${provider?.label || 'AI'} session`,
-            status: 'starting',
             executionState: 'starting',
             focused: false,
             needsAttention: false,
@@ -158,10 +155,6 @@ function getProviders(providers: Record<AiSessionProviderId, ProjectionProvider>
     return Object.keys(providers || {})
         .map(key => providers[key as AiSessionProviderId])
         .filter(Boolean);
-}
-
-function getEstablishedStatus(needsAttention: boolean, focused: boolean): ActiveAiSessionStatus {
-    return needsAttention ? 'needsAttention' : focused ? 'focused' : 'running';
 }
 
 function compareActiveSessions(left: SortableActiveAiSessionViewModel, right: SortableActiveAiSessionViewModel): number {

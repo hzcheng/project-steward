@@ -14,7 +14,6 @@ export interface AiSessionTerminalEntry<TTerminal = unknown> {
 }
 
 export type AiSessionTabId = 'active' | 'sessions';
-export type ActiveAiSessionStatus = 'starting' | 'running' | 'focused' | 'needsAttention';
 export type ActiveAiSessionExecutionState = 'starting' | AiSessionExecutionState;
 
 export interface AiSessionActiveTerminalRuntime {
@@ -29,7 +28,6 @@ export interface ActiveAiSessionViewModel {
     provider: AiSessionProviderId;
     sessionId?: string;
     name: string;
-    status: ActiveAiSessionStatus;
     executionState: ActiveAiSessionExecutionState;
     focused: boolean;
     needsAttention: boolean;
