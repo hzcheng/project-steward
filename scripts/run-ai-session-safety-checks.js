@@ -3450,7 +3450,9 @@ function runBatchAiSessionWebviewChecks() {
                 }
             },
             closest: selector => {
-                if (selector === '.codex-session-row[data-session-id]') return row;
+                if (selector === '.codex-session-row' || selector === '.codex-session-row[data-session-provider]') return row;
+                if (selector === '.codex-session-row[data-session-id]' && sessionId) return row;
+                if (selector === '.codex-session-row[data-session-pending]' && attributes.has('data-session-pending')) return row;
                 if (selector === '.project' || selector === '.project[data-id]') return row.project;
                 return null;
             },
@@ -3482,11 +3484,14 @@ function runBatchAiSessionWebviewChecks() {
             'clear-ai-session-selection',
             'archive-selected-ai-sessions',
         ].map(action => ({ action, disabled: false }));
-        return {
+        const project = {
             batchButtons,
             manageButton,
             get rows() { return rows; },
-            replaceRowsOnNextUpdate: nextRows => { replacementRows = nextRows; },
+            replaceRowsOnNextUpdate: nextRows => {
+                nextRows.forEach(row => { row.project = project; });
+                replacementRows = nextRows;
+            },
             getAttribute: attribute => attribute === 'data-id' ? projectId : null,
             hasAttribute: attribute => attributes.has(attribute),
             removeAttribute: attribute => attributes.delete(attribute),
@@ -3519,6 +3524,7 @@ function runBatchAiSessionWebviewChecks() {
                 return [];
             },
         };
+        return project;
     };
     const projectA = createProject('project-a', 'codex');
     const projectB = createProject('project-b', 'kimi');
@@ -3570,6 +3576,7 @@ function runBatchAiSessionWebviewChecks() {
         insertAdjacentHTML: () => { openAttentionBadgeInsertions++; },
     };
     let replacedSearchCatalog = null;
+    let webviewState = { unrelated: 'preserved' };
     const context = {
         normalizeDashboardSearchCatalog: value => value
             && Array.isArray(value.sessions)
@@ -3613,12 +3620,29 @@ function runBatchAiSessionWebviewChecks() {
             addEventListener: (event, listener) => { windowEventListeners[event] = listener; },
             requestAnimationFrame: callback => callback(),
             setTimeout: callback => timeoutCallbacks.push(callback),
-            vscode: { postMessage: message => messages.push(message) },
+            vscode: {
+                postMessage: message => messages.push(message),
+                getState: () => webviewState,
+                setState: state => { webviewState = state; },
+            },
             __projectStewardDashboard: { replaceSearchCatalog: catalog => { replacedSearchCatalog = catalog; } },
         },
     };
 
     vm.runInNewContext(source, context);
+    assert.strictEqual(context.normalizeAiSessionTab('active'), 'active');
+    assert.strictEqual(context.normalizeAiSessionTab('unknown'), 'sessions');
+    assert.strictEqual(context.getAdjacentAiSessionTab('active', 'ArrowRight'), 'sessions');
+    assert.strictEqual(context.getAdjacentAiSessionTab('sessions', 'ArrowLeft'), 'active');
+    assert.strictEqual(context.getAdjacentAiSessionTab('sessions', 'Home'), 'active');
+    assert.strictEqual(context.getAdjacentAiSessionTab('active', 'End'), 'sessions');
+    context.writeAiSessionTabState(context.window.vscode, 'project-a', 'active');
+    context.writeAiSessionTabState(context.window.vscode, 'project-b', 'sessions');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(context.readAiSessionTabState(context.window.vscode))), {
+        'project-a': 'active',
+        'project-b': 'sessions',
+    });
+    assert.strictEqual(webviewState.unrelated, 'preserved');
     context.initProjects();
 
     const messageListenerIndex = source.indexOf("window.addEventListener('message', onWindowMessage)");
@@ -3665,6 +3689,59 @@ function runBatchAiSessionWebviewChecks() {
         },
     ]);
     assert.ok(messages.every(message => !Object.prototype.hasOwnProperty.call(message, 'uri')));
+    messages.length = 0;
+
+    activeRow.setAttribute('data-session-active', '');
+    const pendingRow = createSessionRow('claude', '');
+    pendingRow.project = projectA;
+    pendingRow.setAttribute('data-session-pending', '');
+    pendingRow.setAttribute('data-pending-created-at', '2026-07-18T08:00:00Z');
+    eventListeners.click({ button: 0, target: activeRow });
+    eventListeners.click({ button: 0, target: otherCodexRow });
+    eventListeners.click({ button: 0, target: pendingRow });
+
+    const newSessionTarget = {
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') return projectA;
+            if (selector === '[data-action="create-ai-session"]') return newSessionTarget;
+            return null;
+        },
+    };
+    eventListeners.click({ button: 0, target: newSessionTarget });
+
+    const closeActiveTarget = {
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') return projectA;
+            if (selector === '[data-action="close-ai-session-terminal"]') return closeActiveTarget;
+            if (selector === '.codex-session-row[data-session-provider]') return activeRow;
+            return null;
+        },
+    };
+    const closePendingTarget = {
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') return projectA;
+            if (selector === '[data-action="close-ai-session-terminal"]') return closePendingTarget;
+            if (selector === '.codex-session-row[data-session-provider]') return pendingRow;
+            return null;
+        },
+    };
+    eventListeners.click({ button: 0, target: closeActiveTarget });
+    eventListeners.click({ button: 0, target: closePendingTarget });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [{
+        type: 'focus-ai-session-terminal', projectId: 'project-a', provider: 'codex', sessionId: 'active-session',
+    }, {
+        type: 'resume-codex-session', projectId: 'project-a', sessionId: 'other-session',
+    }, {
+        type: 'focus-pending-ai-session', projectId: 'project-a', provider: 'claude',
+        createdAt: '2026-07-18T08:00:00Z',
+    }, {
+        type: 'create-ai-session', projectId: 'project-a',
+    }, {
+        type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'codex', sessionId: 'active-session',
+    }, {
+        type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'claude',
+        pendingCreatedAt: '2026-07-18T08:00:00Z',
+    }]);
     messages.length = 0;
 
     attentionRow.setAttribute('data-ai-session-attention', '');
@@ -3821,6 +3898,7 @@ function runBatchAiSessionWebviewChecks() {
         { id: 'plain', pinned: false },
         { id: 'pinned', pinned: true },
         { id: 'second', pinned: false },
+        { id: 'active', pinned: false, active: true },
     ]);
     assert.deepStrictEqual(JSON.parse(JSON.stringify(manager.snapshot())), {
         projectId: 'project-a', provider: 'codex', selectedIds: ['plain', 'second'], pending: false,

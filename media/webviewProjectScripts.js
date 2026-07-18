@@ -1,3 +1,120 @@
+function normalizeAiSessionTab(value) {
+    return value === 'active' ? 'active' : 'sessions';
+}
+
+function getAdjacentAiSessionTab(tab, key) {
+    tab = normalizeAiSessionTab(tab);
+    if (key === 'ArrowLeft' || key === 'ArrowRight') return tab === 'active' ? 'sessions' : 'active';
+    if (key === 'Home') return 'active';
+    if (key === 'End') return 'sessions';
+    return tab;
+}
+
+function readAiSessionTabState(vscodeApi) {
+    var state = vscodeApi && typeof vscodeApi.getState === 'function' ? vscodeApi.getState() || {} : {};
+    return state.aiSessionTabs && typeof state.aiSessionTabs === 'object' && !Array.isArray(state.aiSessionTabs)
+        ? Object.assign({}, state.aiSessionTabs)
+        : {};
+}
+
+function writeAiSessionTabState(vscodeApi, projectId, tab) {
+    if (!vscodeApi || typeof vscodeApi.setState !== 'function' || !projectId) return;
+    var state = typeof vscodeApi.getState === 'function' ? vscodeApi.getState() || {} : {};
+    var tabs = readAiSessionTabState(vscodeApi);
+    tabs[projectId] = normalizeAiSessionTab(tab);
+    vscodeApi.setState(Object.assign({}, state, { aiSessionTabs: tabs }));
+}
+
+function selectAiSessionTabDom(projectDiv, tab) {
+    if (!projectDiv || typeof projectDiv.querySelectorAll !== 'function') return null;
+    tab = normalizeAiSessionTab(tab);
+    var sessionSection = projectDiv.querySelector('.codex-sessions');
+    if (sessionSection && typeof sessionSection.setAttribute === 'function') {
+        sessionSection.setAttribute('data-selected-ai-session-tab', tab);
+    }
+    var selectedTab = null;
+    projectDiv.querySelectorAll('[data-ai-session-tab]').forEach(tabElement => {
+        var selected = tabElement.getAttribute('data-ai-session-tab') === tab;
+        tabElement.setAttribute('aria-selected', selected ? 'true' : 'false');
+        tabElement.setAttribute('tabindex', selected ? '0' : '-1');
+        if (selected) selectedTab = tabElement;
+    });
+    projectDiv.querySelectorAll('[data-ai-session-panel]').forEach(panel => {
+        var selected = panel.getAttribute('data-ai-session-panel') === tab;
+        panel.toggleAttribute('hidden', !selected);
+    });
+    return selectedTab;
+}
+
+function restoreAiSessionTabsFromState(root, vscodeApi) {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    var tabs = readAiSessionTabState(vscodeApi);
+    root.querySelectorAll('.project[data-open-project][data-id]').forEach(projectDiv => {
+        var projectId = projectDiv.getAttribute('data-id');
+        if (Object.prototype.hasOwnProperty.call(tabs, projectId)) {
+            selectAiSessionTabDom(projectDiv, tabs[projectId]);
+        }
+    });
+}
+
+function getSelectedAiSessionTab(projectDiv) {
+    if (!projectDiv || typeof projectDiv.querySelector !== 'function') return null;
+    var selected = projectDiv.querySelector('[data-ai-session-tab][aria-selected="true"]');
+    return selected ? normalizeAiSessionTab(selected.getAttribute('data-ai-session-tab')) : null;
+}
+
+function captureAiSessionViewState(projectDiv) {
+    var activeList = projectDiv.querySelector('.ai-session-active-panel .codex-sessions-list');
+    var historyList = projectDiv.querySelector('.ai-session-history-panel .codex-sessions-list');
+    var focused = typeof document !== 'undefined' ? document.activeElement : null;
+    var focusedInside = focused && typeof focused.closest === 'function' && focused.closest('.project[data-id]') === projectDiv;
+    var focusedRow = focusedInside ? focused.closest('.codex-session-row') : null;
+    var focusedTab = focusedInside ? focused.closest('[data-ai-session-tab]') : null;
+    return {
+        selectedTab: getSelectedAiSessionTab(projectDiv),
+        activeScrollTop: activeList && typeof activeList.scrollTop === 'number' ? activeList.scrollTop : 0,
+        historyScrollTop: historyList && typeof historyList.scrollTop === 'number' ? historyList.scrollTop : 0,
+        pendingCount: projectDiv.querySelectorAll('.active-ai-session-row[data-session-pending]').length,
+        activeCount: projectDiv.querySelectorAll('.active-ai-session-row[data-session-active]').length,
+        restoreFocus: !!focusedInside,
+        focusedTab: focusedTab && focusedTab.getAttribute('data-ai-session-tab'),
+        focusedRow: focusedRow ? {
+            provider: focusedRow.getAttribute('data-session-provider') || '',
+            sessionId: focusedRow.getAttribute('data-session-id') || '',
+            pendingCreatedAt: focusedRow.getAttribute('data-pending-created-at') || '',
+            panel: focusedRow.closest('[data-ai-session-panel]')?.getAttribute('data-ai-session-panel') || '',
+        } : null,
+    };
+}
+
+function restoreAiSessionViewState(projectDiv, viewState, requestedTab) {
+    var selectedTab = selectAiSessionTabDom(projectDiv, requestedTab);
+    var activeList = projectDiv.querySelector('.ai-session-active-panel .codex-sessions-list');
+    var historyList = projectDiv.querySelector('.ai-session-history-panel .codex-sessions-list');
+    if (activeList) activeList.scrollTop = Math.min(viewState.activeScrollTop, Math.max(0, activeList.scrollHeight - activeList.clientHeight));
+    if (historyList) historyList.scrollTop = Math.min(viewState.historyScrollTop, Math.max(0, historyList.scrollHeight - historyList.clientHeight));
+    if (!viewState.restoreFocus) return;
+
+    if (viewState.focusedTab) {
+        var tabToFocus = Array.from(projectDiv.querySelectorAll('[data-ai-session-tab]'))
+            .find(tab => tab.getAttribute('data-ai-session-tab') === viewState.focusedTab);
+        (tabToFocus || selectedTab)?.focus();
+        return;
+    }
+
+    if (!viewState.focusedRow) return;
+    var rows = Array.from(projectDiv.querySelectorAll('.codex-session-row'));
+    var match = rows.find(row => {
+        var panel = row.closest('[data-ai-session-panel]');
+        return (row.getAttribute('data-session-provider') || '') === viewState.focusedRow.provider
+            && (row.getAttribute('data-session-id') || '') === viewState.focusedRow.sessionId
+            && (row.getAttribute('data-pending-created-at') || '') === viewState.focusedRow.pendingCreatedAt
+            && (!viewState.focusedRow.panel || panel?.getAttribute('data-ai-session-panel') === viewState.focusedRow.panel);
+    });
+    var selectedPanel = projectDiv.querySelector('[data-ai-session-panel="' + normalizeAiSessionTab(requestedTab) + '"]');
+    (match || selectedPanel?.querySelector('.codex-session-row'))?.focus();
+}
+
 function applyOpenProjectsUpdate(message) {
     if (!message
         || message.type !== 'open-projects-updated'
@@ -25,6 +142,9 @@ function applyOpenProjectsUpdate(message) {
     }
     if (window.__projectStewardDashboard) {
         window.__projectStewardDashboard.replaceSearchCatalog(message.searchCatalog);
+    }
+    if (typeof restoreAiSessionTabsFromState === 'function') {
+        restoreAiSessionTabsFromState(document, window.vscode);
     }
     if (typeof window.__projectStewardSyncCollapseButton === 'function') {
         window.__projectStewardSyncCollapseButton();
@@ -258,7 +378,7 @@ function initProjects() {
     function selectUnpinned(sessions) {
         if (batchAiSessionState.pending)
             return;
-        sessions.filter(session => !session.pinned).forEach(session =>
+        sessions.filter(session => !session.pinned && !session.active).forEach(session =>
             batchAiSessionState.selectedIds.add(session.id)
         );
     }
@@ -382,6 +502,15 @@ function initProjects() {
     }
 
     function onTriggerAiSessionAction(target, projectId) {
+        var projectDiv = target.closest('.project[data-id]');
+        var tabAction = target.closest('[data-action="select-ai-session-tab"][data-tab]');
+        if (tabAction) {
+            var selectedTab = normalizeAiSessionTab(tabAction.getAttribute('data-tab'));
+            selectAiSessionTabDom(projectDiv, selectedTab);
+            writeAiSessionTabState(window.vscode, projectId, selectedTab);
+            return true;
+        }
+
         var providerAction = target.closest('[data-action="select-ai-provider"]');
         if (providerAction) {
             if (providerAction.tagName !== "SELECT") {
@@ -391,21 +520,16 @@ function initProjects() {
             return true;
         }
 
-        var createAction = target.closest('[data-action="create-ai-session"][data-provider]');
+        var createAction = target.closest('[data-action="create-ai-session"]');
         if (createAction) {
-            var createProvider = createAction.getAttribute("data-provider");
-            if (isAiSessionProvider(createProvider)) {
-                window.vscode.postMessage({
-                    type: 'create-ai-session',
-                    projectId,
-                    provider: createProvider,
-                });
-            }
+            window.vscode.postMessage({
+                type: 'create-ai-session',
+                projectId,
+            });
 
             return true;
         }
 
-        var projectDiv = target.closest('.project[data-id]');
         var manageAction = target.closest('[data-action="manage-ai-sessions"][data-provider]');
         if (manageAction) {
             if (batchAiSessionState.pending)
@@ -427,11 +551,12 @@ function initProjects() {
         var selectUnpinnedAction = target.closest('[data-action="select-unpinned-ai-sessions"]');
         if (selectUnpinnedAction) {
             if (isActiveAiSessionBatchScope(projectId, getProjectActiveAiSessionProvider(projectDiv))) {
-                var sessions = Array.from(projectDiv.querySelectorAll('.codex-session-row[data-session-id]'))
+                var sessions = Array.from(projectDiv.querySelectorAll('.ai-session-history-panel .codex-session-row[data-session-id]'))
                     .filter(row => (row.getAttribute("data-session-provider") || "codex") === batchAiSessionState.provider)
                     .map(row => ({
                         id: row.getAttribute("data-session-id"),
                         pinned: row.hasAttribute("data-session-pinned"),
+                        active: row.hasAttribute("data-session-active"),
                     }));
                 batchAiSessionManager.selectUnpinned(sessions);
                 syncAiSessionBatchManagementDom(projectDiv);
@@ -460,10 +585,31 @@ function initProjects() {
             return true;
         }
 
+        var closeTerminalAction = target.closest('[data-action="close-ai-session-terminal"]');
+        if (closeTerminalAction) {
+            var closeRow = closeTerminalAction.closest('.codex-session-row[data-session-provider]');
+            var closeProvider = closeRow && closeRow.getAttribute('data-session-provider');
+            if (closeRow && isAiSessionProvider(closeProvider)) {
+                var closeMessage = {
+                    type: 'close-ai-session-terminal',
+                    projectId,
+                    provider: closeProvider,
+                };
+                if (closeRow.hasAttribute('data-session-pending')) {
+                    closeMessage.pendingCreatedAt = closeRow.getAttribute('data-pending-created-at');
+                } else {
+                    closeMessage.sessionId = closeRow.getAttribute('data-session-id');
+                }
+                window.vscode.postMessage(closeMessage);
+            }
+            return true;
+        }
+
         var managedSessionRow = target.closest('.codex-session-row[data-session-id]');
         if (managedSessionRow) {
             var managedSessionProvider = managedSessionRow.getAttribute("data-session-provider") || "codex";
-            if (isActiveAiSessionBatchScope(projectId, managedSessionProvider)) {
+            if (isActiveAiSessionBatchScope(projectId, managedSessionProvider)
+                && !managedSessionRow.hasAttribute('data-session-active')) {
                 batchAiSessionManager.toggle(managedSessionRow.getAttribute("data-session-id"));
                 syncAiSessionBatchManagementDom(projectDiv);
                 return true;
@@ -504,6 +650,21 @@ function initProjects() {
             return true;
         }
 
+        var pendingSessionRow = target.closest('.codex-session-row[data-session-pending]');
+        if (pendingSessionRow) {
+            var pendingProvider = pendingSessionRow.getAttribute('data-session-provider');
+            var pendingCreatedAt = pendingSessionRow.getAttribute('data-pending-created-at');
+            if (isAiSessionProvider(pendingProvider) && pendingCreatedAt) {
+                window.vscode.postMessage({
+                    type: 'focus-pending-ai-session',
+                    projectId,
+                    provider: pendingProvider,
+                    createdAt: pendingCreatedAt,
+                });
+            }
+            return true;
+        }
+
         var sessionRow = target.closest('.codex-session-row[data-session-id]');
         if (!sessionRow)
             return false;
@@ -516,11 +677,20 @@ function initProjects() {
         acknowledgeAiSessionRow(sessionRow);
 
         if (isAiSessionProvider(sessionProvider)) {
-            window.vscode.postMessage({
-                type: getResumeAiSessionMessageType(sessionProvider),
-                projectId,
-                sessionId,
-            });
+            if (sessionRow.hasAttribute('data-session-active')) {
+                window.vscode.postMessage({
+                    type: 'focus-ai-session-terminal',
+                    projectId,
+                    provider: sessionProvider,
+                    sessionId,
+                });
+            } else {
+                window.vscode.postMessage({
+                    type: getResumeAiSessionMessageType(sessionProvider),
+                    projectId,
+                    sessionId,
+                });
+            }
         }
 
         return true;
@@ -655,16 +825,18 @@ function initProjects() {
         }
 
         var selectedIds = new Set(snapshot.selectedIds);
-        projectDiv.querySelectorAll('.codex-session-row[data-session-id]').forEach(row => {
+        projectDiv.querySelectorAll('.ai-session-history-panel .codex-session-row[data-session-id]').forEach(row => {
             var rowProvider = row.getAttribute("data-session-provider") || "codex";
+            var isActive = row.hasAttribute('data-session-active');
             var isSelected = isScoped
+                && !isActive
                 && rowProvider === snapshot.provider
                 && selectedIds.has(row.getAttribute("data-session-id"));
             row.toggleAttribute("data-ai-session-selected", isSelected);
             var checkbox = row.querySelector('.ai-session-batch-checkbox');
             if (checkbox) {
                 checkbox.checked = isSelected;
-                checkbox.disabled = isScoped && snapshot.pending;
+                checkbox.disabled = isActive || (isScoped && snapshot.pending);
             }
         });
 
@@ -999,6 +1171,7 @@ function initProjects() {
     var contextMenuAiSessionId = null;
     var contextMenuAiSessionProvider = null;
     var contextMenuAiSessionProjectId = null;
+    var contextMenuAiSessionActive = false;
     var latestAiSessionUpdateSequence = 0;
 
     function showContextMenu(contextMenuElement, e) {
@@ -1034,6 +1207,7 @@ function initProjects() {
             contextMenuAiSessionProvider = sessionRow.getAttribute("data-session-provider");
             var sessionProjectDiv = sessionRow.closest('.project[data-id]');
             contextMenuAiSessionProjectId = sessionProjectDiv ? sessionProjectDiv.getAttribute("data-id") : null;
+            contextMenuAiSessionActive = sessionRow.hasAttribute('data-session-active');
             if (!contextMenuAiSessionId || !isAiSessionProvider(contextMenuAiSessionProvider))
                 return;
 
@@ -1041,6 +1215,11 @@ function initProjects() {
             var sessionContextMenuElement = document.getElementById("aiSessionContextMenu");
             if (!sessionContextMenuElement)
                 return;
+            sessionContextMenuElement.querySelectorAll(':scope > *').forEach(element => element.classList.remove('disabled'));
+            var archiveMenuItem = sessionContextMenuElement.querySelector('[data-action="archive"]');
+            var closeMenuItem = sessionContextMenuElement.querySelector('[data-action="close-terminal"]');
+            if (archiveMenuItem) archiveMenuItem.classList.toggle('disabled', contextMenuAiSessionActive);
+            if (closeMenuItem) closeMenuItem.classList.toggle('disabled', !contextMenuAiSessionActive);
 
             showContextMenu(sessionContextMenuElement, e);
             return;
@@ -1144,7 +1323,12 @@ function initProjects() {
 
         switch (action) {
             case 'resume':
-                window.vscode.postMessage({
+                window.vscode.postMessage(contextMenuAiSessionActive ? {
+                    type: 'focus-ai-session-terminal',
+                    provider: contextMenuAiSessionProvider,
+                    projectId: contextMenuAiSessionProjectId,
+                    sessionId: contextMenuAiSessionId,
+                } : {
                     type: getResumeAiSessionMessageType(contextMenuAiSessionProvider),
                     provider: contextMenuAiSessionProvider,
                     projectId: contextMenuAiSessionProjectId,
@@ -1173,8 +1357,18 @@ function initProjects() {
                 });
                 break;
             case 'archive':
+                if (contextMenuAiSessionActive) break;
                 window.vscode.postMessage({
                     type: getArchiveAiSessionMessageType(contextMenuAiSessionProvider),
+                    provider: contextMenuAiSessionProvider,
+                    sessionId: contextMenuAiSessionId,
+                });
+                break;
+            case 'close-terminal':
+                if (!contextMenuAiSessionActive) break;
+                window.vscode.postMessage({
+                    type: 'close-ai-session-terminal',
+                    projectId: contextMenuAiSessionProjectId,
                     provider: contextMenuAiSessionProvider,
                     sessionId: contextMenuAiSessionId,
                 });
@@ -1190,6 +1384,7 @@ function initProjects() {
         contextMenuAiSessionId = null;
         contextMenuAiSessionProvider = null;
         contextMenuAiSessionProjectId = null;
+        contextMenuAiSessionActive = false;
         document.querySelectorAll(".custom-context-menu").forEach(element =>
             element.classList.remove("visible")
         );
@@ -1407,6 +1602,23 @@ function initProjects() {
             return;
         }
 
+        if (message && message.type === 'ai-session-tab-selection-requested') {
+            var requestedProject = findOpenProjectDiv(message.projectId);
+            if (requestedProject && (message.tab === 'active' || message.tab === 'sessions')) {
+                selectAiSessionTabDom(requestedProject, message.tab);
+                writeAiSessionTabState(window.vscode, message.projectId, message.tab);
+            }
+            return;
+        }
+
+        if (message && message.type === 'ai-session-status-announcement') {
+            var announcementProject = findOpenProjectDiv(message.projectId);
+            var announcement = typeof message.message === 'string' ? message.message.trim().slice(0, 256) : '';
+            var announcementRegion = announcementProject && announcementProject.querySelector('[data-ai-session-live-region]');
+            if (announcementRegion && announcement) announcementRegion.textContent = announcement;
+            return;
+        }
+
         if (message && message.type === 'active-ai-session-terminal-changed') {
             activeAiSessionTerminalState.provider = isAiSessionProvider(message.provider) ? message.provider : null;
             activeAiSessionTerminalState.sessionId = typeof message.sessionId === 'string' ? message.sessionId : null;
@@ -1530,13 +1742,25 @@ function initProjects() {
             return false;
         }
 
+        var viewState = captureAiSessionViewState(projectDiv);
+        var storedTabs = readAiSessionTabState(window.vscode);
+        var hasStoredTab = Object.prototype.hasOwnProperty.call(storedTabs, projectUpdate.projectId);
+        var requestedTab = hasStoredTab
+            ? storedTabs[projectUpdate.projectId]
+            : viewState.selectedTab || projectUpdate.defaultTab;
+
         projectDiv.toggleAttribute("data-codex-expanded", !!projectUpdate.expanded);
 
         if (typeof projectUpdate.searchText === 'string') {
             projectDiv.setAttribute("data-name", projectUpdate.searchText);
         }
 
-        updateOpenProjectAiSessionBadge(projectDiv, projectUpdate.aiSessionCount || 0, projectUpdate.attentionCount || 0);
+        updateOpenProjectAiSessionBadge(
+            projectDiv,
+            projectUpdate.aiSessionCount || 0,
+            projectUpdate.attentionCount || 0,
+            projectUpdate.activeSessionCount || 0
+        );
 
         var sessionSection = projectDiv.querySelector('.codex-sessions');
         if (sessionSection) {
@@ -1545,9 +1769,17 @@ function initProjects() {
             projectDiv.insertAdjacentHTML('beforeend', projectUpdate.sessionSectionHtml);
         }
 
+        restoreAiSessionViewState(projectDiv, viewState, requestedTab);
+        var nextPendingCount = projectDiv.querySelectorAll('.active-ai-session-row[data-session-pending]').length;
+        var nextActiveCount = projectDiv.querySelectorAll('.active-ai-session-row[data-session-active]').length;
+        if (nextPendingCount < viewState.pendingCount && nextActiveCount > viewState.activeCount) {
+            var liveRegion = projectDiv.querySelector('[data-ai-session-live-region]');
+            if (liveRegion) liveRegion.textContent = 'AI session is ready';
+        }
+
         if (projectUpdate.projectId === batchAiSessionState.projectId) {
             var activeProvider = getProjectActiveAiSessionProvider(projectDiv);
-            var remainingIds = Array.from(projectDiv.querySelectorAll('.codex-session-row[data-session-id]'))
+            var remainingIds = Array.from(projectDiv.querySelectorAll('.ai-session-history-panel .codex-session-row[data-session-id]:not([data-session-active])'))
                 .filter(row => (row.getAttribute("data-session-provider") || "codex") === activeProvider)
                 .map(row => row.getAttribute("data-session-id"))
                 .filter(sessionId => !!sessionId);
@@ -1569,7 +1801,7 @@ function initProjects() {
             if (!eventId || window.__projectStewardAttentionEvents[eventId]) return;
             window.__projectStewardAttentionEvents[eventId] = true;
             row.classList.add('attention-animate');
-            var badge = root.closest('.project')?.querySelector('.project-codex-badge.has-attention');
+            var badge = root.closest('.project')?.querySelector('.project-codex-badge .ai-session-attention-count');
             if (badge) {
                 badge.classList.add('attention-animate');
                 window.setTimeout(() => badge.classList.remove('attention-animate'), 2800);
@@ -1678,9 +1910,9 @@ function initProjects() {
         });
     }
 
-    function updateOpenProjectAiSessionBadge(projectDiv, aiSessionCount, attentionCount) {
+    function updateOpenProjectAiSessionBadge(projectDiv, aiSessionCount, attentionCount, activeSessionCount) {
         var badge = projectDiv.querySelector('.project-codex-badge');
-        if (!aiSessionCount) {
+        if (!aiSessionCount && !attentionCount && !activeSessionCount) {
             if (badge) {
                 badge.remove();
             }
@@ -1697,17 +1929,37 @@ function initProjects() {
             badge = projectDiv.querySelector('.project-codex-badge');
         }
 
-        badge.textContent = 'AI ' + aiSessionCount;
-        badge.classList.toggle('has-attention', !!attentionCount);
-        var attentionBadge = badge.querySelector('.ai-session-attention-count');
-        if (attentionCount && !attentionBadge) {
-            badge.insertAdjacentHTML('beforeend', ' <b class="ai-session-attention-count"></b>');
-            attentionBadge = badge.querySelector('.ai-session-attention-count');
+        syncAiSessionBadgeCount(badge, '.ai-session-total-count', aiSessionCount,
+            '<span class="ai-session-total-count"></span>', 'AI ' + aiSessionCount,
+            aiSessionCount + ' AI session' + (aiSessionCount === 1 ? '' : 's'));
+        syncAiSessionBadgeCount(badge, '.ai-session-active-count', activeSessionCount,
+            '<span class="ai-session-active-count"></span>', '●' + activeSessionCount,
+            activeSessionCount + ' active AI session' + (activeSessionCount === 1 ? '' : 's'));
+        syncAiSessionBadgeCount(badge, '.ai-session-attention-count', attentionCount,
+            '<b class="ai-session-attention-count"></b>', String(attentionCount),
+            attentionCount + ' AI session' + (attentionCount === 1 ? ' needs' : 's need') + ' attention');
+        var summary = [
+            aiSessionCount ? aiSessionCount + ' AI session' + (aiSessionCount === 1 ? '' : 's') : '',
+            activeSessionCount ? activeSessionCount + ' active AI session' + (activeSessionCount === 1 ? '' : 's') : '',
+            attentionCount ? attentionCount + ' AI session' + (attentionCount === 1 ? ' needs' : 's need') + ' attention' : '',
+        ].filter(Boolean).join(', ');
+        badge.setAttribute('title', summary);
+        badge.setAttribute('aria-label', summary);
+    }
+
+    function syncAiSessionBadgeCount(badge, selector, count, html, textValue, ariaLabel) {
+        var element = badge.querySelector(selector);
+        if (!count) {
+            if (element) element.remove();
+            return;
         }
-        if (attentionBadge) {
-            attentionBadge.textContent = attentionCount ? String(attentionCount) : '';
-            attentionBadge.hidden = !attentionCount;
+        if (!element) {
+            badge.insertAdjacentHTML('beforeend', html);
+            element = badge.querySelector(selector);
         }
+        if (!element) return;
+        element.textContent = textValue;
+        element.setAttribute('aria-label', ariaLabel);
     }
 
     function requestFullRefresh(reason) {
@@ -1757,6 +2009,38 @@ function initProjects() {
     });
 
     document.addEventListener("keydown", e => {
+        var tab = e.target && e.target.closest ? e.target.closest('[data-ai-session-tab]') : null;
+        if (tab && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+            e.preventDefault();
+            var nextTabId = getAdjacentAiSessionTab(tab.getAttribute('data-ai-session-tab'), e.key);
+            var projectDiv = tab.closest('.project[data-id]');
+            var nextTab = projectDiv && Array.from(projectDiv.querySelectorAll('[data-ai-session-tab]'))
+                .find(candidate => candidate.getAttribute('data-ai-session-tab') === nextTabId);
+            nextTab?.focus();
+            return;
+        }
+        if (tab && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault();
+            var tabProject = tab.closest('.project[data-id]');
+            var tabProjectId = tabProject && tabProject.getAttribute('data-id');
+            if (tabProjectId) onTriggerAiSessionAction(tab, tabProjectId);
+            return;
+        }
+
+        var sessionRow = e.target && e.target.closest ? e.target.closest('.codex-session-row') : null;
+        var interactiveChild = e.target && e.target.closest
+            ? e.target.closest('button, input, select, textarea, a[href]')
+            : null;
+        if (sessionRow && !interactiveChild && e.key === 'Enter') {
+            var rowProject = sessionRow.closest('.project[data-id]');
+            var rowProjectId = rowProject && rowProject.getAttribute('data-id');
+            if (rowProjectId) {
+                e.preventDefault();
+                onTriggerAiSessionAction(sessionRow, rowProjectId);
+            }
+            return;
+        }
+
         if (e.key === "Escape") {
             var editForm = e.target && e.target.closest ? e.target.closest('.todo-edit-form') : null;
             if (editForm) {
@@ -1772,6 +2056,7 @@ function initProjects() {
     });
 
     window.addEventListener('message', onWindowMessage);
+    restoreAiSessionTabsFromState(document, window.vscode);
     window.vscode.postMessage({ type: 'request-active-ai-session-terminal' });
     window.vscode.postMessage({ type: 'request-ai-session-attention-state' });
 
