@@ -20,6 +20,13 @@ export interface AiSessionTmuxLocator {
     windowName?: string;
 }
 
+export interface AiSessionTmuxDiscoveryDiagnostic {
+    kind: 'tmux-locator-collision';
+    identity: AiSessionRuntimeIdentity;
+    actual: AiSessionTmuxLocator;
+    expected: AiSessionTmuxLocator;
+}
+
 export interface AiSessionManagedTmuxMetadataBase {
     version: 1;
     layout: AiSessionTmuxLayout;

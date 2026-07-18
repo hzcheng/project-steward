@@ -67,6 +67,8 @@ export interface TmuxWindowRecord {
     windowName: string;
     windowId: string;
     active: boolean;
+    sessionMetadata: Record<string, string>;
+    windowMetadata: Record<string, string>;
     metadata: Record<string, string>;
 }
 
@@ -201,6 +203,8 @@ export class TmuxClient {
             );
             records.push({
                 ...row,
+                sessionMetadata: { ...sessionOptions },
+                windowMetadata: { ...windowOptions },
                 metadata: { ...sessionOptions, ...windowOptions },
             });
         }
@@ -529,7 +533,9 @@ function parseCommandNames(stdout: string): Set<string> {
     return names;
 }
 
-function parseWindowRows(stdout: string): Array<Omit<TmuxWindowRecord, 'metadata'>> {
+function parseWindowRows(
+    stdout: string
+): Array<Omit<TmuxWindowRecord, 'metadata' | 'sessionMetadata' | 'windowMetadata'>> {
     if (stdout.length > MAX_LIST_OUTPUT_LENGTH) {
         throw new TmuxClientError('list-windows', 'invalid-output');
     }
