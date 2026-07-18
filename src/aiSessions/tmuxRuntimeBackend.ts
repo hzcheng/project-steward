@@ -886,15 +886,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 'Managed tmux runtimes require a POSIX extension host.'
             );
         }
-        let availability;
-        try {
-            availability = await this.dependencies.client.checkAvailability();
-        } catch (error) {
-            throw new TmuxRuntimeUnavailableError(
-                'probe-failed',
-                error instanceof Error ? error.message : 'The tmux availability probe failed.'
-            );
-        }
+        const availability = await this.dependencies.client.checkAvailability();
         if ('category' in availability) {
             throw new TmuxRuntimeUnavailableError(
                 unavailableReason(availability.category),

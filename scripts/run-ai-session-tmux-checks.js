@@ -228,6 +228,7 @@ function createTmuxBackendHarness(options = {}) {
         checkAvailability: async () => {
             operations.push({ type: 'availability' });
             if (options.availabilityGate) await options.availabilityGate.promise;
+            if (options.availabilityError) throw options.availabilityError;
             return options.availability || { available: true, version: '3.2a' };
         },
         getExecutablePath: () => '/opt/tmux',
@@ -4631,6 +4632,30 @@ async function runRuntimeCoordinatorChecks() {
         assert.strictEqual(failedReadChoices, 0);
         assert.strictEqual(failedReadDirect.ensureResumeCalls, 0);
     }
+
+    const probeException = new Error('availability programmer failure');
+    const probeExceptionBoundary = createTmuxBackendHarness({ availabilityError: probeException });
+    const probeExceptionDirect = createFakeRuntimeBackend('vscode');
+    let probeExceptionChoices = 0;
+    let probeExceptionClears = 0;
+    const probeExceptionCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: probeExceptionDirect,
+        tmux: new tmuxBackendModule.TmuxRuntimeBackend(probeExceptionBoundary.dependencies),
+        getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => { probeExceptionChoices++; return 'direct-anyway'; },
+        hasKnownTmuxHint: async () => true,
+        clearKnownTmuxHint: async () => { probeExceptionClears++; },
+    });
+    await assert.rejects(probeExceptionCoordinator.resume(
+        fakeResumeRequest('probe-exception')), error => error === probeException);
+    assert.strictEqual(probeExceptionChoices, 0);
+    assert.strictEqual(probeExceptionDirect.ensureResumeCalls, 0);
+    assert.strictEqual(probeExceptionClears, 0);
+    assert.strictEqual(probeExceptionBoundary.operations.filter(
+        item => item.type === 'availability').length, 1);
+    assert.strictEqual(probeExceptionBoundary.operations.some(item => item.type === 'list-windows'), false);
+    assert.strictEqual(probeExceptionBoundary.operations.some(item => item.type === 'lock'), false);
+    assert.strictEqual(probeExceptionBoundary.operations.some(item => item.type === 'new-session'), false);
 
     for (const boundaryOptions of [
         { ambiguousCreateCount: 1 },
