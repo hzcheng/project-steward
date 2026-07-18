@@ -109,6 +109,12 @@ const TODO_SEARCH_ITEMS = [{
     searchText: 'preserve ai catalog release medium non-empty ai safety fixture',
 }];
 
+function decodePowerShellPayload(command) {
+    const prefix = 'powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ';
+    assert.ok(command.startsWith(prefix));
+    return Buffer.from(command.slice(prefix.length), 'base64').toString('utf16le');
+}
+
 function createTestUri(value) {
     const parsed = new URL(value);
     const uriPath = decodeURIComponent(parsed.pathname);
@@ -5712,6 +5718,7 @@ function runCommandBuilderChecks() {
             args: ['--name', "Useful; 'Title'"],
             cwd: '/work/app',
             markerPath: '/tmp/claude.done',
+            windowsDirectShell: 'powershell',
         }
     );
     assert.strictEqual(
@@ -5742,13 +5749,14 @@ function runCommandBuilderChecks() {
     assert.ok(markedCodexNewCommand.includes('/tmp/new-codex.done'));
 
     let windowsCommand = commands.buildClaudeResumeCommand('session-1', 'C:\\Repo', 'C:\\Temp\\session.done', 'win32');
-    assert.ok(windowsCommand.startsWith('powershell -NoProfile -ExecutionPolicy Bypass -Command '));
-    assert.ok(windowsCommand.includes("Set-Location -LiteralPath 'C:\\Repo'"));
-    assert.ok(windowsCommand.includes("Remove-Item -LiteralPath 'C:\\Temp\\session.done'"));
-    assert.ok(windowsCommand.includes("New-Item -ItemType File -Force -Path 'C:\\Temp\\session.done'"));
+    let windowsPayload = decodePowerShellPayload(windowsCommand);
+    assert.ok(windowsPayload.includes("Set-Location -LiteralPath 'C:\\Repo'"));
+    assert.ok(windowsPayload.includes("Remove-Item -LiteralPath 'C:\\Temp\\session.done'"));
+    assert.ok(windowsPayload.includes("New-Item -ItemType File -Force -Path 'C:\\Temp\\session.done'"));
     let windowsNewCommand = commands.buildCodexNewSessionCommand('C:\\Repo', null, 'C:\\Temp\\new-codex.done', 'win32');
-    assert.ok(windowsNewCommand.includes("codex --cd 'C:\\Repo'"));
-    assert.ok(windowsNewCommand.includes("New-Item -ItemType File -Force -Path 'C:\\Temp\\new-codex.done'"));
+    let windowsNewPayload = decodePowerShellPayload(windowsNewCommand);
+    assert.ok(windowsNewPayload.includes("codex --cd 'C:\\Repo'"));
+    assert.ok(windowsNewPayload.includes("New-Item -ItemType File -Force -Path 'C:\\Temp\\new-codex.done'"));
     assert.strictEqual(commands.quotePowerShellArg("O'Brien"), "'O''Brien'");
 }
 

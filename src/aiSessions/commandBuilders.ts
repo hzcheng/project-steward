@@ -13,6 +13,7 @@ export function buildCodexResumeLaunchSpec(sessionId: string, cwd: string, marke
         executable: 'codex',
         args: ['resume', ...(cwd ? ['--cd', cwd] : []), sessionId],
         markerPath,
+        windowsDirectShell: 'current',
     };
 }
 
@@ -21,6 +22,7 @@ export function buildCodexNewSessionLaunchSpec(cwd: string, prompt: string = nul
         executable: 'codex',
         args: [...(cwd ? ['--cd', cwd] : []), ...(prompt ? [prompt] : [])],
         markerPath,
+        windowsDirectShell: 'powershell',
     };
 }
 
@@ -29,6 +31,7 @@ export function buildKimiResumeLaunchSpec(sessionId: string, cwd: string, marker
         executable: 'kimi',
         args: [...(cwd ? ['--work-dir', cwd] : []), '--resume', sessionId],
         markerPath,
+        windowsDirectShell: 'current',
     };
 }
 
@@ -37,6 +40,7 @@ export function buildKimiNewSessionLaunchSpec(cwd: string, prompt: string = null
         executable: 'kimi',
         args: [...(cwd ? ['--work-dir', cwd] : []), ...(prompt ? ['--prompt', prompt] : [])],
         markerPath,
+        windowsDirectShell: 'powershell',
     };
 }
 
@@ -46,6 +50,7 @@ export function buildClaudeResumeLaunchSpec(sessionId: string, cwd: string, mark
         args: ['--resume', sessionId],
         cwd: cwd || undefined,
         markerPath,
+        windowsDirectShell: 'current',
     };
 }
 
@@ -55,6 +60,7 @@ export function buildClaudeNewSessionLaunchSpec(cwd: string, title: string = nul
         args: title ? ['--name', title] : [],
         cwd: cwd || undefined,
         markerPath,
+        windowsDirectShell: 'powershell',
     };
 }
 

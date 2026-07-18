@@ -5,6 +5,7 @@ export interface AiSessionLaunchSpec {
     args: string[];
     cwd?: string;
     markerPath?: string;
+    windowsDirectShell?: 'current' | 'powershell';
 }
 
 export function serializeDirectLaunchCommand(
@@ -12,6 +13,9 @@ export function serializeDirectLaunchCommand(
     platform: NodeJS.Platform = process.platform
 ): string {
     if (platform === 'win32') {
+        if (!spec.markerPath && spec.windowsDirectShell === 'current') {
+            return serializeWindowsCurrentShellCommand(spec);
+        }
         return serializePowerShellLaunchCommand(spec);
     }
 
@@ -54,7 +58,9 @@ export function quotePosixShellArg(value: string): string {
 function serializePosixCommand(spec: AiSessionLaunchSpec, quoteExecutable = false): string {
     return [
         quoteExecutable ? quotePosixShellArg(spec.executable) : spec.executable,
-        ...spec.args.map(arg => quoteExecutable || !isCliSyntaxArg(arg) ? quotePosixShellArg(arg) : arg),
+        ...spec.args.map((arg, index) => quoteExecutable || !isCliSyntaxArg(arg, index, spec.args)
+            ? quotePosixShellArg(arg)
+            : arg),
     ].join(' ');
 }
 
@@ -68,12 +74,24 @@ function serializePowerShellLaunchCommand(spec: AiSessionLaunchSpec): string {
     }
     commands.push([
         spec.executable,
-        ...spec.args.map(arg => isCliSyntaxArg(arg) ? arg : quotePowerShellArg(arg)),
+        ...spec.args.map((arg, index) => isCliSyntaxArg(arg, index, spec.args) ? arg : quotePowerShellArg(arg)),
     ].join(' '));
     if (spec.markerPath) {
         commands.push(`New-Item -ItemType File -Force -Path ${quotePowerShellArg(spec.markerPath)} | Out-Null`);
     }
-    return `powershell -NoProfile -ExecutionPolicy Bypass -Command ${quoteWindowsCommandArg(commands.join('; '))}`;
+    const encodedCommand = Buffer.from(commands.join('; '), 'utf16le').toString('base64');
+    return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
+}
+
+function serializeWindowsCurrentShellCommand(spec: AiSessionLaunchSpec): string {
+    let command = [
+        spec.executable,
+        ...spec.args.map((arg, index) => isCliSyntaxArg(arg, index, spec.args) ? arg : quoteWindowsCommandArg(arg)),
+    ].join(' ');
+    if (spec.cwd) {
+        command = `cd ${quoteWindowsCommandArg(spec.cwd)} && ${command}`;
+    }
+    return command;
 }
 
 function quotePowerShellArg(value: string): string {
@@ -84,6 +102,9 @@ function quoteWindowsCommandArg(value: string): string {
     return `"${String(value).replace(/"/g, '\\"')}"`;
 }
 
-function isCliSyntaxArg(value: string): boolean {
-    return value === 'resume' || /^--[A-Za-z][A-Za-z0-9-]*$/.test(value);
+function isCliSyntaxArg(value: string, index: number, args: readonly string[]): boolean {
+    if (/^--[A-Za-z][A-Za-z0-9-]*$/.test(value)) {
+        return true;
+    }
+    return index === 0 && args.length > 1 && /^[A-Za-z][A-Za-z0-9-]*$/.test(value);
 }

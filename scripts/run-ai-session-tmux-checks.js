@@ -10,6 +10,16 @@ function config(values) {
     return { get: (key, fallback) => Object.prototype.hasOwnProperty.call(values, key) ? values[key] : fallback };
 }
 
+function decodePowerShellPayload(command) {
+    const prefix = 'powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ';
+    assert.ok(command.startsWith(prefix));
+    return Buffer.from(command.slice(prefix.length), 'base64').toString('utf16le');
+}
+
+function quotePowerShellLiteral(value) {
+    return `'${String(value).replace(/'/g, `''`)}'`;
+}
+
 function runRuntimeConfigurationChecks() {
     assert.deepStrictEqual(runtimeConfiguration.readAiSessionRuntimeConfiguration(config({})), {
         mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux',
@@ -72,10 +82,74 @@ function runLaunchSpecChecks() {
     );
 
     const windowsCommand = launchSpec.serializeDirectLaunchCommand(spec, 'win32');
-    assert.ok(windowsCommand.startsWith('powershell -NoProfile -ExecutionPolicy Bypass -Command '));
-    assert.ok(windowsCommand.includes("Remove-Item -LiteralPath '/tmp/done marker'"));
-    assert.ok(windowsCommand.includes("New-Item -ItemType File -Force -Path '/tmp/done marker'"));
-    assert.ok(windowsCommand.includes("'session''; touch /tmp/nope; '''"));
+    const windowsPayload = decodePowerShellPayload(windowsCommand);
+    assert.ok(windowsPayload.includes("Remove-Item -LiteralPath '/tmp/done marker'"));
+    assert.ok(windowsPayload.includes("New-Item -ItemType File -Force -Path '/tmp/done marker'"));
+    assert.ok(windowsPayload.includes("'session''; touch /tmp/nope; '''"));
+
+    const adversarialValues = {
+        prompt: `Prompt "quoted"; Set-Content C:\\tmp\\prompt-pwned 1; #`,
+        title: `Title "quoted"; Set-Content C:\\tmp\\title-pwned 1; #`,
+        session: `Session "quoted"; Set-Content C:\\tmp\\session-pwned 1; #`,
+        cwd: `C:\\work\\O'Brien "quoted"; Set-Content C:\\tmp\\cwd-pwned 1; #`,
+        marker: `C:\\tmp\\done "quoted"; Set-Content C:\\tmp\\marker-pwned 1; #`,
+    };
+    const windowsSpecs = [
+        commandBuilders.buildCodexNewSessionLaunchSpec(adversarialValues.cwd, adversarialValues.prompt, adversarialValues.marker),
+        commandBuilders.buildClaudeNewSessionLaunchSpec(adversarialValues.cwd, adversarialValues.title, adversarialValues.marker),
+        commandBuilders.buildCodexResumeLaunchSpec(adversarialValues.session, adversarialValues.cwd, adversarialValues.marker),
+    ];
+    for (const windowsSpec of windowsSpecs) {
+        const command = launchSpec.serializeDirectLaunchCommand(windowsSpec, 'win32');
+        assert.strictEqual(command.includes('Set-Content'), false);
+        const payload = decodePowerShellPayload(command);
+        assert.ok(payload.includes(quotePowerShellLiteral(adversarialValues.marker)));
+        for (const value of Object.values(adversarialValues)) {
+            if (windowsSpec.args.includes(value)) {
+                assert.ok(payload.includes(quotePowerShellLiteral(value)));
+            }
+        }
+        if (windowsSpec.cwd) {
+            assert.ok(payload.includes(`Set-Location -LiteralPath ${quotePowerShellLiteral(windowsSpec.cwd)}`));
+        }
+    }
+
+    assert.strictEqual(
+        commandBuilders.buildCodexResumeCommand('session-1', 'C:\\Repo App', null, 'win32'),
+        'codex resume --cd "C:\\Repo App" "session-1"'
+    );
+    assert.strictEqual(
+        commandBuilders.buildKimiResumeCommand('session-1', 'C:\\Repo App', null, 'win32'),
+        'kimi --work-dir "C:\\Repo App" --resume "session-1"'
+    );
+    assert.strictEqual(
+        commandBuilders.buildClaudeResumeCommand('session-1', 'C:\\Repo App', null, 'win32'),
+        'cd "C:\\Repo App" && claude --resume "session-1"'
+    );
+
+    assert.strictEqual(
+        decodePowerShellPayload(commandBuilders.buildCodexNewSessionCommand('C:\\Repo App', 'Prompt', null, 'win32')),
+        "codex --cd 'C:\\Repo App' 'Prompt'"
+    );
+    assert.strictEqual(
+        decodePowerShellPayload(commandBuilders.buildKimiNewSessionCommand('C:\\Repo App', 'Prompt', null, 'win32')),
+        "kimi --work-dir 'C:\\Repo App' --prompt 'Prompt'"
+    );
+    assert.strictEqual(
+        decodePowerShellPayload(commandBuilders.buildClaudeNewSessionCommand('C:\\Repo App', 'Title', null, 'win32')),
+        "Set-Location -LiteralPath 'C:\\Repo App'; claude --name 'Title'"
+    );
+
+    assert.strictEqual(
+        launchSpec.serializeDirectLaunchCommand({ executable: 'tool', args: ['deploy', '--target', 'value'] }, 'linux'),
+        "tool deploy --target 'value'"
+    );
+    assert.strictEqual(
+        launchSpec.serializeDirectLaunchCommand({
+            executable: 'tool', args: ['resume'], windowsDirectShell: 'current',
+        }, 'win32'),
+        'tool "resume"'
+    );
 }
 
 runRuntimeConfigurationChecks();
