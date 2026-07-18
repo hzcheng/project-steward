@@ -8,8 +8,9 @@ import type { AiSessionAttentionSnapshot } from './attentionMonitor';
 import { getAiSessionCandidatePaths, getAiSessionOpenProjectCandidates } from './projectCandidates';
 import { hydrateOpenProjectsWithAiSessions } from './projectHydration';
 import { resolvePendingAiSessionTerminals } from './pendingTerminalResolver';
-import type { PendingAiSessionTerminalService } from './pendingTerminalResolver';
+import type { PendingAiSessionRuntimeCoordinator } from './pendingTerminalResolver';
 import { getAiSessionScanMaxFiles } from './scanOptions';
+import type { AiSessionPendingRuntimeSnapshot, AiSessionRuntimeSnapshot } from './runtimeTypes';
 import type {
     AiSessionAssignmentCandidate,
     AiSessionProviderDefinition,
@@ -25,6 +26,36 @@ type HydrationProvider = Pick<
     | 'projectSessionsUnavailableKey'
     | 'terminalCwdFields'
 >;
+
+interface LegacyPendingTerminalResolution<TTerminal> {
+    provider: AiSessionProviderId;
+    terminal: TTerminal;
+    markerPath: string;
+    cwd: string;
+    createdAt: string;
+    excludedSessionIds: string[];
+    title?: string;
+}
+
+interface LegacyPendingTerminalService<TTerminal> {
+    getPendingTerminals(): LegacyPendingTerminalResolution<TTerminal>[];
+    getTrackedSessionKeys(
+        getSessionKey: (providerId: AiSessionProviderId, sessionId: string) => string
+    ): Set<string>;
+    track(providerId: AiSessionProviderId, sessionId: string, entry: {
+        terminal: TTerminal;
+        markerPath: string;
+        runStartedAtMs: number;
+        cwd?: string;
+    }): void;
+    replacePendingTerminals(pendingTerminals: LegacyPendingTerminalResolution<TTerminal>[]): void;
+}
+
+interface ProjectHydrationRuntimeCoordinator<TTerminal>
+extends PendingAiSessionRuntimeCoordinator<TTerminal> {
+    getActive(): AiSessionRuntimeSnapshot<TTerminal>[];
+    getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[];
+}
 
 export interface AiSessionProjectHydrationReadCoordinator {
     getResults(options: {
@@ -47,7 +78,7 @@ export interface AiSessionProjectHydrationControllerOptions<TTerminal = unknown>
     getProviders: () => readonly HydrationProvider[];
     getSessionKey: (providerId: AiSessionProviderId, sessionId: string) => string;
     readCoordinator: AiSessionProjectHydrationReadCoordinator;
-    terminalService: PendingAiSessionTerminalService<TTerminal> & {
+    terminalService: LegacyPendingTerminalService<TTerminal> & {
         trackPending(pending: {
             provider: AiSessionProviderId;
             terminal: TTerminal;
@@ -58,6 +89,7 @@ export interface AiSessionProjectHydrationControllerOptions<TTerminal = unknown>
             title: string;
         }): void;
     };
+    runtimeCoordinator?: ProjectHydrationRuntimeCoordinator<TTerminal>;
     setAlias: (providerId: AiSessionProviderId, sessionId: string, alias: string) => void;
     syncActiveTerminal: () => void;
     getSessionComparableCwd: (providerId: AiSessionProviderId, session: CodexSession) => string;
@@ -110,8 +142,8 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
         const candidatePaths = getAiSessionCandidatePaths(openProjects, workspaceFile, workspaceFolders);
         const assignmentCandidates = getAiSessionOpenProjectCandidates(openProjects, workspaceFile, workspaceFolders);
         const maxFiles = getAiSessionScanMaxFiles(reason, this.options.incrementalScanMaxFiles);
-        const pendingTerminals = this.options.terminalService.getPendingTerminals();
-        const pendingTerminalCount = pendingTerminals.length;
+        const runtimeProjection = this.getRuntimeProjection();
+        const pendingRuntimeCount = runtimeProjection.pendingRuntimes.length;
         const aggregate = this.options.getAttentionAggregate();
         const localAttentionBySession = this.options.getLocalAttentionBySession();
         const signature = this.getCacheSignature({
@@ -123,7 +155,8 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             maxFiles,
             aggregate,
             localAttentionBySession,
-            pendingTerminals,
+            activeRuntimes: runtimeProjection.activeRuntimes,
+            pendingRuntimes: runtimeProjection.pendingRuntimes,
         });
         if (this.cache?.signature === signature) {
             this.logDiagnostic({
@@ -135,14 +168,21 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
         }
 
         const sessionResults = this.getAiSessionResults(candidatePaths, reason, maxFiles);
-        resolvePendingAiSessionTerminals({
-            terminalService: this.options.terminalService,
+        void resolvePendingAiSessionTerminals({
+            activeRuntimes: runtimeProjection.activeRuntimes,
+            pendingRuntimes: runtimeProjection.pendingRuntimes,
             sessionResults,
             providers,
             getSessionKey: this.options.getSessionKey,
+            runtimeCoordinator: runtimeProjection.runtimeCoordinator,
             setAlias: this.options.setAlias,
-            syncActiveTerminal: this.options.syncActiveTerminal,
-        });
+            syncActiveRuntime: this.options.syncActiveTerminal,
+            claimedSessionKeys: runtimeProjection.claimedSessionKeys,
+        }).catch(error => this.logDiagnostic({
+            event: 'ai-session-pending-runtime-promotion-failed',
+            reason,
+            category: error instanceof Error ? error.name : typeof error,
+        }));
         const assignments = this.getAiSessionAssignments(assignmentCandidates, sessionResults);
         const hydrated = hydrateOpenProjectsWithAiSessions({
             projects: openProjects,
@@ -167,7 +207,7 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             providerCount: providers.length,
             sessionCount: Object.values(sessionResults)
                 .reduce((count, result) => count + result.sessions.length, 0),
-            pendingTerminalCount,
+            pendingTerminalCount: pendingRuntimeCount,
         };
         this.cache = {
             signature,
@@ -206,6 +246,71 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             excludedSessionIds: Array.isArray(excludedSessionIds) ? excludedSessionIds.filter(id => !!id) : [],
             title: sanitizeAiSessionAlias(title),
         });
+    }
+
+    private getRuntimeProjection(): {
+        activeRuntimes: AiSessionRuntimeSnapshot<TTerminal>[];
+        pendingRuntimes: AiSessionPendingRuntimeSnapshot<TTerminal>[];
+        runtimeCoordinator: PendingAiSessionRuntimeCoordinator<TTerminal>;
+        claimedSessionKeys: ReadonlySet<string>;
+    } {
+        if (this.options.runtimeCoordinator) {
+            return {
+                activeRuntimes: this.options.runtimeCoordinator.getActive().map(cloneRuntime),
+                pendingRuntimes: this.options.runtimeCoordinator.getPending().map(clonePendingRuntime),
+                runtimeCoordinator: this.options.runtimeCoordinator,
+                claimedSessionKeys: new Set(),
+            };
+        }
+
+        const legacyPendingTerminals = this.options.terminalService.getPendingTerminals();
+        const pendingById = new Map<string, LegacyPendingTerminalResolution<TTerminal>>();
+        const pendingRuntimes = legacyPendingTerminals.map((pending, index) => {
+            const pendingId = `legacy:${pending.provider}:${pending.createdAt}:${index}`;
+            pendingById.set(pendingId, pending);
+            return {
+                identity: {
+                    provider: pending.provider,
+                    projectKey: pending.cwd,
+                    cwd: pending.cwd,
+                    pendingId,
+                },
+                backend: 'vscode' as const,
+                state: 'pending' as const,
+                markerPath: pending.markerPath,
+                runStartedAtMs: finiteTimestamp(pending.createdAt),
+                attached: true,
+                terminal: pending.terminal,
+                createdAt: pending.createdAt,
+                excludedSessionIds: [...pending.excludedSessionIds],
+                ...(pending.title === undefined ? {} : { title: pending.title }),
+            };
+        });
+        const runtimeCoordinator: PendingAiSessionRuntimeCoordinator<TTerminal> = {
+            promotePending: async (pendingId, sessionId) => {
+                const pending = pendingById.get(pendingId);
+                if (!pending) {
+                    return [];
+                }
+                this.options.terminalService.track(pending.provider, sessionId, {
+                    terminal: pending.terminal,
+                    markerPath: pending.markerPath,
+                    runStartedAtMs: finiteTimestamp(pending.createdAt),
+                    cwd: pending.cwd,
+                });
+                this.options.terminalService.replacePendingTerminals(
+                    this.options.terminalService.getPendingTerminals()
+                        .filter(candidate => candidate.terminal !== pending.terminal)
+                );
+                return [];
+            },
+        };
+        return {
+            activeRuntimes: [],
+            pendingRuntimes,
+            runtimeCoordinator,
+            claimedSessionKeys: this.options.terminalService.getTrackedSessionKeys(this.options.getSessionKey),
+        };
     }
 
     private getAiSessionResults(
@@ -256,7 +361,8 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
         maxFiles: number;
         aggregate: AttentionAggregate;
         localAttentionBySession: Record<string, AiSessionAttentionSnapshot>;
-        pendingTerminals: ReturnType<PendingAiSessionTerminalService<TTerminal>['getPendingTerminals']>;
+        activeRuntimes: readonly AiSessionRuntimeSnapshot<TTerminal>[];
+        pendingRuntimes: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[];
     }): string {
         return JSON.stringify({
             reason: input.reason,
@@ -296,12 +402,26 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
                     reason: snapshot.event?.reason,
                 }))
                 .sort((left, right) => left.sessionKey < right.sessionKey ? -1 : left.sessionKey > right.sessionKey ? 1 : 0),
-            pendingTerminals: input.pendingTerminals.map(pending => ({
-                provider: pending.provider,
+            activeRuntimes: input.activeRuntimes.map(runtime => ({
+                identity: { ...runtime.identity },
+                backend: runtime.backend,
+                state: runtime.state,
+                conflict: runtime.state === 'conflict',
+                markerPath: runtime.markerPath,
+                runStartedAtMs: runtime.runStartedAtMs,
+                attached: runtime.attached,
+                ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
+            })),
+            pendingRuntimes: input.pendingRuntimes.map(pending => ({
+                identity: { ...pending.identity },
+                backend: pending.backend,
+                state: pending.state,
                 markerPath: pending.markerPath,
-                cwd: pending.cwd,
+                runStartedAtMs: pending.runStartedAtMs,
+                attached: pending.attached,
+                ...(pending.tmux ? { tmux: { ...pending.tmux } } : {}),
                 createdAt: pending.createdAt,
-                excludedSessionIds: pending.excludedSessionIds,
+                excludedSessionIds: [...pending.excludedSessionIds],
                 title: pending.title,
             })),
         });
@@ -321,4 +441,30 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
                 return result;
             }, {} as Record<string, unknown>);
     }
+}
+
+function cloneRuntime<TTerminal>(
+    runtime: AiSessionRuntimeSnapshot<TTerminal>
+): AiSessionRuntimeSnapshot<TTerminal> {
+    return {
+        ...runtime,
+        identity: { ...runtime.identity },
+        ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
+    };
+}
+
+function clonePendingRuntime<TTerminal>(
+    runtime: AiSessionPendingRuntimeSnapshot<TTerminal>
+): AiSessionPendingRuntimeSnapshot<TTerminal> {
+    return {
+        ...cloneRuntime(runtime),
+        state: 'pending',
+        createdAt: runtime.createdAt,
+        excludedSessionIds: [...runtime.excludedSessionIds],
+    };
+}
+
+function finiteTimestamp(value: string): number {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
 }

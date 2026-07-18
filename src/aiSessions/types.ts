@@ -5,6 +5,7 @@ import type { BatchAiSessionArchiveResult } from './archiveBatch';
 import type { AiSessionExecutionState, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
 import type { DashboardSearchCatalog } from '../webview/dashboardViewModel';
 import type { AiSessionLaunchSpec } from './launchSpec';
+import type { AiSessionRuntimeBackendId, AiSessionTmuxLayout } from './runtimeTypes';
 
 export interface AiSessionTerminalEntry<TTerminal = unknown> {
     terminal: TTerminal;
@@ -16,6 +17,7 @@ export interface AiSessionTerminalEntry<TTerminal = unknown> {
 
 export type AiSessionTabId = 'active' | 'sessions';
 export type ActiveAiSessionExecutionState = 'starting' | AiSessionExecutionState;
+export type ActiveAiSessionStatus = 'starting' | 'running' | 'focused' | 'needsAttention' | 'conflict';
 
 export interface AiSessionActiveTerminalRuntime {
     provider: AiSessionProviderId;
@@ -30,9 +32,14 @@ export interface ActiveAiSessionViewModel {
     sessionId?: string;
     name: string;
     executionState: ActiveAiSessionExecutionState;
+    status: ActiveAiSessionStatus;
     focused: boolean;
     needsAttention: boolean;
     pending: boolean;
+    backend: AiSessionRuntimeBackendId;
+    tmuxLayout?: AiSessionTmuxLayout;
+    attached: boolean;
+    conflict?: boolean;
     updatedAt?: string;
     createdAt?: string;
     pinned?: boolean;

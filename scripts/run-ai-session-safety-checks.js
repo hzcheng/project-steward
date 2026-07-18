@@ -524,8 +524,7 @@ function runPendingTerminalMatcherChecks() {
     );
 
     const match = aiSessionPendingTerminals.findPendingAiSessionTerminalMatch({
-        provider: 'codex',
-        cwd: '/work/app',
+        identity: { provider: 'codex', pendingId: 'pending-codex', projectKey: '/work/app', cwd: '/work/app' },
         createdAt: '2026-07-15T10:00:00Z',
         excludedSessionIds: ['excluded'],
     }, result, new Set(['codex:claimed']), (providerId, sessionId) => `${providerId}:${sessionId}`, providerDefinitions);
@@ -533,8 +532,7 @@ function runPendingTerminalMatcherChecks() {
     assert.strictEqual(match.id, 'newest');
     assert.strictEqual(
         aiSessionPendingTerminals.findPendingAiSessionTerminalMatch({
-            provider: 'kimi',
-            cwd: '/work/app',
+            identity: { provider: 'kimi', pendingId: 'pending-kimi', projectKey: '/work/app', cwd: '/work/app' },
             createdAt: '2026-07-15T10:00:00Z',
             excludedSessionIds: [],
         }, {
@@ -566,42 +564,44 @@ function runTerminalCandidateChecks() {
     assert.deepStrictEqual(calls, [['codex', { reason: 'terminal-candidates' }]]);
 }
 
-function runPendingTerminalResolverChecks() {
+async function runPendingTerminalResolverChecks() {
     const providerDefinitions = [
         { id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions', terminalCwdFields: ['cwd'] },
     ];
-    const pendingTerminals = [
+    const pendingRuntimes = [
         {
-            provider: 'codex',
-            terminal: { name: 'Codex: New' },
+            identity: { provider: 'codex', pendingId: 'pending-new', projectKey: '/work/app', cwd: '/work/app' },
+            backend: 'vscode',
+            state: 'pending',
             markerPath: '/tmp/new.done',
-            cwd: '/work/app',
+            runStartedAtMs: Date.parse('2026-07-15T10:00:00Z'),
+            attached: true,
             createdAt: '2026-07-15T10:00:00Z',
             excludedSessionIds: ['old'],
             title: 'Created Alias',
         },
         {
-            provider: 'codex',
-            terminal: { name: 'Codex: Still Pending' },
+            identity: { provider: 'codex', pendingId: 'pending-other', projectKey: '/work/other', cwd: '/work/other' },
+            backend: 'vscode',
+            state: 'pending',
             markerPath: '/tmp/pending.done',
-            cwd: '/work/other',
+            runStartedAtMs: Date.parse('2026-07-15T10:00:00Z'),
+            attached: true,
             createdAt: '2026-07-15T10:00:00Z',
             excludedSessionIds: [],
         },
     ];
-    const tracked = [];
+    const promotions = [];
     const aliases = [];
-    const replacements = [];
     let synced = 0;
-    const terminalService = {
-        getPendingTerminals: () => pendingTerminals.slice(),
-        getTrackedSessionKeys: getKey => new Set([getKey('codex', 'claimed')]),
-        track: (providerId, sessionId, entry) => tracked.push([providerId, sessionId, entry]),
-        replacePendingTerminals: remaining => replacements.push(remaining),
-    };
 
-    const matched = aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals({
-        terminalService,
+    const matched = await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals({
+        pendingRuntimes,
+        activeRuntimes: [{
+            identity: { provider: 'codex', sessionId: 'claimed', projectKey: '/work/app', cwd: '/work/app' },
+            backend: 'vscode', state: 'active', markerPath: '/tmp/claimed.done',
+            runStartedAtMs: 1, attached: true,
+        }],
         sessionResults: {
             codex: {
                 available: true,
@@ -616,18 +616,19 @@ function runPendingTerminalResolverChecks() {
         },
         providers: providerDefinitions,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        runtimeCoordinator: {
+            promotePending: async (pendingId, sessionId) => {
+                promotions.push([pendingId, sessionId]);
+                return [];
+            },
+        },
         setAlias: (providerId, sessionId, alias) => aliases.push([providerId, sessionId, alias]),
-        syncActiveTerminal: () => { synced++; },
+        syncActiveRuntime: () => { synced++; },
     });
 
     assert.strictEqual(matched, true);
-    assert.deepStrictEqual(tracked.map(item => item.slice(0, 2)), [['codex', 'new']]);
-    assert.strictEqual(tracked[0][2].terminal, pendingTerminals[0].terminal);
-    assert.strictEqual(tracked[0][2].markerPath, '/tmp/new.done');
-    assert.strictEqual(tracked[0][2].runStartedAtMs, Date.parse('2026-07-15T10:00:00Z'));
-    assert.strictEqual(tracked[0][2].cwd, '/work/app');
+    assert.deepStrictEqual(promotions, [['pending-new', 'new']]);
     assert.deepStrictEqual(aliases, [['codex', 'new', 'Created Alias']]);
-    assert.deepStrictEqual(replacements, [[pendingTerminals[1]]]);
     assert.strictEqual(synced, 1);
 }
 
@@ -912,14 +913,22 @@ function runActiveAiSessionProjectionChecks() {
     const projected = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects,
         providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
-        activeTerminals: [
-            { provider: 'codex', sessionId: 'c1', cwd: '/work/app', runStartedAtMs: 10 },
-            { provider: 'kimi', sessionId: 'k1', cwd: '/work/app', runStartedAtMs: 20 },
+        activeRuntimes: [
+            {
+                identity: { provider: 'codex', sessionId: 'c1', projectKey: '/work/app', cwd: '/work/app' },
+                backend: 'vscode', state: 'active', markerPath: '/tmp/c1.done', runStartedAtMs: 10, attached: true,
+            },
+            {
+                identity: { provider: 'kimi', sessionId: 'k1', projectKey: '/work/app', cwd: '/work/app' },
+                backend: 'vscode', state: 'active', markerPath: '/tmp/k1.done', runStartedAtMs: 20, attached: true,
+            },
         ],
-        pendingTerminals: [{
-            provider: 'claude',
-            cwd: '/work/app',
+        pendingRuntimes: [{
+            identity: { provider: 'claude', pendingId: 'pending-claude', projectKey: '/work/app', cwd: '/work/app' },
+            backend: 'vscode', state: 'pending', markerPath: '/tmp/claude.done',
+            runStartedAtMs: Date.parse('2026-07-18T03:00:00Z'), attached: true,
             createdAt: '2026-07-18T03:00:00Z',
+            excludedSessionIds: [],
             title: 'New Claude',
         }],
         executionSnapshot: {
@@ -931,16 +940,16 @@ function runActiveAiSessionProjectionChecks() {
         normalizePath: value => value && value.replace(/\/$/, ''),
     });
 
-    assert.ok(projected[0].activeAiSessions.every(item => !Object.prototype.hasOwnProperty.call(item, 'status')));
     assert.deepStrictEqual(projected[0].activeAiSessions.map(item => ({
         provider: item.provider,
         executionState: item.executionState,
+        status: item.status,
         focused: item.focused,
         needsAttention: item.needsAttention,
     })), [
-        { provider: 'kimi', executionState: 'stopped', focused: false, needsAttention: true },
-        { provider: 'codex', executionState: 'running', focused: true, needsAttention: false },
-        { provider: 'claude', executionState: 'starting', focused: false, needsAttention: false },
+        { provider: 'kimi', executionState: 'stopped', status: 'needsAttention', focused: false, needsAttention: true },
+        { provider: 'codex', executionState: 'running', status: 'focused', focused: true, needsAttention: false },
+        { provider: 'claude', executionState: 'starting', status: 'starting', focused: false, needsAttention: false },
     ]);
     assert.deepStrictEqual(projected[0].activeAiSessions.map(item => item.provider), ['kimi', 'codex', 'claude']);
     assert.strictEqual(projected[0].activeAiSessions[0].focused, false);
@@ -979,13 +988,16 @@ function runActiveAiSessionProjectionChecks() {
     const withoutHistory = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'historyless', path: '/work/historyless', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
         providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
-        activeTerminals: [{
-            provider: 'claude',
-            sessionId: '1234567890abcdef',
-            cwd: '/work/historyless/',
+        activeRuntimes: [{
+            identity: {
+                provider: 'claude', sessionId: '1234567890abcdef',
+                projectKey: '/work/historyless', cwd: '/work/historyless/',
+            },
+            backend: 'vscode', state: 'active', markerPath: '/tmp/historyless.done',
             runStartedAtMs: 30,
+            attached: true,
         }],
-        pendingTerminals: [],
+        pendingRuntimes: [],
         executionSnapshot: {},
         focusedIdentity: null,
         getProjectCwd: project => project.path,
@@ -1000,10 +1012,20 @@ function runActiveAiSessionProjectionChecks() {
     const stableStarting = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'stable', path: '/work/stable', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
         providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
-        activeTerminals: [],
-        pendingTerminals: [
-            { provider: 'kimi', cwd: '/work/stable', createdAt: '2026-07-18T03:00:00Z', title: 'First' },
-            { provider: 'codex', cwd: '/work/stable', createdAt: '2026-07-18T03:01:00Z', title: 'Second' },
+        activeRuntimes: [],
+        pendingRuntimes: [
+            {
+                identity: { provider: 'kimi', pendingId: 'first', projectKey: '/work/stable', cwd: '/work/stable' },
+                backend: 'vscode', state: 'pending', markerPath: '/tmp/first.done', attached: true,
+                runStartedAtMs: Date.parse('2026-07-18T03:00:00Z'),
+                createdAt: '2026-07-18T03:00:00Z', excludedSessionIds: [], title: 'First',
+            },
+            {
+                identity: { provider: 'codex', pendingId: 'second', projectKey: '/work/stable', cwd: '/work/stable' },
+                backend: 'vscode', state: 'pending', markerPath: '/tmp/second.done', attached: true,
+                runStartedAtMs: Date.parse('2026-07-18T03:01:00Z'),
+                createdAt: '2026-07-18T03:01:00Z', excludedSessionIds: [], title: 'Second',
+            },
         ],
         executionSnapshot: {},
         focusedIdentity: null,
@@ -1015,8 +1037,8 @@ function runActiveAiSessionProjectionChecks() {
     const empty = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'empty', path: '/work/empty', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
         providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
-        activeTerminals: [],
-        pendingTerminals: [],
+        activeRuntimes: [],
+        pendingRuntimes: [],
         executionSnapshot: {},
         focusedIdentity: null,
         getProjectCwd: project => project.path,
@@ -1718,6 +1740,43 @@ async function runAiSessionProjectHydrationControllerChecks() {
             this.pending.push(pending);
         },
     };
+    const activeRuntimes = [];
+    const runtimeCoordinator = {
+        getActive: () => activeRuntimes,
+        getPending: () => terminalService.pending.map((pending, index) => ({
+            identity: {
+                provider: pending.provider,
+                pendingId: `hydration:${pending.createdAt}:${index}`,
+                projectKey: pending.cwd,
+                cwd: pending.cwd,
+            },
+            backend: 'vscode',
+            state: 'pending',
+            markerPath: pending.markerPath,
+            runStartedAtMs: Date.parse(pending.createdAt),
+            attached: true,
+            createdAt: pending.createdAt,
+            excludedSessionIds: [...pending.excludedSessionIds],
+            ...(pending.title === undefined ? {} : { title: pending.title }),
+        })),
+        promotePending: async (pendingId, sessionId) => {
+            const pending = runtimeCoordinator.getPending().find(runtime => runtime.identity.pendingId === pendingId);
+            const entry = terminalService.pending.find(candidate => candidate.createdAt === pending?.createdAt);
+            if (!entry) {
+                return [];
+            }
+            terminalService.track(entry.provider, sessionId, {
+                terminal: entry.terminal,
+                markerPath: entry.markerPath,
+                runStartedAtMs: Date.parse(entry.createdAt),
+                cwd: entry.cwd,
+            });
+            terminalService.replacePendingTerminals(
+                terminalService.pending.filter(candidate => candidate !== entry)
+            );
+            return [];
+        },
+    };
     const aliasesSet = [];
     const synced = [];
     const diagnostics = [];
@@ -1755,6 +1814,7 @@ async function runAiSessionProjectHydrationControllerChecks() {
             },
         },
         terminalService,
+        runtimeCoordinator,
         setAlias: (providerId, sessionId, alias) => aliasesSet.push([providerId, sessionId, alias]),
         syncActiveTerminal: () => synced.push('sync'),
         getSessionComparableCwd: (providerId, session) => session.cwd,
@@ -1810,6 +1870,7 @@ async function runAiSessionProjectHydrationControllerChecks() {
         title: ' Pending Alias ',
     }];
     const hydrated = controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A' }]);
+    await Promise.resolve();
 
     assert.deepStrictEqual(readOptions[0], {
         candidatePaths: ['/work/a'],
@@ -1901,6 +1962,33 @@ async function runAiSessionProjectHydrationControllerChecks() {
         { id: 'project-b', path: '/work/b', name: 'Project B' },
     ]);
     assert.strictEqual(readOptions.length, 7, 'hydration cache must clear after the current turn');
+
+    const runtimeSignatureProject = [
+        { id: 'project-a', path: '/work/a', name: 'Project A' },
+        { id: 'project-b', path: '/work/b', name: 'Project B' },
+    ];
+    activeRuntimes.push({
+        identity: { provider: 'codex', sessionId: 'session-a', projectKey: 'key:/work/a', cwd: '/work/a' },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/session-a.done',
+        runStartedAtMs: 1, attached: true,
+    });
+    controller.hydrate(runtimeSignatureProject);
+    assert.strictEqual(readOptions.length, 8, 'hydration cache signature must include active runtime identities');
+    activeRuntimes[0].backend = 'tmux';
+    controller.hydrate(runtimeSignatureProject);
+    assert.strictEqual(readOptions.length, 9, 'hydration cache signature must include runtime backend');
+    activeRuntimes[0].tmux = { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-a' };
+    controller.hydrate(runtimeSignatureProject);
+    assert.strictEqual(readOptions.length, 10, 'hydration cache signature must include tmux locator');
+    activeRuntimes[0].tmux.layout = 'session';
+    controller.hydrate(runtimeSignatureProject);
+    assert.strictEqual(readOptions.length, 11, 'hydration cache signature must include tmux layout');
+    activeRuntimes[0].attached = false;
+    controller.hydrate(runtimeSignatureProject);
+    assert.strictEqual(readOptions.length, 12, 'hydration cache signature must include attachment state');
+    activeRuntimes[0].state = 'conflict';
+    controller.hydrate(runtimeSignatureProject);
+    assert.strictEqual(readOptions.length, 13, 'hydration cache signature must include conflict state');
 
     controller.trackPendingTerminal('codex', null, '/tmp/skip.done', '/work/a', '2026-07-16T10:00:00.000Z', [], 'skip');
     controller.trackPendingTerminal('codex', { name: 'terminal' }, '', '/work/a', '2026-07-16T10:00:00.000Z', [], 'skip');
@@ -2938,7 +3026,8 @@ function runWebviewContentChecks() {
     assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
     const pendingTerminalResolverSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'pendingTerminalResolver.ts'), 'utf8');
     const resumeControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'resumeController.ts'), 'utf8');
-    assert.ok(pendingTerminalResolverSource.includes('runStartedAtMs: Date.parse(pendingTerminal.createdAt)'));
+    assert.ok(pendingTerminalResolverSource.includes('runtimeCoordinator.promotePending(pendingId, session.id)'));
+    assert.ok(!pendingTerminalResolverSource.includes('.terminal'));
     assert.ok(resumeControllerSource.includes('runStartedAtMs: this.options.nowMs()'));
     assert.ok(dashboard.includes('nowMs: () => Date.now()'));
     assert.ok(dashboardRuntimeControllerSource.includes("type: 'ai-session-attention-projects-updated'"));
@@ -4418,8 +4507,9 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(sessionPathsSource.includes('export function getAiSessionTerminalName('));
     assert.ok(pendingTerminalsSource.includes('export function getAiSessionIdsForCwd('));
     assert.ok(pendingTerminalsSource.includes('export function findPendingAiSessionTerminalMatch('));
-    assert.ok(pendingTerminalResolverSource.includes('export function resolvePendingAiSessionTerminals'));
-    assert.ok(pendingTerminalResolverSource.includes('replacePendingTerminals'));
+    assert.ok(pendingTerminalResolverSource.includes('export async function resolvePendingAiSessionTerminals'));
+    assert.ok(pendingTerminalResolverSource.includes('runtimeCoordinator.promotePending(pendingId, session.id)'));
+    assert.ok(!pendingTerminalResolverSource.includes('replacePendingTerminals'));
     assert.ok(terminalCandidatesSource.includes('export function getAiSessionTerminalCandidates('));
     assert.ok(terminalCandidatesSource.includes("reason: 'terminal-candidates'"));
     assert.ok(scanOptionsSource.includes('export function getAiSessionScanMaxFiles('));
@@ -6964,7 +7054,7 @@ async function main() {
     runSessionPathChecks();
     runPendingTerminalMatcherChecks();
     runTerminalCandidateChecks();
-    runPendingTerminalResolverChecks();
+    await runPendingTerminalResolverChecks();
     runScanOptionChecks();
     runTerminalCwdChecks();
     runDisplayChecks();

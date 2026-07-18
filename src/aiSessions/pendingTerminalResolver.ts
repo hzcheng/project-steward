@@ -1,77 +1,90 @@
 'use strict';
 
 import type { AiSessionProviderId } from '../models';
-import { findPendingAiSessionTerminalMatch, PendingAiSessionTerminalMatchInput } from './pendingTerminals';
-import type { AiSessionProviderDefinition, AiSessionReadResult, AiSessionTerminalEntry } from './types';
+import { findPendingAiSessionTerminalMatch } from './pendingTerminals';
+import type {
+    AiSessionPendingRuntimeSnapshot,
+    AiSessionRuntimeSnapshot,
+} from './runtimeTypes';
+import type { AiSessionProviderDefinition, AiSessionReadResult } from './types';
 
-type AiSessionPendingTerminalProvider = Pick<
+type AiSessionPendingRuntimeProvider = Pick<
     AiSessionProviderDefinition,
     'id' | 'terminalNamePrefix' | 'projectSessionsKey' | 'terminalCwdFields'
 >;
 
-export interface PendingAiSessionTerminalResolution<TTerminal = unknown> extends PendingAiSessionTerminalMatchInput {
-    terminal: TTerminal;
-    markerPath: string;
-    title?: string;
-}
-
-export interface PendingAiSessionTerminalService<TTerminal = unknown> {
-    getPendingTerminals(): PendingAiSessionTerminalResolution<TTerminal>[];
-    getTrackedSessionKeys(getSessionKey: (providerId: AiSessionProviderId, sessionId: string) => string): Set<string>;
-    track(providerId: AiSessionProviderId, sessionId: string, entry: AiSessionTerminalEntry<TTerminal>): void;
-    replacePendingTerminals(pendingTerminals: PendingAiSessionTerminalResolution<TTerminal>[]): void;
+export interface PendingAiSessionRuntimeCoordinator<TTerminal = unknown> {
+    promotePending(pendingId: string, sessionId: string): Promise<AiSessionRuntimeSnapshot<TTerminal>[]>;
 }
 
 export interface ResolvePendingAiSessionTerminalsOptions<TTerminal = unknown> {
-    terminalService: PendingAiSessionTerminalService<TTerminal>;
+    pendingRuntimes: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[];
+    activeRuntimes: readonly AiSessionRuntimeSnapshot<TTerminal>[];
     sessionResults: Record<AiSessionProviderId, AiSessionReadResult>;
-    providers: readonly AiSessionPendingTerminalProvider[];
+    providers: readonly AiSessionPendingRuntimeProvider[];
     getSessionKey: (providerId: AiSessionProviderId, sessionId: string) => string;
+    runtimeCoordinator: PendingAiSessionRuntimeCoordinator<TTerminal>;
     setAlias: (providerId: AiSessionProviderId, sessionId: string, alias: string) => void;
-    syncActiveTerminal: () => void;
+    syncActiveRuntime: () => void;
+    claimedSessionKeys?: ReadonlySet<string>;
 }
 
-export function resolvePendingAiSessionTerminals<TTerminal = unknown>(
+export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
     options: ResolvePendingAiSessionTerminalsOptions<TTerminal>
-): boolean {
-    let pendingTerminals = options.terminalService.getPendingTerminals();
-    if (!pendingTerminals.length) {
+): Promise<boolean> {
+    const pendingRuntimes = options.pendingRuntimes.map(clonePendingRuntime);
+    if (!pendingRuntimes.length) {
         return false;
     }
 
-    let remainingPendingTerminals: PendingAiSessionTerminalResolution<TTerminal>[] = [];
-    let claimedSessionKeys = options.terminalService.getTrackedSessionKeys(options.getSessionKey);
-    let matchedPendingTerminal = false;
+    const claimedSessionKeys = new Set(options.claimedSessionKeys || []);
+    for (const runtime of options.activeRuntimes) {
+        if (runtime.identity.sessionId) {
+            claimedSessionKeys.add(options.getSessionKey(
+                runtime.identity.provider,
+                runtime.identity.sessionId
+            ));
+        }
+    }
 
-    for (let pendingTerminal of pendingTerminals) {
-        let sessionResult = options.sessionResults[pendingTerminal.provider];
-        let session = findPendingAiSessionTerminalMatch(
-            pendingTerminal,
+    let matchedPendingRuntime = false;
+    for (const pendingRuntime of pendingRuntimes) {
+        const pendingId = pendingRuntime.identity.pendingId;
+        const sessionResult = options.sessionResults[pendingRuntime.identity.provider];
+        if (!pendingId || !sessionResult) {
+            continue;
+        }
+        const session = findPendingAiSessionTerminalMatch(
+            pendingRuntime,
             sessionResult,
             claimedSessionKeys,
             options.getSessionKey,
             options.providers
         );
         if (!session) {
-            remainingPendingTerminals.push(pendingTerminal);
             continue;
         }
 
-        options.terminalService.track(pendingTerminal.provider, session.id, {
-            terminal: pendingTerminal.terminal,
-            markerPath: pendingTerminal.markerPath,
-            runStartedAtMs: Date.parse(pendingTerminal.createdAt),
-            cwd: pendingTerminal.cwd,
-        });
-        options.setAlias(pendingTerminal.provider, session.id, pendingTerminal.title);
-        claimedSessionKeys.add(options.getSessionKey(pendingTerminal.provider, session.id));
-        matchedPendingTerminal = true;
+        await options.runtimeCoordinator.promotePending(pendingId, session.id);
+        options.setAlias(pendingRuntime.identity.provider, session.id, pendingRuntime.title);
+        claimedSessionKeys.add(options.getSessionKey(pendingRuntime.identity.provider, session.id));
+        matchedPendingRuntime = true;
     }
 
-    options.terminalService.replacePendingTerminals(remainingPendingTerminals);
-    if (matchedPendingTerminal) {
-        options.syncActiveTerminal();
+    if (matchedPendingRuntime) {
+        options.syncActiveRuntime();
     }
+    return matchedPendingRuntime;
+}
 
-    return matchedPendingTerminal;
+function clonePendingRuntime<TTerminal>(
+    runtime: AiSessionPendingRuntimeSnapshot<TTerminal>
+): AiSessionPendingRuntimeSnapshot<TTerminal> {
+    return {
+        ...runtime,
+        identity: { ...runtime.identity },
+        ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
+        state: 'pending',
+        excludedSessionIds: [...runtime.excludedSessionIds],
+    };
 }

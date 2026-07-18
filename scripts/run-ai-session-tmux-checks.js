@@ -18,6 +18,7 @@ const directBackendModule = require('../out/aiSessions/directTerminalRuntimeBack
 const coordinatorModule = require('../out/aiSessions/runtimeCoordinator');
 const runtimeTypesModule = require('../out/aiSessions/runtimeTypes');
 const tmuxBackendModule = require('../out/aiSessions/tmuxRuntimeBackend');
+const activeSessionProjection = require('../out/aiSessions/activeSessionProjection');
 
 function config(values) {
     return { get: (key, fallback) => Object.prototype.hasOwnProperty.call(values, key) ? values[key] : fallback };
@@ -4739,6 +4740,151 @@ async function runRuntimeCoordinatorChecks() {
     assert.deepStrictEqual(routedTmux.closed, [closedTerminal]);
 }
 
+async function runRuntimeProjectionChecks() {
+    const providerFixtures = {
+        codex: { id: 'codex', label: 'Codex', projectSessionsKey: 'codexSessions' },
+        kimi: { id: 'kimi', label: 'Kimi', projectSessionsKey: 'kimiSessions' },
+        claude: { id: 'claude', label: 'Claude', projectSessionsKey: 'claudeSessions' },
+    };
+    const activeRuntimes = [{
+        identity: { provider: 'codex', sessionId: 's1', projectKey: 'pk', cwd: '/work' },
+        markerPath: '/tmp/m',
+        state: 'active',
+        runStartedAtMs: 1,
+        backend: 'tmux',
+        tmux: {
+            layout: 'project',
+            sessionName: 'project-steward-p-a',
+            windowName: 'ai-codex-b',
+        },
+        attached: false,
+    }];
+    const projected = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{
+            id: 'p', path: '/work',
+            codexSessions: [{ id: 's1', name: 'One' }],
+            kimiSessions: [], claudeSessions: [],
+        }],
+        providers: providerFixtures,
+        activeRuntimes,
+        pendingRuntimes: [],
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    const model = projected[0].activeAiSessions[0];
+    assert.strictEqual(model.backend, 'tmux');
+    assert.strictEqual(model.tmuxLayout, 'project');
+    assert.strictEqual(model.attached, false);
+    assert.strictEqual(model.status, 'running');
+
+    const focused = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{
+            id: 'p', path: '/work',
+            codexSessions: [{ id: 's1', name: 'One' }],
+            kimiSessions: [], claudeSessions: [],
+        }],
+        providers: providerFixtures,
+        activeRuntimes,
+        pendingRuntimes: [],
+        focusedIdentity: { provider: 'codex', sessionId: 's1', projectKey: 'pk', cwd: '/work' },
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.strictEqual(focused[0].activeAiSessions[0].status, 'focused');
+    assert.strictEqual(focused[0].codexSessions[0].focused, true);
+
+    const conflicted = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{
+            id: 'p', path: '/work',
+            codexSessions: [{ id: 's1', name: 'One' }],
+            kimiSessions: [], claudeSessions: [],
+        }],
+        providers: providerFixtures,
+        activeRuntimes: [{ ...activeRuntimes[0], state: 'conflict', attached: true }],
+        pendingRuntimes: [],
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.strictEqual(conflicted[0].activeAiSessions[0].status, 'conflict');
+    assert.strictEqual(conflicted[0].activeAiSessions[0].conflict, true);
+
+    const duplicateConflict = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{
+            id: 'p', path: '/work',
+            codexSessions: [{ id: 's1', name: 'One' }],
+            kimiSessions: [], claudeSessions: [],
+        }],
+        providers: providerFixtures,
+        activeRuntimes: [
+            activeRuntimes[0],
+            {
+                ...activeRuntimes[0],
+                identity: { ...activeRuntimes[0].identity },
+                backend: 'vscode', attached: true, tmux: undefined,
+            },
+        ],
+        pendingRuntimes: [],
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.strictEqual(duplicateConflict[0].activeAiSessions.length, 1);
+    assert.strictEqual(duplicateConflict[0].activeAiSessions[0].status, 'conflict');
+
+    const cwdFirst = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [
+            { id: 'cwd', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] },
+            { id: 'history', path: '/history', codexSessions: [{ id: 's1', name: 'One' }], kimiSessions: [], claudeSessions: [] },
+        ],
+        providers: providerFixtures,
+        activeRuntimes,
+        pendingRuntimes: [],
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.strictEqual(cwdFirst[0].activeAiSessions.length, 1);
+    assert.strictEqual(cwdFirst[1].activeAiSessions.length, 0);
+
+    const historyFallbackRuntime = {
+        ...activeRuntimes[0],
+        identity: { ...activeRuntimes[0].identity, cwd: '/unknown' },
+    };
+    const historyFallback = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [
+            { id: 'cwd', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] },
+            { id: 'history', path: '/history', codexSessions: [{ id: 's1', name: 'One' }], kimiSessions: [], claudeSessions: [] },
+        ],
+        providers: providerFixtures,
+        activeRuntimes: [historyFallbackRuntime],
+        pendingRuntimes: [],
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.strictEqual(historyFallback[0].activeAiSessions.length, 0);
+    assert.strictEqual(historyFallback[1].activeAiSessions.length, 1);
+
+    const noLegacyFallback = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
+        providers: providerFixtures,
+        activeRuntimes: [],
+        pendingRuntimes: [],
+        activeTerminals: [{ provider: 'codex', sessionId: 'legacy', cwd: '/work', runStartedAtMs: 1 }],
+        pendingTerminals: [{ provider: 'kimi', cwd: '/work', createdAt: '2026-07-18T10:00:00Z' }],
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.deepStrictEqual(noLegacyFallback[0].activeAiSessions, []);
+
+    activeRuntimes[0].identity.cwd = '/mutated';
+    assert.strictEqual(model.name, 'One', 'projected models must not retain runtime identity references');
+
+}
+
 async function main() {
     runRuntimeConfigurationChecks();
     runLaunchSpecChecks();
@@ -4749,6 +4895,7 @@ async function main() {
     await runTmuxBackendChecks();
     await runDirectBackendChecks();
     await runRuntimeCoordinatorChecks();
+    await runRuntimeProjectionChecks();
     console.log('AI session tmux checks passed.');
 }
 
