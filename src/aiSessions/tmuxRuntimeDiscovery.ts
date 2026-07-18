@@ -83,9 +83,14 @@ export class TmuxRuntimeDiscovery {
             }
             if (!this.forcedAfterInFlight) {
                 const joined = this.inFlight;
-                const startFresh = () => this.startRefresh();
-                const forced = joined.then(startFresh, startFresh);
                 let tracked: Promise<void>;
+                const startFresh = () => {
+                    if (this.forcedAfterInFlight === tracked) {
+                        this.forcedAfterInFlight = null;
+                    }
+                    return this.startRefresh();
+                };
+                const forced = joined.then(startFresh, startFresh);
                 tracked = forced.then(
                     () => {
                         if (this.forcedAfterInFlight === tracked) {
