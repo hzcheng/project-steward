@@ -14,6 +14,8 @@ const discoveryModule = require('../out/aiSessions/tmuxRuntimeDiscovery');
 const runtimeStoreModule = require('../out/aiSessions/tmuxRuntimeBindingStore');
 const attachStoreModule = require('../out/aiSessions/tmuxAttachBindingStore');
 const creationLock = require('../out/aiSessions/tmuxCreationLock');
+const directBackendModule = require('../out/aiSessions/directTerminalRuntimeBackend');
+const coordinatorModule = require('../out/aiSessions/runtimeCoordinator');
 
 function config(values) {
     return { get: (key, fallback) => Object.prototype.hasOwnProperty.call(values, key) ? values[key] : fallback };
@@ -3998,6 +4000,353 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(restoreHarness.attachBindings.has(originalProcessId), false);
 }
 
+function fakeRuntime(backend, sessionId, overrides = {}) {
+    return {
+        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId },
+        backend,
+        state: 'active',
+        markerPath: '/tmp/m',
+        runStartedAtMs: 1,
+        attached: true,
+        ...overrides,
+    };
+}
+
+function fakeResumeRequest(sessionId) {
+    return {
+        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId },
+        projectName: 'App',
+        terminalName: 'Codex: App',
+        launch: { executable: 'codex', args: ['resume', sessionId], markerPath: '/tmp/m' },
+    };
+}
+
+function fakeCreateRequest(pendingId) {
+    return {
+        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId },
+        projectName: 'App',
+        terminalName: 'Codex: App',
+        createdAt: '2026-07-18T10:00:00.000Z',
+        excludedSessionIds: ['old'],
+        title: 'New work',
+        launch: { executable: 'codex', args: [], markerPath: '/tmp/pending' },
+    };
+}
+
+function createFakeRuntimeBackend(backend, options = {}) {
+    const fake = {
+        backend,
+        active: [],
+        pending: [],
+        refreshCalls: [],
+        ensureResumeCalls: 0,
+        ensurePendingCalls: 0,
+        focusCalls: [],
+        detachCalls: [],
+        closed: [],
+        promoted: [],
+    };
+    fake.refresh = async force => {
+        fake.refreshCalls.push(force);
+        if (options.refreshError) throw options.refreshError;
+    };
+    fake.getActive = () => fake.active.map(runtime => ({
+        ...runtime,
+        identity: { ...runtime.identity },
+        ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
+    }));
+    fake.getPending = () => fake.pending.map(runtime => ({
+        ...runtime,
+        identity: { ...runtime.identity },
+        excludedSessionIds: runtime.excludedSessionIds.slice(),
+    }));
+    fake.find = identity => fake.getActive().filter(item =>
+        item.identity.provider === identity.provider
+        && item.identity.sessionId === identity.sessionId);
+    fake.focus = async runtime => { fake.focusCalls.push(runtime); };
+    fake.detach = async runtime => { fake.detachCalls.push(runtime); };
+    fake.ensureResume = async (request, layout) => {
+        fake.ensureResumeCalls++;
+        if (options.resumeGate) await options.resumeGate.promise;
+        if (options.ensureError) throw options.ensureError;
+        const runtime = fakeRuntime(backend, request.identity.sessionId,
+            backend === 'tmux' ? { tmux: { layout, sessionName: 'managed' } } : {});
+        fake.active.push(runtime);
+        return runtime;
+    };
+    fake.ensurePending = async (request, layout) => {
+        fake.ensurePendingCalls++;
+        if (options.pendingGate) await options.pendingGate.promise;
+        if (options.ensureError) throw options.ensureError;
+        const runtime = {
+            ...fakeRuntime(backend, undefined),
+            identity: { ...request.identity },
+            state: 'pending',
+            createdAt: request.createdAt,
+            excludedSessionIds: request.excludedSessionIds.slice(),
+            title: request.title,
+            ...(backend === 'tmux' ? { tmux: { layout, sessionName: 'managed-pending' } } : {}),
+        };
+        fake.pending.push(runtime);
+        return runtime;
+    };
+    fake.promotePending = async (pendingId, sessionId) => {
+        fake.promoted.push({ pendingId, sessionId });
+        return [fakeRuntime(backend, sessionId)];
+    };
+    fake.handleClosedTerminal = terminal => { fake.closed.push(terminal); };
+    return fake;
+}
+
+async function runDirectBackendChecks() {
+    const terminalA = { name: 'Codex: Existing' };
+    const terminalPending = { name: 'Codex: Pending' };
+    const terminals = [{
+        provider: 'codex', sessionId: 'existing', terminal: terminalA,
+        markerPath: '/tmp/existing', runStartedAtMs: 10, cwd: '/work',
+    }];
+    const pending = [{
+        provider: 'codex', terminal: terminalPending, markerPath: '/tmp/pending', cwd: '/work',
+        createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: ['old'], title: 'New work',
+    }];
+    const operations = [];
+    let nextTerminal = 1;
+    const terminalService = {
+        getTrackedTerminalEntries: () => terminals.map(entry => ({ ...entry })),
+        getPendingTerminals: () => pending.map(entry => ({
+            ...entry, excludedSessionIds: entry.excludedSessionIds.slice(),
+        })),
+        isComplete: entry => entry.markerPath === '/tmp/complete',
+        createTerminal: options => {
+            const terminal = { name: options.name, id: nextTerminal++ };
+            operations.push({ type: 'create', options, terminal });
+            return { terminal, cwdAccepted: true };
+        },
+        getProviderTerminalEnvironment: (provider, sessionId) => ({ AI_PROVIDER: provider, AI_SESSION: sessionId }),
+        sendRuntimeLaunch: async (terminal, launch, options) => {
+            operations.push({ type: 'launch', terminal, launch, options });
+        },
+        track: (provider, sessionId, entry) => {
+            terminals.push({ provider, sessionId, ...entry });
+            operations.push({ type: 'track', provider, sessionId, entry });
+        },
+        trackPending: entry => {
+            pending.push(entry);
+            operations.push({ type: 'track-pending', entry });
+        },
+        replacePendingTerminals: entries => {
+            pending.splice(0, pending.length, ...entries);
+            operations.push({ type: 'replace-pending', entries });
+        },
+        focusTerminal: terminal => { operations.push({ type: 'focus', terminal }); },
+        closeTerminal: terminal => { operations.push({ type: 'close', terminal }); },
+        handleClosedTerminal: terminal => {
+            operations.push({ type: 'closed', terminal });
+            return [];
+        },
+    };
+    const backend = new directBackendModule.DirectTerminalRuntimeBackend(terminalService, () => 100);
+    await backend.refresh(true);
+    const projected = backend.getActive();
+    assert.strictEqual(projected.length, 1);
+    assert.deepStrictEqual(projected[0].identity, {
+        provider: 'codex', projectKey: '/work', cwd: '/work', sessionId: 'existing',
+    });
+    projected[0].identity.sessionId = 'mutated';
+    assert.strictEqual(backend.getActive()[0].identity.sessionId, 'existing');
+    assert.strictEqual(backend.getPending()[0].identity.pendingId, '2026-07-18T10:00:00.000Z');
+
+    const resumed = await backend.ensureResume(fakeResumeRequest('fresh'));
+    assert.strictEqual(resumed.backend, 'vscode');
+    assert.deepStrictEqual(operations.filter(item => item.type === 'create').pop().options.env, {
+        AI_PROVIDER: 'codex', AI_SESSION: 'fresh',
+    });
+    assert.deepStrictEqual(operations.filter(item => item.type === 'launch').pop().options, {
+        deleteMarkerBeforeLaunch: true,
+    });
+    assert.strictEqual(operations.filter(item => item.type === 'track').length, 1);
+
+    const created = await backend.ensurePending(fakeCreateRequest('pending-1'));
+    assert.strictEqual(created.identity.pendingId, 'pending-1');
+    assert.strictEqual(operations.filter(item => item.type === 'track-pending').length, 1);
+    assert.deepStrictEqual(operations.filter(item => item.type === 'launch').pop().options, {
+        persistPendingBeforeLaunch: true,
+    });
+    const promoted = await backend.promotePending('pending-1', 'new-session');
+    assert.strictEqual(promoted[0].identity.sessionId, 'new-session');
+    assert.strictEqual(backend.getPending().some(item => item.identity.pendingId === 'pending-1'), false);
+
+    await backend.focus(promoted[0]);
+    await backend.detach(promoted[0]);
+    backend.handleClosedTerminal(promoted[0].terminal);
+    assert.strictEqual(operations.filter(item => item.type === 'focus').length, 3);
+    assert.strictEqual(operations.filter(item => item.type === 'close').length, 1);
+    assert.strictEqual(operations.filter(item => item.type === 'closed').length, 1);
+}
+
+async function runRuntimeCoordinatorChecks() {
+    const direct = createFakeRuntimeBackend('vscode');
+    const tmux = createFakeRuntimeBackend('tmux');
+    let configuration = { mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' };
+    let configurationReads = 0;
+    const coordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct,
+        tmux,
+        getConfiguration: () => {
+            configurationReads++;
+            return { ...configuration };
+        },
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    tmux.active.push(fakeRuntime('tmux', 's1'));
+    const existing = await coordinator.resume(fakeResumeRequest('s1'));
+    assert.strictEqual(existing.status, 'focused');
+    assert.strictEqual(existing.runtime.backend, 'tmux');
+    assert.strictEqual(direct.ensureResumeCalls, 0);
+    assert.deepStrictEqual(direct.refreshCalls, [true]);
+    assert.deepStrictEqual(tmux.refreshCalls, [true]);
+    assert.strictEqual(configurationReads, 0);
+
+    direct.active.push(fakeRuntime('vscode', 's1'));
+    const conflict = await coordinator.resume(fakeResumeRequest('s1'));
+    assert.strictEqual(conflict.status, 'conflict');
+    assert.strictEqual(conflict.conflicts.length, 2);
+    assert.strictEqual(direct.ensureResumeCalls + tmux.ensureResumeCalls, 0);
+    assert.strictEqual(configurationReads, 0);
+    conflict.conflicts[0].identity.sessionId = 'mutated';
+    assert.strictEqual(coordinator.getActive().some(runtime => runtime.identity.sessionId === 'mutated'), false);
+
+    const duplicate = createFakeRuntimeBackend('vscode');
+    duplicate.active.push(fakeRuntime('vscode', 'duplicate'));
+    duplicate.active.push(fakeRuntime('vscode', 'duplicate'));
+    const duplicateCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: duplicate,
+        tmux: createFakeRuntimeBackend('tmux'),
+        getConfiguration: () => configuration,
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    assert.strictEqual((await duplicateCoordinator.resume(fakeResumeRequest('duplicate'))).status, 'conflict');
+    assert.strictEqual(duplicateCoordinator.getById('codex', 'duplicate'), null);
+
+    configuration = { ...configuration, mode: 'tmux', tmuxLayout: 'session' };
+    direct.active.push(fakeRuntime('vscode', 'existing-direct'));
+    const existingDirect = await coordinator.resume(fakeResumeRequest('existing-direct'));
+    assert.strictEqual(existingDirect.status, 'focused');
+    assert.strictEqual(existingDirect.runtime.backend, 'vscode');
+    assert.strictEqual(configurationReads, 0);
+    const settingsWinner = await coordinator.resume(fakeResumeRequest('new-tmux'));
+    assert.strictEqual(settingsWinner.status, 'started');
+    assert.strictEqual(settingsWinner.runtime.backend, 'tmux');
+    assert.strictEqual(configurationReads, 1);
+
+    const gate = deferred();
+    const guardedDirect = createFakeRuntimeBackend('vscode', { resumeGate: gate });
+    const guardedCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: guardedDirect,
+        tmux: createFakeRuntimeBackend('tmux'),
+        getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    const first = guardedCoordinator.resume(fakeResumeRequest('single'));
+    const second = guardedCoordinator.resume(fakeResumeRequest('single'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(guardedDirect.ensureResumeCalls, 1);
+    gate.resolve();
+    const sharedResults = await Promise.all([first, second]);
+    assert.strictEqual(sharedResults[0].runtime.identity.sessionId, 'single');
+    sharedResults[0].runtime.identity.sessionId = 'changed';
+    assert.strictEqual(sharedResults[1].runtime.identity.sessionId, 'single');
+
+    const pendingGate = deferred();
+    const guardedPending = createFakeRuntimeBackend('vscode', { pendingGate });
+    const pendingCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: guardedPending,
+        tmux: createFakeRuntimeBackend('tmux'),
+        getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    const pendingFirst = pendingCoordinator.create(fakeCreateRequest('single-pending'));
+    const pendingSecond = pendingCoordinator.create(fakeCreateRequest('single-pending'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(guardedPending.ensurePendingCalls, 1);
+    pendingGate.resolve();
+    await Promise.all([pendingFirst, pendingSecond]);
+
+    for (const choice of ['direct', 'settings', 'cancel']) {
+        const fallbackDirect = createFakeRuntimeBackend('vscode');
+        const fallbackTmux = createFakeRuntimeBackend('tmux', { ensureError: new Error('tmux unavailable') });
+        const originalConfiguration = { mode: 'tmux', tmuxLayout: 'project', tmuxPath: '/bad/tmux' };
+        const fallbackCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+            direct: fallbackDirect,
+            tmux: fallbackTmux,
+            getConfiguration: () => ({ ...originalConfiguration }),
+            chooseTmuxFallback: async context => {
+                assert.strictEqual(context.knownHint, false);
+                return choice;
+            },
+        });
+        const result = await fallbackCoordinator.resume(fakeResumeRequest(`fallback-${choice}`));
+        assert.strictEqual(result.status, choice === 'direct' ? 'started'
+            : choice === 'cancel' ? 'cancelled' : choice);
+        assert.strictEqual(fallbackDirect.ensureResumeCalls, choice === 'direct' ? 1 : 0);
+        assert.deepStrictEqual(originalConfiguration, {
+            mode: 'tmux', tmuxLayout: 'project', tmuxPath: '/bad/tmux',
+        });
+    }
+
+    for (const acceptedChoice of ['direct', 'direct-anyway']) {
+        let cleared = 0;
+        const hintedDirect = createFakeRuntimeBackend('vscode');
+        const hintedCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+            direct: hintedDirect,
+            tmux: createFakeRuntimeBackend('tmux', { ensureError: new Error('tmux unavailable') }),
+            getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: '/bad/tmux' }),
+            chooseTmuxFallback: async context => {
+                assert.strictEqual(context.knownHint, true);
+                return acceptedChoice;
+            },
+            hasKnownTmuxHint: async () => true,
+            clearKnownTmuxHint: async () => { cleared++; },
+        });
+        const result = await hintedCoordinator.resume(fakeResumeRequest(`hint-${acceptedChoice}`));
+        assert.strictEqual(result.status, acceptedChoice === 'direct-anyway' ? 'started' : 'cancelled');
+        assert.strictEqual(hintedDirect.ensureResumeCalls, acceptedChoice === 'direct-anyway' ? 1 : 0);
+        assert.strictEqual(cleared, acceptedChoice === 'direct-anyway' ? 1 : 0);
+    }
+
+    const failedDirect = createFakeRuntimeBackend('vscode', { ensureError: new Error('direct failed') });
+    let failedClear = 0;
+    const failedHintCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: failedDirect,
+        tmux: createFakeRuntimeBackend('tmux', { ensureError: new Error('tmux unavailable') }),
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: '/bad/tmux' }),
+        chooseTmuxFallback: async () => 'direct-anyway',
+        hasKnownTmuxHint: async () => true,
+        clearKnownTmuxHint: async () => { failedClear++; },
+    });
+    await assert.rejects(failedHintCoordinator.resume(fakeResumeRequest('hint-failed')), /direct failed/);
+    assert.strictEqual(failedClear, 0);
+
+    const routedDirect = createFakeRuntimeBackend('vscode');
+    const routedTmux = createFakeRuntimeBackend('tmux');
+    const routed = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: routedDirect,
+        tmux: routedTmux,
+        getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    routedDirect.active.push(fakeRuntime('vscode', 'direct-route'));
+    routedTmux.active.push(fakeRuntime('tmux', 'tmux-route'));
+    await routed.focus(fakeResumeRequest('tmux-route').identity);
+    await routed.detach(fakeResumeRequest('direct-route').identity);
+    assert.strictEqual(routedTmux.focusCalls.length, 1);
+    assert.strictEqual(routedDirect.detachCalls.length, 1);
+    const closedTerminal = { name: 'closed' };
+    routed.handleClosedTerminal(closedTerminal);
+    assert.deepStrictEqual(routedDirect.closed, [closedTerminal]);
+    assert.deepStrictEqual(routedTmux.closed, [closedTerminal]);
+}
+
 async function main() {
     runRuntimeConfigurationChecks();
     runLaunchSpecChecks();
@@ -4006,6 +4355,8 @@ async function main() {
     await runTmuxDiscoveryChecks();
     await runTmuxStoreChecks();
     await runTmuxBackendChecks();
+    await runDirectBackendChecks();
+    await runRuntimeCoordinatorChecks();
     console.log('AI session tmux checks passed.');
 }
 

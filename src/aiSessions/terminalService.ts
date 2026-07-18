@@ -11,7 +11,7 @@ import type {
 } from './activeTerminalHighlight';
 import AiSessionTerminalBindingStore from './terminalBindingStore';
 import { getAiSessionTerminalName } from './sessionPaths';
-import { serializeDirectLaunchCommand } from './launchSpec';
+import { AiSessionLaunchSpec, serializeDirectLaunchCommand } from './launchSpec';
 import type { AiSessionActiveTerminalRuntime, AiSessionProviderDefinition, AiSessionTerminalEntry } from './types';
 
 export interface AiSessionTerminalCreateOptions {
@@ -36,6 +36,21 @@ export interface PendingAiSessionTerminal {
     createdAt: string;
     excludedSessionIds: string[];
     title?: string;
+}
+
+export interface TrackedAiSessionTerminal {
+    provider: AiSessionProviderId;
+    sessionId: string;
+    terminal: vscode.Terminal;
+    markerPath: string;
+    runStartedAtMs: number;
+    cwd?: string;
+    released?: boolean;
+}
+
+export interface AiSessionRuntimeLaunchOptions {
+    deleteMarkerBeforeLaunch?: boolean;
+    persistPendingBeforeLaunch?: boolean;
 }
 
 export default class AiSessionTerminalService {
@@ -97,16 +112,46 @@ export default class AiSessionTerminalService {
 
     async sendNewSessionCommand(providerId: AiSessionProviderId, terminal: vscode.Terminal, cwd: string, title: string, markerPath: string) {
         let provider = this.getProvider(providerId);
-        await this.waitForReady(terminal);
-        await this.persistReadyPendingTerminal(terminal);
-        terminal.sendText(serializeDirectLaunchCommand(provider.buildNewSessionLaunchSpec(cwd, title, markerPath)));
+        await this.sendRuntimeLaunch(terminal, provider.buildNewSessionLaunchSpec(cwd, title, markerPath), {
+            persistPendingBeforeLaunch: true,
+        });
     }
 
     async sendResumeCommand(providerId: AiSessionProviderId, terminal: vscode.Terminal, sessionId: string, cwd: string, markerPath: string) {
         let provider = this.getProvider(providerId);
-        this.deleteEntryMarker({ markerPath });
+        await this.sendRuntimeLaunch(terminal, provider.buildResumeLaunchSpec(sessionId, cwd, markerPath), {
+            deleteMarkerBeforeLaunch: true,
+        });
+    }
+
+    async sendRuntimeLaunch(
+        terminal: vscode.Terminal,
+        launch: AiSessionLaunchSpec,
+        options: AiSessionRuntimeLaunchOptions = {}
+    ): Promise<void> {
+        if (options.deleteMarkerBeforeLaunch) {
+            this.deleteMarker(launch?.markerPath);
+        }
         await this.waitForReady(terminal);
-        terminal.sendText(serializeDirectLaunchCommand(provider.buildResumeLaunchSpec(sessionId, cwd, markerPath)));
+        if (options.persistPendingBeforeLaunch) {
+            await this.persistReadyPendingTerminal(terminal);
+        }
+        terminal.sendText(serializeDirectLaunchCommand(launch));
+    }
+
+    getProviderTerminalEnvironment(providerId: AiSessionProviderId, sessionId: string): Record<string, string> {
+        let provider = this.getProvider(providerId);
+        return provider?.terminalEnvKey && sessionId
+            ? { [provider.terminalEnvKey]: sessionId }
+            : {};
+    }
+
+    focusTerminal(terminal: vscode.Terminal): void {
+        terminal?.show();
+    }
+
+    closeTerminal(terminal: vscode.Terminal): void {
+        terminal?.dispose();
     }
 
     track(providerId: AiSessionProviderId, sessionId: string, entry: AiSessionTerminalEntry<vscode.Terminal>, persist = true) {
@@ -195,7 +240,28 @@ export default class AiSessionTerminalService {
 
     getPendingTerminals(): PendingAiSessionTerminal[] {
         this.pendingTerminals = this.trimPendingTerminals(this.pendingTerminals);
-        return [...this.pendingTerminals];
+        return this.pendingTerminals.map(entry => ({
+            ...entry,
+            excludedSessionIds: [...entry.excludedSessionIds],
+        }));
+    }
+
+    getTrackedTerminalEntries(): TrackedAiSessionTerminal[] {
+        let result: TrackedAiSessionTerminal[] = [];
+        for (let provider of this.getProviderIds()) {
+            for (let [sessionId, entry] of this.getTerminalMap(provider)) {
+                result.push({
+                    provider,
+                    sessionId,
+                    terminal: entry.terminal,
+                    markerPath: entry.markerPath,
+                    runStartedAtMs: entry.runStartedAtMs,
+                    ...(entry.cwd ? { cwd: entry.cwd } : {}),
+                    ...(entry.released ? { released: true } : {}),
+                });
+            }
+        }
+        return result;
     }
 
     hasPending(providerId: AiSessionProviderId, createdAt: string): boolean {
