@@ -192,7 +192,7 @@ function makeDashboardCatalog() {
     return {
         sessions: [{
             key: 'codex:c1', searchText: 'fix dashboard codex c1', projectId: 'current',
-            projectName: 'Dashboard', provider: 'codex', sessionId: 'c1', name: 'Fix dashboard',
+            projectName: 'Dashboard', provider: 'codex', sessionId: 'c1', name: 'Fix dashboard', active: true,
         }],
         openProjects: [{
             key: 'open:/work/dashboard', identity: '/work/dashboard', searchText: 'dashboard current',
@@ -3378,6 +3378,21 @@ function runControllerChecks(source) {
     assert.strictEqual(searchController.getProjectsState(), 'unloaded');
     assert.strictEqual(searchController.getTodoState(), 'unloaded');
     assert.strictEqual(searchMessages.length, 0, 'restored search must not load PROJECTS');
+    searchController.replaceSearchCatalog(makeDashboardCatalog());
+    const sessionSection = searchResults.children.find(section => section.dataset.sectionType === 'session');
+    const sessionResult = sessionSection.children[1];
+    const sessionMetadata = sessionResult.children.find(child => child.className === 'dashboard-search-result-meta');
+    assert.ok(sessionMetadata.children.some(child =>
+        child.className.includes('dashboard-search-result-status') && child.textContent === 'Active'
+    ), 'active AI Session search results must expose Active metadata');
+    sessionResult.closest = selector => selector === '.dashboard-search-result[data-search-action]'
+        ? sessionResult
+        : null;
+    searchResults.dispatch('click', { target: sessionResult });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(searchMessages)), [{
+        type: 'resume-codex-session', provider: 'codex', projectId: 'current', sessionId: 'c1',
+    }]);
+    searchMessages.length = 0;
     searchController.setSearchQuery('');
     assert.deepStrictEqual(JSON.parse(JSON.stringify(searchMessages)), [
         { type: 'request-projects-panel', version: 1, requestId: 1 },

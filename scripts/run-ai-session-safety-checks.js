@@ -184,7 +184,7 @@ function runDashboardSearchCatalogChecks() {
     const openProjects = [{
         id: '__openProjects-0', name: 'Dashboard', description: 'Current', path: '/work/dashboard',
         openProjectCardKind: 'current',
-        codexSessions: [{ id: 'c1', name: 'Fix dashboard', updatedAt: '2026-07-15T10:00:00Z' }],
+        codexSessions: [{ id: 'c1', name: 'Fix dashboard', updatedAt: '2026-07-15T10:00:00Z', active: true }],
         kimiSessions: [{ id: 'k1', name: 'Review layout', updatedAt: '2026-07-15T09:00:00Z' }],
         claudeSessions: [],
     }, {
@@ -195,6 +195,7 @@ function runDashboardSearchCatalogChecks() {
 
     const catalog = dashboardViewModel.buildDashboardSearchCatalog(groups, openProjects);
     assert.deepStrictEqual(catalog.sessions.map(item => item.key), ['codex:c1', 'kimi:k1']);
+    assert.strictEqual(catalog.sessions.find(item => item.sessionId === 'c1').active, true);
     assert.deepStrictEqual(catalog.openProjects.map(item => item.action), ['open-current', 'switch-open']);
     assert.strictEqual(catalog.savedProjects.length, 2);
     assert.deepStrictEqual(catalog.savedProjects[0].groupLabels, ['FAVORITES', 'TOOLS']);
@@ -2892,8 +2893,14 @@ function runWebviewContentChecks() {
     assert.ok(!webviewContent.includes('codex-session-meta-chip'));
     assert.ok(webviewContent.includes("join(' · ')"));
     assert.ok(styles.includes('.codex-session-actions'));
+    assert.ok(styles.includes('.ai-session-tabs'));
+    assert.ok(styles.includes('[data-session-status="focused"]'));
+    assert.ok(styles.includes('[data-session-status="needsAttention"]'));
+    assert.ok(styles.includes('[data-session-pending]'));
+    assert.ok(styles.includes('@media (max-width: 280px)'));
+    assert.ok(styles.includes('@media (prefers-reduced-motion: reduce)'));
     assert.ok(styles.includes('[data-ai-session-managing]'));
-    assert.ok(styles.includes('grid-template-columns: minmax(0, 1fr) 24px 24px;'));
+    assert.ok(styles.includes('grid-template-columns: minmax(0, 1fr) 24px;'));
     assert.ok(styles.includes('.ai-session-manage-button[aria-pressed="true"]'));
     assert.ok(styles.includes('.ai-session-batch-actions'));
     assert.ok(compiledStyles.includes('.ai-session-batch-actions'));
