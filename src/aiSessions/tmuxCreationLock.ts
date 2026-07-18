@@ -6,29 +6,37 @@ import type { Stats } from 'fs';
 import * as path from 'path';
 
 const LOCK_DIRECTORY = 'ai-session-tmux-locks';
+const HELD_DIRECTORY = 'held';
 const WAIT_TIMEOUT_MS = 5000;
 const POLL_INTERVAL_MS = 50;
 const STALE_AFTER_MS = 30000;
 const CLAIM_VERSION = 1;
 const MAX_CLAIM_BYTES = 1024;
 
-interface LockDirectoryIdentity {
+interface DirectoryIdentity {
     dev: number;
     ino: number;
     birthtimeMs: number;
     mtimeMs: number;
 }
 
-interface LockOwner {
+interface LockIdentity {
+    container: DirectoryIdentity;
+    held: DirectoryIdentity;
+}
+
+interface LockOwner extends LockIdentity {
     claimPath: string;
-    directoryIdentity: LockDirectoryIdentity;
 }
 
 interface LockClaimRecord {
     version: 1;
-    dev: number;
-    ino: number;
-    birthtimeMs: number;
+    containerDev: number;
+    containerIno: number;
+    containerBirthtimeMs: number;
+    heldDev: number;
+    heldIno: number;
+    heldBirthtimeMs: number;
 }
 
 export async function withTmuxCreationLock<T>(
@@ -39,61 +47,76 @@ export async function withTmuxCreationLock<T>(
     const directory = path.join(root, LOCK_DIRECTORY);
     const digest = createHash('sha256').update(key, 'utf8').digest('hex');
     const lockPath = path.join(directory, `${digest}.lock`);
+    const heldPath = path.join(lockPath, HELD_DIRECTORY);
     const deadline = Date.now() + WAIT_TIMEOUT_MS;
     await fs.mkdir(directory, { recursive: true });
 
     let owner: LockOwner | null = null;
     while (!owner) {
-        try {
-            await fs.mkdir(lockPath);
-        } catch (error) {
-            if (!isNodeError(error, 'EEXIST')) {
-                throw error;
-            }
-            await recoverStaleLock(directory, lockPath, digest);
+        const containerIdentity = await ensureCanonicalContainer(lockPath);
+        if (!containerIdentity) {
             await waitForRetry(deadline, digest);
             continue;
         }
 
-        const directoryIdentity = await readDirectoryIdentity(lockPath);
-        if (directoryIdentity) {
-            owner = await initializeClaim(directory, lockPath, digest, directoryIdentity);
+        try {
+            await fs.mkdir(heldPath);
+        } catch (error) {
+            if (!isNodeError(error, 'EEXIST')) {
+                if (isNodeError(error, 'ENOENT')) {
+                    await waitForRetry(deadline, digest);
+                    continue;
+                }
+                throw error;
+            }
+            await recoverStaleHeld(lockPath, heldPath, containerIdentity);
+            await waitForRetry(deadline, digest);
+            continue;
+        }
+
+        const heldIdentity = await readDirectoryIdentity(heldPath);
+        if (heldIdentity) {
+            owner = await initializeClaim(lockPath, heldPath, { container: containerIdentity, held: heldIdentity });
         }
         if (!owner) {
             await waitForRetry(deadline, digest);
         }
     }
 
-    if (!await hasDirectoryIdentity(lockPath, owner.directoryIdentity)) {
-        await removeOwnerClaim(directory, lockPath, owner);
+    if (!await hasLockIdentity(lockPath, heldPath, owner)) {
+        await removeOwnerClaim(lockPath, heldPath, owner);
         throw new Error(`Tmux creation lock identity changed before entry ${digest}.`);
     }
 
     try {
         return await operation();
     } finally {
-        await removeOwnerClaim(directory, lockPath, owner);
+        await removeOwnerClaim(lockPath, heldPath, owner);
     }
 }
 
+async function ensureCanonicalContainer(lockPath: string): Promise<DirectoryIdentity | null> {
+    try {
+        await fs.mkdir(lockPath);
+    } catch (error) {
+        if (!isNodeError(error, 'EEXIST')) {
+            throw error;
+        }
+    }
+    return readDirectoryIdentity(lockPath);
+}
+
 async function initializeClaim(
-    directory: string,
     lockPath: string,
-    digest: string,
-    directoryIdentity: LockDirectoryIdentity
+    heldPath: string,
+    identity: LockIdentity
 ): Promise<LockOwner | null> {
-    if (!await hasDirectoryIdentity(lockPath, directoryIdentity)) {
+    if (!await hasLockIdentity(lockPath, heldPath, identity)) {
         return null;
     }
 
-    const token = randomBytes(32).toString('hex');
-    const claimPath = path.join(directory, `${digest}.${token}.claim`);
-    const record: LockClaimRecord = {
-        version: CLAIM_VERSION,
-        dev: directoryIdentity.dev,
-        ino: directoryIdentity.ino,
-        birthtimeMs: directoryIdentity.birthtimeMs,
-    };
+    const claimPath = path.join(heldPath, `${randomBytes(32).toString('hex')}.claim`);
+    const record = createClaimRecord(identity);
     let handle: fs.FileHandle | undefined;
     let failure: unknown;
     let claimCreated = false;
@@ -114,75 +137,76 @@ async function initializeClaim(
     }
     if (failure) {
         if (claimCreated) {
-            await removeExactFile(claimPath);
+            await removeClaimIfOwned(lockPath, heldPath, claimPath, identity);
         }
-        await removeOwnedDirectory(directory, lockPath, directoryIdentity);
+        await removeHeldIfOwned(lockPath, heldPath, identity);
+        if (isNodeError(failure, 'ENOENT')) {
+            return null;
+        }
         throw failure;
     }
-    if (!await hasDirectoryIdentity(lockPath, directoryIdentity)) {
-        await removeExactFile(claimPath);
+    if (!await hasLockIdentity(lockPath, heldPath, identity)) {
+        await removeClaimIfOwned(lockPath, heldPath, claimPath, identity);
         return null;
     }
-    return { claimPath, directoryIdentity };
+    return { ...identity, claimPath };
 }
 
-async function recoverStaleLock(directory: string, lockPath: string, digest: string): Promise<void> {
-    const directoryIdentity = await readDirectoryIdentity(lockPath);
-    if (!directoryIdentity) {
+async function recoverStaleHeld(
+    lockPath: string,
+    heldPath: string,
+    containerIdentity: DirectoryIdentity
+): Promise<void> {
+    if (!await hasDirectoryIdentity(lockPath, containerIdentity)) {
+        return;
+    }
+    const heldIdentity = await readDirectoryIdentity(heldPath);
+    if (!heldIdentity) {
+        return;
+    }
+    const identity: LockIdentity = { container: containerIdentity, held: heldIdentity };
+    if (!await hasLockIdentity(lockPath, heldPath, identity)) {
         return;
     }
 
     let names: string[];
     try {
-        names = await fs.readdir(directory);
+        names = await fs.readdir(heldPath);
     } catch (error) {
         if (isNodeError(error, 'ENOENT')) {
             return;
         }
         throw error;
     }
-    if (!await hasDirectoryIdentity(lockPath, directoryIdentity)) {
+    if (!await hasLockIdentity(lockPath, heldPath, identity)) {
         return;
     }
 
-    const staleClaimPaths: string[] = [];
-    let foundMatchingClaim = false;
-    let foundFreshOrMalformedClaim = false;
+    if (names.length === 0) {
+        if (Date.now() - heldIdentity.mtimeMs > STALE_AFTER_MS) {
+            await removeHeldIfOwned(lockPath, heldPath, identity);
+        }
+        return;
+    }
+
+    const staleClaims: string[] = [];
     for (const name of names) {
-        if (!isClaimName(name, digest)) {
-            continue;
+        if (!isClaimName(name)) {
+            return;
         }
-        const claimPath = path.join(directory, name);
+        const claimPath = path.join(heldPath, name);
         const claim = await readClaim(claimPath);
-        if (!claim) {
-            foundFreshOrMalformedClaim = true;
-            continue;
+        if (!claim || !claimMatchesIdentity(claim.record, identity)
+            || Date.now() - claim.stat.mtimeMs <= STALE_AFTER_MS) {
+            return;
         }
-        if (!claimMatchesDirectory(claim.record, directoryIdentity)) {
-            continue;
-        }
-        foundMatchingClaim = true;
-        if (Date.now() - claim.stat.mtimeMs > STALE_AFTER_MS) {
-            staleClaimPaths.push(claimPath);
-        } else {
-            foundFreshOrMalformedClaim = true;
-        }
+        staleClaims.push(claimPath);
     }
 
-    if (foundFreshOrMalformedClaim) {
-        return;
+    for (const claimPath of staleClaims) {
+        await removeClaimIfOwned(lockPath, heldPath, claimPath, identity);
     }
-    if (!foundMatchingClaim && Date.now() - directoryIdentity.mtimeMs <= STALE_AFTER_MS) {
-        return;
-    }
-    const quarantinePath = await quarantineOwnedDirectory(directory, lockPath, directoryIdentity);
-    if (!quarantinePath) {
-        return;
-    }
-    for (const claimPath of staleClaimPaths) {
-        await removeExactFile(claimPath);
-    }
-    await removeEmptyDirectory(quarantinePath);
+    await removeHeldIfOwned(lockPath, heldPath, identity);
 }
 
 async function readClaim(claimPath: string): Promise<{ record: LockClaimRecord; stat: Stats } | null> {
@@ -192,16 +216,21 @@ async function readClaim(claimPath: string): Promise<{ record: LockClaimRecord; 
             return null;
         }
         const value = JSON.parse(await fs.readFile(claimPath, 'utf8')) as Record<string, unknown>;
-        if (value.version !== CLAIM_VERSION || !isFiniteNonNegative(value.dev)
-            || !isFiniteNonNegative(value.ino) || !isFiniteNonNegative(value.birthtimeMs)) {
+        if (value.version !== CLAIM_VERSION
+            || !isFiniteNonNegative(value.containerDev) || !isFiniteNonNegative(value.containerIno)
+            || !isFiniteNonNegative(value.containerBirthtimeMs) || !isFiniteNonNegative(value.heldDev)
+            || !isFiniteNonNegative(value.heldIno) || !isFiniteNonNegative(value.heldBirthtimeMs)) {
             return null;
         }
         return {
             record: {
                 version: CLAIM_VERSION,
-                dev: value.dev,
-                ino: value.ino,
-                birthtimeMs: value.birthtimeMs,
+                containerDev: value.containerDev,
+                containerIno: value.containerIno,
+                containerBirthtimeMs: value.containerBirthtimeMs,
+                heldDev: value.heldDev,
+                heldIno: value.heldIno,
+                heldBirthtimeMs: value.heldBirthtimeMs,
             },
             stat,
         };
@@ -213,18 +242,15 @@ async function readClaim(claimPath: string): Promise<{ record: LockClaimRecord; 
     }
 }
 
-async function removeOwnerClaim(directory: string, lockPath: string, owner: LockOwner): Promise<void> {
+async function removeOwnerClaim(lockPath: string, heldPath: string, owner: LockOwner): Promise<void> {
     let failure: unknown;
-    if (path.dirname(owner.claimPath) !== directory) {
-        return;
-    }
     try {
-        await removeExactFile(owner.claimPath);
+        await removeClaimIfOwned(lockPath, heldPath, owner.claimPath, owner);
     } catch (error) {
         failure = error;
     }
     try {
-        await removeOwnedDirectory(directory, lockPath, owner.directoryIdentity);
+        await removeHeldIfOwned(lockPath, heldPath, owner);
     } catch (error) {
         failure = failure || error;
     }
@@ -233,53 +259,34 @@ async function removeOwnerClaim(directory: string, lockPath: string, owner: Lock
     }
 }
 
-async function removeOwnedDirectory(
-    directory: string,
+async function removeClaimIfOwned(
     lockPath: string,
-    identity: LockDirectoryIdentity
+    heldPath: string,
+    claimPath: string,
+    identity: LockIdentity
 ): Promise<void> {
-    const quarantinePath = await quarantineOwnedDirectory(directory, lockPath, identity);
-    if (quarantinePath) {
-        await removeEmptyDirectory(quarantinePath);
-    }
-}
-
-async function quarantineOwnedDirectory(
-    directory: string,
-    lockPath: string,
-    identity: LockDirectoryIdentity
-): Promise<string | null> {
-    if (!await hasDirectoryIdentity(lockPath, identity)) {
-        return null;
-    }
-    const quarantinePath = path.join(
-        directory,
-        `.${path.basename(lockPath)}.${randomBytes(32).toString('hex')}.quarantine`
-    );
-    try {
-        await fs.rename(lockPath, quarantinePath);
-    } catch (error) {
-        if (isNodeError(error, 'ENOENT')) {
-            return null;
-        }
-        throw error;
-    }
-    if (await hasDirectoryIdentity(quarantinePath, identity)) {
-        return quarantinePath;
+    if (path.dirname(claimPath) !== heldPath || !await hasLockIdentity(lockPath, heldPath, identity)) {
+        return;
     }
     try {
-        await fs.rename(quarantinePath, lockPath);
+        await fs.unlink(claimPath);
     } catch (error) {
-        if (!isNodeError(error, 'EEXIST') && !isNodeError(error, 'ENOTEMPTY')) {
+        if (!isNodeError(error, 'ENOENT')) {
             throw error;
         }
     }
-    return null;
 }
 
-async function removeEmptyDirectory(directory: string): Promise<void> {
+async function removeHeldIfOwned(
+    lockPath: string,
+    heldPath: string,
+    identity: LockIdentity
+): Promise<void> {
+    if (!await hasLockIdentity(lockPath, heldPath, identity)) {
+        return;
+    }
     try {
-        await fs.rmdir(directory);
+        await fs.rmdir(heldPath);
     } catch (error) {
         if (!isNodeError(error, 'ENOENT') && !isNodeError(error, 'ENOTEMPTY') && !isNodeError(error, 'EEXIST')) {
             throw error;
@@ -287,9 +294,9 @@ async function removeEmptyDirectory(directory: string): Promise<void> {
     }
 }
 
-async function readDirectoryIdentity(lockPath: string): Promise<LockDirectoryIdentity | null> {
+async function readDirectoryIdentity(directory: string): Promise<DirectoryIdentity | null> {
     try {
-        const stat = await fs.lstat(lockPath);
+        const stat = await fs.lstat(directory);
         return stat.isDirectory()
             ? { dev: stat.dev, ino: stat.ino, birthtimeMs: stat.birthtimeMs, mtimeMs: stat.mtimeMs }
             : null;
@@ -301,20 +308,36 @@ async function readDirectoryIdentity(lockPath: string): Promise<LockDirectoryIde
     }
 }
 
-async function hasDirectoryIdentity(lockPath: string, identity: LockDirectoryIdentity): Promise<boolean> {
-    const current = await readDirectoryIdentity(lockPath);
+async function hasDirectoryIdentity(directory: string, identity: DirectoryIdentity): Promise<boolean> {
+    const current = await readDirectoryIdentity(directory);
     return !!current && current.dev === identity.dev && current.ino === identity.ino
         && current.birthtimeMs === identity.birthtimeMs;
 }
 
-async function removeExactFile(filePath: string): Promise<void> {
-    try {
-        await fs.unlink(filePath);
-    } catch (error) {
-        if (!isNodeError(error, 'ENOENT')) {
-            throw error;
-        }
-    }
+async function hasLockIdentity(lockPath: string, heldPath: string, identity: LockIdentity): Promise<boolean> {
+    return await hasDirectoryIdentity(lockPath, identity.container)
+        && await hasDirectoryIdentity(heldPath, identity.held);
+}
+
+function createClaimRecord(identity: LockIdentity): LockClaimRecord {
+    return {
+        version: CLAIM_VERSION,
+        containerDev: identity.container.dev,
+        containerIno: identity.container.ino,
+        containerBirthtimeMs: identity.container.birthtimeMs,
+        heldDev: identity.held.dev,
+        heldIno: identity.held.ino,
+        heldBirthtimeMs: identity.held.birthtimeMs,
+    };
+}
+
+function claimMatchesIdentity(record: LockClaimRecord, identity: LockIdentity): boolean {
+    return record.containerDev === identity.container.dev
+        && record.containerIno === identity.container.ino
+        && record.containerBirthtimeMs === identity.container.birthtimeMs
+        && record.heldDev === identity.held.dev
+        && record.heldIno === identity.held.ino
+        && record.heldBirthtimeMs === identity.held.birthtimeMs;
 }
 
 async function waitForRetry(deadline: number, digest: string): Promise<void> {
@@ -324,14 +347,8 @@ async function waitForRetry(deadline: number, digest: string): Promise<void> {
     await delay(POLL_INTERVAL_MS);
 }
 
-function isClaimName(name: string, digest: string): boolean {
-    return name.length === digest.length + 1 + 64 + '.claim'.length
-        && name.startsWith(`${digest}.`) && /^[0-9a-f]{64}\.claim$/.test(name.slice(digest.length + 1));
-}
-
-function claimMatchesDirectory(record: LockClaimRecord, identity: LockDirectoryIdentity): boolean {
-    return record.dev === identity.dev && record.ino === identity.ino
-        && record.birthtimeMs === identity.birthtimeMs;
+function isClaimName(name: string): boolean {
+    return /^[0-9a-f]{64}\.claim$/.test(name);
 }
 
 function isFiniteNonNegative(value: unknown): value is number {

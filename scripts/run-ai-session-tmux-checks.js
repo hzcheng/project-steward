@@ -648,11 +648,15 @@ async function runTmuxStoreChecks() {
         })));
         assert.strictEqual(highestInside, 1);
         const lockDirectory = path.join(root, 'ai-session-tmux-locks');
-        assert.deepStrictEqual(fs.readdirSync(lockDirectory), []);
+        const sameDigest = crypto.createHash('sha256').update('same-key', 'utf8').digest('hex');
+        const sameLockPath = path.join(lockDirectory, `${sameDigest}.lock`);
+        assert.strictEqual(fs.lstatSync(sameLockPath).isDirectory(), true);
+        assert.deepStrictEqual(fs.readdirSync(sameLockPath), []);
 
         const raceKey = 'owner-cleanup-race';
         const raceDigest = crypto.createHash('sha256').update(raceKey, 'utf8').digest('hex');
         const raceLockPath = path.join(lockDirectory, `${raceDigest}.lock`);
+        const raceHeldPath = path.join(raceLockPath, 'held');
         const oldEntered = deferred();
         const releaseOld = deferred();
         const oldLock = creationLock.withTmuxCreationLock(root, raceKey, async () => {
@@ -660,60 +664,57 @@ async function runTmuxStoreChecks() {
             await releaseOld.promise;
         });
         await oldEntered.promise;
-        const childArtifacts = fs.statSync(raceLockPath).isDirectory()
-            ? fs.readdirSync(raceLockPath).map(name => path.join(raceLockPath, name))
-            : [];
-        const directArtifacts = fs.readdirSync(lockDirectory)
-            .filter(name => name.startsWith(`${raceDigest}.`) && name.endsWith('.claim'))
-            .map(name => path.join(lockDirectory, name));
-        const oldArtifact = childArtifacts[0] || directArtifacts[0] || raceLockPath;
-        const originalUnlink = fs.promises.unlink;
+        assert.strictEqual(fs.lstatSync(raceHeldPath).isDirectory(), true);
         const originalRmdir = fs.promises.rmdir;
+        const originalRaceOpen = fs.promises.open;
         const cleanupPaused = deferred();
         const allowCleanup = deferred();
-        let pausedCleanup = false;
-        fs.promises.unlink = async target => {
-            if (!pausedCleanup && path.resolve(String(target)) === path.resolve(oldArtifact)) {
-                pausedCleanup = true;
+        const replacementClaimPaused = deferred();
+        const allowReplacementClaim = deferred();
+        let cleanupIntercepted = false;
+        let pauseNextReplacementClaim = false;
+        let replacementClaimIntercepted = false;
+        fs.promises.rmdir = async target => {
+            if (!cleanupIntercepted && path.resolve(String(target)) === path.resolve(raceHeldPath)) {
+                cleanupIntercepted = true;
                 cleanupPaused.resolve();
                 await allowCleanup.promise;
             }
-            return originalUnlink.call(fs.promises, target);
+            return originalRmdir.call(fs.promises, target);
+        };
+        fs.promises.open = async (filePath, flags, ...args) => {
+            if (pauseNextReplacementClaim && !replacementClaimIntercepted && flags === 'wx'
+                && path.dirname(String(filePath)) === raceHeldPath) {
+                replacementClaimIntercepted = true;
+                replacementClaimPaused.resolve();
+                await allowReplacementClaim.promise;
+            }
+            return originalRaceOpen.call(fs.promises, filePath, flags, ...args);
         };
         let replacementLock;
-        let thirdLock;
+        let replacementEntries = 0;
         try {
             releaseOld.resolve();
             await cleanupPaused.promise;
-            await originalUnlink.call(fs.promises, oldArtifact);
-            if (fs.existsSync(raceLockPath) && fs.statSync(raceLockPath).isDirectory()) {
-                await originalRmdir.call(fs.promises, raceLockPath);
-            }
-
-            const replacementEntered = deferred();
-            const releaseReplacement = deferred();
+            await originalRmdir.call(fs.promises, raceHeldPath);
+            pauseNextReplacementClaim = true;
             replacementLock = creationLock.withTmuxCreationLock(root, raceKey, async () => {
-                replacementEntered.resolve();
-                await releaseReplacement.promise;
+                replacementEntries++;
             });
-            await replacementEntered.promise;
+            await replacementClaimPaused.promise;
             allowCleanup.resolve();
             await oldLock;
-
-            const replacementSurvived = fs.existsSync(raceLockPath);
-            let thirdEntered = false;
-            thirdLock = creationLock.withTmuxCreationLock(root, raceKey, async () => { thirdEntered = true; });
-            await new Promise(resolve => setTimeout(resolve, 100));
-            const thirdEnteredWhileReplacementOwned = thirdEntered;
-            releaseReplacement.resolve();
+            allowReplacementClaim.resolve();
             await replacementLock;
-            await thirdLock;
-            assert.strictEqual(replacementSurvived, true);
-            assert.strictEqual(thirdEnteredWhileReplacementOwned, false);
+            assert.strictEqual(replacementEntries, 1);
+            assert.strictEqual(fs.lstatSync(raceLockPath).isDirectory(), true);
+            assert.strictEqual(fs.existsSync(raceHeldPath), false);
         } finally {
-            fs.promises.unlink = originalUnlink;
+            fs.promises.rmdir = originalRmdir;
+            fs.promises.open = originalRaceOpen;
             releaseOld.resolve();
             allowCleanup.resolve();
+            allowReplacementClaim.resolve();
         }
 
         const originalOpen = fs.promises.open;
@@ -741,7 +742,11 @@ async function runTmuxStoreChecks() {
             fs.promises.open = originalOpen;
         }
         assert.strictEqual(injectedHandleClosed, true);
-        assert.deepStrictEqual(fs.readdirSync(lockDirectory), []);
+        const initializationDigest = crypto.createHash('sha256')
+            .update('initialization-failure', 'utf8').digest('hex');
+        const initializationLockPath = path.join(lockDirectory, `${initializationDigest}.lock`);
+        assert.strictEqual(fs.lstatSync(initializationLockPath).isDirectory(), true);
+        assert.deepStrictEqual(fs.readdirSync(initializationLockPath), []);
 
         const symlinkKey = 'symlinked-lock-container';
         const symlinkDigest = crypto.createHash('sha256').update(symlinkKey, 'utf8').digest('hex');
@@ -764,46 +769,47 @@ async function runTmuxStoreChecks() {
         fs.unlinkSync(symlinkLockPath);
         fs.rmSync(externalLockDirectory, { recursive: true, force: true });
 
-        const identityKey = 'replacement-container-identity';
-        const identityDigest = crypto.createHash('sha256').update(identityKey, 'utf8').digest('hex');
-        const identityLockPath = path.join(lockDirectory, `${identityDigest}.lock`);
-        const displacedIdentityPath = path.join(lockDirectory, `${identityDigest}.displaced`);
-        const identityEntered = deferred();
-        const releaseIdentity = deferred();
-        const identityLock = creationLock.withTmuxCreationLock(root, identityKey, async () => {
-            identityEntered.resolve();
-            await releaseIdentity.promise;
-        });
-        await identityEntered.promise;
-        fs.renameSync(identityLockPath, displacedIdentityPath);
-        fs.mkdirSync(identityLockPath);
-        const replacementIdentity = fs.lstatSync(identityLockPath);
-        releaseIdentity.resolve();
-        await identityLock;
-        const survivingIdentity = fs.lstatSync(identityLockPath);
-        assert.strictEqual(survivingIdentity.dev, replacementIdentity.dev);
-        assert.strictEqual(survivingIdentity.ino, replacementIdentity.ino);
-        fs.rmdirSync(identityLockPath);
-        fs.rmSync(displacedIdentityPath, { recursive: true, force: true });
-
         const staleDigest = crypto.createHash('sha256').update('stale-key', 'utf8').digest('hex');
         const lockName = `${staleDigest}.lock`;
         const staleLockPath = path.join(lockDirectory, lockName);
         fs.mkdirSync(staleLockPath);
-        const staleIdentity = fs.lstatSync(staleLockPath);
-        const staleClaimPath = path.join(lockDirectory, `${staleDigest}.${'0'.repeat(64)}.claim`);
+        const staleHeldPath = path.join(staleLockPath, 'held');
+        fs.mkdirSync(staleHeldPath);
+        const staleContainerIdentity = fs.lstatSync(staleLockPath);
+        const staleHeldIdentity = fs.lstatSync(staleHeldPath);
+        const staleClaimPath = path.join(staleHeldPath, `${'0'.repeat(64)}.claim`);
         fs.writeFileSync(staleClaimPath, JSON.stringify({
-            version: 1, dev: staleIdentity.dev, ino: staleIdentity.ino,
-            birthtimeMs: staleIdentity.birthtimeMs,
+            version: 1,
+            containerDev: staleContainerIdentity.dev,
+            containerIno: staleContainerIdentity.ino,
+            containerBirthtimeMs: staleContainerIdentity.birthtimeMs,
+            heldDev: staleHeldIdentity.dev,
+            heldIno: staleHeldIdentity.ino,
+            heldBirthtimeMs: staleHeldIdentity.birthtimeMs,
         }));
         const staleTime = new Date(Date.now() - 31000);
         fs.utimesSync(staleClaimPath, staleTime, staleTime);
-        fs.utimesSync(staleLockPath, staleTime, staleTime);
+        fs.utimesSync(staleHeldPath, staleTime, staleTime);
         let recovered = false;
         await creationLock.withTmuxCreationLock(root, 'stale-key', async () => { recovered = true; });
         assert.strictEqual(recovered, true);
-        assert.strictEqual(fs.existsSync(staleLockPath), false);
+        assert.strictEqual(fs.lstatSync(staleLockPath).isDirectory(), true);
+        assert.strictEqual(fs.existsSync(staleHeldPath), false);
         assert.strictEqual(fs.existsSync(staleClaimPath), false);
+
+        const emptyStaleKey = 'empty-stale-key';
+        const emptyStaleDigest = crypto.createHash('sha256').update(emptyStaleKey, 'utf8').digest('hex');
+        const emptyStaleLockPath = path.join(lockDirectory, `${emptyStaleDigest}.lock`);
+        const emptyStaleHeldPath = path.join(emptyStaleLockPath, 'held');
+        fs.mkdirSync(emptyStaleLockPath);
+        fs.mkdirSync(emptyStaleHeldPath);
+        fs.utimesSync(emptyStaleHeldPath, staleTime, staleTime);
+        let emptyStaleRecovered = false;
+        await creationLock.withTmuxCreationLock(root, emptyStaleKey, async () => {
+            emptyStaleRecovered = true;
+        });
+        assert.strictEqual(emptyStaleRecovered, true);
+        assert.strictEqual(fs.existsSync(emptyStaleHeldPath), false);
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
