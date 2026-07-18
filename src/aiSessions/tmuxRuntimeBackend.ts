@@ -438,11 +438,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!runtime || runtime.backend !== 'tmux' || !runtime.tmux) {
             return;
         }
-        await this.dependencies.client.selectWindow(runtime.tmux);
-        const entry = this.attaches.get(registryKey(runtime));
-        if (entry) {
-            attachTerminal(entry.terminal).show();
-        }
+        await this.attachAndFocus(runtime, getRestoredAttachTerminalName(runtime));
     }
 
     async detach(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void> {
@@ -960,6 +956,21 @@ function finalIdentity(identity: AiSessionRuntimeIdentity & { sessionId: string 
         cwd: identity.cwd,
         sessionId: identity.sessionId,
     };
+}
+
+function getRestoredAttachTerminalName(runtime: AiSessionRuntimeSnapshot): string {
+    const identityId = runtime.identity.sessionId || runtime.identity.pendingId || 'runtime';
+    const digest = createHash('sha256').update(JSON.stringify([
+        runtime.tmux?.layout,
+        runtime.identity.provider,
+        runtime.identity.projectKey,
+        identityId,
+        runtime.tmux?.sessionName,
+        runtime.tmux?.windowName || '',
+    ]), 'utf8').digest('hex').slice(0, 12);
+    return runtime.tmux?.layout === 'project'
+        ? `Project Steward: tmux project ${digest} [tmux]`
+        : `Project Steward: ${runtime.identity.provider} ${digest} [tmux]`;
 }
 
 function snapshotResumeRequest(request: AiSessionResumeRuntimeRequest): AiSessionResumeRuntimeRequest {

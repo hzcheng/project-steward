@@ -458,6 +458,8 @@ function createTmuxBackendHarness(options = {}) {
     return {
         dependencies, client, runtimeStore, attachStore, operations, terminals, windows,
         pending, known, ambiguous, consumed, promoting, attachBindings,
+        failNextAttach() { failAttachCount++; },
+        failNextShow() { failShowCount++; },
         get stateReadCount() { return stateReadCount; },
     };
 }
@@ -2634,6 +2636,30 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(projectHarness.terminals[0].disposed, true);
     assert.strictEqual(projectBackend.getActive().length, 2);
     assert.ok(projectBackend.getActive().every(runtime => runtime.attached === false));
+    const providerCreateCount = projectHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length;
+    await projectBackend.focus(firstProject);
+    assert.strictEqual(projectHarness.terminals.length, 2,
+        'focusing a detached tmux runtime creates one viewer terminal');
+    assert.ok(projectHarness.terminals[1].name.startsWith('Project Steward:'));
+    assert.ok(projectHarness.terminals[1].name.length <= 200);
+    assert.strictEqual(projectHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length, providerCreateCount,
+    'reattaching must not create another provider runtime');
+    await projectBackend.focus(firstProject);
+    assert.strictEqual(projectHarness.terminals.length, 2,
+        'repeated focus reuses the existing viewer terminal');
+    await projectBackend.detach(firstProject);
+    projectHarness.failNextShow();
+    await assert.rejects(projectBackend.focus(firstProject), /show failed/);
+    assert.strictEqual(projectBackend.getActive().length, 2,
+        'an attach show failure does not remove the provider runtime');
+    assert.strictEqual(projectHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length, providerCreateCount,
+    'an attach show failure must not resend the provider command');
+    await projectBackend.focus(firstProject);
+    assert.strictEqual(projectHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length, providerCreateCount);
     const projectManagedRows = projectHarness.windows.filter(row => row.windowMetadata.provider);
     assert.strictEqual(projectManagedRows.length, 2);
     assert.deepStrictEqual(projectManagedRows[0].sessionMetadata, {
@@ -5383,6 +5409,56 @@ async function runRuntimeControllerChecks() {
     });
 }
 
+function runHostRuntimeCompositionChecks() {
+    const dashboardSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    assert.ok(dashboardSource.includes('new TmuxRuntimeBindingStore'));
+    assert.ok(dashboardSource.includes('new TmuxAttachBindingStore(context.workspaceState'));
+    assert.ok(dashboardSource.includes('new TmuxClient'));
+    assert.ok(dashboardSource.includes('new TmuxRuntimeDiscovery'));
+    assert.ok(dashboardSource.includes('new DirectTerminalRuntimeBackend'));
+    assert.ok(dashboardSource.includes('new TmuxRuntimeBackend'));
+    assert.ok(dashboardSource.includes('new AiSessionRuntimeCoordinator'));
+    assert.ok(dashboardSource.includes('onDidChangeConfiguration'));
+    assert.ok(dashboardSource.includes("affectsConfiguration('projectSteward.aiSession"));
+    assert.ok(dashboardSource.includes('runtimeCoordinator: aiSessionRuntimeCoordinator'));
+    assert.ok(dashboardSource.includes("path.join(\n        context.globalStoragePath,\n        'ai-session-tmux-runtimes'"));
+    assert.ok(dashboardSource.includes('runtimeCoordinator: aiSessionRuntimeCoordinator'));
+    assert.ok(dashboardSource.includes('activeRuntimes: aiSessionRuntimeCoordinator.getActive()'));
+    assert.ok(dashboardSource.includes('pendingRuntimes: aiSessionRuntimeCoordinator.getPending()'));
+    assert.ok(dashboardSource.includes("'Use VS Code Terminal This Time'"));
+    assert.ok(dashboardSource.includes("'Resume in VS Code Anyway'"));
+    assert.ok(dashboardSource.includes("'Open Settings'"));
+    assert.match(dashboardSource, /fallback\.knownHint[\s\S]*?showWarningMessage\([\s\S]*?\{ modal: true \}/);
+    assert.ok(dashboardSource.includes('tmuxClient.setExecutablePath(nextConfiguration.tmuxPath)'));
+    assert.ok(dashboardSource.includes('tmuxRuntimeDiscovery.invalidate()'));
+    assert.ok(dashboardSource.includes('await aiSessionRuntimeCoordinator.refresh(true)'));
+    assert.ok(dashboardSource.includes("category: 'unexpected'"));
+    const runtimeFailureBody = dashboardSource.slice(
+        dashboardSource.indexOf('function logAiSessionRuntimeFailure('),
+        dashboardSource.indexOf('async function chooseAiSessionTmuxFallback(')
+    );
+    assert.ok(!runtimeFailureBody.includes('error.message'));
+    assert.ok(!runtimeFailureBody.includes('String(error)'));
+    assert.ok(!runtimeFailureBody.includes('logError('));
+    assert.ok(!dashboardSource.includes(
+        'getTerminalById: (providerId, sessionId) => aiSessionTerminalService.getActiveById'
+    ));
+    assert.ok(!dashboardSource.includes(
+        'getActiveTerminal: (providerId, sessionId) => aiSessionTerminalService.getActiveById'
+    ));
+    const directRestore = dashboardSource.indexOf(
+        'await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'
+    );
+    const tmuxRestore = dashboardSource.indexOf(
+        'await tmuxRuntimeBackend.restoreAttachTerminals(vscode.window.terminals)'
+    );
+    const hydrationConstruction = dashboardSource.indexOf(
+        'const aiSessionProjectHydrationController = new AiSessionProjectHydrationController'
+    );
+    assert.ok(directRestore >= 0 && tmuxRestore > directRestore && hydrationConstruction > tmuxRestore,
+        'Direct and tmux attachment restoration must finish before first hydration is possible');
+}
+
 async function main() {
     runRuntimeConfigurationChecks();
     runLaunchSpecChecks();
@@ -5395,6 +5471,7 @@ async function main() {
     await runRuntimeCoordinatorChecks();
     await runRuntimeProjectionChecks();
     await runRuntimeControllerChecks();
+    runHostRuntimeCompositionChecks();
     console.log('AI session tmux checks passed.');
 }
 

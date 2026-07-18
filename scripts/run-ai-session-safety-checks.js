@@ -94,6 +94,7 @@ const AiSessionCreationController = require('../out/aiSessions/creationControlle
 const AiSessionResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const AiSessionAttentionController = require('../out/aiSessions/attentionController').AiSessionAttentionController;
 const AiSessionExecutionController = require('../out/aiSessions/executionController').AiSessionExecutionController;
+const AiSessionArchiveController = require('../out/aiSessions/archiveController').AiSessionArchiveController;
 const AiSessionProjectHydrationController = require('../out/aiSessions/projectHydrationController').AiSessionProjectHydrationController;
 Module._load = originalModuleLoad;
 
@@ -1953,8 +1954,15 @@ async function runAiSessionAttentionControllerChecks() {
         projectSessionsKey: 'claudeSessions',
         service: { getLifecycleSignals: () => ({}) },
     }];
-    const terminalEntries = new Map([
-        ['codex:session-a', { runStartedAtMs: 900, complete: false }],
+    const runtimeEntries = new Map([
+        ['codex:session-a', {
+            identity: {
+                provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
+            },
+            backend: 'tmux', state: 'completed', markerPath: '/tmp/completed.marker',
+            runStartedAtMs: 900, attached: false,
+            tmux: { layout: 'session', sessionName: 'project-steward-s-codex-a' },
+        }],
     ]);
     const published = [];
     const scheduled = [];
@@ -1965,8 +1973,8 @@ async function runAiSessionAttentionControllerChecks() {
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
         getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
-        getTerminalById: (providerId, sessionId) => terminalEntries.get(`${providerId}:${sessionId}`) || null,
-        isTerminalComplete: entry => Boolean(entry.complete),
+        getRuntimeById: (providerId, sessionId) => runtimeEntries.get(`${providerId}:${sessionId}`) || null,
+        isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async (items, forceHeartbeat) => {
             published.push({ items: items.map(item => ({ ...item })), forceHeartbeat: Boolean(forceHeartbeat) });
             return true;
@@ -1985,7 +1993,10 @@ async function runAiSessionAttentionControllerChecks() {
     assert.strictEqual(published[0].items[0].sessionKey, 'codex:session-a');
     assert.strictEqual(published[0].items[0].state, 'needsAttention');
     assert.strictEqual(published[0].items[0].reason, 'completed');
-    assert.strictEqual(published[0].items[0].observedAtMs, 1100);
+    assert.strictEqual(published[0].items[0].observedAtMs, 900);
+    assert.ok(published[0].items[0].eventId.endsWith(
+        crypto.createHash('sha256').update('terminal-exit:900').digest('hex')
+    ), 'a current completion marker must preserve the existing terminal-exit attention signal');
     assert.strictEqual(postedSummaries.length, 1, 'local fallback posts project summaries when no bridge aggregate is available');
     assert.deepStrictEqual(controller.getRecoverySessionEvents(), [{
         sessionKey: 'codex:session-a',
@@ -1996,6 +2007,20 @@ async function runAiSessionAttentionControllerChecks() {
     await controller.acknowledge([published[0].items[0].eventId]);
     assert.strictEqual(controller.getLocalSnapshot()['codex:session-a'].state, 'acknowledged');
     assert.strictEqual(controller.getEffectiveAggregate().sessions.length, 0, 'local fallback aggregate must reflect acknowledged owner events immediately');
+
+    runtimeEntries.set('codex:session-a', {
+        identity: {
+            provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
+        },
+        backend: 'tmux', state: 'stopped', markerPath: '/tmp/stopped.marker',
+        runStartedAtMs: 900, attached: false,
+        tmux: { layout: 'session', sessionName: 'project-steward-s-codex-a' },
+    });
+    await controller.evaluate();
+    assert.deepStrictEqual(controller.getLocalSnapshot(), {},
+        'a stopped runtime without a current marker must remove attention ownership');
+    assert.deepStrictEqual(published[published.length - 1].items, [],
+        'a stopped runtime must not publish a completed attention item');
 
     const remoteAggregate = {
         protocolVersion: 1,
@@ -2013,7 +2038,7 @@ async function runAiSessionAttentionControllerChecks() {
     assert.strictEqual(controller.setRemoteAggregate(remoteAggregate), false);
     assert.strictEqual(controller.hasRemoteAggregate(), true);
     assert.strictEqual(controller.getEffectiveAggregate().sessions[0].sessionKey, 'kimi:remote');
-    assert.deepStrictEqual(controller.getRecoverySessionEvents().map(item => item.sessionKey), ['codex:session-a', 'kimi:remote']);
+    assert.deepStrictEqual(controller.getRecoverySessionEvents().map(item => item.sessionKey), ['kimi:remote']);
 
     enabled = false;
     await controller.evaluate();
@@ -2103,6 +2128,62 @@ async function runAiSessionExecutionControllerChecks() {
     const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'executionController.ts'), 'utf8');
     assert.ok(!source.includes('isEnabled'), 'execution controller has no attention enablement option');
     assert.ok(!source.toLowerCase().includes('attention'), 'execution controller never reads attention configuration');
+}
+
+async function runAiSessionArchiveRuntimeChecks() {
+    const runtime = {
+        identity: {
+            provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
+        },
+        backend: 'tmux', state: 'active', markerPath: '/tmp/runtime.marker',
+        runStartedAtMs: 900, attached: false,
+        tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-a' },
+    };
+    const warnings = [];
+    const focused = [];
+    let confirmCount = 0;
+    let archiveCount = 0;
+    const controller = new AiSessionArchiveController({
+        isProviderId: value => value === 'codex',
+        getProvider: () => ({
+            label: 'Codex',
+            service: { archiveSession: () => { archiveCount++; return true; } },
+        }),
+        getProviderLabel: () => 'Codex',
+        getOpenProjects: () => [],
+        getProjectSessions: () => [],
+        getRuntimeById: (providerId, sessionId) => providerId === 'codex' && sessionId === 'session-a'
+            ? runtime : null,
+        isRuntimeComplete: candidate => candidate.state === 'completed',
+        focusRuntime: candidate => { focused.push({ ...candidate.identity }); },
+        deleteRuntimeMarker: () => undefined,
+        untrackRuntime: () => undefined,
+        deletePin: () => undefined,
+        deleteAlias: () => undefined,
+        confirmSingleArchive: async () => { confirmCount++; return 'Archive'; },
+        confirmBatchArchive: async () => undefined,
+        showWarningMessage: message => warnings.push(message),
+        showErrorMessage: () => undefined,
+        showInformationMessage: () => undefined,
+        appendLine: () => undefined,
+        postCompletion: () => undefined,
+        refresh: () => undefined,
+        syncActiveRuntime: () => undefined,
+        logUnexpectedError: () => undefined,
+    });
+
+    await controller.archiveSession('codex', 'session-a');
+    assert.strictEqual(confirmCount, 0, 'an active detached tmux runtime blocks archive before confirmation');
+    assert.strictEqual(archiveCount, 0, 'an active detached tmux runtime is never archived');
+    assert.strictEqual(warnings.length, 1);
+    assert.deepStrictEqual(focused, [{
+        provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
+    }]);
+
+    runtime.state = 'stopped';
+    await controller.archiveSession('codex', 'session-a');
+    assert.strictEqual(confirmCount, 1, 'a stopped runtime no longer owns the archive guard');
+    assert.strictEqual(archiveCount, 1, 'a stopped runtime can be archived');
 }
 
 async function runAiSessionProjectHydrationControllerChecks() {
@@ -3743,7 +3824,7 @@ function runWebviewContentChecks() {
     assert.ok(attentionControllerSource.includes('const projectKey = this.options.getProjectKey(project);'));
     assert.ok(attentionControllerSource.includes('projectId: projectKey'));
     assert.ok(attentionControllerSource.includes('observedAtMs: attention.stateChangedAt'));
-    assert.ok(attentionControllerSource.includes('if (!terminal ||'));
+    assert.ok(attentionControllerSource.includes("if (!runtime || runtime.state === 'stopped'"));
     assert.ok(attentionControllerSource.includes('provider.service.getLifecycleSignals(requests)'));
     assert.ok(evaluateAttentionFunction.includes('terminal-exit:'));
     assert.ok(!evaluateAttentionFunction.includes('activityToken'));
@@ -3759,10 +3840,10 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('sessionEvents: aiSessionAttentionController.getRecoverySessionEvents()'));
     assert.ok(webviewProjectScripts.includes('message.sessionEvents'));
     assert.ok(dashboard.includes("import { AiSessionAttentionController } from './aiSessions/attentionController';"));
-    assert.ok(dashboard.includes('const aiSessionAttentionController = new AiSessionAttentionController<TerminalEntry>({'));
+    assert.ok(dashboard.includes('const aiSessionAttentionController = new AiSessionAttentionController<AiSessionRuntimeSnapshot<vscode.Terminal>>({'));
     assert.ok(dashboard.includes("import { AiSessionExecutionController } from './aiSessions/executionController';"));
     assert.ok(dashboard.includes('const aiSessionExecutionController = new AiSessionExecutionController({'));
-    assert.ok(dashboard.includes('getActiveSessions: () => aiSessionTerminalService.getActiveSessions()'));
+    assert.ok(dashboard.includes('getActiveSessions: () => aiSessionRuntimeCoordinator.getActive()'));
     assert.ok(dashboard.includes('executionSnapshot: aiSessionExecutionController.getSnapshot()'));
     assert.match(dashboard, /aiSessionExecutionInterval = setInterval\(\(\) => \{ aiSessionExecutionController\.evaluate\(\); \}, 1_000\)/);
     assert.match(dashboard, /setTimeout\(\(\) => \{ aiSessionExecutionController\.evaluate\(\); \}, 0\)/);
@@ -3776,7 +3857,7 @@ function runWebviewContentChecks() {
     assert.ok(activeSessionProjectionSource.includes("executionState: input.executionSnapshot[key]?.state || 'stopped'"));
     assert.ok(!dashboard.includes('function getEffectiveAiSessionAttentionAggregate('));
     assert.ok(!dashboard.includes('function getAiSessionAttentionRecoverySessionEvents('));
-    assert.ok(!dashboard.includes('async function evaluateAiSessionAttention('));
+    assert.ok(dashboard.includes('async function evaluateAiSessionAttention('));
     assert.ok(dashboard.includes("'open-settings': async () =>"));
     assert.ok(settingsFunction.includes('dashboardRuntimeController.openSettings()'));
     assert.ok(dashboardRuntimeControllerSource.includes("executeCommand('workbench.action.openSettings', query)"));
@@ -3788,7 +3869,7 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes("import { AiSessionResumeController } from './aiSessions/resumeController';"));
     assert.ok(dashboard.includes('const aiSessionCommandController = new AiSessionCommandController({'));
     assert.ok(dashboard.includes('const aiSessionCreationController = new AiSessionCreationController({'));
-    assert.ok(dashboard.includes('const aiSessionResumeController = new AiSessionResumeController<vscode.Terminal, TerminalEntry>({'));
+    assert.ok(dashboard.includes('const aiSessionResumeController = new AiSessionResumeController<vscode.Terminal>({'));
     assert.ok(dashboard.includes('new AiSessionPinController({'));
     assert.ok(dashboard.includes('aiSessionPinController.getAll()'));
     assert.ok(dashboard.includes('aiSessionPinController.toggle('));
@@ -3809,16 +3890,18 @@ function runWebviewContentChecks() {
     assert.ok(!terminalServiceSource.includes('AI_SESSION_PROVIDER_IDS'));
     assert.ok(dashboard.includes('const aiSessionProviders = aiSessionProviderRegistry.providers();'));
     assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
+    assert.ok(dashboard.includes('await tmuxRuntimeBackend.restoreAttachTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
     assert.match(dashboard, /const acknowledgeAiSessionAttention = \(identity:[\s\S]*?getRecoverySessionEvents\(\)[\s\S]*?aiSessionAttentionController\.acknowledge\(eventIds\);[\s\S]*?aiSessionAttentionBridgeClient\.acknowledge\(eventIds\)/);
     assert.match(dashboard, /const settleCompletedAiSessionTerminal = \(identity:[\s\S]*?acknowledgeAiSessionAttention\(identity\);[\s\S]*?releaseCompletedSession\(identity\.provider, identity\.sessionId\)/);
     assert.match(dashboard, /aggregate => \{[\s\S]*?setRemoteAggregate\(aggregate\)[\s\S]*?getReleasedSessions\(\)\.forEach\(acknowledgeAiSessionAttention\)/);
-    assert.match(dashboard, /onComplete: resolution => \{[\s\S]*?settleCompletedAiSessionTerminal\(resolution\);[\s\S]*?aiSessionAttentionController\.evaluate\(\)/);
-    assert.ok(dashboard.includes('getTerminalById: (providerId, sessionId) => aiSessionTerminalService.getActiveById(providerId, sessionId)'));
+    assert.match(dashboard, /onComplete: resolution => \{[\s\S]*?settleCompletedAiSessionTerminal\(resolution\);[\s\S]*?evaluateAiSessionAttention\(\)/);
+    assert.ok(dashboard.includes('getRuntimeById: getAiSessionRuntimeById'));
+    assert.ok(!dashboard.includes('getTerminalById: (providerId, sessionId) => aiSessionTerminalService.getActiveById(providerId, sessionId)'));
     assert.match(dashboard, /aiSessionTerminalCompletionInterval = setInterval\(\(\) => \{[\s\S]*?getCompletedSessions\(\)[\s\S]*?settleCompletedAiSessionTerminal[\s\S]*?\}, 1_000\)/);
-    assert.match(dashboard, /onDidCloseTerminal\(terminal => \{[\s\S]*?hadPendingTerminal[\s\S]*?handleClosedTerminal\(terminal\)[\s\S]*?closedSessions\.length \|\| hadPendingTerminal[\s\S]*?refreshAiSessionViewsIncrementally\(\)/);
+    assert.match(dashboard, /onDidCloseTerminal\(terminal => \{[\s\S]*?hadRuntimeClient[\s\S]*?aiSessionRuntimeCoordinator\.handleClosedTerminal\(terminal\)[\s\S]*?closedSessions\.length \|\| hadRuntimeClient[\s\S]*?refreshAiSessionViewsIncrementally\(\)/);
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
-    assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void aiSessionAttentionController\.evaluate\(\);[\s\S]*?\}\)/);
+    assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);
     assert.match(dashboard, /onDidChangeWindowState\(windowState => \{[\s\S]*?dashboardLifecycleController\.handleWindowStateChanged\(windowState\);[\s\S]*?\}\)/);
     assert.ok(dashboardLifecycleControllerSource.includes('this.options.evaluateAiSessionAttention();'));
     assert.ok(dashboardLifecycleControllerSource.includes('this.options.publishOpenProjects(true);'));
@@ -3831,6 +3914,7 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.sync()'));
     assert.ok(dashboard.includes('onVisibleChanged: visible =>'));
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.setVisible(visible)'));
+    assert.ok(dashboard.includes('dashboardRuntimeController.handleAiSessionViewVisibilityChanged(visible)'));
     const viewProvider = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'viewProvider.ts'), 'utf8');
     assert.ok(viewProvider.includes('this.options.onVisibleChanged(webviewView.visible)'));
     const terminalCandidatesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'terminalCandidates.ts'), 'utf8');
@@ -3842,7 +3926,7 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes("'archive-ai-sessions': async e =>"));
     assert.ok(dashboard.includes('AiSessionBatchArchiveCompletedMessage'));
     assert.ok(dashboard.includes("import { AiSessionArchiveController } from './aiSessions/archiveController';"));
-    assert.ok(dashboard.includes('const aiSessionArchiveController = new AiSessionArchiveController<AiSessionTerminalEntry<vscode.Terminal>>({'));
+    assert.ok(dashboard.includes('const aiSessionArchiveController = new AiSessionArchiveController<AiSessionRuntimeSnapshot<vscode.Terminal>>({'));
     assert.ok(dashboard.includes('await aiSessionArchiveController.archiveSessions('));
     assert.ok(dashboard.includes('await aiSessionArchiveController.archiveSession('));
     assert.ok(!dashboard.includes('async function archiveAiSession('));
@@ -3852,8 +3936,8 @@ function runWebviewContentChecks() {
     assert.ok(!dashboard.includes('function logBatchAiSessionArchiveResult('));
     assert.ok(singleArchiveFunction.includes('this.archiveSessionItem(providerId, sessionId)'));
     assert.ok(batchArchiveFunction.includes('executeBatchAiSessionArchiveRequest('));
-    assert.strictEqual((singleArchiveFunction.match(/syncActiveTerminal\(\)/g) || []).length, 1);
-    assert.strictEqual((batchArchiveFunction.match(/syncActiveTerminal\(\)/g) || []).length, 1);
+    assert.strictEqual((singleArchiveFunction.match(/syncActiveRuntime\(\)/g) || []).length, 1);
+    assert.strictEqual((batchArchiveFunction.match(/syncActiveRuntime\(\)/g) || []).length, 1);
     assert.ok(!archiveItemFunction.includes('activeAiSessionTerminalHighlighter.sync()'));
     assert.ok(!archiveItemFunction.includes('refreshAiSessionViewsIncrementally()'));
     assert.ok(!archiveItemFunction.includes('invalidateAiSessionCache('));
@@ -7798,6 +7882,7 @@ async function main() {
     await runAiSessionRuntimeControllerChecks();
     await runAiSessionAttentionControllerChecks();
     await runAiSessionExecutionControllerChecks();
+    await runAiSessionArchiveRuntimeChecks();
     await runAiSessionProjectHydrationControllerChecks();
     await runAiSessionProjectHydrationPromotionChecks();
     runKeyChecks();

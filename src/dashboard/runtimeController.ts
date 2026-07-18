@@ -16,6 +16,8 @@ export interface DashboardRuntimeControllerOptions<TProject extends Project = Pr
     syncProjectColorToCurrentWindow: (project: TProject | null) => Thenable<void> | Promise<void>;
     postMessage: (message: unknown) => Thenable<unknown> | Promise<unknown>;
     logError: (message: string, error: unknown) => void;
+    refreshAiSessionRuntimes?: (reason: string, force: boolean) => Thenable<void> | Promise<void>;
+    logAiSessionRuntimeFailure?: (operation: string, error: unknown) => void;
 }
 
 export class DashboardRuntimeController<TProject extends Project = Project> {
@@ -38,6 +40,18 @@ export class DashboardRuntimeController<TProject extends Project = Project> {
         this.options.publishOpenProjects();
         await this.revealSidebarSteward();
         this.refresh('show-steward');
+    }
+
+    async handleAiSessionViewVisibilityChanged(visible: boolean): Promise<void> {
+        if (!visible || !this.options.refreshAiSessionRuntimes) {
+            return;
+        }
+        try {
+            await this.runAsync(() => this.options.refreshAiSessionRuntimes('dashboard-visible', true));
+        } catch (error) {
+            this.options.logAiSessionRuntimeFailure?.('dashboard-visible', error);
+        }
+        this.refresh('ai-session-runtime-visible');
     }
 
     refreshAfterMutation(reason = 'project-mutation'): void {

@@ -13,12 +13,9 @@ import {
     BatchAiSessionArchiveSelection,
 } from './archiveBatch';
 
-interface TerminalLike {
-    show(): void;
-}
-
-export interface AiSessionArchiveTerminalEntry {
-    terminal: TerminalLike;
+export interface AiSessionArchiveRuntimeEntry {
+    state: 'pending' | 'active' | 'completed' | 'stopped' | 'conflict';
+    markerPath: string;
 }
 
 export interface AiSessionArchiveProvider {
@@ -28,16 +25,17 @@ export interface AiSessionArchiveProvider {
     };
 }
 
-export interface AiSessionArchiveControllerOptions<TEntry extends AiSessionArchiveTerminalEntry = AiSessionArchiveTerminalEntry> {
+export interface AiSessionArchiveControllerOptions<TRuntime extends AiSessionArchiveRuntimeEntry = AiSessionArchiveRuntimeEntry> {
     isProviderId: (value: string) => value is AiSessionProviderId;
     getProvider: (providerId: AiSessionProviderId) => AiSessionArchiveProvider;
     getProviderLabel: (providerId: AiSessionProviderId) => string;
     getOpenProjects: () => Project[];
     getProjectSessions: (project: Project, providerId: AiSessionProviderId) => CodexSession[];
-    getExistingTerminal: (providerId: AiSessionProviderId, sessionId: string) => TEntry | null;
-    isTerminalComplete: (terminal: TEntry) => boolean;
-    deleteEntryMarker: (terminal: TEntry) => void;
-    untrackTerminal: (providerId: AiSessionProviderId, sessionId: string) => void;
+    getRuntimeById: (providerId: AiSessionProviderId, sessionId: string) => TRuntime | null;
+    isRuntimeComplete: (runtime: TRuntime) => boolean;
+    focusRuntime: (runtime: TRuntime) => unknown;
+    deleteRuntimeMarker: (runtime: TRuntime) => void;
+    untrackRuntime: (providerId: AiSessionProviderId, sessionId: string) => void;
     deletePin: (providerId: AiSessionProviderId, sessionId: string) => void;
     deleteAlias: (providerId: AiSessionProviderId, sessionId: string) => void;
     confirmSingleArchive: (providerLabel: string) => Thenable<string | undefined>;
@@ -48,12 +46,12 @@ export interface AiSessionArchiveControllerOptions<TEntry extends AiSessionArchi
     appendLine: (message: string) => void;
     postCompletion: (completion: BatchAiSessionArchiveCompletion) => void;
     refresh: () => void;
-    syncActiveTerminal: () => void;
+    syncActiveRuntime: () => void;
     logUnexpectedError: (operation: string, error: unknown, failedSessionId?: string) => void;
 }
 
-export class AiSessionArchiveController<TEntry extends AiSessionArchiveTerminalEntry = AiSessionArchiveTerminalEntry> {
-    constructor(private readonly options: AiSessionArchiveControllerOptions<TEntry>) {
+export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntimeEntry = AiSessionArchiveRuntimeEntry> {
+    constructor(private readonly options: AiSessionArchiveControllerOptions<TRuntime>) {
     }
 
     async archiveSession(providerId: AiSessionProviderId | null, sessionId: string): Promise<void> {
@@ -62,10 +60,10 @@ export class AiSessionArchiveController<TEntry extends AiSessionArchiveTerminalE
         }
 
         const sessionProvider = this.options.getProvider(providerId);
-        let existingTerminal = this.options.getExistingTerminal(providerId, sessionId);
-        if (existingTerminal && !this.options.isTerminalComplete(existingTerminal)) {
-            this.options.showWarningMessage(`This ${sessionProvider.label} session is open in a terminal. Exit or close that terminal before archiving it.`);
-            existingTerminal.terminal.show();
+        let runtime = this.options.getRuntimeById(providerId, sessionId);
+        if (runtime && runtime.state !== 'stopped' && !this.options.isRuntimeComplete(runtime)) {
+            this.options.showWarningMessage(`This ${sessionProvider.label} session has an active runtime. Exit the AI provider before archiving it.`);
+            await this.options.focusRuntime(runtime);
             return;
         }
 
@@ -76,9 +74,11 @@ export class AiSessionArchiveController<TEntry extends AiSessionArchiveTerminalE
 
         const status = this.archiveSessionItem(providerId, sessionId);
         if (status === 'running') {
-            existingTerminal = this.options.getExistingTerminal(providerId, sessionId);
-            this.options.showWarningMessage(`This ${sessionProvider.label} session is open in a terminal. Exit or close that terminal before archiving it.`);
-            existingTerminal?.terminal.show();
+            runtime = this.options.getRuntimeById(providerId, sessionId);
+            this.options.showWarningMessage(`This ${sessionProvider.label} session has an active runtime. Exit the AI provider before archiving it.`);
+            if (runtime) {
+                await this.options.focusRuntime(runtime);
+            }
             return;
         }
 
@@ -87,7 +87,7 @@ export class AiSessionArchiveController<TEntry extends AiSessionArchiveTerminalE
             return;
         }
 
-        this.options.syncActiveTerminal();
+        this.options.syncActiveRuntime();
         this.options.refresh();
     }
 
@@ -96,16 +96,17 @@ export class AiSessionArchiveController<TEntry extends AiSessionArchiveTerminalE
         sessionId: string
     ): BatchAiSessionArchiveAttemptStatus {
         const sessionProvider = this.options.getProvider(providerId);
-        const existingTerminal = this.options.getExistingTerminal(providerId, sessionId);
+        const runtime = this.options.getRuntimeById(providerId, sessionId);
         return archiveBatchAiSessionItem(sessionId, {
-            isRunning: () => Boolean(existingTerminal && !this.options.isTerminalComplete(existingTerminal)),
+            isRunning: () => Boolean(runtime && runtime.state !== 'stopped'
+                && !this.options.isRuntimeComplete(runtime)),
             archiveSession: () => sessionProvider.service.archiveSession(sessionId),
             deleteEntryMarker: () => {
-                if (existingTerminal) {
-                    this.options.deleteEntryMarker(existingTerminal);
+                if (runtime) {
+                    this.options.deleteRuntimeMarker(runtime);
                 }
             },
-            untrackTerminal: () => this.options.untrackTerminal(providerId, sessionId),
+            untrackTerminal: () => this.options.untrackRuntime(providerId, sessionId),
             deletePin: () => this.options.deletePin(providerId, sessionId),
             deleteAlias: () => this.options.deleteAlias(providerId, sessionId),
         });
@@ -161,7 +162,7 @@ export class AiSessionArchiveController<TEntry extends AiSessionArchiveTerminalE
             postCompletion: completion => this.options.postCompletion(completion),
             refresh: () => this.options.refresh(),
         });
-        this.options.syncActiveTerminal();
+        this.options.syncActiveRuntime();
     }
 
     private logRejectedBatchAiSessionSelections(

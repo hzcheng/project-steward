@@ -11,8 +11,9 @@ import { getAttentionProjectSummaries } from './attentionProject';
 import type { AttentionProjectSummary } from './attentionProject';
 import { getAiSessionKey } from './sessionHelpers';
 
-export interface AiSessionAttentionTerminalEntry {
+export interface AiSessionAttentionRuntimeEntry {
     runStartedAtMs: number;
+    state: 'pending' | 'active' | 'completed' | 'stopped' | 'conflict';
 }
 
 export interface AiSessionAttentionProvider {
@@ -23,26 +24,26 @@ export interface AiSessionAttentionProvider {
     };
 }
 
-export interface AiSessionAttentionControllerOptions<TEntry extends AiSessionAttentionTerminalEntry = AiSessionAttentionTerminalEntry> {
+export interface AiSessionAttentionControllerOptions<TRuntime extends AiSessionAttentionRuntimeEntry = AiSessionAttentionRuntimeEntry> {
     isEnabled: () => boolean;
     getOpenProjects: () => Project[];
     getProviders: () => AiSessionAttentionProvider[];
     getSessionKey?: (providerId: AiSessionProviderId, sessionId: string) => string;
     getProjectKey: (project: Project) => string;
-    getTerminalById: (providerId: AiSessionProviderId, sessionId: string) => TEntry | null;
-    isTerminalComplete: (entry: TEntry) => boolean;
+    getRuntimeById: (providerId: AiSessionProviderId, sessionId: string) => TRuntime | null;
+    isRuntimeComplete: (runtime: TRuntime) => boolean;
     publish: (items: AttentionPayloadItem[], forceHeartbeat?: boolean) => Promise<boolean>;
     scheduleRefresh: (reason: string) => void;
     postProjectsUpdated: (projects: AttentionProjectSummary[]) => void;
     nowMs: () => number;
 }
 
-export class AiSessionAttentionController<TEntry extends AiSessionAttentionTerminalEntry = AiSessionAttentionTerminalEntry> {
+export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRuntimeEntry = AiSessionAttentionRuntimeEntry> {
     private readonly monitor: AiSessionAttentionMonitor;
     private remoteAggregate: AttentionAggregate | null = null;
     private localItems: AttentionPayloadItem[] = [];
 
-    constructor(private readonly options: AiSessionAttentionControllerOptions<TEntry>) {
+    constructor(private readonly options: AiSessionAttentionControllerOptions<TRuntime>) {
         this.monitor = new AiSessionAttentionMonitor({ now: options.nowMs });
     }
 
@@ -62,13 +63,13 @@ export class AiSessionAttentionController<TEntry extends AiSessionAttentionTermi
         const ownedSessions = this.getOwnedSessions(projects, providers);
         const signalsByProvider = this.getSignalsByProvider(providers, ownedSessions);
         const inputs = Array.from(ownedSessions, ([key, owned]) => {
-            const signal = this.options.isTerminalComplete(owned.terminal)
+            const signal = this.options.isRuntimeComplete(owned.runtime)
                 ? {
-                    token: `terminal-exit:${owned.terminal.runStartedAtMs}`,
+                    token: `terminal-exit:${owned.runtime.runStartedAtMs}`,
                     phase: 'needsAttention' as const,
                     reason: 'completed' as const,
                     executionState: 'stopped' as const,
-                    occurredAtMs: owned.terminal.runStartedAtMs,
+                    occurredAtMs: owned.runtime.runStartedAtMs,
                 }
                 : signalsByProvider[owned.providerId][owned.session.id];
             return {
@@ -176,22 +177,22 @@ export class AiSessionAttentionController<TEntry extends AiSessionAttentionTermi
     ): Map<string, {
         providerId: AiSessionProviderId;
         session: CodexSession;
-        terminal: TEntry;
+        runtime: TRuntime;
     }> {
         const ownedSessions = new Map<string, {
             providerId: AiSessionProviderId;
             session: CodexSession;
-            terminal: TEntry;
+            runtime: TRuntime;
         }>();
         for (const project of projects) {
             for (const provider of providers) {
                 for (const session of project[provider.projectSessionsKey] || []) {
                     const key = this.getSessionKey(provider.id, session.id);
-                    const terminal = this.options.getTerminalById(provider.id, session.id);
-                    if (!terminal || ownedSessions.has(key)) {
+                    const runtime = this.options.getRuntimeById(provider.id, session.id);
+                    if (!runtime || runtime.state === 'stopped' || ownedSessions.has(key)) {
                         continue;
                     }
-                    ownedSessions.set(key, { providerId: provider.id, session, terminal });
+                    ownedSessions.set(key, { providerId: provider.id, session, runtime });
                 }
             }
         }
@@ -200,7 +201,7 @@ export class AiSessionAttentionController<TEntry extends AiSessionAttentionTermi
 
     private getSignalsByProvider(
         providers: AiSessionAttentionProvider[],
-        ownedSessions: Map<string, { providerId: AiSessionProviderId; session: CodexSession; terminal: TEntry }>
+        ownedSessions: Map<string, { providerId: AiSessionProviderId; session: CodexSession; runtime: TRuntime }>
     ): Record<AiSessionProviderId, Record<string, AiSessionLifecycleSignal>> {
         const requestsByProvider = providers.reduce((result, provider) => {
             result[provider.id] = [];
@@ -209,7 +210,7 @@ export class AiSessionAttentionController<TEntry extends AiSessionAttentionTermi
         for (const owned of ownedSessions.values()) {
             requestsByProvider[owned.providerId].push({
                 sessionId: owned.session.id,
-                runStartedAtMs: owned.terminal.runStartedAtMs,
+                runStartedAtMs: owned.runtime.runStartedAtMs,
             });
         }
 
