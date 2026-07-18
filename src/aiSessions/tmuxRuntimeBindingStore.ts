@@ -62,7 +62,7 @@ export interface TmuxConsumedPendingBinding {
     pendingId: string;
     provider: AiSessionProviderId;
     projectKey: string;
-    cwd: string;
+    cwd?: string;
     finalSessionId: string;
     layout: AiSessionTmuxLayout;
     finalLocator: AiSessionTmuxLocator;
@@ -218,7 +218,7 @@ export class TmuxRuntimeBindingStore {
 
     setConsumed(record: TmuxConsumedPendingBinding): Promise<boolean> {
         const validated = validateConsumedRecord(record);
-        if (!validated) {
+        if (!validated || validated.cwd === undefined) {
             return Promise.reject(new Error('The consumed tmux binding is invalid.'));
         }
         return this.serialize(async () => {
@@ -610,7 +610,7 @@ function validateConsumedRecord(value: unknown): TmuxConsumedPendingBinding | nu
     if (record.version !== RECORD_VERSION || record.state !== 'consumed'
         || !isBoundedString(record.pendingId, MAX_ID_LENGTH) || !isProviderId(record.provider)
         || !isBoundedString(record.projectKey, MAX_ID_LENGTH)
-        || !isBoundedString(record.cwd, MAX_PATH_LENGTH)
+        || (record.cwd !== undefined && !isBoundedString(record.cwd, MAX_PATH_LENGTH))
         || !isBoundedString(record.finalSessionId, MAX_ID_LENGTH)
         || !isLayout(record.layout) || !locator || locator.layout !== record.layout
         || !isFiniteNonNegative(record.consumedAtMs)) {
@@ -622,7 +622,7 @@ function validateConsumedRecord(value: unknown): TmuxConsumedPendingBinding | nu
         pendingId: record.pendingId,
         provider: record.provider,
         projectKey: record.projectKey,
-        cwd: record.cwd,
+        ...(record.cwd === undefined ? {} : { cwd: record.cwd }),
         finalSessionId: record.finalSessionId,
         layout: record.layout,
         finalLocator: locator,
@@ -815,7 +815,8 @@ function consumedRecordMatchesIdentity(
     identity: AiSessionRuntimeIdentity
 ): boolean {
     return record.provider === identity.provider && record.projectKey === identity.projectKey
-        && record.pendingId === identity.pendingId && record.cwd === identity.cwd;
+        && record.pendingId === identity.pendingId
+        && (record.cwd === undefined || record.cwd === identity.cwd);
 }
 
 function pendingIdentityParts(identity: AiSessionRuntimeIdentity): string[] | null {

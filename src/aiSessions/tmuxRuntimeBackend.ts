@@ -203,16 +203,21 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         return this.dependencies.withCreationLock<AiSessionRuntimeSnapshot<TTerminal>[]>(
             pendingLifecycleLockKey(pendingId), async () => {
             await this.requireAvailable();
-            await this.dependencies.discovery.refresh(true);
             const storedIntent = await this.dependencies.runtimeStore.getPromotingByPendingId(pendingId);
+            const storedLiveBinding = await this.dependencies.runtimeStore.getPending(pendingId);
+            if (storedIntent && storedLiveBinding
+                && !promotionIntentMatchesLiveBinding(storedIntent, storedLiveBinding)) {
+                throw new Error('The pending tmux promotion intent conflicts with the live pending binding.');
+            }
             const storedPending = storedIntent?.pendingBinding
-                || await this.dependencies.runtimeStore.getPending(pendingId);
+                || storedLiveBinding;
             if (!storedPending) {
                 return [];
             }
             if (storedIntent && storedIntent.finalSessionId !== sessionId) {
                 throw new Error('The pending tmux runtime has a conflicting promotion in progress.');
             }
+            await this.dependencies.discovery.refresh(true);
             const pendingIdentityValue = identityFromPendingBinding(storedPending);
             const consumedByPendingId = await this.dependencies.runtimeStore.getConsumedByPendingId(pendingId);
             if (consumedByPendingId
@@ -230,6 +235,10 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             }
             const currentIntent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
             const freshBinding = await this.dependencies.runtimeStore.getPending(pendingId);
+            if (currentIntent && freshBinding
+                && !promotionIntentMatchesLiveBinding(currentIntent, freshBinding)) {
+                throw new Error('The pending tmux promotion intent conflicts with the live pending binding.');
+            }
             const currentBinding = currentIntent?.pendingBinding || freshBinding;
             if (!currentBinding || !pendingBindingsEqual(storedPending, currentBinding)
                 || (storedIntent && (!currentIntent || !promotionIntentsMatch(storedIntent, currentIntent)))) {
@@ -1344,20 +1353,7 @@ function promotionIntent(
     if (!finalIdentityValue.sessionId) {
         throw new Error('A promotion intent requires a final session ID.');
     }
-    const requestFingerprint = createHash('sha256').update(JSON.stringify([
-        1,
-        binding.provider,
-        binding.projectKey,
-        binding.pendingId,
-        binding.cwd,
-        binding.createdAt,
-        binding.excludedSessionIds,
-        binding.title ?? null,
-        binding.acceptedAtMs,
-        binding.layout,
-        binding.locator,
-        pending.markerPath,
-    ]), 'utf8').digest('hex');
+    const requestFingerprint = promotionRequestFingerprint(binding, pending.markerPath);
     return {
         version: 1,
         state: 'promoting',
@@ -1379,6 +1375,31 @@ function promotionIntent(
         requestFingerprint,
         recordedAtMs,
     };
+}
+
+function promotionRequestFingerprint(binding: TmuxPendingRuntimeBinding, markerPath: string): string {
+    return createHash('sha256').update(JSON.stringify([
+        1,
+        binding.provider,
+        binding.projectKey,
+        binding.pendingId,
+        binding.cwd,
+        binding.createdAt,
+        binding.excludedSessionIds,
+        binding.title ?? null,
+        binding.acceptedAtMs,
+        binding.layout,
+        binding.locator,
+        markerPath,
+    ]), 'utf8').digest('hex');
+}
+
+function promotionIntentMatchesLiveBinding(
+    intent: TmuxPromotingRuntimeBinding,
+    binding: TmuxPendingRuntimeBinding
+): boolean {
+    return pendingBindingsEqual(intent.pendingBinding, binding)
+        && intent.requestFingerprint === promotionRequestFingerprint(binding, intent.markerPath);
 }
 
 function promotionIntentsMatch(

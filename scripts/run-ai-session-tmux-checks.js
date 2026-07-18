@@ -201,6 +201,7 @@ function createTmuxBackendHarness(options = {}) {
             promoting.delete(ambiguousKey(identity));
         },
         reconcileKnown: async live => {
+            operations.push({ type: 'reconcile-known', count: live.length });
             for (const runtime of live) {
                 const sessionId = runtime.identity.sessionId;
                 if (sessionId && runtime.tmux) {
@@ -444,7 +445,9 @@ function createTmuxBackendHarness(options = {}) {
 function runtimeRecordFilename(record) {
     const identity = record.state === 'pending'
         ? [record.pendingId]
-        : [record.provider, record.sessionId];
+        : record.state === 'consumed' || record.state === 'promoting'
+            ? [record.provider, record.projectKey, record.pendingId]
+            : [record.provider, record.sessionId];
     const digest = crypto.createHash('sha256')
         .update(JSON.stringify([1, record.state, ...identity]), 'utf8')
         .digest('hex');
@@ -1902,6 +1905,53 @@ async function runTmuxStoreChecks() {
         assert.strictEqual(await store.setConsumed(consumedRecord), true);
         assert.deepStrictEqual(await restartedStore.getConsumed(consumedIdentity), consumedRecord);
         assert.deepStrictEqual(await restartedStore.getConsumedByPendingId('p-used'), consumedRecord);
+
+        const legacyConsumedRoot = path.join(root, 'legacy-consumed');
+        fs.mkdirSync(legacyConsumedRoot);
+        const legacyConsumedRecord = {
+            version: 1,
+            state: 'consumed',
+            pendingId: 'legacy-consumed-pending',
+            provider: 'codex',
+            projectKey: 'legacy-consumed-project',
+            finalSessionId: 'legacy-final',
+            layout: 'session',
+            finalLocator: { layout: 'session', sessionName: 'project-steward-s-codex-legacy-final' },
+            consumedAtMs: now - 1,
+        };
+        const legacyConsumedPath = path.join(legacyConsumedRoot,
+            runtimeRecordFilename(legacyConsumedRecord));
+        const legacyConsumedBytes = `${JSON.stringify(legacyConsumedRecord, null, 2)}\n`;
+        fs.writeFileSync(legacyConsumedPath, legacyConsumedBytes);
+        const legacyConsumedStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            legacyConsumedRoot, () => now
+        );
+        const legacyConsumedIdentity = {
+            provider: 'codex', projectKey: 'legacy-consumed-project', cwd: '/fresh-work',
+            pendingId: 'legacy-consumed-pending',
+        };
+        assert.deepStrictEqual(await legacyConsumedStore.getConsumed(legacyConsumedIdentity),
+            legacyConsumedRecord);
+        assert.deepStrictEqual(await legacyConsumedStore.getConsumedByPendingId('legacy-consumed-pending'),
+            legacyConsumedRecord);
+        await assert.rejects(legacyConsumedStore.setConsumed(legacyConsumedRecord),
+            /consumed tmux binding is invalid/);
+        const legacyConsumedHarness = createTmuxBackendHarness();
+        legacyConsumedHarness.dependencies.runtimeStore = legacyConsumedStore;
+        const legacyBackendModule = require('../out/aiSessions/tmuxRuntimeBackend');
+        await assert.rejects(
+            new legacyBackendModule.TmuxRuntimeBackend(legacyConsumedHarness.dependencies).ensurePending({
+                identity: legacyConsumedIdentity,
+                projectName: 'App', terminalName: 'Codex: Legacy Consumed',
+                createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
+                launch: { executable: 'codex', args: ['new'], cwd: '/fresh-work' },
+            }, 'session'),
+            /pending ID.*identity|already consumed/i
+        );
+        assert.strictEqual(legacyConsumedHarness.operations.some(item =>
+            item.type === 'new-session' || item.type === 'new-window'), false);
+        assert.strictEqual(fs.readFileSync(legacyConsumedPath, 'utf8'), legacyConsumedBytes);
+
         const conflictingConsumedRecord = {
             ...consumedRecord,
             provider: 'kimi',
@@ -3355,6 +3405,64 @@ async function runTmuxBackendChecks() {
         assert.strictEqual(recoveryHarness.operations.filter(item =>
             item.type === 'rename-session' || item.type === 'rename-window').length, 1);
     }
+
+    const intentLiveHarness = createTmuxBackendHarness({ failSetConsumedCount: 1 });
+    const intentLiveRequest = {
+        identity: {
+            provider: 'codex', projectKey: 'intent-live-a', cwd: '/work-a',
+            pendingId: 'intent-live-shared-pending',
+        },
+        projectName: 'App A', terminalName: 'Codex: Intent Live A',
+        createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: ['a'], title: 'Contract A',
+        launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/intent-live-a' },
+    };
+    const intentLiveFinalId = 'intent-live-final';
+    const intentLiveBackend = new backendModule.TmuxRuntimeBackend(intentLiveHarness.dependencies);
+    await intentLiveBackend.ensurePending(intentLiveRequest, 'session');
+    await assert.rejects(intentLiveBackend.promotePending(
+        intentLiveRequest.identity.pendingId, intentLiveFinalId
+    ), /consumed persistence failed/);
+    const intentA = JSON.parse(JSON.stringify(Array.from(intentLiveHarness.promoting.values())[0]));
+    const bindingA = intentLiveHarness.pending.get(intentLiveRequest.identity.pendingId);
+    const identityB = {
+        provider: 'kimi', projectKey: 'intent-live-b', cwd: '/work-b',
+        pendingId: intentLiveRequest.identity.pendingId,
+    };
+    const bindingB = {
+        ...bindingA,
+        ...identityB,
+        excludedSessionIds: ['b'],
+        title: 'Contract B',
+        acceptedAtMs: bindingA.acceptedAtMs + 1,
+        locator: new tmuxLayout.SessionTmuxLayout().getPendingLocator(identityB),
+    };
+    intentLiveHarness.pending.set(identityB.pendingId, bindingB);
+    const promotionMutationTypes = new Set([
+        'rename-session', 'rename-window', 'session-options', 'window-options', 'clear-pending',
+        'store-known', 'store-consumed', 'remove-pending', 'remove-promoting', 'reconcile-known',
+    ]);
+    const intentLiveMutationCount = () => intentLiveHarness.operations.filter(item =>
+        promotionMutationTypes.has(item.type)).length;
+    const mutationsBeforeIntentLiveRetry = intentLiveMutationCount();
+    const knownBeforeIntentLiveRetry = JSON.stringify(Array.from(intentLiveHarness.known.entries()));
+    const removePendingBeforeIntentLiveRetry = intentLiveHarness.operations.filter(item =>
+        item.type === 'remove-pending').length;
+    const removeIntentBeforeIntentLiveRetry = intentLiveHarness.operations.filter(item =>
+        item.type === 'remove-promoting').length;
+    await assert.rejects(
+        new backendModule.TmuxRuntimeBackend(intentLiveHarness.dependencies)
+            .promotePending(identityB.pendingId, intentLiveFinalId),
+        /conflicting.*(binding|contract|promotion)|intent.*live/i
+    );
+    assert.deepStrictEqual(Array.from(intentLiveHarness.promoting.values())[0], intentA);
+    assert.deepStrictEqual(intentLiveHarness.pending.get(identityB.pendingId), bindingB);
+    assert.strictEqual(intentLiveHarness.consumed.size, 0);
+    assert.strictEqual(JSON.stringify(Array.from(intentLiveHarness.known.entries())), knownBeforeIntentLiveRetry);
+    assert.strictEqual(intentLiveMutationCount(), mutationsBeforeIntentLiveRetry);
+    assert.strictEqual(intentLiveHarness.operations.filter(item => item.type === 'remove-pending').length,
+        removePendingBeforeIntentLiveRetry);
+    assert.strictEqual(intentLiveHarness.operations.filter(item => item.type === 'remove-promoting').length,
+        removeIntentBeforeIntentLiveRetry);
 
     for (const ambiguousPromotionLayout of ['session', 'project']) {
         const ambiguousPromotionHarness = createTmuxBackendHarness({
