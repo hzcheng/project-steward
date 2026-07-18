@@ -76,10 +76,12 @@ export class TmuxRuntimeBindingStore {
             }
             const filePath = this.recordPath('known', provider, sessionId);
             const record = validateKnownRecord(await readJsonRegularFile(filePath));
-            if (!record || isKnownExpired(record, this.now())) {
-                if (record) {
-                    await removeFile(filePath);
-                }
+            if (!record || record.provider !== provider || record.sessionId !== sessionId
+                || !isCanonicalRecordPath(filePath, record)) {
+                return null;
+            }
+            if (isKnownExpired(record, this.now())) {
+                await removeFile(filePath);
                 return null;
             }
             return cloneKnown(record);

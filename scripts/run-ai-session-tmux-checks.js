@@ -411,6 +411,21 @@ async function runTmuxStoreChecks() {
         assert.strictEqual((await store.listKnown()).some(record => record.sessionId === 'noncanonical'), false);
         assert.strictEqual(fs.existsSync(noncanonicalPath), true);
 
+        const directMismatchRoot = path.join(root, 'direct-identity-mismatch');
+        fs.mkdirSync(directMismatchRoot);
+        const requestedDirectRecord = known('s1', now);
+        const mismatchedDirectRecord = known('s2', now, { provider: 'kimi' });
+        const requestedDirectPath = path.join(
+            directMismatchRoot, runtimeRecordFilename(requestedDirectRecord)
+        );
+        fs.writeFileSync(requestedDirectPath, JSON.stringify(mismatchedDirectRecord));
+        const directMismatchStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            directMismatchRoot, () => now
+        );
+        assert.strictEqual(await directMismatchStore.getKnown('codex', 's1'), null);
+        assert.strictEqual(await directMismatchStore.getKnown('kimi', 's2'), null);
+        assert.strictEqual(fs.existsSync(requestedDirectPath), true);
+
         const fifoRoot = path.join(root, 'fifo-records');
         fs.mkdirSync(fifoRoot);
         const fifoPath = path.join(fifoRoot, 'blocked.json');
