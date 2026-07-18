@@ -112,7 +112,7 @@ function restoreAiSessionViewState(projectDiv, viewState, requestedTab) {
             && (!viewState.focusedRow.panel || panel?.getAttribute('data-ai-session-panel') === viewState.focusedRow.panel);
     });
     var selectedPanel = projectDiv.querySelector('[data-ai-session-panel="' + normalizeAiSessionTab(requestedTab) + '"]');
-    (match || selectedPanel?.querySelector('.codex-session-row'))?.focus();
+    (match || selectedPanel?.querySelector('.codex-session-row') || selectedTab)?.focus();
 }
 
 function applyOpenProjectsUpdate(message) {
@@ -1172,6 +1172,7 @@ function initProjects() {
     var contextMenuAiSessionProvider = null;
     var contextMenuAiSessionProjectId = null;
     var contextMenuAiSessionActive = false;
+    var contextMenuAiSessionOrigin = null;
     var latestAiSessionUpdateSequence = 0;
 
     function showContextMenu(contextMenuElement, e) {
@@ -1203,6 +1204,7 @@ function initProjects() {
 
         var sessionRow = e.target.closest('.codex-session-row[data-session-id][data-session-provider]');
         if (sessionRow) {
+            contextMenuAiSessionOrigin = sessionRow;
             contextMenuAiSessionId = sessionRow.getAttribute("data-session-id");
             contextMenuAiSessionProvider = sessionRow.getAttribute("data-session-provider");
             var sessionProjectDiv = sessionRow.closest('.project[data-id]');
@@ -1222,6 +1224,10 @@ function initProjects() {
             if (closeMenuItem) closeMenuItem.classList.toggle('disabled', !contextMenuAiSessionActive);
 
             showContextMenu(sessionContextMenuElement, e);
+            if (e.keyboardTrigger) {
+                var firstMenuItem = sessionContextMenuElement.querySelector('.custom-context-menu-item[data-action]:not(.disabled)');
+                firstMenuItem?.focus();
+            }
             return;
         }
 
@@ -1317,6 +1323,7 @@ function initProjects() {
 
     function onAiSessionContextMenuActionClicked(el) {
         var action = el.getAttribute("data-action");
+        var origin = contextMenuAiSessionOrigin;
 
         if (action == null || contextMenuAiSessionId == null || contextMenuAiSessionProvider == null)
             return;
@@ -1376,6 +1383,7 @@ function initProjects() {
         }
 
         closeContextMenus();
+        origin?.focus();
     }
 
     function closeContextMenus() {
@@ -1385,6 +1393,7 @@ function initProjects() {
         contextMenuAiSessionProvider = null;
         contextMenuAiSessionProjectId = null;
         contextMenuAiSessionActive = false;
+        contextMenuAiSessionOrigin = null;
         document.querySelectorAll(".custom-context-menu").forEach(element =>
             element.classList.remove("visible")
         );
@@ -1838,6 +1847,17 @@ function initProjects() {
             var badge = projectDiv.querySelector('.project-ai-attention-badge');
             if (projectDiv.hasAttribute('data-open-project')) {
                 if (badge) badge.remove();
+                var sessionBadge = projectDiv.querySelector('.project-codex-badge');
+                var totalCount = readAiSessionBadgeCount(sessionBadge, 'data-ai-session-total-count');
+                var activeCount = readAiSessionBadgeCount(sessionBadge, 'data-ai-session-active-count');
+                if (sessionBadge || attentionCount) {
+                    updateOpenProjectAiSessionBadge(projectDiv, totalCount, attentionCount, activeCount);
+                    var attentionBadge = projectDiv.querySelector('.project-codex-badge .ai-session-attention-count');
+                    if (attentionBadge && animateProjectKeys[projectKey]) {
+                        attentionBadge.classList.add('attention-animate');
+                        window.setTimeout(() => attentionBadge.classList.remove('attention-animate'), 2800);
+                    }
+                }
                 return;
             }
             if (!attentionCount) {
@@ -1928,6 +1948,7 @@ function initProjects() {
             }
             badge = projectDiv.querySelector('.project-codex-badge');
         }
+        if (!badge) return;
 
         syncAiSessionBadgeCount(badge, '.ai-session-total-count', aiSessionCount,
             '<span class="ai-session-total-count"></span>', 'AI ' + aiSessionCount,
@@ -1945,6 +1966,14 @@ function initProjects() {
         ].filter(Boolean).join(', ');
         badge.setAttribute('title', summary);
         badge.setAttribute('aria-label', summary);
+        badge.setAttribute('data-ai-session-total-count', String(aiSessionCount));
+        badge.setAttribute('data-ai-session-active-count', String(activeSessionCount));
+        badge.setAttribute('data-ai-session-attention-count', String(attentionCount));
+    }
+
+    function readAiSessionBadgeCount(badge, attribute) {
+        var count = Number(badge && badge.getAttribute(attribute));
+        return Number.isSafeInteger(count) && count >= 0 ? count : 0;
     }
 
     function syncAiSessionBadgeCount(badge, selector, count, html, textValue, ariaLabel) {
@@ -2009,6 +2038,40 @@ function initProjects() {
     });
 
     document.addEventListener("keydown", e => {
+        var aiSessionMenuItem = e.target && e.target.closest
+            ? e.target.closest('#aiSessionContextMenu [role="menuitem"]')
+            : null;
+        if (aiSessionMenuItem) {
+            var aiSessionMenu = aiSessionMenuItem.closest('#aiSessionContextMenu');
+            var enabledMenuItems = Array.from(aiSessionMenu.querySelectorAll('[role="menuitem"]'))
+                .filter(item => !item.classList.contains('disabled'));
+            var currentMenuIndex = enabledMenuItems.indexOf(aiSessionMenuItem);
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End') {
+                e.preventDefault();
+                var nextMenuIndex = e.key === 'Home' ? 0
+                    : e.key === 'End' ? enabledMenuItems.length - 1
+                        : (currentMenuIndex + (e.key === 'ArrowDown' ? 1 : -1) + enabledMenuItems.length)
+                            % enabledMenuItems.length;
+                enabledMenuItems[nextMenuIndex]?.focus();
+                return;
+            }
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onAiSessionContextMenuActionClicked(aiSessionMenuItem);
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                var menuOrigin = contextMenuAiSessionOrigin;
+                closeContextMenus();
+                menuOrigin?.focus();
+                return;
+            }
+            if (e.key === 'Tab') {
+                closeContextMenus();
+            }
+        }
+
         var tab = e.target && e.target.closest ? e.target.closest('[data-ai-session-tab]') : null;
         if (tab && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
             e.preventDefault();
@@ -2031,6 +2094,19 @@ function initProjects() {
         var interactiveChild = e.target && e.target.closest
             ? e.target.closest('button, input, select, textarea, a[href]')
             : null;
+        if (sessionRow && !interactiveChild
+            && (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey))) {
+            e.preventDefault();
+            var sessionRowRect = sessionRow.getBoundingClientRect();
+            onContextMenu({
+                target: sessionRow,
+                preventDefault: () => {},
+                clientX: sessionRowRect.left + 8,
+                clientY: sessionRowRect.top + 8,
+                keyboardTrigger: true,
+            });
+            return;
+        }
         if (sessionRow && !interactiveChild && e.key === 'Enter') {
             var rowProject = sessionRow.closest('.project[data-id]');
             var rowProjectId = rowProject && rowProject.getAttribute('data-id');

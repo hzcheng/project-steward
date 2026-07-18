@@ -458,8 +458,10 @@ body .project {
 
     .custom-context-menu-item {
         padding: 5px 26px;
+        outline: none;
 
-        &:hover {
+        &:hover,
+        &:focus-visible {
             color: var(--vscode-menu-selectionForeground);
             background: var(--vscode-menu-selectionBackground);
         }

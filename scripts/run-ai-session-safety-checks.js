@@ -2729,6 +2729,13 @@ function runWebviewContentChecks() {
     assert.ok(sessionTabsHtml.includes('data-session-active'));
     assert.ok(sessionTabsHtml.includes('Close the active terminal before archiving.'));
     assert.ok(sessionTabsHtml.includes('aria-live="polite"'));
+    assert.ok(webviewContent.includes('data-ai-session-total-count'));
+    assert.ok(webviewContent.includes('role="menu" aria-label="AI Session actions"'));
+    assert.ok(webviewContent.includes('role="menuitem" tabindex="-1"'));
+    assert.ok(webviewProjectScripts.includes("e.key === 'ContextMenu'"));
+    assert.ok(webviewProjectScripts.includes("e.key === 'F10' && e.shiftKey"));
+    assert.ok(webviewProjectScripts.includes("selectedPanel?.querySelector('.codex-session-row') || selectedTab"));
+    assert.ok(webviewProjectScripts.includes('updateOpenProjectAiSessionBadge(projectDiv, totalCount, attentionCount, activeCount)'));
 
     assert.ok(webviewContent.includes('data-action="add" title="Add Project"'));
     assert.ok(webviewContent.includes('class="project no-projects" data-action="add-project" data-nodrag'));
@@ -2813,7 +2820,7 @@ function runWebviewContentChecks() {
     assert.match(dashboard, /onComplete: resolution => \{[\s\S]*?settleCompletedAiSessionTerminal\(resolution\);[\s\S]*?aiSessionAttentionController\.evaluate\(\)/);
     assert.ok(dashboard.includes('getTerminalById: (providerId, sessionId) => aiSessionTerminalService.getActiveById(providerId, sessionId)'));
     assert.match(dashboard, /aiSessionTerminalCompletionInterval = setInterval\(\(\) => \{[\s\S]*?getCompletedSessions\(\)[\s\S]*?settleCompletedAiSessionTerminal[\s\S]*?\}, 1_000\)/);
-    assert.match(dashboard, /onDidCloseTerminal\(terminal => \{[\s\S]*?handleClosedTerminal\(terminal\)[\s\S]*?acknowledgeAiSessionAttention[\s\S]*?aiSessionAttentionController\.evaluate\(\)/);
+    assert.match(dashboard, /onDidCloseTerminal\(terminal => \{[\s\S]*?hadPendingTerminal[\s\S]*?handleClosedTerminal\(terminal\)[\s\S]*?closedSessions\.length \|\| hadPendingTerminal[\s\S]*?refreshAiSessionViewsIncrementally\(\)/);
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
     assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void aiSessionAttentionController\.evaluate\(\);[\s\S]*?\}\)/);
     assert.match(dashboard, /onDidChangeWindowState\(windowState => \{[\s\S]*?dashboardLifecycleController\.handleWindowStateChanged\(windowState\);[\s\S]*?\}\)/);
@@ -3549,6 +3556,32 @@ function runBatchAiSessionWebviewChecks() {
     attentionRow.project = projectA;
     let openAttentionBadge = { remove: () => { openAttentionBadge = null; } };
     let openAttentionBadgeInsertions = 0;
+    const openSessionBadgeAttributes = {
+        'data-ai-session-total-count': '2',
+        'data-ai-session-active-count': '1',
+        'data-ai-session-attention-count': '0',
+    };
+    const openSessionBadgeChildren = {};
+    const createOpenSessionBadgeChild = selector => {
+        const child = {
+            textContent: '',
+            classList: { add: () => {}, remove: () => {} },
+            setAttribute: () => {},
+            remove: () => { delete openSessionBadgeChildren[selector]; },
+        };
+        openSessionBadgeChildren[selector] = child;
+        return child;
+    };
+    const openSessionBadge = {
+        getAttribute: attribute => openSessionBadgeAttributes[attribute] || null,
+        setAttribute: (attribute, value) => { openSessionBadgeAttributes[attribute] = String(value); },
+        querySelector: selector => openSessionBadgeChildren[selector] || null,
+        insertAdjacentHTML: (_position, html) => {
+            if (html.includes('ai-session-total-count')) createOpenSessionBadgeChild('.ai-session-total-count');
+            if (html.includes('ai-session-active-count')) createOpenSessionBadgeChild('.ai-session-active-count');
+            if (html.includes('ai-session-attention-count')) createOpenSessionBadgeChild('.ai-session-attention-count');
+        },
+    };
     const attentionProjectCard = {
         getAttribute: attribute => attribute === 'data-attention-project-key' ? 'attention-project-a' : null,
         hasAttribute: () => false,
@@ -3578,7 +3611,14 @@ function runBatchAiSessionWebviewChecks() {
         getAttribute: attribute => attribute === 'data-attention-project-key' ? 'attention-project-a' : null,
         hasAttribute: attribute => attribute === 'data-open-project',
         classList: { add: () => {}, remove: () => {} },
-        querySelector: selector => selector === '.project-ai-attention-badge' ? openAttentionBadge : null,
+        querySelector: selector => {
+            if (selector === '.project-ai-attention-badge') return openAttentionBadge;
+            if (selector === '.project-codex-badge') return openSessionBadge;
+            if (selector === '.project-codex-badge .ai-session-attention-count') {
+                return openSessionBadgeChildren['.ai-session-attention-count'] || null;
+            }
+            return null;
+        },
         querySelectorAll: () => [],
         insertAdjacentHTML: () => { openAttentionBadgeInsertions++; },
     };
@@ -3781,6 +3821,7 @@ function runBatchAiSessionWebviewChecks() {
     assert.strictEqual(attentionBadge.title, '1 AI session needs attention');
     assert.strictEqual(openAttentionBadge, null);
     assert.strictEqual(openAttentionBadgeInsertions, 0);
+    assert.strictEqual(openSessionBadgeChildren['.ai-session-attention-count'].textContent, '1');
     assert.strictEqual(attentionRow.hasAttribute('data-ai-session-attention'), true);
     assert.ok(attentionRow.querySelector('.ai-session-attention-indicator'));
     assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);

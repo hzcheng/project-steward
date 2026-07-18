@@ -963,10 +963,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }));
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(terminal => {
+            const hadPendingTerminal = aiSessionTerminalService.getPendingTerminals()
+                .some(pending => pending.terminal === terminal);
             const closedSessions = aiSessionTerminalService.handleClosedTerminal(terminal);
             closedSessions.forEach(acknowledgeAiSessionAttention);
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
-            if (closedSessions.length) {
+            if (closedSessions.length || hadPendingTerminal) {
                 refreshAiSessionViewsIncrementally();
                 void aiSessionAttentionController.evaluate();
             }

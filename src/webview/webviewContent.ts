@@ -484,7 +484,7 @@ function getProjectDiv(
         attentionCount ? `${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention` : '',
     ].filter(Boolean).join(', ');
     var aiSessionBadge = showCurrentAttention && (aiSessionCount || activeAiSessionCount || attentionCount)
-        ? `<span class="project-codex-badge" title="${escapeAttribute(aiSessionSummaryLabel)}" aria-label="${escapeAttribute(aiSessionSummaryLabel)}">${
+        ? `<span class="project-codex-badge" data-ai-session-total-count="${aiSessionCount}" data-ai-session-active-count="${activeAiSessionCount}" data-ai-session-attention-count="${attentionCount}" title="${escapeAttribute(aiSessionSummaryLabel)}" aria-label="${escapeAttribute(aiSessionSummaryLabel)}">${
             aiSessionCount ? `<span class="ai-session-total-count">AI ${aiSessionCount}</span>` : ''
         }${activeAiSessionCount ? `<span class="ai-session-active-count" aria-label="${activeAiSessionCount} active AI session${activeAiSessionCount === 1 ? '' : 's'}">●${activeAiSessionCount}</span>` : ''
         }${attentionCount ? `<b class="ai-session-attention-count" aria-label="${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention">${attentionCount}</b>` : ''
@@ -891,26 +891,26 @@ function getGroupContextMenu() {
 
 function getAiSessionContextMenu() {
     return `
-<div id="aiSessionContextMenu" class="custom-context-menu">
-    <div class="custom-context-menu-item" data-action="resume">
+<div id="aiSessionContextMenu" class="custom-context-menu" role="menu" aria-label="AI Session actions">
+    <div class="custom-context-menu-item" role="menuitem" tabindex="-1" data-action="resume">
         Focus / Resume Chat
     </div>
-    <div class="custom-context-menu-item" data-action="rename">
+    <div class="custom-context-menu-item" role="menuitem" tabindex="-1" data-action="rename">
         Rename Chat
     </div>
-    <div class="custom-context-menu-item" data-action="copy-id">
+    <div class="custom-context-menu-item" role="menuitem" tabindex="-1" data-action="copy-id">
         Copy Chat ID
     </div>
 
-    <div class="custom-context-menu-separator"></div>
+    <div class="custom-context-menu-separator" role="separator"></div>
 
-    <div class="custom-context-menu-item" data-action="pin">
+    <div class="custom-context-menu-item" role="menuitem" tabindex="-1" data-action="pin">
         Pin / Unpin Chat
     </div>
-    <div class="custom-context-menu-item" data-action="close-terminal">
+    <div class="custom-context-menu-item" role="menuitem" tabindex="-1" data-action="close-terminal">
         Close Terminal…
     </div>
-    <div class="custom-context-menu-item" data-action="archive">
+    <div class="custom-context-menu-item" role="menuitem" tabindex="-1" data-action="archive">
         Archive Chat
     </div>
 </div>
