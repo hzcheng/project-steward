@@ -19,7 +19,8 @@ const MAX_TITLE_LENGTH = 200;
 const MAX_EXCLUDED_SESSION_IDS = 1000;
 const MAX_RECORD_BYTES = 1024 * 1024;
 const MAX_KNOWN_RECORDS = 512;
-const MAX_PROMOTING_LOOKUP_RECORDS = 512;
+const MAX_PENDING_LIFECYCLE_DIRECTORY_FILES = 4096;
+const MAX_PENDING_LIFECYCLE_LOOKUP_RECORDS = 512;
 const PENDING_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const KNOWN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -61,6 +62,7 @@ export interface TmuxConsumedPendingBinding {
     pendingId: string;
     provider: AiSessionProviderId;
     projectKey: string;
+    cwd: string;
     finalSessionId: string;
     layout: AiSessionTmuxLayout;
     finalLocator: AiSessionTmuxLocator;
@@ -177,6 +179,12 @@ export class TmuxRuntimeBindingStore {
         });
     }
 
+    getAmbiguousByPendingId(pendingId: string): Promise<TmuxAmbiguousRuntimeBinding | null> {
+        return this.serialize(() => this.getPendingLifecycleByIdUnlocked(
+            'ambiguous', pendingId, validateAmbiguousRecord, cloneAmbiguous
+        ));
+    }
+
     setPending(record: TmuxPendingRuntimeBinding): Promise<boolean> {
         const validated = validatePersistedPendingRecord(record, this.now());
         if (!validated) {
@@ -200,6 +208,12 @@ export class TmuxRuntimeBindingStore {
             return record && consumedRecordMatchesIdentity(record, identity)
                 && isCanonicalRecordPath(filePath, record) ? cloneConsumed(record) : null;
         });
+    }
+
+    getConsumedByPendingId(pendingId: string): Promise<TmuxConsumedPendingBinding | null> {
+        return this.serialize(() => this.getPendingLifecycleByIdUnlocked(
+            'consumed', pendingId, validateConsumedRecord, cloneConsumed
+        ));
     }
 
     setConsumed(record: TmuxConsumedPendingBinding): Promise<boolean> {
@@ -228,27 +242,9 @@ export class TmuxRuntimeBindingStore {
     }
 
     getPromotingByPendingId(pendingId: string): Promise<TmuxPromotingRuntimeBinding | null> {
-        return this.serialize(async () => {
-            if (!isBoundedString(pendingId, MAX_ID_LENGTH)) {
-                return null;
-            }
-            const candidates = (await listJsonFiles(this.root))
-                .filter(filePath => path.basename(filePath).startsWith('promoting-'));
-            if (candidates.length > MAX_PROMOTING_LOOKUP_RECORDS) {
-                throw new Error('Too many tmux promotion intents exist for bounded recovery.');
-            }
-            const matches: TmuxPromotingRuntimeBinding[] = [];
-            for (const filePath of candidates) {
-                const record = validatePromotingRecord(await readJsonRegularFile(filePath));
-                if (record?.pendingId === pendingId && isCanonicalRecordPath(filePath, record)) {
-                    matches.push(record);
-                }
-            }
-            if (matches.length > 1) {
-                throw new Error('Multiple tmux promotion intents use the same pending ID.');
-            }
-            return matches.length === 1 ? clonePromoting(matches[0]) : null;
-        });
+        return this.serialize(() => this.getPendingLifecycleByIdUnlocked(
+            'promoting', pendingId, validatePromotingRecord, clonePromoting
+        ));
     }
 
     setPromoting(record: TmuxPromotingRuntimeBinding): Promise<boolean> {
@@ -387,6 +383,37 @@ export class TmuxRuntimeBindingStore {
             entries.length = MAX_KNOWN_RECORDS;
         }
         return entries.map(entry => cloneKnown(entry.record));
+    }
+
+    private async getPendingLifecycleByIdUnlocked<T extends TmuxAmbiguousRuntimeBinding
+        | TmuxConsumedPendingBinding | TmuxPromotingRuntimeBinding>(
+        kind: 'ambiguous' | 'consumed' | 'promoting',
+        pendingId: string,
+        validate: (value: unknown) => T | null,
+        clone: (record: T) => T
+    ): Promise<T | null> {
+        if (!isBoundedString(pendingId, MAX_ID_LENGTH)) {
+            return null;
+        }
+        const files = await listJsonFiles(this.root);
+        if (files.length > MAX_PENDING_LIFECYCLE_DIRECTORY_FILES) {
+            throw new Error('Too many tmux lifecycle files exist for bounded pending ID lookup.');
+        }
+        const candidates = files.filter(filePath => path.basename(filePath).startsWith(`${kind}-`));
+        if (candidates.length > MAX_PENDING_LIFECYCLE_LOOKUP_RECORDS) {
+            throw new Error('Too many tmux lifecycle records exist for bounded pending ID lookup.');
+        }
+        const matches: T[] = [];
+        for (const filePath of candidates) {
+            const record = validate(await readJsonRegularFile(filePath));
+            if (record && record.pendingId === pendingId && isCanonicalRecordPath(filePath, record)) {
+                matches.push(record);
+            }
+        }
+        if (matches.length > 1) {
+            throw new Error(`Multiple tmux ${kind} records use the same pending ID.`);
+        }
+        return matches.length === 1 ? clone(matches[0]) : null;
     }
 
     private recordPath(
@@ -583,6 +610,7 @@ function validateConsumedRecord(value: unknown): TmuxConsumedPendingBinding | nu
     if (record.version !== RECORD_VERSION || record.state !== 'consumed'
         || !isBoundedString(record.pendingId, MAX_ID_LENGTH) || !isProviderId(record.provider)
         || !isBoundedString(record.projectKey, MAX_ID_LENGTH)
+        || !isBoundedString(record.cwd, MAX_PATH_LENGTH)
         || !isBoundedString(record.finalSessionId, MAX_ID_LENGTH)
         || !isLayout(record.layout) || !locator || locator.layout !== record.layout
         || !isFiniteNonNegative(record.consumedAtMs)) {
@@ -594,6 +622,7 @@ function validateConsumedRecord(value: unknown): TmuxConsumedPendingBinding | nu
         pendingId: record.pendingId,
         provider: record.provider,
         projectKey: record.projectKey,
+        cwd: record.cwd,
         finalSessionId: record.finalSessionId,
         layout: record.layout,
         finalLocator: locator,
@@ -786,7 +815,7 @@ function consumedRecordMatchesIdentity(
     identity: AiSessionRuntimeIdentity
 ): boolean {
     return record.provider === identity.provider && record.projectKey === identity.projectKey
-        && record.pendingId === identity.pendingId;
+        && record.pendingId === identity.pendingId && record.cwd === identity.cwd;
 }
 
 function pendingIdentityParts(identity: AiSessionRuntimeIdentity): string[] | null {
