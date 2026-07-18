@@ -456,10 +456,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         findPendingTerminalForSession: (providerId, sessionId, cwd, updatedAt) => aiSessionTerminalService.findPendingTerminalForSession(providerId, sessionId, cwd, updatedAt),
         createTerminal: options => aiSessionTerminalService.createTerminal(options),
         track: (providerId, sessionId, entry) => aiSessionTerminalService.track(providerId, sessionId, entry),
+        claimPendingTerminal: terminal => aiSessionTerminalService.removePendingForTerminal(terminal),
         sendResumeCommand: (providerId, terminal, sessionId, cwd, markerPath) => aiSessionTerminalService.sendResumeCommand(providerId, terminal, sessionId, cwd, markerPath),
         showWarningMessage: message => vscode.window.showWarningMessage(message),
         syncActiveTerminal: () => activeAiSessionTerminalHighlighter.sync(),
         refresh: refreshAiSessionViewsIncrementally,
+        showActiveTab: projectId => provider.postMessage({
+            type: 'ai-session-tab-selection-requested',
+            projectId,
+            tab: 'active',
+        }),
         logError,
         nowMs: () => Date.now(),
     });

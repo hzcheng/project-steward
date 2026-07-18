@@ -1219,6 +1219,8 @@ async function runAiSessionResumeControllerChecks() {
     const synced = [];
     const pendingLookups = [];
     const runtimeRefreshes = [];
+    const activeTabRequests = [];
+    const claimedPendingTerminals = [];
     let existingEntry = null;
     let beginResult = true;
     let createCwdAccepted = false;
@@ -1252,6 +1254,7 @@ async function runAiSessionResumeControllerChecks() {
             return { terminal, cwdAccepted: createCwdAccepted };
         },
         track: (providerId, sessionId, entry) => tracked.push([providerId, sessionId, entry]),
+        claimPendingTerminal: terminal => claimedPendingTerminals.push(terminal),
         sendResumeCommand: async (providerId, terminal, sessionId, cwd, markerPath) => {
             if (rejectResumeSend) {
                 throw new Error('send failed');
@@ -1261,6 +1264,7 @@ async function runAiSessionResumeControllerChecks() {
         showWarningMessage: message => warnings.push(message),
         syncActiveTerminal: () => synced.push('sync'),
         refresh: () => runtimeRefreshes.push('refresh'),
+        showActiveTab: projectId => activeTabRequests.push(projectId),
         logError() {},
         nowMs: () => 123456,
     });
@@ -1277,6 +1281,7 @@ async function runAiSessionResumeControllerChecks() {
     assert.deepStrictEqual(shown, ['existing-running']);
     assert.strictEqual(begins.length, 0);
     assert.strictEqual(runtimeRefreshes.length, 1);
+    assert.deepStrictEqual(activeTabRequests, ['project-a']);
 
     existingEntry = null;
     beginResult = false;
@@ -1297,6 +1302,7 @@ async function runAiSessionResumeControllerChecks() {
     assert.deepStrictEqual(finishes.slice(-1)[0], ['codex', session.id]);
     assert.deepStrictEqual(synced, ['sync']);
     assert.strictEqual(runtimeRefreshes.length, 2);
+    assert.deepStrictEqual(activeTabRequests, ['project-a', 'project-a']);
 
     createCwdAccepted = true;
     pendingTerminal = { terminal: makeTerminal('pending'), markerPath: '/tmp/pending.marker' };
@@ -1304,11 +1310,16 @@ async function runAiSessionResumeControllerChecks() {
     assert.strictEqual(created.length, 1);
     assert.strictEqual(tracked[1][2].terminal, pendingTerminal.terminal);
     assert.deepStrictEqual(sent[1], ['codex', pendingTerminal.terminal, session.id, '/work/a', '/tmp/pending.marker']);
+    assert.deepStrictEqual(claimedPendingTerminals, [pendingTerminal.terminal]);
+    assert.deepStrictEqual(activeTabRequests, ['project-a', 'project-a', 'project-a']);
 
     pendingTerminal = null;
     rejectResumeSend = true;
     const finishCountBeforeReject = finishes.length;
     const syncCountBeforeReject = synced.length;
+    const trackedCountBeforeReject = tracked.length;
+    const refreshCountBeforeReject = runtimeRefreshes.length;
+    const activeTabCountBeforeReject = activeTabRequests.length;
     let rejected = false;
     try {
         await controller.resumeProjectSession('project-a', 'codex', session.id);
@@ -1319,6 +1330,9 @@ async function runAiSessionResumeControllerChecks() {
     assert.strictEqual(rejected, true);
     assert.strictEqual(finishes.length, finishCountBeforeReject + 1);
     assert.strictEqual(synced.length, syncCountBeforeReject);
+    assert.strictEqual(tracked.length, trackedCountBeforeReject, 'a failed resume must not appear Active');
+    assert.strictEqual(runtimeRefreshes.length, refreshCountBeforeReject);
+    assert.strictEqual(activeTabRequests.length, activeTabCountBeforeReject, 'a failed resume must not steal the current Tab');
 
     rejectResumeSend = false;
     const releasedTerminal = makeTerminal('released-existing');
@@ -1334,6 +1348,7 @@ async function runAiSessionResumeControllerChecks() {
         sent[sentCountBeforeReleasedResume],
         ['codex', releasedTerminal, session.id, '/work/a', '/tmp/released.marker']
     );
+    assert.strictEqual(activeTabRequests.length, activeTabCountBeforeReject + 1);
 }
 
 async function runAiSessionTerminalCommandControllerChecks() {
