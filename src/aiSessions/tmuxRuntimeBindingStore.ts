@@ -19,6 +19,7 @@ const MAX_TITLE_LENGTH = 200;
 const MAX_EXCLUDED_SESSION_IDS = 1000;
 const MAX_RECORD_BYTES = 1024 * 1024;
 const MAX_KNOWN_RECORDS = 512;
+const MAX_PROMOTING_LOOKUP_RECORDS = 512;
 const PENDING_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const KNOWN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -75,6 +76,7 @@ export interface TmuxPromotingRuntimeBinding {
     cwd: string;
     createdAt: string;
     markerPath: string;
+    pendingBinding: TmuxPendingRuntimeBinding;
     finalSessionId: string;
     layout: AiSessionTmuxLayout;
     sourceLocator: AiSessionTmuxLocator;
@@ -222,6 +224,30 @@ export class TmuxRuntimeBindingStore {
             const record = validatePromotingRecord(await readJsonRegularFile(filePath));
             return record && promotingRecordMatchesIdentity(record, identity)
                 && isCanonicalRecordPath(filePath, record) ? clonePromoting(record) : null;
+        });
+    }
+
+    getPromotingByPendingId(pendingId: string): Promise<TmuxPromotingRuntimeBinding | null> {
+        return this.serialize(async () => {
+            if (!isBoundedString(pendingId, MAX_ID_LENGTH)) {
+                return null;
+            }
+            const candidates = (await listJsonFiles(this.root))
+                .filter(filePath => path.basename(filePath).startsWith('promoting-'));
+            if (candidates.length > MAX_PROMOTING_LOOKUP_RECORDS) {
+                throw new Error('Too many tmux promotion intents exist for bounded recovery.');
+            }
+            const matches: TmuxPromotingRuntimeBinding[] = [];
+            for (const filePath of candidates) {
+                const record = validatePromotingRecord(await readJsonRegularFile(filePath));
+                if (record?.pendingId === pendingId && isCanonicalRecordPath(filePath, record)) {
+                    matches.push(record);
+                }
+            }
+            if (matches.length > 1) {
+                throw new Error('Multiple tmux promotion intents use the same pending ID.');
+            }
+            return matches.length === 1 ? clonePromoting(matches[0]) : null;
         });
     }
 
@@ -582,6 +608,7 @@ function validatePromotingRecord(value: unknown): TmuxPromotingRuntimeBinding | 
     const record = value as Record<string, unknown>;
     const sourceLocator = validateLocator(record.sourceLocator);
     const finalLocator = validateLocator(record.finalLocator);
+    const pendingBinding = validatePendingRecord(record.pendingBinding);
     if (record.version !== RECORD_VERSION || record.state !== 'promoting'
         || !isBoundedString(record.pendingId, MAX_ID_LENGTH) || !isProviderId(record.provider)
         || !isBoundedString(record.projectKey, MAX_ID_LENGTH) || !isBoundedString(record.cwd, MAX_PATH_LENGTH)
@@ -592,6 +619,10 @@ function validatePromotingRecord(value: unknown): TmuxPromotingRuntimeBinding | 
         || !finalLocator || finalLocator.layout !== record.layout
         || (record.layout === 'project' && sourceLocator.sessionName !== finalLocator.sessionName)
         || locatorsEqual(sourceLocator, finalLocator)
+        || !pendingBinding || pendingBinding.pendingId !== record.pendingId
+        || pendingBinding.provider !== record.provider || pendingBinding.projectKey !== record.projectKey
+        || pendingBinding.cwd !== record.cwd || pendingBinding.createdAt !== record.createdAt
+        || pendingBinding.layout !== record.layout || !locatorsEqual(pendingBinding.locator, sourceLocator)
         || typeof record.requestFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(record.requestFingerprint)
         || !isFiniteNonNegative(record.recordedAtMs)) {
         return null;
@@ -605,6 +636,7 @@ function validatePromotingRecord(value: unknown): TmuxPromotingRuntimeBinding | 
         cwd: record.cwd,
         createdAt: record.createdAt,
         markerPath: record.markerPath,
+        pendingBinding,
         finalSessionId: record.finalSessionId,
         layout: record.layout,
         sourceLocator,
@@ -745,6 +777,7 @@ function clonePromoting(record: TmuxPromotingRuntimeBinding): TmuxPromotingRunti
         ...record,
         sourceLocator: { ...record.sourceLocator },
         finalLocator: { ...record.finalLocator },
+        pendingBinding: clonePending(record.pendingBinding),
     };
 }
 

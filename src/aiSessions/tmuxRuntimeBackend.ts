@@ -35,6 +35,7 @@ const MAX_IDENTITY_FIELD_LENGTH = 512;
 const MAX_EXECUTABLE_LENGTH = 4096;
 const MAX_LAUNCH_ARGUMENT_BYTES = 16 * 1024;
 const MAX_LAUNCH_ARGUMENTS = 256;
+const MAX_EXCLUDED_SESSION_IDS = 1000;
 const MAX_AGGREGATE_LAUNCH_BYTES = 32 * 1024;
 const MAX_SERIALIZED_TMUX_COMMAND_BYTES = 128 * 1024;
 const LOCAL_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
@@ -120,6 +121,13 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         requireLayout(layout);
         validateDispatchInputs(request.identity, request.launch);
         const identity = pendingIdentity(request.identity);
+        if (await this.dependencies.runtimeStore.getPromoting(identity)) {
+            throw new Error('The pending tmux runtime has a promotion in progress.');
+        }
+        const consumedBeforeFreshness = await this.dependencies.runtimeStore.getConsumed(identity);
+        if (consumedBeforeFreshness) {
+            throw consumedPendingError(consumedBeforeFreshness);
+        }
         const locator = getPendingLocator(identity, layout);
         const binding = validateTmuxPendingRuntimeBinding({
             version: 1,
@@ -173,16 +181,24 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     async promotePending(pendingId: string, sessionId: string): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
         await this.requireAvailable();
         await this.dependencies.discovery.refresh(true);
-        const storedPending = await this.dependencies.runtimeStore.getPending(pendingId);
+        const storedIntent = await this.dependencies.runtimeStore.getPromotingByPendingId(pendingId);
+        const storedPending = storedIntent?.pendingBinding
+            || await this.dependencies.runtimeStore.getPending(pendingId);
         if (!storedPending || !sessionId) {
             return [];
+        }
+        if (storedIntent && storedIntent.finalSessionId !== sessionId) {
+            throw new Error('The pending tmux runtime has a conflicting promotion in progress.');
         }
         const pendingIdentityValue = identityFromPendingBinding(storedPending);
         const lockKey = getTmuxRuntimeKey(pendingIdentityValue);
         return this.dependencies.withCreationLock<AiSessionRuntimeSnapshot<TTerminal>[]>(lockKey, async () => {
             await this.dependencies.discovery.refresh(true);
-            const currentBinding = await this.dependencies.runtimeStore.getPending(pendingId);
-            if (!currentBinding || !pendingBindingsEqual(storedPending, currentBinding)) {
+            const currentIntent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
+            const freshBinding = await this.dependencies.runtimeStore.getPending(pendingId);
+            const currentBinding = currentIntent?.pendingBinding || freshBinding;
+            if (!currentBinding || !pendingBindingsEqual(storedPending, currentBinding)
+                || (storedIntent && (!currentIntent || !promotionIntentsMatch(storedIntent, currentIntent)))) {
                 return [];
             }
             const currentPending = this.dependencies.discovery.getPending()
@@ -228,18 +244,19 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                         return this.completePromotion(pendingSnapshot, identity, finalLocator,
                             compatible, pendingIdentityValue);
                     }
-                    if (intent && await this.pendingMetadataMatches(
-                        pendingIdentityValue, finalLocator, intent.createdAt, intent.markerPath
-                    )) {
-                        await this.dependencies.client.clearPendingMetadata(finalLocator);
+                    if (intent && await this.promotionTransitionMatches(intent, identity)) {
                         await this.writeFinalMetadata(identity, finalLocator, {
                             createdAt: intent.createdAt,
                             markerPath: intent.markerPath,
                         });
+                        await this.dependencies.client.clearPendingMetadata(finalLocator);
                         return this.verifyAndCompletePromotion(pendingSnapshot, identity,
                             finalLocator, pendingIdentityValue);
                     }
-                    if (!currentPending || !currentPending.tmux) {
+                    const sourcePendingVerified = !!currentPending || !!(intent
+                        && await this.pendingMetadataMatches(pendingIdentityValue,
+                            intent.sourceLocator, intent.createdAt, intent.markerPath));
+                    if (!sourcePendingVerified) {
                         throw new Error('The pending tmux promotion state is ambiguous; no mutation was attempted.');
                     }
                     if (await this.locatorIsOccupied(finalLocator)) {
@@ -250,19 +267,20 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                         throw new Error('The pending tmux promotion intent could not be persisted.');
                     }
                     try {
-                        await this.renameRuntime(currentPending.tmux, finalLocator);
-                        await this.dependencies.client.clearPendingMetadata(finalLocator);
+                        const sourceLocator = currentPending?.tmux || currentBinding.locator;
+                        await this.renameRuntime(sourceLocator, finalLocator);
                         await this.writeFinalMetadata(identity, finalLocator, {
-                            createdAt: currentPending.createdAt,
-                            markerPath: currentPending.markerPath,
+                            createdAt: pendingSnapshot.createdAt,
+                            markerPath: pendingSnapshot.markerPath,
                         });
+                        await this.dependencies.client.clearPendingMetadata(finalLocator);
                     } catch (error) {
                         await this.dependencies.discovery.refresh(true);
                         const recovered = this.findVerified(identity, finalLocator);
                         if (!recovered) {
                             const sourceStillVerified = await this.pendingMetadataMatches(
-                                pendingIdentityValue, currentPending.tmux,
-                                currentPending.createdAt, currentPending.markerPath
+                                pendingIdentityValue, currentBinding.locator,
+                                pendingSnapshot.createdAt, pendingSnapshot.markerPath
                             );
                             if (sourceStillVerified && !await this.locatorIsOccupied(finalLocator)) {
                                 await this.dependencies.runtimeStore.removePromoting(pendingIdentityValue);
@@ -275,6 +293,50 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 }
             );
         });
+    }
+
+    private async promotionTransitionMatches(
+        intent: TmuxPromotingRuntimeBinding,
+        finalIdentityValue: AiSessionRuntimeIdentity
+    ): Promise<boolean> {
+        try {
+            const sessionOptions = await this.dependencies.client.getSessionOptions(
+                intent.finalLocator.sessionName
+            );
+            const windowName = intent.finalLocator.layout === 'project'
+                ? intent.finalLocator.windowName
+                : SESSION_WINDOW;
+            if (!windowName) {
+                return false;
+            }
+            const windowOptions = await this.dependencies.client.getWindowOptions(
+                intent.finalLocator.sessionName, windowName
+            );
+            const pendingIdentityValue: AiSessionRuntimeIdentity = {
+                provider: intent.provider,
+                projectKey: intent.projectKey,
+                cwd: intent.cwd,
+                pendingId: intent.pendingId,
+            };
+            const pendingMetadata = fullMetadata(pendingIdentityValue, intent.layout,
+                intent.createdAt, intent.markerPath);
+            const finalMetadata = fullMetadata(finalIdentityValue, intent.layout,
+                intent.createdAt, intent.markerPath);
+            const bothMetadata = {
+                ...pendingMetadata,
+                sessionId: intent.finalSessionId,
+            };
+            const identityOptions = intent.layout === 'project' ? windowOptions : sessionOptions;
+            const baseOptions = intent.layout === 'project' ? sessionOptions : windowOptions;
+            const expectedBase = intent.layout === 'project'
+                ? projectSessionMetadata(intent.projectKey)
+                : sessionWindowMetadata();
+            return recordsEqual(baseOptions, expectedBase)
+                && [pendingMetadata, finalMetadata, bothMetadata]
+                    .some(expected => recordsEqual(identityOptions, expected));
+        } catch (_error) {
+            return false;
+        }
     }
 
     private async pendingMetadataMatches(
@@ -843,8 +905,14 @@ function finalIdentity(identity: AiSessionRuntimeIdentity & { sessionId: string 
 }
 
 function snapshotResumeRequest(request: AiSessionResumeRuntimeRequest): AiSessionResumeRuntimeRequest {
+    preflightRequestShape(request, false);
     return {
-        identity: { ...request.identity },
+        identity: {
+            provider: request.identity.provider,
+            projectKey: request.identity.projectKey,
+            cwd: request.identity.cwd,
+            sessionId: request.identity.sessionId,
+        },
         projectName: request.projectName,
         terminalName: request.terminalName,
         launch: snapshotLaunch(request.launch),
@@ -852,14 +920,18 @@ function snapshotResumeRequest(request: AiSessionResumeRuntimeRequest): AiSessio
 }
 
 function snapshotPendingRequest(request: AiSessionCreateRuntimeRequest): AiSessionCreateRuntimeRequest {
+    preflightRequestShape(request, true);
     return {
-        identity: { ...request.identity },
+        identity: {
+            provider: request.identity.provider,
+            projectKey: request.identity.projectKey,
+            cwd: request.identity.cwd,
+            pendingId: request.identity.pendingId,
+        },
         projectName: request.projectName,
         terminalName: request.terminalName,
         createdAt: request.createdAt,
-        excludedSessionIds: Array.isArray(request.excludedSessionIds)
-            ? [...request.excludedSessionIds]
-            : request.excludedSessionIds,
+        excludedSessionIds: copyDenseStringArray(request.excludedSessionIds),
         ...(request.title === undefined ? {} : { title: request.title }),
         launch: snapshotLaunch(request.launch),
     };
@@ -870,13 +942,63 @@ function snapshotLaunch(
 ): AiSessionResumeRuntimeRequest['launch'] {
     return {
         executable: launch.executable,
-        args: Array.isArray(launch.args) ? [...launch.args] : launch.args,
+        args: copyDenseStringArray(launch.args),
         ...(launch.cwd === undefined ? {} : { cwd: launch.cwd }),
         ...(launch.markerPath === undefined ? {} : { markerPath: launch.markerPath }),
         ...(launch.windowsDirectShell === undefined
             ? {}
             : { windowsDirectShell: launch.windowsDirectShell }),
     };
+}
+
+function preflightRequestShape(
+    request: AiSessionResumeRuntimeRequest | AiSessionCreateRuntimeRequest,
+    pending: boolean
+): void {
+    if (!isRecordShape(request) || !isRecordShape(request.identity) || !isRecordShape(request.launch)) {
+        throw new Error('The tmux runtime request shape is invalid.');
+    }
+    validateDenseStringArrayShape(request.launch.args, MAX_LAUNCH_ARGUMENTS,
+        'provider launch arguments', 'The tmux runtime request');
+    if (pending) {
+        validateDenseStringArrayShape(
+            (request as AiSessionCreateRuntimeRequest).excludedSessionIds,
+            MAX_EXCLUDED_SESSION_IDS,
+            'excluded session IDs',
+            'The pending runtime request'
+        );
+    }
+}
+
+function validateDenseStringArrayShape(
+    value: unknown,
+    maximum: number,
+    label: string,
+    owner: string
+): asserts value is string[] {
+    if (!Array.isArray(value)) {
+        throw new Error(`${owner} ${label} must be an array.`);
+    }
+    if (!Number.isSafeInteger(value.length) || value.length > maximum) {
+        throw new Error(`${owner} has too many ${label}; the ${label} count is too large.`);
+    }
+    for (let index = 0; index < value.length; index++) {
+        if (!Object.prototype.hasOwnProperty.call(value, index) || typeof value[index] !== 'string') {
+            throw new Error(`${owner} requires dense ${label}.`);
+        }
+    }
+}
+
+function copyDenseStringArray(value: string[]): string[] {
+    const copy = new Array<string>(value.length);
+    for (let index = 0; index < value.length; index++) {
+        copy[index] = value[index];
+    }
+    return copy;
+}
+
+function isRecordShape(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function pendingIdentity(identity: AiSessionRuntimeIdentity & { pendingId: string }): AiSessionRuntimeIdentity {
@@ -1150,6 +1272,11 @@ function promotionIntent(
         cwd: binding.cwd,
         createdAt: binding.createdAt,
         markerPath: pending.markerPath,
+        pendingBinding: {
+            ...binding,
+            excludedSessionIds: [...binding.excludedSessionIds],
+            locator: { ...binding.locator },
+        },
         finalSessionId: finalIdentityValue.sessionId,
         layout: binding.layout,
         sourceLocator: { ...binding.locator },
@@ -1166,6 +1293,7 @@ function promotionIntentsMatch(
     return left.pendingId === right.pendingId && left.provider === right.provider
         && left.projectKey === right.projectKey && left.cwd === right.cwd
         && left.createdAt === right.createdAt && left.markerPath === right.markerPath
+        && pendingBindingsEqual(left.pendingBinding, right.pendingBinding)
         && left.finalSessionId === right.finalSessionId && left.layout === right.layout
         && locatorsEqual(left.sourceLocator, right.sourceLocator)
         && locatorsEqual(left.finalLocator, right.finalLocator)
