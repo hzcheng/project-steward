@@ -82,6 +82,7 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
     }
 
     const claimedSessionKeys = new Set(options.claimedSessionKeys || []);
+    const attemptedPendingIdentityKeys = new Set<string>();
     for (const runtime of options.activeRuntimes) {
         if (runtime.identity.sessionId) {
             claimedSessionKeys.add(options.getSessionKey(
@@ -97,6 +98,10 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
         if (!pendingId || !sessionResult) {
             continue;
         }
+        const pendingIdentityKey = getPendingIdentityKey(pendingRuntime);
+        if (attemptedPendingIdentityKeys.has(pendingIdentityKey)) {
+            continue;
+        }
         const session = findPendingAiSessionTerminalMatch(
             pendingRuntime,
             sessionResult,
@@ -108,6 +113,7 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
             continue;
         }
 
+        attemptedPendingIdentityKeys.add(pendingIdentityKey);
         result.attempted++;
         const promotionIdentity = {
             pendingId,
@@ -137,6 +143,15 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
         options.syncActiveRuntime();
     }
     return result;
+}
+
+function getPendingIdentityKey<TTerminal>(runtime: AiSessionPendingRuntimeSnapshot<TTerminal>): string {
+    return JSON.stringify([
+        runtime.identity.provider,
+        runtime.identity.projectKey,
+        runtime.identity.cwd,
+        runtime.identity.pendingId || '',
+    ]);
 }
 
 function settlePendingAiSessionPromotion<TTerminal>(

@@ -630,6 +630,44 @@ async function runPendingTerminalResolverChecks() {
     assert.deepStrictEqual(validAliases, [['codex', 'session-0', 'Created Alias']]);
     assert.strictEqual(validSyncs, 1);
 
+    const duplicatePending = { ...validPending, identity: { ...validPending.identity } };
+    const duplicateCases = [{
+        reason: null,
+        promote: async (_pendingId, sessionId) => [finalRuntime(validPending, sessionId)],
+    }, {
+        reason: 'conflict',
+        promote: async (_pendingId, sessionId) => [
+            finalRuntime(validPending, sessionId, { state: 'conflict' }),
+        ],
+    }, {
+        reason: 'missing-runtime',
+        promote: async () => [],
+    }, {
+        reason: 'invalid-runtime',
+        promote: async () => [null],
+    }, {
+        reason: 'promotion-error',
+        promote: async () => { throw new Error('duplicate promotion failed'); },
+    }];
+    for (const duplicateCase of duplicateCases) {
+        let promotionCalls = 0;
+        const aliases = [];
+        let syncs = 0;
+        const result = await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
+            resolverOptions([validPending, duplicatePending], async (pendingId, sessionId) => {
+                promotionCalls++;
+                return duplicateCase.promote(pendingId, sessionId);
+            }, aliases, () => { syncs++; })
+        );
+        assert.strictEqual(promotionCalls, 1, 'one resolver invocation must attempt a full pending identity once');
+        assert.strictEqual(result.attempted, 1);
+        assert.strictEqual(result.promoted.length, duplicateCase.reason ? 0 : 1);
+        assert.deepStrictEqual(result.failures.map(failure => failure.reason),
+            duplicateCase.reason ? [duplicateCase.reason] : []);
+        assert.strictEqual(aliases.length, duplicateCase.reason ? 0 : 1);
+        assert.strictEqual(syncs, duplicateCase.reason ? 0 : 1);
+    }
+
     const invalidCases = [{
         reason: 'missing-runtime',
         promote: async () => [],
@@ -2315,6 +2353,67 @@ async function runAiSessionProjectHydrationPromotionChecks() {
     assert.strictEqual(retryCalls, 2, 'rejected single-flight must clear so promotion can retry');
     assert.strictEqual(retried[0].codexSessions[0].name, 'Promoted Alias');
     assert.deepStrictEqual(retry.syncs, ['sync']);
+
+    const duplicateFailureFixtures = [
+        { backend: 'vscode', reason: 'conflict' },
+        { backend: 'vscode', reason: 'promotion-error' },
+        { backend: 'tmux', reason: 'conflict' },
+        { backend: 'tmux', reason: 'promotion-error' },
+    ];
+    for (const fixture of duplicateFailureFixtures) {
+        const fixturePending = {
+            ...pendingRuntime,
+            backend: fixture.backend,
+            attached: fixture.backend === 'vscode',
+            ...(fixture.backend === 'vscode' ? { tmux: undefined } : {}),
+        };
+        const fixtureFinal = {
+            ...finalRuntime,
+            backend: fixture.backend,
+            attached: fixture.backend === 'vscode',
+            ...(fixture.backend === 'vscode' ? { tmux: undefined } : {}),
+        };
+        let allowSuccess = false;
+        let promotionCalls = 0;
+        const duplicateFailure = createHarness({
+            runtimeCoordinator: {
+                getActive: () => [],
+                getPending: () => [fixturePending, {
+                    ...fixturePending,
+                    identity: { ...fixturePending.identity },
+                    title: 'Duplicate title must not produce another attempt',
+                }],
+                promotePending: async () => {
+                    promotionCalls++;
+                    if (allowSuccess) {
+                        return [fixtureFinal];
+                    }
+                    if (fixture.reason === 'promotion-error') {
+                        throw new Error('fixture rejection');
+                    }
+                    return [{ ...fixtureFinal, state: 'conflict' }];
+                },
+            },
+        });
+        duplicateFailure.controller.hydrate(project(`${fixture.backend} duplicate failure`));
+        await flushSettlements();
+        assert.strictEqual(promotionCalls, 1, `${fixture.backend} duplicate failure must attempt promotion once`);
+        const failureDiagnostics = duplicateFailure.diagnostics.filter(diagnostic => {
+            return diagnostic.event === 'ai-session-pending-runtime-promotion-result';
+        });
+        assert.strictEqual(failureDiagnostics.length, 1);
+        assert.deepStrictEqual(failureDiagnostics[0].failureReasons, [fixture.reason]);
+        assert.deepStrictEqual(duplicateFailure.aliasesSet, []);
+        assert.deepStrictEqual(duplicateFailure.syncs, []);
+
+        allowSuccess = true;
+        const recovered = duplicateFailure.controller.hydrate(project(`${fixture.backend} retry`));
+        await flushSettlements();
+        assert.strictEqual(promotionCalls, 2, 'a later resolver invocation must retry a failed identity');
+        assert.strictEqual(recovered[0].codexSessions[0].name, 'Promoted Alias');
+        assert.strictEqual(duplicateFailure.aliasesSet.length, 1);
+        assert.deepStrictEqual(duplicateFailure.syncs, ['sync']);
+    }
 
     const legacyPending = {
         provider: 'codex', terminal: { name: 'Legacy pending' }, markerPath: '/tmp/legacy.done',
