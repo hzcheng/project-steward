@@ -2,7 +2,7 @@
 
 import type { AiSessionProviderId, CodexSession } from '../models';
 import type { BatchAiSessionArchiveResult } from './archiveBatch';
-import type { AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
+import type { AiSessionExecutionState, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
 import type { DashboardSearchCatalog } from '../webview/dashboardViewModel';
 
 export interface AiSessionTerminalEntry<TTerminal = unknown> {
@@ -15,6 +15,7 @@ export interface AiSessionTerminalEntry<TTerminal = unknown> {
 
 export type AiSessionTabId = 'active' | 'sessions';
 export type ActiveAiSessionStatus = 'starting' | 'running' | 'focused' | 'needsAttention';
+export type ActiveAiSessionExecutionState = 'starting' | AiSessionExecutionState;
 
 export interface AiSessionActiveTerminalRuntime {
     provider: AiSessionProviderId;
@@ -29,6 +30,7 @@ export interface ActiveAiSessionViewModel {
     sessionId?: string;
     name: string;
     status: ActiveAiSessionStatus;
+    executionState: ActiveAiSessionExecutionState;
     focused: boolean;
     needsAttention: boolean;
     pending: boolean;

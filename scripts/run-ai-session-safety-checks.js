@@ -914,6 +914,10 @@ function runActiveAiSessionProjectionChecks() {
             createdAt: '2026-07-18T03:00:00Z',
             title: 'New Claude',
         }],
+        executionSnapshot: {
+            'codex:c1': { state: 'running', stateChangedAt: 100 },
+            'kimi:k1': { state: 'stopped', stateChangedAt: 200 },
+        },
         focusedIdentity: { provider: 'codex', sessionId: 'c1' },
         getProjectCwd: project => project.path,
         normalizePath: value => value && value.replace(/\/$/, ''),
@@ -922,6 +926,16 @@ function runActiveAiSessionProjectionChecks() {
     assert.deepStrictEqual(projected[0].activeAiSessions.map(item => item.status), [
         'needsAttention', 'focused', 'starting',
     ]);
+    assert.deepStrictEqual(projected[0].activeAiSessions.map(item => ({
+        provider: item.provider,
+        executionState: item.executionState,
+        focused: item.focused,
+        needsAttention: item.needsAttention,
+    })), [
+        { provider: 'kimi', executionState: 'stopped', focused: false, needsAttention: true },
+        { provider: 'codex', executionState: 'running', focused: true, needsAttention: false },
+        { provider: 'claude', executionState: 'starting', focused: false, needsAttention: false },
+    ]);
     assert.deepStrictEqual(projected[0].activeAiSessions.map(item => item.provider), ['kimi', 'codex', 'claude']);
     assert.strictEqual(projected[0].activeAiSessions[0].focused, false);
     assert.strictEqual(projected[0].codexSessions[0].active, true);
@@ -929,6 +943,32 @@ function runActiveAiSessionProjectionChecks() {
     assert.strictEqual(projected[0].kimiSessions[0].active, true);
     assert.strictEqual(projected[0].activeAiSessionTab, 'active');
     assert.strictEqual(projects[0].codexSessions[0].active, undefined, 'projection must not mutate hydration input');
+
+    const swappedExecutionStates = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects,
+        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
+        activeTerminals: [
+            { provider: 'codex', sessionId: 'c1', cwd: '/work/app', runStartedAtMs: 10 },
+            { provider: 'kimi', sessionId: 'k1', cwd: '/work/app', runStartedAtMs: 20 },
+        ],
+        pendingTerminals: [{
+            provider: 'claude',
+            cwd: '/work/app',
+            createdAt: '2026-07-18T03:00:00Z',
+            title: 'New Claude',
+        }],
+        executionSnapshot: {
+            'codex:c1': { state: 'stopped', stateChangedAt: 300 },
+            'kimi:k1': { state: 'running', stateChangedAt: 400 },
+        },
+        focusedIdentity: { provider: 'codex', sessionId: 'c1' },
+        getProjectCwd: project => project.path,
+        normalizePath: value => value && value.replace(/\/$/, ''),
+    });
+    assert.deepStrictEqual(
+        swappedExecutionStates[0].activeAiSessions.map(item => item.provider),
+        ['kimi', 'codex', 'claude']
+    );
 
     const withoutHistory = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'historyless', path: '/work/historyless', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
@@ -940,12 +980,14 @@ function runActiveAiSessionProjectionChecks() {
             runStartedAtMs: 30,
         }],
         pendingTerminals: [],
+        executionSnapshot: {},
         focusedIdentity: null,
         getProjectCwd: project => project.path,
         normalizePath: value => value && value.replace(/\/$/, ''),
     });
     assert.strictEqual(withoutHistory[0].activeAiSessions.length, 1);
     assert.strictEqual(withoutHistory[0].activeAiSessions[0].provider, 'claude');
+    assert.strictEqual(withoutHistory[0].activeAiSessions[0].executionState, 'stopped');
     assert.ok(withoutHistory[0].activeAiSessions[0].name.includes('12345678'));
     assert.deepStrictEqual(withoutHistory[0].claudeSessions, []);
 
@@ -957,6 +999,7 @@ function runActiveAiSessionProjectionChecks() {
             { provider: 'kimi', cwd: '/work/stable', createdAt: '2026-07-18T03:00:00Z', title: 'First' },
             { provider: 'codex', cwd: '/work/stable', createdAt: '2026-07-18T03:01:00Z', title: 'Second' },
         ],
+        executionSnapshot: {},
         focusedIdentity: null,
         getProjectCwd: project => project.path,
         normalizePath: value => value,
@@ -968,6 +1011,7 @@ function runActiveAiSessionProjectionChecks() {
         providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
         activeTerminals: [],
         pendingTerminals: [],
+        executionSnapshot: {},
         focusedIdentity: null,
         getProjectCwd: project => project.path,
         normalizePath: value => value,
