@@ -130,12 +130,17 @@ type TmuxFinalRuntimeBinding = TmuxKnownRuntimeBinding | TmuxInactiveRuntimeBind
 type TmuxRuntimeBinding = TmuxPendingRuntimeBinding | TmuxFinalRuntimeBinding
     | TmuxAmbiguousRuntimeBinding | TmuxConsumedPendingBinding | TmuxPromotingRuntimeBinding;
 
+export type TmuxFinalRecordLock = <T>(operation: () => Promise<T>) => Promise<T>;
+
+const runWithoutFinalRecordLock: TmuxFinalRecordLock = operation => operation();
+
 export class TmuxRuntimeBindingStore {
     private operationQueue: Promise<void> = Promise.resolve();
 
     constructor(
         private readonly root: string,
-        private readonly now: () => number = () => Date.now()
+        private readonly now: () => number = () => Date.now(),
+        private readonly withFinalRecordLock: TmuxFinalRecordLock = runWithoutFinalRecordLock
     ) { }
 
     listPending(): Promise<TmuxPendingRuntimeBinding[]> {
@@ -143,11 +148,11 @@ export class TmuxRuntimeBindingStore {
     }
 
     listKnown(): Promise<TmuxKnownRuntimeBinding[]> {
-        return this.serialize(() => this.listKnownUnlocked(true));
+        return this.serializeFinal(() => this.listKnownUnlocked(true));
     }
 
     listInactive(): Promise<TmuxInactiveRuntimeBinding[]> {
-        return this.serialize(() => this.listInactiveUnlocked(true));
+        return this.serializeFinal(() => this.listInactiveUnlocked(true));
     }
 
     getPending(pendingId: string): Promise<TmuxPendingRuntimeBinding | null> {
@@ -165,7 +170,7 @@ export class TmuxRuntimeBindingStore {
     }
 
     getKnown(provider: AiSessionProviderId, sessionId: string): Promise<TmuxKnownRuntimeBinding | null> {
-        return this.serialize(async () => {
+        return this.serializeFinal(async () => {
             if (!isProviderId(provider) || !isBoundedString(sessionId, MAX_ID_LENGTH)) {
                 return null;
             }
@@ -184,7 +189,7 @@ export class TmuxRuntimeBindingStore {
     }
 
     getInactive(provider: AiSessionProviderId, sessionId: string): Promise<TmuxInactiveRuntimeBinding | null> {
-        return this.serialize(async () => {
+        return this.serializeFinal(async () => {
             if (!isProviderId(provider) || !isBoundedString(sessionId, MAX_ID_LENGTH)) {
                 return null;
             }
@@ -338,7 +343,7 @@ export class TmuxRuntimeBindingStore {
         if (!validated || isKnownExpired(validated, this.now())) {
             return Promise.resolve();
         }
-        return this.serialize(async () => {
+        return this.serializeFinal(async () => {
             const filePath = this.recordPath('known', validated.provider, validated.sessionId);
             const current = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
             if (current && current.provider === validated.provider
@@ -356,7 +361,7 @@ export class TmuxRuntimeBindingStore {
         if (!validated || isInactiveExpired(validated, this.now())) {
             return Promise.reject(new Error('The inactive tmux binding is invalid or expired.'));
         }
-        return this.serialize(async () => {
+        return this.serializeFinal(async () => {
             await this.writeRecord(
                 this.recordPath('known', validated.provider, validated.sessionId),
                 validated
@@ -374,7 +379,7 @@ export class TmuxRuntimeBindingStore {
             || !isFiniteNonNegative(expectedLastSeenAtMs)) {
             return Promise.reject(new Error('The inactive tmux binding transition is invalid or expired.'));
         }
-        return this.serialize(async () => {
+        return this.serializeFinal(async () => {
             const filePath = this.recordPath('known', validated.provider, validated.sessionId);
             const current = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
             if (!current || current.state !== 'known'
@@ -397,7 +402,7 @@ export class TmuxRuntimeBindingStore {
         if (!isProviderId(provider) || !isBoundedString(sessionId, MAX_ID_LENGTH)) {
             return Promise.resolve();
         }
-        return this.serialize(async () => {
+        return this.serializeFinal(async () => {
             const filePath = this.recordPath('known', provider, sessionId);
             const record = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
             if (!record) {
@@ -417,7 +422,7 @@ export class TmuxRuntimeBindingStore {
         if (!isProviderId(provider) || !isBoundedString(sessionId, MAX_ID_LENGTH)) {
             return Promise.resolve();
         }
-        return this.serialize(async () => {
+        return this.serializeFinal(async () => {
             const filePath = this.recordPath('known', provider, sessionId);
             const record = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
             if (record?.state === 'known' && record.provider === provider
@@ -428,7 +433,7 @@ export class TmuxRuntimeBindingStore {
     }
 
     reconcileKnown(live: readonly AiSessionRuntimeSnapshot[]): Promise<void> {
-        return this.serialize(async () => {
+        return this.serializeFinal(async () => {
             for (const runtime of live) {
                 const sessionId = runtime.identity && runtime.identity.sessionId;
                 if (runtime.backend !== 'tmux' || !runtime.tmux || !sessionId) {
@@ -460,6 +465,10 @@ export class TmuxRuntimeBindingStore {
         const result = this.operationQueue.then(operation);
         this.operationQueue = result.then(() => undefined, () => undefined);
         return result;
+    }
+
+    private serializeFinal<T>(operation: () => Promise<T>): Promise<T> {
+        return this.serialize(() => this.withFinalRecordLock(operation));
     }
 
     private async listPendingUnlocked(): Promise<TmuxPendingRuntimeBinding[]> {

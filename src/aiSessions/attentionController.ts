@@ -319,6 +319,17 @@ export interface AiSessionRuntimeLifecycleSettlementResult {
     retainedKeys: string[];
 }
 
+export function runAiSessionRuntimeLifecycleTask(
+    operation: string,
+    task: () => unknown | Promise<unknown>,
+    reportFailure: (operation: string, category: 'unexpected') => void
+): Promise<void> {
+    return Promise.resolve().then(task).then(
+        () => undefined,
+        () => { reportFailure(operation, 'unexpected'); }
+    );
+}
+
 export async function settleAiSessionRuntimeLifecycles<
     TCandidate extends AiSessionRuntimeLifecycleCandidate
 >(

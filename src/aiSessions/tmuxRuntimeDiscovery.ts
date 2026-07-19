@@ -163,6 +163,38 @@ export class TmuxRuntimeDiscovery {
         return this.diagnostics.map(cloneDiagnostic);
     }
 
+    async loadPersistedInactive(): Promise<void> {
+        if (!this.options.bindingStore.listInactive) {
+            return;
+        }
+        const generation = this.cacheGeneration;
+        const records = await this.options.bindingStore.listInactive();
+        if (this.cacheGeneration !== generation) {
+            return;
+        }
+        const restored = new Map<string, AiSessionRuntimeSnapshot>();
+        for (const runtime of this.inactive) {
+            const sessionId = runtime.identity.sessionId;
+            if (sessionId) {
+                restored.set(finalIdentityKey(runtime.identity.provider, sessionId), cloneRuntime(runtime));
+            }
+        }
+        for (const record of records) {
+            restored.set(finalIdentityKey(record.provider, record.sessionId),
+                inactiveSnapshotFromBinding(record));
+        }
+        for (const runtime of this.active) {
+            if (runtime.identity.sessionId) {
+                restored.delete(finalIdentityKey(runtime.identity.provider, runtime.identity.sessionId));
+            }
+        }
+        this.retainedInactive.clear();
+        for (const [key, runtime] of restored) {
+            this.retainedInactive.set(key, cloneRuntime(runtime));
+        }
+        this.inactive = [...restored.values()].map(cloneRuntime);
+    }
+
     async acknowledgeInactive(identity: AiSessionRuntimeIdentity): Promise<void> {
         if (!identity?.sessionId) {
             return;

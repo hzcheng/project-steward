@@ -72,6 +72,7 @@ import { AiSessionTerminalCommandController } from './aiSessions/terminalCommand
 import { AiSessionExecutionController } from './aiSessions/executionController';
 import {
     AiSessionAttentionController,
+    runAiSessionRuntimeLifecycleTask,
     settleAiSessionRuntimeLifecycles,
 } from './aiSessions/attentionController';
 import type {
@@ -276,10 +277,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         aiSessionTerminalBindingStore
     );
     let aiSessionRuntimeConfiguration = readAiSessionRuntimeConfiguration(getStewardConfiguration());
-    const tmuxRuntimeStore = new TmuxRuntimeBindingStore(path.join(
-        context.globalStoragePath,
-        'ai-session-tmux-runtimes'
-    ));
+    const tmuxRuntimeStore = new TmuxRuntimeBindingStore(
+        path.join(context.globalStoragePath, 'ai-session-tmux-runtimes'),
+        () => Date.now(),
+        operation => withTmuxCreationLock(
+            context.globalStoragePath,
+            'runtime-binding-final-records',
+            operation
+        )
+    );
     const tmuxAttachBindingStore = new TmuxAttachBindingStore(context.workspaceState, error => {
         logAiSessionRuntimeFailure('persist-attach-binding', error);
     });
@@ -289,6 +295,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         bindingStore: tmuxRuntimeStore,
         markerIsCurrent: isCurrentRuntimeMarker,
     });
+    try {
+        await tmuxRuntimeDiscovery.loadPersistedInactive();
+    } catch (error) {
+        logAiSessionRuntimeFailure('restore-inactive-runtimes', error);
+    }
     const directTerminalRuntimeBackend = new DirectTerminalRuntimeBackend(aiSessionTerminalService);
     const tmuxRuntimeBackend = new TmuxRuntimeBackend<vscode.Terminal>({
         platform: process.platform,
@@ -306,6 +317,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         tmux: tmuxRuntimeBackend,
         getConfiguration: () => ({ ...aiSessionRuntimeConfiguration }),
         chooseTmuxFallback: chooseAiSessionTmuxFallback,
+        hasLiveTmuxOwnership,
         hasKnownTmuxHint: async identity => Boolean(identity.sessionId
             && await tmuxRuntimeStore.getKnown(identity.provider, identity.sessionId)),
         clearKnownTmuxHint: async identity => {
@@ -457,7 +469,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getOpenProjects,
         getProjectSessions: (project, providerId) => getProviderProjectAiSessions(project, providerId, aiSessionProviders),
         getRuntimeById: getAiSessionRuntimeById,
-        refreshRuntimeGuard: () => aiSessionRuntimeCoordinator.refresh(true),
+        refreshRuntimeGuard: (providerId, sessionId) => providerId && sessionId
+            ? aiSessionRuntimeCoordinator.refreshForIdentity({
+                provider: providerId, sessionId, projectKey: '', cwd: '',
+            }, true)
+            : aiSessionRuntimeCoordinator.refreshForHost(true),
         isRuntimeComplete: runtime => runtime.state === 'completed',
         focusRuntime: runtime => aiSessionRuntimeCoordinator.focus({ ...runtime.identity }),
         deleteRuntimeMarker: runtime => aiSessionTerminalService.deleteMarker(runtime.markerPath),
@@ -574,6 +590,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const queuedAiSessionRuntimeSettlements = new Map<string, RuntimeLifecycleCandidate>();
     const settlingAiSessionRuntimeKeys = new Set<string>();
     let aiSessionRuntimeSettlementInFlight: Promise<void> | null = null;
+    const runSafeAiSessionRuntimeLifecycleTask = (
+        operation: string,
+        task: () => unknown | Promise<unknown>
+    ): Promise<void> => runAiSessionRuntimeLifecycleTask(
+        operation,
+        task,
+        (failedOperation, category) => logAiSessionDiagnostic({
+            event: 'runtime-lifecycle-task-failed',
+            operation: failedOperation,
+            category,
+        })
+    );
     const queueAiSessionRuntimeSettlements = (
         runtimes: readonly AiSessionRuntimeSnapshot<vscode.Terminal>[]
     ): void => {
@@ -598,7 +626,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             });
         }
         if (!aiSessionRuntimeSettlementInFlight && queuedAiSessionRuntimeSettlements.size) {
-            aiSessionRuntimeSettlementInFlight = drainAiSessionRuntimeSettlements();
+            aiSessionRuntimeSettlementInFlight = runSafeAiSessionRuntimeLifecycleTask(
+                'settle-runtime-lifecycles',
+                drainAiSessionRuntimeSettlements
+            );
         }
     };
     const drainAiSessionRuntimeSettlements = async (): Promise<void> => {
@@ -651,7 +682,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         aggregate => {
             if (aiSessionAttentionController.setRemoteAggregate(aggregate)) {
                 aiSessionTerminalService.getReleasedSessions().forEach(identity => {
-                    void acknowledgeAiSessionAttention(identity);
+                    void runSafeAiSessionRuntimeLifecycleTask(
+                        'acknowledge-released-attention',
+                        () => acknowledgeAiSessionAttention(identity)
+                    );
                 });
                 scheduleAiSessionRefresh('attention');
                 postAiSessionAttentionProjectsUpdated(aiSessionAttentionController.getProjectSummaries());
@@ -659,8 +693,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         error => logError('AI session attention bridge unavailable; using local-window monitoring.', error)
     );
-    const aiSessionAttentionInterval = setInterval(() => { void evaluateAiSessionAttention(); }, 10_000);
-    setTimeout(() => { void evaluateAiSessionAttention(); }, 0);
+    const aiSessionAttentionInterval = setInterval(() => {
+        void runSafeAiSessionRuntimeLifecycleTask(
+            'evaluate-attention-interval', evaluateAiSessionAttention
+        );
+    }, 10_000);
+    setTimeout(() => {
+        void runSafeAiSessionRuntimeLifecycleTask(
+            'evaluate-attention-startup', evaluateAiSessionAttention
+        );
+    }, 0);
     const aiSessionExecutionInterval = setInterval(() => { aiSessionExecutionController.evaluate(); }, 1_000);
     setTimeout(() => { aiSessionExecutionController.evaluate(); }, 0);
     const openProjectAiSessionViewModelBuilder = createOpenProjectAiSessionViewModelBuilder();
@@ -1054,7 +1096,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         syncProjectColorToCurrentWindow: project => projectWindowColorService.syncProjectColorToCurrentWindow(project),
         postMessage: message => provider.postMessage(message),
         logError,
-        refreshAiSessionRuntimes: (_reason, force) => aiSessionRuntimeCoordinator.refresh(force),
+        refreshAiSessionRuntimes: (_reason, force) => aiSessionRuntimeCoordinator.refreshForHost(force),
         logAiSessionRuntimeFailure,
     });
     const openProjectDashboardController = new OpenProjectDashboardController({
@@ -1141,7 +1183,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.onDidChangeActiveTerminal(() => {
             activeAiSessionTerminalHighlighter.sync();
             refreshAiSessionViewsIncrementally();
-            void evaluateAiSessionAttention();
+            void runSafeAiSessionRuntimeLifecycleTask(
+                'evaluate-attention-active-terminal', evaluateAiSessionAttention
+            );
         }));
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(terminal => {
@@ -1156,11 +1200,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 .some(runtime => runtime.terminal === terminal);
             aiSessionRuntimeCoordinator.handleClosedTerminal(terminal);
             aiSessionExecutionController.evaluate();
-            closedSessions.forEach(identity => { void acknowledgeAiSessionAttention(identity); });
+            closedSessions.forEach(identity => {
+                void runSafeAiSessionRuntimeLifecycleTask(
+                    'acknowledge-closed-attention',
+                    () => acknowledgeAiSessionAttention(identity)
+                );
+            });
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
             if (closedSessions.length || hadRuntimeClient) {
                 refreshAiSessionViewsIncrementally();
-                void evaluateAiSessionAttention();
+                void runSafeAiSessionRuntimeLifecycleTask(
+                    'evaluate-attention-closed-terminal', evaluateAiSessionAttention
+                );
             }
         }));
     context.subscriptions.push(activeAiSessionTerminalHighlighter);
@@ -1216,7 +1267,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         applyProjectColorToCurrentWindow,
         refresh: refreshStewardViews,
         publishOpenProjects: followsFocusEvent => openProjectWorkspaceController.publish(followsFocusEvent),
-        evaluateAiSessionAttention,
+        evaluateAiSessionAttention: () => runSafeAiSessionRuntimeLifecycleTask(
+            'evaluate-attention-window-state', evaluateAiSessionAttention
+        ),
     });
     const activeTerminalFileReferenceController = new ActiveTerminalFileReferenceController({
         getActiveTextEditor: () => vscode.window.activeTextEditor,
@@ -1326,16 +1379,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             pathChanged,
         });
         try {
-            await aiSessionRuntimeCoordinator.refresh(true);
+            await aiSessionRuntimeCoordinator.refreshForHost(true);
         } catch (error) {
             logAiSessionRuntimeFailure('configuration-refresh', error);
         }
     }
 
     async function evaluateAiSessionAttention(): Promise<AiSessionAttentionEvaluation> {
-        if (await hasRelevantTmuxRuntime()) {
+        try {
+            await tmuxRuntimeDiscovery.loadPersistedInactive();
+        } catch (error) {
+            logAiSessionRuntimeFailure('attention-inactive-restore', error);
+        }
+        const hasRelevantTmux = await hasRelevantTmuxRuntime();
+        if (hasRelevantTmux && await hasLiveTmuxOwnership()) {
             try {
-                await aiSessionRuntimeCoordinator.refresh(false);
+                await aiSessionRuntimeCoordinator.refreshForHost(false);
             } catch (error) {
                 logAiSessionRuntimeFailure('attention-refresh', error);
             }
@@ -1343,11 +1402,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return aiSessionAttentionController.evaluate();
     }
 
-    async function hasRelevantTmuxRuntime(): Promise<boolean> {
+    async function hasLiveTmuxOwnership(): Promise<boolean> {
         if (aiSessionRuntimeConfiguration.mode === 'tmux'
             || tmuxRuntimeDiscovery.getActive().length
             || tmuxRuntimeDiscovery.getPending().length
-            || tmuxRuntimeDiscovery.getInactive().length) {
+            || tmuxRuntimeBackend.getConflicts().length) {
             return true;
         }
         try {
@@ -1356,6 +1415,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 tmuxRuntimeStore.listPending(),
             ]);
             return known.length > 0 || pending.length > 0;
+        } catch (error) {
+            logAiSessionRuntimeFailure('attention-relevance', error);
+            return true;
+        }
+    }
+
+    async function hasRelevantTmuxRuntime(): Promise<boolean> {
+        if (tmuxRuntimeDiscovery.getInactive().length) {
+            return true;
+        }
+        try {
+            const inactive = await tmuxRuntimeStore.listInactive();
+            return inactive.length > 0 || await hasLiveTmuxOwnership();
         } catch (error) {
             logAiSessionRuntimeFailure('attention-relevance', error);
             return true;

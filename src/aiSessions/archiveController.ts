@@ -32,7 +32,7 @@ export interface AiSessionArchiveControllerOptions<TRuntime extends AiSessionArc
     getOpenProjects: () => Project[];
     getProjectSessions: (project: Project, providerId: AiSessionProviderId) => CodexSession[];
     getRuntimeById: (providerId: AiSessionProviderId, sessionId: string) => TRuntime | null;
-    refreshRuntimeGuard?: () => Promise<void>;
+    refreshRuntimeGuard?: (providerId?: AiSessionProviderId, sessionId?: string) => Promise<void>;
     isRuntimeComplete: (runtime: TRuntime) => boolean;
     focusRuntime: (runtime: TRuntime) => unknown;
     deleteRuntimeMarker: (runtime: TRuntime) => void;
@@ -61,7 +61,7 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
         }
 
         const sessionProvider = this.options.getProvider(providerId);
-        if (!await this.refreshRuntimeGuard(sessionId)) {
+        if (!await this.refreshRuntimeGuard(providerId, sessionId)) {
             return;
         }
         let runtime = this.options.getRuntimeById(providerId, sessionId);
@@ -74,7 +74,7 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
             return;
         }
 
-        if (!await this.refreshRuntimeGuard(sessionId)) {
+        if (!await this.refreshRuntimeGuard(providerId, sessionId)) {
             return;
         }
         runtime = this.options.getRuntimeById(providerId, sessionId);
@@ -187,12 +187,15 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
         this.options.syncActiveRuntime();
     }
 
-    private async refreshRuntimeGuard(sessionId?: string): Promise<boolean> {
+    private async refreshRuntimeGuard(
+        providerId?: AiSessionProviderId,
+        sessionId?: string
+    ): Promise<boolean> {
         if (!this.options.refreshRuntimeGuard) {
             return true;
         }
         try {
-            await this.options.refreshRuntimeGuard();
+            await this.options.refreshRuntimeGuard(providerId, sessionId);
             return true;
         } catch (_error) {
             this.options.logUnexpectedError(

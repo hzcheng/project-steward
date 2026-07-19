@@ -31,6 +31,7 @@ export interface AiSessionRuntimeCoordinatorDependencies<TTerminal> {
     tmux: ClosableRuntimeBackend<TTerminal>;
     getConfiguration(): AiSessionRuntimeConfiguration;
     chooseTmuxFallback(context: AiSessionTmuxFallbackContext): Promise<AiSessionTmuxFallbackChoice>;
+    hasLiveTmuxOwnership?(): Promise<boolean>;
     hasKnownTmuxHint?(identity: AiSessionRuntimeIdentity): Promise<boolean>;
     clearKnownTmuxHint?(identity: AiSessionRuntimeIdentity): Promise<void>;
     chooseConflict?(runtimes: AiSessionRuntimeSnapshot<TTerminal>[]): Promise<AiSessionRuntimeSnapshot<TTerminal> | undefined>;
@@ -54,6 +55,38 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         if (outcome.tmuxError) {
             throw outcome.tmuxError;
         }
+    }
+
+    async refreshForHost(force: boolean = false): Promise<void> {
+        const outcome = await this.refreshBackends(force);
+        if (outcome.directError) {
+            throw outcome.directError;
+        }
+        if (!outcome.tmuxError) {
+            return;
+        }
+        const configuration = snapshotConfiguration(this.dependencies.getConfiguration());
+        const cachedLiveOwnership = this.dependencies.tmux.getActive().length > 0
+            || this.dependencies.tmux.getPending().length > 0
+            || this.getConflicts().some(runtime => runtime.backend === 'tmux');
+        const persistedLiveOwnership = this.dependencies.hasLiveTmuxOwnership
+            ? await this.dependencies.hasLiveTmuxOwnership()
+            : true;
+        if (configuration.mode === 'vscode' && !cachedLiveOwnership && !persistedLiveOwnership
+            && this.isTmuxUnavailable(outcome.tmuxError)) {
+            return;
+        }
+        throw outcome.tmuxError;
+    }
+
+    async refreshForIdentity(identity: AiSessionRuntimeIdentity, force: boolean = true): Promise<void> {
+        const cached = this.matchesForIdentity(identity);
+        if (cached.length === 1 && cached[0].backend === 'vscode'
+            && cached[0].state !== 'conflict') {
+            await this.dependencies.direct.refresh(force);
+            return;
+        }
+        await this.refreshForHost(force);
     }
 
     getActive(): AiSessionRuntimeSnapshot<TTerminal>[] {
@@ -106,7 +139,8 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         pendingId: string,
         sessionId: string
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
-        await this.refreshBackends(true);
+        const refresh = await this.refreshBackends(true);
+        this.throwRefreshFailure(refresh);
         const refreshedConflicts = this.getConflicts().filter(runtime =>
             runtime.identity.pendingId === pendingId);
         if (refreshedConflicts.length) {
@@ -133,8 +167,17 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
     }
 
     async focus(identity: AiSessionRuntimeIdentity): Promise<void> {
-        const refresh = await this.refreshBackends(true);
-        this.throwRefreshFailure(refresh);
+        const cached = this.matchesForIdentity(identity);
+        if (cached.length === 1 && cached[0].backend === 'vscode'
+            && cached[0].state !== 'conflict') {
+            await this.dependencies.direct.refresh(true);
+            const directMatches = this.matchesInBackend(this.dependencies.direct, identity);
+            if (directMatches.length === 1 && directMatches[0].state !== 'conflict') {
+                await this.dependencies.direct.focus(cloneRuntime(directMatches[0]));
+            }
+            return;
+        }
+        await this.refreshForHost(true);
         const matches = this.matchesForIdentity(identity);
         if (matches.length !== 1 || matches[0].state === 'conflict') {
             return;
@@ -143,8 +186,17 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
     }
 
     async detach(identity: AiSessionRuntimeIdentity): Promise<void> {
-        const refresh = await this.refreshBackends(true);
-        this.throwRefreshFailure(refresh);
+        const cached = this.matchesForIdentity(identity);
+        if (cached.length === 1 && cached[0].backend === 'vscode'
+            && cached[0].state !== 'conflict') {
+            await this.dependencies.direct.refresh(true);
+            const directMatches = this.matchesInBackend(this.dependencies.direct, identity);
+            if (directMatches.length === 1 && directMatches[0].state !== 'conflict') {
+                await this.dependencies.direct.detach(cloneRuntime(directMatches[0]));
+            }
+            return;
+        }
+        await this.refreshForHost(true);
         const matches = this.matchesForIdentity(identity);
         if (matches.length !== 1 || matches[0].state === 'conflict') {
             return;
@@ -339,6 +391,20 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         return identity?.pendingId
             ? [...this.getPending(), ...this.getConflicts()]
                 .filter(runtime => samePendingIdentity(runtime.identity, identity))
+            : [];
+    }
+
+    private matchesInBackend(
+        backend: ClosableRuntimeBackend<TTerminal>,
+        identity: AiSessionRuntimeIdentity
+    ): AiSessionRuntimeSnapshot<TTerminal>[] {
+        if (identity?.sessionId) {
+            return backend.getActive().filter(runtime =>
+                runtime.identity.provider === identity.provider
+                && runtime.identity.sessionId === identity.sessionId);
+        }
+        return identity?.pendingId
+            ? backend.getPending().filter(runtime => samePendingIdentity(runtime.identity, identity))
             : [];
     }
 

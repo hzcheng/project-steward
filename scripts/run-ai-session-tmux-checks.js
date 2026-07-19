@@ -1704,6 +1704,20 @@ async function runTmuxDiscoveryChecks() {
             markerIsCurrent: () => { throw new Error('restart must not reclassify persisted inactive'); },
             nowMs: () => now,
         });
+        let unavailableProbeCalls = 0;
+        const unavailableRestart = new discoveryModule.TmuxRuntimeDiscovery({
+            client: { listWindows: async () => {
+                unavailableProbeCalls++;
+                throw fakeUnavailableError();
+            } },
+            bindingStore: new runtimeStoreModule.TmuxRuntimeBindingStore(restartRoot, () => now),
+            markerIsCurrent: () => false,
+            nowMs: () => now,
+        });
+        await unavailableRestart.loadPersistedInactive();
+        assert.strictEqual(unavailableProbeCalls, 0,
+            'inactive restart recovery must not probe tmux availability');
+        assert.strictEqual(unavailableRestart.getInactive()[0].state, 'completed');
         await afterRestart.refresh(true);
         assert.strictEqual(afterRestart.getInactive()[0].state, 'completed',
             'a new discovery instance must restore completed inactive state from disk');
@@ -1979,6 +1993,100 @@ async function runTmuxStoreChecks() {
         );
         assert.deepStrictEqual(await legacyKnownStore.getKnown('codex', 'legacy-known'),
             normalizedLegacyKnown, 'legacy final records without a discriminator parse as known');
+
+        const crossHostRoot = path.join(root, 'cross-host-final-records');
+        const crossHostRecords = path.join(crossHostRoot, 'records');
+        const sharedFinalLock = operation => creationLock.withTmuxCreationLock(
+            crossHostRoot, 'runtime-binding-final-records', operation
+        );
+        const crossHostA = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            crossHostRecords, () => now, sharedFinalLock
+        );
+        const crossHostB = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            crossHostRecords, () => now, sharedFinalLock
+        );
+        const crossOld = known('cross-host', now - 200);
+        const crossNew = known('cross-host', now);
+        const crossRuntime = {
+            identity: {
+                provider: 'codex', sessionId: 'cross-host', projectKey: 'pk', cwd: '/work',
+            },
+            backend: 'tmux', state: 'active', markerPath: '/tmp/cross-host.done',
+            runStartedAtMs: now - 1000, attached: false, tmux: { ...crossNew.locator },
+        };
+        await crossHostA.setKnown(crossOld);
+        await Promise.all([
+            crossHostA.transitionKnownToInactive(
+                inactive('cross-host', 'stopped', now), crossOld.lastSeenAtMs
+            ),
+            crossHostB.reconcileKnown([crossRuntime]),
+        ]);
+        assert.strictEqual((await crossHostA.getInactive('codex', 'cross-host')).state, 'stopped',
+            'a later cross-host reconcile must not overwrite an inactive transition');
+
+        await crossHostA.acknowledgeInactive('codex', 'cross-host');
+        await crossHostA.setKnown(crossOld);
+        const [_, staleCrossTransition] = await Promise.all([
+            crossHostB.reconcileKnown([crossRuntime]),
+            crossHostA.transitionKnownToInactive(
+                inactive('cross-host', 'stopped', now), crossOld.lastSeenAtMs
+            ),
+        ]);
+        assert.strictEqual(staleCrossTransition, false);
+        assert.deepStrictEqual(await crossHostA.getKnown('codex', 'cross-host'), crossNew,
+            'a stale cross-host transition must not overwrite a newer reconcile');
+
+        const ackRaceRoot = path.join(crossHostRoot, 'ack-records');
+        let blockNextAckOperation = false;
+        const ackLockEntered = deferred();
+        const releaseAckLock = deferred();
+        const controlledAckLock = operation => sharedFinalLock(async () => {
+            if (blockNextAckOperation) {
+                blockNextAckOperation = false;
+                ackLockEntered.resolve();
+                await releaseAckLock.promise;
+            }
+            return operation();
+        });
+        const ackRaceA = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            ackRaceRoot, () => now, controlledAckLock
+        );
+        const ackRaceB = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            ackRaceRoot, () => now, sharedFinalLock
+        );
+        await ackRaceA.setInactive(inactive('cross-ack', 'completed', now));
+        const rewrittenAfterAck = known('cross-ack', now);
+        blockNextAckOperation = true;
+        const ackOperation = ackRaceA.acknowledgeInactive('codex', 'cross-ack');
+        await ackLockEntered.promise;
+        const rewriteOperation = ackRaceB.setKnown(rewrittenAfterAck);
+        releaseAckLock.resolve();
+        await Promise.all([ackOperation, rewriteOperation]);
+        assert.deepStrictEqual(await ackRaceA.getKnown('codex', 'cross-ack'), rewrittenAfterAck,
+            'cross-host acknowledgement must not delete a known record rewritten after it');
+
+        const crossPruneRoot = path.join(crossHostRoot, 'prune-records');
+        fs.mkdirSync(crossPruneRoot);
+        const pruneTarget = known('cross-prune-target', now - 100_000);
+        fs.writeFileSync(path.join(crossPruneRoot, runtimeRecordFilename(pruneTarget)),
+            JSON.stringify(pruneTarget));
+        for (let index = 0; index < 512; index++) {
+            const row = known(`cross-prune-${index}`, now - index);
+            fs.writeFileSync(path.join(crossPruneRoot, runtimeRecordFilename(row)), JSON.stringify(row));
+        }
+        const crossPruneA = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            crossPruneRoot, () => now, sharedFinalLock
+        );
+        const crossPruneB = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            crossPruneRoot, () => now, sharedFinalLock
+        );
+        const refreshedPruneTarget = known('cross-prune-target', now);
+        await Promise.all([
+            crossPruneB.setKnown(refreshedPruneTarget),
+            crossPruneA.listKnown(),
+        ]);
+        assert.deepStrictEqual(await crossPruneA.getKnown('codex', 'cross-prune-target'),
+            refreshedPruneTarget, 'cross-host pruning must not delete a concurrently refreshed known record');
 
         const originalUnlink = fs.promises.unlink;
         fs.promises.unlink = async filePath => {
@@ -4616,6 +4724,58 @@ async function runRuntimeCoordinatorChecks() {
         },
         chooseTmuxFallback: async () => 'cancel',
     });
+
+    for (const operation of ['focus', 'detach']) {
+        const isolatedDirect = createFakeRuntimeBackend('vscode');
+        isolatedDirect.active.push(fakeRuntime('vscode', `direct-${operation}`));
+        const unavailableTmux = createFakeRuntimeBackend('tmux', {
+            refreshError: fakeUnavailableError(),
+        });
+        const isolatedCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+            direct: isolatedDirect,
+            tmux: unavailableTmux,
+            getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+            chooseTmuxFallback: async () => 'cancel',
+            hasLiveTmuxOwnership: async () => false,
+        });
+        await isolatedCoordinator[operation]({
+            provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: `direct-${operation}`,
+        });
+        assert.deepStrictEqual(isolatedDirect.refreshCalls, [true]);
+        assert.deepStrictEqual(unavailableTmux.refreshCalls, [],
+            `${operation} of a cached unique Direct runtime must not probe tmux`);
+        assert.strictEqual(isolatedDirect[`${operation}Calls`].length, 1);
+    }
+
+    const hostDirect = createFakeRuntimeBackend('vscode');
+    const hostUnavailableTmux = createFakeRuntimeBackend('tmux', {
+        refreshError: fakeUnavailableError(),
+    });
+    let hostHasLiveOwnership = false;
+    const hostRefreshCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: hostDirect,
+        tmux: hostUnavailableTmux,
+        getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+        hasLiveTmuxOwnership: async () => hostHasLiveOwnership,
+    });
+    await hostRefreshCoordinator.refreshForHost(true);
+    assert.deepStrictEqual(hostDirect.refreshCalls, [true]);
+    assert.deepStrictEqual(hostUnavailableTmux.refreshCalls, [true]);
+    hostHasLiveOwnership = true;
+    await assert.rejects(hostRefreshCoordinator.refreshForHost(true),
+        error => error instanceof runtimeTypesModule.TmuxRuntimeUnavailableError);
+
+    const unsafeHostError = new Error('plain host refresh failure');
+    const unsafeHostCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: createFakeRuntimeBackend('vscode'),
+        tmux: createFakeRuntimeBackend('tmux', { refreshError: unsafeHostError }),
+        getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+        hasLiveTmuxOwnership: async () => false,
+    });
+    await assert.rejects(unsafeHostCoordinator.refreshForHost(true), error => error === unsafeHostError,
+        'only structured tmux-unavailable errors may be ignored for an ownership-free Direct host');
     tmux.active.push(fakeRuntime('tmux', 's1'));
     const existing = await coordinator.resume(fakeResumeRequest('s1'));
     assert.strictEqual(existing.status, 'focused');
@@ -5154,6 +5314,28 @@ async function runRuntimeCoordinatorChecks() {
     await assert.rejects(lockCoordinator.resume(fakeResumeRequest('lock-timeout')), /lock timed out/);
     assert.strictEqual(lockChoices, 0);
     assert.strictEqual(lockDirect.ensureResumeCalls, 0);
+
+    for (const promoteRefreshError of [fakeUnavailableError(), new Error('plain promote refresh failure')]) {
+        const promoteDirect = createFakeRuntimeBackend('vscode');
+        promoteDirect.pending.push({
+            ...fakeRuntime('vscode', undefined),
+            identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'guarded-promote' },
+            state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
+        });
+        const promoteCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+            direct: promoteDirect,
+            tmux: createFakeRuntimeBackend('tmux', { refreshError: promoteRefreshError }),
+            getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+            chooseTmuxFallback: async () => 'cancel',
+            hasLiveTmuxOwnership: async () => false,
+        });
+        await assert.rejects(
+            promoteCoordinator.promotePending('guarded-promote', 'must-not-promote'),
+            error => error === promoteRefreshError
+        );
+        assert.deepStrictEqual(promoteDirect.promoted, [],
+            'promotion must fail closed when either forced refresh outcome is not safe');
+    }
 
     const routedDirect = createFakeRuntimeBackend('vscode');
     const routedTmux = createFakeRuntimeBackend('tmux');
@@ -6047,7 +6229,8 @@ function runHostRuntimeCompositionChecks() {
     assert.ok(dashboardSource.includes('onDidChangeConfiguration'));
     assert.ok(dashboardSource.includes("affectsConfiguration('projectSteward.aiSession"));
     assert.ok(dashboardSource.includes('runtimeCoordinator: aiSessionRuntimeCoordinator'));
-    assert.ok(dashboardSource.includes("path.join(\n        context.globalStoragePath,\n        'ai-session-tmux-runtimes'"));
+    assert.ok(dashboardSource.includes("path.join(context.globalStoragePath, 'ai-session-tmux-runtimes')"));
+    assert.ok(dashboardSource.includes("'runtime-binding-final-records'"));
     assert.ok(dashboardSource.includes('runtimeCoordinator: aiSessionRuntimeCoordinator'));
     assert.ok(dashboardSource.includes('activeRuntimes: getProjectedAiSessionActiveRuntimes()'));
     assert.ok(dashboardSource.includes('pendingRuntimes: aiSessionRuntimeCoordinator.getPending()'));
@@ -6064,7 +6247,8 @@ function runHostRuntimeCompositionChecks() {
     assert.match(dashboardSource, /fallback\.knownHint[\s\S]*?showWarningMessage\([\s\S]*?\{ modal: true \}/);
     assert.ok(dashboardSource.includes('tmuxClient.setExecutablePath(nextConfiguration.tmuxPath)'));
     assert.ok(dashboardSource.includes('tmuxRuntimeDiscovery.invalidate()'));
-    assert.ok(dashboardSource.includes('await aiSessionRuntimeCoordinator.refresh(true)'));
+    assert.ok(dashboardSource.includes('await aiSessionRuntimeCoordinator.refreshForHost(true)'));
+    assert.ok(dashboardSource.includes('await tmuxRuntimeDiscovery.loadPersistedInactive()'));
     assert.ok(dashboardSource.includes("category: 'unexpected'"));
     const runtimeFailureBody = dashboardSource.slice(
         dashboardSource.indexOf('function logAiSessionRuntimeFailure('),

@@ -89,3 +89,30 @@ npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run te
 ```
 
 Lint emitted only the repository's existing warnings. The checks use fake tmux clients; no real tmux process was invoked.
+
+## Round-3 Direct Isolation and Cross-Host Serialization
+
+- Default Direct mode now uses a layered host refresh. A structured tmux-unavailable result is contained only when no cached or persisted live tmux known/pending/conflict ownership exists; ordinary errors and any unverifiable live ownership still fail closed. Persisted inactive records are deliberately not live blockers.
+- Focus and detach first inspect the cached identity. A unique Direct runtime refreshes and re-resolves only the Direct backend, while tmux, unknown, duplicate, and conflict identities use the guarded host/full refresh. Single-session archive passes the provider/session identity into the same guard; batch archive uses the ownership-aware host guard.
+- Persisted inactive records load independently from tmux availability during activation and attention evaluation. This permits restart recovery, publication, acknowledgement, and settlement while tmux itself is absent, without turning inactive records into duplicate-prevention hints.
+- The host injects a fixed cross-instance final-record lock backed by `withTmuxCreationLock`. All known/inactive writes, compare-and-swap transitions, acknowledgements, TTL deletion, cap pruning, removal, and reconciliation acquire the instance queue and then the global file lock, re-read under that lock, and mutate without recursively acquiring it.
+- Dashboard fire-and-forget attention evaluation, publication/acknowledgement settlement, and lifecycle drain entry points use one safe task boundary. Rejections are contained and reported with fixed operation/category fields; behavior tests observe no `unhandledRejection`.
+- Pending promotion now inspects both forced-refresh outcomes before resolving or mutating a pending runtime. Any backend refresh rejection fails closed; refreshed collisions return conflict snapshots without promotion.
+
+### Round-3 Race and Boundary Evidence
+
+- RED: cached Direct focus failed when an unavailable tmux backend was refreshed; GREEN: Direct focus/detach refresh only Direct and perform the requested action.
+- RED: host-visible Direct refresh propagated structured tmux unavailability without considering ownership; GREEN: Direct/no-live continues, while persisted known/pending ownership and plain failures remain blocking.
+- Cross-instance tests use two independent stores sharing the real file lock and cover transition/reconcile in both orders, a held acknowledgement followed by rewrite, and pruning concurrent with a refreshed known record. Newer known ownership is neither overwritten nor deleted.
+- A restart test restores completed inactive state through `loadPersistedInactive()` with a client that would throw if probed; the probe count remains zero.
+- A rejected fire-and-forget attention task is observed with a process-level `unhandledRejection` listener; the listener receives no event and diagnostics contain only fixed fields.
+
+### Round-3 Final Verification
+
+The final required matrix exited 0:
+
+```text
+npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run test:safety && npm run test:dashboard && npm run test:architecture-baseline && npm run test:tmux && npm run test:tmux && npm run lint && git diff --check
+```
+
+Lint emitted only the repository's existing warnings. Tmux checks use fake clients and controlled file locks; no real tmux process was invoked.

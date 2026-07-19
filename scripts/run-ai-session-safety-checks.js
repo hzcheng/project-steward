@@ -95,6 +95,7 @@ const AiSessionResumeController = require('../out/aiSessions/resumeController').
 const AiSessionAttentionController = require('../out/aiSessions/attentionController').AiSessionAttentionController;
 const AiSessionExecutionController = require('../out/aiSessions/executionController').AiSessionExecutionController;
 const settleAiSessionRuntimeLifecycles = require('../out/aiSessions/attentionController').settleAiSessionRuntimeLifecycles;
+const runAiSessionRuntimeLifecycleTask = require('../out/aiSessions/attentionController').runAiSessionRuntimeLifecycleTask;
 const AiSessionArchiveController = require('../out/aiSessions/archiveController').AiSessionArchiveController;
 const AiSessionProjectHydrationController = require('../out/aiSessions/projectHydrationController').AiSessionProjectHydrationController;
 const SidebarStewardViewProvider = require('../out/dashboard/viewProvider').SidebarStewardViewProvider;
@@ -2159,6 +2160,27 @@ async function runAiSessionAttentionControllerChecks() {
             rejectedOperation === 'release' ? `codex:${rejectedOperation}` : undefined]]);
     }
 
+    const unhandledLifecycleRejections = [];
+    const lifecycleTaskFailures = [];
+    const captureUnhandledLifecycleRejection = reason => {
+        unhandledLifecycleRejections.push(reason);
+    };
+    process.on('unhandledRejection', captureUnhandledLifecycleRejection);
+    try {
+        void runAiSessionRuntimeLifecycleTask(
+            'attention-interval',
+            async () => { throw new Error('/secret/unhandled-lifecycle'); },
+            (operation, category) => lifecycleTaskFailures.push([operation, category])
+        );
+        await new Promise(resolve => setImmediate(resolve));
+    } finally {
+        process.removeListener('unhandledRejection', captureUnhandledLifecycleRejection);
+    }
+    assert.deepStrictEqual(unhandledLifecycleRejections, [],
+        'fire-and-forget attention lifecycle tasks must never emit unhandledRejection');
+    assert.deepStrictEqual(lifecycleTaskFailures, [['attention-interval', 'unexpected']],
+        'fire-and-forget lifecycle failures report only fixed redacted fields');
+
     runtimeEntries.set('codex:session-a', {
         identity: {
             provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
@@ -2439,6 +2461,7 @@ async function runAiSessionArchiveRuntimeChecks() {
     const createFreshArchiveController = options => {
         let currentRuntime = null;
         let refreshCount = 0;
+        const refreshIdentities = [];
         let freshConfirmCount = 0;
         let freshArchiveCount = 0;
         const freshController = new AiSessionArchiveController({
@@ -2449,8 +2472,9 @@ async function runAiSessionArchiveRuntimeChecks() {
             }),
             getProviderLabel: () => 'Codex', getOpenProjects: () => [], getProjectSessions: () => [],
             getRuntimeById: () => currentRuntime,
-            refreshRuntimeGuard: async () => {
+            refreshRuntimeGuard: async (providerId, sessionId) => {
                 refreshCount++;
+                refreshIdentities.push([providerId, sessionId]);
                 currentRuntime = options.runtimeAfterRefresh(refreshCount);
             },
             isRuntimeComplete: candidate => candidate.state === 'completed',
@@ -2465,7 +2489,7 @@ async function runAiSessionArchiveRuntimeChecks() {
         });
         return {
             controller: freshController,
-            state: () => ({ refreshCount, freshConfirmCount, freshArchiveCount }),
+            state: () => ({ refreshCount, freshConfirmCount, freshArchiveCount, refreshIdentities }),
         };
     };
     const conflictRuntime = { ...runtime, state: 'conflict' };
@@ -2475,6 +2499,7 @@ async function runAiSessionArchiveRuntimeChecks() {
     await beforeConfirmation.controller.archiveSession('codex', 'session-a');
     assert.deepStrictEqual(beforeConfirmation.state(), {
         refreshCount: 1, freshConfirmCount: 0, freshArchiveCount: 0,
+        refreshIdentities: [['codex', 'session-a']],
     }, 'archive must force-refresh and block a newly discovered collision before confirmation');
 
     const afterConfirmation = createFreshArchiveController({
@@ -2483,6 +2508,7 @@ async function runAiSessionArchiveRuntimeChecks() {
     await afterConfirmation.controller.archiveSession('codex', 'session-a');
     assert.deepStrictEqual(afterConfirmation.state(), {
         refreshCount: 2, freshConfirmCount: 1, freshArchiveCount: 0,
+        refreshIdentities: [['codex', 'session-a'], ['codex', 'session-a']],
     }, 'archive must revalidate after confirmation and perform no destructive action on a new collision');
 }
 
@@ -4205,7 +4231,10 @@ function runWebviewContentChecks() {
         'one completion polling round must queue one structured batch');
     assert.match(dashboard, /onDidCloseTerminal\(terminal => \{[\s\S]*?hadRuntimeClient[\s\S]*?aiSessionRuntimeCoordinator\.handleClosedTerminal\(terminal\)[\s\S]*?closedSessions\.length \|\| hadRuntimeClient[\s\S]*?refreshAiSessionViewsIncrementally\(\)/);
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
-    assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);
+    assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?runSafeAiSessionRuntimeLifecycleTask\([\s\S]*?'evaluate-attention-active-terminal'[\s\S]*?\}\)/);
+    assert.ok(!dashboard.includes('void evaluateAiSessionAttention()'));
+    assert.ok(!dashboard.includes('void acknowledgeAiSessionAttention('));
+    assert.ok(dashboard.includes('runAiSessionRuntimeLifecycleTask('));
     assert.match(dashboard, /onDidChangeWindowState\(windowState => \{[\s\S]*?dashboardLifecycleController\.handleWindowStateChanged\(windowState\);[\s\S]*?\}\)/);
     assert.ok(dashboardLifecycleControllerSource.includes('this.options.evaluateAiSessionAttention();'));
     assert.ok(dashboardLifecycleControllerSource.includes('this.options.publishOpenProjects(true);'));
