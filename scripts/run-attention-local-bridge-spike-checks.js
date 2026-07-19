@@ -351,7 +351,7 @@ function readText(relativePath) {
 function runArtifactContractChecks() {
     const packageScript = readText('scripts/package-attention-extensions.js');
     const expectedArtifactPaths = [
-        'artifacts/project-steward-attention-ui-bridge-0.1.2.vsix',
+        'artifacts/project-steward-attention-ui-bridge-0.1.3.vsix',
         'artifacts/project-steward-attention-workspace-probe-0.0.5.vsix',
     ];
     const namedArtifactPaths = packageScript.match(/artifacts\/[^'"`\s]+\.vsix/g) || [];
@@ -366,7 +366,7 @@ function runArtifactContractChecks() {
         'same workspace',
         'different Profile',
         'Developer: Show Running Extensions',
-        'project-steward-attention-ui-bridge-0.1.2.vsix',
+        'project-steward-attention-ui-bridge-0.1.3.vsix',
         'project-steward-attention-workspace-probe-0.0.5.vsix',
     ]) {
         assert.ok(manualMatrix.includes(requiredText), `MANUAL-MATRIX.md must contain ${requiredText}`);
@@ -429,7 +429,7 @@ function runManifestChecks() {
     const workspace = readJson('spikes/attention-local-bridge/workspace/package.json');
     const bridge = readJson('extensions/attention-ui-bridge/package.json');
     assert.strictEqual(workspace.version, '0.0.5');
-    assert.strictEqual(bridge.version, '0.1.2');
+    assert.strictEqual(bridge.version, '0.1.3');
     assert.deepStrictEqual(workspace.extensionKind, ['workspace']);
     assert.deepStrictEqual(bridge.extensionKind, ['ui']);
     assert.strictEqual(bridge.api, 'none');

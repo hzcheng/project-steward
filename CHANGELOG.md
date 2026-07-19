@@ -4,6 +4,23 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ## [Unreleased]
 
+## [2.1.2] 2026-07-19
+
+### Added
+
+-   Show live execution activity for Active Sessions while keeping attention indicators independent.
+
+### Changed
+
+-   Read AI session lifecycle logs incrementally and scope recovered lifecycle state to the current run.
+-   Route `OTHER WINDOWS` project cards through the same project-opening path as saved `PROJECTS` cards.
+
+### Fixed
+
+-   Keep newly created pending AI sessions visible until their terminal closes.
+-   Recover long-running AI session state without reviving stale lifecycle events after cursor resets or Extension Host reloads.
+-   Preserve the exact SSH and Dev Container authority published by each VS Code window so `OTHER WINDOWS` switches to the existing project window instead of opening the project in the wrong container.
+
 ## [2.1.1] 2026-07-18
 
 ### Added

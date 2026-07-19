@@ -51,7 +51,7 @@ function run() {
     assertIncludes(installScript, 'BRIDGE_VERSION', 'local install script');
     assertIncludes(installScript, '--install-extension "$BRIDGE_VSIX" --force', 'local install script');
     assertIncludes(installScript, '--install-extension "$MAIN_VSIX" --force', 'local install script');
-    assertNotIncludes(installScript, 'project-steward-attention-ui-bridge-0.1.2.vsix', 'local install script');
+    assertNotIncludes(installScript, 'project-steward-attention-ui-bridge-0.1.3.vsix', 'local install script');
 
     const publishScript = readText('scripts/publish-marketplace.sh');
     assertIncludes(publishScript, 'BRIDGE_NAME', 'Marketplace publish script');
