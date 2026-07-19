@@ -115,6 +115,9 @@ function createTmuxBackendHarness(options = {}) {
         windows.push(row);
         if (command && ambiguousCreateCount > 0) {
             ambiguousCreateCount--;
+            if (options.prepareAmbiguousWindow) {
+                options.prepareAmbiguousWindow(row);
+            }
             const error = new tmuxClientModule.TmuxClientError('create-session', 'timeout');
             throw error;
         }
@@ -4676,6 +4679,37 @@ async function runTmuxBackendChecks() {
     }, 'ambiguous recovery without createdAt must fall back to a legacy known hint');
     assert.strictEqual(ambiguousHarness.ambiguous.size, 0);
     assert.strictEqual(ambiguousHarness.operations.filter(item => item.type === 'new-session').length, 1);
+
+    const ambiguousLifecycleHarness = createTmuxBackendHarness({
+        ambiguousCreateCount: 1,
+        prepareAmbiguousWindow: row => {
+            row.sessionMetadata = {
+                managed: '1', version: '1', layout: 'session', projectKey: 'ambiguous-lifecycle',
+                provider: 'codex', sessionId: 's2',
+                createdAt: '2026-07-18T09:59:00.000Z', marker: '/tmp/a2',
+            };
+            row.windowMetadata = { managed: '1', version: '1', layout: 'session' };
+            row.metadata = { ...row.sessionMetadata, ...row.windowMetadata };
+        },
+    });
+    const ambiguousLifecycleRequest = {
+        identity: { provider: 'codex', projectKey: 'ambiguous-lifecycle', cwd: '/work', sessionId: 's2' },
+        projectName: 'App', terminalName: 'Codex: s2',
+        launch: { executable: 'codex', args: ['resume', 's2'], markerPath: '/tmp/a2' },
+    };
+    const recoveredLifecycle = await new backendModule.TmuxRuntimeBackend(
+        ambiguousLifecycleHarness.dependencies
+    ).ensureResume(ambiguousLifecycleRequest, 'session');
+    const recoveredLifecycleRow = ambiguousLifecycleHarness.windows[0];
+    assert.strictEqual(recoveredLifecycle.identity.sessionId, 's2');
+    assert.deepStrictEqual(ambiguousLifecycleHarness.known.get('codex:s2'), {
+        version: 1, state: 'known', provider: 'codex', sessionId: 's2',
+        projectKey: 'ambiguous-lifecycle', layout: 'session',
+        locator: { layout: 'session', sessionName: recoveredLifecycleRow.sessionName },
+        lastSeenAtMs: Date.parse('2026-07-18T10:00:00Z'),
+        cwd: '/work', markerPath: '/tmp/a2',
+        runStartedAtMs: Date.parse('2026-07-18T09:59:00.000Z'),
+    }, 'ambiguous recovery must preserve complete lifecycle proof when discovery omits cwd');
 
     const ambiguousPendingHarness = createTmuxBackendHarness({ ambiguousCreateCount: 1 });
     const ambiguousPendingRequest = {

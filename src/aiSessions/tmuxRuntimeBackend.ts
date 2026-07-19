@@ -716,7 +716,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             throw new Error('A known tmux runtime requires a session ID.');
         }
         const hasLifecycleEvidence = !!lifecycle
-            && isLocalPath(lifecycle.identity.cwd)
+            && isLocalPath(identity.cwd)
             && isBoundedOptionalLocalPath(lifecycle.markerPath)
             && Number.isFinite(lifecycle.runStartedAtMs)
             && lifecycle.runStartedAtMs > 0;
@@ -730,7 +730,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             locator: { ...locator },
             lastSeenAtMs: this.dependencies.nowMs(),
             ...(hasLifecycleEvidence ? {
-                cwd: lifecycle.identity.cwd,
+                cwd: identity.cwd,
                 markerPath: lifecycle.markerPath,
                 runStartedAtMs: lifecycle.runStartedAtMs,
             } : {}),
