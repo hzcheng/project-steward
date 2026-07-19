@@ -233,6 +233,7 @@ function deduplicateActiveRuntimes(runtimes: AiSessionRuntimeSnapshot[]): AiSess
             ...existing,
             identity: { ...existing.identity },
             state: 'conflict',
+            ...(existing.stale || runtime.stale ? { stale: true } : {}),
         });
     }
     return [...byIdentity.values(), ...withoutFinalIdentity];
@@ -262,6 +263,7 @@ function deduplicatePendingRuntimes(
             ...(representative.tmux ? { tmux: { ...representative.tmux } } : {}),
             excludedSessionIds: [...representative.excludedSessionIds],
             projectionConflict: true,
+            ...(group.some(runtime => runtime.stale) ? { stale: true } : {}),
         };
     });
     return [...deduplicated, ...withoutPendingIdentity];

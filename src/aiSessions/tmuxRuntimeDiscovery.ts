@@ -265,7 +265,7 @@ export class TmuxRuntimeDiscovery {
         this.active = result.active.map(cloneFreshRuntime);
         this.pending = result.pending.map(cloneFreshPendingRuntime);
         this.inactive = result.inactive.map(cloneFreshRuntime);
-        this.diagnostics = result.diagnostics.map(cloneDiagnostic);
+        this.diagnostics = result.diagnostics.map(cloneFreshDiagnostic);
         this.retainedInactive.clear();
         for (const runtime of result.inactive) {
             const sessionId = runtime.identity.sessionId;
@@ -282,6 +282,9 @@ export class TmuxRuntimeDiscovery {
         this.active = this.active.map(runtime => ({ ...cloneRuntime(runtime), stale: true }));
         this.pending = this.pending.map(runtime => ({ ...clonePendingRuntime(runtime), stale: true }));
         this.inactive = this.inactive.map(runtime => ({ ...cloneRuntime(runtime), stale: true }));
+        this.diagnostics = this.diagnostics.map(diagnostic => ({
+            ...cloneDiagnostic(diagnostic), stale: true,
+        }));
     }
 
     private async enumerate(): Promise<DiscoveryResult> {
@@ -509,6 +512,7 @@ export function findTmuxCollisionRuntime(
         runStartedAtMs: 0,
         attached: false,
         tmux: { ...diagnostic.expected },
+        ...(matches.some(candidate => candidate.stale) ? { stale: true } : {}),
     };
 }
 
@@ -530,7 +534,10 @@ export function getTmuxCollisionRuntimes(
                 runStartedAtMs: 0,
                 attached: false,
                 tmux: { ...diagnostic.expected },
+                ...(diagnostic.stale ? { stale: true } : {}),
             });
+        } else if (diagnostic.stale) {
+            byIdentity.set(key, { ...byIdentity.get(key) as AiSessionRuntimeSnapshot, stale: true });
         }
     }
     return [...byIdentity.values()].map(cloneRuntime);
@@ -831,4 +838,12 @@ function cloneDiagnostic(diagnostic: AiSessionTmuxDiscoveryDiagnostic): AiSessio
         actual: { ...diagnostic.actual },
         expected: { ...diagnostic.expected },
     };
+}
+
+function cloneFreshDiagnostic(
+    diagnostic: AiSessionTmuxDiscoveryDiagnostic
+): AiSessionTmuxDiscoveryDiagnostic {
+    const clone = cloneDiagnostic(diagnostic);
+    delete clone.stale;
+    return clone;
 }

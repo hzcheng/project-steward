@@ -1416,8 +1416,13 @@ async function runTmuxDiscoveryChecks() {
     };
     const collisionReconciled = [];
     const collisionRemoved = [];
+    let collisionListFailure = false;
     const collisionDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
-        client: { listWindows: async () => [
+        client: { listWindows: async () => {
+            if (collisionListFailure) {
+                throw new Error('collision refresh failed');
+            }
+            return [
             {
                 ...collisionActual, windowId: '@3', active: true,
                 sessionMetadata: {
@@ -1450,7 +1455,8 @@ async function runTmuxDiscoveryChecks() {
                 ...collisionExpected, windowId: '@5', active: true,
                 sessionMetadata: {}, windowMetadata: {}, metadata: {},
             },
-        ] },
+            ];
+        } },
         bindingStore: {
             listPending: async () => [], listKnown: async () => [collisionKnown],
             reconcileKnown: async runtimes => { collisionReconciled.push(runtimes); },
@@ -1491,6 +1497,13 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(discoveryModule.findTmuxCollisionRuntime(
         collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
     ), stableCollisionSnapshot, 'synthetic collision snapshots must be stable defensive copies');
+    collisionListFailure = true;
+    await assert.rejects(collisionDiscovery.refresh(true), /collision refresh failed/);
+    assert.strictEqual(collisionDiscovery.getDiagnostics()[0].stale, true,
+        'retained collision diagnostics must be marked stale after a failed refresh');
+    assert.strictEqual(discoveryModule.findTmuxCollisionRuntime(
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+    ).stale, true, 'synthetic collision runtimes must preserve diagnostic staleness');
 
     const pendingCollisionActual = {
         ...pendingLocator, windowName: `${pendingLocator.windowName}-occupied`,
@@ -2964,6 +2977,30 @@ async function runTmuxStoreChecks() {
         assert.strictEqual(cappedKnown[0].sessionId, 'queued-set');
         assert.ok(cappedKnown.some(record => record.sessionId === 'cap-512'));
         assert.strictEqual(cappedKnown.some(record => record.sessionId === 'cap-0'), false);
+
+        const legacyReconcileRoot = path.join(root, 'legacy-known-reconcile');
+        fs.mkdirSync(legacyReconcileRoot);
+        const legacyReconcileStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            legacyReconcileRoot, () => now
+        );
+        await legacyReconcileStore.reconcileKnown([{
+            identity: {
+                provider: 'codex', projectKey: 'legacy-project', cwd: '', sessionId: 'legacy-live',
+            },
+            backend: 'tmux', state: 'active', markerPath: '', runStartedAtMs: 0,
+            attached: false,
+            tmux: { layout: 'session', sessionName: 'project-steward-s-codex-legacy' },
+        }]);
+        assert.deepStrictEqual(await legacyReconcileStore.getKnown('codex', 'legacy-live'), {
+            version: 1,
+            state: 'known',
+            provider: 'codex',
+            sessionId: 'legacy-live',
+            projectKey: 'legacy-project',
+            layout: 'session',
+            locator: { layout: 'session', sessionName: 'project-steward-s-codex-legacy' },
+            lastSeenAtMs: now,
+        }, 'legacy managed metadata without a run timestamp must retain a duplicate-prevention hint');
 
         await store.reconcileKnown([{
             identity: { provider: 'kimi', projectKey: 'pk-live', cwd: '/live', sessionId: 'live' },
@@ -4620,7 +4657,7 @@ async function runTmuxBackendChecks() {
     const recoveredAmbiguousRow = ambiguousHarness.windows[0];
     recoveredAmbiguousRow.sessionMetadata = {
         managed: '1', version: '1', layout: 'session', projectKey: 'ambiguous',
-        provider: 'codex', sessionId: 's1', createdAt: '2026-07-18T10:00:00.000Z', marker: '/tmp/a1',
+        provider: 'codex', sessionId: 's1', marker: '/tmp/a1',
     };
     recoveredAmbiguousRow.windowMetadata = {
         managed: '1', version: '1', layout: 'session',
@@ -4631,6 +4668,12 @@ async function runTmuxBackendChecks() {
     const recoveredAmbiguous = await new backendModule.TmuxRuntimeBackend(ambiguousHarness.dependencies)
         .ensureResume(ambiguousRequest, 'session');
     assert.strictEqual(recoveredAmbiguous.identity.sessionId, 's1');
+    assert.deepStrictEqual(ambiguousHarness.known.get('codex:s1'), {
+        version: 1, state: 'known', provider: 'codex', sessionId: 's1',
+        projectKey: 'ambiguous', layout: 'session',
+        locator: { layout: 'session', sessionName: recoveredAmbiguousRow.sessionName },
+        lastSeenAtMs: Date.parse('2026-07-18T10:00:00Z'),
+    }, 'ambiguous recovery without createdAt must fall back to a legacy known hint');
     assert.strictEqual(ambiguousHarness.ambiguous.size, 0);
     assert.strictEqual(ambiguousHarness.operations.filter(item => item.type === 'new-session').length, 1);
 
@@ -5976,7 +6019,7 @@ async function runRuntimeProjectionChecks() {
             {
                 ...activeRuntimes[0],
                 identity: { ...activeRuntimes[0].identity },
-                backend: 'vscode', attached: true, tmux: undefined,
+                backend: 'vscode', attached: true, tmux: undefined, stale: true,
             },
         ],
         pendingRuntimes: [],
@@ -5986,6 +6029,8 @@ async function runRuntimeProjectionChecks() {
     });
     assert.strictEqual(duplicateConflict[0].activeAiSessions.length, 1);
     assert.strictEqual(duplicateConflict[0].activeAiSessions[0].status, 'conflict');
+    assert.strictEqual(duplicateConflict[0].activeAiSessions[0].stale, true,
+        'a combined runtime conflict is stale when any representative is stale');
 
     const cwdFirst = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [
@@ -6054,7 +6099,7 @@ async function runRuntimeProjectionChecks() {
         pendingRuntimes: [{
             ...tmuxPending,
             identity: { ...tmuxPending.identity },
-            backend: 'vscode', attached: true, tmux: undefined,
+            backend: 'vscode', attached: true, tmux: undefined, stale: true,
         }, tmuxPending],
         focusedIdentity: { provider: 'codex', pendingId: 'pending-focus', projectKey: 'pk', cwd: '/work' },
         getProjectCwd: project => project.path,
@@ -6066,6 +6111,8 @@ async function runRuntimeProjectionChecks() {
     assert.strictEqual(duplicatePending[0].activeAiSessions[0].backend, 'tmux');
     assert.strictEqual(duplicatePending[0].activeAiSessions[0].tmuxLayout, 'session');
     assert.strictEqual(duplicatePending[0].activeAiSessions[0].attached, false);
+    assert.strictEqual(duplicatePending[0].activeAiSessions[0].stale, true,
+        'a combined pending conflict is stale when any representative is stale');
 
     const tiedPendingLeft = {
         ...tmuxPending,

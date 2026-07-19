@@ -460,6 +460,9 @@ export class TmuxRuntimeBindingStore {
                 if (runtime.backend !== 'tmux' || !runtime.tmux || !sessionId) {
                     continue;
                 }
+                const hasLifecycleEvidence = isBoundedPath(runtime.identity.cwd)
+                    && isBoundedPath(runtime.markerPath)
+                    && isFinitePositive(runtime.runStartedAtMs);
                 const record = validateKnownRecord({
                     version: 1,
                     state: 'known',
@@ -469,9 +472,11 @@ export class TmuxRuntimeBindingStore {
                     layout: runtime.tmux.layout,
                     locator: runtime.tmux,
                     lastSeenAtMs: this.now(),
-                    cwd: runtime.identity.cwd,
-                    markerPath: runtime.markerPath,
-                    runStartedAtMs: runtime.runStartedAtMs,
+                    ...(hasLifecycleEvidence ? {
+                        cwd: runtime.identity.cwd,
+                        markerPath: runtime.markerPath,
+                        runStartedAtMs: runtime.runStartedAtMs,
+                    } : {}),
                 });
                 if (record) {
                     const filePath = this.recordPath('known', record.provider, record.sessionId);

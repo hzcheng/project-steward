@@ -715,6 +715,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!identity.sessionId) {
             throw new Error('A known tmux runtime requires a session ID.');
         }
+        const hasLifecycleEvidence = !!lifecycle
+            && isLocalPath(lifecycle.identity.cwd)
+            && isBoundedOptionalLocalPath(lifecycle.markerPath)
+            && Number.isFinite(lifecycle.runStartedAtMs)
+            && lifecycle.runStartedAtMs > 0;
         await this.dependencies.runtimeStore.setKnown({
             version: 1,
             state: 'known',
@@ -724,7 +729,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             layout: locator.layout,
             locator: { ...locator },
             lastSeenAtMs: this.dependencies.nowMs(),
-            ...(lifecycle ? {
+            ...(hasLifecycleEvidence ? {
                 cwd: lifecycle.identity.cwd,
                 markerPath: lifecycle.markerPath,
                 runStartedAtMs: lifecycle.runStartedAtMs,
@@ -1315,6 +1320,11 @@ function isIdentityField(value: unknown): value is string {
 
 function isLocalPath(value: unknown): value is string {
     return typeof value === 'string' && value.length > 0 && value.length <= MAX_LOCAL_PATH_LENGTH
+        && !LOCAL_CONTROL_CHARACTERS.test(value);
+}
+
+function isBoundedOptionalLocalPath(value: unknown): value is string {
+    return typeof value === 'string' && value.length <= MAX_LOCAL_PATH_LENGTH
         && !LOCAL_CONTROL_CHARACTERS.test(value);
 }
 

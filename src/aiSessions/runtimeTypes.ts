@@ -58,6 +58,7 @@ export interface AiSessionTmuxDiscoveryDiagnostic {
     identity: AiSessionRuntimeIdentity;
     actual: AiSessionTmuxLocator;
     expected: AiSessionTmuxLocator;
+    stale?: boolean;
 }
 
 export interface AiSessionManagedTmuxMetadataBase {
