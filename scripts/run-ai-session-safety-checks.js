@@ -5912,13 +5912,19 @@ function runIncrementalJsonlLifecycleReaderChecks() {
         signal = reader.read('codex:run-reset', runResetPath, runStartedAtMs, createAccumulator);
         assert.strictEqual(signal.executionState, 'stopped');
         const nextRunStartedAtMs = Date.parse('2026-07-15T00:00:12.000Z');
-        signal = reader.read(
-            'codex:run-reset',
-            runResetPath,
-            nextRunStartedAtMs,
-            () => lifecycle.createCodexLifecycleAccumulator(nextRunStartedAtMs)
-        );
-        assert.strictEqual(signal, null, 'a changed run start resets the cursor and filters the old event');
+        const originalOpenSync = fs.openSync;
+        fs.openSync = () => { throw new Error('forced open failure after cursor reset'); };
+        try {
+            signal = reader.read(
+                'codex:run-reset',
+                runResetPath,
+                nextRunStartedAtMs,
+                () => lifecycle.createCodexLifecycleAccumulator(nextRunStartedAtMs)
+            );
+            assert.strictEqual(signal, null, 'an open failure after reset cannot leak the old run signal');
+        } finally {
+            fs.openSync = originalOpenSync;
+        }
 
         const retainedPath = path.join(tempRoot, 'retained.jsonl');
         const retainedStarted = codexEvent('2026-07-15T00:00:13.000Z', 'task_started', 'retain-11');
