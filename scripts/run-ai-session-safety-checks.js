@@ -5573,6 +5573,15 @@ function runProviderChecks() {
 }
 
 function runProviderLifecycleServiceChecks() {
+    const writeLargeLifecycleLog = (filePath, firstEvent, fillerEvent) => {
+        const fillerLine = JSON.stringify(fillerEvent);
+        const fillerCount = Math.ceil((600 * 1024) / Buffer.byteLength(fillerLine + '\n'));
+        fs.writeFileSync(filePath, [
+            JSON.stringify(firstEvent),
+            ...Array.from({ length: fillerCount }, () => fillerLine),
+            '',
+        ].join('\n'));
+    };
     const runStartedAtMs = Date.parse('2026-07-15T00:00:00.000Z');
     const previousCodexHome = process.env.CODEX_HOME;
     const codexRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-codex-lifecycle-'));
@@ -5584,27 +5593,36 @@ function runProviderLifecycleServiceChecks() {
         const sessionFile = writeCodexSessionMetaFile(sessionDir, codexId, {
             id: codexId, session_id: codexId, cwd: '/work/app', timestamp: '2026-07-14T23:00:00.000Z', source: 'vscode',
         });
-        fs.appendFileSync(sessionFile, [
-            { timestamp: '2026-07-14T23:59:59.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'old' } },
-            { timestamp: '2026-07-15T00:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'new' } },
-        ].map(JSON.stringify).join('\n') + '\n');
-        const service = new CodexSessionService();
-        let signals = service.getLifecycleSignals([
+        writeLargeLifecycleLog(sessionFile, {
+            timestamp: '2026-07-15T00:00:01.000Z',
+            type: 'event_msg',
+            payload: { type: 'task_started', turn_id: 'long-codex' },
+        }, {
+            timestamp: '2026-07-15T00:00:02.000Z',
+            type: 'event_msg',
+            payload: { type: 'token_count' },
+        });
+        const codexService = new CodexSessionService();
+        let signals = codexService.getLifecycleSignals([
             { sessionId: codexId, runStartedAtMs },
             { sessionId: 'missing', runStartedAtMs },
         ]);
-        assert.strictEqual(signals[codexId].reason, 'completed');
+        assert.strictEqual(signals[codexId].executionState, 'running');
         assert.strictEqual(signals.missing, undefined);
-        fs.appendFileSync(sessionFile, JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'next' } }) + '\n');
+        fs.appendFileSync(sessionFile, JSON.stringify({
+            timestamp: '2026-07-15T00:00:03.000Z',
+            type: 'event_msg',
+            payload: { type: 'task_complete', turn_id: 'long-codex' },
+        }) + '\n');
         const originalReaddirSync = fs.readdirSync;
         fs.readdirSync = () => { throw new Error('cached lifecycle lookup must not rescan provider roots'); };
         try {
-            signals = service.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs }]);
+            signals = codexService.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs }]);
         } finally {
             fs.readdirSync = originalReaddirSync;
         }
-        assert.strictEqual(signals[codexId].phase, 'running');
-        assert.deepStrictEqual(service.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs: Date.parse('2026-07-16T00:00:00Z') }]), {});
+        assert.strictEqual(signals[codexId].executionState, 'stopped');
+        assert.deepStrictEqual(codexService.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs: Date.parse('2026-07-16T00:00:00Z') }]), {});
     } finally {
         previousCodexHome === undefined ? delete process.env.CODEX_HOME : process.env.CODEX_HOME = previousCodexHome;
         fs.rmSync(codexRoot, { recursive: true, force: true });
@@ -5621,11 +5639,26 @@ function runProviderLifecycleServiceChecks() {
         const sessionDir = path.join(kimiRoot, 'sessions', workDirHash, kimiId);
         fs.mkdirSync(sessionDir, { recursive: true });
         fs.writeFileSync(path.join(sessionDir, 'state.json'), '{}');
-        fs.writeFileSync(path.join(sessionDir, 'wire.jsonl'), JSON.stringify({
-            timestamp: runStartedAtMs / 1000 + 2, message: { type: 'TurnEnd', payload: {} },
+        writeLargeLifecycleLog(path.join(sessionDir, 'wire.jsonl'), {
+            timestamp: runStartedAtMs / 1000 + 1,
+            message: { type: 'TurnBegin', payload: {} },
+        }, {
+            timestamp: runStartedAtMs / 1000 + 2,
+            message: { type: 'StatusUpdate', payload: {} },
+        });
+        const kimiService = new KimiSessionService();
+        assert.strictEqual(
+            kimiService.getLifecycleSignals([{ sessionId: kimiId, runStartedAtMs }])[kimiId].executionState,
+            'running'
+        );
+        fs.appendFileSync(path.join(sessionDir, 'wire.jsonl'), JSON.stringify({
+            timestamp: runStartedAtMs / 1000 + 3,
+            message: { type: 'TurnEnd', payload: {} },
         }) + '\n');
-        const signals = new KimiSessionService().getLifecycleSignals([{ sessionId: kimiId, runStartedAtMs }]);
-        assert.strictEqual(signals[kimiId].reason, 'completed');
+        assert.strictEqual(
+            kimiService.getLifecycleSignals([{ sessionId: kimiId, runStartedAtMs }])[kimiId].executionState,
+            'stopped'
+        );
     } finally {
         previousKimiHome === undefined ? delete process.env.KIMI_SHARE_DIR : process.env.KIMI_SHARE_DIR = previousKimiHome;
         fs.rmSync(kimiRoot, { recursive: true, force: true });
@@ -5638,12 +5671,29 @@ function runProviderLifecycleServiceChecks() {
         process.env.CLAUDE_HOME = claudeRoot;
         const sessionDir = path.join(claudeRoot, 'projects', '-work-app');
         fs.mkdirSync(sessionDir, { recursive: true });
-        fs.writeFileSync(path.join(sessionDir, `${claudeId}.jsonl`), JSON.stringify({
-            timestamp: '2026-07-15T00:00:02.000Z', type: 'assistant',
+        const claudeFile = path.join(sessionDir, `${claudeId}.jsonl`);
+        writeLargeLifecycleLog(claudeFile, {
+            timestamp: '2026-07-15T00:00:01.000Z',
+            type: 'user',
+            message: { role: 'user' },
+        }, {
+            timestamp: '2026-07-15T00:00:02.000Z',
+            type: 'progress',
+        });
+        const claudeService = new ClaudeSessionService();
+        assert.strictEqual(
+            claudeService.getLifecycleSignals([{ sessionId: claudeId, runStartedAtMs }])[claudeId].executionState,
+            'running'
+        );
+        fs.appendFileSync(claudeFile, JSON.stringify({
+            timestamp: '2026-07-15T00:00:03.000Z',
+            type: 'assistant',
             message: { role: 'assistant', stop_reason: 'end_turn', content: [] },
         }) + '\n');
-        const signals = new ClaudeSessionService().getLifecycleSignals([{ sessionId: claudeId, runStartedAtMs }]);
-        assert.strictEqual(signals[claudeId].reason, 'completed');
+        assert.strictEqual(
+            claudeService.getLifecycleSignals([{ sessionId: claudeId, runStartedAtMs }])[claudeId].executionState,
+            'stopped'
+        );
     } finally {
         previousClaudeHome === undefined ? delete process.env.CLAUDE_HOME : process.env.CLAUDE_HOME = previousClaudeHome;
         fs.rmSync(claudeRoot, { recursive: true, force: true });
