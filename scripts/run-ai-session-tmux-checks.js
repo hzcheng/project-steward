@@ -454,6 +454,9 @@ function createTmuxBackendHarness(options = {}) {
         },
         nowMs: () => typeof options.nowMs === 'function'
             ? options.nowMs() : Date.parse('2026-07-18T10:00:00Z'),
+        ...(options.getAttachTerminalName
+            ? { getAttachTerminalName: options.getAttachTerminalName }
+            : {}),
     };
     return {
         dependencies, client, runtimeStore, attachStore, operations, terminals, windows,
@@ -1461,6 +1464,21 @@ async function runTmuxDiscoveryChecks() {
         kind: 'tmux-locator-collision', identity: collisionIdentity,
         actual: collisionActual, expected: collisionExpected,
     });
+    const collisionSnapshot = discoveryModule.findTmuxCollisionRuntime(
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+    );
+    assert.strictEqual(collisionSnapshot.state, 'conflict');
+    assert.strictEqual(collisionSnapshot.backend, 'tmux');
+    assert.deepStrictEqual(collisionSnapshot.identity, collisionIdentity);
+    assert.deepStrictEqual(collisionSnapshot.tmux, collisionExpected);
+    const stableCollisionSnapshot = discoveryModule.findTmuxCollisionRuntime(
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+    );
+    collisionSnapshot.identity.sessionId = 'mutated';
+    collisionSnapshot.tmux.sessionName = 'mutated';
+    assert.deepStrictEqual(discoveryModule.findTmuxCollisionRuntime(
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+    ), stableCollisionSnapshot, 'synthetic collision snapshots must be stable defensive copies');
 
     const pendingCollisionActual = {
         ...pendingLocator, windowName: `${pendingLocator.windowName}-occupied`,
@@ -1606,6 +1624,22 @@ async function runTmuxDiscoveryChecks() {
         version: 1, state: 'known', provider: 'codex', sessionId: 's1', projectKey: 'pk',
         layout: 'project', locator: finalLocator, lastSeenAtMs: 900,
     };
+
+    const markerRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-marker-proof-'));
+    try {
+        const markerPath = path.join(markerRoot, 'complete.marker');
+        fs.writeFileSync(markerPath, '');
+        const markerTimeMs = Date.now();
+        fs.utimesSync(markerPath, new Date(markerTimeMs), new Date(markerTimeMs));
+        assert.strictEqual(discoveryModule.isCurrentRuntimeMarker(markerPath, markerTimeMs - 1), true);
+        assert.strictEqual(discoveryModule.isCurrentRuntimeMarker(markerPath, markerTimeMs + 10_000), false);
+        assert.strictEqual(discoveryModule.isCurrentRuntimeMarker(markerPath, 0), false);
+        assert.strictEqual(discoveryModule.isCurrentRuntimeMarker(markerPath, NaN), false);
+        assert.strictEqual(discoveryModule.isCurrentRuntimeMarker('', markerTimeMs), false);
+        assert.strictEqual(discoveryModule.isCurrentRuntimeMarker(path.join(markerRoot, 'missing'), markerTimeMs), false);
+    } finally {
+        fs.rmSync(markerRoot, { recursive: true, force: true });
+    }
     const removedKnown = [];
     const markerChecks = [];
     let lifecycleRows = [finalRow];
@@ -1627,6 +1661,9 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(lifecycleDiscovery.getActive(), []);
     assert.deepStrictEqual(lifecycleDiscovery.find(finalIdentity), []);
     assert.strictEqual(lifecycleDiscovery.getInactive()[0].state, 'completed');
+    await lifecycleDiscovery.refresh(true);
+    assert.strictEqual(lifecycleDiscovery.getInactive()[0].state, 'completed',
+        'a completed inactive runtime must remain owned across consecutive refreshes');
     const inactiveCopy = lifecycleDiscovery.getInactive();
     inactiveCopy[0].identity.sessionId = 'mutated';
     inactiveCopy[0].tmux.sessionName = 'mutated';
@@ -1635,6 +1672,10 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(markerChecks, [[
         '/tmp/s1.done', Date.parse('2026-07-18T10:00:00Z'),
     ]]);
+    assert.deepStrictEqual(removedKnown, [],
+        'discovery must not remove persisted ownership before host acknowledgement');
+    await lifecycleDiscovery.acknowledgeInactive(finalIdentity);
+    assert.deepStrictEqual(lifecycleDiscovery.getInactive(), []);
     assert.deepStrictEqual(removedKnown, [['codex', 's1']]);
 
     const stoppedRemoved = [];
@@ -1653,6 +1694,12 @@ async function runTmuxDiscoveryChecks() {
     await stoppedDiscovery.refresh(true);
     assert.deepStrictEqual(stoppedDiscovery.getActive(), []);
     assert.strictEqual(stoppedDiscovery.getInactive()[0].state, 'stopped');
+    await stoppedDiscovery.refresh(true);
+    assert.strictEqual(stoppedDiscovery.getInactive()[0].state, 'stopped',
+        'a stopped inactive runtime must remain owned until lifecycle cleanup acknowledges it');
+    assert.deepStrictEqual(stoppedRemoved, []);
+    await stoppedDiscovery.acknowledgeInactive(finalIdentity);
+    assert.deepStrictEqual(stoppedDiscovery.getInactive(), []);
     assert.deepStrictEqual(stoppedRemoved, [['codex', 's1']]);
 
     let failList = false;
@@ -2592,7 +2639,11 @@ async function runTmuxStoreChecks() {
 
 async function runTmuxBackendChecks() {
     const backendModule = require('../out/aiSessions/tmuxRuntimeBackend');
-    const projectHarness = createTmuxBackendHarness();
+    const projectHarness = createTmuxBackendHarness({
+        getAttachTerminalName: runtime => runtime.tmux.layout === 'project'
+            ? 'Project Steward: App [tmux]'
+            : 'Project Steward: Codex Session [tmux]',
+    });
     const projectBackend = new backendModule.TmuxRuntimeBackend(projectHarness.dependencies);
     const firstProject = await projectBackend.ensureResume({
         identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
@@ -2641,14 +2692,18 @@ async function runTmuxBackendChecks() {
     await projectBackend.focus(firstProject);
     assert.strictEqual(projectHarness.terminals.length, 2,
         'focusing a detached tmux runtime creates one viewer terminal');
-    assert.ok(projectHarness.terminals[1].name.startsWith('Project Steward:'));
-    assert.ok(projectHarness.terminals[1].name.length <= 200);
+    assert.strictEqual(projectHarness.terminals[1].name, 'Project Steward: App [tmux]');
     assert.strictEqual(projectHarness.operations.filter(item =>
         item.type === 'new-session' || item.type === 'new-window').length, providerCreateCount,
     'reattaching must not create another provider runtime');
     await projectBackend.focus(firstProject);
     assert.strictEqual(projectHarness.terminals.length, 2,
         'repeated focus reuses the existing viewer terminal');
+    await projectBackend.focus(secondProject);
+    assert.strictEqual(projectBackend.getFocusedRuntime(projectHarness.terminals[1]).identity.sessionId, 's2',
+        'project layout focus must follow the selected managed window');
+    const focusedBinding = projectHarness.attachBindings.get(await projectHarness.terminals[1].processId);
+    assert.strictEqual(focusedBinding.windowName, secondProject.tmux.windowName);
     await projectBackend.detach(firstProject);
     projectHarness.failNextShow();
     await assert.rejects(projectBackend.focus(firstProject), /show failed/);
@@ -5407,6 +5462,204 @@ async function runRuntimeControllerChecks() {
     assert.deepStrictEqual(resumeRequests[0].identity, {
         provider: 'codex', sessionId: 'tmux-session', projectKey: 'pk', cwd: '/work',
     });
+
+    let collisionResumeCalls = 0;
+    const collisionAnnouncements = [];
+    const collisionRefreshes = [];
+    const controllerCollisionSnapshot = {
+        identity: { provider: 'codex', sessionId: 'tmux-session', projectKey: 'pk', cwd: '/work' },
+        backend: 'tmux', state: 'conflict', markerPath: '', runStartedAtMs: 0,
+        attached: false, tmux: { layout: 'session', sessionName: 'collision' },
+    };
+    const collisionResume = new ResumeController({
+        getOpenProjects: () => [project],
+        getProvider: () => ({
+            label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: (sessionId, cwd, markerPath) => ({
+                executable: 'codex', args: ['resume', sessionId], cwd, markerPath,
+            }),
+        }),
+        getProjectSession: (_project, _provider, sessionId) => ({
+            id: sessionId, name: 'Collision', cwd: '/work', updatedAt: createdAt,
+        }),
+        getProjectKey: () => 'pk',
+        getTerminalCwd: () => '/work',
+        getTerminalName: () => 'Codex: Collision',
+        getMarkerPath: () => '/tmp/collision.done',
+        showWarningMessage: () => undefined,
+        announceStatus: async (_projectId, message) => { collisionAnnouncements.push(message); },
+        refresh: () => { collisionRefreshes.push('refresh'); },
+        showActiveTab: () => undefined,
+        getRuntimeConflict: () => controllerCollisionSnapshot,
+        runtimeCoordinator: {
+            resume: async () => { collisionResumeCalls++; return { status: 'started' }; },
+        },
+    });
+    await collisionResume.resumeProjectSession('project', 'codex', 'tmux-session');
+    assert.strictEqual(collisionResumeCalls, 0,
+        'a discovery locator collision must block resume dispatch');
+    assert.deepStrictEqual(collisionRefreshes, ['refresh']);
+    assert.deepStrictEqual(collisionAnnouncements, [
+        'Multiple live runtimes match this AI session.',
+    ]);
+
+    const actionErrors = [];
+    const actionRefreshes = [];
+    const actionFailures = [];
+    const failingActionController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getOpenProjects: () => [project],
+        getProjectSessions: candidate => candidate.codexSessions,
+        getProjectKey: () => 'pk',
+        getProjectCwd: candidate => candidate.path,
+        normalizePath: value => value,
+        runtimeCoordinator: {
+            getById: () => tmux,
+            getPending: () => [],
+            focus: async () => { throw new Error('raw focus timeout'); },
+            detach: async () => { throw new Error('raw detach timeout'); },
+        },
+        confirmRuntimeClose: async (_message, action) => action,
+        announceStatus: async () => undefined,
+        showErrorMessage: async message => { actionErrors.push(message); },
+        logRuntimeFailure: (operation, error, backend) => {
+            actionFailures.push([operation, error.message, backend]);
+        },
+        getProviderLabel: () => 'Codex',
+        refresh: () => { actionRefreshes.push('refresh'); },
+    });
+    await failingActionController.focusActive('project', 'codex', 'tmux-session');
+    await failingActionController.closeTerminal({
+        projectId: 'project', providerId: 'codex', sessionId: 'tmux-session',
+    });
+    assert.deepStrictEqual(actionErrors, [
+        'Could not focus the AI session terminal.',
+        'Could not detach the AI session terminal.',
+    ]);
+    assert.deepStrictEqual(actionRefreshes, ['refresh', 'refresh']);
+    assert.deepStrictEqual(actionFailures, [
+        ['focus-runtime', 'raw focus timeout', 'tmux'],
+        ['detach-runtime', 'raw detach timeout', 'tmux'],
+    ]);
+
+    const createErrors = [];
+    const createFailures = [];
+    const createRefreshes = [];
+    const rejectedCreation = new CreationController({
+        isProviderId: value => value === 'codex', getOpenProjects: () => [project],
+        pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
+        getProvider: () => ({
+            label: 'Codex', terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: (cwd, title, markerPath) => ({
+                executable: 'codex', args: ['new', title], cwd, markerPath,
+            }),
+        }),
+        getTerminalCwd: candidate => candidate.path, getProjectKey: () => 'pk',
+        createPendingId: () => 'rejected-pending', showInputBox: async () => '',
+        showActiveTab: async () => undefined, announceStatus: async () => undefined,
+        showWarningMessage: async () => undefined,
+        showErrorMessage: async message => { createErrors.push(message); },
+        logRuntimeFailure: (operation, error, backend) => {
+            createFailures.push([operation, error.message, backend]);
+        },
+        refresh: () => { createRefreshes.push('refresh'); },
+        getExistingSessionIdsForCwd: () => [], getPendingMarkerPath: () => '/tmp/rejected',
+        scheduleNewSessionRefresh: () => undefined, normalizeProjectPath: value => value,
+        setTimeout: () => ({}), clearTimeout: () => undefined,
+        bindingTimeoutMs: 15_000, nowMs: () => Date.parse(createdAt),
+        runtimeCoordinator: {
+            create: async () => { throw new Error('raw create timeout'); },
+            getActive: () => [], getPending: () => [], focus: async () => undefined,
+        },
+    });
+    await rejectedCreation.createSession('project');
+    assert.deepStrictEqual(createErrors, ['Could not start the AI session runtime.']);
+    assert.deepStrictEqual(createRefreshes, ['refresh']);
+    assert.deepStrictEqual(createFailures, [['create-runtime', 'raw create timeout', 'tmux']]);
+
+    const resumeErrors = [];
+    const resumeFailures = [];
+    const resumeRefreshes = [];
+    const rejectedResume = new ResumeController({
+        getOpenProjects: () => [project],
+        getProvider: () => ({
+            label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: (sessionId, cwd, markerPath) => ({
+                executable: 'codex', args: ['resume', sessionId], cwd, markerPath,
+            }),
+        }),
+        getProjectSession: (_project, _provider, sessionId) => ({
+            id: sessionId, name: 'Rejected', cwd: '/work', updatedAt: createdAt,
+        }),
+        getProjectKey: () => 'pk', getTerminalCwd: () => '/work',
+        getTerminalName: () => 'Codex: Rejected', getMarkerPath: () => '/tmp/rejected',
+        showWarningMessage: () => undefined,
+        showErrorMessage: async message => { resumeErrors.push(message); },
+        logRuntimeFailure: (operation, error, backend) => {
+            resumeFailures.push([operation, error.message, backend]);
+        },
+        announceStatus: async () => undefined,
+        refresh: () => { resumeRefreshes.push('refresh'); }, showActiveTab: () => undefined,
+        runtimeCoordinator: {
+            resume: async () => { throw new Error('raw resume timeout'); },
+        },
+    });
+    await rejectedResume.resumeProjectSession('project', 'codex', 'tmux-session');
+    assert.deepStrictEqual(resumeErrors, ['Could not resume the AI session runtime.']);
+    assert.deepStrictEqual(resumeRefreshes, ['refresh']);
+    assert.deepStrictEqual(resumeFailures, [['resume-runtime', 'raw resume timeout', 'tmux']]);
+
+    const pendingTimeouts = [];
+    const pendingErrors = [];
+    const pendingFailures = [];
+    const pendingRefreshes = [];
+    let retainedPending;
+    const pendingFocusCreation = new CreationController({
+        isProviderId: value => value === 'codex', getOpenProjects: () => [project],
+        pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
+        getProvider: () => ({
+            label: 'Codex', terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: (cwd, title, markerPath) => ({
+                executable: 'codex', args: ['new', title], cwd, markerPath,
+            }),
+        }),
+        getTerminalCwd: candidate => candidate.path, getProjectKey: () => 'pk',
+        createPendingId: () => 'timeout-pending', showInputBox: async () => '',
+        showActiveTab: async () => undefined, announceStatus: async () => undefined,
+        showWarningMessage: async (_message, ...items) => items.includes('Focus Terminal')
+            ? 'Focus Terminal' : undefined,
+        showErrorMessage: async message => { pendingErrors.push(message); },
+        logRuntimeFailure: (operation, error, backend) => {
+            pendingFailures.push([operation, error.message, backend]);
+        },
+        refresh: () => { pendingRefreshes.push('refresh'); },
+        getExistingSessionIdsForCwd: () => [], getPendingMarkerPath: () => '/tmp/timeout',
+        scheduleNewSessionRefresh: () => undefined, normalizeProjectPath: value => value,
+        setTimeout: callback => { pendingTimeouts.push(callback); return {}; },
+        clearTimeout: () => undefined, bindingTimeoutMs: 15_000,
+        nowMs: () => Date.parse(createdAt),
+        runtimeCoordinator: {
+            create: async request => {
+                retainedPending = {
+                    identity: { ...request.identity }, backend: 'tmux', state: 'pending',
+                    markerPath: request.launch.markerPath, runStartedAtMs: Date.parse(request.createdAt),
+                    attached: false, createdAt: request.createdAt, excludedSessionIds: [],
+                    tmux: { layout: 'session', sessionName: 'pending-timeout' },
+                };
+                return { status: 'started', runtime: retainedPending };
+            },
+            getActive: () => [], getPending: () => retainedPending ? [retainedPending] : [],
+            focus: async () => { throw new Error('raw pending focus timeout'); },
+        },
+    });
+    await pendingFocusCreation.createSession('project');
+    await pendingTimeouts[0]();
+    assert.deepStrictEqual(pendingErrors, ['Could not focus the AI session terminal.']);
+    assert.deepStrictEqual(pendingFailures, [[
+        'focus-pending-runtime', 'raw pending focus timeout', 'tmux',
+    ]]);
+    assert.ok(pendingRefreshes.length >= 2,
+        'a pending focus failure refreshes stale runtime state after timeout handling');
 }
 
 function runHostRuntimeCompositionChecks() {
@@ -5423,8 +5676,15 @@ function runHostRuntimeCompositionChecks() {
     assert.ok(dashboardSource.includes('runtimeCoordinator: aiSessionRuntimeCoordinator'));
     assert.ok(dashboardSource.includes("path.join(\n        context.globalStoragePath,\n        'ai-session-tmux-runtimes'"));
     assert.ok(dashboardSource.includes('runtimeCoordinator: aiSessionRuntimeCoordinator'));
-    assert.ok(dashboardSource.includes('activeRuntimes: aiSessionRuntimeCoordinator.getActive()'));
+    assert.ok(dashboardSource.includes('activeRuntimes: getProjectedAiSessionActiveRuntimes()'));
     assert.ok(dashboardSource.includes('pendingRuntimes: aiSessionRuntimeCoordinator.getPending()'));
+    assert.ok(dashboardSource.includes('findTmuxCollisionRuntime('));
+    assert.ok(dashboardSource.includes('getProjectedAiSessionActiveRuntimes()'));
+    assert.ok(dashboardSource.includes('getRuntimeConflict: getAiSessionRuntimeCollision'));
+    assert.ok(dashboardSource.includes('getFocusedAiSessionRuntimeIdentity()'));
+    assert.ok(dashboardSource.includes('tmuxRuntimeBackend.getFocusedRuntime(activeTerminal)'));
+    assert.ok(dashboardSource.includes('getAttachTerminalName: getAiSessionTmuxAttachTerminalName'));
+    assert.ok(dashboardSource.includes('markerIsCurrent: isCurrentRuntimeMarker'));
     assert.ok(dashboardSource.includes("'Use VS Code Terminal This Time'"));
     assert.ok(dashboardSource.includes("'Resume in VS Code Anyway'"));
     assert.ok(dashboardSource.includes("'Open Settings'"));

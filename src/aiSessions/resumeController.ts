@@ -5,6 +5,7 @@ import type { AiSessionLaunchSpec } from './launchSpec';
 import type {
     AiSessionResumeRuntimeRequest,
     AiSessionRuntimeActionResult,
+    AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
 
 export interface AiSessionResumeTerminal {
@@ -62,6 +63,12 @@ export interface AiSessionResumeControllerCommonOptions {
     showWarningMessage: (message: string) => unknown;
     refresh: () => void;
     showActiveTab: (projectId: string) => unknown;
+    showErrorMessage?: (message: string) => Thenable<unknown> | Promise<unknown>;
+    logRuntimeFailure?: (
+        operation: string,
+        error: unknown,
+        backend: 'vscode' | 'tmux'
+    ) => void;
 }
 
 export interface AiSessionResumeRuntimeControllerOptions<
@@ -70,6 +77,10 @@ export interface AiSessionResumeRuntimeControllerOptions<
     runtimeCoordinator: AiSessionResumeRuntimeCoordinator<TTerminal>;
     getProjectKey: (project: Project) => string;
     announceStatus: (projectId: string, message: string) => Thenable<unknown> | Promise<unknown>;
+    getRuntimeConflict?: (
+        providerId: AiSessionProviderId,
+        sessionId: string
+    ) => AiSessionRuntimeSnapshot<TTerminal> | null;
 }
 
 export interface AiSessionResumeLegacyControllerOptions<
@@ -227,6 +238,14 @@ export class AiSessionResumeController<
         sessionProvider: AiSessionResumeProvider,
         options: AiSessionResumeRuntimeControllerOptions<TTerminal>
     ): Promise<void> {
+        if (options.getRuntimeConflict?.(providerId, session.id)) {
+            options.refresh();
+            await options.announceStatus(
+                project.id,
+                'Multiple live runtimes match this AI session.'
+            );
+            return;
+        }
         if (!sessionProvider.buildResumeLaunchSpec) {
             throw new Error('AI session runtime resume is not configured.');
         }
@@ -247,7 +266,19 @@ export class AiSessionResumeController<
             terminalName: options.getTerminalName(providerId, session),
             launch,
         };
-        const result = await options.runtimeCoordinator.resume(request);
+        let result: AiSessionRuntimeActionResult<TTerminal>;
+        try {
+            result = await options.runtimeCoordinator.resume(request);
+        } catch (error) {
+            options.logRuntimeFailure?.('resume-runtime', error, 'tmux');
+            if (options.showErrorMessage) {
+                await options.showErrorMessage('Could not resume the AI session runtime.');
+            } else {
+                options.showWarningMessage('Could not resume the AI session runtime.');
+            }
+            options.refresh();
+            return;
+        }
         if (result.status === 'cancelled' || result.status === 'settings') {
             return;
         }

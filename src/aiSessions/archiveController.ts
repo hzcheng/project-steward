@@ -63,7 +63,13 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
         let runtime = this.options.getRuntimeById(providerId, sessionId);
         if (runtime && runtime.state !== 'stopped' && !this.options.isRuntimeComplete(runtime)) {
             this.options.showWarningMessage(`This ${sessionProvider.label} session has an active runtime. Exit the AI provider before archiving it.`);
-            await this.options.focusRuntime(runtime);
+            try {
+                await this.options.focusRuntime(runtime);
+            } catch (error) {
+                this.options.logUnexpectedError('focus-runtime', error, sessionId);
+                this.options.showErrorMessage('Could not focus the AI session terminal.');
+                this.options.refresh();
+            }
             return;
         }
 
@@ -77,7 +83,13 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
             runtime = this.options.getRuntimeById(providerId, sessionId);
             this.options.showWarningMessage(`This ${sessionProvider.label} session has an active runtime. Exit the AI provider before archiving it.`);
             if (runtime) {
-                await this.options.focusRuntime(runtime);
+                try {
+                    await this.options.focusRuntime(runtime);
+                } catch (error) {
+                    this.options.logUnexpectedError('focus-runtime', error, sessionId);
+                    this.options.showErrorMessage('Could not focus the AI session terminal.');
+                    this.options.refresh();
+                }
             }
             return;
         }

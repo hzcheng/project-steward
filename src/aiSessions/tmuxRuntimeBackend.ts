@@ -63,6 +63,7 @@ export interface TmuxRuntimeBackendDependencies<TTerminal> {
     withCreationLock<T>(key: string, operation: () => Promise<T>): Promise<T>;
     createTerminal(options: vscode.TerminalOptions): TTerminal;
     nowMs(): number;
+    getAttachTerminalName?(runtime: AiSessionRuntimeSnapshot): string | undefined;
 }
 
 export class TmuxRuntimeBackend<TTerminal = vscode.Terminal>
@@ -438,7 +439,16 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!runtime || runtime.backend !== 'tmux' || !runtime.tmux) {
             return;
         }
-        await this.attachAndFocus(runtime, getRestoredAttachTerminalName(runtime));
+        await this.attachAndFocus(runtime, this.getAttachTerminalName(runtime));
+    }
+
+    getFocusedRuntime(terminal: TTerminal | null | undefined): AiSessionRuntimeSnapshot<TTerminal> | null {
+        if (!terminal) {
+            return null;
+        }
+        const entry = [...this.attaches.values()].find(candidate => candidate.terminal === terminal);
+        const runtime = entry ? this.runtimeForBinding(entry.binding) : undefined;
+        return runtime ? this.withAttach(runtime) : null;
     }
 
     async detach(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void> {
@@ -847,6 +857,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             entry = { terminal, binding };
             this.attaches.set(key, entry);
             this.dependencies.attachStore.set(attachTerminal(terminal).processId, binding);
+        } else {
+            entry.binding = attachBinding(runtime, entry.binding.terminalNamePrefix);
+            this.dependencies.attachStore.set(
+                attachTerminal(entry.terminal).processId, entry.binding
+            );
         }
         try {
             attachTerminal(entry.terminal).show();
@@ -860,7 +875,19 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             }
             throw error;
         }
+        await this.dependencies.attachStore.flush();
         return this.withAttach(runtime) as T & AiSessionRuntimeSnapshot<TTerminal>;
+    }
+
+    private getAttachTerminalName(runtime: AiSessionRuntimeSnapshot): string {
+        const candidate = this.dependencies.getAttachTerminalName?.({
+            ...runtime,
+            identity: { ...runtime.identity },
+            ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
+        });
+        return isSafeAttachTerminalName(candidate)
+            ? candidate
+            : getRestoredAttachTerminalName(runtime);
     }
 
     private withAttach(runtime: AiSessionRuntimeSnapshot): AiSessionRuntimeSnapshot<TTerminal> {
@@ -899,7 +926,8 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (binding.layout === 'project') {
             return runtimes.find(runtime => runtime.tmux?.layout === 'project'
                 && runtime.identity.projectKey === binding.projectKey
-                && runtime.tmux.sessionName === binding.sessionName);
+                && runtime.tmux.sessionName === binding.sessionName
+                && (!binding.windowName || runtime.tmux.windowName === binding.windowName));
         }
         return runtimes.find(runtime => runtime.tmux?.layout === 'session'
             && runtime.identity.projectKey === binding.projectKey
@@ -971,6 +999,11 @@ function getRestoredAttachTerminalName(runtime: AiSessionRuntimeSnapshot): strin
     return runtime.tmux?.layout === 'project'
         ? `Project Steward: tmux project ${digest} [tmux]`
         : `Project Steward: ${runtime.identity.provider} ${digest} [tmux]`;
+}
+
+function isSafeAttachTerminalName(value: unknown): value is string {
+    return typeof value === 'string' && value.length > 0 && value.length <= 200
+        && !LOCAL_CONTROL_CHARACTERS.test(value);
 }
 
 function snapshotResumeRequest(request: AiSessionResumeRuntimeRequest): AiSessionResumeRuntimeRequest {

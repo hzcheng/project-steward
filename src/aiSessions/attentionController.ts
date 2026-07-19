@@ -47,15 +47,15 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         this.monitor = new AiSessionAttentionMonitor({ now: options.nowMs });
     }
 
-    async evaluate(): Promise<void> {
+    async evaluate(): Promise<boolean> {
         if (!this.options.isEnabled()) {
             this.monitor.evaluate([]);
             this.remoteAggregate = null;
             this.localItems = [];
-            await this.options.publish([], true);
+            const published = await this.options.publish([], true);
             this.options.scheduleRefresh('attention');
             this.postProjectsUpdated();
-            return;
+            return published;
         }
 
         const projects = this.options.getOpenProjects();
@@ -87,7 +87,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         if (!this.remoteAggregate) {
             this.postProjectsUpdated();
         }
-        await this.options.publish(this.localItems);
+        return this.options.publish(this.localItems);
     }
 
     acknowledge(eventIds: string[]): void {
@@ -256,4 +256,32 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             ? this.options.getSessionKey(providerId, sessionId)
             : getAiSessionKey(providerId, sessionId);
     }
+}
+
+export interface SettleAiSessionRuntimeLifecycleOptions {
+    state: 'completed' | 'stopped';
+    evaluateAttention: () => Promise<boolean>;
+    getEventIds: () => string[];
+    acknowledgePublished: (eventIds: string[]) => Promise<void>;
+    acknowledgeLocal: (eventIds: string[]) => void;
+    release: () => void | Promise<void>;
+}
+
+export async function settleAiSessionRuntimeLifecycle(
+    options: SettleAiSessionRuntimeLifecycleOptions
+): Promise<boolean> {
+    const published = await options.evaluateAttention();
+    if (!published) {
+        return false;
+    }
+    if (options.state === 'completed') {
+        const eventIds = options.getEventIds();
+        if (!eventIds.length) {
+            return false;
+        }
+        await options.acknowledgePublished(eventIds);
+        options.acknowledgeLocal(eventIds);
+    }
+    await options.release();
+    return true;
 }

@@ -1,5 +1,7 @@
 'use strict';
 
+import { existsSync, statSync } from 'fs';
+
 import type {
     AiSessionManagedTmuxMetadata,
     AiSessionPendingRuntimeSnapshot,
@@ -63,6 +65,7 @@ export class TmuxRuntimeDiscovery {
     private active: AiSessionRuntimeSnapshot[] = [];
     private pending: AiSessionPendingRuntimeSnapshot[] = [];
     private inactive: AiSessionRuntimeSnapshot[] = [];
+    private readonly retainedInactive = new Map<string, AiSessionRuntimeSnapshot>();
     private diagnostics: AiSessionTmuxDiscoveryDiagnostic[] = [];
     private successfulAtMs: number | null = null;
     private cacheGeneration = 0;
@@ -150,6 +153,19 @@ export class TmuxRuntimeDiscovery {
 
     getDiagnostics(): AiSessionTmuxDiscoveryDiagnostic[] {
         return this.diagnostics.map(cloneDiagnostic);
+    }
+
+    async acknowledgeInactive(identity: AiSessionRuntimeIdentity): Promise<void> {
+        if (!identity?.sessionId) {
+            return;
+        }
+        const key = finalIdentityKey(identity.provider, identity.sessionId);
+        this.retainedInactive.delete(key);
+        this.inactive = this.inactive.filter(runtime =>
+            finalIdentityKey(runtime.identity.provider, runtime.identity.sessionId || '') !== key);
+        if (this.options.bindingStore.removeKnown) {
+            await this.options.bindingStore.removeKnown(identity.provider, identity.sessionId);
+        }
     }
 
     find(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot[] {
@@ -265,19 +281,36 @@ export class TmuxRuntimeDiscovery {
         const pending = [...pendingByKey.values()];
         const liveActive = active.filter(runtime => !collisionIdentityKeys.has(identityKey(runtime.identity)));
         const livePending = pending.filter(runtime => !collisionIdentityKeys.has(identityKey(runtime.identity)));
-        const inactive = await this.classifyVanishedKnown(
+        const newlyInactive = await this.classifyVanishedKnown(
             knownBindings.slice(0, Math.max(0, MAX_DISCOVERY_ROWS - liveActive.length)),
             liveActive,
             previousActive,
             collisionIdentityKeys
         );
-        await this.options.bindingStore.reconcileKnown(liveActive.map(cloneRuntime));
-        for (const runtime of inactive) {
-            const sessionId = runtime.identity.sessionId;
-            if (sessionId && this.options.bindingStore.removeKnown) {
-                await this.options.bindingStore.removeKnown(runtime.identity.provider, sessionId);
+        for (const runtime of liveActive) {
+            if (runtime.identity.sessionId) {
+                this.retainedInactive.delete(finalIdentityKey(
+                    runtime.identity.provider, runtime.identity.sessionId
+                ));
             }
         }
+        for (const runtime of newlyInactive) {
+            const sessionId = runtime.identity.sessionId;
+            if (!sessionId) {
+                continue;
+            }
+            const key = finalIdentityKey(runtime.identity.provider, sessionId);
+            const retained = this.retainedInactive.get(key);
+            if (!retained || (retained.state !== 'completed' && runtime.state === 'completed')) {
+                this.retainedInactive.set(key, cloneRuntime(runtime));
+            }
+        }
+        const inactive = [...this.retainedInactive.values()].filter(runtime =>
+            !collisionIdentityKeys.has(identityKey(runtime.identity))
+            && !liveActive.some(liveRuntime => finalIdentitiesMatch(
+                liveRuntime.identity, runtime.identity
+            )));
+        await this.options.bindingStore.reconcileKnown(liveActive.map(cloneRuntime));
         return {
             active: liveActive,
             pending: livePending,
@@ -327,6 +360,54 @@ export class TmuxRuntimeDiscovery {
         }
         return terminal;
     }
+}
+
+export function findTmuxCollisionRuntime(
+    diagnostics: readonly AiSessionTmuxDiscoveryDiagnostic[],
+    provider: AiSessionRuntimeIdentity['provider'],
+    sessionId: string
+): AiSessionRuntimeSnapshot | null {
+    const matches = diagnostics.filter(diagnostic =>
+        diagnostic.kind === 'tmux-locator-collision'
+        && diagnostic.identity.provider === provider
+        && diagnostic.identity.sessionId === sessionId);
+    if (!sessionId || matches.length === 0) {
+        return null;
+    }
+    const diagnostic = matches[0];
+    return {
+        identity: { ...diagnostic.identity },
+        backend: 'tmux',
+        state: 'conflict',
+        markerPath: '',
+        runStartedAtMs: 0,
+        attached: false,
+        tmux: { ...diagnostic.expected },
+    };
+}
+
+export function isCurrentRuntimeMarker(markerPath: string, runStartedAtMs: number): boolean {
+    if (!markerPath || !Number.isFinite(runStartedAtMs) || runStartedAtMs <= 0) {
+        return false;
+    }
+    try {
+        if (!existsSync(markerPath)) {
+            return false;
+        }
+        const stat = statSync(markerPath);
+        return stat.isFile() && stat.mtimeMs >= runStartedAtMs;
+    } catch (_error) {
+        return false;
+    }
+}
+
+function finalIdentityKey(provider: AiSessionRuntimeIdentity['provider'], sessionId: string): string {
+    return `${provider}:${sessionId}`;
+}
+
+function finalIdentitiesMatch(left: AiSessionRuntimeIdentity, right: AiSessionRuntimeIdentity): boolean {
+    return !!left.sessionId && !!right.sessionId
+        && left.provider === right.provider && left.sessionId === right.sessionId;
 }
 
 function parseRowMetadata(row: DiscoveryWindowRecord): AiSessionManagedTmuxMetadata | null {

@@ -94,8 +94,10 @@ const AiSessionCreationController = require('../out/aiSessions/creationControlle
 const AiSessionResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const AiSessionAttentionController = require('../out/aiSessions/attentionController').AiSessionAttentionController;
 const AiSessionExecutionController = require('../out/aiSessions/executionController').AiSessionExecutionController;
+const settleAiSessionRuntimeLifecycle = require('../out/aiSessions/attentionController').settleAiSessionRuntimeLifecycle;
 const AiSessionArchiveController = require('../out/aiSessions/archiveController').AiSessionArchiveController;
 const AiSessionProjectHydrationController = require('../out/aiSessions/projectHydrationController').AiSessionProjectHydrationController;
+const SidebarStewardViewProvider = require('../out/dashboard/viewProvider').SidebarStewardViewProvider;
 Module._load = originalModuleLoad;
 
 const TODO_SEARCH_ITEMS = [{
@@ -1672,6 +1674,8 @@ async function runAiSessionRuntimeControllerChecks() {
     const pending = [];
     const activeCreationRuntimes = [];
     const creationWarnings = [];
+    const creationErrors = [];
+    const creationFailures = [];
     const creationAnnouncements = [];
     const creationTabs = [];
     const creationRefreshes = [];
@@ -1712,6 +1716,10 @@ async function runAiSessionRuntimeControllerChecks() {
         showWarningMessage: async (message, ...items) => {
             creationWarnings.push([message, items]);
             return 'Focus Terminal';
+        },
+        showErrorMessage: async message => creationErrors.push(message),
+        logRuntimeFailure: (operation, error, backend) => {
+            creationFailures.push([operation, error.message, backend]);
         },
         refresh: () => creationRefreshes.push('refresh'),
         getExistingSessionIdsForCwd: () => existingIds,
@@ -1791,7 +1799,9 @@ async function runAiSessionRuntimeControllerChecks() {
     ]);
 
     createError = new Error('create failed');
-    await assert.rejects(creation.createSession('project-a'), /create failed/);
+    await creation.createSession('project-a');
+    assert.deepStrictEqual(creationErrors, ['Could not start the AI session runtime.']);
+    assert.deepStrictEqual(creationFailures, [['create-runtime', 'create failed', 'tmux']]);
     createResults.push({ status: 'cancelled' });
     await creation.createSession('project-a');
     assert.strictEqual(createRequests.length, 7, 'a failed create must release the controller guard');
@@ -1841,6 +1851,8 @@ async function runAiSessionRuntimeControllerChecks() {
     const resumeRefreshes = [];
     const resumeAnnouncements = [];
     const resumeWarnings = [];
+    const resumeErrors = [];
+    const resumeFailures = [];
     const resumeSpec = Object.freeze({
         executable: 'codex', args: Object.freeze(['resume', session.id]),
         cwd: '/work/a', markerPath: '/tmp/resume.marker',
@@ -1861,6 +1873,10 @@ async function runAiSessionRuntimeControllerChecks() {
         normalizeProjectPath: value => value,
         getMarkerPath: () => '/tmp/resume.marker',
         showWarningMessage: message => resumeWarnings.push(message),
+        showErrorMessage: async message => resumeErrors.push(message),
+        logRuntimeFailure: (operation, error, backend) => {
+            resumeFailures.push([operation, error.message, backend]);
+        },
         announceStatus: async (projectId, message) => resumeAnnouncements.push([projectId, message]),
         refresh: () => resumeRefreshes.push('refresh'),
         showActiveTab: projectId => resumeTabs.push(projectId),
@@ -1916,9 +1932,11 @@ async function runAiSessionRuntimeControllerChecks() {
     ]]);
     assert.deepStrictEqual(resumeWarnings, []);
     resumeError = new Error('resume failed');
-    await assert.rejects(resume.resumeProjectSession('project-a', 'codex', session.id), /resume failed/);
+    await resume.resumeProjectSession('project-a', 'codex', session.id);
+    assert.deepStrictEqual(resumeErrors, ['Could not resume the AI session runtime.']);
+    assert.deepStrictEqual(resumeFailures, [['resume-runtime', 'resume failed', 'tmux']]);
     assert.strictEqual(resumeTabs.length, 2);
-    assert.strictEqual(resumeRefreshes.length, 3);
+    assert.strictEqual(resumeRefreshes.length, 4);
 }
 
 async function runAiSessionAttentionControllerChecks() {
@@ -1984,7 +2002,8 @@ async function runAiSessionAttentionControllerChecks() {
         nowMs: () => nowMs,
     });
 
-    await controller.evaluate();
+    assert.strictEqual(await controller.evaluate(), true,
+        'attention evaluation must expose whether its owner snapshot was published');
     assert.deepStrictEqual(scheduled, ['attention']);
     assert.strictEqual(published.length, 1);
     assert.strictEqual(published[0].forceHeartbeat, false);
@@ -2007,6 +2026,35 @@ async function runAiSessionAttentionControllerChecks() {
     await controller.acknowledge([published[0].items[0].eventId]);
     assert.strictEqual(controller.getLocalSnapshot()['codex:session-a'].state, 'acknowledged');
     assert.strictEqual(controller.getEffectiveAggregate().sessions.length, 0, 'local fallback aggregate must reflect acknowledged owner events immediately');
+
+    const completionOrder = [];
+    const settled = await settleAiSessionRuntimeLifecycle({
+        state: 'completed',
+        evaluateAttention: async () => { completionOrder.push('publish'); return true; },
+        getEventIds: () => { completionOrder.push('events'); return ['completed-event']; },
+        acknowledgePublished: async eventIds => {
+            completionOrder.push(`ack:${eventIds.join(',')}`);
+        },
+        acknowledgeLocal: eventIds => {
+            completionOrder.push(`local:${eventIds.join(',')}`);
+        },
+        release: () => { completionOrder.push('release'); },
+    });
+    assert.strictEqual(settled, true);
+    assert.deepStrictEqual(completionOrder, [
+        'publish', 'events', 'ack:completed-event', 'local:completed-event', 'release',
+    ], 'Direct completion must publish and acknowledge before releasing marker/tracked ownership');
+    let prematureRelease = 0;
+    assert.strictEqual(await settleAiSessionRuntimeLifecycle({
+        state: 'completed',
+        evaluateAttention: async () => false,
+        getEventIds: () => ['unpublished-event'],
+        acknowledgePublished: async () => undefined,
+        acknowledgeLocal: () => undefined,
+        release: () => { prematureRelease++; },
+    }), false);
+    assert.strictEqual(prematureRelease, 0,
+        'a completion that was not published must remain owned for retry');
 
     runtimeEntries.set('codex:session-a', {
         identity: {
@@ -2130,6 +2178,73 @@ async function runAiSessionExecutionControllerChecks() {
     assert.ok(!source.toLowerCase().includes('attention'), 'execution controller never reads attention configuration');
 }
 
+async function runSidebarStewardViewProviderOrderingChecks() {
+    const order = [];
+    const visibilityListeners = [];
+    const messageListeners = [];
+    const view = {
+        visible: true,
+        webview: {
+            options: {},
+            html: '',
+            postMessage: async () => true,
+            onDidReceiveMessage: listener => { messageListeners.push(listener); return { dispose() {} }; },
+        },
+        onDidChangeVisibility: listener => { visibilityListeners.push(listener); return { dispose() {} }; },
+    };
+    const provider = new SidebarStewardViewProvider({
+        getWebviewOptions: () => ({}),
+        renderContent: () => { order.push('render'); return '<main>fresh</main>'; },
+        renderError: () => '<main>error</main>',
+        onMessage: async () => undefined,
+        onVisibleChanged: async visible => {
+            order.push(`visible:${visible}:start`);
+            await Promise.resolve();
+            order.push(`visible:${visible}:end`);
+        },
+        logError: () => undefined,
+    });
+    await provider.resolveWebviewView(view, {}, {});
+    assert.deepStrictEqual(order, ['visible:true:start', 'visible:true:end', 'render'],
+        'first visible render must await forced runtime refresh');
+    view.visible = false;
+    await visibilityListeners[0]();
+    assert.deepStrictEqual(order.slice(-2), ['visible:false:start', 'visible:false:end'],
+        'hidden views must not render or force a runtime refresh');
+    view.visible = true;
+    await visibilityListeners[0]();
+    assert.deepStrictEqual(order.slice(-3), ['visible:true:start', 'visible:true:end', 'render'],
+        'later visible renders must also await refresh and render exactly once');
+
+    let staleRenderCount = 0;
+    const failedLogs = [];
+    const failedView = {
+        visible: true,
+        webview: {
+            options: {}, html: '', postMessage: async () => true,
+            onDidReceiveMessage: listener => { messageListeners.push(listener); return { dispose() {} }; },
+        },
+        onDidChangeVisibility: () => ({ dispose() {} }),
+    };
+    const failedProvider = new SidebarStewardViewProvider({
+        getWebviewOptions: () => ({}),
+        renderContent: () => { staleRenderCount++; return '<main>stale</main>'; },
+        renderError: () => '<main>runtime unavailable</main>',
+        onMessage: async () => { throw new Error('raw message failure'); },
+        onVisibleChanged: async () => { throw new Error('raw refresh failure'); },
+        logError: message => { failedLogs.push(message); },
+    });
+    await failedProvider.resolveWebviewView(failedView, {}, {});
+    assert.strictEqual(staleRenderCount, 0,
+        'a rejected runtime refresh must not render stale state as fresh');
+    assert.strictEqual(failedView.webview.html, '<main>runtime unavailable</main>');
+    await messageListeners[messageListeners.length - 1]({ type: 'rejected-action' });
+    assert.deepStrictEqual(failedLogs, [
+        'Failed to prepare Project Steward view.',
+        'Failed to handle a Project Steward message.',
+    ], 'visibility and message rejections must be contained at the view boundary');
+}
+
 async function runAiSessionArchiveRuntimeChecks() {
     const runtime = {
         identity: {
@@ -2179,6 +2294,11 @@ async function runAiSessionArchiveRuntimeChecks() {
     assert.deepStrictEqual(focused, [{
         provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
     }]);
+
+    runtime.state = 'conflict';
+    await controller.archiveSession('codex', 'session-a');
+    assert.strictEqual(confirmCount, 0, 'a discovery collision blocks archive before confirmation');
+    assert.strictEqual(archiveCount, 0, 'a discovery collision performs zero destructive archive actions');
 
     runtime.state = 'stopped';
     await controller.archiveSession('codex', 'session-a');
@@ -3839,7 +3959,7 @@ function runWebviewContentChecks() {
     assert.ok(dashboardRuntimeControllerSource.includes("type: 'ai-session-attention-projects-updated'"));
     assert.ok(dashboard.includes('sessionEvents: aiSessionAttentionController.getRecoverySessionEvents()'));
     assert.ok(webviewProjectScripts.includes('message.sessionEvents'));
-    assert.ok(dashboard.includes("import { AiSessionAttentionController } from './aiSessions/attentionController';"));
+    assert.ok(dashboard.includes('settleAiSessionRuntimeLifecycle'));
     assert.ok(dashboard.includes('const aiSessionAttentionController = new AiSessionAttentionController<AiSessionRuntimeSnapshot<vscode.Terminal>>({'));
     assert.ok(dashboard.includes("import { AiSessionExecutionController } from './aiSessions/executionController';"));
     assert.ok(dashboard.includes('const aiSessionExecutionController = new AiSessionExecutionController({'));
@@ -3892,13 +4012,13 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('await tmuxRuntimeBackend.restoreAttachTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
-    assert.match(dashboard, /const acknowledgeAiSessionAttention = \(identity:[\s\S]*?getRecoverySessionEvents\(\)[\s\S]*?aiSessionAttentionController\.acknowledge\(eventIds\);[\s\S]*?aiSessionAttentionBridgeClient\.acknowledge\(eventIds\)/);
-    assert.match(dashboard, /const settleCompletedAiSessionTerminal = \(identity:[\s\S]*?acknowledgeAiSessionAttention\(identity\);[\s\S]*?releaseCompletedSession\(identity\.provider, identity\.sessionId\)/);
-    assert.match(dashboard, /aggregate => \{[\s\S]*?setRemoteAggregate\(aggregate\)[\s\S]*?getReleasedSessions\(\)\.forEach\(acknowledgeAiSessionAttention\)/);
-    assert.match(dashboard, /onComplete: resolution => \{[\s\S]*?settleCompletedAiSessionTerminal\(resolution\);[\s\S]*?evaluateAiSessionAttention\(\)/);
+    assert.match(dashboard, /const acknowledgeAiSessionAttention = async[\s\S]*?await aiSessionAttentionBridgeClient\.acknowledge\(eventIds\);[\s\S]*?aiSessionAttentionController\.acknowledge\(eventIds\)/);
+    assert.match(dashboard, /settleAiSessionRuntimeLifecycle\(\{[\s\S]*?evaluateAttention: evaluateAiSessionAttention[\s\S]*?acknowledgePublished[\s\S]*?acknowledgeLocal[\s\S]*?release:/);
+    assert.match(dashboard, /aggregate => \{[\s\S]*?setRemoteAggregate\(aggregate\)[\s\S]*?getReleasedSessions\(\)\.forEach/);
+    assert.match(dashboard, /onComplete: resolution => \{[\s\S]*?void settleAiSessionRuntime\(\{/);
     assert.ok(dashboard.includes('getRuntimeById: getAiSessionRuntimeById'));
     assert.ok(!dashboard.includes('getTerminalById: (providerId, sessionId) => aiSessionTerminalService.getActiveById(providerId, sessionId)'));
-    assert.match(dashboard, /aiSessionTerminalCompletionInterval = setInterval\(\(\) => \{[\s\S]*?getCompletedSessions\(\)[\s\S]*?settleCompletedAiSessionTerminal[\s\S]*?\}, 1_000\)/);
+    assert.match(dashboard, /aiSessionTerminalCompletionInterval = setInterval\(\(\) => \{[\s\S]*?getCompletedSessions\(\)[\s\S]*?tmuxRuntimeDiscovery\.getInactive\(\)[\s\S]*?\}, 1_000\)/);
     assert.match(dashboard, /onDidCloseTerminal\(terminal => \{[\s\S]*?hadRuntimeClient[\s\S]*?aiSessionRuntimeCoordinator\.handleClosedTerminal\(terminal\)[\s\S]*?closedSessions\.length \|\| hadRuntimeClient[\s\S]*?refreshAiSessionViewsIncrementally\(\)/);
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
     assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?void evaluateAiSessionAttention\(\);[\s\S]*?\}\)/);
@@ -3912,11 +4032,11 @@ function runWebviewContentChecks() {
     assert.ok(webviewProjectScripts.includes('data-ai-session-active-terminal'));
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal)'));
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.sync()'));
-    assert.ok(dashboard.includes('onVisibleChanged: visible =>'));
+    assert.ok(dashboard.includes('onVisibleChanged: async visible =>'));
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.setVisible(visible)'));
-    assert.ok(dashboard.includes('dashboardRuntimeController.handleAiSessionViewVisibilityChanged(visible)'));
+    assert.ok(dashboard.includes('await dashboardRuntimeController.handleAiSessionViewVisibilityChanged(visible)'));
     const viewProvider = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'viewProvider.ts'), 'utf8');
-    assert.ok(viewProvider.includes('this.options.onVisibleChanged(webviewView.visible)'));
+    assert.ok(viewProvider.includes('await this.options.onVisibleChanged(webviewView.visible)'));
     const terminalCandidatesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'terminalCandidates.ts'), 'utf8');
     assert.ok(terminalCandidatesSource.includes("reason: 'terminal-candidates'"));
     assert.ok(!terminalCandidatesSource.includes('AI_SESSION_PROVIDER_IDS'));
@@ -7882,6 +8002,7 @@ async function main() {
     await runAiSessionRuntimeControllerChecks();
     await runAiSessionAttentionControllerChecks();
     await runAiSessionExecutionControllerChecks();
+    await runSidebarStewardViewProviderOrderingChecks();
     await runAiSessionArchiveRuntimeChecks();
     await runAiSessionProjectHydrationControllerChecks();
     await runAiSessionProjectHydrationPromotionChecks();

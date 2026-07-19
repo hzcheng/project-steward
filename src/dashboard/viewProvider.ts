@@ -7,7 +7,7 @@ export interface SidebarStewardViewProviderOptions {
     renderContent: (webview: vscode.Webview) => string;
     renderError: (error: unknown) => string;
     onMessage: (message: unknown) => Promise<void>;
-    onVisibleChanged: (visible: boolean) => void;
+    onVisibleChanged: (visible: boolean) => void | Thenable<void> | Promise<void>;
     logError: (message: string, error: unknown) => void;
 }
 
@@ -20,22 +20,22 @@ export class SidebarStewardViewProvider implements vscode.WebviewViewProvider {
     constructor(private readonly options: SidebarStewardViewProviderOptions) {
     }
 
-    resolveWebviewView(webviewView: vscode.WebviewView, webviewContext: vscode.WebviewViewResolveContext<unknown>, token: vscode.CancellationToken): void | Thenable<void> {
+    async resolveWebviewView(webviewView: vscode.WebviewView, webviewContext: vscode.WebviewViewResolveContext<unknown>, token: vscode.CancellationToken): Promise<void> {
         this._view = webviewView;
         webviewView.webview.options = this.options.getWebviewOptions();
-        this.refresh();
-        this.options.onVisibleChanged(webviewView.visible);
 
         webviewView.webview.onDidReceiveMessage(async message => {
-            await this.options.onMessage(message);
+            try {
+                await this.options.onMessage(message);
+            } catch (error) {
+                this.options.logError('Failed to handle a Project Steward message.', error);
+            }
         });
 
-        webviewView.onDidChangeVisibility(() => {
-            if (webviewView.visible) {
-                this.refresh();
-            }
-            this.options.onVisibleChanged(webviewView.visible);
+        webviewView.onDidChangeVisibility(async () => {
+            await this.prepareVisibility(webviewView);
         });
+        await this.prepareVisibility(webviewView);
     }
 
     get visible() {
@@ -59,5 +59,19 @@ export class SidebarStewardViewProvider implements vscode.WebviewViewProvider {
         }
 
         return this._view.webview.postMessage(message);
+    }
+
+    private async prepareVisibility(webviewView: vscode.WebviewView): Promise<void> {
+        try {
+            await this.options.onVisibleChanged(webviewView.visible);
+            if (webviewView.visible) {
+                this.refresh();
+            }
+        } catch (error) {
+            this.options.logError('Failed to prepare Project Steward view.', error);
+            if (webviewView.visible) {
+                webviewView.webview.html = this.options.renderError(error);
+            }
+        }
     }
 }

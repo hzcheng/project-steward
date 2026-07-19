@@ -58,6 +58,12 @@ export interface AiSessionCreationControllerCommonOptions {
     getPendingMarkerPath: (providerId: AiSessionProviderId) => string;
     scheduleNewSessionRefresh: (providerId: AiSessionProviderId) => void;
     nowMs: () => number;
+    showErrorMessage?: (message: string) => Thenable<unknown> | Promise<unknown>;
+    logRuntimeFailure?: (
+        operation: string,
+        error: unknown,
+        backend: 'vscode' | 'tmux'
+    ) => void;
 }
 
 export interface AiSessionCreationRuntimeControllerOptions extends AiSessionCreationControllerCommonOptions {
@@ -219,7 +225,19 @@ export class AiSessionCreationController {
             title: fields.title,
             launch,
         };
-        const result = await coordinator.create(request);
+        let result: AiSessionRuntimeActionResult<vscode.Terminal>;
+        try {
+            result = await coordinator.create(request);
+        } catch (error) {
+            options.logRuntimeFailure?.('create-runtime', error, 'tmux');
+            if (options.showErrorMessage) {
+                await options.showErrorMessage('Could not start the AI session runtime.');
+            } else {
+                await options.showWarningMessage('Could not start the AI session runtime.');
+            }
+            options.refresh();
+            return;
+        }
         if (result.status === 'cancelled' || result.status === 'settings') {
             return;
         }
