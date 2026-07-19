@@ -14,7 +14,11 @@ import type {
     AiSessionTmuxLocator,
     TmuxRuntimeUnavailableReason,
 } from './runtimeTypes';
-import { AiSessionRuntimeConflictError, TmuxRuntimeUnavailableError } from './runtimeTypes';
+import {
+    AiSessionRuntimeConflictError,
+    AiSessionRuntimeLifecycleBlockedError,
+    TmuxRuntimeUnavailableError,
+} from './runtimeTypes';
 import { getTmuxRuntimeKey, ProjectTmuxLayout, SessionTmuxLayout } from './tmuxLayout';
 import { TmuxAttachBinding, TmuxAttachBindingStore } from './tmuxAttachBindingStore';
 import { TmuxClient, TmuxClientError } from './tmuxClient';
@@ -100,6 +104,13 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             .map(runtime => this.withAttach(runtime));
     }
 
+    getLifecycleBlockers(): AiSessionRuntimeSnapshot<TTerminal>[] {
+        const getInactive = this.dependencies.discovery.getInactive;
+        return (typeof getInactive === 'function'
+            ? getInactive.call(this.dependencies.discovery)
+            : []).map(runtime => this.withAttach(runtime));
+    }
+
     find(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot<TTerminal>[] {
         return this.dependencies.discovery.find(identity).map(runtime => this.withAttach(runtime));
     }
@@ -118,6 +129,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         const runtime = await this.withCreationLocks(identity, layout, lockKey, async () => {
             await this.dependencies.discovery.refresh(true);
             this.throwIfCollision(identity);
+            this.throwIfLifecycleBlocked(identity);
             const existing = this.findVerified(identity, locator);
             if (existing) {
                 await this.dependencies.runtimeStore.removeAmbiguous(identity);
@@ -855,6 +867,15 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             runtimeIdentitiesMatch(runtime.identity, identity));
         if (conflicts.length) {
             throw new AiSessionRuntimeConflictError(conflicts);
+        }
+    }
+
+    private throwIfLifecycleBlocked(identity: AiSessionRuntimeIdentity): void {
+        const blockers = this.getLifecycleBlockers().filter(runtime =>
+            runtime.identity.provider === identity.provider
+            && runtime.identity.sessionId === identity.sessionId);
+        if (blockers.length) {
+            throw new AiSessionRuntimeLifecycleBlockedError(blockers);
         }
     }
 

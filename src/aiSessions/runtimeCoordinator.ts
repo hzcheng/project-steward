@@ -12,7 +12,11 @@ import type {
     AiSessionRuntimeIdentity,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
-import { AiSessionRuntimeConflictError, TmuxRuntimeUnavailableError } from './runtimeTypes';
+import {
+    AiSessionRuntimeConflictError,
+    AiSessionRuntimeLifecycleBlockedError,
+    TmuxRuntimeUnavailableError,
+} from './runtimeTypes';
 
 export type AiSessionTmuxFallbackChoice = 'direct' | 'direct-anyway' | 'settings' | 'cancel';
 
@@ -106,6 +110,13 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             ...(this.dependencies.direct.getConflicts?.() || []),
             ...(this.dependencies.tmux.getConflicts?.() || []),
         ].map(runtime => ({ ...cloneRuntime(runtime), state: 'conflict' }));
+    }
+
+    getLifecycleBlockers(): AiSessionRuntimeSnapshot<TTerminal>[] {
+        return [
+            ...(this.dependencies.direct.getLifecycleBlockers?.() || []),
+            ...(this.dependencies.tmux.getLifecycleBlockers?.() || []),
+        ].map(cloneRuntime);
     }
 
     getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[] {
@@ -216,6 +227,12 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         if (refresh.directError) {
             throw refresh.directError;
         }
+        const lifecycleBlockers = this.getLifecycleBlockers().filter(runtime =>
+            runtime.identity.provider === request.identity.provider
+            && runtime.identity.sessionId === request.identity.sessionId);
+        if (lifecycleBlockers.length) {
+            return blockedResult(lifecycleBlockers);
+        }
         const matches = this.findMatches(request.identity);
         if (matches.length > 1 || matches.some(runtime => runtime.state === 'conflict')) {
             return conflictResult(matches);
@@ -249,6 +266,9 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             const runtime = await this.dependencies.tmux.ensureResume(request, configuration.tmuxLayout);
             return { status: 'started', runtime: cloneRuntime(runtime) };
         } catch (error) {
+            if (error instanceof AiSessionRuntimeLifecycleBlockedError) {
+                return blockedResult(error.blockers as AiSessionRuntimeSnapshot<TTerminal>[]);
+            }
             if (error instanceof AiSessionRuntimeConflictError) {
                 return conflictResult(error.conflicts as AiSessionRuntimeSnapshot<TTerminal>[]);
             }
@@ -491,6 +511,7 @@ function cloneActionResult<TTerminal>(
         status: result.status,
         ...(result.runtime ? { runtime: cloneActionRuntime(result.runtime) } : {}),
         ...(result.conflicts ? { conflicts: result.conflicts.map(cloneActionRuntime) } : {}),
+        ...(result.blockers ? { blockers: result.blockers.map(cloneActionRuntime) } : {}),
     };
 }
 
@@ -513,6 +534,15 @@ function conflictResult<TTerminal>(
     return {
         status: 'conflict',
         conflicts: runtimes.map(runtime => ({ ...cloneRuntime(runtime), state: 'conflict' })),
+    };
+}
+
+function blockedResult<TTerminal>(
+    runtimes: AiSessionRuntimeSnapshot<TTerminal>[]
+): AiSessionRuntimeActionResult<TTerminal> {
+    return {
+        status: 'blocked',
+        blockers: runtimes.map(cloneRuntime),
     };
 }
 

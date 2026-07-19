@@ -118,6 +118,21 @@ export class AiSessionRuntimeConflictError extends Error {
     }
 }
 
+export class AiSessionRuntimeLifecycleBlockedError extends Error {
+    readonly blockers: AiSessionRuntimeSnapshot[];
+
+    constructor(blockers: readonly AiSessionRuntimeSnapshot[]) {
+        super('AI session runtime replay is blocked until lifecycle acknowledgement completes.');
+        this.name = 'AiSessionRuntimeLifecycleBlockedError';
+        this.blockers = (blockers || []).map(runtime => ({
+            ...runtime,
+            identity: { ...runtime.identity },
+            ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
+        }));
+        Object.setPrototypeOf(this, AiSessionRuntimeLifecycleBlockedError.prototype);
+    }
+}
+
 export interface AiSessionPendingRuntimeSnapshot<TTerminal = unknown> extends AiSessionRuntimeSnapshot<TTerminal> {
     state: 'pending';
     createdAt: string;
@@ -136,6 +151,7 @@ export interface AiSessionRuntimeBackend<TTerminal = unknown> {
     getActive(): AiSessionRuntimeSnapshot<TTerminal>[];
     getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[];
     getConflicts?(): AiSessionRuntimeSnapshot<TTerminal>[];
+    getLifecycleBlockers?(): AiSessionRuntimeSnapshot<TTerminal>[];
     find(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot<TTerminal>[];
     focus(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void>;
     detach(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void>;
@@ -159,9 +175,10 @@ export interface AiSessionCreateRuntimeRequest {
 }
 
 export interface AiSessionRuntimeActionResult<TTerminal = unknown> {
-    status: 'started' | 'focused' | 'cancelled' | 'settings' | 'conflict';
+    status: 'started' | 'focused' | 'cancelled' | 'settings' | 'conflict' | 'blocked';
     runtime?: AiSessionRuntimeSnapshot<TTerminal>;
     conflicts?: AiSessionRuntimeSnapshot<TTerminal>[];
+    blockers?: AiSessionRuntimeSnapshot<TTerminal>[];
 }
 
 export interface AiSessionExecutableRuntimeBackend<TTerminal = unknown> extends AiSessionRuntimeBackend<TTerminal> {

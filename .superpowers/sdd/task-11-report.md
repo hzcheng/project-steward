@@ -116,3 +116,30 @@ npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run te
 ```
 
 Lint emitted only the repository's existing warnings. Tmux checks use fake clients and controlled file locks; no real tmux process was invoked.
+
+## Round-4 Lifecycle Replay Blocking
+
+- Resume now treats unacknowledged lifecycle state as ownership, not as a reusable terminal. Direct exposes unreleased completed tracked runtimes; tmux exposes persisted/discovered completed and stopped inactive runtimes. The coordinator returns a defensive `blocked` result after forced refresh and performs no ensure/fallback action.
+- Tmux resume repeats the lifecycle check inside its creation lock after the forced discovery refresh. The distinct typed lifecycle-blocked error cannot enter tmux-unavailable fallback. Direct resume also rejects replay of an unreleased completion.
+- Attention settlement enumerates every Direct completion and tmux inactive snapshot using a stable provider/session/run-start/backend key. Explicit attention overrides produce per-run terminal-exit events, so an old inactive run is settled even if a live runtime anomalously coexists, and multiple runs receive distinct event IDs.
+- Resume and creation controllers handle `blocked` explicitly with a generic lifecycle-pending announcement and refresh; they do not switch tabs or schedule creation work.
+- `setInactive` re-reads the canonical final slot under the cross-host lock. It never overwrites known ownership, never replaces a different run, never moves detection time backward, and never downgrades completed to stopped; the same run may be idempotently refreshed or promoted from stopped to completed.
+- The safe lifecycle task boundary now also contains synchronous throws and rejected thenables from its diagnostic reporter. Process-level tests observe zero unhandled rejections from both task and reporter failures.
+
+### Round-4 RED/GREEN Evidence
+
+- RED: a completed Direct entry resent the provider command; GREEN: replay is blocked until release, then the same session may resume.
+- RED: tmux resume reached ambiguity persistence while a stopped inactive runtime existed; GREEN: the lock-boundary blocker runs before every tmux mutation/provider dispatch.
+- RED: live-first attention lookup published the live signal instead of the old run event; GREEN: explicit per-run overrides publish stable distinct terminal-exit events.
+- RED: `setInactive` replaced a canonical known record; GREEN: lock-time re-read preserves known and enforces same-run monotonic inactive updates.
+- RED: throwing/rejecting failure reporters escaped the safe wrapper; GREEN: both reporter forms are contained with zero `unhandledRejection` events.
+
+### Round-4 Final Verification
+
+The final required matrix exited 0:
+
+```text
+npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run test:safety && npm run test:dashboard && npm run test:architecture-baseline && npm run test:tmux && npm run test:tmux && npm run lint && git diff --check
+```
+
+Lint emitted only the repository's existing warnings. All tmux checks used fake clients; no real tmux process was invoked.

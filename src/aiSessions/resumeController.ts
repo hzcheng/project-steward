@@ -290,6 +290,14 @@ export class AiSessionResumeController<
             );
             return;
         }
+        if (result.status === 'blocked') {
+            options.refresh();
+            await options.announceStatus(
+                project.id,
+                'The previous runtime is still awaiting lifecycle acknowledgement.'
+            );
+            return;
+        }
         await options.showActiveTab(project.id);
         options.refresh();
     }

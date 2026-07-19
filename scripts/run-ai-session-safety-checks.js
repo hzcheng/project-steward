@@ -1788,16 +1788,22 @@ async function runAiSessionRuntimeControllerChecks() {
     };
     createResults.push({ status: 'cancelled' }, { status: 'settings' }, {
         status: 'conflict', conflicts: [pendingRuntime('vscode', 'pending-conflict')],
+    }, {
+        status: 'blocked', blockers: [],
     });
     await creation.createSession('project-a');
     await creation.createSession('project-a');
     await creation.createSession('project-a');
+    assert.deepStrictEqual(creationAnnouncements.slice(-1)[0], [
+        'project-a', 'Multiple live runtimes match this AI session.',
+    ]);
+    await creation.createSession('project-a');
     assert.strictEqual(creationTabs.length, sideEffectsBeforeFallback.tabs);
     assert.strictEqual(scheduled.length, sideEffectsBeforeFallback.scheduled);
     assert.strictEqual(timeouts.length, sideEffectsBeforeFallback.timeouts);
-    assert.strictEqual(creationRefreshes.length, sideEffectsBeforeFallback.refreshes + 1);
+    assert.strictEqual(creationRefreshes.length, sideEffectsBeforeFallback.refreshes + 2);
     assert.deepStrictEqual(creationAnnouncements.slice(-1)[0], [
-        'project-a', 'Multiple live runtimes match this AI session.',
+        'project-a', 'Runtime creation is still awaiting lifecycle acknowledgement.',
     ]);
 
     createError = new Error('create failed');
@@ -1806,7 +1812,7 @@ async function runAiSessionRuntimeControllerChecks() {
     assert.deepStrictEqual(creationFailures, [['create-runtime', 'create failed', 'tmux']]);
     createResults.push({ status: 'cancelled' });
     await creation.createSession('project-a');
-    assert.strictEqual(createRequests.length, 7, 'a failed create must release the controller guard');
+    assert.strictEqual(createRequests.length, 8, 'a failed create must release the controller guard');
     assert.strictEqual(timeouts.length, sideEffectsBeforeFallback.timeouts,
         'failed and cancelled creates must not leave pending feedback timers');
     pendingIdOverride = '';
@@ -1906,8 +1912,10 @@ async function runAiSessionRuntimeControllerChecks() {
         tmux: { layout: 'session', sessionName: 'project-steward-s-codex-a' },
     } }, { status: 'cancelled' }, { status: 'settings' }, {
         status: 'conflict', conflicts: [],
+    }, {
+        status: 'blocked', blockers: [],
     });
-    for (let index = 0; index < 5; index++) {
+    for (let index = 0; index < 6; index++) {
         await resume.resumeProjectSession('project-a', 'codex', session.id);
     }
     assert.deepStrictEqual(resumeRequests[0], {
@@ -1927,18 +1935,19 @@ async function runAiSessionRuntimeControllerChecks() {
         executable: 'codex', args: ['resume', session.id], cwd: '/work/a', markerPath: '/tmp/resume.marker',
     });
     assert.deepStrictEqual(resumeTabs, ['project-a', 'project-a']);
-    assert.strictEqual(resumeRefreshes.length, 3,
-        'started, focused, and conflict results refresh; fallback cancellations do not');
-    assert.deepStrictEqual(resumeAnnouncements, [[
-        'project-a', 'Multiple live runtimes match this AI session.',
-    ]]);
+    assert.strictEqual(resumeRefreshes.length, 4,
+        'started, focused, conflict, and blocked results refresh; fallback cancellations do not');
+    assert.deepStrictEqual(resumeAnnouncements, [
+        ['project-a', 'Multiple live runtimes match this AI session.'],
+        ['project-a', 'The previous runtime is still awaiting lifecycle acknowledgement.'],
+    ]);
     assert.deepStrictEqual(resumeWarnings, []);
     resumeError = new Error('resume failed');
     await resume.resumeProjectSession('project-a', 'codex', session.id);
     assert.deepStrictEqual(resumeErrors, ['Could not resume the AI session runtime.']);
     assert.deepStrictEqual(resumeFailures, [['resume-runtime', 'resume failed', 'tmux']]);
     assert.strictEqual(resumeTabs.length, 2);
-    assert.strictEqual(resumeRefreshes.length, 4);
+    assert.strictEqual(resumeRefreshes.length, 5);
 }
 
 async function runAiSessionAttentionControllerChecks() {
@@ -2035,6 +2044,57 @@ async function runAiSessionAttentionControllerChecks() {
     await controller.acknowledge([published[0].items[0].eventId]);
     assert.strictEqual(controller.getLocalSnapshot()['codex:session-a'].state, 'acknowledged');
     assert.strictEqual(controller.getEffectiveAggregate().sessions.length, 0, 'local fallback aggregate must reflect acknowledged owner events immediately');
+
+    const coexistPublished = [];
+    const coexistController = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getOpenProjects: () => projects,
+        getProviders: () => providersForTest,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
+        getRuntimeById: () => ({
+            identity: {
+                provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
+            },
+            backend: 'vscode', state: 'active', markerPath: '/tmp/live.marker',
+            runStartedAtMs: 1200, attached: true,
+        }),
+        isRuntimeComplete: runtime => runtime.state === 'completed',
+        publish: async items => { coexistPublished.push(items.map(item => ({ ...item }))); return true; },
+        scheduleRefresh: () => undefined,
+        postProjectsUpdated: () => undefined,
+        nowMs: () => nowMs,
+    });
+    const oldInactiveRuntime = {
+        identity: {
+            provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
+        },
+        backend: 'tmux', state: 'completed', markerPath: '/tmp/old.marker',
+        runStartedAtMs: 800, attached: false,
+        tmux: { layout: 'session', sessionName: 'old-inactive' },
+    };
+    await coexistController.evaluate([{
+        providerId: 'codex', sessionId: 'session-a', runtime: oldInactiveRuntime,
+    }]);
+    assert.ok(coexistPublished[0][0].eventId.endsWith(
+        crypto.createHash('sha256').update('terminal-exit:800').digest('hex')
+    ), 'an old inactive lifecycle must publish its own event even if a live runtime anomalously coexists');
+    const multiRunEvaluation = await coexistController.evaluate([
+        {
+            providerId: 'codex', sessionId: 'session-a', attentionKey: 'codex:session-a:700:tmux',
+            runtime: { ...oldInactiveRuntime, runStartedAtMs: 700 },
+        },
+        {
+            providerId: 'codex', sessionId: 'session-a', attentionKey: 'codex:session-a:800:vscode',
+            runtime: { ...oldInactiveRuntime, backend: 'vscode', runStartedAtMs: 800 },
+        },
+    ]);
+    assert.deepStrictEqual(multiRunEvaluation.inScopeSessionKeys, [
+        'codex:session-a:700:tmux', 'codex:session-a:800:vscode',
+    ]);
+    assert.strictEqual(coexistPublished[1].length, 2,
+        'same-session inactive runs must publish stable distinct lifecycle events');
+    assert.notStrictEqual(coexistPublished[1][0].eventId, coexistPublished[1][1].eventId);
 
     const completionOrder = [];
     let evaluationCount = 0;
@@ -2180,6 +2240,29 @@ async function runAiSessionAttentionControllerChecks() {
         'fire-and-forget attention lifecycle tasks must never emit unhandledRejection');
     assert.deepStrictEqual(lifecycleTaskFailures, [['attention-interval', 'unexpected']],
         'fire-and-forget lifecycle failures report only fixed redacted fields');
+
+    const reporterUnhandledRejections = [];
+    const captureReporterUnhandledRejection = reason => {
+        reporterUnhandledRejections.push(reason);
+    };
+    process.on('unhandledRejection', captureReporterUnhandledRejection);
+    try {
+        void runAiSessionRuntimeLifecycleTask(
+            'throwing-reporter',
+            async () => { throw new Error('/secret/task'); },
+            () => { throw new Error('/secret/reporter'); }
+        );
+        void runAiSessionRuntimeLifecycleTask(
+            'rejecting-reporter',
+            async () => { throw new Error('/secret/task'); },
+            () => Promise.reject(new Error('/secret/reporter-promise'))
+        );
+        await new Promise(resolve => setImmediate(resolve));
+    } finally {
+        process.removeListener('unhandledRejection', captureReporterUnhandledRejection);
+    }
+    assert.deepStrictEqual(reporterUnhandledRejections, [],
+        'throwing and rejecting lifecycle failure reporters must remain contained');
 
     runtimeEntries.set('codex:session-a', {
         identity: {
@@ -4219,7 +4302,7 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('await tmuxRuntimeBackend.restoreAttachTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
     assert.match(dashboard, /const acknowledgeAiSessionAttention = async[\s\S]*?await aiSessionAttentionBridgeClient\.acknowledge\(eventIds\);[\s\S]*?aiSessionAttentionController\.acknowledge\(eventIds\)/);
-    assert.match(dashboard, /settleAiSessionRuntimeLifecycles\(\{[\s\S]*?candidates:[\s\S]*?evaluateAttention: evaluateAiSessionAttention[\s\S]*?acknowledgePublished[\s\S]*?acknowledgeLocal[\s\S]*?release:/);
+    assert.match(dashboard, /settleAiSessionRuntimeLifecycles\(\{[\s\S]*?candidates:[\s\S]*?evaluateAttention: \(\) => evaluateAiSessionAttention\([\s\S]*?attentionKey: candidate\.key[\s\S]*?acknowledgePublished[\s\S]*?acknowledgeLocal[\s\S]*?release:/);
     assert.match(dashboard, /aggregate => \{[\s\S]*?setRemoteAggregate\(aggregate\)[\s\S]*?getReleasedSessions\(\)\.forEach/);
     assert.match(dashboard, /onComplete: resolution => \{[\s\S]*?queueAiSessionRuntimeSettlements\(\[\{/);
     assert.ok(!dashboard.includes('void settleAiSessionRuntime('),

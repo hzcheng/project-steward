@@ -362,10 +362,21 @@ export class TmuxRuntimeBindingStore {
             return Promise.reject(new Error('The inactive tmux binding is invalid or expired.'));
         }
         return this.serializeFinal(async () => {
-            await this.writeRecord(
-                this.recordPath('known', validated.provider, validated.sessionId),
-                validated
+            const filePath = this.recordPath('known', validated.provider, validated.sessionId);
+            const current = validateFinalRuntimeRecord(
+                await readJsonRegularFile(filePath), this.now()
             );
+            if (current) {
+                if (current.state === 'known') {
+                    return;
+                }
+                if (!inactiveBindingsMatchRun(current, validated)
+                    || validated.detectedAtMs < current.detectedAtMs
+                    || (current.state === 'completed' && validated.state === 'stopped')) {
+                    return;
+                }
+            }
+            await this.writeRecord(filePath, validated);
             await this.listInactiveUnlocked(true);
         });
     }
@@ -983,6 +994,17 @@ function validateLocator(value: unknown): AiSessionTmuxLocator | null {
 function locatorsEqual(left: AiSessionTmuxLocator, right: AiSessionTmuxLocator): boolean {
     return left.layout === right.layout && left.sessionName === right.sessionName
         && left.windowName === right.windowName;
+}
+
+function inactiveBindingsMatchRun(
+    left: TmuxInactiveRuntimeBinding,
+    right: TmuxInactiveRuntimeBinding
+): boolean {
+    return left.provider === right.provider && left.sessionId === right.sessionId
+        && left.projectKey === right.projectKey && left.cwd === right.cwd
+        && left.layout === right.layout && locatorsEqual(left.locator, right.locator)
+        && left.markerPath === right.markerPath
+        && left.runStartedAtMs === right.runStartedAtMs;
 }
 
 function clonePending(record: TmuxPendingRuntimeBinding): TmuxPendingRuntimeBinding {

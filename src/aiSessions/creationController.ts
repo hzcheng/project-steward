@@ -246,6 +246,14 @@ export class AiSessionCreationController {
             await options.announceStatus(project.id, 'Multiple live runtimes match this AI session.');
             return;
         }
+        if (result.status === 'blocked') {
+            options.refresh();
+            await options.announceStatus(
+                project.id,
+                'Runtime creation is still awaiting lifecycle acknowledgement.'
+            );
+            return;
+        }
         await options.showActiveTab(project.id);
         options.refresh();
         options.scheduleNewSessionRefresh(providerId);

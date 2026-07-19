@@ -1981,6 +1981,33 @@ async function runTmuxStoreChecks() {
         assert.deepStrictEqual(await staleTransitionStore.getKnown('codex', 'stale-transition'),
             refreshedKnown);
 
+        const guardedInactiveStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            path.join(root, 'guarded-set-inactive'), () => now
+        );
+        const guardedKnown = known('guarded-inactive', now);
+        await guardedInactiveStore.setKnown(guardedKnown);
+        await guardedInactiveStore.setInactive(inactive(
+            'guarded-inactive', 'completed', now
+        ));
+        assert.deepStrictEqual(await guardedInactiveStore.getKnown('codex', 'guarded-inactive'),
+            guardedKnown, 'setInactive must never overwrite a canonical known record');
+
+        const idempotentStopped = inactive('idempotent-inactive', 'stopped', now - 10);
+        await guardedInactiveStore.setInactive(idempotentStopped);
+        const promotedCompleted = inactive('idempotent-inactive', 'completed', now, {
+            runStartedAtMs: idempotentStopped.runStartedAtMs,
+        });
+        await guardedInactiveStore.setInactive(promotedCompleted);
+        await guardedInactiveStore.setInactive(inactive('idempotent-inactive', 'stopped', now, {
+            runStartedAtMs: idempotentStopped.runStartedAtMs,
+        }));
+        await guardedInactiveStore.setInactive(inactive('idempotent-inactive', 'completed', now, {
+            runStartedAtMs: idempotentStopped.runStartedAtMs + 1,
+        }));
+        assert.deepStrictEqual(await guardedInactiveStore.getInactive('codex', 'idempotent-inactive'),
+            promotedCompleted,
+        'inactive updates may promote the same run to completed but never downgrade or replace its run');
+
         const legacyKnownRoot = path.join(root, 'legacy-known-no-discriminator');
         fs.mkdirSync(legacyKnownRoot);
         const normalizedLegacyKnown = known('legacy-known', now - 100);
@@ -1999,8 +2026,19 @@ async function runTmuxStoreChecks() {
         const sharedFinalLock = operation => creationLock.withTmuxCreationLock(
             crossHostRoot, 'runtime-binding-final-records', operation
         );
+        let blockNextTransitionOperation = false;
+        const transitionLockEntered = deferred();
+        const releaseTransitionLock = deferred();
+        const controlledTransitionLock = operation => sharedFinalLock(async () => {
+            if (blockNextTransitionOperation) {
+                blockNextTransitionOperation = false;
+                transitionLockEntered.resolve();
+                await releaseTransitionLock.promise;
+            }
+            return operation();
+        });
         const crossHostA = new runtimeStoreModule.TmuxRuntimeBindingStore(
-            crossHostRecords, () => now, sharedFinalLock
+            crossHostRecords, () => now, controlledTransitionLock
         );
         const crossHostB = new runtimeStoreModule.TmuxRuntimeBindingStore(
             crossHostRecords, () => now, sharedFinalLock
@@ -2015,12 +2053,14 @@ async function runTmuxStoreChecks() {
             runStartedAtMs: now - 1000, attached: false, tmux: { ...crossNew.locator },
         };
         await crossHostA.setKnown(crossOld);
-        await Promise.all([
-            crossHostA.transitionKnownToInactive(
-                inactive('cross-host', 'stopped', now), crossOld.lastSeenAtMs
-            ),
-            crossHostB.reconcileKnown([crossRuntime]),
-        ]);
+        blockNextTransitionOperation = true;
+        const transitionOperation = crossHostA.transitionKnownToInactive(
+            inactive('cross-host', 'stopped', now), crossOld.lastSeenAtMs
+        );
+        await transitionLockEntered.promise;
+        const reconcileAfterTransition = crossHostB.reconcileKnown([crossRuntime]);
+        releaseTransitionLock.resolve();
+        await Promise.all([transitionOperation, reconcileAfterTransition]);
         assert.strictEqual((await crossHostA.getInactive('codex', 'cross-host')).state, 'stopped',
             'a later cross-host reconcile must not overwrite an inactive transition');
 
@@ -2994,6 +3034,44 @@ async function runTmuxBackendChecks() {
     );
     assert.strictEqual(backendCollisionMutationCalls, 0,
         'backend forced refresh collision guard must run before any tmux mutation/provider dispatch');
+    const backendLifecycleIdentity = {
+        provider: 'codex', projectKey: 'backend-lifecycle-project', cwd: '/work',
+        sessionId: 'backend-lifecycle-session',
+    };
+    const backendLifecycleBlocker = {
+        identity: { ...backendLifecycleIdentity }, backend: 'tmux', state: 'stopped',
+        markerPath: '/tmp/backend-lifecycle.done', runStartedAtMs: 100,
+        attached: false,
+        tmux: new tmuxLayout.SessionTmuxLayout().getLocator(backendLifecycleIdentity),
+    };
+    let backendLifecycleMutationCalls = 0;
+    const backendLifecycle = new backendModule.TmuxRuntimeBackend({
+        platform: 'linux',
+        client: {
+            checkAvailability: async () => ({ available: true, version: '3.4' }),
+            hasSession: async () => { backendLifecycleMutationCalls++; return false; },
+            getExecutablePath: () => 'tmux',
+        },
+        discovery: {
+            refresh: async () => undefined,
+            getActive: () => [], getPending: () => [], find: () => [], getDiagnostics: () => [],
+            getInactive: () => [{ ...backendLifecycleBlocker,
+                identity: { ...backendLifecycleBlocker.identity },
+                tmux: { ...backendLifecycleBlocker.tmux } }],
+        },
+        runtimeStore: { getAmbiguous: async () => null, removeAmbiguous: async () => undefined },
+        attachStore: { get: () => null, set: () => undefined, remove: () => undefined, flush: async () => undefined },
+        withCreationLock: async (_key, operation) => operation(),
+        createTerminal: () => { throw new Error('attach must not be reached'); },
+        nowMs: () => Date.parse('2026-07-18T10:00:00Z'),
+    });
+    await assert.rejects(backendLifecycle.ensureResume({
+        identity: backendLifecycleIdentity, projectName: 'Lifecycle', terminalName: 'Lifecycle',
+        launch: { executable: 'codex', args: ['resume'], markerPath: '/tmp/backend-lifecycle.done' },
+    }, 'session'), error => error && error.name === 'AiSessionRuntimeLifecycleBlockedError'
+        && Array.isArray(error.blockers) && error.blockers.length === 1);
+    assert.strictEqual(backendLifecycleMutationCalls, 0,
+        'backend lock-boundary lifecycle guard must run before mutation/provider dispatch');
     const projectHarness = createTmuxBackendHarness({
         getAttachTerminalName: runtime => runtime.tmux.layout === 'project'
             ? 'Project Steward: App [tmux]'
@@ -3140,6 +3218,35 @@ async function runTmuxBackendChecks() {
     }, 'project'), /occupied.*unverified/i);
     assert.strictEqual(projectOwnershipHarness.operations.some(item => item.type === 'new-window'), false);
     assert.strictEqual(projectOwnershipHarness.operations.some(item => item.type === 'session-options'), false);
+
+    const lifecycleAckHarness = createTmuxBackendHarness();
+    const lifecycleAckIdentity = {
+        provider: 'codex', projectKey: 'lifecycle-ack', cwd: '/work', sessionId: 'ack-then-resume',
+    };
+    let lifecycleAckBlockers = [{
+        identity: { ...lifecycleAckIdentity }, backend: 'tmux', state: 'completed',
+        markerPath: '/tmp/ack-then-resume.done', runStartedAtMs: 100,
+        attached: false,
+        tmux: new tmuxLayout.SessionTmuxLayout().getLocator(lifecycleAckIdentity),
+    }];
+    lifecycleAckHarness.dependencies.discovery.getInactive = () => lifecycleAckBlockers.map(runtime => ({
+        ...runtime, identity: { ...runtime.identity }, tmux: { ...runtime.tmux },
+    }));
+    const lifecycleAckBackend = new backendModule.TmuxRuntimeBackend(
+        lifecycleAckHarness.dependencies
+    );
+    const lifecycleAckRequest = {
+        identity: lifecycleAckIdentity, projectName: 'Lifecycle', terminalName: 'Lifecycle',
+        launch: { executable: 'codex', args: ['resume'], markerPath: '/tmp/ack-then-resume.done' },
+    };
+    await assert.rejects(lifecycleAckBackend.ensureResume(lifecycleAckRequest, 'session'),
+        error => error && error.name === 'AiSessionRuntimeLifecycleBlockedError');
+    assert.strictEqual(lifecycleAckHarness.operations.some(item => item.type === 'new-session'), false);
+    lifecycleAckBlockers = [];
+    await lifecycleAckBackend.ensureResume(lifecycleAckRequest, 'session');
+    assert.strictEqual(lifecycleAckHarness.operations.filter(item => item.type === 'new-session').length, 1);
+    assert.ok(lifecycleAckHarness.known.has('codex:ack-then-resume'),
+        'acknowledgement removal allows resume and persists the new known runtime');
 
     const sessionHarness = createTmuxBackendHarness();
     const sessionBackend = new backendModule.TmuxRuntimeBackend(sessionHarness.dependencies);
@@ -4504,6 +4611,7 @@ function createFakeRuntimeBackend(backend, options = {}) {
         active: [],
         pending: [],
         conflicts: [],
+        lifecycleBlockers: [],
         refreshCalls: [],
         ensureResumeCalls: 0,
         ensurePendingCalls: 0,
@@ -4528,6 +4636,11 @@ function createFakeRuntimeBackend(backend, options = {}) {
         excludedSessionIds: runtime.excludedSessionIds.slice(),
     }));
     fake.getConflicts = () => fake.conflicts.map(runtime => ({
+        ...runtime,
+        identity: { ...runtime.identity },
+        ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
+    }));
+    fake.getLifecycleBlockers = () => fake.lifecycleBlockers.map(runtime => ({
         ...runtime,
         identity: { ...runtime.identity },
         ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
@@ -4661,6 +4774,12 @@ async function runDirectBackendChecks() {
         markerPath: '/tmp/complete', runStartedAtMs: 20, cwd: '/work',
     });
     const createCountBeforeCompleted = operations.filter(item => item.type === 'create').length;
+    await assert.rejects(backend.ensureResume(fakeResumeRequest('completed')),
+        error => error && error.name === 'AiSessionRuntimeLifecycleBlockedError');
+    assert.strictEqual(operations.filter(item => item.type === 'launch').some(item =>
+        item.terminal === completedTerminal), false,
+    'an unacknowledged Direct completion must block provider replay');
+    terminals.find(entry => entry.sessionId === 'completed').released = true;
     const completed = await backend.ensureResume(fakeResumeRequest('completed'));
     assert.strictEqual(completed.terminal, completedTerminal);
     assert.strictEqual(operations.filter(item => item.type === 'create').length, createCountBeforeCompleted);
@@ -4670,7 +4789,7 @@ async function runDirectBackendChecks() {
     const duplicateCompletedTerminal = { name: 'Codex: Duplicate completed' };
     terminals.push({
         provider: 'codex', sessionId: 'completed', terminal: duplicateCompletedTerminal,
-        markerPath: '/tmp/complete', runStartedAtMs: 21, cwd: '/work',
+        markerPath: '/tmp/duplicate-active', runStartedAtMs: 21, cwd: '/work',
     });
     await assert.rejects(backend.ensureResume(fakeResumeRequest('completed')), /Multiple Direct Terminal/);
     assert.strictEqual(operations.filter(item => item.type === 'create').length, createCountBeforeCompleted);
@@ -4776,6 +4895,66 @@ async function runRuntimeCoordinatorChecks() {
     });
     await assert.rejects(unsafeHostCoordinator.refreshForHost(true), error => error === unsafeHostError,
         'only structured tmux-unavailable errors may be ignored for an ownership-free Direct host');
+
+    for (const [blockerBackend, blockerState] of [
+        ['vscode', 'completed'], ['tmux', 'completed'], ['tmux', 'stopped'],
+    ]) {
+        const blockedDirect = createFakeRuntimeBackend('vscode');
+        const blockedTmux = createFakeRuntimeBackend('tmux');
+        const blocker = fakeRuntime(blockerBackend, `blocked-${blockerBackend}-${blockerState}`, {
+            state: blockerState,
+            attached: blockerBackend === 'vscode',
+            ...(blockerBackend === 'tmux'
+                ? { tmux: { layout: 'session', sessionName: `blocked-${blockerState}` } }
+                : {}),
+        });
+        (blockerBackend === 'vscode' ? blockedDirect : blockedTmux).lifecycleBlockers.push(blocker);
+        let blockedFallbackChoices = 0;
+        const blockedCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+            direct: blockedDirect, tmux: blockedTmux,
+            getConfiguration: () => ({
+                mode: blockerBackend, tmuxLayout: 'session', tmuxPath: 'tmux',
+            }),
+            chooseTmuxFallback: async () => { blockedFallbackChoices++; return 'direct'; },
+            hasLiveTmuxOwnership: async () => false,
+        });
+        const blockedResult = await blockedCoordinator.resume(
+            fakeResumeRequest(blocker.identity.sessionId)
+        );
+        assert.strictEqual(blockedResult.status, 'blocked');
+        assert.strictEqual(blockedResult.blockers.length, 1);
+        assert.strictEqual(blockedDirect.ensureResumeCalls + blockedTmux.ensureResumeCalls, 0,
+            `${blockerState} ${blockerBackend} lifecycle ownership must block replay before acknowledgement`);
+        assert.strictEqual(blockedFallbackChoices, 0,
+            'typed lifecycle blockers must never enter unavailable fallback');
+        blockedResult.blockers[0].identity.sessionId = 'mutated';
+        assert.strictEqual((blockerBackend === 'vscode' ? blockedDirect : blockedTmux)
+            .lifecycleBlockers[0].identity.sessionId, blocker.identity.sessionId);
+        blockedDirect.lifecycleBlockers = [];
+        blockedTmux.lifecycleBlockers = [];
+        const resumedAfterAck = await blockedCoordinator.resume(
+            fakeResumeRequest(blocker.identity.sessionId)
+        );
+        assert.strictEqual(resumedAfterAck.status, 'started',
+            'resume is allowed only after lifecycle acknowledgement removes the blocker');
+    }
+
+    const freshLifecycleDirect = createFakeRuntimeBackend('vscode', {
+        onRefresh: backend => {
+            backend.lifecycleBlockers = [fakeRuntime('vscode', 'fresh-lifecycle-blocker', {
+                state: 'completed', attached: true, runStartedAtMs: 321,
+            })];
+        },
+    });
+    const freshLifecycleCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: freshLifecycleDirect, tmux: createFakeRuntimeBackend('tmux'),
+        getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'direct', hasLiveTmuxOwnership: async () => false,
+    });
+    assert.strictEqual((await freshLifecycleCoordinator.resume(
+        fakeResumeRequest('fresh-lifecycle-blocker')
+    )).status, 'blocked', 'forced refresh lifecycle blockers are atomic resume inputs');
+    assert.strictEqual(freshLifecycleDirect.ensureResumeCalls, 0);
     tmux.active.push(fakeRuntime('tmux', 's1'));
     const existing = await coordinator.resume(fakeResumeRequest('s1'));
     assert.strictEqual(existing.status, 'focused');

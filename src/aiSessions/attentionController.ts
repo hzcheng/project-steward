@@ -45,20 +45,31 @@ export interface AiSessionAttentionEvaluation {
     eventIdsBySession: Record<string, string[]>;
 }
 
+export interface AiSessionAttentionRuntimeOverride<TRuntime> {
+    providerId: AiSessionProviderId;
+    sessionId: string;
+    attentionKey?: string;
+    runtime: TRuntime;
+}
+
 export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRuntimeEntry = AiSessionAttentionRuntimeEntry> {
     private readonly monitor: AiSessionAttentionMonitor;
     private remoteAggregate: AttentionAggregate | null = null;
     private localItems: AttentionPayloadItem[] = [];
+    private attentionKeysBySession = new Map<string, string[]>();
 
     constructor(private readonly options: AiSessionAttentionControllerOptions<TRuntime>) {
         this.monitor = new AiSessionAttentionMonitor({ now: options.nowMs });
     }
 
-    async evaluate(): Promise<AiSessionAttentionEvaluation> {
+    async evaluate(
+        runtimeOverrides: readonly AiSessionAttentionRuntimeOverride<TRuntime>[] = []
+    ): Promise<AiSessionAttentionEvaluation> {
         if (!this.options.isEnabled()) {
             this.monitor.evaluate([]);
             this.remoteAggregate = null;
             this.localItems = [];
+            this.attentionKeysBySession.clear();
             const published = await this.options.publish([], true);
             this.options.scheduleRefresh('attention');
             this.postProjectsUpdated();
@@ -72,7 +83,13 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
 
         const projects = this.options.getOpenProjects();
         const providers = this.options.getProviders();
-        const ownedSessions = this.getOwnedSessions(projects, providers);
+        const ownedSessions = this.getOwnedSessions(projects, providers, runtimeOverrides);
+        this.attentionKeysBySession.clear();
+        for (const [attentionKey, owned] of ownedSessions) {
+            const keys = this.attentionKeysBySession.get(owned.baseSessionKey) || [];
+            keys.push(attentionKey);
+            this.attentionKeysBySession.set(owned.baseSessionKey, keys);
+        }
         const signalsByProvider = this.getSignalsByProvider(providers, ownedSessions);
         const inputs = Array.from(ownedSessions, ([key, owned]) => {
             const signal = this.options.isRuntimeComplete(owned.runtime)
@@ -191,26 +208,59 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
 
     private getOwnedSessions(
         projects: Project[],
-        providers: AiSessionAttentionProvider[]
+        providers: AiSessionAttentionProvider[],
+        runtimeOverrides: readonly AiSessionAttentionRuntimeOverride<TRuntime>[]
     ): Map<string, {
         providerId: AiSessionProviderId;
         session: CodexSession;
         runtime: TRuntime;
+        baseSessionKey: string;
     }> {
         const ownedSessions = new Map<string, {
             providerId: AiSessionProviderId;
             session: CodexSession;
             runtime: TRuntime;
+            baseSessionKey: string;
         }>();
+        const overrides = new Map<string, Array<{ attentionKey: string; runtime: TRuntime }>>();
+        for (const override of runtimeOverrides) {
+            const baseSessionKey = override
+                && this.getSessionKey(override.providerId, override.sessionId);
+            if (baseSessionKey && override.runtime) {
+                const entries = overrides.get(baseSessionKey) || [];
+                entries.push({
+                    attentionKey: override.attentionKey || baseSessionKey,
+                    runtime: override.runtime,
+                });
+                overrides.set(baseSessionKey, entries);
+            }
+        }
         for (const project of projects) {
             for (const provider of providers) {
                 for (const session of project[provider.projectSessionsKey] || []) {
-                    const key = this.getSessionKey(provider.id, session.id);
-                    const runtime = this.options.getRuntimeById(provider.id, session.id);
-                    if (!runtime || runtime.state === 'stopped' || ownedSessions.has(key)) {
+                    const baseSessionKey = this.getSessionKey(provider.id, session.id);
+                    const overridden = overrides.get(baseSessionKey);
+                    if (overridden?.length) {
+                        for (const entry of overridden) {
+                            if (entry.runtime.state !== 'stopped'
+                                && !ownedSessions.has(entry.attentionKey)) {
+                                ownedSessions.set(entry.attentionKey, {
+                                    providerId: provider.id,
+                                    session,
+                                    runtime: entry.runtime,
+                                    baseSessionKey,
+                                });
+                            }
+                        }
                         continue;
                     }
-                    ownedSessions.set(key, { providerId: provider.id, session, runtime });
+                    const runtime = this.options.getRuntimeById(provider.id, session.id);
+                    if (!runtime || runtime.state === 'stopped' || ownedSessions.has(baseSessionKey)) {
+                        continue;
+                    }
+                    ownedSessions.set(baseSessionKey, {
+                        providerId: provider.id, session, runtime, baseSessionKey,
+                    });
                 }
             }
         }
@@ -219,7 +269,12 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
 
     private getSignalsByProvider(
         providers: AiSessionAttentionProvider[],
-        ownedSessions: Map<string, { providerId: AiSessionProviderId; session: CodexSession; runtime: TRuntime }>
+        ownedSessions: Map<string, {
+            providerId: AiSessionProviderId;
+            session: CodexSession;
+            runtime: TRuntime;
+            baseSessionKey: string;
+        }>
     ): Record<AiSessionProviderId, Record<string, AiSessionLifecycleSignal>> {
         const requestsByProvider = providers.reduce((result, provider) => {
             result[provider.id] = [];
@@ -251,18 +306,23 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             }
             for (const provider of providers) {
                 for (const session of project[provider.projectSessionsKey] || []) {
-                    const attention = snapshot[this.getSessionKey(provider.id, session.id)];
-                    if (!attention?.event) {
-                        continue;
+                    const baseSessionKey = this.getSessionKey(provider.id, session.id);
+                    const attentionKeys = this.attentionKeysBySession.get(baseSessionKey)
+                        || [baseSessionKey];
+                    for (const attentionKey of attentionKeys) {
+                        const attention = snapshot[attentionKey];
+                        if (!attention?.event) {
+                            continue;
+                        }
+                        items.push({
+                            projectId: projectKey,
+                            sessionKey: attentionKey,
+                            state: attention.state === 'needsAttention' ? 'needsAttention' : 'acknowledged',
+                            eventId: attention.event.eventId,
+                            reason: attention.event.reason,
+                            observedAtMs: attention.stateChangedAt,
+                        });
                     }
-                    items.push({
-                        projectId: projectKey,
-                        sessionKey: this.getSessionKey(provider.id, session.id),
-                        state: attention.state === 'needsAttention' ? 'needsAttention' : 'acknowledged',
-                        eventId: attention.event.eventId,
-                        reason: attention.event.reason,
-                        observedAtMs: attention.stateChangedAt,
-                    });
                 }
             }
         }
@@ -322,12 +382,15 @@ export interface AiSessionRuntimeLifecycleSettlementResult {
 export function runAiSessionRuntimeLifecycleTask(
     operation: string,
     task: () => unknown | Promise<unknown>,
-    reportFailure: (operation: string, category: 'unexpected') => void
+    reportFailure: (operation: string, category: 'unexpected') => unknown | Promise<unknown>
 ): Promise<void> {
-    return Promise.resolve().then(task).then(
-        () => undefined,
-        () => { reportFailure(operation, 'unexpected'); }
-    );
+    return Promise.resolve().then(task).then(() => undefined, async () => {
+        try {
+            await reportFailure(operation, 'unexpected');
+        } catch (_reportError) {
+            // A diagnostic reporter must not escape the safe lifecycle boundary.
+        }
+    });
 }
 
 export async function settleAiSessionRuntimeLifecycles<

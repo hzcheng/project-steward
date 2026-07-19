@@ -610,13 +610,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (!sessionId || (runtime.state !== 'completed' && runtime.state !== 'stopped')) {
                 continue;
             }
-            const key = `${runtime.backend}:${runtime.identity.provider}:${sessionId}:${runtime.runStartedAtMs}`;
+            const key = `${runtime.identity.provider}:${sessionId}:${runtime.runStartedAtMs}:${runtime.backend}`;
             if (settlingAiSessionRuntimeKeys.has(key)) {
                 continue;
             }
             queuedAiSessionRuntimeSettlements.set(key, {
                 key,
-                sessionKey: getAiSessionKey(runtime.identity.provider, sessionId),
+                sessionKey: key,
                 state: runtime.state,
                 runtime: {
                     ...runtime,
@@ -635,13 +635,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const drainAiSessionRuntimeSettlements = async (): Promise<void> => {
         try {
             while (queuedAiSessionRuntimeSettlements.size) {
-                const candidates = [...queuedAiSessionRuntimeSettlements.values()];
+                const candidates = [...queuedAiSessionRuntimeSettlements.values()]
+                    .sort((left, right) => left.key.localeCompare(right.key));
                 queuedAiSessionRuntimeSettlements.clear();
                 candidates.forEach(candidate => settlingAiSessionRuntimeKeys.add(candidate.key));
                 try {
                     const settled = await settleAiSessionRuntimeLifecycles({
                         candidates: candidates,
-                        evaluateAttention: evaluateAiSessionAttention,
+                        evaluateAttention: () => evaluateAiSessionAttention(
+                            candidates.map(candidate => ({
+                                providerId: candidate.runtime.identity.provider,
+                                sessionId: candidate.runtime.identity.sessionId as string,
+                                attentionKey: candidate.key,
+                                runtime: candidate.runtime,
+                            }))
+                        ),
                         acknowledgePublished: eventIds => aiSessionAttentionBridgeClient.acknowledge(eventIds),
                         acknowledgeLocal: eventIds => aiSessionAttentionController.acknowledge(eventIds),
                         release: candidate => candidate.runtime.backend === 'tmux'
@@ -1385,7 +1393,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
     }
 
-    async function evaluateAiSessionAttention(): Promise<AiSessionAttentionEvaluation> {
+    async function evaluateAiSessionAttention(
+        runtimeOverrides: ReadonlyArray<{
+            providerId: AiSessionProviderId;
+            sessionId: string;
+            attentionKey: string;
+            runtime: AiSessionRuntimeSnapshot<vscode.Terminal>;
+        }> = []
+    ): Promise<AiSessionAttentionEvaluation> {
         try {
             await tmuxRuntimeDiscovery.loadPersistedInactive();
         } catch (error) {
@@ -1399,7 +1414,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 logAiSessionRuntimeFailure('attention-refresh', error);
             }
         }
-        return aiSessionAttentionController.evaluate();
+        return aiSessionAttentionController.evaluate(runtimeOverrides);
     }
 
     async function hasLiveTmuxOwnership(): Promise<boolean> {

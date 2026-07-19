@@ -11,6 +11,7 @@ import type {
     AiSessionRuntimeIdentity,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
+import { AiSessionRuntimeLifecycleBlockedError } from './runtimeTypes';
 
 interface DirectTerminalEntry<TTerminal> {
     provider: AiSessionProviderId;
@@ -101,6 +102,12 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         return this.terminalService.getPendingTerminals().map(entry => this.pendingSnapshot(entry));
     }
 
+    getLifecycleBlockers(): AiSessionRuntimeSnapshot<TTerminal>[] {
+        return this.terminalService.getTrackedTerminalEntries()
+            .filter(entry => !entry.released && this.terminalService.isComplete(entry))
+            .map(entry => ({ ...this.activeSnapshot(entry), state: 'completed' }));
+    }
+
     find(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot<TTerminal>[] {
         if (!identity?.provider || !identity.sessionId) {
             return [];
@@ -111,6 +118,12 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
 
     async ensureResume(request: AiSessionResumeRuntimeRequest): Promise<AiSessionRuntimeSnapshot<TTerminal>> {
         const input = snapshotResumeRequest(request);
+        const blockers = this.getLifecycleBlockers().filter(runtime =>
+            runtime.identity.provider === input.identity.provider
+            && runtime.identity.sessionId === input.identity.sessionId);
+        if (blockers.length) {
+            throw new AiSessionRuntimeLifecycleBlockedError(blockers);
+        }
         const tracked = this.terminalService.getTrackedTerminalEntries().filter(entry =>
             entry.provider === input.identity.provider && entry.sessionId === input.identity.sessionId);
         if (tracked.length > 1) {
