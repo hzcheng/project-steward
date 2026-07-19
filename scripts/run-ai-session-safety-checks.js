@@ -3070,17 +3070,48 @@ async function runAiSessionProjectHydrationPromotionChecks() {
 
     let visibleConsumedPending = [pendingRuntime];
     let resolveConsumedPending;
+    let consumedEvaluationCount = 0;
     const consumedPendingPromotion = new Promise(resolve => { resolveConsumedPending = resolve; });
+    const consumedExecutionController = new AiSessionExecutionController({
+        getActiveSessions: () => visibleConsumedPending.length ? [] : [{
+            provider: finalRuntime.identity.provider,
+            sessionId: finalRuntime.identity.sessionId,
+            cwd: finalRuntime.identity.cwd,
+            runStartedAtMs: finalRuntime.runStartedAtMs,
+        }],
+        getProviders: () => [{
+            id: 'codex',
+            service: {
+                getLifecycleSignals: () => {
+                    consumedEvaluationCount++;
+                    return {
+                        [session.id]: {
+                            token: `codex:async-run:${session.id}`,
+                            phase: 'running',
+                            executionState: 'running',
+                            occurredAtMs: pendingRuntime.runStartedAtMs + 1_000,
+                        },
+                    };
+                },
+            },
+        }],
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        scheduleRefresh: () => undefined,
+        nowMs: () => pendingRuntime.runStartedAtMs,
+    });
     const consumedPending = createHarness({
         runtimeCoordinator: {
             getActive: () => visibleConsumedPending.length ? [] : [finalRuntime],
             getPending: () => visibleConsumedPending,
             promotePending: () => consumedPendingPromotion,
         },
+        onPromoted: () => consumedExecutionController.evaluate(),
     });
     consumedPending.controller.hydrate(project('Promotion started'));
     visibleConsumedPending = [];
     consumedPending.controller.hydrate(project('Backend consumed pending'));
+    assert.deepStrictEqual(consumedExecutionController.getSnapshot(), {},
+        'async execution handoff must wait for the promotion settlement');
     resolveConsumedPending([finalRuntime]);
     await flushSettlements();
     assert.deepStrictEqual(consumedPending.promotions, ['promoted'],
@@ -3090,6 +3121,9 @@ async function runAiSessionProjectHydrationPromotionChecks() {
     assert.strictEqual(consumedPending.diagnostics.some(diagnostic =>
         diagnostic.event === 'ai-session-pending-runtime-promotion-result'
         && diagnostic.failureReasons?.includes('stale-pending')), false);
+    assert.strictEqual(consumedExecutionController.getSnapshot()['codex:session-final'].state, 'running');
+    assert.strictEqual(consumedEvaluationCount, 1,
+        'async promotion settlement must evaluate the final runtime exactly once');
 
     let resolveCancelled;
     let cancelledCalls = 0;
@@ -3134,6 +3168,32 @@ async function runAiSessionProjectHydrationPromotionChecks() {
     assert.deepStrictEqual(reentrant.aliasesSet, [['codex', 'session-final', 'Promoted Alias']]);
     assert.deepStrictEqual(reentrant.syncs, ['sync']);
     assert.deepStrictEqual(reentrant.promotions, ['promoted']);
+
+    let promotionReentered = false;
+    let promotionReentrantController;
+    let promotionReentrantCalls = 0;
+    const promotionReentrant = createHarness({
+        runtimeCoordinator: {
+            getActive: () => [],
+            getPending: () => [pendingRuntime],
+            promotePending: () => { promotionReentrantCalls++; return [finalRuntime]; },
+        },
+        onPromoted: () => {
+            if (!promotionReentered) {
+                promotionReentered = true;
+                promotionReentrantController.hydrate(project('Promotion notification reentry'));
+            }
+        },
+    });
+    promotionReentrantController = promotionReentrant.controller;
+    promotionReentrant.controller.hydrate(project('Initial promotion notification'));
+    await flushSettlements();
+    assert.strictEqual(promotionReentrantCalls, 1,
+        'synchronous promotion notification reentry must reuse the memoized settlement');
+    assert.deepStrictEqual(promotionReentrant.promotions, ['promoted']);
+    assert.deepStrictEqual(promotionReentrant.aliasesSet,
+        [['codex', 'session-final', 'Promoted Alias']]);
+    assert.deepStrictEqual(promotionReentrant.syncs, ['sync']);
 
     const notificationFailure = createHarness({
         runtimeCoordinator: {

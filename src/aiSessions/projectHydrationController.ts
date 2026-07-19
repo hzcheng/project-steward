@@ -436,19 +436,28 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
                 this.retirePendingPromotionSettlement(entry);
                 throw error;
             }
-            this.notifyRuntimePromoted();
             return { failureReason: null };
+        };
+        const notifySuccessfulSettlement = (
+            settlement: PendingAiSessionPromotionSettlement
+        ): PendingAiSessionPromotionSettlement => {
+            if (!settlement.failureReason) {
+                this.notifyRuntimePromoted();
+            }
+            return settlement;
         };
         try {
             const promotion = coordinator.promotePending(pendingId, sessionId);
             if (!isPromiseLike(promotion)) {
                 entry.settlement = settle(promotion);
-                return entry.settlement;
+                return notifySuccessfulSettlement(entry.settlement);
             }
-            entry.settlement = Promise.resolve(promotion).then(settle, error => {
-                this.retirePendingPromotionSettlement(entry);
-                throw error;
-            });
+            entry.settlement = Promise.resolve(promotion)
+                .then(settle, error => {
+                    this.retirePendingPromotionSettlement(entry);
+                    throw error;
+                })
+                .then(notifySuccessfulSettlement);
             return entry.settlement;
         } catch (error) {
             this.retirePendingPromotionSettlement(entry);
