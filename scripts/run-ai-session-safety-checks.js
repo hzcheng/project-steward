@@ -2948,6 +2948,7 @@ async function runAiSessionProjectHydrationPromotionChecks() {
     };
 
     function createHarness(options = {}) {
+        const sessionProvider = options.providerId || 'codex';
         const aliases = {};
         const aliasesSet = [];
         const syncs = [];
@@ -2970,16 +2971,18 @@ async function runAiSessionProjectHydrationPromotionChecks() {
             getProviders: () => providersForTest,
             getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
             readCoordinator: {
-                getResults: () => ({
-                    codex: { available: true, scannedFiles: 1, parsedFiles: 1, sessions: [session] },
-                    kimi: { available: true, scannedFiles: 0, parsedFiles: 0, sessions: [] },
-                    claude: { available: true, scannedFiles: 0, parsedFiles: 0, sessions: [] },
-                }),
-                getAssignments: () => ({
-                    codex: new Map([['project-a', [session]]]),
-                    kimi: new Map(),
-                    claude: new Map(),
-                }),
+                getResults: () => Object.fromEntries(providersForTest.map(provider => [provider.id, {
+                    available: true,
+                    scannedFiles: provider.id === sessionProvider ? 1 : 0,
+                    parsedFiles: provider.id === sessionProvider ? 1 : 0,
+                    sessions: provider.id === sessionProvider ? [session] : [],
+                }])),
+                getAssignments: () => Object.fromEntries(providersForTest.map(provider => [
+                    provider.id,
+                    provider.id === sessionProvider
+                        ? new Map([['project-a', [session]]])
+                        : new Map(),
+                ])),
             },
             terminalService,
             ...(options.runtimeCoordinator ? { runtimeCoordinator: options.runtimeCoordinator } : {}),
@@ -3148,6 +3151,118 @@ async function runAiSessionProjectHydrationPromotionChecks() {
         diagnostic.event === 'ai-session-runtime-promotion-notification-failed'
         && diagnostic.category === 'TypeError'));
     assert.strictEqual(JSON.stringify(notificationFailure.diagnostics).includes('do not expose this text'), false);
+
+    const handoffFixtures = [
+        { providerId: 'codex', backend: 'tmux', layout: 'project' },
+        { providerId: 'codex', backend: 'tmux', layout: 'session' },
+        { providerId: 'kimi', backend: 'tmux', layout: 'project' },
+        { providerId: 'kimi', backend: 'tmux', layout: 'session' },
+        { providerId: 'claude', backend: 'tmux', layout: 'project' },
+        { providerId: 'claude', backend: 'tmux', layout: 'session' },
+        { providerId: 'codex', backend: 'vscode', layout: 'direct' },
+    ];
+    for (const fixture of handoffFixtures) {
+        const fixturePending = {
+            ...pendingRuntime,
+            identity: { ...pendingRuntime.identity, provider: fixture.providerId },
+            backend: fixture.backend,
+            attached: fixture.backend === 'vscode',
+            tmux: fixture.backend === 'tmux'
+                ? {
+                    layout: fixture.layout,
+                    sessionName: fixture.layout === 'project'
+                        ? `project-steward-p-${fixture.providerId}`
+                        : `project-steward-s-${fixture.providerId}`,
+                    ...(fixture.layout === 'project' ? { windowName: `ai-${fixture.providerId}-a` } : {}),
+                }
+                : undefined,
+        };
+        const fixtureFinal = {
+            ...finalRuntime,
+            identity: { ...finalRuntime.identity, provider: fixture.providerId },
+            backend: fixture.backend,
+            attached: fixture.backend === 'vscode',
+            tmux: fixturePending.tmux,
+        };
+        let active = [];
+        let pending = [fixturePending];
+        const runtimeCoordinator = {
+            getActive: () => active,
+            getPending: () => pending,
+            promotePending: () => {
+                active = [fixtureFinal];
+                pending = [];
+                return [fixtureFinal];
+            },
+        };
+        let signal = {
+            token: `${fixture.providerId}:first-run:${session.id}`,
+            phase: 'running',
+            executionState: 'running',
+            occurredAtMs: pendingRuntime.runStartedAtMs + 1_000,
+        };
+        let evaluationCount = 0;
+        const executionController = new AiSessionExecutionController({
+            getActiveSessions: () => active.map(runtime => ({
+                provider: runtime.identity.provider,
+                sessionId: runtime.identity.sessionId,
+                cwd: runtime.identity.cwd,
+                runStartedAtMs: runtime.runStartedAtMs,
+            })),
+            getProviders: () => [{
+                id: fixture.providerId,
+                service: {
+                    getLifecycleSignals: () => {
+                        evaluationCount++;
+                        return { [session.id]: signal };
+                    },
+                },
+            }],
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            scheduleRefresh: () => undefined,
+            nowMs: () => pendingRuntime.runStartedAtMs,
+        });
+        const handoff = createHarness({
+            providerId: fixture.providerId,
+            runtimeCoordinator,
+            onPromoted: () => executionController.evaluate(),
+        });
+        handoff.controller.hydrate(project(`${fixture.providerId} ${fixture.layout} handoff`));
+        const sessionKey = `${fixture.providerId}:${session.id}`;
+        assert.strictEqual(executionController.getSnapshot()[sessionKey].state, 'running');
+        assert.strictEqual(evaluationCount, 1,
+            `${fixture.providerId}/${fixture.layout} promotion must trigger one immediate evaluation`);
+        assert.strictEqual(fixtureFinal.runStartedAtMs, fixturePending.runStartedAtMs);
+
+        signal = {
+            token: `${fixture.providerId}:first-stop:${session.id}`,
+            phase: 'needsAttention',
+            reason: 'completed',
+            executionState: 'stopped',
+            occurredAtMs: pendingRuntime.runStartedAtMs + 2_000,
+        };
+        executionController.evaluate();
+        assert.strictEqual(executionController.getSnapshot()[sessionKey].state, 'stopped');
+
+        signal = {
+            token: `${fixture.providerId}:later-run:${session.id}`,
+            phase: 'running',
+            executionState: 'running',
+            occurredAtMs: pendingRuntime.runStartedAtMs + 3_000,
+        };
+        executionController.evaluate();
+        assert.strictEqual(executionController.getSnapshot()[sessionKey].state, 'running');
+
+        signal = {
+            token: `${fixture.providerId}:later-stop:${session.id}`,
+            phase: 'needsAttention',
+            reason: 'completed',
+            executionState: 'stopped',
+            occurredAtMs: pendingRuntime.runStartedAtMs + 4_000,
+        };
+        executionController.evaluate();
+        assert.strictEqual(executionController.getSnapshot()[sessionKey].state, 'stopped');
+    }
 
     let visiblePending = [pendingRuntime];
     let lifecycleCalls = 0;
@@ -4304,6 +4419,8 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('const aiSessionAttentionController = new AiSessionAttentionController<AiSessionRuntimeSnapshot<vscode.Terminal>>({'));
     assert.ok(dashboard.includes("import { AiSessionExecutionController } from './aiSessions/executionController';"));
     assert.ok(dashboard.includes('const aiSessionExecutionController = new AiSessionExecutionController({'));
+    assert.match(dashboard,
+        /new AiSessionProjectHydrationController[\s\S]*?onDidPromoteRuntime: \(\) => \{[\s\S]*?aiSessionExecutionController\.evaluate\(\);[\s\S]*?\}/);
     assert.ok(dashboard.includes('getActiveSessions: () => aiSessionRuntimeCoordinator.getActive()'));
     assert.ok(dashboard.includes('executionSnapshot: aiSessionExecutionController.getSnapshot()'));
     assert.match(dashboard, /aiSessionExecutionInterval = setInterval\(\(\) => \{ aiSessionExecutionController\.evaluate\(\); \}, 1_000\)/);

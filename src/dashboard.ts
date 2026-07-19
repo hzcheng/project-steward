@@ -363,6 +363,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         runtimeCoordinator: aiSessionRuntimeCoordinator,
         setAlias: (providerId, sessionId, alias) => aiSessionAliasController.set(providerId, sessionId, alias),
         syncActiveTerminal: () => activeAiSessionTerminalHighlighter.sync(),
+        onDidPromoteRuntime: () => {
+            aiSessionExecutionController.evaluate();
+        },
         getSessionComparableCwd: (providerId, session) => getProviderAiSessionComparableCwd(providerId, session, aiSessionProviders),
         getExpandedProjects: () => aiSessionProjectStateStore.getExpandedProjects(),
         getActiveProviders: () => aiSessionProjectStateStore.getActiveProviders(),
