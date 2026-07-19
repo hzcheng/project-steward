@@ -7136,6 +7136,56 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
     assert.deepStrictEqual(repeatedCleanupCalls, [
         'verifyStopped', ['removeSocket', null], ['removeFixtures', false, true],
     ], 'two ordinary kill failures must still verify and retain the tmux root');
+
+    const evidenceFixtures = [
+        {
+            invocationId: 'fixture-one', pidPath: '/private/one.pid',
+            invocationLogPath: '/private/shared.jsonl', stopPath: '/private/one.stop',
+        },
+        {
+            invocationId: 'fixture-two', pidPath: '/private/two.pid',
+            invocationLogPath: '/private/shared.jsonl', stopPath: '/private/two.stop',
+        },
+    ];
+    const assertMissingProviderEvidence = operation => assert.throws(operation, error => {
+        const messages = [error.message, ...(error.errors || []).map(item => item.message)];
+        return error && error.name === 'CleanupAggregateError'
+            && !messages.join(' ').includes('/private/')
+            && !messages.join(' ').includes('fixture-one')
+            && !messages.join(' ').includes('fixture-two');
+    });
+    assertMissingProviderEvidence(() => smokeHarness.collectTrackedProviderPids(
+        [evidenceFixtures[0]],
+        { readInvocations: () => [], readFallbackPid: () => null }
+    ));
+    assertMissingProviderEvidence(() => smokeHarness.collectTrackedProviderPids(
+        evidenceFixtures,
+        {
+            readInvocations: () => [{ invocationId: 'fixture-one', pid: 201 }],
+            readFallbackPid: () => null,
+        }
+    ));
+    assertMissingProviderEvidence(() => smokeHarness.collectTrackedProviderPids(
+        evidenceFixtures,
+        {
+            readInvocations: () => [
+                { invocationId: 'fixture-one', pid: 201 },
+                { invocationId: 'fixture-one', pid: 202 },
+                { invocationId: 'fixture-two', pid: -1 },
+            ],
+            readFallbackPid: () => null,
+        }
+    ));
+    assert.deepStrictEqual(smokeHarness.collectTrackedProviderPids([], {
+        readInvocations: () => { throw new Error('empty fixtures must not read evidence'); },
+        readFallbackPid: () => { throw new Error('empty fixtures must not read evidence'); },
+    }), [], 'an empty fixture set requires no provider PID evidence');
+    smokeHarness.stopAndVerifyProviderFixtures([], {
+        writeStop: () => { throw new Error('empty fixtures must not write stop files'); },
+        readInvocations: () => { throw new Error('empty fixtures must not read evidence'); },
+        readFallbackPid: () => { throw new Error('empty fixtures must not read evidence'); },
+        probe: () => { throw new Error('empty fixtures must not probe processes'); },
+    });
     assert.deepStrictEqual(smokeHarness.collectTrackedProviderPids([
         { invocationId: 'one', pidPath: '/one.pid', invocationLogPath: '/shared.jsonl' },
         { invocationId: 'two', pidPath: '/two.pid', invocationLogPath: '/shared.jsonl' },
@@ -7197,6 +7247,88 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
     }), error => error && error.name === 'CleanupAggregateError');
     assert.deepStrictEqual(stopWrites, ['/stop/one', '/stop/two', '/stop/three'],
         'provider cleanup must request every controlled stop file even when one write fails');
+
+    const missingEvidenceFixtureProofs = [];
+    await assert.rejects(smokeHarness.runBestEffortCleanup({
+        captureSocket: async () => null,
+        killServer: async () => undefined,
+        verifyStopped: async () => undefined,
+        removeSocket: async () => undefined,
+        terminateProviders: async () => smokeHarness.stopAndVerifyProviderFixtures(
+            [evidenceFixtures[0]],
+            {
+                writeStop: () => undefined,
+                readInvocations: () => [],
+                readFallbackPid: () => null,
+                probe: () => { throw new Error('missing evidence must not probe'); },
+            }
+        ),
+        removeFixtures: async (serverStopped, providersStopped) => {
+            missingEvidenceFixtureProofs.push([serverStopped, providersStopped]);
+        },
+    }), error => error && error.name === 'CleanupAggregateError');
+    assert.deepStrictEqual(missingEvidenceFixtureProofs, [[true, false]],
+        'zero provider evidence must retain the provider fixture root');
+
+    const partialEvidenceStopWrites = [];
+    const partialEvidenceProbes = [];
+    const partialEvidenceEvents = [];
+    const partialEvidenceFixtureProofs = [];
+    await assert.rejects(smokeHarness.runBestEffortCleanup({
+        captureSocket: async () => '/owned/socket',
+        killServer: async () => undefined,
+        verifyStopped: async () => undefined,
+        removeSocket: async () => undefined,
+        terminateProviders: async () => smokeHarness.stopAndVerifyProviderFixtures(
+            evidenceFixtures,
+            {
+                writeStop: stopPath => {
+                    partialEvidenceStopWrites.push(stopPath);
+                    partialEvidenceEvents.push(['write', stopPath]);
+                },
+                readInvocations: () => [{ invocationId: 'fixture-one', pid: 201 }],
+                readFallbackPid: () => null,
+                probe: pid => {
+                    partialEvidenceProbes.push(pid);
+                    partialEvidenceEvents.push(['probe', pid]);
+                    const error = new Error('gone');
+                    error.code = 'ESRCH';
+                    throw error;
+                },
+            }
+        ),
+        removeFixtures: async (serverStopped, providersStopped) => {
+            partialEvidenceFixtureProofs.push([serverStopped, providersStopped]);
+        },
+    }), error => error && error.name === 'CleanupAggregateError');
+    assert.deepStrictEqual(partialEvidenceStopWrites,
+        ['/private/one.stop', '/private/two.stop'],
+        'all provider stop files must be attempted before evidence validation');
+    assert.deepStrictEqual(partialEvidenceProbes, [201],
+        'known provider PIDs must still receive signal-0 verification when another fixture lacks evidence');
+    assert.deepStrictEqual(partialEvidenceEvents, [
+        ['write', '/private/one.stop'], ['write', '/private/two.stop'], ['probe', 201],
+    ], 'all controlled stop requests must precede provider process observation');
+    assert.deepStrictEqual(partialEvidenceFixtureProofs, [[true, false]],
+        'partial provider evidence must retain the provider fixture root');
+
+    const completeEvidenceProbes = [];
+    smokeHarness.stopAndVerifyProviderFixtures(evidenceFixtures, {
+        writeStop: () => undefined,
+        readInvocations: () => [
+            { invocationId: 'fixture-one', pid: 201 },
+            { invocationId: 'fixture-two', pid: 202 },
+        ],
+        readFallbackPid: () => null,
+        probe: pid => {
+            completeEvidenceProbes.push(pid);
+            const error = new Error('gone');
+            error.code = 'ESRCH';
+            throw error;
+        },
+    });
+    assert.deepStrictEqual(completeEvidenceProbes.sort(), [201, 202],
+        'complete per-fixture evidence must verify every provider and succeed');
 }
 
 async function main() {

@@ -494,30 +494,60 @@ function validateOwnedSocketPath(socketPath) {
 }
 
 function collectTrackedProviderPids(fixtures, dependencies = {}) {
+    const evidence = inspectTrackedProviderPidEvidence(fixtures, dependencies);
+    if (evidence.errors.length) {
+        throw new CleanupAggregateError(evidence.errors,
+            'One or more provider process records could not be verified.');
+    }
+    return evidence.pids;
+}
+
+function inspectTrackedProviderPidEvidence(fixtures, dependencies = {}) {
     const readInvocations = dependencies.readInvocations || readProviderInvocations;
     const readFallbackPid = dependencies.readFallbackPid || (pidPath => {
         if (!fs.existsSync(pidPath)) return null;
         return Number(fs.readFileSync(pidPath, 'utf8'));
     });
-    const invocationIds = new Set(fixtures.map(fixture => fixture.invocationId).filter(Boolean));
-    const invocationLogPaths = new Set(fixtures
-        .map(fixture => fixture.invocationLogPath).filter(Boolean));
+    const invocationLogs = new Map();
     const pids = new Set();
-    for (const invocationLogPath of invocationLogPaths) {
-        for (const record of readInvocations(invocationLogPath)) {
-            if (invocationIds.has(record.invocationId)
-                && Number.isSafeInteger(record.pid) && record.pid > 0) {
-                pids.add(record.pid);
+    const errors = [];
+    for (const fixture of fixtures) {
+        let fixtureHasEvidence = false;
+        if (fixture.invocationId && fixture.invocationLogPath) {
+            let records = invocationLogs.get(fixture.invocationLogPath);
+            if (!records) {
+                try {
+                    records = { values: readInvocations(fixture.invocationLogPath) };
+                } catch (error) {
+                    records = { values: [] };
+                }
+                invocationLogs.set(fixture.invocationLogPath, records);
+            }
+            const ledgerPids = records.values.filter(record =>
+                record.invocationId === fixture.invocationId
+                && Number.isSafeInteger(record.pid) && record.pid > 0
+            ).map(record => record.pid);
+            if (ledgerPids.length) {
+                ledgerPids.forEach(pid => pids.add(pid));
+                fixtureHasEvidence = true;
             }
         }
-    }
-    for (const fixture of fixtures) {
-        const fallbackPid = readFallbackPid(fixture.pidPath);
-        if (Number.isSafeInteger(fallbackPid) && fallbackPid > 0) {
-            pids.add(fallbackPid);
+        if (!fixtureHasEvidence) {
+            try {
+                const fallbackPid = readFallbackPid(fixture.pidPath);
+                if (Number.isSafeInteger(fallbackPid) && fallbackPid > 0) {
+                    pids.add(fallbackPid);
+                    fixtureHasEvidence = true;
+                }
+            } catch (error) {
+                // A fixed error below retains the fixture root without exposing its path.
+            }
+        }
+        if (!fixtureHasEvidence) {
+            errors.push(new Error('Provider process evidence was missing or invalid.'));
         }
     }
-    return [...pids];
+    return { pids: [...pids], errors };
 }
 
 function waitForTrackedProviderExit(pids, dependencies = {}) {
@@ -573,21 +603,23 @@ function writeProviderStopFiles(fixtures, dependencies = {}) {
     }
 }
 
-function stopAndVerifyProviderFixtures(fixtures) {
+function stopAndVerifyProviderFixtures(fixtures, dependencies = {}) {
     const errors = [];
     try {
-        writeProviderStopFiles(fixtures);
+        writeProviderStopFiles(fixtures, dependencies);
     } catch (error) {
         errors.push(error);
     }
     let pids = [];
     try {
-        pids = collectTrackedProviderPids(fixtures);
+        const evidence = inspectTrackedProviderPidEvidence(fixtures, dependencies);
+        pids = evidence.pids;
+        errors.push(...evidence.errors);
     } catch (error) {
         errors.push(new Error('Provider process evidence could not be read.'));
     }
     try {
-        waitForTrackedProviderExit(pids);
+        waitForTrackedProviderExit(pids, dependencies);
     } catch (error) {
         errors.push(error);
     }
@@ -706,6 +738,7 @@ module.exports = {
     collectTrackedProviderPids,
     killIsolatedServer,
     runBestEffortCleanup,
+    stopAndVerifyProviderFixtures,
     waitForTrackedProviderExit,
     writeProviderStopFiles,
 };
