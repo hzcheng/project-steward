@@ -1,0 +1,63 @@
+# AI Session tmux Runtime Acceptance Record
+
+Date: 2026-07-19
+
+Feature branch: `feat/session-tmux-support`
+
+## Evidence policy
+
+`PASS (automated)` below means the named command was actually executed in the recorded environment. `NOT RUN` means no claim is made for that platform or manual UI flow. This session did not install a VSIX or invoke the repository's `install-local` workflow because installation was not authorized.
+
+## Environment actually exercised
+
+| Field | Observed value |
+| --- | --- |
+| Execution context | Linux Dev Container (`REMOTE_CONTAINERS=true`) |
+| Container OS | Ubuntu 22.04.5 LTS (Jammy) |
+| Kernel / architecture | Linux `5.10.134-16.3.an8.x86_64`, `x86_64` |
+| tmux | `/usr/bin/tmux`, tmux 3.2a |
+| Node.js / npm | Node.js v26.5.0 / npm 12.0.1 |
+| VS Code remote CLI | 1.127.0, commit `4fe60c8b1cdac1c4c174f2fb180d0d758272d713`, x64 |
+| Extension installation | NOT RUN; no VSIX installed |
+
+## Executed evidence
+
+| Status | Command / action | Observed result |
+| --- | --- | --- |
+| PASS (automated) | `npm run test:tmux` | Printed `AI session tmux checks passed.` Pure fake boundaries covered settings, launch quoting, metadata, stores, locking, backend/coordinator/controller behavior, host routes, and Webview contracts. |
+| PASS (automated) | `npm run test:tmux:smoke` | Printed `AI session tmux smoke checks passed.` in repeated fresh runs, including the final verification and cleanup run. Each run used a unique `project-steward-test-<pid>-<random>` server with `-f /dev/null`, then killed it, verified `list-sessions` no longer succeeded, and removed only its exact stale socket if tmux left one behind. A final `/tmp` socket search found no `project-steward-test-*` socket. |
+| PASS (automated) | Real project layout in the isolated smoke server | One managed project tmux session contained two managed AI windows. Concurrent ensure calls for one identity produced one managed window/provider process. |
+| PASS (automated) | Real session layout in the isolated smoke server | Two AI identities produced two independent managed tmux sessions with the new strict session-scope identity metadata and base-only window metadata. |
+| PASS (automated) | Detach boundary with real panes | Fake VS Code attach terminals were disposed; real project- and session-layout panes reported `pane_dead=0`, and discovery kept the runtimes active and detached. |
+| PASS (automated) | New discovery / pending promotion | A new production discovery instance recovered live metadata. A pending project window was renamed to its final window, `pendingId` was removed, and `sessionId` was discoverable. |
+| PASS (automated) | Provider exit isolation | Stopping one fake provider created its completion marker and removed only its managed project window; sibling project and independent session-layout targets remained alive. |
+| PASS (automated) | Special-character command structure | A cwd containing spaces, quotes, `$`, and `;`, special session/project IDs, and a payload containing quotes, shell metacharacters, and a newline arrived unchanged at the fake provider. |
+| PASS (automated) | `npm run test:safety` | Pure tmux checks, AI safety checks, and Open Project safety checks passed. The ordinary safety script did not invoke the real smoke harness. |
+| PASS (automated) | Ten consecutive pure tmux runs | `node scripts/run-ai-session-tmux-checks.js` passed runs 1 through 10 consecutively against the final compiled output, with zero failures. |
+| PASS (automated) | Final build and regression matrix | Dashboard, Open Project, architecture baseline, lint, development webpack, production prepublish, and `git diff --check` all exited 0. Lint reported repository warnings only; webpack reported deprecation warnings only. |
+
+## Manual acceptance matrix
+
+| Environment or flow | Result | Evidence / reason |
+| --- | --- | --- |
+| Local Linux host, extension UI | NOT RUN | The available host was a Linux Dev Container, not a local Linux extension host. |
+| macOS, tmux on `PATH` | NOT RUN | No macOS host was available. |
+| macOS, absolute Homebrew tmux path | NOT RUN | No macOS/Homebrew host was available. |
+| Remote SSH | NOT RUN | No SSH extension host was exercised. |
+| Dev Container, real tmux backend internals | PASS (automated) | Production backend/client/discovery/store code ran against isolated tmux 3.2a as recorded above. |
+| Dev Container, installed extension UI | NOT RUN | No VSIX was installed; project-card click, confirmation, viewer focus, and notifications were not manually exercised. |
+| WSL | NOT RUN | No WSL environment was available. |
+| Native Windows unsupported warning | NOT RUN | No native Windows extension host was available. Source/unit checks cover the unsupported-platform result only. |
+| Project layout, actual Codex/Kimi/Claude CLIs | NOT RUN | Smoke used all three provider identities with controlled fake provider processes; it did not invoke provider CLIs. |
+| Session layout, actual Codex/Kimi/Claude CLIs | NOT RUN | Smoke used controlled fake providers only. |
+| New and resumed provider sessions through UI | NOT RUN | No extension UI installation or provider credentials were used. |
+| Detach and reattach through UI | NOT RUN | Real pane survival and fake attach-registry behavior passed automated checks; interactive VS Code terminal reattach was not run. |
+| Developer: Reload Window | NOT RUN | Requires an installed extension UI. |
+| Complete VS Code close and reopen | NOT RUN | Requires an installed extension UI. |
+| Remote disconnect and reconnect | NOT RUN | No Remote SSH host was available. |
+| Mode/layout/executable changes with live runtimes | NOT RUN | Automated configuration and no-migration checks passed, but the Settings UI flow was not run. |
+| Multiple clients sharing the project current window | NOT RUN | Requires two interactive clients attached to one project tmux session. |
+
+## Manual follow-up procedure
+
+For each available POSIX extension host, set all three machine-scoped settings, create and resume one Codex, Kimi, and Claude session in both layouts, detach and reattach, reload, fully reopen, and verify the process survives only while that host/container remains awake and running. For project layout, attach a second client and confirm that selecting a window in either client changes the shared current window. On native Windows, verify the actionable unsupported warning and explicit Direct Terminal fallback without changing the saved setting.

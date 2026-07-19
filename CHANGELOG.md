@@ -4,6 +4,21 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ## [Unreleased]
 
+### Added
+
+-   Add an opt-in persistent tmux runtime for new and resumed Codex, Kimi, and Claude sessions, with machine-scoped executable and layout settings.
+-   Add the default project layout (one tmux session per project and one window per AI session) and an isolated one-session-per-AI-session layout.
+-   Show tmux backend, detached, and runtime-conflict state in Active Sessions, with backend-specific Detach Terminal actions.
+
+### Changed
+
+-   Discover and reuse live managed runtimes independently of the current runtime preference, while keeping Direct Terminal as the default and requiring explicit fallback when tmux is unavailable.
+-   Keep tmux-backed sessions active after their VS Code viewer is detached, as long as the execution host remains awake and running.
+
+### Fixed
+
+-   Prevent concurrent or ambiguous tmux creation, metadata collisions, reload recovery, and attach failures from resending a provider command or modifying unmanaged tmux targets.
+
 ## [2.1.2] 2026-07-19
 
 ### Added

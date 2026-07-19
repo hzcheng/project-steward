@@ -69,6 +69,7 @@ export interface CloseAiSessionTerminalRequest {
     providerId: string;
     sessionId?: string;
     pendingCreatedAt?: string;
+    expectedBackend?: 'vscode' | 'tmux';
 }
 
 export class AiSessionTerminalCommandController<
@@ -143,9 +144,12 @@ export class AiSessionTerminalCommandController<
                     request.pendingCreatedAt as string,
                     this.options
                 );
-            if (runtime) {
+            if (runtime && (!request.expectedBackend || runtime.backend === request.expectedBackend)) {
                 await this.detachRuntime(request, request.providerId, runtime, this.options);
             }
+            return;
+        }
+        if (request.expectedBackend && request.expectedBackend !== 'vscode') {
             return;
         }
         const terminal = hasSessionId

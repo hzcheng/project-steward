@@ -986,6 +986,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     providerId: e.provider as string,
                     sessionId: e.sessionId as string,
                     pendingCreatedAt: e.pendingCreatedAt as string,
+                    expectedBackend: 'vscode',
+                });
+            },
+            'detach-ai-session-terminal': async e => {
+                await aiSessionTerminalCommandController.closeTerminal({
+                    projectId: e.projectId as string,
+                    providerId: e.provider as string,
+                    sessionId: e.sessionId as string,
+                    pendingCreatedAt: e.pendingCreatedAt as string,
+                    expectedBackend: 'tmux',
                 });
             },
             'toggle-ai-session-pin': async e => {

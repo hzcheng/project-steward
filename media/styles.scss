@@ -2610,12 +2610,28 @@ body.steward-sidebar {
                 }
             }
 
+            &:focus-visible {
+                outline: 2px solid var(--vscode-focusBorder);
+                outline-offset: -2px;
+            }
+
             &[data-session-pinned] {
                 border-color: var(--vscode-panel-border);
                 background: var(--vscode-list-inactiveSelectionBackground, transparent);
 
                 &::before {
                     opacity: 0.9;
+                }
+            }
+
+            &[data-session-conflict] {
+                border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
+                background: var(--vscode-inputValidation-warningBackground, var(--vscode-list-hoverBackground));
+
+                &::before {
+                    width: 3px;
+                    background: var(--vscode-editorWarning-foreground, var(--vscode-terminal-ansiYellow));
+                    opacity: 1;
                 }
             }
         }
@@ -2896,6 +2912,21 @@ body.steward-sidebar {
             line-height: 1.15;
         }
 
+        .ai-session-runtime-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 1px 4px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 999px;
+            color: var(--vscode-descriptionForeground);
+            background: var(--vscode-sideBar-background);
+            font-size: 8px;
+            font-weight: 700;
+            line-height: 1;
+            text-transform: lowercase;
+            vertical-align: baseline;
+        }
+
         .codex-sessions-empty {
             margin: 3px 0 1px 0;
         }
@@ -3115,5 +3146,19 @@ body.steward-sidebar .project .ai-session-attention-indicator {
     .ai-session-attention-indicator {
         animation: none !important;
         transition: none !important;
+    }
+}
+
+@media (forced-colors: active) {
+    body.steward-sidebar .project {
+        .codex-session-row:focus-visible {
+            outline-color: Highlight;
+        }
+
+        .codex-session-row[data-session-conflict],
+        .ai-session-runtime-badge,
+        .ai-session-close-terminal {
+            border: 1px solid CanvasText;
+        }
     }
 }

@@ -628,7 +628,12 @@ function getAiSessionHistoryPanel(
         ? `${providerName} session history is unavailable in this environment`
         : `No ${providerName} sessions yet`;
     var sessionRows = sessions.length
-        ? sessions.map(session => getCodexSessionRow(session, activeProvider)).join('\n')
+        ? sessions.map(session => getCodexSessionRow(
+            session,
+            activeProvider,
+            (project.activeAiSessions || []).find(runtime =>
+                runtime.provider === activeProvider && runtime.sessionId === session.id)
+        )).join('\n')
         : `<div class="codex-sessions-empty"><span>${emptyText}</span>${otherProviderHasHistory ? '<small>Other providers have sessions.</small>' : ''}</div>`;
 
     return `<div id="ai-session-history-${projectId}" class="ai-session-tab-panel ai-session-history-panel" role="tabpanel" data-ai-session-panel="sessions" aria-labelledby="ai-session-sessions-tab-${projectId}"${selected ? '' : ' hidden'}>
@@ -699,7 +704,11 @@ function getAiProviderLabel(providerId: AiSessionProviderId): string {
     }
 }
 
-function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId) {
+function getCodexSessionRow(
+    session: CodexSession,
+    provider: AiSessionProviderId,
+    runtime?: ActiveAiSessionViewModel
+) {
     var sessionName = escapeAttribute(sanitizeProjectName(session.name || session.id));
     var sessionId = escapeAttribute(session.id || '');
     var shortSessionId = escapeAttribute((session.id || '').substring(0, 8));
@@ -714,15 +723,18 @@ function getCodexSessionRow(session: CodexSession, provider: AiSessionProviderId
         : '';
     var pinTitle = pinned ? 'Unpin Session' : 'Pin Session';
     var active = session.active === true;
+    var backend = runtime?.backend || 'vscode';
+    var attached = runtime?.attached ?? (active && backend === 'vscode');
+    var runtimeAttributes = ` data-session-backend="${backend}" data-session-attached="${attached ? 'true' : 'false'}"${runtime?.tmuxLayout ? ` data-tmux-layout="${runtime.tmuxLayout}"` : ''}${runtime?.conflict ? ' data-session-conflict' : ''}`;
     var batchCheckbox = `<input type="checkbox" class="ai-session-batch-checkbox" aria-label="Select ${sessionName}"${active ? ' disabled' : ''}>`;
     var pinAction = `<button type="button" class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}" aria-label="${pinTitle}">${Icons.pin}</button>`;
     var archiveAction = active
-        ? `<button type="button" class="codex-session-archive" disabled title="Close the active terminal before archiving." aria-label="Close the active terminal before archiving.">${Icons.archive}</button>`
+        ? `<button type="button" class="codex-session-archive" disabled title="Stop the active runtime before archiving." aria-label="Stop the active runtime before archiving.">${Icons.archive}</button>`
         : `<button type="button" class="codex-session-archive" data-action="archive-${provider}-session" title="Archive Session" aria-label="Archive Session">${Icons.archive}</button>`;
     var activeStatus = active ? '<span class="ai-session-history-active-status">Active</span>' : '';
 
     return `
-<div class="codex-session-row"${pinned ? ' data-session-pinned' : ''}${active ? ' data-session-active' : ''}${needsAttention ? ' data-ai-session-attention data-session-event-id="' + escapeAttribute(session.attention.eventId) + '"' : ''} data-session-id="${sessionId}" data-session-provider="${provider}" tabindex="0" title="${active ? 'Focus' : 'Resume'} ${providerLabel} Session">
+<div class="codex-session-row"${runtimeAttributes}${pinned ? ' data-session-pinned' : ''}${active ? ' data-session-active' : ''}${needsAttention ? ' data-ai-session-attention data-session-event-id="' + escapeAttribute(session.attention.eventId) + '"' : ''} data-session-id="${sessionId}" data-session-provider="${provider}" tabindex="0" title="${active && backend === 'tmux' && !attached ? 'Attach or focus' : active ? 'Focus' : 'Resume'} ${providerLabel} Session">
     ${attentionIndicator}
     ${batchCheckbox}
     <span class="codex-session-icon">${Icons.terminalLine}</span>
@@ -750,7 +762,14 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
         : model.executionState === 'starting' ? 'Waiting for AI activity'
             : 'AI is not currently executing';
     var executionStatus = `<span class="ai-session-execution-status" aria-label="${executionAriaLabel}"><span class="ai-session-execution-dot" aria-hidden="true"></span>${executionLabel}</span>`;
-    var metadata = [providerLabel, executionStatus, createdAt, shortSessionId].filter(Boolean).join(' · ');
+    var runtimeStatusLabel = model.status === 'conflict' || model.conflict ? 'Runtime conflict'
+        : model.status === 'needsAttention' ? 'Needs attention'
+            : model.status === 'focused' ? 'Focused'
+                : '';
+    var runtimeBadge = model.backend === 'tmux'
+        ? '<span class="ai-session-runtime-badge" title="Managed tmux runtime">tmux</span>'
+        : '';
+    var metadata = [runtimeBadge, providerLabel, runtimeStatusLabel, executionStatus, createdAt, shortSessionId].filter(Boolean).join(' · ');
     var attentionIndicator = model.needsAttention
         ? '<span class="ai-session-attention-indicator" title="AI session needs attention" aria-label="AI session needs attention"></span>'
         : '';
@@ -758,21 +777,27 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     var pinAction = model.pending
         ? ''
         : `<button type="button" class="codex-session-pin ${model.pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}" aria-label="${pinTitle}">${Icons.pin}</button>`;
-    var closeAction = `<button type="button" class="ai-session-close-terminal" data-action="close-ai-session-terminal" title="Close Terminal…" aria-label="Close Terminal">${Icons.remove}</button>`;
+    var terminalAction = model.backend === 'tmux'
+        ? `<button type="button" class="ai-session-close-terminal ai-session-detach-terminal" data-action="detach-ai-session-terminal" title="Detach Terminal… The AI task keeps running in tmux." aria-label="Detach Terminal">${Icons.remove}</button>`
+        : `<button type="button" class="ai-session-close-terminal" data-action="close-ai-session-terminal" title="Close Terminal…" aria-label="Close Terminal">${Icons.remove}</button>`;
     var pendingAttributes = model.pending
         ? ` data-session-pending data-pending-created-at="${escapeAttribute(model.createdAt || '')}"`
         : ` data-session-active data-session-id="${sessionId}"`;
     var attentionAttributes = model.needsAttention && model.attentionEventId
         ? ` data-ai-session-attention data-session-event-id="${escapeAttribute(model.attentionEventId)}"`
         : '';
-    return `<div class="codex-session-row active-ai-session-row" data-session-provider="${model.provider}" data-execution-state="${model.executionState}"${pendingAttributes}${model.pinned ? ' data-session-pinned' : ''}${model.focused ? ' data-session-focused' : ''}${model.needsAttention ? ' data-session-needs-attention' : ''}${attentionAttributes} tabindex="0" title="${model.pending ? 'Focus pending' : 'Focus'} ${providerLabel} Session">
+    var runtimeAttributes = ` data-session-backend="${model.backend}" data-session-attached="${model.attached ? 'true' : 'false'}"${model.tmuxLayout ? ` data-tmux-layout="${model.tmuxLayout}"` : ''}${model.conflict ? ' data-session-conflict' : ''}`;
+    var rowAction = model.backend === 'tmux'
+        ? (model.attached ? 'Focus' : 'Attach or focus')
+        : 'Focus';
+    return `<div class="codex-session-row active-ai-session-row" data-session-provider="${model.provider}" data-execution-state="${model.executionState}"${runtimeAttributes}${pendingAttributes}${model.pinned ? ' data-session-pinned' : ''}${model.focused ? ' data-session-focused' : ''}${model.needsAttention ? ' data-session-needs-attention' : ''}${attentionAttributes} tabindex="0" title="${model.pending ? 'Focus pending' : rowAction} ${providerLabel} Session">
         ${attentionIndicator}
         <span class="codex-session-icon">${Icons.terminalLine}</span>
         <span class="codex-session-text">
             <span class="codex-session-name">${sessionName}</span>
             <span class="codex-session-meta">${metadata}</span>
         </span>
-        <span class="codex-session-actions">${pinAction}${closeAction}</span>
+        <span class="codex-session-actions">${pinAction}${terminalAction}</span>
     </div>`;
 }
 

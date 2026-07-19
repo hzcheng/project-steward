@@ -594,22 +594,26 @@ function initProjects() {
             return true;
         }
 
-        var closeTerminalAction = target.closest('[data-action="close-ai-session-terminal"]');
-        if (closeTerminalAction) {
-            var closeRow = closeTerminalAction.closest('.codex-session-row[data-session-provider]');
-            var closeProvider = closeRow && closeRow.getAttribute('data-session-provider');
-            if (closeRow && isAiSessionProvider(closeProvider)) {
-                var closeMessage = {
-                    type: 'close-ai-session-terminal',
+        var terminalAction = target.closest('[data-action="close-ai-session-terminal"], [data-action="detach-ai-session-terminal"]');
+        if (terminalAction) {
+            var terminalRow = terminalAction.closest('.codex-session-row[data-session-provider][data-session-backend]');
+            var terminalProvider = terminalRow && terminalRow.getAttribute('data-session-provider');
+            var terminalBackend = terminalRow && terminalRow.getAttribute('data-session-backend');
+            var requestedDetach = terminalAction.getAttribute('data-action') === 'detach-ai-session-terminal';
+            if (terminalRow && isAiSessionProvider(terminalProvider)
+                && ((requestedDetach && terminalBackend === 'tmux')
+                    || (!requestedDetach && terminalBackend === 'vscode'))) {
+                var terminalMessage = {
+                    type: requestedDetach ? 'detach-ai-session-terminal' : 'close-ai-session-terminal',
                     projectId,
-                    provider: closeProvider,
+                    provider: terminalProvider,
                 };
-                if (closeRow.hasAttribute('data-session-pending')) {
-                    closeMessage.pendingCreatedAt = closeRow.getAttribute('data-pending-created-at');
+                if (terminalRow.hasAttribute('data-session-pending')) {
+                    terminalMessage.pendingCreatedAt = terminalRow.getAttribute('data-pending-created-at');
                 } else {
-                    closeMessage.sessionId = closeRow.getAttribute('data-session-id');
+                    terminalMessage.sessionId = terminalRow.getAttribute('data-session-id');
                 }
-                window.vscode.postMessage(closeMessage);
+                window.vscode.postMessage(terminalMessage);
             }
             return true;
         }
@@ -1181,6 +1185,7 @@ function initProjects() {
     var contextMenuAiSessionProvider = null;
     var contextMenuAiSessionProjectId = null;
     var contextMenuAiSessionActive = false;
+    var contextMenuAiSessionBackend = null;
     var contextMenuAiSessionOrigin = null;
     var latestAiSessionUpdateSequence = 0;
 
@@ -1219,6 +1224,7 @@ function initProjects() {
             var sessionProjectDiv = sessionRow.closest('.project[data-id]');
             contextMenuAiSessionProjectId = sessionProjectDiv ? sessionProjectDiv.getAttribute("data-id") : null;
             contextMenuAiSessionActive = sessionRow.hasAttribute('data-session-active');
+            contextMenuAiSessionBackend = sessionRow.getAttribute('data-session-backend') || 'vscode';
             if (!contextMenuAiSessionId || !isAiSessionProvider(contextMenuAiSessionProvider))
                 return;
 
@@ -1230,7 +1236,13 @@ function initProjects() {
             var archiveMenuItem = sessionContextMenuElement.querySelector('[data-action="archive"]');
             var closeMenuItem = sessionContextMenuElement.querySelector('[data-action="close-terminal"]');
             if (archiveMenuItem) archiveMenuItem.classList.toggle('disabled', contextMenuAiSessionActive);
-            if (closeMenuItem) closeMenuItem.classList.toggle('disabled', !contextMenuAiSessionActive);
+            if (closeMenuItem) {
+                var terminalActionLabel = contextMenuAiSessionBackend === 'tmux'
+                    ? 'Detach Terminal…' : 'Close Terminal…';
+                closeMenuItem.textContent = terminalActionLabel;
+                closeMenuItem.setAttribute('aria-label', terminalActionLabel);
+                closeMenuItem.classList.toggle('disabled', !contextMenuAiSessionActive);
+            }
 
             showContextMenu(sessionContextMenuElement, e);
             if (e.keyboardTrigger) {
@@ -1383,7 +1395,8 @@ function initProjects() {
             case 'close-terminal':
                 if (!contextMenuAiSessionActive) break;
                 window.vscode.postMessage({
-                    type: 'close-ai-session-terminal',
+                    type: contextMenuAiSessionBackend === 'tmux'
+                        ? 'detach-ai-session-terminal' : 'close-ai-session-terminal',
                     projectId: contextMenuAiSessionProjectId,
                     provider: contextMenuAiSessionProvider,
                     sessionId: contextMenuAiSessionId,
@@ -1402,6 +1415,7 @@ function initProjects() {
         contextMenuAiSessionProvider = null;
         contextMenuAiSessionProjectId = null;
         contextMenuAiSessionActive = false;
+        contextMenuAiSessionBackend = null;
         contextMenuAiSessionOrigin = null;
         document.querySelectorAll(".custom-context-menu").forEach(element =>
             element.classList.remove("visible")

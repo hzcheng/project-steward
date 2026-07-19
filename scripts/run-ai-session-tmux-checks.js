@@ -3,6 +3,7 @@ const assert = require('assert');
 const childProcess = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
+const Module = require('module');
 const os = require('os');
 const path = require('path');
 const launchSpec = require('../out/aiSessions/launchSpec');
@@ -22,6 +23,15 @@ const activeSessionProjection = require('../out/aiSessions/activeSessionProjecti
 const CreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
 const ResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const TerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
+const originalModuleLoad = Module._load;
+Module._load = function(request, parent, isMain) {
+    if (request === 'vscode') {
+        return {};
+    }
+    return originalModuleLoad.call(this, request, parent, isMain);
+};
+const webviewContentModule = require('../out/webview/webviewContent');
+Module._load = originalModuleLoad;
 
 function config(values) {
     return { get: (key, fallback) => Object.prototype.hasOwnProperty.call(values, key) ? values[key] : fallback };
@@ -5738,6 +5748,7 @@ async function runRuntimeProjectionChecks() {
             kimiSessions: [], claudeSessions: [],
         }],
         providers: providerFixtures,
+        executionSnapshot: {},
         activeRuntimes,
         pendingRuntimes: [],
         focusedIdentity: null,
@@ -5757,6 +5768,7 @@ async function runRuntimeProjectionChecks() {
             kimiSessions: [], claudeSessions: [],
         }],
         providers: providerFixtures,
+        executionSnapshot: {},
         activeRuntimes,
         pendingRuntimes: [],
         focusedIdentity: { provider: 'codex', sessionId: 's1', projectKey: 'pk', cwd: '/work' },
@@ -5773,6 +5785,7 @@ async function runRuntimeProjectionChecks() {
             kimiSessions: [], claudeSessions: [],
         }],
         providers: providerFixtures,
+        executionSnapshot: {},
         activeRuntimes: [{ ...activeRuntimes[0], state: 'conflict', attached: true }],
         pendingRuntimes: [],
         focusedIdentity: null,
@@ -5789,6 +5802,7 @@ async function runRuntimeProjectionChecks() {
             kimiSessions: [], claudeSessions: [],
         }],
         providers: providerFixtures,
+        executionSnapshot: {},
         activeRuntimes: [
             activeRuntimes[0],
             {
@@ -5811,6 +5825,7 @@ async function runRuntimeProjectionChecks() {
             { id: 'history', path: '/history', codexSessions: [{ id: 's1', name: 'One' }], kimiSessions: [], claudeSessions: [] },
         ],
         providers: providerFixtures,
+        executionSnapshot: {},
         activeRuntimes,
         pendingRuntimes: [],
         focusedIdentity: null,
@@ -5830,6 +5845,7 @@ async function runRuntimeProjectionChecks() {
             { id: 'history', path: '/history', codexSessions: [{ id: 's1', name: 'One' }], kimiSessions: [], claudeSessions: [] },
         ],
         providers: providerFixtures,
+        executionSnapshot: {},
         activeRuntimes: [historyFallbackRuntime],
         pendingRuntimes: [],
         focusedIdentity: null,
@@ -5849,6 +5865,7 @@ async function runRuntimeProjectionChecks() {
     const focusedPending = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
         providers: providerFixtures,
+        executionSnapshot: {},
         activeRuntimes: [],
         pendingRuntimes: [tmuxPending],
         focusedIdentity: { provider: 'codex', pendingId: 'pending-focus', projectKey: 'other', cwd: '/other' },
@@ -5864,6 +5881,7 @@ async function runRuntimeProjectionChecks() {
     const duplicatePending = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
         providers: providerFixtures,
+        executionSnapshot: {},
         activeRuntimes: [],
         pendingRuntimes: [{
             ...tmuxPending,
@@ -5902,6 +5920,7 @@ async function runRuntimeProjectionChecks() {
     const projectPendingDuplicates = pendingRuntimes => activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
         providers: providerFixtures,
+        executionSnapshot: {},
         activeRuntimes: [],
         pendingRuntimes,
         focusedIdentity: null,
@@ -5917,6 +5936,7 @@ async function runRuntimeProjectionChecks() {
     const legacyOnly = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
         providers: providerFixtures,
+        executionSnapshot: {},
         activeTerminals: [{ provider: 'codex', sessionId: 'legacy', cwd: '/work', runStartedAtMs: 1 }],
         pendingTerminals: [{ provider: 'kimi', cwd: '/work', createdAt: '2026-07-18T10:00:00Z' }],
         focusedIdentity: null,
@@ -5930,6 +5950,7 @@ async function runRuntimeProjectionChecks() {
     const noLegacyFallback = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
         providers: providerFixtures,
+        executionSnapshot: {},
         activeRuntimes: [],
         pendingRuntimes: [],
         activeTerminals: [{ provider: 'codex', sessionId: 'legacy', cwd: '/work', runStartedAtMs: 1 }],
@@ -6038,6 +6059,18 @@ async function runRuntimeControllerChecks() {
         'Detaching this CODEX terminal will leave the AI task running in tmux.', 'Detach Terminal',
     ]);
     assert.strictEqual(coordinator.detached.length, 2);
+    await controller.closeTerminal({
+        projectId: 'project', providerId: 'codex', sessionId: 'direct-session',
+        expectedBackend: 'tmux',
+    });
+    await controller.closeTerminal({
+        projectId: 'project', providerId: 'codex', sessionId: 'tmux-session',
+        expectedBackend: 'vscode',
+    });
+    assert.strictEqual(confirmations.length, 2,
+        'a forged backend-specific route must be rejected before confirmation');
+    assert.strictEqual(coordinator.detached.length, 2,
+        'a forged backend-specific route must not detach the resolved runtime');
     assert.deepStrictEqual(runtimes, [direct, tmux, legacy], 'controller calls must not mutate runtime snapshots');
 
     const normalizeCanonicalPath = value => value
@@ -6537,13 +6570,13 @@ async function runRuntimeControllerChecks() {
         },
     });
     await pendingFocusCreation.createSession('project');
-    await pendingTimeouts[0]();
-    assert.deepStrictEqual(pendingErrors, ['Could not focus the AI session terminal.']);
-    assert.deepStrictEqual(pendingFailures, [[
-        'focus-pending-runtime', 'raw pending focus timeout', 'tmux',
-    ]]);
-    assert.ok(pendingRefreshes.length >= 2,
-        'a pending focus failure refreshes stale runtime state after timeout handling');
+    assert.strictEqual(pendingTimeouts.length, 0,
+        'runtime pending sessions must not be removed by an elapsed-time callback');
+    assert.strictEqual(retainedPending.identity.pendingId, 'timeout-pending');
+    assert.deepStrictEqual(pendingErrors, []);
+    assert.deepStrictEqual(pendingFailures, []);
+    assert.strictEqual(pendingRefreshes.length, 1,
+        'creating a retained pending runtime refreshes the visible runtime state once');
 }
 
 function runHostRuntimeCompositionChecks() {
@@ -6592,6 +6625,9 @@ function runHostRuntimeCompositionChecks() {
     assert.ok(!dashboardSource.includes(
         'getActiveTerminal: (providerId, sessionId) => aiSessionTerminalService.getActiveById'
     ));
+    assert.match(dashboardSource,
+        /'close-ai-session-terminal':[\s\S]*?expectedBackend: 'vscode'[\s\S]*?'detach-ai-session-terminal':[\s\S]*?expectedBackend: 'tmux'/,
+        'host routes must constrain close/detach to the requested runtime backend');
     const directRestore = dashboardSource.indexOf(
         'await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'
     );
@@ -6603,6 +6639,95 @@ function runHostRuntimeCompositionChecks() {
     );
     assert.ok(directRestore >= 0 && tmuxRestore > directRestore && hydrationConstruction > tmuxRestore,
         'Direct and tmux attachment restoration must finish before first hydration is possible');
+}
+
+function runTmuxWebviewExperienceChecks() {
+    const projectWithTmuxRuntimeFixture = {
+        id: 'p', name: 'App', path: '/work/app', activeAiSessionTab: 'active',
+        activeAiSessions: [{
+            key: 'codex:s1', provider: 'codex', sessionId: 's1', name: 'One',
+            executionState: 'running', status: 'running', focused: false, needsAttention: false, pending: false,
+            backend: 'tmux', tmuxLayout: 'project', attached: false,
+        }],
+        codexSessions: [{ id: 's1', name: 'One', active: true }],
+        kimiSessions: [], claudeSessions: [],
+    };
+    const projectWithDirectRuntimeFixture = {
+        ...projectWithTmuxRuntimeFixture,
+        activeAiSessions: [{
+            ...projectWithTmuxRuntimeFixture.activeAiSessions[0],
+            backend: 'vscode', tmuxLayout: undefined, attached: true,
+        }],
+    };
+    const projectWithConflictFixture = {
+        ...projectWithTmuxRuntimeFixture,
+        activeAiSessions: [{
+            ...projectWithTmuxRuntimeFixture.activeAiSessions[0],
+            status: 'conflict', conflict: true,
+        }],
+    };
+
+    const tmuxRow = webviewContentModule.getAiSessionsDiv(projectWithTmuxRuntimeFixture);
+    assert.ok(tmuxRow.includes('data-session-backend="tmux"'));
+    assert.ok(tmuxRow.includes('data-tmux-layout="project"'));
+    assert.ok(tmuxRow.includes('data-session-attached="false"'));
+    assert.ok(tmuxRow.includes('ai-session-runtime-badge'));
+    assert.ok(tmuxRow.includes('tmux'));
+    assert.ok(tmuxRow.includes('Detach Terminal…'));
+    assert.ok(tmuxRow.includes('data-action="detach-ai-session-terminal"'));
+    assert.ok(tmuxRow.includes('aria-label="Detach Terminal"'));
+    assert.strictEqual((tmuxRow.match(/data-session-backend="tmux"/g) || []).length, 2,
+        'matching active history rows must preserve the tmux backend for context actions');
+
+    const directRow = webviewContentModule.getAiSessionsDiv(projectWithDirectRuntimeFixture);
+    assert.ok(directRow.includes('data-session-backend="vscode"'));
+    assert.ok(directRow.includes('data-session-attached="true"'));
+    assert.ok(directRow.includes('Close Terminal…'));
+    assert.ok(directRow.includes('data-action="close-ai-session-terminal"'));
+    assert.ok(!directRow.includes('data-action="detach-ai-session-terminal"'));
+    assert.strictEqual((directRow.match(/data-session-backend="vscode"/g) || []).length, 2);
+
+    const conflictRow = webviewContentModule.getAiSessionsDiv(projectWithConflictFixture);
+    assert.ok(conflictRow.includes('data-session-conflict'));
+    assert.ok(conflictRow.includes('Runtime conflict'));
+
+    const projectScript = fs.readFileSync(
+        path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'), 'utf8'
+    );
+    assert.ok(projectScript.includes("'detach-ai-session-terminal'"));
+    assert.ok(projectScript.includes("data-session-backend"));
+    assert.ok(projectScript.includes("contextMenuAiSessionBackend"));
+    const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
+    assert.ok(styles.includes('.ai-session-runtime-badge'));
+    assert.ok(styles.includes('&:focus-visible'));
+    assert.ok(styles.includes('&[data-session-conflict]'));
+    assert.ok(styles.includes('@media (forced-colors: active)'));
+    const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
+    assert.ok(compiledStyles.includes('body.steward-sidebar .project .codex-session-row:focus-visible'),
+        'generated styles must give session rows a visible keyboard focus outline');
+}
+
+function runRealTmuxSmokeHarnessSourceChecks() {
+    const smokePath = path.join(__dirname, 'run-ai-session-tmux-smoke-checks.js');
+    assert.ok(fs.existsSync(smokePath), 'the isolated real tmux smoke harness must exist');
+    const source = fs.readFileSync(smokePath, 'utf8');
+    assert.ok(source.includes('execFileSync'));
+    assert.ok(source.includes('project-steward-test-'));
+    assert.ok(source.includes("'-L'"));
+    assert.ok(source.includes("'-f'"));
+    assert.ok(source.includes("'/dev/null'"));
+    assert.ok(source.includes('finally'));
+    assert.ok(source.includes("'kill-server'"));
+    assert.ok(source.includes("'list-sessions'"),
+        'cleanup must verify the isolated server no longer answers');
+    assert.ok(source.includes('#{socket_path}'),
+        'cleanup must capture the exact isolated socket before stopping the server');
+    assert.ok(source.includes('unlinkSync'),
+        'cleanup must remove only its own stale isolated socket');
+    assert.ok(source.includes('PROJECT_STEWARD_TMUX_PATH'));
+    assert.strictEqual(/\bexecFile\s*\(/.test(source), false);
+    assert.strictEqual(/\bexecSync\s*\(/.test(source), false);
+    assert.strictEqual(/\bspawn(?:Sync)?\s*\(/.test(source), false);
 }
 
 async function main() {
@@ -6618,6 +6743,8 @@ async function main() {
     await runRuntimeProjectionChecks();
     await runRuntimeControllerChecks();
     runHostRuntimeCompositionChecks();
+    runTmuxWebviewExperienceChecks();
+    runRealTmuxSmokeHarnessSourceChecks();
     console.log('AI session tmux checks passed.');
 }
 

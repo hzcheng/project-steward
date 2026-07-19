@@ -4197,7 +4197,7 @@ function runWebviewContentChecks() {
     assert.ok(!sessionTabsHtml.includes('data-session-status='));
     assert.ok(sessionTabsHtml.includes('data-session-pending'));
     assert.ok(sessionTabsHtml.includes('data-session-active'));
-    assert.ok(sessionTabsHtml.includes('Close the active terminal before archiving.'));
+    assert.ok(sessionTabsHtml.includes('Stop the active runtime before archiving.'));
     assert.ok(sessionTabsHtml.includes('aria-live="polite"'));
     assert.ok(webviewContent.includes('data-ai-session-total-count'));
     assert.ok(webviewContent.includes('role="menu" aria-label="AI Session actions"'));
@@ -4557,6 +4557,29 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes('--steward-ai-session-list-max-height: ${getAiSessionListMaxHeight(config)}px;'));
     assert.ok(webviewContent.includes('Number.isFinite(visibleRows)'));
     assert.ok(styles.includes('height: var(--steward-ai-session-list-max-height, calc(3 * 42px + 2 * 2px));'));
+}
+
+function runTmuxSmokeHarnessSafetyChecks() {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    const safetyScript = packageJson.scripts['test:safety'];
+    assert.ok(safetyScript.includes('node scripts/run-ai-session-tmux-checks.js'),
+        'ordinary safety CI must run the pure fake-tmux checks');
+    assert.strictEqual(safetyScript.includes('run-ai-session-tmux-smoke-checks.js'), false,
+        'ordinary safety CI must never start a real tmux server');
+    assert.strictEqual(packageJson.scripts['test:tmux:smoke'],
+        'npm run test-compile && node scripts/run-ai-session-tmux-smoke-checks.js');
+
+    const smokeSource = fs.readFileSync(
+        path.join(__dirname, 'run-ai-session-tmux-smoke-checks.js'), 'utf8'
+    );
+    assert.ok(smokeSource.includes('execFileSync'));
+    assert.ok(smokeSource.includes('project-steward-test-'));
+    assert.ok(smokeSource.includes("['-L', serverName, '-f', '/dev/null']"));
+    assert.ok(smokeSource.includes('finally'));
+    assert.ok(smokeSource.includes("'kill-server'"));
+    assert.strictEqual(/\bexecFile\s*\(/.test(smokeSource), false);
+    assert.strictEqual(/\bexecSync\s*\(/.test(smokeSource), false);
+    assert.strictEqual(/\bspawn(?:Sync)?\s*\(/.test(smokeSource), false);
 }
 
 function runCurrentWorkspaceRenderingChecks() {
@@ -4942,9 +4965,12 @@ function runBatchAiSessionWebviewChecks() {
     const eventListeners = {};
     const windowEventListeners = {};
     const timeoutCallbacks = [];
-    const createSessionRow = (provider, sessionId) => {
-        const attributes = new Set();
-        const attributeValues = {};
+    const createSessionRow = (provider, sessionId, backend = 'vscode') => {
+        const attributes = new Set(['data-session-backend', 'data-session-attached']);
+        const attributeValues = {
+            'data-session-backend': backend,
+            'data-session-attached': backend === 'vscode' ? 'true' : 'false',
+        };
         const classes = new Set();
         let attentionIndicator = null;
         const row = {
@@ -4954,6 +4980,11 @@ function runBatchAiSessionWebviewChecks() {
             classList: {
                 add: className => classes.add(className),
                 remove: className => classes.delete(className),
+                contains: className => classes.has(className),
+                toggle: (className, force) => {
+                    if (force) classes.add(className);
+                    else classes.delete(className);
+                },
             },
             getAttribute: attribute => {
                 if (attribute === 'data-session-provider') return provider;
@@ -4982,12 +5013,16 @@ function runBatchAiSessionWebviewChecks() {
                 }
             },
             closest: selector => {
-                if (selector === '.codex-session-row' || selector === '.codex-session-row[data-session-provider]') return row;
+                if (selector === '.codex-session-row' || selector === '.codex-session-row[data-session-provider]'
+                    || selector === '.codex-session-row[data-session-provider][data-session-backend]') return row;
                 if (selector === '.codex-session-row[data-session-id]' && sessionId) return row;
+                if (selector === '.codex-session-row[data-session-id][data-session-provider]' && sessionId) return row;
                 if (selector === '.codex-session-row[data-session-pending]' && attributes.has('data-session-pending')) return row;
                 if (selector === '.project' || selector === '.project[data-id]') return row.project;
                 return null;
             },
+            focus: () => {},
+            getBoundingClientRect: () => ({ left: 10, top: 10 }),
         };
         return row;
     };
@@ -5142,6 +5177,49 @@ function runBatchAiSessionWebviewChecks() {
     };
     let replacedSearchCatalog = null;
     let webviewState = { unrelated: 'preserved' };
+    const createMenuItem = action => {
+        const classes = new Set(['custom-context-menu-item']);
+        const attributes = { 'data-action': action };
+        const item = {
+            textContent: '',
+            classList: {
+                add: name => classes.add(name),
+                remove: name => classes.delete(name),
+                contains: name => classes.has(name),
+                toggle: (name, force) => force ? classes.add(name) : classes.delete(name),
+            },
+            getAttribute: name => attributes[name] || null,
+            setAttribute: (name, value) => { attributes[name] = String(value); },
+            focus: () => { item.focused = true; },
+            closest: selector => {
+                if (selector === '#aiSessionContextMenu [data-action]'
+                    || selector === '#aiSessionContextMenu [role="menuitem"]') return item;
+                if (selector === '.disabled' && classes.has('disabled')) return item;
+                if (selector === '#aiSessionContextMenu') return aiSessionMenu;
+                return null;
+            },
+        };
+        return item;
+    };
+    const resumeMenuItem = createMenuItem('resume');
+    const archiveMenuItem = createMenuItem('archive');
+    const closeMenuItem = createMenuItem('close-terminal');
+    const aiSessionMenuItems = [resumeMenuItem, closeMenuItem, archiveMenuItem];
+    const menuClasses = new Set();
+    const aiSessionMenu = {
+        style: {},
+        classList: {
+            add: name => menuClasses.add(name),
+            remove: name => menuClasses.delete(name),
+        },
+        getBoundingClientRect: () => ({ width: 180, height: 120 }),
+        querySelectorAll: selector => selector === ':scope > *' || selector === '[role="menuitem"]'
+            ? aiSessionMenuItems : [],
+        querySelector: selector => selector === '[data-action="archive"]' ? archiveMenuItem
+            : selector === '[data-action="close-terminal"]' ? closeMenuItem
+                : selector === '.custom-context-menu-item[data-action]:not(.disabled)'
+                    ? aiSessionMenuItems.find(item => !item.classList.contains('disabled')) : null,
+    };
     const context = {
         normalizeDashboardSearchCatalog: value => value
             && Array.isArray(value.sessions)
@@ -5156,7 +5234,7 @@ function runBatchAiSessionWebviewChecks() {
                 style: { setProperty: () => {} },
             },
             addEventListener: (event, listener) => { eventListeners[event] = listener; },
-            getElementById: () => null,
+            getElementById: id => id === 'aiSessionContextMenu' ? aiSessionMenu : null,
             createElement: () => ({
                 className: '',
                 title: '',
@@ -5178,10 +5256,13 @@ function runBatchAiSessionWebviewChecks() {
                 if (selector === '.project[data-attention-project-key]') {
                     return [attentionProjectCard, openAttentionProjectCard];
                 }
+                if (selector === '.custom-context-menu') return [aiSessionMenu];
                 return [];
             },
         },
         window: {
+            innerWidth: 800,
+            innerHeight: 600,
             addEventListener: (event, listener) => { windowEventListeners[event] = listener; },
             requestAnimationFrame: callback => callback(),
             setTimeout: callback => timeoutCallbacks.push(callback),
@@ -5329,23 +5410,38 @@ function runBatchAiSessionWebviewChecks() {
     eventListeners.click({ button: 0, target: newSessionTarget });
 
     const closeActiveTarget = {
+        getAttribute: attribute => attribute === 'data-action' ? 'close-ai-session-terminal' : null,
         closest: selector => {
             if (selector === '.project' || selector === '.project[data-id]') return projectA;
-            if (selector === '[data-action="close-ai-session-terminal"]') return closeActiveTarget;
-            if (selector === '.codex-session-row[data-session-provider]') return activeRow;
+            if (selector === '[data-action="close-ai-session-terminal"], [data-action="detach-ai-session-terminal"]') return closeActiveTarget;
+            if (selector === '.codex-session-row[data-session-provider][data-session-backend]') return activeRow;
             return null;
         },
     };
     const closePendingTarget = {
+        getAttribute: attribute => attribute === 'data-action' ? 'close-ai-session-terminal' : null,
         closest: selector => {
             if (selector === '.project' || selector === '.project[data-id]') return projectA;
-            if (selector === '[data-action="close-ai-session-terminal"]') return closePendingTarget;
-            if (selector === '.codex-session-row[data-session-provider]') return pendingRow;
+            if (selector === '[data-action="close-ai-session-terminal"], [data-action="detach-ai-session-terminal"]') return closePendingTarget;
+            if (selector === '.codex-session-row[data-session-provider][data-session-backend]') return pendingRow;
+            return null;
+        },
+    };
+    const tmuxRow = createSessionRow('kimi', 'tmux-session', 'tmux');
+    tmuxRow.project = projectA;
+    tmuxRow.setAttribute('data-session-active', '');
+    const detachTmuxTarget = {
+        getAttribute: attribute => attribute === 'data-action' ? 'detach-ai-session-terminal' : null,
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') return projectA;
+            if (selector === '[data-action="close-ai-session-terminal"], [data-action="detach-ai-session-terminal"]') return detachTmuxTarget;
+            if (selector === '.codex-session-row[data-session-provider][data-session-backend]') return tmuxRow;
             return null;
         },
     };
     eventListeners.click({ button: 0, target: closeActiveTarget });
     eventListeners.click({ button: 0, target: closePendingTarget });
+    eventListeners.click({ button: 0, target: detachTmuxTarget });
     assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [{
         type: 'focus-ai-session-terminal', projectId: 'project-a', provider: 'codex', sessionId: 'active-session',
     }, {
@@ -5360,7 +5456,45 @@ function runBatchAiSessionWebviewChecks() {
     }, {
         type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'claude',
         pendingCreatedAt: '2026-07-18T08:00:00Z',
+    }, {
+        type: 'detach-ai-session-terminal', projectId: 'project-a', provider: 'kimi',
+        sessionId: 'tmux-session',
     }]);
+    messages.length = 0;
+
+    eventListeners.contextmenu({
+        target: tmuxRow,
+        preventDefault: () => {},
+        clientX: 20,
+        clientY: 20,
+        keyboardTrigger: true,
+    });
+    assert.strictEqual(closeMenuItem.textContent, 'Detach Terminal…');
+    assert.strictEqual(closeMenuItem.getAttribute('aria-label'), 'Detach Terminal…');
+    eventListeners.keydown({
+        target: closeMenuItem,
+        key: 'Enter',
+        preventDefault: () => {},
+    });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.pop())), {
+        type: 'detach-ai-session-terminal', projectId: 'project-a', provider: 'kimi',
+        sessionId: 'tmux-session',
+    }, 'keyboard context-menu activation must preserve the tmux detach route');
+
+    eventListeners.contextmenu({
+        target: activeRow,
+        preventDefault: () => {},
+        clientX: 20,
+        clientY: 20,
+        keyboardTrigger: false,
+    });
+    assert.strictEqual(closeMenuItem.textContent, 'Close Terminal…');
+    assert.strictEqual(closeMenuItem.getAttribute('aria-label'), 'Close Terminal…');
+    eventListeners.click({ button: 0, target: closeMenuItem });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.pop())), {
+        type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'codex',
+        sessionId: 'active-session',
+    }, 'pointer context-menu activation must preserve the Direct close route');
     messages.length = 0;
 
     attentionRow.setAttribute('data-ai-session-attention', '');
@@ -8310,6 +8444,7 @@ async function main() {
     await runAiSessionTerminalPersistenceChecks();
     await runBatchAiSessionArchiveHostChecks();
     runWebviewContentChecks();
+    runTmuxSmokeHarnessSafetyChecks();
     runCurrentWorkspaceRenderingChecks();
     runFavoriteRenderingChecks();
     runAttentionProjectRenderingChecks();
