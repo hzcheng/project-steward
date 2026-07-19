@@ -70,6 +70,8 @@ export interface TmuxInactiveRuntimeBinding {
     detectedAtMs: number;
 }
 
+export type TmuxInactiveAcknowledgementResult = 'acknowledged' | 'stale' | 'missing';
+
 export interface TmuxConsumedPendingBinding {
     version: 1;
     state: 'consumed';
@@ -409,23 +411,27 @@ export class TmuxRuntimeBindingStore {
         });
     }
 
-    acknowledgeInactive(provider: AiSessionProviderId, sessionId: string): Promise<void> {
-        if (!isProviderId(provider) || !isBoundedString(sessionId, MAX_ID_LENGTH)) {
-            return Promise.resolve();
+    acknowledgeInactive(
+        expected: TmuxInactiveRuntimeBinding
+    ): Promise<TmuxInactiveAcknowledgementResult> {
+        const validated = validateInactiveRecord(expected, this.now());
+        if (!validated) {
+            return Promise.reject(new Error('The expected inactive tmux binding is invalid.'));
         }
         return this.serializeFinal(async () => {
-            const filePath = this.recordPath('known', provider, sessionId);
+            const filePath = this.recordPath('known', validated.provider, validated.sessionId);
             const record = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
             if (!record) {
-                await removeFileDurably(filePath);
-                return;
+                return await pathEntryExists(filePath) ? 'stale' : 'missing';
             }
-            if (record.provider !== provider || record.sessionId !== sessionId
+            if (record.provider !== validated.provider || record.sessionId !== validated.sessionId
                 || !isCanonicalRecordPath(filePath, record)
-                || record.state === 'known') {
-                return;
+                || record.state === 'known'
+                || !inactiveBindingsEqual(record, validated)) {
+                return 'stale';
             }
             await removeFileDurably(filePath);
+            return 'acknowledged';
         });
     }
 
@@ -642,6 +648,18 @@ async function readJsonRegularFile(filePath: string): Promise<unknown> {
         if (handle) {
             await handle.close();
         }
+    }
+}
+
+async function pathEntryExists(filePath: string): Promise<boolean> {
+    try {
+        await fs.lstat(filePath);
+        return true;
+    } catch (error) {
+        if (isNodeError(error, 'ENOENT')) {
+            return false;
+        }
+        throw error;
     }
 }
 
@@ -1005,6 +1023,15 @@ function inactiveBindingsMatchRun(
         && left.layout === right.layout && locatorsEqual(left.locator, right.locator)
         && left.markerPath === right.markerPath
         && left.runStartedAtMs === right.runStartedAtMs;
+}
+
+function inactiveBindingsEqual(
+    left: TmuxInactiveRuntimeBinding,
+    right: TmuxInactiveRuntimeBinding
+): boolean {
+    return inactiveBindingsMatchRun(left, right)
+        && left.state === right.state
+        && left.detectedAtMs === right.detectedAtMs;
 }
 
 function clonePending(record: TmuxPendingRuntimeBinding): TmuxPendingRuntimeBinding {

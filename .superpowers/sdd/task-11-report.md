@@ -143,3 +143,19 @@ npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run te
 ```
 
 Lint emitted only the repository's existing warnings. All tmux checks used fake clients; no real tmux process was invoked.
+
+## Final Per-Run Lifecycle Acknowledgement CAS
+
+- Inactive acknowledgement now carries the complete expected run contract and compares it with the canonical record under the cross-host final-record lock. An exact match is deleted as `acknowledged`, an absent record is `missing`, and every different run, field, or locator is `stale` and remains persisted.
+- Discovery clears retained state only for an exact acknowledged/missing snapshot. A stale acknowledgement reloads and retains the current canonical inactive run, so resume remains blocked. Dashboard settlement passes the candidate runtime snapshot rather than identity alone.
+- Two independent stores and discoveries prove that acknowledgement A may remove the old run, a new inactive run may then be written, and a late acknowledgement B cannot remove it. Tests also cover locator/field mismatch and idempotent same-run double acknowledgement.
+
+### Final Verification
+
+The complete required matrix exited 0:
+
+```text
+npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run test:safety && npm run test:dashboard && npm run test:architecture-baseline && npm run test:tmux && npm run test:tmux && npm run lint && git diff --check
+```
+
+Lint emitted only the repository's existing warnings. All tmux checks used fake clients; no real tmux process was invoked.

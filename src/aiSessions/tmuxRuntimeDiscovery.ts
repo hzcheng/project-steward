@@ -16,6 +16,7 @@ import {
     parseManagedTmuxMetadata,
 } from './tmuxLayout';
 import type {
+    TmuxInactiveAcknowledgementResult,
     TmuxInactiveRuntimeBinding,
     TmuxKnownRuntimeBinding,
     TmuxPendingRuntimeBinding,
@@ -47,7 +48,9 @@ interface TmuxDiscoveryBindingStore {
         record: TmuxInactiveRuntimeBinding,
         expectedLastSeenAtMs: number
     ): Promise<boolean>;
-    acknowledgeInactive?(provider: AiSessionRuntimeIdentity['provider'], sessionId: string): Promise<void>;
+    acknowledgeInactive?(
+        expected: TmuxInactiveRuntimeBinding
+    ): Promise<TmuxInactiveAcknowledgementResult>;
     reconcileKnown(live: readonly AiSessionRuntimeSnapshot[]): Promise<void>;
     removeKnown?(provider: AiSessionRuntimeIdentity['provider'], sessionId: string): Promise<void>;
 }
@@ -195,21 +198,50 @@ export class TmuxRuntimeDiscovery {
         this.inactive = [...restored.values()].map(cloneRuntime);
     }
 
-    async acknowledgeInactive(identity: AiSessionRuntimeIdentity): Promise<void> {
-        if (!identity?.sessionId) {
-            return;
-        }
-        const key = finalIdentityKey(identity.provider, identity.sessionId);
+    async acknowledgeInactive(
+        expected: AiSessionRuntimeSnapshot
+    ): Promise<TmuxInactiveAcknowledgementResult> {
+        const expectedBinding = inactiveBindingFromSnapshot(
+            expected, expected.detectedAtMs as number
+        );
+        const key = finalIdentityKey(expectedBinding.provider, expectedBinding.sessionId);
         this.cacheGeneration++;
         this.successfulAtMs = null;
+        let result: TmuxInactiveAcknowledgementResult;
         if (this.options.bindingStore.acknowledgeInactive) {
-            await this.options.bindingStore.acknowledgeInactive(identity.provider, identity.sessionId);
+            result = await this.options.bindingStore.acknowledgeInactive(expectedBinding);
         } else if (this.options.bindingStore.removeKnown) {
-            await this.options.bindingStore.removeKnown(identity.provider, identity.sessionId);
+            await this.options.bindingStore.removeKnown(
+                expectedBinding.provider, expectedBinding.sessionId
+            );
+            result = 'acknowledged';
+        } else {
+            result = 'missing';
         }
-        this.retainedInactive.delete(key);
-        this.inactive = this.inactive.filter(runtime =>
-            finalIdentityKey(runtime.identity.provider, runtime.identity.sessionId || '') !== key);
+        if (result === 'stale') {
+            if (this.options.bindingStore.listInactive) {
+                const current = (await this.options.bindingStore.listInactive()).find(record =>
+                    record.provider === expectedBinding.provider
+                    && record.sessionId === expectedBinding.sessionId);
+                if (current) {
+                    const currentSnapshot = inactiveSnapshotFromBinding(current);
+                    this.retainedInactive.set(key, currentSnapshot);
+                    this.inactive = this.inactive.filter(runtime =>
+                        finalIdentityKey(runtime.identity.provider,
+                            runtime.identity.sessionId || '') !== key);
+                    this.inactive.push(cloneRuntime(currentSnapshot));
+                }
+            }
+            return result;
+        }
+        const retained = this.retainedInactive.get(key);
+        if (retained && inactiveSnapshotsEqual(retained, expected)) {
+            this.retainedInactive.delete(key);
+            this.inactive = this.inactive.filter(runtime =>
+                finalIdentityKey(runtime.identity.provider,
+                    runtime.identity.sessionId || '') !== key);
+        }
+        return result;
     }
 
     find(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot[] {
@@ -383,7 +415,7 @@ export class TmuxRuntimeDiscovery {
                     await this.options.bindingStore.setInactive(binding);
                 }
                 if (persisted) {
-                    retainedInactive.set(key, cloneRuntime(runtime));
+                    retainedInactive.set(key, inactiveSnapshotFromBinding(binding));
                 }
             }
         }
@@ -544,9 +576,26 @@ function inactiveSnapshotFromBinding(
         state: record.state,
         markerPath: record.markerPath,
         runStartedAtMs: record.runStartedAtMs,
+        detectedAtMs: record.detectedAtMs,
         attached: false,
         tmux: { ...record.locator },
     };
+}
+
+function inactiveSnapshotsEqual(
+    left: AiSessionRuntimeSnapshot,
+    right: AiSessionRuntimeSnapshot
+): boolean {
+    return left.backend === 'tmux' && right.backend === 'tmux'
+        && left.state === right.state
+        && left.identity.provider === right.identity.provider
+        && left.identity.sessionId === right.identity.sessionId
+        && left.identity.projectKey === right.identity.projectKey
+        && left.identity.cwd === right.identity.cwd
+        && left.markerPath === right.markerPath
+        && left.runStartedAtMs === right.runStartedAtMs
+        && left.detectedAtMs === right.detectedAtMs
+        && !!left.tmux && !!right.tmux && locatorsEqual(left.tmux, right.tmux);
 }
 
 function finalIdentityKey(provider: AiSessionRuntimeIdentity['provider'], sessionId: string): string {

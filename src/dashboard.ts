@@ -652,12 +652,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                         ),
                         acknowledgePublished: eventIds => aiSessionAttentionBridgeClient.acknowledge(eventIds),
                         acknowledgeLocal: eventIds => aiSessionAttentionController.acknowledge(eventIds),
-                        release: candidate => candidate.runtime.backend === 'tmux'
-                            ? tmuxRuntimeDiscovery.acknowledgeInactive(candidate.runtime.identity)
-                            : aiSessionTerminalService.releaseCompletedSession(
+                        release: async candidate => {
+                            if (candidate.runtime.backend === 'tmux') {
+                                const acknowledgement = await tmuxRuntimeDiscovery
+                                    .acknowledgeInactive(candidate.runtime);
+                                if (acknowledgement === 'stale') {
+                                    throw new Error('The tmux lifecycle acknowledgement became stale.');
+                                }
+                                return;
+                            }
+                            aiSessionTerminalService.releaseCompletedSession(
                                 candidate.runtime.identity.provider,
                                 candidate.runtime.identity.sessionId as string
-                            ),
+                            );
+                        },
                         reportFailure: (operation, category, key) => logAiSessionDiagnostic({
                             event: 'runtime-lifecycle-settlement-failed',
                             operation,

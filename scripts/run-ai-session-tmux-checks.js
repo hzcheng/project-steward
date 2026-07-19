@@ -1676,7 +1676,7 @@ async function runTmuxDiscoveryChecks() {
     ]]);
     assert.deepStrictEqual(removedKnown, [],
         'discovery must not remove persisted ownership before host acknowledgement');
-    await lifecycleDiscovery.acknowledgeInactive(finalIdentity);
+    await lifecycleDiscovery.acknowledgeInactive(lifecycleDiscovery.getInactive()[0]);
     assert.deepStrictEqual(lifecycleDiscovery.getInactive(), []);
     assert.deepStrictEqual(removedKnown, [['codex', 's1']]);
 
@@ -1732,22 +1732,80 @@ async function runTmuxDiscoveryChecks() {
             return originalUnlink.call(fs.promises, filePath);
         };
         try {
-            await assert.rejects(afterRestart.acknowledgeInactive(finalIdentity),
+            await assert.rejects(afterRestart.acknowledgeInactive(afterRestart.getInactive()[0]),
                 error => error && error.code === 'EACCES');
         } finally {
             fs.promises.unlink = originalUnlink;
         }
         assert.strictEqual(afterRestart.getInactive()[0].state, 'completed',
             'failed durable acknowledgement must not delete discovery memory first');
-        await afterRestart.acknowledgeInactive(finalIdentity);
+        await afterRestart.acknowledgeInactive(afterRestart.getInactive()[0]);
         assert.deepStrictEqual(afterRestart.getInactive(), []);
     } finally {
         fs.rmSync(restartRoot, { recursive: true, force: true });
     }
 
+    const discoveryAckRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-discovery-ack-cas-'));
+    try {
+        let discoveryAckQueue = Promise.resolve();
+        const discoveryAckLock = operation => {
+            const result = discoveryAckQueue.then(operation);
+            discoveryAckQueue = result.then(() => undefined, () => undefined);
+            return result;
+        };
+        const discoveryAckStoreA = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            discoveryAckRoot, () => now, discoveryAckLock
+        );
+        const discoveryAckStoreB = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            discoveryAckRoot, () => now, discoveryAckLock
+        );
+        const discoveryAckIdentity = {
+            provider: 'codex', sessionId: 'discovery-ack-cas', projectKey: 'pk', cwd: '/work',
+        };
+        const discoveryAckLocator = new tmuxLayout.ProjectTmuxLayout()
+            .getLocator(discoveryAckIdentity);
+        const oldDiscoveryAck = {
+            version: 1, state: 'completed', ...discoveryAckIdentity, layout: 'project',
+            locator: discoveryAckLocator, markerPath: '/tmp/discovery-ack-old.done',
+            runStartedAtMs: 900, detectedAtMs: 990,
+        };
+        await discoveryAckStoreA.setInactive(oldDiscoveryAck);
+        const discoveryAckA = new discoveryModule.TmuxRuntimeDiscovery({
+            client: { listWindows: async () => [] }, bindingStore: discoveryAckStoreA,
+            markerIsCurrent: () => false, nowMs: () => now,
+        });
+        const discoveryAckB = new discoveryModule.TmuxRuntimeDiscovery({
+            client: { listWindows: async () => [] }, bindingStore: discoveryAckStoreB,
+            markerIsCurrent: () => false, nowMs: () => now,
+        });
+        await Promise.all([
+            discoveryAckA.loadPersistedInactive(), discoveryAckB.loadPersistedInactive(),
+        ]);
+        const lateOldExpected = discoveryAckB.getInactive()[0];
+        assert.strictEqual(await discoveryAckA.acknowledgeInactive(
+            discoveryAckA.getInactive()[0]
+        ), 'acknowledged');
+        const newDiscoveryAck = {
+            ...oldDiscoveryAck, state: 'stopped', markerPath: '/tmp/discovery-ack-new.done',
+            runStartedAtMs: 950, detectedAtMs: now,
+        };
+        await discoveryAckStoreA.setInactive(newDiscoveryAck);
+        assert.strictEqual(await discoveryAckB.acknowledgeInactive(lateOldExpected), 'stale',
+            'a second discovery must not clear a newer run with its retained old snapshot');
+        assert.deepStrictEqual(await discoveryAckStoreA.getInactive(
+            'codex', 'discovery-ack-cas'
+        ), newDiscoveryAck);
+        assert.strictEqual(discoveryAckB.getInactive()[0].runStartedAtMs,
+            newDiscoveryAck.runStartedAtMs,
+            'a stale acknowledgement must reload and retain the current lifecycle blocker');
+    } finally {
+        fs.rmSync(discoveryAckRoot, { recursive: true, force: true });
+    }
+
     const staleInactive = {
         identity: { ...finalIdentity }, backend: 'tmux', state: 'completed',
         markerPath: '/tmp/s1.done', runStartedAtMs: 900, attached: false,
+        detectedAtMs: now,
         tmux: { ...finalLocator },
     };
     let persistedInactive = [{
@@ -1771,7 +1829,7 @@ async function runTmuxDiscoveryChecks() {
         },
         reconcileKnown: async () => undefined,
         setInactive: async () => undefined,
-        acknowledgeInactive: async () => { persistedInactive = []; },
+        acknowledgeInactive: async () => { persistedInactive = []; return 'acknowledged'; },
     };
     const generationDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [] }, bindingStore: generationStore,
@@ -1782,7 +1840,7 @@ async function runTmuxDiscoveryChecks() {
     blockInactiveRead = true;
     const staleRefresh = generationDiscovery.refresh(true);
     await inactiveReadStarted.promise;
-    await generationDiscovery.acknowledgeInactive(finalIdentity);
+    await generationDiscovery.acknowledgeInactive(generationDiscovery.getInactive()[0]);
     releaseInactiveRead.resolve();
     await staleRefresh;
     assert.deepStrictEqual(generationDiscovery.getInactive(), [],
@@ -1808,7 +1866,7 @@ async function runTmuxDiscoveryChecks() {
     assert.strictEqual(stoppedDiscovery.getInactive()[0].state, 'stopped',
         'a stopped inactive runtime must remain owned until lifecycle cleanup acknowledges it');
     assert.deepStrictEqual(stoppedRemoved, []);
-    await stoppedDiscovery.acknowledgeInactive(finalIdentity);
+    await stoppedDiscovery.acknowledgeInactive(stoppedDiscovery.getInactive()[0]);
     assert.deepStrictEqual(stoppedDiscovery.getInactive(), []);
     assert.deepStrictEqual(stoppedRemoved, [['codex', 's1']]);
 
@@ -2008,6 +2066,47 @@ async function runTmuxStoreChecks() {
             promotedCompleted,
         'inactive updates may promote the same run to completed but never downgrade or replace its run');
 
+        const acknowledgementCasRoot = path.join(root, 'inactive-ack-cas');
+        const acknowledgementCasRecords = path.join(acknowledgementCasRoot, 'records');
+        let acknowledgementCasQueue = Promise.resolve();
+        const acknowledgementCasLock = operation => {
+            const result = acknowledgementCasQueue.then(operation);
+            acknowledgementCasQueue = result.then(() => undefined, () => undefined);
+            return result;
+        };
+        const acknowledgementCasA = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            acknowledgementCasRecords, () => now, acknowledgementCasLock
+        );
+        const acknowledgementCasB = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            acknowledgementCasRecords, () => now, acknowledgementCasLock
+        );
+        const oldAcknowledgement = inactive('ack-cas', 'completed', now - 10, {
+            runStartedAtMs: now - 1000,
+        });
+        await acknowledgementCasA.setInactive(oldAcknowledgement);
+        assert.strictEqual(await acknowledgementCasA.acknowledgeInactive(oldAcknowledgement),
+            'acknowledged');
+        const newAcknowledgement = inactive('ack-cas', 'stopped', now, {
+            runStartedAtMs: now - 500,
+            markerPath: '/tmp/ack-cas-new.done',
+        });
+        await acknowledgementCasB.setInactive(newAcknowledgement);
+        assert.strictEqual(await acknowledgementCasA.acknowledgeInactive(oldAcknowledgement),
+            'stale', 'a late old-run acknowledgement must not delete a newer inactive run');
+        assert.deepStrictEqual(await acknowledgementCasB.getInactive('codex', 'ack-cas'),
+            newAcknowledgement);
+        const locatorMismatch = {
+            ...newAcknowledgement,
+            locator: { ...newAcknowledgement.locator, windowName: 'different-window' },
+        };
+        assert.strictEqual(await acknowledgementCasA.acknowledgeInactive(locatorMismatch), 'stale');
+        assert.deepStrictEqual(await acknowledgementCasB.getInactive('codex', 'ack-cas'),
+            newAcknowledgement, 'field and locator mismatches must not delete current lifecycle state');
+        assert.strictEqual(await acknowledgementCasB.acknowledgeInactive(newAcknowledgement),
+            'acknowledged');
+        assert.strictEqual(await acknowledgementCasA.acknowledgeInactive(newAcknowledgement),
+            'missing', 'same-run duplicate acknowledgement is idempotent');
+
         const legacyKnownRoot = path.join(root, 'legacy-known-no-discriminator');
         fs.mkdirSync(legacyKnownRoot);
         const normalizedLegacyKnown = known('legacy-known', now - 100);
@@ -2064,7 +2163,9 @@ async function runTmuxStoreChecks() {
         assert.strictEqual((await crossHostA.getInactive('codex', 'cross-host')).state, 'stopped',
             'a later cross-host reconcile must not overwrite an inactive transition');
 
-        await crossHostA.acknowledgeInactive('codex', 'cross-host');
+        await crossHostA.acknowledgeInactive(
+            await crossHostA.getInactive('codex', 'cross-host')
+        );
         await crossHostA.setKnown(crossOld);
         const [_, staleCrossTransition] = await Promise.all([
             crossHostB.reconcileKnown([crossRuntime]),
@@ -2096,8 +2197,9 @@ async function runTmuxStoreChecks() {
         );
         await ackRaceA.setInactive(inactive('cross-ack', 'completed', now));
         const rewrittenAfterAck = known('cross-ack', now);
+        const ackExpected = await ackRaceA.getInactive('codex', 'cross-ack');
         blockNextAckOperation = true;
-        const ackOperation = ackRaceA.acknowledgeInactive('codex', 'cross-ack');
+        const ackOperation = ackRaceA.acknowledgeInactive(ackExpected);
         await ackLockEntered.promise;
         const rewriteOperation = ackRaceB.setKnown(rewrittenAfterAck);
         releaseAckLock.resolve();
@@ -2139,7 +2241,7 @@ async function runTmuxStoreChecks() {
         };
         try {
             await assert.rejects(
-                restartedInactiveStore.acknowledgeInactive('codex', 'inactive-restart'),
+                restartedInactiveStore.acknowledgeInactive(completedInactive),
                 error => error && error.code === 'EACCES'
             );
         } finally {
@@ -2147,8 +2249,8 @@ async function runTmuxStoreChecks() {
         }
         assert.deepStrictEqual(await restartedInactiveStore.listInactive(), [completedInactive],
             'failed acknowledgement persistence must retain inactive lifecycle ownership');
-        await restartedInactiveStore.acknowledgeInactive('codex', 'inactive-restart');
-        await restartedInactiveStore.acknowledgeInactive('codex', 'inactive-restart');
+        await restartedInactiveStore.acknowledgeInactive(completedInactive);
+        await restartedInactiveStore.acknowledgeInactive(completedInactive);
         assert.deepStrictEqual(await restartedInactiveStore.listInactive(), [],
             'inactive acknowledgement must be idempotent');
 
