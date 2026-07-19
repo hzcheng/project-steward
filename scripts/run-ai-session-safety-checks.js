@@ -5976,6 +5976,45 @@ function runIncrementalJsonlLifecycleReaderChecks() {
             fs.openSync = originalOpenSync;
         }
 
+        const statFailurePath = path.join(tempRoot, 'stat-failure.jsonl');
+        fs.writeFileSync(statFailurePath, `${codexEvent('2026-07-15T00:00:11.000Z', 'task_complete', 'cached-old-run')}\n`);
+        signal = reader.read('codex:stat-failure', statFailurePath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped');
+        const originalStatSync = fs.statSync;
+        fs.statSync = () => { throw new Error('forced stat failure'); };
+        try {
+            signal = reader.read(
+                'codex:stat-failure',
+                statFailurePath,
+                nextRunStartedAtMs,
+                () => lifecycle.createCodexLifecycleAccumulator(nextRunStartedAtMs)
+            );
+            assert.strictEqual(signal, null, 'a stat failure cannot leak a cached signal from another run');
+
+            signal = reader.read('codex:stat-failure', statFailurePath, runStartedAtMs, createAccumulator);
+            assert.strictEqual(
+                signal.executionState,
+                'stopped',
+                'a stat failure preserves the cached signal for the matching path and run'
+            );
+        } finally {
+            fs.statSync = originalStatSync;
+        }
+
+        const nonFileSourcePath = path.join(tempRoot, 'non-file-source.jsonl');
+        const nonFilePath = path.join(tempRoot, 'non-file-target');
+        fs.writeFileSync(nonFileSourcePath, `${codexEvent('2026-07-15T00:00:11.000Z', 'task_complete', 'cached-before-non-file')}\n`);
+        fs.mkdirSync(nonFilePath);
+        signal = reader.read('codex:non-file', nonFileSourcePath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped');
+        signal = reader.read(
+            'codex:non-file',
+            nonFilePath,
+            nextRunStartedAtMs,
+            () => lifecycle.createCodexLifecycleAccumulator(nextRunStartedAtMs)
+        );
+        assert.strictEqual(signal, null, 'a non-file path cannot leak a cached signal from another path and run');
+
         const retainedPath = path.join(tempRoot, 'retained.jsonl');
         const retainedStarted = codexEvent('2026-07-15T00:00:13.000Z', 'task_started', 'retain-11');
         const retainedComplete = codexEvent('2026-07-15T00:00:13.000Z', 'task_complete', 'retain-1');

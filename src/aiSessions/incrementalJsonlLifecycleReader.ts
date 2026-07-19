@@ -35,8 +35,11 @@ export default class IncrementalJsonlLifecycleReader {
         createAccumulator: () => AiSessionLifecycleAccumulator
     ): AiSessionLifecycleSignal | null {
         let previousCursor = this.cursors.get(key);
-        let previousSignal = previousCursor ? previousCursor.accumulator.getSignal() : null;
-        let errorCursor = previousCursor;
+        let previousCursorMatchesRequest = previousCursor
+            && previousCursor.filePath === filePath
+            && previousCursor.runStartedAtMs === runStartedAtMs;
+        let previousSignal = previousCursorMatchesRequest ? previousCursor.accumulator.getSignal() : null;
+        let errorCursor = previousCursorMatchesRequest ? previousCursor : null;
         let fd: number = null;
 
         try {
