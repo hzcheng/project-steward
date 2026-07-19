@@ -2928,7 +2928,8 @@ body.steward-sidebar {
             line-height: 1.15;
         }
 
-        .ai-session-runtime-badge {
+        .ai-session-runtime-badge,
+        .ai-session-stale-status {
             display: inline-flex;
             align-items: center;
             padding: 1px 4px;
@@ -2941,6 +2942,12 @@ body.steward-sidebar {
             line-height: 1;
             text-transform: lowercase;
             vertical-align: baseline;
+        }
+
+        .ai-session-stale-status {
+            font-weight: 600;
+            text-transform: none;
+            opacity: .8;
         }
 
         .codex-sessions-empty {

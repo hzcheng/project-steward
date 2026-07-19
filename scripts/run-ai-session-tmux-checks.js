@@ -1637,6 +1637,38 @@ async function runTmuxDiscoveryChecks() {
         layout: 'project', locator: finalLocator, lastSeenAtMs: 900,
     };
 
+    const offlineExitRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-offline-exit-'));
+    try {
+        const offlineRunStartedAtMs = Date.parse('2026-07-18T10:00:00Z');
+        const offlineMarkerPath = '/tmp/offline-exit.done';
+        const offlineStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            offlineExitRoot, () => now
+        );
+        await offlineStore.setKnown({
+            ...known,
+            cwd: '/work',
+            markerPath: offlineMarkerPath,
+            runStartedAtMs: offlineRunStartedAtMs,
+        });
+        const offlineMarkerChecks = [];
+        const offlineExitDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+            client: { listWindows: async () => [] },
+            bindingStore: offlineStore,
+            markerIsCurrent: (markerPath, runStartedAtMs) => {
+                offlineMarkerChecks.push([markerPath, runStartedAtMs]);
+                return true;
+            },
+            nowMs: () => now,
+        });
+        await offlineExitDiscovery.refresh(true);
+        assert.strictEqual(offlineExitDiscovery.getInactive()[0].state, 'completed',
+            'a provider that exits while the extension host is offline must retain completion proof');
+        assert.deepStrictEqual(offlineMarkerChecks, [[offlineMarkerPath, offlineRunStartedAtMs]]);
+        assert.strictEqual(offlineExitDiscovery.getInactive()[0].identity.cwd, '/work');
+    } finally {
+        fs.rmSync(offlineExitRoot, { recursive: true, force: true });
+    }
+
     const markerRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-marker-proof-'));
     try {
         const markerPath = path.join(markerRoot, 'complete.marker');
@@ -1949,10 +1981,12 @@ async function runTmuxDiscoveryChecks() {
     });
     await failureDiscovery.refresh();
     const beforeFailure = failureDiscovery.getActive();
+    assert.strictEqual(beforeFailure[0].stale, undefined);
     failList = true;
     now += 501;
     await assert.rejects(failureDiscovery.refresh(), /ambiguous list failure/);
-    assert.deepStrictEqual(failureDiscovery.getActive(), beforeFailure);
+    assert.strictEqual(failureDiscovery.getActive()[0].stale, true,
+        'a failed refresh must mark the retained last-successful runtime snapshot stale');
     assert.strictEqual(failureReconciles, 1);
     assert.strictEqual(failureRemovals, 0);
     await assert.rejects(failureDiscovery.refresh(), /ambiguous list failure/);
@@ -2002,7 +2036,9 @@ async function runTmuxDiscoveryChecks() {
     markerFailureRows = [];
     await assert.rejects(markerFailureDiscovery.refresh(true), /marker read failure/);
     assert.deepStrictEqual(markerFailureMutations, markerMutationsBeforeFailure);
-    assert.deepStrictEqual(markerFailureDiscovery.getActive(), markerFailureActive);
+    assert.deepStrictEqual(markerFailureDiscovery.getActive(), markerFailureActive.map(runtime => ({
+        ...runtime, stale: true,
+    })));
     assert.deepStrictEqual(markerFailureDiscovery.getInactive(), []);
 }
 
@@ -2232,7 +2268,12 @@ async function runTmuxStoreChecks() {
             ),
         ]);
         assert.strictEqual(staleCrossTransition, false);
-        assert.deepStrictEqual(await crossHostA.getKnown('codex', 'cross-host'), crossNew,
+        assert.deepStrictEqual(await crossHostA.getKnown('codex', 'cross-host'), {
+            ...crossNew,
+            cwd: crossRuntime.identity.cwd,
+            markerPath: crossRuntime.markerPath,
+            runStartedAtMs: crossRuntime.runStartedAtMs,
+        },
             'a stale cross-host transition must not overwrite a newer reconcile');
 
         const ackRaceRoot = path.join(crossHostRoot, 'ack-records');
@@ -2327,6 +2368,20 @@ async function runTmuxStoreChecks() {
         assert.strictEqual(cappedInactive.some(record => record.sessionId === 'priority-completed'), true,
             'deterministic cap pruning must retain completed records before newer stopped records');
         assert.strictEqual(cappedInactive.some(record => record.sessionId === 'cap-stopped-511'), false);
+
+        const mixedCapRoot = path.join(root, 'mixed-final-cap');
+        fs.mkdirSync(mixedCapRoot);
+        for (let index = 0; index < 512; index++) {
+            const completed = inactive(`mixed-completed-${index}`, 'completed', now - index);
+            fs.writeFileSync(path.join(mixedCapRoot, runtimeRecordFilename(completed)), JSON.stringify(completed));
+        }
+        const liveKnown = known('mixed-live-known', now);
+        fs.writeFileSync(path.join(mixedCapRoot, runtimeRecordFilename(liveKnown)), JSON.stringify(liveKnown));
+        const mixedCapStore = new runtimeStoreModule.TmuxRuntimeBindingStore(mixedCapRoot, () => now);
+        assert.deepStrictEqual(await mixedCapStore.listKnown(), [liveKnown],
+            'inactive lifecycle history must never consume the live-known retention budget');
+        assert.strictEqual((await mixedCapStore.listInactive()).length, 512,
+            'known and inactive records must use independent bounded retention budgets');
         const expiredInactiveStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
             inactiveCapRoot, () => now + (30 * 24 * 60 * 60 * 1000)
         );
@@ -3263,7 +3318,7 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 2);
     assert.strictEqual(projectHarness.terminals.length, 1);
     assert.deepStrictEqual(projectHarness.terminals[0].creationOptions, {
-        name: 'AI Sessions: App',
+        name: 'Project Steward: App [tmux]',
         shellPath: '/opt/tmux',
         shellArgs: ['attach-session', '-t', firstProject.tmux.sessionName],
         env: { TMUX: null },
@@ -3423,6 +3478,8 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(sessionHarness.operations.filter(item => item.type === 'new-session').length, 2);
     assert.strictEqual(sessionHarness.operations.filter(item => item.type === 'new-window').length, 0);
     assert.strictEqual(sessionHarness.terminals.length, 2);
+    assert.ok(sessionHarness.terminals.every(terminal => terminal.name.endsWith(' [tmux]')),
+        'initial session-layout viewers must use the same tmux-specific naming as reattach');
     const sessionManagedRow = sessionHarness.windows[0];
     assert.deepStrictEqual(sessionManagedRow.sessionMetadata, {
         managed: '1', version: '1', layout: 'session', projectKey: 'pk', provider: 'codex',
@@ -3769,7 +3826,7 @@ async function runTmuxBackendChecks() {
     const resumeSnapshotRuntime = await resumeSnapshotPromise;
     assert.strictEqual(resumeSnapshotRuntime.identity.projectKey, 'snapshot-resume');
     assert.strictEqual(resumeSnapshotRuntime.identity.sessionId, 'original-session');
-    assert.strictEqual(resumeSnapshotHarness.terminals[0].name, 'Codex: Original');
+    assert.match(resumeSnapshotHarness.terminals[0].name, /^Project Steward: codex .+ \[tmux\]$/);
     const resumeSnapshotCreate = resumeSnapshotHarness.operations.find(item => item.type === 'new-session');
     assert.strictEqual(resumeSnapshotCreate.cwd, '/original');
     assert.ok(resumeSnapshotCreate.command.includes('original-session'));
@@ -3815,7 +3872,7 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(pendingSnapshotRuntime.identity.pendingId, 'original-pending');
     assert.deepStrictEqual(pendingSnapshotRuntime.excludedSessionIds, ['original-exclusion']);
     assert.strictEqual(pendingSnapshotRuntime.title, 'Original title');
-    assert.strictEqual(pendingSnapshotHarness.terminals[0].name, 'Kimi: Original');
+    assert.match(pendingSnapshotHarness.terminals[0].name, /^Project Steward: kimi .+ \[tmux\]$/);
     const pendingSnapshotCreate = pendingSnapshotHarness.operations.find(item => item.type === 'new-session');
     assert.strictEqual(pendingSnapshotCreate.cwd, '/original');
     assert.ok(pendingSnapshotCreate.command.includes('original-title'));
@@ -4704,7 +4761,7 @@ async function runTmuxBackendChecks() {
     restoreBackend.handleClosedTerminal(originalTerminal);
     await restoreHarness.attachStore.flush();
     const restoredTerminal = {
-        name: 'AI Sessions: Restore',
+        name: originalTerminal.name,
         creationOptions: {},
         processId: Promise.resolve(originalProcessId),
         shown: false,
@@ -5856,6 +5913,22 @@ async function runRuntimeProjectionChecks() {
     assert.strictEqual(model.attached, false);
     assert.strictEqual(model.status, 'running');
 
+    const staleProjected = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects: [{
+            id: 'p', path: '/work',
+            codexSessions: [{ id: 's1', name: 'One' }],
+            kimiSessions: [], claudeSessions: [],
+        }],
+        providers: providerFixtures,
+        executionSnapshot: {},
+        activeRuntimes: [{ ...activeRuntimes[0], stale: true }],
+        pendingRuntimes: [],
+        focusedIdentity: null,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.strictEqual(staleProjected[0].activeAiSessions[0].stale, true);
+
     const focused = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{
             id: 'p', path: '/work',
@@ -6931,7 +7004,7 @@ function runTmuxWebviewExperienceChecks() {
         activeAiSessions: [{
             key: 'codex:s1', provider: 'codex', sessionId: 's1', name: 'One',
             executionState: 'running', status: 'running', focused: false, needsAttention: false, pending: false,
-            backend: 'tmux', tmuxLayout: 'project', attached: false,
+            backend: 'tmux', tmuxLayout: 'project', attached: false, stale: true,
         }],
         codexSessions: [{ id: 's1', name: 'One', active: true }],
         kimiSessions: [], claudeSessions: [],
@@ -6940,14 +7013,14 @@ function runTmuxWebviewExperienceChecks() {
         ...projectWithTmuxRuntimeFixture,
         activeAiSessions: [{
             ...projectWithTmuxRuntimeFixture.activeAiSessions[0],
-            backend: 'vscode', tmuxLayout: undefined, attached: true,
+            backend: 'vscode', tmuxLayout: undefined, attached: true, stale: false,
         }],
     };
     const projectWithConflictFixture = {
         ...projectWithTmuxRuntimeFixture,
         activeAiSessions: [{
             ...projectWithTmuxRuntimeFixture.activeAiSessions[0],
-            status: 'conflict', conflict: true,
+            status: 'conflict', conflict: true, stale: false,
         }],
     };
 
@@ -6958,13 +7031,16 @@ function runTmuxWebviewExperienceChecks() {
     assert.ok(tmuxRow.includes('role="group"'));
     assert.ok(tmuxRow.includes('class="ai-session-primary-action"'));
     assert.ok(tmuxRow.includes('type="button"'));
-    assert.ok(tmuxRow.includes('aria-label="Attach or focus Codex session One using tmux project layout, detached"'));
+    assert.ok(tmuxRow.includes('aria-label="Attach or focus Codex session One using tmux project layout, detached, runtime status is stale"'));
     assert.strictEqual(/class="codex-session-row[^>]*tabindex=/.test(tmuxRow), false,
         'the group row itself must not be a focusable clickable div');
     assert.match(tmuxRow,
         /class="ai-session-primary-action"[\s\S]*?<\/button>[\s\S]*?<span class="codex-session-actions">/,
         'the primary button and row actions must be siblings');
     assert.ok(tmuxRow.includes('ai-session-runtime-badge'));
+    assert.ok(tmuxRow.includes('data-session-stale'));
+    assert.ok(tmuxRow.includes('ai-session-stale-status'));
+    assert.ok(tmuxRow.includes('Runtime status is stale'));
     assert.ok(tmuxRow.includes('tmux'));
     assert.ok(tmuxRow.includes('Detach Terminal…'));
     assert.ok(tmuxRow.includes('data-action="detach-ai-session-terminal"'));
@@ -6997,6 +7073,7 @@ function runTmuxWebviewExperienceChecks() {
     assert.ok(projectScript.includes(".ai-session-primary-action"));
     const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
     assert.ok(styles.includes('.ai-session-runtime-badge'));
+    assert.ok(styles.includes('.ai-session-stale-status'));
     assert.ok(styles.includes('&:focus-visible'));
     assert.ok(styles.includes('&[data-session-conflict]'));
     assert.ok(styles.includes('@media (forced-colors: active)'));

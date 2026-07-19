@@ -714,7 +714,10 @@ function getCodexSessionRow(
     var shortSessionId = escapeAttribute((session.id || '').substring(0, 8));
     var updatedAt = escapeAttribute(formatCodexSessionUpdatedAt(session.updatedAt));
     var shortId = shortSessionId ? `#${shortSessionId}` : '';
-    var metadata = [updatedAt, shortId].filter(value => !!value).join(' · ');
+    var staleStatus = runtime?.stale
+        ? '<span class="ai-session-stale-status" title="Runtime status is stale">stale</span>'
+        : '';
+    var metadata = [staleStatus, updatedAt, shortId].filter(value => !!value).join(' · ');
     var providerLabel = getAiProviderLabel(provider);
     var pinned = !!session.pinned;
     var needsAttention = !!session.attention?.unread;
@@ -726,7 +729,7 @@ function getCodexSessionRow(
     var backend = runtime?.backend || 'vscode';
     var attached = runtime?.attached ?? (active && backend === 'vscode');
     var conflict = runtime?.conflict === true;
-    var runtimeAttributes = ` data-session-backend="${backend}" data-session-attached="${attached ? 'true' : 'false'}"${runtime?.tmuxLayout ? ` data-tmux-layout="${runtime.tmuxLayout}"` : ''}${runtime?.conflict ? ' data-session-conflict' : ''}`;
+    var runtimeAttributes = ` data-session-backend="${backend}" data-session-attached="${attached ? 'true' : 'false'}"${runtime?.tmuxLayout ? ` data-tmux-layout="${runtime.tmuxLayout}"` : ''}${runtime?.conflict ? ' data-session-conflict' : ''}${runtime?.stale ? ' data-session-stale' : ''}`;
     var batchCheckbox = `<input type="checkbox" class="ai-session-batch-checkbox" aria-label="Select ${sessionName}"${active ? ' disabled' : ''}>`;
     var pinAction = `<button type="button" class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}" aria-label="${pinTitle}">${Icons.pin}</button>`;
     var archiveAction = active
@@ -743,6 +746,9 @@ function getCodexSessionRow(
     var primaryAriaLabel = conflict
         ? `Choose runtime for ${providerLabel} session ${sessionName}, runtime conflict`
         : `${primaryAction} ${providerLabel} session ${sessionName} using ${runtimeDescription}`;
+    if (runtime?.stale) {
+        primaryAriaLabel += ', runtime status is stale';
+    }
 
     return `
 <div class="codex-session-row" role="group" aria-label="${providerLabel} session ${sessionName}"${runtimeAttributes}${pinned ? ' data-session-pinned' : ''}${active ? ' data-session-active' : ''}${needsAttention ? ' data-ai-session-attention data-session-event-id="' + escapeAttribute(session.attention.eventId) + '"' : ''} data-session-id="${sessionId}" data-session-provider="${provider}">
@@ -782,7 +788,10 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     var runtimeBadge = model.backend === 'tmux'
         ? '<span class="ai-session-runtime-badge" title="Managed tmux runtime">tmux</span>'
         : '';
-    var metadata = [runtimeBadge, providerLabel, runtimeStatusLabel, executionStatus, createdAt, shortSessionId].filter(Boolean).join(' · ');
+    var staleStatus = model.stale
+        ? '<span class="ai-session-stale-status" title="Runtime status is stale">stale</span>'
+        : '';
+    var metadata = [runtimeBadge, staleStatus, providerLabel, runtimeStatusLabel, executionStatus, createdAt, shortSessionId].filter(Boolean).join(' · ');
     var attentionIndicator = model.needsAttention
         ? '<span class="ai-session-attention-indicator" title="AI session needs attention" aria-label="AI session needs attention"></span>'
         : '';
@@ -800,7 +809,7 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     var attentionAttributes = model.needsAttention && model.attentionEventId
         ? ` data-ai-session-attention data-session-event-id="${escapeAttribute(model.attentionEventId)}"`
         : '';
-    var runtimeAttributes = ` data-session-backend="${model.backend}" data-session-attached="${model.attached ? 'true' : 'false'}"${model.tmuxLayout ? ` data-tmux-layout="${model.tmuxLayout}"` : ''}${model.conflict ? ' data-session-conflict' : ''}`;
+    var runtimeAttributes = ` data-session-backend="${model.backend}" data-session-attached="${model.attached ? 'true' : 'false'}"${model.tmuxLayout ? ` data-tmux-layout="${model.tmuxLayout}"` : ''}${model.conflict ? ' data-session-conflict' : ''}${model.stale ? ' data-session-stale' : ''}`;
     var rowAction = model.backend === 'tmux'
         ? (model.attached ? 'Focus' : 'Attach or focus')
         : 'Focus';
@@ -812,6 +821,9 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     var primaryAriaLabel = conflict
         ? `Choose runtime for ${providerLabel} session ${sessionName}, runtime conflict`
         : `${primaryAction} ${providerLabel} session ${sessionName} using ${runtimeDescription}`;
+    if (model.stale) {
+        primaryAriaLabel += ', runtime status is stale';
+    }
     return `<div class="codex-session-row active-ai-session-row" role="group" aria-label="${providerLabel} session ${sessionName}" data-session-provider="${model.provider}" data-execution-state="${model.executionState}"${runtimeAttributes}${pendingAttributes}${model.pinned ? ' data-session-pinned' : ''}${model.focused ? ' data-session-focused' : ''}${model.needsAttention ? ' data-session-needs-attention' : ''}${attentionAttributes}>
         <button type="button" class="ai-session-primary-action" data-action="activate-ai-session" aria-label="${primaryAriaLabel}" title="${primaryAction} ${providerLabel} Session">
             ${attentionIndicator}

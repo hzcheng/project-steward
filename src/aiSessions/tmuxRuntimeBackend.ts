@@ -141,7 +141,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             }
             return this.createFinalRuntime(request, layout, locator);
         });
-        return this.attachAndFocus(runtime, request.terminalName);
+        return this.attachAndFocus(runtime, this.getAttachTerminalName(runtime));
     }
 
     async ensurePending(
@@ -195,7 +195,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             }
             return this.createPendingRuntime(request, dispatchBinding, locator);
         });
-        return this.attachAndFocus(runtime, request.terminalName) as Promise<AiSessionPendingRuntimeSnapshot<TTerminal>>;
+        return this.attachAndFocus(
+            runtime, this.getAttachTerminalName(runtime)
+        ) as Promise<AiSessionPendingRuntimeSnapshot<TTerminal>>;
     }
 
     private async auditPendingId(identity: AiSessionRuntimeIdentity): Promise<{
@@ -452,7 +454,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         promoted: AiSessionRuntimeSnapshot,
         pendingIdentityValue: AiSessionRuntimeIdentity
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
-        await this.persistKnown(identity, finalLocator);
+        await this.persistKnown(identity, finalLocator, promoted);
         await this.persistConsumed(pending, identity, finalLocator);
         await this.dependencies.runtimeStore.removePromoting(pendingIdentityValue);
         await this.dependencies.runtimeStore.removePending(pendingIdentityValue.pendingId as string);
@@ -541,7 +543,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 createdAt,
                 markerPath: request.launch.markerPath || '',
             });
-            await this.persistKnown(request.identity, locator);
+            await this.persistKnown(request.identity, locator, {
+                identity: request.identity,
+                markerPath: request.launch.markerPath || '',
+                runStartedAtMs: Date.parse(createdAt),
+            });
         } catch (error) {
             if (!providerLaunchAttempted) {
                 throw error;
@@ -701,7 +707,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         }
     }
 
-    private async persistKnown(identity: AiSessionRuntimeIdentity, locator: AiSessionTmuxLocator): Promise<void> {
+    private async persistKnown(
+        identity: AiSessionRuntimeIdentity,
+        locator: AiSessionTmuxLocator,
+        lifecycle?: Pick<AiSessionRuntimeSnapshot, 'identity' | 'markerPath' | 'runStartedAtMs'>
+    ): Promise<void> {
         if (!identity.sessionId) {
             throw new Error('A known tmux runtime requires a session ID.');
         }
@@ -714,6 +724,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             layout: locator.layout,
             locator: { ...locator },
             lastSeenAtMs: this.dependencies.nowMs(),
+            ...(lifecycle ? {
+                cwd: lifecycle.identity.cwd,
+                markerPath: lifecycle.markerPath,
+                runStartedAtMs: lifecycle.runStartedAtMs,
+            } : {}),
         });
     }
 
@@ -742,7 +757,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             }
             throw error;
         }
-        await this.persistKnown(identity, locator);
+        await this.persistKnown(identity, locator, recovered);
         await this.dependencies.runtimeStore.removeAmbiguous(identity);
         return recovered;
     }

@@ -19,6 +19,7 @@ const MAX_TITLE_LENGTH = 200;
 const MAX_EXCLUDED_SESSION_IDS = 1000;
 const MAX_RECORD_BYTES = 1024 * 1024;
 const MAX_KNOWN_RECORDS = 512;
+const MAX_INACTIVE_RECORDS = 512;
 const MAX_PENDING_LIFECYCLE_DIRECTORY_FILES = 4096;
 const MAX_PENDING_LIFECYCLE_LOOKUP_RECORDS = 512;
 const PENDING_TTL_MS = 24 * 60 * 60 * 1000;
@@ -54,6 +55,9 @@ export interface TmuxKnownRuntimeBinding {
     layout: AiSessionTmuxLayout;
     locator: AiSessionTmuxLocator;
     lastSeenAtMs: number;
+    cwd?: string;
+    markerPath?: string;
+    runStartedAtMs?: number;
 }
 
 export interface TmuxInactiveRuntimeBinding {
@@ -465,6 +469,9 @@ export class TmuxRuntimeBindingStore {
                     layout: runtime.tmux.layout,
                     locator: runtime.tmux,
                     lastSeenAtMs: this.now(),
+                    cwd: runtime.identity.cwd,
+                    markerPath: runtime.markerPath,
+                    runStartedAtMs: runtime.runStartedAtMs,
                 });
                 if (record) {
                     const filePath = this.recordPath('known', record.provider, record.sessionId);
@@ -538,11 +545,20 @@ export class TmuxRuntimeBindingStore {
             || finalRuntimeTimestamp(right.record) - finalRuntimeTimestamp(left.record)
             || left.record.provider.localeCompare(right.record.provider)
             || left.record.sessionId.localeCompare(right.record.sessionId));
-        if (pruneToCap && entries.length > MAX_KNOWN_RECORDS) {
-            for (const entry of entries.slice(MAX_KNOWN_RECORDS)) {
+        if (pruneToCap) {
+            const knownEntries = entries.filter(entry => entry.record.state === 'known');
+            const inactiveEntries = entries.filter(entry => entry.record.state !== 'known');
+            const pruned = [
+                ...knownEntries.slice(MAX_KNOWN_RECORDS),
+                ...inactiveEntries.slice(MAX_INACTIVE_RECORDS),
+            ];
+            for (const entry of pruned) {
                 await removeFile(entry.filePath);
             }
-            entries.length = MAX_KNOWN_RECORDS;
+            if (pruned.length) {
+                const prunedPaths = new Set(pruned.map(entry => entry.filePath));
+                return entries.filter(entry => !prunedPaths.has(entry.filePath));
+            }
         }
         return entries;
     }
@@ -928,12 +944,17 @@ function validateKnownRecord(value: unknown): TmuxKnownRuntimeBinding | null {
     }
     const record = value as Record<string, unknown>;
     const locator = validateLocator(record.locator);
+    const lifecycleFieldCount = [record.cwd, record.markerPath, record.runStartedAtMs]
+        .filter(field => field !== undefined).length;
     if (record.version !== RECORD_VERSION
         || (record.state !== undefined && record.state !== 'known')
         || !isProviderId(record.provider)
         || !isBoundedString(record.sessionId, MAX_ID_LENGTH) || !isBoundedString(record.projectKey, MAX_ID_LENGTH)
         || !isLayout(record.layout) || !locator || locator.layout !== record.layout
-        || !isFiniteNonNegative(record.lastSeenAtMs)) {
+        || !isFiniteNonNegative(record.lastSeenAtMs)
+        || (lifecycleFieldCount !== 0 && lifecycleFieldCount !== 3)
+        || (lifecycleFieldCount === 3 && (!isBoundedPath(record.cwd)
+            || !isBoundedPath(record.markerPath) || !isFinitePositive(record.runStartedAtMs)))) {
         return null;
     }
     return {
@@ -945,6 +966,11 @@ function validateKnownRecord(value: unknown): TmuxKnownRuntimeBinding | null {
         layout: record.layout,
         locator,
         lastSeenAtMs: record.lastSeenAtMs,
+        ...(lifecycleFieldCount === 3 ? {
+            cwd: record.cwd as string,
+            markerPath: record.markerPath as string,
+            runStartedAtMs: record.runStartedAtMs as number,
+        } : {}),
     };
 }
 

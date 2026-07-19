@@ -75,6 +75,8 @@ The default `project` layout creates one managed tmux session per project card a
 
 If discovery finds more than one verified live runtime for the same AI session, the row shows `Runtime conflict` and hides Close/Detach. Selecting it opens a runtime chooser that identifies Direct versus tmux, layout, attachment state, and the exact terminal or tmux target. Metadata or name-collision diagnostics are never offered as runtime targets and are scoped to their owning project; a collision with no verified runtime produces a safe status announcement and no focus action. Cancelling or choosing a runtime that changes before the forced refresh also performs no action.
 
+If a tmux discovery refresh fails, Project Steward keeps the last successful runtime snapshot visible with a quiet `stale` label. Selecting the row retries discovery; one failed tmux command never declares the provider completed or stopped.
+
 Tmux persistence is bounded by the execution host: the computer must remain awake and running, and an SSH host, WSL distribution, or Dev Container must remain available. Laptop sleep, host shutdown, and container stop suspend or terminate work according to that environment.
 
 Project Steward never silently falls back to a Direct Terminal when tmux is unavailable. The warning lets you use a VS Code terminal for that operation or open Settings. If a previous tmux runtime cannot be verified, the explicit Direct fallback includes a duplicate-runtime warning.

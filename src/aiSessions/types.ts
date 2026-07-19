@@ -40,6 +40,7 @@ export interface ActiveAiSessionViewModel {
     tmuxLayout?: AiSessionTmuxLayout;
     attached: boolean;
     conflict?: boolean;
+    stale?: boolean;
     updatedAt?: string;
     createdAt?: string;
     pinned?: boolean;

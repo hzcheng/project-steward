@@ -98,6 +98,7 @@ export interface AiSessionRuntimeSnapshot<TTerminal = unknown> {
     markerPath: string;
     runStartedAtMs: number;
     detectedAtMs?: number;
+    stale?: boolean;
     attached: boolean;
     terminal?: TTerminal;
     tmux?: AiSessionTmuxLocator;

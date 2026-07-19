@@ -143,6 +143,7 @@ export class TmuxRuntimeDiscovery {
                 if (this.inFlight === tracked) {
                     this.inFlight = null;
                 }
+                this.markSnapshotsStale();
                 throw error;
             }
         );
@@ -261,20 +262,26 @@ export class TmuxRuntimeDiscovery {
         if (this.cacheGeneration !== cacheGeneration) {
             return;
         }
-        this.active = result.active.map(cloneRuntime);
-        this.pending = result.pending.map(clonePendingRuntime);
-        this.inactive = result.inactive.map(cloneRuntime);
+        this.active = result.active.map(cloneFreshRuntime);
+        this.pending = result.pending.map(cloneFreshPendingRuntime);
+        this.inactive = result.inactive.map(cloneFreshRuntime);
         this.diagnostics = result.diagnostics.map(cloneDiagnostic);
         this.retainedInactive.clear();
         for (const runtime of result.inactive) {
             const sessionId = runtime.identity.sessionId;
             if (sessionId) {
                 this.retainedInactive.set(
-                    finalIdentityKey(runtime.identity.provider, sessionId), cloneRuntime(runtime)
+                    finalIdentityKey(runtime.identity.provider, sessionId), cloneFreshRuntime(runtime)
                 );
             }
         }
         this.successfulAtMs = this.nowMs();
+    }
+
+    private markSnapshotsStale(): void {
+        this.active = this.active.map(runtime => ({ ...cloneRuntime(runtime), stale: true }));
+        this.pending = this.pending.map(runtime => ({ ...clonePendingRuntime(runtime), stale: true }));
+        this.inactive = this.inactive.map(runtime => ({ ...cloneRuntime(runtime), stale: true }));
     }
 
     private async enumerate(): Promise<DiscoveryResult> {
@@ -456,19 +463,23 @@ export class TmuxRuntimeDiscovery {
             }
             const previous = previousActive.find(runtime => finalIdentityMatchesKnown(runtime.identity, known)
                 && !!runtime.tmux && locatorsEqual(runtime.tmux, known.locator));
-            const completed = !!previous && !!previous.markerPath
-                && await this.options.markerIsCurrent(previous.markerPath, previous.runStartedAtMs);
+            const markerPath = previous?.markerPath || known.markerPath || '';
+            const runStartedAtMs = previous?.runStartedAtMs
+                || known.runStartedAtMs || known.lastSeenAtMs;
+            const cwd = previous?.identity.cwd || known.cwd || '';
+            const completed = !!markerPath
+                && await this.options.markerIsCurrent(markerPath, runStartedAtMs);
             terminal.push({
                 identity: {
                     provider: known.provider,
                     projectKey: known.projectKey,
-                    cwd: '',
+                    cwd,
                     sessionId: known.sessionId,
                 },
                 backend: 'tmux',
                 state: completed ? 'completed' : 'stopped',
-                markerPath: previous ? previous.markerPath : '',
-                runStartedAtMs: previous ? previous.runStartedAtMs : known.lastSeenAtMs,
+                markerPath,
+                runStartedAtMs,
                 attached: false,
                 tmux: { ...known.locator },
             });
@@ -797,6 +808,20 @@ function clonePendingRuntime(runtime: AiSessionPendingRuntimeSnapshot): AiSessio
         excludedSessionIds: [...runtime.excludedSessionIds],
         ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
     };
+}
+
+function cloneFreshRuntime(runtime: AiSessionRuntimeSnapshot): AiSessionRuntimeSnapshot {
+    const clone = cloneRuntime(runtime);
+    delete clone.stale;
+    return clone;
+}
+
+function cloneFreshPendingRuntime(
+    runtime: AiSessionPendingRuntimeSnapshot
+): AiSessionPendingRuntimeSnapshot {
+    const clone = clonePendingRuntime(runtime);
+    delete clone.stale;
+    return clone;
 }
 
 function cloneDiagnostic(diagnostic: AiSessionTmuxDiscoveryDiagnostic): AiSessionTmuxDiscoveryDiagnostic {
