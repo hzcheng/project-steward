@@ -5715,6 +5715,24 @@ function runLifecycleParserChecks() {
         JSON.stringify({ timestamp: '2026-07-15T00:00:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call-1' } }),
     ], runStartedAtMs).phase, 'running', 'matching Codex output resumes the turn');
 
+    const codexAccumulator = lifecycle.createCodexLifecycleAccumulator(runStartedAtMs);
+    codexAccumulator.addLines([
+        JSON.stringify({
+            timestamp: '2026-07-15T00:00:10.000Z',
+            type: 'response_item',
+            payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'cross-batch' },
+        }),
+    ]);
+    assert.strictEqual(codexAccumulator.getSignal().reason, 'input-required');
+    codexAccumulator.addLines([
+        JSON.stringify({
+            timestamp: '2026-07-15T00:00:11.000Z',
+            type: 'response_item',
+            payload: { type: 'custom_tool_call_output', call_id: 'cross-batch' },
+        }),
+    ]);
+    assert.strictEqual(codexAccumulator.getSignal().executionState, 'running');
+
     const kimiSignal = lifecycle.parseKimiLifecycleLines([
         JSON.stringify({ timestamp: 1784073601, message: { type: 'TurnBegin', payload: {} } }),
         JSON.stringify({ timestamp: 1784073602, message: { type: 'QuestionRequest', payload: { id: 'question-1' } } }),
@@ -5740,6 +5758,15 @@ function runLifecycleParserChecks() {
         JSON.stringify({ timestamp: 1784073607, message: { type: 'StatusUpdate', payload: { message_id: 'status-2' } } }),
     ], runStartedAtMs).reason, 'input-required', 'Kimi status updates do not answer a pending question');
 
+    const kimiAccumulator = lifecycle.createKimiLifecycleAccumulator(runStartedAtMs);
+    kimiAccumulator.addLines([
+        JSON.stringify({ timestamp: 1784073612, message: { type: 'TurnEnd', payload: {} } }),
+    ]);
+    kimiAccumulator.addLines([
+        JSON.stringify({ timestamp: 1784073611, message: { type: 'TurnBegin', payload: {} } }),
+    ]);
+    assert.strictEqual(kimiAccumulator.getSignal().executionState, 'stopped');
+
     const claudeSignal = lifecycle.parseClaudeLifecycleLines([
         JSON.stringify({ timestamp: '2026-07-15T00:00:01.000Z', type: 'user', message: { role: 'user' } }),
         JSON.stringify({ timestamp: '2026-07-15T00:00:02.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn', content: [] } }),
@@ -5759,6 +5786,12 @@ function runLifecycleParserChecks() {
         JSON.stringify({ timestamp: '2026-07-15T00:00:05.000Z', type: 'system', subtype: 'api_error' }),
     ], runStartedAtMs).reason, 'failed');
     assert.strictEqual(lifecycle.parseClaudeLifecycleLines(['{}', 'not-json'], runStartedAtMs), null);
+
+    const claudeAccumulator = lifecycle.createClaudeLifecycleAccumulator(runStartedAtMs);
+    claudeAccumulator.addLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:12.000Z', type: 'user', message: { role: 'user' } }),
+    ]);
+    assert.strictEqual(claudeAccumulator.getSignal().executionState, 'running');
 
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-jsonl-tail-'));
     try {
