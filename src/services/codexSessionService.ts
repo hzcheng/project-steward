@@ -5,10 +5,10 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { CodexSession } from '../models';
+import IncrementalJsonlLifecycleReader from '../aiSessions/incrementalJsonlLifecycleReader';
 import { filterAiSessionsByCandidatePaths, normalizeAiSessionCandidatePaths } from '../aiSessions/sessionHelpers';
 import type { AiSessionQueryOptions } from '../aiSessions/types';
-import { parseCodexLifecycleLines, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from '../aiSessions/lifecycle';
-import { readJsonlTailLines } from '../aiSessions/jsonlTail';
+import { createCodexLifecycleAccumulator, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from '../aiSessions/lifecycle';
 
 interface CodexSessionIndexEntry {
     id?: string;
@@ -41,6 +41,7 @@ export default class CodexSessionService {
     private readonly sessionMetaCache = new Map<string, { signature: string; meta: CodexSessionMeta }>();
     private readonly sessionIndexCache = new Map<string, { signature: string; entries: CodexSessionIndexEntry[] }>();
     private readonly lifecycleSessionFiles = new Map<string, string>();
+    private readonly lifecycleReader = new IncrementalJsonlLifecycleReader();
     private readonly cacheTtlMs = 5000;
     private readonly changePollIntervalMs = 3000;
 
@@ -113,19 +114,26 @@ export default class CodexSessionService {
     }
 
     getLifecycleSignals(requests: readonly AiSessionLifecycleRequest[]): Record<string, AiSessionLifecycleSignal> {
+        let activeSessionIds = new Set<string>();
         let codexHome = this.getCodexHome();
         if (!codexHome) {
+            this.lifecycleReader.retain(activeSessionIds);
             return {};
         }
         let signals: Record<string, AiSessionLifecycleSignal> = {};
         let discoveredFiles: Map<string, string> = null;
         for (let request of requests || []) {
-            if (!request?.sessionId || !Number.isFinite(request.runStartedAtMs) || signals[request.sessionId]) {
+            if (!request?.sessionId || !Number.isFinite(request.runStartedAtMs)) {
+                continue;
+            }
+            activeSessionIds.add(request.sessionId);
+            if (signals[request.sessionId]) {
                 continue;
             }
             let sessionFile = this.lifecycleSessionFiles.get(request.sessionId);
             if (sessionFile && !fs.existsSync(sessionFile)) {
                 this.lifecycleSessionFiles.delete(request.sessionId);
+                this.lifecycleReader.delete(request.sessionId);
                 sessionFile = null;
             }
             if (!sessionFile) {
@@ -133,13 +141,20 @@ export default class CodexSessionService {
                 sessionFile = discoveredFiles.get(request.sessionId);
             }
             if (!sessionFile) {
+                this.lifecycleReader.delete(request.sessionId);
                 continue;
             }
-            let signal = parseCodexLifecycleLines(readJsonlTailLines(sessionFile), request.runStartedAtMs);
+            let signal = this.lifecycleReader.read(
+                request.sessionId,
+                sessionFile,
+                request.runStartedAtMs,
+                () => createCodexLifecycleAccumulator(request.runStartedAtMs)
+            );
             if (signal) {
                 signals[request.sessionId] = signal;
             }
         }
+        this.lifecycleReader.retain(activeSessionIds);
         return signals;
     }
 
@@ -163,6 +178,7 @@ export default class CodexSessionService {
             fs.mkdirSync(archivePath, { recursive: true });
             fs.renameSync(sessionFile, this.getAvailableArchivePath(archivePath, path.basename(sessionFile)));
             this.lifecycleSessionFiles.delete(sessionId);
+            this.lifecycleReader.delete(sessionId);
             this.invalidateCache();
             return true;
         } catch (e) {

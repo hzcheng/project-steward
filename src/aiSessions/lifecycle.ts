@@ -17,34 +17,42 @@ export interface AiSessionLifecycleSignal {
     occurredAtMs: number;
 }
 
+export interface AiSessionLifecycleAccumulator {
+    addLines(lines: readonly string[]): void;
+    getSignal(): AiSessionLifecycleSignal | null;
+}
+
 type JsonRecord = Record<string, any>;
 
-function parseLines(
-    lines: readonly string[],
+function createAccumulator(
     runStartedAtMs: number,
     parseEvent: (event: JsonRecord, occurredAtMs: number) => AiSessionLifecycleSignal | null
-): AiSessionLifecycleSignal | null {
+): AiSessionLifecycleAccumulator {
     let latest: AiSessionLifecycleSignal | null = null;
-    for (let line of lines || []) {
-        let event: JsonRecord;
-        try {
-            event = JSON.parse(line);
-        } catch (e) {
-            continue;
-        }
+    return {
+        addLines(lines) {
+            for (let line of lines || []) {
+                let event: JsonRecord;
+                try {
+                    event = JSON.parse(line);
+                } catch (e) {
+                    continue;
+                }
 
-        let occurredAtMs = getOccurredAtMs(event?.timestamp);
-        if (!Number.isFinite(occurredAtMs) || occurredAtMs < runStartedAtMs) {
-            continue;
-        }
+                let occurredAtMs = getOccurredAtMs(event?.timestamp);
+                if (!Number.isFinite(occurredAtMs) || occurredAtMs < runStartedAtMs
+                    || (latest && occurredAtMs < latest.occurredAtMs)) {
+                    continue;
+                }
 
-        let signal = parseEvent(event, occurredAtMs);
-        if (signal && (!latest || signal.occurredAtMs >= latest.occurredAtMs)) {
-            latest = signal;
-        }
-    }
-
-    return latest;
+                let signal = parseEvent(event, occurredAtMs);
+                if (signal && (!latest || signal.occurredAtMs >= latest.occurredAtMs)) {
+                    latest = signal;
+                }
+            }
+        },
+        getSignal: () => latest,
+    };
 }
 
 function getOccurredAtMs(value: unknown): number {
@@ -76,9 +84,9 @@ function attention(
     return { token: getToken(provider, eventType, occurredAtMs, id), phase: 'needsAttention', reason, executionState: 'stopped', occurredAtMs };
 }
 
-export function parseCodexLifecycleLines(lines: readonly string[], runStartedAtMs: number): AiSessionLifecycleSignal | null {
+export function createCodexLifecycleAccumulator(runStartedAtMs: number): AiSessionLifecycleAccumulator {
     let pendingInputCallIds = new Set<string>();
-    return parseLines(lines, runStartedAtMs, (event, occurredAtMs) => {
+    return createAccumulator(runStartedAtMs, (event, occurredAtMs) => {
         let payload = event?.payload || {};
         if (event?.type === 'event_msg') {
             switch (payload.type) {
@@ -110,13 +118,19 @@ export function parseCodexLifecycleLines(lines: readonly string[], runStartedAtM
     });
 }
 
+export function parseCodexLifecycleLines(lines: readonly string[], runStartedAtMs: number): AiSessionLifecycleSignal | null {
+    let accumulator = createCodexLifecycleAccumulator(runStartedAtMs);
+    accumulator.addLines(lines);
+    return accumulator.getSignal();
+}
+
 const KIMI_RUNNING_EVENTS = new Set([
     'TurnBegin', 'StepBegin', 'ContentPart', 'ToolCall', 'ToolResult',
     'StepRetry', 'ApprovalResponse',
 ]);
 
-export function parseKimiLifecycleLines(lines: readonly string[], runStartedAtMs: number): AiSessionLifecycleSignal | null {
-    return parseLines(lines, runStartedAtMs, (event, occurredAtMs) => {
+export function createKimiLifecycleAccumulator(runStartedAtMs: number): AiSessionLifecycleAccumulator {
+    return createAccumulator(runStartedAtMs, (event, occurredAtMs) => {
         let message = event?.message || {};
         let payload = message.payload || {};
         if (KIMI_RUNNING_EVENTS.has(message.type)) {
@@ -135,8 +149,14 @@ export function parseKimiLifecycleLines(lines: readonly string[], runStartedAtMs
     });
 }
 
-export function parseClaudeLifecycleLines(lines: readonly string[], runStartedAtMs: number): AiSessionLifecycleSignal | null {
-    return parseLines(lines, runStartedAtMs, (event, occurredAtMs) => {
+export function parseKimiLifecycleLines(lines: readonly string[], runStartedAtMs: number): AiSessionLifecycleSignal | null {
+    let accumulator = createKimiLifecycleAccumulator(runStartedAtMs);
+    accumulator.addLines(lines);
+    return accumulator.getSignal();
+}
+
+export function createClaudeLifecycleAccumulator(runStartedAtMs: number): AiSessionLifecycleAccumulator {
+    return createAccumulator(runStartedAtMs, (event, occurredAtMs) => {
         if (event?.type === 'system' && event?.subtype === 'api_error') {
             return attention('claude', 'api_error', occurredAtMs, 'failed');
         }
@@ -159,4 +179,10 @@ export function parseClaudeLifecycleLines(lines: readonly string[], runStartedAt
         }
         return running('claude', message.stop_reason || 'assistant', occurredAtMs, event.uuid);
     });
+}
+
+export function parseClaudeLifecycleLines(lines: readonly string[], runStartedAtMs: number): AiSessionLifecycleSignal | null {
+    let accumulator = createClaudeLifecycleAccumulator(runStartedAtMs);
+    accumulator.addLines(lines);
+    return accumulator.getSignal();
 }

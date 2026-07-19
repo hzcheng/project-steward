@@ -13,6 +13,7 @@ const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
 const activeSessionProjection = require('../out/aiSessions/activeSessionProjection');
 const lifecycle = require('../out/aiSessions/lifecycle');
+const IncrementalJsonlLifecycleReader = require('../out/aiSessions/incrementalJsonlLifecycleReader').default;
 const jsonlTail = require('../out/aiSessions/jsonlTail');
 const terminalBindingStore = require('../out/aiSessions/terminalBindingStore');
 const AiSessionTerminalBindingStore = terminalBindingStore.default;
@@ -5572,6 +5573,15 @@ function runProviderChecks() {
 }
 
 function runProviderLifecycleServiceChecks() {
+    const writeLargeLifecycleLog = (filePath, firstEvent, fillerEvent) => {
+        const fillerLine = JSON.stringify(fillerEvent);
+        const fillerCount = Math.ceil((600 * 1024) / Buffer.byteLength(fillerLine + '\n'));
+        fs.writeFileSync(filePath, [
+            JSON.stringify(firstEvent),
+            ...Array.from({ length: fillerCount }, () => fillerLine),
+            '',
+        ].join('\n'));
+    };
     const runStartedAtMs = Date.parse('2026-07-15T00:00:00.000Z');
     const previousCodexHome = process.env.CODEX_HOME;
     const codexRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-codex-lifecycle-'));
@@ -5583,27 +5593,36 @@ function runProviderLifecycleServiceChecks() {
         const sessionFile = writeCodexSessionMetaFile(sessionDir, codexId, {
             id: codexId, session_id: codexId, cwd: '/work/app', timestamp: '2026-07-14T23:00:00.000Z', source: 'vscode',
         });
-        fs.appendFileSync(sessionFile, [
-            { timestamp: '2026-07-14T23:59:59.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'old' } },
-            { timestamp: '2026-07-15T00:00:02.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'new' } },
-        ].map(JSON.stringify).join('\n') + '\n');
-        const service = new CodexSessionService();
-        let signals = service.getLifecycleSignals([
+        writeLargeLifecycleLog(sessionFile, {
+            timestamp: '2026-07-15T00:00:01.000Z',
+            type: 'event_msg',
+            payload: { type: 'task_started', turn_id: 'long-codex' },
+        }, {
+            timestamp: '2026-07-15T00:00:02.000Z',
+            type: 'event_msg',
+            payload: { type: 'token_count' },
+        });
+        const codexService = new CodexSessionService();
+        let signals = codexService.getLifecycleSignals([
             { sessionId: codexId, runStartedAtMs },
             { sessionId: 'missing', runStartedAtMs },
         ]);
-        assert.strictEqual(signals[codexId].reason, 'completed');
+        assert.strictEqual(signals[codexId].executionState, 'running');
         assert.strictEqual(signals.missing, undefined);
-        fs.appendFileSync(sessionFile, JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'next' } }) + '\n');
+        fs.appendFileSync(sessionFile, JSON.stringify({
+            timestamp: '2026-07-15T00:00:03.000Z',
+            type: 'event_msg',
+            payload: { type: 'task_complete', turn_id: 'long-codex' },
+        }) + '\n');
         const originalReaddirSync = fs.readdirSync;
         fs.readdirSync = () => { throw new Error('cached lifecycle lookup must not rescan provider roots'); };
         try {
-            signals = service.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs }]);
+            signals = codexService.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs }]);
         } finally {
             fs.readdirSync = originalReaddirSync;
         }
-        assert.strictEqual(signals[codexId].phase, 'running');
-        assert.deepStrictEqual(service.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs: Date.parse('2026-07-16T00:00:00Z') }]), {});
+        assert.strictEqual(signals[codexId].executionState, 'stopped');
+        assert.deepStrictEqual(codexService.getLifecycleSignals([{ sessionId: codexId, runStartedAtMs: Date.parse('2026-07-16T00:00:00Z') }]), {});
     } finally {
         previousCodexHome === undefined ? delete process.env.CODEX_HOME : process.env.CODEX_HOME = previousCodexHome;
         fs.rmSync(codexRoot, { recursive: true, force: true });
@@ -5620,11 +5639,26 @@ function runProviderLifecycleServiceChecks() {
         const sessionDir = path.join(kimiRoot, 'sessions', workDirHash, kimiId);
         fs.mkdirSync(sessionDir, { recursive: true });
         fs.writeFileSync(path.join(sessionDir, 'state.json'), '{}');
-        fs.writeFileSync(path.join(sessionDir, 'wire.jsonl'), JSON.stringify({
-            timestamp: runStartedAtMs / 1000 + 2, message: { type: 'TurnEnd', payload: {} },
+        writeLargeLifecycleLog(path.join(sessionDir, 'wire.jsonl'), {
+            timestamp: runStartedAtMs / 1000 + 1,
+            message: { type: 'TurnBegin', payload: {} },
+        }, {
+            timestamp: runStartedAtMs / 1000 + 2,
+            message: { type: 'StatusUpdate', payload: {} },
+        });
+        const kimiService = new KimiSessionService();
+        assert.strictEqual(
+            kimiService.getLifecycleSignals([{ sessionId: kimiId, runStartedAtMs }])[kimiId].executionState,
+            'running'
+        );
+        fs.appendFileSync(path.join(sessionDir, 'wire.jsonl'), JSON.stringify({
+            timestamp: runStartedAtMs / 1000 + 3,
+            message: { type: 'TurnEnd', payload: {} },
         }) + '\n');
-        const signals = new KimiSessionService().getLifecycleSignals([{ sessionId: kimiId, runStartedAtMs }]);
-        assert.strictEqual(signals[kimiId].reason, 'completed');
+        assert.strictEqual(
+            kimiService.getLifecycleSignals([{ sessionId: kimiId, runStartedAtMs }])[kimiId].executionState,
+            'stopped'
+        );
     } finally {
         previousKimiHome === undefined ? delete process.env.KIMI_SHARE_DIR : process.env.KIMI_SHARE_DIR = previousKimiHome;
         fs.rmSync(kimiRoot, { recursive: true, force: true });
@@ -5637,12 +5671,29 @@ function runProviderLifecycleServiceChecks() {
         process.env.CLAUDE_HOME = claudeRoot;
         const sessionDir = path.join(claudeRoot, 'projects', '-work-app');
         fs.mkdirSync(sessionDir, { recursive: true });
-        fs.writeFileSync(path.join(sessionDir, `${claudeId}.jsonl`), JSON.stringify({
-            timestamp: '2026-07-15T00:00:02.000Z', type: 'assistant',
+        const claudeFile = path.join(sessionDir, `${claudeId}.jsonl`);
+        writeLargeLifecycleLog(claudeFile, {
+            timestamp: '2026-07-15T00:00:01.000Z',
+            type: 'user',
+            message: { role: 'user' },
+        }, {
+            timestamp: '2026-07-15T00:00:02.000Z',
+            type: 'progress',
+        });
+        const claudeService = new ClaudeSessionService();
+        assert.strictEqual(
+            claudeService.getLifecycleSignals([{ sessionId: claudeId, runStartedAtMs }])[claudeId].executionState,
+            'running'
+        );
+        fs.appendFileSync(claudeFile, JSON.stringify({
+            timestamp: '2026-07-15T00:00:03.000Z',
+            type: 'assistant',
             message: { role: 'assistant', stop_reason: 'end_turn', content: [] },
         }) + '\n');
-        const signals = new ClaudeSessionService().getLifecycleSignals([{ sessionId: claudeId, runStartedAtMs }]);
-        assert.strictEqual(signals[claudeId].reason, 'completed');
+        assert.strictEqual(
+            claudeService.getLifecycleSignals([{ sessionId: claudeId, runStartedAtMs }])[claudeId].executionState,
+            'stopped'
+        );
     } finally {
         previousClaudeHome === undefined ? delete process.env.CLAUDE_HOME : process.env.CLAUDE_HOME = previousClaudeHome;
         fs.rmSync(claudeRoot, { recursive: true, force: true });
@@ -5715,6 +5766,32 @@ function runLifecycleParserChecks() {
         JSON.stringify({ timestamp: '2026-07-15T00:00:06.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call-1' } }),
     ], runStartedAtMs).phase, 'running', 'matching Codex output resumes the turn');
 
+    const codexAccumulator = lifecycle.createCodexLifecycleAccumulator(runStartedAtMs);
+    codexAccumulator.addLines([
+        JSON.stringify({
+            timestamp: '2026-07-15T00:00:10.000Z',
+            type: 'response_item',
+            payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'cross-batch' },
+        }),
+    ]);
+    assert.strictEqual(codexAccumulator.getSignal().reason, 'input-required');
+    codexAccumulator.addLines([
+        JSON.stringify({
+            timestamp: '2026-07-15T00:00:11.000Z',
+            type: 'response_item',
+            payload: { type: 'custom_tool_call_output', call_id: 'cross-batch' },
+        }),
+    ]);
+    assert.strictEqual(codexAccumulator.getSignal().executionState, 'running');
+
+    const staleCodexAccumulator = lifecycle.createCodexLifecycleAccumulator(runStartedAtMs);
+    staleCodexAccumulator.addLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:20.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'completed' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:19.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'stale-input' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:21.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'stale-input' } }),
+    ]);
+    assert.strictEqual(staleCodexAccumulator.getSignal().executionState, 'stopped', 'stale events cannot mutate provider state');
+
     const kimiSignal = lifecycle.parseKimiLifecycleLines([
         JSON.stringify({ timestamp: 1784073601, message: { type: 'TurnBegin', payload: {} } }),
         JSON.stringify({ timestamp: 1784073602, message: { type: 'QuestionRequest', payload: { id: 'question-1' } } }),
@@ -5740,6 +5817,15 @@ function runLifecycleParserChecks() {
         JSON.stringify({ timestamp: 1784073607, message: { type: 'StatusUpdate', payload: { message_id: 'status-2' } } }),
     ], runStartedAtMs).reason, 'input-required', 'Kimi status updates do not answer a pending question');
 
+    const kimiAccumulator = lifecycle.createKimiLifecycleAccumulator(runStartedAtMs);
+    kimiAccumulator.addLines([
+        JSON.stringify({ timestamp: 1784073612, message: { type: 'TurnEnd', payload: {} } }),
+    ]);
+    kimiAccumulator.addLines([
+        JSON.stringify({ timestamp: 1784073611, message: { type: 'TurnBegin', payload: {} } }),
+    ]);
+    assert.strictEqual(kimiAccumulator.getSignal().executionState, 'stopped');
+
     const claudeSignal = lifecycle.parseClaudeLifecycleLines([
         JSON.stringify({ timestamp: '2026-07-15T00:00:01.000Z', type: 'user', message: { role: 'user' } }),
         JSON.stringify({ timestamp: '2026-07-15T00:00:02.000Z', type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn', content: [] } }),
@@ -5760,12 +5846,198 @@ function runLifecycleParserChecks() {
     ], runStartedAtMs).reason, 'failed');
     assert.strictEqual(lifecycle.parseClaudeLifecycleLines(['{}', 'not-json'], runStartedAtMs), null);
 
+    const claudeAccumulator = lifecycle.createClaudeLifecycleAccumulator(runStartedAtMs);
+    claudeAccumulator.addLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:12.000Z', type: 'user', message: { role: 'user' } }),
+    ]);
+    assert.strictEqual(claudeAccumulator.getSignal().executionState, 'running');
+
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-jsonl-tail-'));
     try {
         const filePath = path.join(tempRoot, 'events.jsonl');
         fs.writeFileSync(filePath, `${'x'.repeat(40)}\nsecond\nthird\n`, 'utf8');
         assert.deepStrictEqual(jsonlTail.readJsonlTailLines(filePath, 14), ['second', 'third']);
         assert.deepStrictEqual(jsonlTail.readJsonlTailLines(path.join(tempRoot, 'missing.jsonl'), 14), []);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
+function runIncrementalJsonlLifecycleReaderChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-incremental-jsonl-lifecycle-'));
+    const runStartedAtMs = Date.parse('2026-07-15T00:00:00.000Z');
+    const createAccumulator = () => lifecycle.createCodexLifecycleAccumulator(runStartedAtMs);
+    const codexEvent = (timestamp, type, turnId) => JSON.stringify({
+        timestamp,
+        type: 'event_msg',
+        payload: { type, turn_id: turnId },
+    });
+
+    try {
+        const reader = new IncrementalJsonlLifecycleReader(64);
+        const filePath = path.join(tempRoot, 'codex.jsonl');
+        const started = JSON.stringify({
+            timestamp: '2026-07-15T00:00:01.000Z',
+            type: 'event_msg',
+            payload: { type: 'task_started', turn_id: 'long-turn' },
+        });
+        fs.writeFileSync(filePath, `${started}\n${Array.from({ length: 100 }, (_, index) =>
+            JSON.stringify({ timestamp: `2026-07-15T00:00:02.${String(index).padStart(3, '0')}Z`, type: 'event_msg', payload: { type: 'token_count' } })
+        ).join('\n')}\n`);
+
+        let readCalls = 0;
+        const originalReadSync = fs.readSync;
+        fs.readSync = function (...args) {
+            readCalls++;
+            return originalReadSync.apply(this, args);
+        };
+        let signal;
+        try {
+            signal = reader.read(
+                'codex:long',
+                filePath,
+                runStartedAtMs,
+                createAccumulator
+            );
+            assert.strictEqual(signal.executionState, 'running', 'cold scan recovers starts beyond one chunk');
+
+            fs.appendFileSync(filePath, JSON.stringify({
+                timestamp: '2026-07-15T00:00:03.000Z',
+                type: 'event_msg',
+                payload: { type: 'task_complete', turn_id: 'long-turn' },
+            }) + '\n');
+            signal = reader.read('codex:long', filePath, runStartedAtMs, createAccumulator);
+            assert.strictEqual(signal.executionState, 'stopped', 'appended completion updates cached state');
+
+            const readsAfterAppend = readCalls;
+            signal = reader.read('codex:long', filePath, runStartedAtMs, createAccumulator);
+            assert.strictEqual(signal.executionState, 'stopped');
+            assert.strictEqual(readCalls, readsAfterAppend, 'unchanged file size performs no additional reads');
+        } finally {
+            fs.readSync = originalReadSync;
+        }
+
+        const inputPath = path.join(tempRoot, 'input.jsonl');
+        fs.writeFileSync(inputPath, JSON.stringify({
+            timestamp: '2026-07-15T00:00:04.000Z',
+            type: 'response_item',
+            payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'later-answer' },
+        }) + '\n');
+        signal = reader.read('codex:input', inputPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.reason, 'input-required');
+        fs.appendFileSync(inputPath, JSON.stringify({
+            timestamp: '2026-07-15T00:00:05.000Z',
+            type: 'response_item',
+            payload: { type: 'custom_tool_call_output', call_id: 'later-answer' },
+        }) + '\n');
+        signal = reader.read('codex:input', inputPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running', 'matching output in a later append resumes input request');
+
+        const splitPath = path.join(tempRoot, 'split.jsonl');
+        const splitLine = codexEvent('2026-07-15T00:00:06.000Z', 'task_started', 'split-line');
+        const splitAt = Math.floor(splitLine.length / 2);
+        fs.writeFileSync(splitPath, splitLine.slice(0, splitAt));
+        assert.strictEqual(reader.read('codex:split', splitPath, runStartedAtMs, createAccumulator), null);
+        fs.appendFileSync(splitPath, splitLine.slice(splitAt) + '\n');
+        signal = reader.read('codex:split', splitPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running', 'a line split across reads is parsed after its newline arrives');
+
+        const malformedPath = path.join(tempRoot, 'malformed.jsonl');
+        fs.writeFileSync(malformedPath, `{bad json\n${codexEvent('2026-07-15T00:00:07.000Z', 'task_started', 'after-bad')}\n`);
+        signal = reader.read('codex:malformed', malformedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running', 'malformed JSON does not prevent a later valid event');
+
+        const truncatedPath = path.join(tempRoot, 'truncated.jsonl');
+        fs.writeFileSync(truncatedPath,
+            `${codexEvent('2026-07-15T00:00:08.000Z', 'task_started', 'truncate')}\n`
+            + `${codexEvent('2026-07-15T00:00:09.000Z', 'task_complete', 'truncate')}\n`);
+        signal = reader.read('codex:truncated', truncatedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped');
+        fs.writeFileSync(truncatedPath, `${codexEvent('2026-07-15T00:00:10.000Z', 'task_started', 'new')}\n`);
+        signal = reader.read('codex:truncated', truncatedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running', 'truncation resets the old completion state');
+
+        const runResetPath = path.join(tempRoot, 'run-reset.jsonl');
+        fs.writeFileSync(runResetPath, `${codexEvent('2026-07-15T00:00:11.000Z', 'task_complete', 'old-run')}\n`);
+        signal = reader.read('codex:run-reset', runResetPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped');
+        const nextRunStartedAtMs = Date.parse('2026-07-15T00:00:12.000Z');
+        const originalOpenSync = fs.openSync;
+        fs.openSync = () => { throw new Error('forced open failure after cursor reset'); };
+        try {
+            signal = reader.read(
+                'codex:run-reset',
+                runResetPath,
+                nextRunStartedAtMs,
+                () => lifecycle.createCodexLifecycleAccumulator(nextRunStartedAtMs)
+            );
+            assert.strictEqual(signal, null, 'an open failure after reset cannot leak the old run signal');
+        } finally {
+            fs.openSync = originalOpenSync;
+        }
+
+        const statFailurePath = path.join(tempRoot, 'stat-failure.jsonl');
+        fs.writeFileSync(statFailurePath, `${codexEvent('2026-07-15T00:00:11.000Z', 'task_complete', 'cached-old-run')}\n`);
+        signal = reader.read('codex:stat-failure', statFailurePath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped');
+        const originalStatSync = fs.statSync;
+        fs.statSync = () => { throw new Error('forced stat failure'); };
+        try {
+            signal = reader.read(
+                'codex:stat-failure',
+                statFailurePath,
+                nextRunStartedAtMs,
+                () => lifecycle.createCodexLifecycleAccumulator(nextRunStartedAtMs)
+            );
+            assert.strictEqual(signal, null, 'a stat failure cannot leak a cached signal from another run');
+
+            signal = reader.read('codex:stat-failure', statFailurePath, runStartedAtMs, createAccumulator);
+            assert.strictEqual(
+                signal.executionState,
+                'stopped',
+                'a stat failure preserves the cached signal for the matching path and run'
+            );
+        } finally {
+            fs.statSync = originalStatSync;
+        }
+
+        const nonFileSourcePath = path.join(tempRoot, 'non-file-source.jsonl');
+        const nonFilePath = path.join(tempRoot, 'non-file-target');
+        fs.writeFileSync(nonFileSourcePath, `${codexEvent('2026-07-15T00:00:11.000Z', 'task_complete', 'cached-before-non-file')}\n`);
+        fs.mkdirSync(nonFilePath);
+        signal = reader.read('codex:non-file', nonFileSourcePath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped');
+        signal = reader.read(
+            'codex:non-file',
+            nonFilePath,
+            nextRunStartedAtMs,
+            () => lifecycle.createCodexLifecycleAccumulator(nextRunStartedAtMs)
+        );
+        assert.strictEqual(signal, null, 'a non-file path cannot leak a cached signal from another path and run');
+
+        const retainedPath = path.join(tempRoot, 'retained.jsonl');
+        const retainedStarted = codexEvent('2026-07-15T00:00:13.000Z', 'task_started', 'retain-11');
+        const retainedComplete = codexEvent('2026-07-15T00:00:13.000Z', 'task_complete', 'retain-1');
+        assert.strictEqual(retainedStarted.length, retainedComplete.length);
+        fs.writeFileSync(retainedPath, `${retainedStarted}\n`);
+        signal = reader.read('codex:retain-drop', retainedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running');
+        fs.writeFileSync(retainedPath, `${retainedComplete}\n`);
+        reader.retain(new Set(['codex:long']));
+        signal = reader.read('codex:retain-drop', retainedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped', 'retain removes unowned cursors before a same-size rewrite');
+
+        const deletedPath = path.join(tempRoot, 'deleted.jsonl');
+        const deletedStarted = codexEvent('2026-07-15T00:00:14.000Z', 'task_started', 'delete-11');
+        const deletedComplete = codexEvent('2026-07-15T00:00:14.000Z', 'task_complete', 'delete-1');
+        assert.strictEqual(deletedStarted.length, deletedComplete.length);
+        fs.writeFileSync(deletedPath, `${deletedStarted}\n`);
+        signal = reader.read('codex:delete', deletedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running');
+        fs.writeFileSync(deletedPath, `${deletedComplete}\n`);
+        reader.delete('codex:delete');
+        signal = reader.read('codex:delete', deletedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped', 'delete removes a cursor before a same-size rewrite');
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -6713,6 +6985,7 @@ async function main() {
     runProviderLifecycleServiceChecks();
     runCommandBuilderChecks();
     runLifecycleParserChecks();
+    runIncrementalJsonlLifecycleReaderChecks();
     runAttentionMonitorChecks();
     runAiSessionExecutionMonitorChecks();
     runAttentionPayloadChecks();

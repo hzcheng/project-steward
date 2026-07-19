@@ -7,9 +7,9 @@ import * as path from 'path';
 
 import { CodexSession } from '../models';
 import { aiSessionPathContains, filterAiSessionsByCandidatePaths, normalizeAiSessionCandidatePaths } from '../aiSessions/sessionHelpers';
+import IncrementalJsonlLifecycleReader from '../aiSessions/incrementalJsonlLifecycleReader';
 import type { AiSessionQueryOptions } from '../aiSessions/types';
-import { parseKimiLifecycleLines, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from '../aiSessions/lifecycle';
-import { readJsonlTailLines } from '../aiSessions/jsonlTail';
+import { createKimiLifecycleAccumulator, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from '../aiSessions/lifecycle';
 import { Disposable } from './codexSessionService';
 
 interface KimiWorkDirEntry {
@@ -47,6 +47,7 @@ export default class KimiSessionService {
     private cachedResult: KimiSessionReadResult = null;
     private cachedAt = 0;
     private readonly sessionDirsById = new Map<string, string>();
+    private readonly lifecycleReader = new IncrementalJsonlLifecycleReader();
     private readonly cacheTtlMs = 5000;
     private readonly changePollIntervalMs = 3000;
 
@@ -98,27 +99,42 @@ export default class KimiSessionService {
     }
 
     getLifecycleSignals(requests: readonly AiSessionLifecycleRequest[]): Record<string, AiSessionLifecycleSignal> {
+        let activeSessionIds = new Set<string>();
         let kimiHome = this.getKimiHome();
         if (!kimiHome) {
+            this.lifecycleReader.retain(activeSessionIds);
             return {};
         }
         let signals: Record<string, AiSessionLifecycleSignal> = {};
         for (let request of requests || []) {
-            if (!request?.sessionId || !Number.isFinite(request.runStartedAtMs) || signals[request.sessionId]) {
+            if (!request?.sessionId || !Number.isFinite(request.runStartedAtMs)) {
+                continue;
+            }
+            activeSessionIds.add(request.sessionId);
+            if (signals[request.sessionId]) {
                 continue;
             }
             let sessionDir = this.findSessionDir(kimiHome, request.sessionId);
             if (!sessionDir) {
+                this.lifecycleReader.delete(request.sessionId);
                 continue;
             }
-            let signal = parseKimiLifecycleLines(
-                readJsonlTailLines(path.join(sessionDir, 'wire.jsonl')),
-                request.runStartedAtMs
+            let sessionFile = path.join(sessionDir, 'wire.jsonl');
+            if (!fs.existsSync(sessionFile)) {
+                this.lifecycleReader.delete(request.sessionId);
+                continue;
+            }
+            let signal = this.lifecycleReader.read(
+                request.sessionId,
+                sessionFile,
+                request.runStartedAtMs,
+                () => createKimiLifecycleAccumulator(request.runStartedAtMs)
             );
             if (signal) {
                 signals[request.sessionId] = signal;
             }
         }
+        this.lifecycleReader.retain(activeSessionIds);
         return signals;
     }
 
@@ -143,6 +159,7 @@ export default class KimiSessionService {
             state.archived = true;
             state.archived_at = new Date().toISOString();
             fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+            this.lifecycleReader.delete(sessionId);
             this.invalidateCache();
             return true;
         } catch (e) {

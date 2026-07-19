@@ -6,9 +6,9 @@ import * as path from 'path';
 
 import { CodexSession } from '../models';
 import { filterAiSessionsByCandidatePaths, normalizeAiSessionCandidatePaths } from '../aiSessions/sessionHelpers';
+import IncrementalJsonlLifecycleReader from '../aiSessions/incrementalJsonlLifecycleReader';
 import type { AiSessionQueryOptions } from '../aiSessions/types';
-import { parseClaudeLifecycleLines, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from '../aiSessions/lifecycle';
-import { readJsonlTailLines } from '../aiSessions/jsonlTail';
+import { createClaudeLifecycleAccumulator, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from '../aiSessions/lifecycle';
 import { Disposable } from './codexSessionService';
 
 interface ClaudeSessionEvent {
@@ -37,6 +37,7 @@ export default class ClaudeSessionService {
     private cachedAt = 0;
     private sessionCache = new Map<string, { signature: string; session: CodexSession }>();
     private readonly sessionFilesById = new Map<string, string>();
+    private readonly lifecycleReader = new IncrementalJsonlLifecycleReader();
     private readonly cacheTtlMs = 5000;
     private readonly changePollIntervalMs = 3000;
     private readonly cwdScanChunkBytes = 64 * 1024;
@@ -80,20 +81,27 @@ export default class ClaudeSessionService {
     }
 
     getLifecycleSignals(requests: readonly AiSessionLifecycleRequest[]): Record<string, AiSessionLifecycleSignal> {
+        let activeSessionIds = new Set<string>();
         let claudeHome = this.getClaudeHome();
         if (!claudeHome) {
+            this.lifecycleReader.retain(activeSessionIds);
             return {};
         }
         let projectRoot = path.join(claudeHome, 'projects');
         let signals: Record<string, AiSessionLifecycleSignal> = {};
         let discovered = false;
         for (let request of requests || []) {
-            if (!request?.sessionId || !Number.isFinite(request.runStartedAtMs) || signals[request.sessionId]) {
+            if (!request?.sessionId || !Number.isFinite(request.runStartedAtMs)) {
+                continue;
+            }
+            activeSessionIds.add(request.sessionId);
+            if (signals[request.sessionId]) {
                 continue;
             }
             let sessionFile = this.sessionFilesById.get(request.sessionId);
             if (sessionFile && !fs.existsSync(sessionFile)) {
                 this.sessionFilesById.delete(request.sessionId);
+                this.lifecycleReader.delete(request.sessionId);
                 sessionFile = null;
             }
             if (!sessionFile && !discovered) {
@@ -102,13 +110,20 @@ export default class ClaudeSessionService {
                 sessionFile = this.sessionFilesById.get(request.sessionId);
             }
             if (!sessionFile) {
+                this.lifecycleReader.delete(request.sessionId);
                 continue;
             }
-            let signal = parseClaudeLifecycleLines(readJsonlTailLines(sessionFile), request.runStartedAtMs);
+            let signal = this.lifecycleReader.read(
+                request.sessionId,
+                sessionFile,
+                request.runStartedAtMs,
+                () => createClaudeLifecycleAccumulator(request.runStartedAtMs)
+            );
             if (signal) {
                 signals[request.sessionId] = signal;
             }
         }
+        this.lifecycleReader.retain(activeSessionIds);
         return signals;
     }
 
@@ -133,6 +148,7 @@ export default class ClaudeSessionService {
             fs.mkdirSync(archivePath, { recursive: true });
             fs.renameSync(sessionFile, this.getAvailableArchivePath(archivePath, path.basename(sessionFile)));
             this.sessionFilesById.delete(sessionId);
+            this.lifecycleReader.delete(sessionId);
             this.invalidateCache();
             return true;
         } catch (e) {
