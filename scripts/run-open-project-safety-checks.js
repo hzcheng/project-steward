@@ -27,6 +27,7 @@ const { DashboardStartupController } = require('../out/dashboard/startupControll
 const models = require('../out/models');
 const { OpenProjectStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectStore');
 const { OpenProjectCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectCoordinator');
+const { replaceOpenProjectPublicationUris } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectPublication');
 Module._load = originalModuleLoad;
 
 const SELF = '1'.repeat(32);
@@ -114,7 +115,6 @@ function runProtocolChecks() {
     assert.deepStrictEqual(protocol.validateOpenProjectPublication(publication), publication);
     assert.deepStrictEqual(protocol.validateOpenProjectRegistration(registration), registration);
     assert.deepStrictEqual(protocol.validateOpenProjectAggregate(aggregate), aggregate);
-
     assertRejectsValidation(
         () => protocol.validateOpenProjectPublication({ ...publication, unexpected: true }),
         /unexpected fields/
@@ -271,6 +271,27 @@ function runProtocolChecks() {
             projects: [tiedProjectBeta, tiedProjectAlpha],
         })])
     );
+}
+
+function runOpenProjectPublicationChecks() {
+    const publication = {
+        protocolVersion: 1,
+        instanceId: SELF,
+        sequence: 1,
+        followsFocusEvent: false,
+        projects: [makeRecord({
+            ordinal: 0,
+            uri: 'vscode-remote://dev-container%2Bcurrent/workspaces/AiToEarn',
+            remoteType: 'devContainer',
+        })],
+    };
+    const exactWindowUri = 'vscode-remote://dev-container%2Btarget%40ssh-remote%2Bhome-book/workspaces/AiToEarn';
+
+    const replaced = replaceOpenProjectPublicationUris(publication, [exactWindowUri]);
+
+    assert.strictEqual(replaced.projects[0].uri, exactWindowUri);
+    assert.strictEqual(publication.projects[0].uri, 'vscode-remote://dev-container%2Bcurrent/workspaces/AiToEarn');
+    assert.deepStrictEqual(replaceOpenProjectPublicationUris(publication, []), publication);
 }
 
 function runIdentityChecks() {
@@ -2002,7 +2023,13 @@ async function runCoordinatorWiringChecks() {
                 };
             },
         },
-        workspace: { workspaceFolders: [] },
+        workspace: {
+            workspaceFolders: [{
+                uri: {
+                    toString: () => 'vscode-remote://dev-container%2Btarget%40ssh-remote%2Bhome-book/workspaces/AiToEarn',
+                },
+            }],
+        },
         commands: {
             registerCommand: (command, callback) => {
                 registeredCommands.set(command, callback);
@@ -2041,6 +2068,10 @@ async function runCoordinatorWiringChecks() {
         ).pop();
         assert.ok(aggregateDelivery, 'production wiring should deliver an open-project aggregate');
         assert.strictEqual(aggregateDelivery.argument.registrations[0].instanceId, SELF);
+        assert.strictEqual(
+            aggregateDelivery.argument.registrations[0].projects[0].uri,
+            'vscode-remote://dev-container%2Btarget%40ssh-remote%2Bhome-book/workspaces/AiToEarn'
+        );
         assert.ok(bridgeOutputLines.some(line =>
             line.startsWith('[OpenProjects] ')
             && line.includes('"event":"publish"')
@@ -2062,6 +2093,7 @@ async function runCoordinatorWiringChecks() {
 
 async function main() {
     runProtocolChecks();
+    runOpenProjectPublicationChecks();
     runIdentityChecks();
     runRecordChecks();
     runProjectionChecks();

@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { resolveBridgeStorageRoot } from './bridgeStorageRoot';
 import { LocalStore } from './localStore';
 import { OpenProjectCoordinator } from './openProjectCoordinator';
+import { replaceOpenProjectPublicationUris } from './openProjectPublication';
 import { ProductionAttentionStore } from './productionAttentionStore';
 import { aggregateAttentionSnapshots, validateAttentionAggregate } from '../../../src/aiSessions/attentionAggregate';
 import {
@@ -191,7 +192,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
     const openProjectPublishDisposable = vscode.commands.registerCommand(
         OPEN_PROJECT_BRIDGE_PUBLISH,
-        (raw: unknown) => openProjectCoordinator.publish(raw),
+        (raw: unknown) => {
+            const workspaceFile = vscode.workspace.workspaceFile;
+            const workspaceUris = workspaceFile && workspaceFile.scheme !== 'untitled'
+                ? [workspaceFile.toString()]
+                : (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString());
+            return openProjectCoordinator.publish(replaceOpenProjectPublicationUris(raw, workspaceUris));
+        },
     );
     const openProjectUnregisterDisposable = vscode.commands.registerCommand(
         OPEN_PROJECT_BRIDGE_UNREGISTER,
