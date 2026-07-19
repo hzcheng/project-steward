@@ -2564,20 +2564,17 @@ body.steward-sidebar {
         .codex-session-row {
             --steward-ai-accent: var(--vscode-terminal-ansiCyan);
 
-            display: grid;
-            grid-template-columns: 28px minmax(0, 1fr);
-            align-items: center;
-            gap: 7px;
+            display: block;
             box-sizing: border-box;
             position: relative;
             min-height: 42px;
-            padding: 4px 42px 4px 8px;
+            padding: 0;
             border: 1px solid transparent;
             border-radius: 8px;
             color: var(--steward-foreground);
             background: transparent;
             box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-            cursor: pointer;
+            cursor: default;
             overflow: hidden;
             transition:
                 border-color $defaultTransition,
@@ -2610,11 +2607,6 @@ body.steward-sidebar {
                 }
             }
 
-            &:focus-visible {
-                outline: 2px solid var(--vscode-focusBorder);
-                outline-offset: -2px;
-            }
-
             &[data-session-pinned] {
                 border-color: var(--vscode-panel-border);
                 background: var(--vscode-list-inactiveSelectionBackground, transparent);
@@ -2633,6 +2625,30 @@ body.steward-sidebar {
                     background: var(--vscode-editorWarning-foreground, var(--vscode-terminal-ansiYellow));
                     opacity: 1;
                 }
+            }
+        }
+
+        .ai-session-primary-action {
+            display: grid;
+            grid-template-columns: 28px minmax(0, 1fr);
+            align-items: center;
+            gap: 7px;
+            box-sizing: border-box;
+            width: 100%;
+            min-height: 40px;
+            padding: 4px 42px 4px 8px;
+            border: 0;
+            border-radius: 7px;
+            outline: none;
+            color: inherit;
+            background: transparent;
+            font: inherit;
+            text-align: left;
+            cursor: pointer;
+
+            &:focus-visible {
+                outline: 2px solid var(--vscode-focusBorder);
+                outline-offset: -2px;
             }
         }
 
@@ -2982,8 +2998,18 @@ body.steward-sidebar {
 
         &[data-ai-session-managing] {
             .ai-session-history-panel .codex-session-row {
-                grid-template-columns: 18px 28px minmax(0, 1fr);
-                padding-right: 8px;
+                .ai-session-primary-action {
+                    padding-right: 8px;
+                    padding-left: 30px;
+                }
+
+                .ai-session-batch-checkbox {
+                    position: absolute;
+                    top: 50%;
+                    left: 8px;
+                    z-index: 3;
+                    transform: translateY(-50%);
+                }
             }
 
             .ai-session-batch-checkbox,
@@ -3118,10 +3144,12 @@ body.steward-sidebar .project .ai-session-attention-indicator {
         }
 
         .codex-session-row {
-            grid-template-columns: 22px minmax(0, 1fr);
-            gap: 5px;
-            padding-right: 36px;
-            padding-left: 6px;
+            .ai-session-primary-action {
+                grid-template-columns: 22px minmax(0, 1fr);
+                gap: 5px;
+                padding-right: 36px;
+                padding-left: 6px;
+            }
         }
 
         .codex-session-icon {
@@ -3142,6 +3170,7 @@ body.steward-sidebar .project .ai-session-attention-indicator {
 
 @media (prefers-reduced-motion: reduce) {
     .codex-session-row,
+    .ai-session-primary-action,
     .project-codex-badge,
     .ai-session-attention-indicator {
         animation: none !important;
@@ -3151,7 +3180,7 @@ body.steward-sidebar .project .ai-session-attention-indicator {
 
 @media (forced-colors: active) {
     body.steward-sidebar .project {
-        .codex-session-row:focus-visible {
+        .ai-session-primary-action:focus-visible {
             outline-color: Highlight;
         }
 

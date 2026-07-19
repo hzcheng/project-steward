@@ -508,6 +508,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         confirmRuntimeClose: (message, action) => vscode.window.showWarningMessage(
             message, { modal: true }, action
         ),
+        chooseRuntimeConflict: async runtimes => {
+            const picks = runtimes.map(runtime => {
+                const backendLabel = runtime.backend === 'tmux'
+                    ? `tmux · ${runtime.tmux?.layout || 'unknown'} layout`
+                    : 'Direct · VS Code Terminal';
+                const attachment = runtime.attached ? 'attached' : 'detached';
+                const target = runtime.backend === 'tmux'
+                    ? `${runtime.tmux?.sessionName || 'unknown session'}${runtime.tmux?.windowName
+                        ? `:${runtime.tmux.windowName}` : ''}`
+                    : runtime.terminal?.name || 'unnamed VS Code terminal';
+                return {
+                    label: `$(terminal) ${backendLabel}`,
+                    description: attachment,
+                    detail: `Target: ${target}`,
+                    runtime,
+                };
+            });
+            const selected = await vscode.window.showQuickPick(picks, {
+                placeHolder: 'Select the exact AI session runtime to focus',
+                ignoreFocusOut: true,
+            });
+            return selected?.runtime;
+        },
         announceStatus: (projectId, message) => provider.postMessage({
             type: 'ai-session-status-announcement',
             projectId,

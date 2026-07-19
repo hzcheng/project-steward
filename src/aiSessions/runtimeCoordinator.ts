@@ -134,6 +134,18 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         return matches.length === 1 ? cloneRuntime(matches[0]) : null;
     }
 
+    getActiveCandidates(
+        provider: AiSessionProviderId,
+        sessionId: string
+    ): AiSessionRuntimeSnapshot<TTerminal>[] {
+        const matches = this.findMatches({ provider, sessionId });
+        const conflict = matches.length > 1 || matches.some(runtime => runtime.state === 'conflict');
+        return matches.map(runtime => ({
+            ...cloneRuntime(runtime),
+            ...(conflict ? { state: 'conflict' as const } : {}),
+        }));
+    }
+
     resume(request: AiSessionResumeRuntimeRequest): Promise<AiSessionRuntimeActionResult<TTerminal>> {
         const input = snapshotResumeRequest(request);
         const key = `resume:${input.identity.provider}:${input.identity.sessionId}`;
@@ -194,6 +206,22 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             return;
         }
         await this.backendFor(matches[0]).focus(cloneRuntime(matches[0]));
+    }
+
+    async focusSelected(selected: AiSessionRuntimeSnapshot<TTerminal>): Promise<boolean> {
+        const selection = cloneRuntime(selected);
+        const refresh = await this.refreshBackends(true);
+        this.throwRefreshFailure(refresh);
+        const backend = this.backendFor(selection);
+        const matches = [
+            ...backend.getActive(),
+            ...(backend.getConflicts?.() || []),
+        ].filter(runtime => selectedRuntimeMatches(selection, runtime));
+        if (matches.length !== 1) {
+            return false;
+        }
+        await backend.focus(cloneRuntime(matches[0]));
+        return true;
     }
 
     async detach(identity: AiSessionRuntimeIdentity): Promise<void> {
@@ -566,4 +594,31 @@ function countFinalIdentities<TTerminal>(
 function samePendingIdentity(left: AiSessionRuntimeIdentity, right: AiSessionRuntimeIdentity): boolean {
     return !!left.pendingId && left.pendingId === right.pendingId
         && left.provider === right.provider;
+}
+
+function selectedRuntimeMatches<TTerminal>(
+    selected: AiSessionRuntimeSnapshot<TTerminal>,
+    current: AiSessionRuntimeSnapshot<TTerminal>
+): boolean {
+    if (selected.backend !== current.backend
+        || selected.markerPath !== current.markerPath
+        || selected.runStartedAtMs !== current.runStartedAtMs
+        || !sameFullIdentity(selected.identity, current.identity)) {
+        return false;
+    }
+    if (selected.backend === 'vscode') {
+        return !!selected.terminal && selected.terminal === current.terminal;
+    }
+    return !!selected.tmux && !!current.tmux
+        && selected.tmux.layout === current.tmux.layout
+        && selected.tmux.sessionName === current.tmux.sessionName
+        && selected.tmux.windowName === current.tmux.windowName;
+}
+
+function sameFullIdentity(left: AiSessionRuntimeIdentity, right: AiSessionRuntimeIdentity): boolean {
+    return left.provider === right.provider
+        && left.projectKey === right.projectKey
+        && left.cwd === right.cwd
+        && left.sessionId === right.sessionId
+        && left.pendingId === right.pendingId;
 }

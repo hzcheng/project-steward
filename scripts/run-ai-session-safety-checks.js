@@ -4204,7 +4204,10 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes('role="menuitem" tabindex="-1"'));
     assert.ok(webviewProjectScripts.includes("e.key === 'ContextMenu'"));
     assert.ok(webviewProjectScripts.includes("e.key === 'F10' && e.shiftKey"));
-    assert.ok(webviewProjectScripts.includes("selectedPanel?.querySelector('.codex-session-row') || selectedTab"));
+    assert.ok(webviewProjectScripts.includes("rowToFocus?.querySelector('.ai-session-primary-action') || selectedTab"));
+    assert.ok(sessionTabsHtml.includes('class="ai-session-primary-action"'));
+    assert.ok(sessionTabsHtml.includes('role="group"'));
+    assert.ok(!/class="codex-session-row[^>]*tabindex=/.test(sessionTabsHtml));
     assert.ok(webviewProjectScripts.includes('updateOpenProjectAiSessionBadge(projectDiv, totalCount, attentionCount, activeCount)'));
 
     assert.ok(webviewContent.includes('data-action="add" title="Add Project"'));
@@ -4996,7 +4999,8 @@ function runBatchAiSessionWebviewChecks() {
                 attentionIndicator = indicator;
                 indicator.remove = () => { attentionIndicator = null; };
             },
-            querySelector: selector => selector === '.ai-session-attention-indicator' ? attentionIndicator : null,
+            querySelector: selector => selector === '.ai-session-attention-indicator' ? attentionIndicator
+                : selector === '.ai-session-primary-action' ? row.primaryAction : null,
             removeAttribute: attribute => {
                 attributes.delete(attribute);
                 delete attributeValues[attribute];
@@ -5023,6 +5027,15 @@ function runBatchAiSessionWebviewChecks() {
             },
             focus: () => {},
             getBoundingClientRect: () => ({ left: 10, top: 10 }),
+        };
+        row.primaryAction = {
+            focus: () => { row.primaryAction.focused = true; },
+            closest: selector => {
+                if (selector === '[data-action="activate-ai-session"]'
+                    || selector === '.ai-session-primary-action'
+                    || selector === 'button, input, select, textarea, a[href]') return row.primaryAction;
+                return row.closest(selector);
+            },
         };
         return row;
     };
@@ -5190,6 +5203,11 @@ function runBatchAiSessionWebviewChecks() {
             },
             getAttribute: name => attributes[name] || null,
             setAttribute: (name, value) => { attributes[name] = String(value); },
+            toggleAttribute: (name, force) => {
+                if (force) attributes[name] = '';
+                else delete attributes[name];
+            },
+            hasAttribute: name => Object.prototype.hasOwnProperty.call(attributes, name),
             focus: () => { item.focused = true; },
             closest: selector => {
                 if (selector === '#aiSessionContextMenu [data-action]'
@@ -5396,9 +5414,17 @@ function runBatchAiSessionWebviewChecks() {
     pendingRow.project = projectA;
     pendingRow.setAttribute('data-session-pending', '');
     pendingRow.setAttribute('data-pending-created-at', '2026-07-18T08:00:00Z');
-    eventListeners.click({ button: 0, target: activeRow });
-    eventListeners.click({ button: 0, target: otherCodexRow });
-    eventListeners.click({ button: 0, target: pendingRow });
+    let primarySpacePrevented = false;
+    eventListeners.keydown({
+        target: activeRow.primaryAction,
+        key: ' ',
+        preventDefault: () => { primarySpacePrevented = true; },
+    });
+    assert.strictEqual(primarySpacePrevented, false,
+        'native Space activation on the primary button must not be intercepted');
+    eventListeners.click({ button: 0, target: activeRow.primaryAction });
+    eventListeners.click({ button: 0, target: otherCodexRow.primaryAction });
+    eventListeners.click({ button: 0, target: pendingRow.primaryAction });
 
     const newSessionTarget = {
         closest: selector => {
@@ -5462,13 +5488,37 @@ function runBatchAiSessionWebviewChecks() {
     }]);
     messages.length = 0;
 
+    let keyboardContextPrevented = false;
+    eventListeners.keydown({
+        target: tmuxRow.primaryAction,
+        key: 'F10',
+        shiftKey: true,
+        preventDefault: () => { keyboardContextPrevented = true; },
+    });
+    assert.strictEqual(keyboardContextPrevented, true);
+    assert.strictEqual(resumeMenuItem.focused, true,
+        'Shift+F10 on the native primary button must preserve keyboard context-menu access');
+
+    tmuxRow.setAttribute('data-session-conflict', '');
     eventListeners.contextmenu({
-        target: tmuxRow,
+        target: tmuxRow.primaryAction,
         preventDefault: () => {},
         clientX: 20,
         clientY: 20,
         keyboardTrigger: true,
     });
+    assert.strictEqual(closeMenuItem.hasAttribute('hidden'), true,
+        'a conflict row must hide Close/Detach from its context menu');
+    tmuxRow.removeAttribute('data-session-conflict');
+
+    eventListeners.contextmenu({
+        target: tmuxRow.primaryAction,
+        preventDefault: () => {},
+        clientX: 20,
+        clientY: 20,
+        keyboardTrigger: true,
+    });
+    assert.strictEqual(closeMenuItem.hasAttribute('hidden'), false);
     assert.strictEqual(closeMenuItem.textContent, 'Detach Terminal…');
     assert.strictEqual(closeMenuItem.getAttribute('aria-label'), 'Detach Terminal…');
     eventListeners.keydown({
@@ -5482,7 +5532,7 @@ function runBatchAiSessionWebviewChecks() {
     }, 'keyboard context-menu activation must preserve the tmux detach route');
 
     eventListeners.contextmenu({
-        target: activeRow,
+        target: activeRow.primaryAction,
         preventDefault: () => {},
         clientX: 20,
         clientY: 20,
@@ -5508,7 +5558,7 @@ function runBatchAiSessionWebviewChecks() {
         }],
     } });
     messages.length = 0;
-    eventListeners.click({ button: 0, target: attentionRow });
+    eventListeners.click({ button: 0, target: attentionRow.primaryAction });
     assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0])), {
         type: 'acknowledge-ai-session-attention',
         eventIds: ['full-owner-event-a', 'full-owner-event-b'],
@@ -5583,7 +5633,7 @@ function runBatchAiSessionWebviewChecks() {
         }],
     } });
     messages.length = 0;
-    eventListeners.click({ button: 0, target: attentionRow });
+    eventListeners.click({ button: 0, target: attentionRow.primaryAction });
     assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0])), {
         type: 'acknowledge-ai-session-attention',
         eventIds: ['owner-event-a', 'owner-event-b'],
@@ -5597,7 +5647,7 @@ function runBatchAiSessionWebviewChecks() {
         }],
     } });
     messages.length = 0;
-    eventListeners.click({ button: 0, target: attentionRow });
+    eventListeners.click({ button: 0, target: attentionRow.primaryAction });
     assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0].eventIds)), ['later-generation']);
     messages.length = 0;
 

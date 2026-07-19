@@ -114,7 +114,8 @@ function restoreAiSessionViewState(projectDiv, viewState, requestedTab) {
             && (!viewState.focusedRow.panel || panel?.getAttribute('data-ai-session-panel') === viewState.focusedRow.panel);
     });
     var selectedPanel = projectDiv.querySelector('[data-ai-session-panel="' + normalizeAiSessionTab(requestedTab) + '"]');
-    (match || selectedPanel?.querySelector('.codex-session-row') || selectedTab)?.focus();
+    var rowToFocus = match || selectedPanel?.querySelector('.codex-session-row');
+    (rowToFocus?.querySelector('.ai-session-primary-action') || selectedTab)?.focus();
 }
 
 function restoreAiSessionListScroll(list, requestedScrollTop) {
@@ -663,7 +664,9 @@ function initProjects() {
             return true;
         }
 
-        var pendingSessionRow = target.closest('.codex-session-row[data-session-pending]');
+        var primarySessionAction = target.closest('[data-action="activate-ai-session"]');
+        var pendingSessionRow = primarySessionAction
+            ? primarySessionAction.closest('.codex-session-row[data-session-pending]') : null;
         if (pendingSessionRow) {
             var pendingProvider = pendingSessionRow.getAttribute('data-session-provider');
             var pendingCreatedAt = pendingSessionRow.getAttribute('data-pending-created-at');
@@ -678,9 +681,10 @@ function initProjects() {
             return true;
         }
 
-        var sessionRow = target.closest('.codex-session-row[data-session-id]');
+        var sessionRow = primarySessionAction
+            ? primarySessionAction.closest('.codex-session-row[data-session-id]') : null;
         if (!sessionRow)
-            return false;
+            return !!target.closest('.codex-session-row');
 
         var sessionId = sessionRow.getAttribute("data-session-id");
         if (!sessionId)
@@ -1186,6 +1190,7 @@ function initProjects() {
     var contextMenuAiSessionProjectId = null;
     var contextMenuAiSessionActive = false;
     var contextMenuAiSessionBackend = null;
+    var contextMenuAiSessionConflict = false;
     var contextMenuAiSessionOrigin = null;
     var latestAiSessionUpdateSequence = 0;
 
@@ -1218,13 +1223,14 @@ function initProjects() {
 
         var sessionRow = e.target.closest('.codex-session-row[data-session-id][data-session-provider]');
         if (sessionRow) {
-            contextMenuAiSessionOrigin = sessionRow;
+            contextMenuAiSessionOrigin = sessionRow.querySelector('.ai-session-primary-action') || sessionRow;
             contextMenuAiSessionId = sessionRow.getAttribute("data-session-id");
             contextMenuAiSessionProvider = sessionRow.getAttribute("data-session-provider");
             var sessionProjectDiv = sessionRow.closest('.project[data-id]');
             contextMenuAiSessionProjectId = sessionProjectDiv ? sessionProjectDiv.getAttribute("data-id") : null;
             contextMenuAiSessionActive = sessionRow.hasAttribute('data-session-active');
             contextMenuAiSessionBackend = sessionRow.getAttribute('data-session-backend') || 'vscode';
+            contextMenuAiSessionConflict = sessionRow.hasAttribute('data-session-conflict');
             if (!contextMenuAiSessionId || !isAiSessionProvider(contextMenuAiSessionProvider))
                 return;
 
@@ -1241,7 +1247,10 @@ function initProjects() {
                     ? 'Detach Terminal…' : 'Close Terminal…';
                 closeMenuItem.textContent = terminalActionLabel;
                 closeMenuItem.setAttribute('aria-label', terminalActionLabel);
-                closeMenuItem.classList.toggle('disabled', !contextMenuAiSessionActive);
+                closeMenuItem.toggleAttribute('hidden', contextMenuAiSessionConflict);
+                closeMenuItem.classList.toggle(
+                    'disabled', !contextMenuAiSessionActive || contextMenuAiSessionConflict
+                );
             }
 
             showContextMenu(sessionContextMenuElement, e);
@@ -1393,7 +1402,7 @@ function initProjects() {
                 });
                 break;
             case 'close-terminal':
-                if (!contextMenuAiSessionActive) break;
+                if (!contextMenuAiSessionActive || contextMenuAiSessionConflict) break;
                 window.vscode.postMessage({
                     type: contextMenuAiSessionBackend === 'tmux'
                         ? 'detach-ai-session-terminal' : 'close-ai-session-terminal',
@@ -1416,6 +1425,7 @@ function initProjects() {
         contextMenuAiSessionProjectId = null;
         contextMenuAiSessionActive = false;
         contextMenuAiSessionBackend = null;
+        contextMenuAiSessionConflict = false;
         contextMenuAiSessionOrigin = null;
         document.querySelectorAll(".custom-context-menu").forEach(element =>
             element.classList.remove("visible")
@@ -2117,12 +2127,14 @@ function initProjects() {
         var interactiveChild = e.target && e.target.closest
             ? e.target.closest('button, input, select, textarea, a[href]')
             : null;
-        if (sessionRow && !interactiveChild
+        var primarySessionAction = e.target && e.target.closest
+            ? e.target.closest('.ai-session-primary-action') : null;
+        if (sessionRow && (!interactiveChild || primarySessionAction)
             && (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey))) {
             e.preventDefault();
             var sessionRowRect = sessionRow.getBoundingClientRect();
             onContextMenu({
-                target: sessionRow,
+                target: primarySessionAction || sessionRow,
                 preventDefault: () => {},
                 clientX: sessionRowRect.left + 8,
                 clientY: sessionRowRect.top + 8,
@@ -2130,16 +2142,6 @@ function initProjects() {
             });
             return;
         }
-        if (sessionRow && !interactiveChild && e.key === 'Enter') {
-            var rowProject = sessionRow.closest('.project[data-id]');
-            var rowProjectId = rowProject && rowProject.getAttribute('data-id');
-            if (rowProjectId) {
-                e.preventDefault();
-                onTriggerAiSessionAction(sessionRow, rowProjectId);
-            }
-            return;
-        }
-
         if (e.key === "Escape") {
             var editForm = e.target && e.target.closest ? e.target.closest('.todo-edit-form') : null;
             if (editForm) {

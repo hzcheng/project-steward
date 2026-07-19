@@ -24,6 +24,20 @@ const configuredTmuxPath = process.env.PROJECT_STEWARD_TMUX_PATH || 'tmux';
 const serverName = `project-steward-test-${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
 const isolatedPrefix = ['-L', serverName, '-f', '/dev/null'];
 const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+let tmuxTempRoot = null;
+
+class CleanupAggregateError extends Error {
+    constructor(errors, message) {
+        super(message);
+        this.name = 'CleanupAggregateError';
+        this.errors = errors.slice();
+    }
+}
+
+function isolatedEnvironment() {
+    if (!tmuxTempRoot) throw new Error('The isolated tmux temporary root is not initialized.');
+    return { ...process.env, TMUX_TMPDIR: tmuxTempRoot };
+}
 
 function asText(value) {
     return typeof value === 'string' ? value : value ? value.toString('utf8') : '';
@@ -47,6 +61,7 @@ class IsolatedSyncTmuxRunner {
         this.calls.push({ file, args: isolatedArgs.slice() });
         try {
             const stdout = execFileSync(file, isolatedArgs, {
+                env: isolatedEnvironment(),
                 encoding: 'utf8',
                 stdio: ['ignore', 'pipe', 'pipe'],
                 timeout: COMMAND_TIMEOUT_MS,
@@ -127,32 +142,44 @@ function buildRuntimeContext(client, root, terminals) {
     return { backend, discovery, store };
 }
 
-function providerFixture(root, name, payload) {
+function providerFixture(root, name, payload, fixtureRegistry) {
     const stopPath = path.join(root, `${name}.stop`);
     const pidPath = path.join(root, `${name}.pid`);
-    const payloadPath = path.join(root, `${name}.payload`);
+    const invocationLogPath = path.join(root, 'provider-invocations.jsonl');
+    const invocationId = `${name}-${crypto.randomBytes(8).toString('hex')}`;
     const markerPath = path.join(root, `${name}.done`);
     const program = [
         "const fs = require('fs')",
-        'const [pidPath, stopPath, payloadPath, payload] = process.argv.slice(1)',
+        'const [pidPath, stopPath, invocationLogPath, invocationId, payload] = process.argv.slice(1)',
+        "fs.appendFileSync(invocationLogPath, JSON.stringify({ invocationId, pid: process.pid, cwd: process.cwd(), payload }) + '\\n', 'utf8')",
         "fs.writeFileSync(pidPath, String(process.pid), 'utf8')",
-        "fs.writeFileSync(payloadPath, payload, 'utf8')",
         'const timer = setInterval(() => {',
         '  if (fs.existsSync(stopPath)) { clearInterval(timer); process.exit(0); }',
         '}, 20)',
     ].join('; ');
-    return {
+    const fixture = {
         stopPath,
         pidPath,
-        payloadPath,
+        invocationLogPath,
+        invocationId,
         markerPath,
         payload,
         launch: {
             executable: process.execPath,
-            args: ['-e', program, pidPath, stopPath, payloadPath, payload],
+            args: ['-e', program, pidPath, stopPath, invocationLogPath, invocationId, payload],
             markerPath,
         },
     };
+    fixtureRegistry.push(fixture);
+    return fixture;
+}
+
+function readProviderInvocations(invocationLogPath) {
+    if (!fs.existsSync(invocationLogPath)) return [];
+    return fs.readFileSync(invocationLogPath, 'utf8')
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map(line => JSON.parse(line));
 }
 
 function resumeRequest(provider, projectKey, cwd, sessionId, fixture, terminalName) {
@@ -201,16 +228,16 @@ async function assertPaneAlive(runner, locator) {
     assert.deepStrictEqual(result.stdout.trim().split(/\r?\n/), ['0']);
 }
 
-async function runSmoke(root, runner, client) {
+async function runSmoke(root, runner, client, fixtureRegistry) {
     const cwd = path.join(root, "work dir 'quoted' $dollar ; semi");
     fs.mkdirSync(cwd, { recursive: true });
     const payload = "payload with spaces 'quotes' ; $HOME $(not-run) &\nsecond line";
     const fixtures = {
-        projectOne: providerFixture(root, 'project-one', payload),
-        projectTwo: providerFixture(root, 'project-two', `${payload}:two`),
-        sessionOne: providerFixture(root, 'session-one', `${payload}:three`),
-        sessionTwo: providerFixture(root, 'session-two', `${payload}:four`),
-        pending: providerFixture(root, 'pending', `${payload}:pending`),
+        projectOne: providerFixture(root, 'project-one', payload, fixtureRegistry),
+        projectTwo: providerFixture(root, 'project-two', `${payload}:two`, fixtureRegistry),
+        sessionOne: providerFixture(root, 'session-one', `${payload}:three`, fixtureRegistry),
+        sessionTwo: providerFixture(root, 'session-two', `${payload}:four`, fixtureRegistry),
+        pending: providerFixture(root, 'pending', `${payload}:pending`, fixtureRegistry),
     };
     const projectKey = "project:key with spaces ' ; $";
     const terminals = [];
@@ -225,20 +252,39 @@ async function runSmoke(root, runner, client) {
         'claude', projectKey, cwd, 'session-two.special:$', fixtures.projectTwo,
         'Project Steward: Smoke Project [tmux]'
     );
-    const [projectOne] = await Promise.all([
+    const [projectOne, concurrentProjectOne] = await Promise.all([
         contextA.backend.ensureResume(projectOneRequest, 'project'),
         contextB.backend.ensureResume(projectOneRequest, 'project'),
     ]);
+    assert.deepStrictEqual(projectOne.tmux, concurrentProjectOne.tmux);
     const projectTwo = await contextA.backend.ensureResume(projectTwoRequest, 'project');
 
     await waitFor(() => Object.values(fixtures).slice(0, 2)
         .every(fixture => fs.existsSync(fixture.pidPath)), 'project providers to start');
     assertProviderAlive(fixtures.projectOne);
     assertProviderAlive(fixtures.projectTwo);
-    assert.strictEqual(fs.readFileSync(fixtures.projectOne.payloadPath, 'utf8'), payload);
+    const projectInvocationRecords = readProviderInvocations(fixtures.projectOne.invocationLogPath)
+        .filter(record => record.invocationId === fixtures.projectOne.invocationId);
+    assert.strictEqual(projectInvocationRecords.length, 1,
+        'concurrent ensure calls for one identity must dispatch one provider invocation');
+    assert.deepStrictEqual(projectInvocationRecords[0], {
+        invocationId: fixtures.projectOne.invocationId,
+        pid: Number(fs.readFileSync(fixtures.projectOne.pidPath, 'utf8')),
+        cwd,
+        payload,
+    });
 
     let rows = await client.listWindows();
+    const projectManagedSessions = new Set(rows.filter(row =>
+        row.sessionMetadata.managed === '1'
+        && row.sessionMetadata.layout === 'project'
+        && row.sessionMetadata.projectKey === projectKey
+    ).map(row => row.sessionName));
+    assert.strictEqual(projectManagedSessions.size, 1,
+        'project layout must have exactly one managed project session');
     const projectRows = rows.filter(row => row.sessionName === projectOne.tmux.sessionName
+        && row.windowMetadata.managed === '1'
+        && row.windowMetadata.layout === 'project'
         && row.windowMetadata.provider);
     assert.strictEqual(new Set(projectRows.map(row => row.sessionName)).size, 1);
     assert.strictEqual(projectRows.length, 2,
@@ -277,7 +323,12 @@ async function runSmoke(root, runner, client) {
         && fs.existsSync(fixtures.sessionTwo.pidPath), 'session-layout providers to start');
     rows = await client.listWindows();
     const sessionRows = rows.filter(row => row.sessionMetadata.layout === 'session'
-        && row.sessionMetadata.provider);
+        && row.sessionMetadata.managed === '1'
+        && row.sessionMetadata.provider
+        && row.windowMetadata.managed === '1'
+        && row.windowMetadata.layout === 'session');
+    assert.strictEqual(sessionRows.length, 2,
+        'session layout must contain exactly two managed session rows');
     assert.strictEqual(new Set(sessionRows.map(row => row.sessionName)).size, 2,
         'session layout must create one independent tmux session per AI session');
     assert.ok(sessionRows.every(row => Object.keys(row.windowMetadata).sort().join(',')
@@ -297,6 +348,18 @@ async function runSmoke(root, runner, client) {
         launch: { ...fixtures.pending.launch, cwd },
     }, 'project');
     await waitFor(() => fs.existsSync(fixtures.pending.pidPath), 'pending provider to start');
+    const invocationRecords = readProviderInvocations(fixtures.projectOne.invocationLogPath);
+    assert.strictEqual(invocationRecords.length, Object.keys(fixtures).length,
+        'every fixture must append exactly one provider invocation record');
+    assert.strictEqual(new Set(invocationRecords.map(record => record.invocationId)).size,
+        Object.keys(fixtures).length, 'provider invocation IDs must be unique');
+    for (const fixture of Object.values(fixtures)) {
+        const records = invocationRecords.filter(record => record.invocationId === fixture.invocationId);
+        assert.strictEqual(records.length, 1);
+        assert.ok(Number.isSafeInteger(records[0].pid) && records[0].pid > 0);
+        assert.strictEqual(records[0].cwd, cwd);
+        assert.strictEqual(records[0].payload, fixture.payload);
+    }
     const pendingLocator = { ...pending.tmux };
     const finalSessionId = "promoted:session ' ;$";
     const promoted = await contextA.backend.promotePending(pendingId, finalSessionId);
@@ -341,6 +404,7 @@ async function runSmoke(root, runner, client) {
 function killIsolatedServer() {
     try {
         execFileSync(configuredTmuxPath, [...isolatedPrefix, 'kill-server'], {
+            env: isolatedEnvironment(),
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: COMMAND_TIMEOUT_MS,
@@ -355,14 +419,12 @@ function captureIsolatedSocketPath() {
         const socketPath = execFileSync(configuredTmuxPath, [
             ...isolatedPrefix, 'display-message', '-p', '#{socket_path}',
         ], {
+            env: isolatedEnvironment(),
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: COMMAND_TIMEOUT_MS,
         }).trim();
-        if (!path.isAbsolute(socketPath) || path.basename(socketPath) !== serverName) {
-            throw new Error('tmux returned an unexpected isolated socket path.');
-        }
-        return socketPath;
+        return validateOwnedSocketPath(socketPath);
     } catch (error) {
         if (error && typeof error.status === 'number' && error.status !== 0) return null;
         throw error;
@@ -372,6 +434,7 @@ function captureIsolatedSocketPath() {
 function assertIsolatedServerStopped() {
     try {
         execFileSync(configuredTmuxPath, [...isolatedPrefix, 'list-sessions'], {
+            env: isolatedEnvironment(),
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: COMMAND_TIMEOUT_MS,
@@ -385,38 +448,212 @@ function assertIsolatedServerStopped() {
 
 function removeOwnStaleSocket(socketPath) {
     if (!socketPath || !fs.existsSync(socketPath)) return;
+    const ownedSocketPath = validateOwnedSocketPath(socketPath);
     const stat = fs.lstatSync(socketPath);
-    if (!stat.isSocket() || path.basename(socketPath) !== serverName) {
+    if (!stat.isSocket()) {
         throw new Error('Refusing to remove a non-socket or foreign tmux path.');
     }
-    fs.unlinkSync(socketPath);
-    assert.strictEqual(fs.existsSync(socketPath), false,
+    fs.unlinkSync(ownedSocketPath);
+    assert.strictEqual(fs.existsSync(ownedSocketPath), false,
         'the isolated tmux socket must be removed after its server stops');
+}
+
+function validateOwnedSocketPath(socketPath) {
+    if (!tmuxTempRoot || !path.isAbsolute(socketPath) || path.basename(socketPath) !== serverName) {
+        throw new Error('tmux returned an unexpected isolated socket path.');
+    }
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    if (!Number.isSafeInteger(uid) || uid < 0) {
+        throw new Error('Cannot validate the isolated tmux socket owner on this platform.');
+    }
+    const ownedRoot = fs.realpathSync(tmuxTempRoot);
+    const ownedSocketPath = fs.realpathSync(socketPath);
+    const expectedParent = path.join(ownedRoot, `tmux-${uid}`);
+    if (path.dirname(ownedSocketPath) !== expectedParent
+        || path.basename(ownedSocketPath) !== serverName) {
+        throw new Error('Refusing to use a tmux socket outside the owned temporary root.');
+    }
+    return ownedSocketPath;
+}
+
+function collectTrackedProviderPids(fixtures, dependencies = {}) {
+    const readInvocations = dependencies.readInvocations || readProviderInvocations;
+    const readFallbackPid = dependencies.readFallbackPid || (pidPath => {
+        if (!fs.existsSync(pidPath)) return null;
+        return Number(fs.readFileSync(pidPath, 'utf8'));
+    });
+    const invocationIds = new Set(fixtures.map(fixture => fixture.invocationId).filter(Boolean));
+    const invocationLogPaths = new Set(fixtures
+        .map(fixture => fixture.invocationLogPath).filter(Boolean));
+    const pids = new Set();
+    for (const invocationLogPath of invocationLogPaths) {
+        for (const record of readInvocations(invocationLogPath)) {
+            if (invocationIds.has(record.invocationId)
+                && Number.isSafeInteger(record.pid) && record.pid > 0) {
+                pids.add(record.pid);
+            }
+        }
+    }
+    for (const fixture of fixtures) {
+        const fallbackPid = readFallbackPid(fixture.pidPath);
+        if (Number.isSafeInteger(fallbackPid) && fallbackPid > 0) {
+            pids.add(fallbackPid);
+        }
+    }
+    return [...pids];
+}
+
+function terminateTrackedProviderPids(pids, dependencies = {}) {
+    const kill = dependencies.kill || ((pid, signal) => process.kill(pid, signal));
+    const wait = dependencies.wait || (delayMs => Atomics.wait(waitBuffer, 0, 0, delayMs));
+    const errors = [];
+    for (const pid of pids) {
+        try {
+            kill(pid, 0);
+            kill(pid, 'SIGTERM');
+        } catch (error) {
+            if (!(error && error.code === 'ESRCH')) errors.push(error);
+        }
+    }
+    wait(50);
+    for (const pid of pids) {
+        try {
+            kill(pid, 0);
+            kill(pid, 'SIGKILL');
+        } catch (error) {
+            if (!(error && error.code === 'ESRCH')) errors.push(error);
+        }
+    }
+    if (errors.length) {
+        throw new CleanupAggregateError(errors, 'One or more provider fixtures could not be terminated.');
+    }
+}
+
+function terminateProviderFixtures(fixtures) {
+    const errors = [];
+    for (const fixture of fixtures) {
+        try {
+            if (!fs.existsSync(fixture.stopPath)) {
+                fs.writeFileSync(fixture.stopPath, 'stop', 'utf8');
+            }
+        } catch (error) {
+            errors.push(error);
+        }
+    }
+    try {
+        terminateTrackedProviderPids(collectTrackedProviderPids(fixtures));
+    } catch (error) {
+        errors.push(error);
+    }
+    if (errors.length) {
+        throw new CleanupAggregateError(errors, 'One or more provider fixtures could not be terminated.');
+    }
+}
+
+function removeFixtureRoots(root, isolatedRoot, removeIsolatedRoot) {
+    const errors = [];
+    const fixtureRoots = [root, ...(removeIsolatedRoot ? [isolatedRoot] : [])];
+    for (const fixtureRoot of fixtureRoots) {
+        try {
+            fs.rmSync(fixtureRoot, { recursive: true, force: true });
+        } catch (error) {
+            errors.push(error);
+        }
+    }
+    if (errors.length) {
+        throw new CleanupAggregateError(errors, 'One or more smoke fixture roots could not be removed.');
+    }
+}
+
+async function runBestEffortCleanup(stages) {
+    const errors = [];
+    let socketPath = null;
+    const attempt = async operation => {
+        try {
+            return await operation();
+        } catch (error) {
+            errors.push(error);
+            return undefined;
+        }
+    };
+    const captured = await attempt(() => stages.captureSocket());
+    if (typeof captured === 'string') socketPath = captured;
+    let killFailed = false;
+    try {
+        await stages.killServer();
+    } catch (error) {
+        errors.push(error);
+        killFailed = true;
+    }
+    if (killFailed) {
+        await attempt(() => stages.killServer());
+    }
+    let serverStopped = false;
+    try {
+        await stages.verifyStopped();
+        serverStopped = true;
+    } catch (error) {
+        errors.push(error);
+    }
+    await attempt(() => stages.removeSocket(serverStopped ? socketPath : null));
+    await attempt(() => stages.terminateProviders());
+    await attempt(() => stages.removeFixtures(serverStopped));
+    if (errors.length) {
+        throw new CleanupAggregateError(errors, 'The isolated tmux smoke cleanup encountered errors.');
+    }
 }
 
 async function main() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-tmux-smoke-'));
+    tmuxTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-tmux-server-'));
+    const ownedTmuxTempRoot = tmuxTempRoot;
+    const fixtures = [];
     const runner = new IsolatedSyncTmuxRunner();
     const client = new TmuxClient(configuredTmuxPath, runner);
-    let isolatedSocketPath = null;
+    let primaryError = null;
+    let cleanupError = null;
     try {
-        const availability = await client.checkAvailability();
-        assert.ok(availability.available, availability.message);
-        await runSmoke(root, runner, client);
+        try {
+            const availability = await client.checkAvailability();
+            assert.ok(availability.available, availability.message);
+            await runSmoke(root, runner, client, fixtures);
+        } catch (error) {
+            primaryError = error;
+        }
     } finally {
         try {
-            isolatedSocketPath = captureIsolatedSocketPath();
-            killIsolatedServer();
-            assertIsolatedServerStopped();
-            removeOwnStaleSocket(isolatedSocketPath);
-        } finally {
-            fs.rmSync(root, { recursive: true, force: true });
+            await runBestEffortCleanup({
+                captureSocket: captureIsolatedSocketPath,
+                killServer: killIsolatedServer,
+                verifyStopped: assertIsolatedServerStopped,
+                removeSocket: removeOwnStaleSocket,
+                terminateProviders: () => terminateProviderFixtures(fixtures),
+                removeFixtures: serverStopped => removeFixtureRoots(
+                    root, ownedTmuxTempRoot, serverStopped
+                ),
+            });
+        } catch (error) {
+            cleanupError = error;
         }
     }
+    if (primaryError && cleanupError) {
+        throw new CleanupAggregateError([primaryError, cleanupError],
+            'The tmux smoke test and cleanup both failed.');
+    }
+    if (primaryError) throw primaryError;
+    if (cleanupError) throw cleanupError;
     console.log('AI session tmux smoke checks passed.');
 }
 
-main().catch(error => {
-    console.error(error);
-    process.exitCode = 1;
-});
+module.exports = {
+    collectTrackedProviderPids,
+    runBestEffortCleanup,
+    terminateTrackedProviderPids,
+};
+
+if (require.main === module) {
+    main().catch(error => {
+        console.error(error);
+        process.exitCode = 1;
+    });
+}

@@ -5720,6 +5720,49 @@ async function runRuntimeCoordinatorChecks() {
     routed.handleClosedTerminal(closedTerminal);
     assert.deepStrictEqual(routedDirect.closed, [closedTerminal]);
     assert.deepStrictEqual(routedTmux.closed, [closedTerminal]);
+
+    const choiceDirect = createFakeRuntimeBackend('vscode');
+    const choiceTmux = createFakeRuntimeBackend('tmux');
+    const directHandle = { name: 'exact-direct-handle' };
+    choiceDirect.active.push(fakeRuntime('vscode', 'choice', {
+        terminal: directHandle,
+        markerPath: '/tmp/direct-choice.done',
+        runStartedAtMs: 41,
+    }));
+    choiceTmux.active.push(fakeRuntime('tmux', 'choice', {
+        markerPath: '/tmp/tmux-choice.done',
+        runStartedAtMs: 42,
+        attached: false,
+        tmux: { layout: 'project', sessionName: 'managed-choice', windowName: 'choice-window' },
+    }));
+    const choiceCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: choiceDirect,
+        tmux: choiceTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    const choices = choiceCoordinator.getActiveCandidates('codex', 'choice');
+    assert.strictEqual(choices.length, 2);
+    assert.ok(choices.every(runtime => runtime.state === 'conflict'));
+    assert.strictEqual(await choiceCoordinator.focusSelected(choices[0]), true);
+    assert.strictEqual(choiceDirect.focusCalls.length, 1,
+        'an exact Direct conflict choice must focus its selected terminal handle');
+    assert.strictEqual(choiceTmux.focusCalls.length, 0);
+    assert.strictEqual(await choiceCoordinator.focusSelected(choices[1]), true);
+    assert.strictEqual(choiceTmux.focusCalls.length, 1,
+        'an exact tmux conflict choice must focus its selected locator');
+
+    const staleChoice = choiceCoordinator.getActiveCandidates('codex', 'choice')[0];
+    choiceDirect.refresh = async force => {
+        choiceDirect.refreshCalls.push(force);
+        choiceDirect.active[0] = {
+            ...choiceDirect.active[0],
+            terminal: { name: 'replacement-direct-handle' },
+        };
+    };
+    assert.strictEqual(await choiceCoordinator.focusSelected(staleChoice), false,
+        'a stale Direct handle must not be focused after forced refresh');
+    assert.strictEqual(choiceDirect.focusCalls.length, 1);
 }
 
 async function runRuntimeProjectionChecks() {
@@ -6072,6 +6115,76 @@ async function runRuntimeControllerChecks() {
     assert.strictEqual(coordinator.detached.length, 2,
         'a forged backend-specific route must not detach the resolved runtime');
     assert.deepStrictEqual(runtimes, [direct, tmux, legacy], 'controller calls must not mutate runtime snapshots');
+
+    const conflictDirect = {
+        ...direct,
+        identity: { ...direct.identity, sessionId: 'conflict-session' },
+        state: 'conflict',
+    };
+    const conflictTmux = {
+        ...tmux,
+        identity: { ...tmux.identity, sessionId: 'conflict-session' },
+        state: 'conflict',
+    };
+    project.codexSessions.push({ id: 'conflict-session' });
+    const conflictCandidates = [conflictDirect, conflictTmux];
+    const selectedConflicts = [];
+    const chooserSelections = [conflictDirect, conflictTmux, undefined, conflictDirect];
+    let selectedFocusResult = true;
+    let chooserThrows = false;
+    const conflictCoordinator = {
+        getById: () => null,
+        getActiveCandidates: () => conflictCandidates.map(runtime => ({
+            ...runtime,
+            identity: { ...runtime.identity },
+            ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
+        })),
+        getPending: () => [],
+        focus: async () => { throw new Error('ambiguous identity focus must not be used'); },
+        focusSelected: async runtime => {
+            selectedConflicts.push(runtime);
+            return selectedFocusResult;
+        },
+        detach: async () => undefined,
+    };
+    const conflictAnnouncements = [];
+    const conflictErrors = [];
+    const conflictController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getOpenProjects: () => [project],
+        getProjectSessions: candidate => candidate.codexSessions,
+        getProjectKey: () => 'pk',
+        getProjectCwd: () => '/work',
+        normalizePath: value => value,
+        runtimeCoordinator: conflictCoordinator,
+        chooseRuntimeConflict: async candidates => {
+            assert.strictEqual(candidates.length, 2);
+            if (chooserThrows) throw new Error('raw quick pick failure');
+            return chooserSelections.shift();
+        },
+        confirmRuntimeClose: async () => undefined,
+        announceStatus: async (projectId, message) => conflictAnnouncements.push([projectId, message]),
+        showErrorMessage: async message => conflictErrors.push(message),
+        getProviderLabel: () => 'CODEX',
+        refresh: () => undefined,
+    });
+    await conflictController.focusActive('project', 'codex', 'conflict-session');
+    await conflictController.focusActive('project', 'codex', 'conflict-session');
+    await conflictController.focusActive('project', 'codex', 'conflict-session');
+    assert.deepStrictEqual(selectedConflicts.map(runtime => runtime.backend), ['vscode', 'tmux'],
+        'the chooser must route exact Direct and tmux conflict selections');
+    selectedFocusResult = false;
+    await conflictController.focusActive('project', 'codex', 'conflict-session');
+    assert.strictEqual(selectedConflicts.length, 3,
+        'cancel must perform zero selected-runtime focus actions');
+    assert.deepStrictEqual(conflictAnnouncements, [[
+        'project', 'The selected AI session runtime changed before it could be focused.',
+    ]], 'a stale selection must announce the safe no-action result');
+    chooserThrows = true;
+    await conflictController.focusActive('project', 'codex', 'conflict-session');
+    assert.deepStrictEqual(conflictErrors, ['Could not choose an AI session runtime.']);
+    assert.strictEqual(selectedConflicts.length, 3,
+        'a rejected QuickPick boundary must perform zero focus actions');
 
     const normalizeCanonicalPath = value => value
         .replace(/\\/g, '/')
@@ -6628,6 +6741,10 @@ function runHostRuntimeCompositionChecks() {
     assert.match(dashboardSource,
         /'close-ai-session-terminal':[\s\S]*?expectedBackend: 'vscode'[\s\S]*?'detach-ai-session-terminal':[\s\S]*?expectedBackend: 'tmux'/,
         'host routes must constrain close/detach to the requested runtime backend');
+    assert.ok(dashboardSource.includes('chooseRuntimeConflict:'));
+    assert.ok(dashboardSource.includes('vscode.window.showQuickPick'));
+    assert.ok(dashboardSource.includes("runtime.backend === 'tmux'"));
+    assert.ok(dashboardSource.includes("runtime.attached ? 'attached' : 'detached'"));
     const directRestore = dashboardSource.indexOf(
         'await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'
     );
@@ -6671,6 +6788,15 @@ function runTmuxWebviewExperienceChecks() {
     assert.ok(tmuxRow.includes('data-session-backend="tmux"'));
     assert.ok(tmuxRow.includes('data-tmux-layout="project"'));
     assert.ok(tmuxRow.includes('data-session-attached="false"'));
+    assert.ok(tmuxRow.includes('role="group"'));
+    assert.ok(tmuxRow.includes('class="ai-session-primary-action"'));
+    assert.ok(tmuxRow.includes('type="button"'));
+    assert.ok(tmuxRow.includes('aria-label="Attach or focus Codex session One using tmux project layout, detached"'));
+    assert.strictEqual(/class="codex-session-row[^>]*tabindex=/.test(tmuxRow), false,
+        'the group row itself must not be a focusable clickable div');
+    assert.match(tmuxRow,
+        /class="ai-session-primary-action"[\s\S]*?<\/button>[\s\S]*?<span class="codex-session-actions">/,
+        'the primary button and row actions must be siblings');
     assert.ok(tmuxRow.includes('ai-session-runtime-badge'));
     assert.ok(tmuxRow.includes('tmux'));
     assert.ok(tmuxRow.includes('Detach Terminal…'));
@@ -6682,6 +6808,7 @@ function runTmuxWebviewExperienceChecks() {
     const directRow = webviewContentModule.getAiSessionsDiv(projectWithDirectRuntimeFixture);
     assert.ok(directRow.includes('data-session-backend="vscode"'));
     assert.ok(directRow.includes('data-session-attached="true"'));
+    assert.ok(directRow.includes('aria-label="Focus Codex session One using Direct VS Code terminal, attached"'));
     assert.ok(directRow.includes('Close Terminal…'));
     assert.ok(directRow.includes('data-action="close-ai-session-terminal"'));
     assert.ok(!directRow.includes('data-action="detach-ai-session-terminal"'));
@@ -6690,6 +6817,9 @@ function runTmuxWebviewExperienceChecks() {
     const conflictRow = webviewContentModule.getAiSessionsDiv(projectWithConflictFixture);
     assert.ok(conflictRow.includes('data-session-conflict'));
     assert.ok(conflictRow.includes('Runtime conflict'));
+    assert.ok(conflictRow.includes('aria-label="Choose runtime for Codex session One, runtime conflict"'));
+    assert.ok(!conflictRow.includes('data-action="close-ai-session-terminal"'));
+    assert.ok(!conflictRow.includes('data-action="detach-ai-session-terminal"'));
 
     const projectScript = fs.readFileSync(
         path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'), 'utf8'
@@ -6697,17 +6827,18 @@ function runTmuxWebviewExperienceChecks() {
     assert.ok(projectScript.includes("'detach-ai-session-terminal'"));
     assert.ok(projectScript.includes("data-session-backend"));
     assert.ok(projectScript.includes("contextMenuAiSessionBackend"));
+    assert.ok(projectScript.includes(".ai-session-primary-action"));
     const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
     assert.ok(styles.includes('.ai-session-runtime-badge'));
     assert.ok(styles.includes('&:focus-visible'));
     assert.ok(styles.includes('&[data-session-conflict]'));
     assert.ok(styles.includes('@media (forced-colors: active)'));
     const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
-    assert.ok(compiledStyles.includes('body.steward-sidebar .project .codex-session-row:focus-visible'),
-        'generated styles must give session rows a visible keyboard focus outline');
+    assert.ok(compiledStyles.includes('body.steward-sidebar .project .ai-session-primary-action:focus-visible'),
+        'generated styles must give the native primary button a visible keyboard focus outline');
 }
 
-function runRealTmuxSmokeHarnessSourceChecks() {
+async function runRealTmuxSmokeHarnessSourceChecks() {
     const smokePath = path.join(__dirname, 'run-ai-session-tmux-smoke-checks.js');
     assert.ok(fs.existsSync(smokePath), 'the isolated real tmux smoke harness must exist');
     const source = fs.readFileSync(smokePath, 'utf8');
@@ -6724,10 +6855,87 @@ function runRealTmuxSmokeHarnessSourceChecks() {
         'cleanup must capture the exact isolated socket before stopping the server');
     assert.ok(source.includes('unlinkSync'),
         'cleanup must remove only its own stale isolated socket');
+    assert.ok(source.includes('TMUX_TMPDIR'));
+    assert.ok(source.includes('realpathSync'));
     assert.ok(source.includes('PROJECT_STEWARD_TMUX_PATH'));
+    assert.ok(source.includes('appendFileSync'));
+    assert.ok(source.includes('invocationId'));
+    assert.ok(source.includes('readProviderInvocations'));
+    assert.ok(source.includes('collectTrackedProviderPids'));
+    assert.strictEqual(source.includes('new AggregateError'), false,
+        'the smoke harness must remain compatible with Node runtimes before global AggregateError');
+    assert.ok(source.includes('assert.deepStrictEqual(projectOne.tmux, concurrentProjectOne.tmux)'));
+    assert.ok(source.includes("assert.strictEqual(projectInvocationRecords.length, 1"));
+    assert.ok(source.includes("assert.strictEqual(sessionRows.length, 2"));
     assert.strictEqual(/\bexecFile\s*\(/.test(source), false);
     assert.strictEqual(/\bexecSync\s*\(/.test(source), false);
     assert.strictEqual(/\bspawn(?:Sync)?\s*\(/.test(source), false);
+
+    const smokeHarness = require(smokePath);
+    const cleanupStages = [
+        'captureSocket', 'killServer', 'verifyStopped',
+        'removeSocket', 'terminateProviders', 'removeFixtures',
+    ];
+    for (const failingStage of cleanupStages) {
+        const calls = [];
+        const stages = Object.fromEntries(cleanupStages.map(stage => [stage, async value => {
+            calls.push([stage, value]);
+            if (stage === failingStage) throw new Error(`${stage} failed`);
+            return stage === 'captureSocket' ? '/owned/socket' : undefined;
+        }]));
+        await assert.rejects(
+            smokeHarness.runBestEffortCleanup(stages),
+            error => error && error.name === 'CleanupAggregateError'
+                && Array.isArray(error.errors)
+                && error.errors.some(item => item.message === `${failingStage} failed`)
+        );
+        const expectedCalls = failingStage === 'killServer'
+            ? ['captureSocket', 'killServer', 'killServer', 'verifyStopped',
+                'removeSocket', 'terminateProviders', 'removeFixtures']
+            : cleanupStages;
+        assert.deepStrictEqual(calls.map(call => call[0]), expectedCalls,
+            `${failingStage} failure must not skip any later cleanup stage`);
+        assert.strictEqual(calls.find(call => call[0] === 'removeSocket')[1],
+            failingStage === 'captureSocket' || failingStage === 'verifyStopped'
+                ? null : '/owned/socket',
+            'socket unlink must require both a captured owned path and proof the server stopped');
+        assert.strictEqual(calls.find(call => call[0] === 'removeFixtures')[1],
+            failingStage === 'verifyStopped' ? false : true,
+            'a live or unverifiable server must retain its owned tmux root while other fixtures clean up');
+    }
+    assert.deepStrictEqual(smokeHarness.collectTrackedProviderPids([
+        { invocationId: 'one', pidPath: '/one.pid', invocationLogPath: '/shared.jsonl' },
+        { invocationId: 'two', pidPath: '/two.pid', invocationLogPath: '/shared.jsonl' },
+        { invocationId: 'three', pidPath: '/three.pid', invocationLogPath: '/missing.jsonl' },
+    ], {
+        readInvocations: logPath => logPath === '/shared.jsonl' ? [
+            { invocationId: 'one', pid: 101 },
+            { invocationId: 'one', pid: 102 },
+            { invocationId: 'two', pid: 102 },
+            { invocationId: 'foreign', pid: 999 },
+            { invocationId: 'two', pid: -1 },
+        ] : [],
+        readFallbackPid: pidPath => pidPath === '/three.pid' ? 103
+            : pidPath === '/one.pid' ? 102 : null,
+    }), [101, 102, 103],
+    'cleanup must track every ledger PID, deduplicate it, ignore foreign/invalid rows, and retain pidPath fallback');
+    const terminationCalls = [];
+    const terminatedPids = new Set();
+    smokeHarness.terminateTrackedProviderPids([101, 102], {
+        kill: (pid, signal) => {
+            terminationCalls.push([pid, signal]);
+            if (signal === 0 && terminatedPids.has(pid)) {
+                const error = new Error('gone');
+                error.code = 'ESRCH';
+                throw error;
+            }
+            if (signal === 'SIGTERM') terminatedPids.add(pid);
+        },
+        wait: () => undefined,
+    });
+    assert.deepStrictEqual(terminationCalls, [
+        [101, 0], [101, 'SIGTERM'], [102, 0], [102, 'SIGTERM'], [101, 0], [102, 0],
+    ], 'provider fallback termination must attempt every tracked PID and verify it exited');
 }
 
 async function main() {
@@ -6744,7 +6952,7 @@ async function main() {
     await runRuntimeControllerChecks();
     runHostRuntimeCompositionChecks();
     runTmuxWebviewExperienceChecks();
-    runRealTmuxSmokeHarnessSourceChecks();
+    await runRealTmuxSmokeHarnessSourceChecks();
     console.log('AI session tmux checks passed.');
 }
 

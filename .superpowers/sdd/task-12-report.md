@@ -63,3 +63,38 @@ git diff --check
 - Lint exited 0 with repository warnings only; webpack/prepublish exited 0 with webpack deprecation warnings only.
 - After production asset generation, `node scripts/run-ai-session-tmux-checks.js` passed ten consecutive runs (1–10), with zero failures.
 - No VSIX install, push, PR, or merge was performed.
+
+## Review Hardening Follow-up
+
+- Conflict rows now invoke an extension-host QuickPick that identifies backend, tmux layout, attached/detached state, and exact target. The coordinator force-refreshes both backends and focuses only one exact match for the selected backend, complete identity/run contract, Direct terminal handle, or tmux locator. Cancelled, stale, missing, and non-unique selections perform no focus action. Conflict rows expose neither Close nor Detach before a concrete runtime is selected.
+- Session markup now uses a non-focusable outer `role="group"` with a native sibling primary button and separate pin/archive/terminal buttons. Native Enter and Space activation, Shift+F10/context-menu access, screen-reader labels for provider/session/backend/layout/attachment/conflict state, detached history rows, focus restoration, forced colors, and primary-button `:focus-visible` are covered.
+- Cleanup is a six-stage best-effort orchestrator. Capture, kill (with one fallback retry), stopped verification, safe socket cleanup, provider fallback termination, and fixture cleanup all run even when another stage fails; failures return a local `CleanupAggregateError` rather than relying on the post-Node-14 global `AggregateError`. Socket unlink and removal of the owned tmux root require positive stopped-server proof; an unverifiable live server retains that root for safe diagnosis.
+- Every real smoke run owns a fresh `TMUX_TMPDIR`. Socket cleanup requires the captured socket realpath to be exactly inside the owned `tmux-<uid>` directory with the unique server basename. It never unlinks an external, symlinked, non-socket, or unexpected path.
+- Controlled providers append JSONL records containing unique invocation ID, PID, exact cwd, and payload. Cleanup collects and deduplicates every PID in the ledger, with pid-file compatibility fallback, so an unintended duplicate provider would also be terminated. The real smoke asserts the concurrent locators are identical, invocation count is one, project topology is exactly one managed session/two windows, and session topology is exactly two managed sessions/two rows.
+
+### Review RED/GREEN Evidence
+
+- RED: conflict tests stopped at missing `getActiveCandidates`; GREEN: Direct and tmux exact choices focus their selected target, while cancel, stale handle, and rejected QuickPick boundaries produce zero focus actions.
+- RED: generated HTML lacked `role="group"`; GREEN: native primary buttons and sibling actions pass detached/history/conflict labels plus Space and Shift+F10 behavior checks.
+- RED: the smoke harness lacked `TMUX_TMPDIR`; GREEN: every injected cleanup-stage failure still reaches all remaining stages, and a failed first kill receives a second attempt.
+- RED: the smoke harness lacked append-only invocation evidence; GREEN: JSONL assertions prove one concurrent dispatch, exact cwd/payload, unique invocations, and exact managed topology.
+- RED: provider fallback used only the last pid file; GREEN: ledger PID collection retains every valid duplicate invocation PID, ignores foreign/invalid rows, deduplicates, and attempts termination for each tracked PID.
+
+### Review Follow-up Final Verification
+
+The complete Task 12 matrix exited 0 after review hardening:
+
+```text
+npm run test:tmux
+npm run test:tmux:smoke
+npm run test:safety
+npm run test:dashboard
+npm run test:open-projects
+npm run test:architecture-baseline
+npm run lint
+npm run webpack
+npm run vscode:prepublish
+git diff --check
+```
+
+After production asset generation, the pure tmux runner passed ten consecutive runs (1–10) with zero failures. The real isolated harness then passed three consecutive runs. Final scans found no `project-steward-test-*` socket and no `project-steward-tmux-smoke-*` or `project-steward-tmux-server-*` fixture root. Lint emitted repository warnings only; webpack/prepublish emitted deprecation warnings only. No VSIX was installed and no push, PR, or merge was performed.

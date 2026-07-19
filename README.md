@@ -73,6 +73,8 @@ The default `project` layout creates one managed tmux session per project card a
 
 `Detach Terminal…` closes only the VS Code viewer. The provider process and its `ACTIVE` row remain alive in tmux, and selecting the row attaches again without restarting the provider. Project Steward does not provide a force-kill action; attach and exit the provider normally when you want it to stop.
 
+If discovery finds more than one concrete runtime for the same AI session, the row shows `Runtime conflict` and hides Close/Detach. Selecting it opens a runtime chooser that identifies Direct versus tmux, layout, attachment state, and the exact terminal or tmux target. Cancelling or choosing a runtime that changes before the forced refresh performs no action.
+
 Tmux persistence is bounded by the execution host: the computer must remain awake and running, and an SSH host, WSL distribution, or Dev Container must remain available. Laptop sleep, host shutdown, and container stop suspend or terminate work according to that environment.
 
 Project Steward never silently falls back to a Direct Terminal when tmux is unavailable. The warning lets you use a VS Code terminal for that operation or open Settings. If a previous tmux runtime cannot be verified, the explicit Direct fallback includes a duplicate-runtime warning.

@@ -725,6 +725,7 @@ function getCodexSessionRow(
     var active = session.active === true;
     var backend = runtime?.backend || 'vscode';
     var attached = runtime?.attached ?? (active && backend === 'vscode');
+    var conflict = runtime?.conflict === true;
     var runtimeAttributes = ` data-session-backend="${backend}" data-session-attached="${attached ? 'true' : 'false'}"${runtime?.tmuxLayout ? ` data-tmux-layout="${runtime.tmuxLayout}"` : ''}${runtime?.conflict ? ' data-session-conflict' : ''}`;
     var batchCheckbox = `<input type="checkbox" class="ai-session-batch-checkbox" aria-label="Select ${sessionName}"${active ? ' disabled' : ''}>`;
     var pinAction = `<button type="button" class="codex-session-pin ${pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}" aria-label="${pinTitle}">${Icons.pin}</button>`;
@@ -732,16 +733,28 @@ function getCodexSessionRow(
         ? `<button type="button" class="codex-session-archive" disabled title="Stop the active runtime before archiving." aria-label="Stop the active runtime before archiving.">${Icons.archive}</button>`
         : `<button type="button" class="codex-session-archive" data-action="archive-${provider}-session" title="Archive Session" aria-label="Archive Session">${Icons.archive}</button>`;
     var activeStatus = active ? '<span class="ai-session-history-active-status">Active</span>' : '';
+    var primaryAction = conflict ? 'Choose runtime'
+        : active && backend === 'tmux' && !attached ? 'Attach or focus'
+            : active ? 'Focus' : 'Resume';
+    var runtimeDescription = conflict ? 'runtime conflict'
+        : backend === 'tmux'
+            ? `tmux ${runtime?.tmuxLayout || 'unknown'} layout, ${attached ? 'attached' : 'detached'}`
+            : `Direct VS Code terminal${active ? `, ${attached ? 'attached' : 'detached'}` : ''}`;
+    var primaryAriaLabel = conflict
+        ? `Choose runtime for ${providerLabel} session ${sessionName}, runtime conflict`
+        : `${primaryAction} ${providerLabel} session ${sessionName} using ${runtimeDescription}`;
 
     return `
-<div class="codex-session-row"${runtimeAttributes}${pinned ? ' data-session-pinned' : ''}${active ? ' data-session-active' : ''}${needsAttention ? ' data-ai-session-attention data-session-event-id="' + escapeAttribute(session.attention.eventId) + '"' : ''} data-session-id="${sessionId}" data-session-provider="${provider}" tabindex="0" title="${active && backend === 'tmux' && !attached ? 'Attach or focus' : active ? 'Focus' : 'Resume'} ${providerLabel} Session">
-    ${attentionIndicator}
+<div class="codex-session-row" role="group" aria-label="${providerLabel} session ${sessionName}"${runtimeAttributes}${pinned ? ' data-session-pinned' : ''}${active ? ' data-session-active' : ''}${needsAttention ? ' data-ai-session-attention data-session-event-id="' + escapeAttribute(session.attention.eventId) + '"' : ''} data-session-id="${sessionId}" data-session-provider="${provider}">
     ${batchCheckbox}
-    <span class="codex-session-icon">${Icons.terminalLine}</span>
-    <span class="codex-session-text">
-        <span class="codex-session-name">${sessionName}</span>
-        <span class="codex-session-meta">${activeStatus}${active && metadata ? ' · ' : ''}${metadata}</span>
-    </span>
+    <button type="button" class="ai-session-primary-action" data-action="activate-ai-session" aria-label="${primaryAriaLabel}" title="${primaryAction} ${providerLabel} Session">
+        ${attentionIndicator}
+        <span class="codex-session-icon">${Icons.terminalLine}</span>
+        <span class="codex-session-text">
+            <span class="codex-session-name">${sessionName}</span>
+            <span class="codex-session-meta">${activeStatus}${active && metadata ? ' · ' : ''}${metadata}</span>
+        </span>
+    </button>
     <span class="codex-session-actions">
         ${pinAction}
         ${archiveAction}
@@ -777,7 +790,8 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     var pinAction = model.pending
         ? ''
         : `<button type="button" class="codex-session-pin ${model.pinned ? 'active' : ''}" data-action="toggle-ai-session-pin" title="${pinTitle}" aria-label="${pinTitle}">${Icons.pin}</button>`;
-    var terminalAction = model.backend === 'tmux'
+    var conflict = model.status === 'conflict' || model.conflict === true;
+    var terminalAction = conflict ? '' : model.backend === 'tmux'
         ? `<button type="button" class="ai-session-close-terminal ai-session-detach-terminal" data-action="detach-ai-session-terminal" title="Detach Terminal… The AI task keeps running in tmux." aria-label="Detach Terminal">${Icons.remove}</button>`
         : `<button type="button" class="ai-session-close-terminal" data-action="close-ai-session-terminal" title="Close Terminal…" aria-label="Close Terminal">${Icons.remove}</button>`;
     var pendingAttributes = model.pending
@@ -790,13 +804,23 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     var rowAction = model.backend === 'tmux'
         ? (model.attached ? 'Focus' : 'Attach or focus')
         : 'Focus';
-    return `<div class="codex-session-row active-ai-session-row" data-session-provider="${model.provider}" data-execution-state="${model.executionState}"${runtimeAttributes}${pendingAttributes}${model.pinned ? ' data-session-pinned' : ''}${model.focused ? ' data-session-focused' : ''}${model.needsAttention ? ' data-session-needs-attention' : ''}${attentionAttributes} tabindex="0" title="${model.pending ? 'Focus pending' : rowAction} ${providerLabel} Session">
-        ${attentionIndicator}
-        <span class="codex-session-icon">${Icons.terminalLine}</span>
-        <span class="codex-session-text">
-            <span class="codex-session-name">${sessionName}</span>
-            <span class="codex-session-meta">${metadata}</span>
-        </span>
+    var primaryAction = conflict ? 'Choose runtime' : model.pending ? 'Focus pending' : rowAction;
+    var runtimeDescription = conflict ? 'runtime conflict'
+        : model.backend === 'tmux'
+            ? `tmux ${model.tmuxLayout || 'unknown'} layout, ${model.attached ? 'attached' : 'detached'}`
+            : `Direct VS Code terminal, ${model.attached ? 'attached' : 'detached'}`;
+    var primaryAriaLabel = conflict
+        ? `Choose runtime for ${providerLabel} session ${sessionName}, runtime conflict`
+        : `${primaryAction} ${providerLabel} session ${sessionName} using ${runtimeDescription}`;
+    return `<div class="codex-session-row active-ai-session-row" role="group" aria-label="${providerLabel} session ${sessionName}" data-session-provider="${model.provider}" data-execution-state="${model.executionState}"${runtimeAttributes}${pendingAttributes}${model.pinned ? ' data-session-pinned' : ''}${model.focused ? ' data-session-focused' : ''}${model.needsAttention ? ' data-session-needs-attention' : ''}${attentionAttributes}>
+        <button type="button" class="ai-session-primary-action" data-action="activate-ai-session" aria-label="${primaryAriaLabel}" title="${primaryAction} ${providerLabel} Session">
+            ${attentionIndicator}
+            <span class="codex-session-icon">${Icons.terminalLine}</span>
+            <span class="codex-session-text">
+                <span class="codex-session-name">${sessionName}</span>
+                <span class="codex-session-meta">${metadata}</span>
+            </span>
+        </button>
         <span class="codex-session-actions">${pinAction}${terminalAction}</span>
     </div>`;
 }

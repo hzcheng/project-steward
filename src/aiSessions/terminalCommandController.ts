@@ -9,8 +9,13 @@ import type {
 
 export interface AiSessionTerminalCommandRuntimeCoordinator<TTerminal> {
     getById(provider: AiSessionProviderId, sessionId: string): AiSessionRuntimeSnapshot<TTerminal> | null;
+    getActiveCandidates?(
+        provider: AiSessionProviderId,
+        sessionId: string
+    ): AiSessionRuntimeSnapshot<TTerminal>[];
     getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[];
     focus(identity: AiSessionRuntimeIdentity): Promise<void>;
+    focusSelected?(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<boolean>;
     detach(identity: AiSessionRuntimeIdentity): Promise<void>;
 }
 
@@ -40,6 +45,10 @@ export interface AiSessionTerminalCommandRuntimeControllerOptions<
         action: 'Close Terminal' | 'Detach Terminal'
     ): Thenable<string | undefined> | Promise<string | undefined>;
     announceStatus(projectId: string, message: string): Thenable<unknown> | Promise<unknown>;
+    chooseRuntimeConflict?(
+        runtimes: AiSessionRuntimeSnapshot<TTerminal>[]
+    ): Thenable<AiSessionRuntimeSnapshot<TTerminal> | undefined>
+        | Promise<AiSessionRuntimeSnapshot<TTerminal> | undefined>;
 }
 
 export interface AiSessionTerminalCommandLegacyControllerOptions<
@@ -87,6 +96,13 @@ export class AiSessionTerminalCommandController<
             return;
         }
         if (isRuntimeOptions(this.options)) {
+            const candidates = this.getScopedActiveCandidates(
+                projectId, providerId, sessionId, this.options
+            );
+            if (candidates.length > 1 || candidates.some(runtime => runtime.state === 'conflict')) {
+                await this.chooseAndFocusConflict(projectId, candidates, this.options);
+                return;
+            }
             const runtime = this.getScopedActiveRuntime(projectId, providerId, sessionId, this.options);
             if (runtime) {
                 try {
@@ -101,6 +117,41 @@ export class AiSessionTerminalCommandController<
             return;
         }
         this.getScopedActiveTerminal(projectId, providerId, sessionId, this.options)?.show();
+    }
+
+    private async chooseAndFocusConflict(
+        projectId: string,
+        candidates: AiSessionRuntimeSnapshot<TTerminal>[],
+        options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
+    ): Promise<void> {
+        if (!options.chooseRuntimeConflict || !options.runtimeCoordinator.focusSelected) {
+            return;
+        }
+        let selected: AiSessionRuntimeSnapshot<TTerminal> | undefined;
+        try {
+            selected = await options.chooseRuntimeConflict(candidates.map(cloneRuntime));
+        } catch (error) {
+            await options.showErrorMessage('Could not choose an AI session runtime.');
+            return;
+        }
+        if (!selected) {
+            return;
+        }
+        try {
+            const focused = await options.runtimeCoordinator.focusSelected(cloneRuntime(selected));
+            if (!focused) {
+                options.refresh();
+                await options.announceStatus(
+                    projectId,
+                    'The selected AI session runtime changed before it could be focused.'
+                );
+            }
+        } catch (error) {
+            await this.handleRuntimeActionFailure(
+                'focus-selected-runtime', 'Could not focus the selected AI session runtime.',
+                selected, error, options
+            );
+        }
     }
 
     async focusPending(projectId: string, providerId: string, createdAt: string): Promise<void> {
@@ -265,6 +316,25 @@ export class AiSessionTerminalCommandController<
         )
             ? cloneRuntime(runtime)
             : null;
+    }
+
+    private getScopedActiveCandidates(
+        projectId: string,
+        providerId: AiSessionProviderId,
+        sessionId: string,
+        options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
+    ): AiSessionRuntimeSnapshot<TTerminal>[] {
+        const ownership = this.getRuntimeProjectOwnership(projectId, options);
+        if (!ownership) {
+            return [];
+        }
+        const coordinator = options.runtimeCoordinator;
+        const candidates = coordinator.getActiveCandidates
+            ? coordinator.getActiveCandidates(providerId, sessionId)
+            : [coordinator.getById(providerId, sessionId)].filter(Boolean) as AiSessionRuntimeSnapshot<TTerminal>[];
+        return candidates.filter(runtime => this.runtimeBelongsToProject(
+            ownership, providerId, sessionId, runtime, options
+        )).map(cloneRuntime);
     }
 
     private getScopedPendingRuntime(
