@@ -13,6 +13,7 @@ const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
 const activeSessionProjection = require('../out/aiSessions/activeSessionProjection');
 const lifecycle = require('../out/aiSessions/lifecycle');
+const IncrementalJsonlLifecycleReader = require('../out/aiSessions/incrementalJsonlLifecycleReader').default;
 const jsonlTail = require('../out/aiSessions/jsonlTail');
 const terminalBindingStore = require('../out/aiSessions/terminalBindingStore');
 const AiSessionTerminalBindingStore = terminalBindingStore.default;
@@ -5812,6 +5813,141 @@ function runLifecycleParserChecks() {
     }
 }
 
+function runIncrementalJsonlLifecycleReaderChecks() {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-incremental-jsonl-lifecycle-'));
+    const runStartedAtMs = Date.parse('2026-07-15T00:00:00.000Z');
+    const createAccumulator = () => lifecycle.createCodexLifecycleAccumulator(runStartedAtMs);
+    const codexEvent = (timestamp, type, turnId) => JSON.stringify({
+        timestamp,
+        type: 'event_msg',
+        payload: { type, turn_id: turnId },
+    });
+
+    try {
+        const reader = new IncrementalJsonlLifecycleReader(64);
+        const filePath = path.join(tempRoot, 'codex.jsonl');
+        const started = JSON.stringify({
+            timestamp: '2026-07-15T00:00:01.000Z',
+            type: 'event_msg',
+            payload: { type: 'task_started', turn_id: 'long-turn' },
+        });
+        fs.writeFileSync(filePath, `${started}\n${Array.from({ length: 100 }, (_, index) =>
+            JSON.stringify({ timestamp: `2026-07-15T00:00:02.${String(index).padStart(3, '0')}Z`, type: 'event_msg', payload: { type: 'token_count' } })
+        ).join('\n')}\n`);
+
+        let readCalls = 0;
+        const originalReadSync = fs.readSync;
+        fs.readSync = function (...args) {
+            readCalls++;
+            return originalReadSync.apply(this, args);
+        };
+        let signal;
+        try {
+            signal = reader.read(
+                'codex:long',
+                filePath,
+                runStartedAtMs,
+                createAccumulator
+            );
+            assert.strictEqual(signal.executionState, 'running', 'cold scan recovers starts beyond one chunk');
+
+            fs.appendFileSync(filePath, JSON.stringify({
+                timestamp: '2026-07-15T00:00:03.000Z',
+                type: 'event_msg',
+                payload: { type: 'task_complete', turn_id: 'long-turn' },
+            }) + '\n');
+            signal = reader.read('codex:long', filePath, runStartedAtMs, createAccumulator);
+            assert.strictEqual(signal.executionState, 'stopped', 'appended completion updates cached state');
+
+            const readsAfterAppend = readCalls;
+            signal = reader.read('codex:long', filePath, runStartedAtMs, createAccumulator);
+            assert.strictEqual(signal.executionState, 'stopped');
+            assert.strictEqual(readCalls, readsAfterAppend, 'unchanged file size performs no additional reads');
+        } finally {
+            fs.readSync = originalReadSync;
+        }
+
+        const inputPath = path.join(tempRoot, 'input.jsonl');
+        fs.writeFileSync(inputPath, JSON.stringify({
+            timestamp: '2026-07-15T00:00:04.000Z',
+            type: 'response_item',
+            payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'later-answer' },
+        }) + '\n');
+        signal = reader.read('codex:input', inputPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.reason, 'input-required');
+        fs.appendFileSync(inputPath, JSON.stringify({
+            timestamp: '2026-07-15T00:00:05.000Z',
+            type: 'response_item',
+            payload: { type: 'custom_tool_call_output', call_id: 'later-answer' },
+        }) + '\n');
+        signal = reader.read('codex:input', inputPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running', 'matching output in a later append resumes input request');
+
+        const splitPath = path.join(tempRoot, 'split.jsonl');
+        const splitLine = codexEvent('2026-07-15T00:00:06.000Z', 'task_started', 'split-line');
+        const splitAt = Math.floor(splitLine.length / 2);
+        fs.writeFileSync(splitPath, splitLine.slice(0, splitAt));
+        assert.strictEqual(reader.read('codex:split', splitPath, runStartedAtMs, createAccumulator), null);
+        fs.appendFileSync(splitPath, splitLine.slice(splitAt) + '\n');
+        signal = reader.read('codex:split', splitPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running', 'a line split across reads is parsed after its newline arrives');
+
+        const malformedPath = path.join(tempRoot, 'malformed.jsonl');
+        fs.writeFileSync(malformedPath, `{bad json\n${codexEvent('2026-07-15T00:00:07.000Z', 'task_started', 'after-bad')}\n`);
+        signal = reader.read('codex:malformed', malformedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running', 'malformed JSON does not prevent a later valid event');
+
+        const truncatedPath = path.join(tempRoot, 'truncated.jsonl');
+        fs.writeFileSync(truncatedPath,
+            `${codexEvent('2026-07-15T00:00:08.000Z', 'task_started', 'truncate')}\n`
+            + `${codexEvent('2026-07-15T00:00:09.000Z', 'task_complete', 'truncate')}\n`);
+        signal = reader.read('codex:truncated', truncatedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped');
+        fs.writeFileSync(truncatedPath, `${codexEvent('2026-07-15T00:00:10.000Z', 'task_started', 'new')}\n`);
+        signal = reader.read('codex:truncated', truncatedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running', 'truncation resets the old completion state');
+
+        const runResetPath = path.join(tempRoot, 'run-reset.jsonl');
+        fs.writeFileSync(runResetPath, `${codexEvent('2026-07-15T00:00:11.000Z', 'task_complete', 'old-run')}\n`);
+        signal = reader.read('codex:run-reset', runResetPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped');
+        const nextRunStartedAtMs = Date.parse('2026-07-15T00:00:12.000Z');
+        signal = reader.read(
+            'codex:run-reset',
+            runResetPath,
+            nextRunStartedAtMs,
+            () => lifecycle.createCodexLifecycleAccumulator(nextRunStartedAtMs)
+        );
+        assert.strictEqual(signal, null, 'a changed run start resets the cursor and filters the old event');
+
+        const retainedPath = path.join(tempRoot, 'retained.jsonl');
+        const retainedStarted = codexEvent('2026-07-15T00:00:13.000Z', 'task_started', 'retain-11');
+        const retainedComplete = codexEvent('2026-07-15T00:00:13.000Z', 'task_complete', 'retain-1');
+        assert.strictEqual(retainedStarted.length, retainedComplete.length);
+        fs.writeFileSync(retainedPath, `${retainedStarted}\n`);
+        signal = reader.read('codex:retain-drop', retainedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running');
+        fs.writeFileSync(retainedPath, `${retainedComplete}\n`);
+        reader.retain(new Set(['codex:long']));
+        signal = reader.read('codex:retain-drop', retainedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped', 'retain removes unowned cursors before a same-size rewrite');
+
+        const deletedPath = path.join(tempRoot, 'deleted.jsonl');
+        const deletedStarted = codexEvent('2026-07-15T00:00:14.000Z', 'task_started', 'delete-11');
+        const deletedComplete = codexEvent('2026-07-15T00:00:14.000Z', 'task_complete', 'delete-1');
+        assert.strictEqual(deletedStarted.length, deletedComplete.length);
+        fs.writeFileSync(deletedPath, `${deletedStarted}\n`);
+        signal = reader.read('codex:delete', deletedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'running');
+        fs.writeFileSync(deletedPath, `${deletedComplete}\n`);
+        reader.delete('codex:delete');
+        signal = reader.read('codex:delete', deletedPath, runStartedAtMs, createAccumulator);
+        assert.strictEqual(signal.executionState, 'stopped', 'delete removes a cursor before a same-size rewrite');
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+}
+
 function runAttentionMonitorChecks() {
     let now = 0;
     const signal = (token, phase, reason, occurredAtMs = now) => ({ token, phase, reason, occurredAtMs });
@@ -6754,6 +6890,7 @@ async function main() {
     runProviderLifecycleServiceChecks();
     runCommandBuilderChecks();
     runLifecycleParserChecks();
+    runIncrementalJsonlLifecycleReaderChecks();
     runAttentionMonitorChecks();
     runAiSessionExecutionMonitorChecks();
     runAttentionPayloadChecks();
