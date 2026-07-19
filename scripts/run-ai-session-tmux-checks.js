@@ -1680,6 +1680,54 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(lifecycleDiscovery.getInactive(), []);
     assert.deepStrictEqual(removedKnown, [['codex', 's1']]);
 
+    const acknowledgementEntered = deferred();
+    const releaseAcknowledgement = deferred();
+    let persistedAcknowledgementExpected;
+    const mutationBinding = {
+        version: 1, state: 'completed', provider: 'codex', sessionId: 'mutation-ack',
+        projectKey: 'pk', cwd: '/work', layout: 'project',
+        locator: {
+            layout: 'project', sessionName: 'project-pk', windowName: 'mutation-ack',
+        },
+        markerPath: '/tmp/mutation-ack.done', runStartedAtMs: 900, detectedAtMs: now,
+    };
+    const mutationAckDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [] },
+        bindingStore: {
+            listPending: async () => [], listKnown: async () => [],
+            listInactive: async () => [mutationBinding],
+            reconcileKnown: async () => undefined,
+            acknowledgeInactive: async expected => {
+                persistedAcknowledgementExpected = expected;
+                acknowledgementEntered.resolve();
+                await releaseAcknowledgement.promise;
+                return 'acknowledged';
+            },
+        },
+        markerIsCurrent: () => false,
+    });
+    await mutationAckDiscovery.loadPersistedInactive();
+    const callerOwnedExpected = mutationAckDiscovery.getInactive()[0];
+    const mutationAcknowledgement = mutationAckDiscovery.acknowledgeInactive(callerOwnedExpected);
+    await acknowledgementEntered.promise;
+    callerOwnedExpected.identity.provider = 'kimi';
+    callerOwnedExpected.identity.sessionId = 'mutated-session';
+    callerOwnedExpected.identity.projectKey = 'mutated-project';
+    callerOwnedExpected.identity.cwd = '/mutated';
+    callerOwnedExpected.tmux.layout = 'session';
+    callerOwnedExpected.tmux.sessionName = 'mutated-tmux';
+    callerOwnedExpected.tmux.windowName = 'mutated-window';
+    callerOwnedExpected.markerPath = '/tmp/mutated.done';
+    callerOwnedExpected.runStartedAtMs = 901;
+    callerOwnedExpected.detectedAtMs = now + 1;
+    callerOwnedExpected.state = 'stopped';
+    releaseAcknowledgement.resolve();
+    assert.strictEqual(await mutationAcknowledgement, 'acknowledged');
+    assert.deepStrictEqual(persistedAcknowledgementExpected, mutationBinding,
+        'durable acknowledgement must receive the normalized pre-await run contract');
+    assert.deepStrictEqual(mutationAckDiscovery.getInactive(), [],
+        'caller mutation after invocation must not retain an acknowledged local blocker');
+
     const restartRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-inactive-restart-'));
     try {
         const restartStore = new runtimeStoreModule.TmuxRuntimeBindingStore(restartRoot, () => now);

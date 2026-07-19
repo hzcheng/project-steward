@@ -204,6 +204,7 @@ export class TmuxRuntimeDiscovery {
         const expectedBinding = inactiveBindingFromSnapshot(
             expected, expected.detectedAtMs as number
         );
+        const expectedSnapshot = inactiveSnapshotFromBinding(expectedBinding);
         const key = finalIdentityKey(expectedBinding.provider, expectedBinding.sessionId);
         this.cacheGeneration++;
         this.successfulAtMs = null;
@@ -235,7 +236,7 @@ export class TmuxRuntimeDiscovery {
             return result;
         }
         const retained = this.retainedInactive.get(key);
-        if (retained && inactiveSnapshotsEqual(retained, expected)) {
+        if (retained && inactiveSnapshotsEqual(retained, expectedSnapshot)) {
             this.retainedInactive.delete(key);
             this.inactive = this.inactive.filter(runtime =>
                 finalIdentityKey(runtime.identity.provider,
