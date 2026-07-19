@@ -2952,6 +2952,7 @@ async function runAiSessionProjectHydrationPromotionChecks() {
         const aliasesSet = [];
         const syncs = [];
         const diagnostics = [];
+        const promotions = [];
         const terminalService = {
             pending: options.legacyPending ? [options.legacyPending] : [],
             tracked: [],
@@ -2990,6 +2991,10 @@ async function runAiSessionProjectHydrationPromotionChecks() {
                 syncs.push('sync');
                 options.onSync?.();
             },
+            onDidPromoteRuntime: () => {
+                promotions.push('promoted');
+                options.onPromoted?.();
+            },
             getSessionComparableCwd: (_providerId, item) => item.cwd,
             getExpandedProjects: () => new Set(),
             getActiveProviders: () => ({}),
@@ -3005,7 +3010,7 @@ async function runAiSessionProjectHydrationPromotionChecks() {
             normalizeProjectPath: value => value,
             logDiagnostic: event => diagnostics.push(event),
         });
-        return { controller, terminalService, aliases, aliasesSet, syncs, diagnostics };
+        return { controller, terminalService, aliases, aliasesSet, syncs, diagnostics, promotions };
     }
     function project(name = 'Project') {
         return [{ id: 'project-a', path: '/work/app', name }];
@@ -3036,6 +3041,7 @@ async function runAiSessionProjectHydrationPromotionChecks() {
     assert.strictEqual(second[0].codexSessions[0].name, 'Promoted Alias');
     assert.deepStrictEqual(delayed.aliasesSet, [['codex', 'session-final', 'Promoted Alias']]);
     assert.deepStrictEqual(delayed.syncs, ['sync']);
+    assert.deepStrictEqual(delayed.promotions, ['promoted']);
 
     let resolveGeneration;
     let generationCalls = 0;
@@ -3057,6 +3063,30 @@ async function runAiSessionProjectHydrationPromotionChecks() {
     assert.deepStrictEqual(generations.aliasesSet, [['codex', 'session-final', 'Promoted Alias']],
         'different hydration generations must settle the alias once');
     assert.deepStrictEqual(generations.syncs, ['sync']);
+    assert.deepStrictEqual(generations.promotions, ['promoted']);
+
+    let visibleConsumedPending = [pendingRuntime];
+    let resolveConsumedPending;
+    const consumedPendingPromotion = new Promise(resolve => { resolveConsumedPending = resolve; });
+    const consumedPending = createHarness({
+        runtimeCoordinator: {
+            getActive: () => visibleConsumedPending.length ? [] : [finalRuntime],
+            getPending: () => visibleConsumedPending,
+            promotePending: () => consumedPendingPromotion,
+        },
+    });
+    consumedPending.controller.hydrate(project('Promotion started'));
+    visibleConsumedPending = [];
+    consumedPending.controller.hydrate(project('Backend consumed pending'));
+    resolveConsumedPending([finalRuntime]);
+    await flushSettlements();
+    assert.deepStrictEqual(consumedPending.promotions, ['promoted'],
+        'the promotion that consumed its own pending runtime must complete its handoff once');
+    assert.deepStrictEqual(consumedPending.aliasesSet,
+        [['codex', 'session-final', 'Promoted Alias']]);
+    assert.strictEqual(consumedPending.diagnostics.some(diagnostic =>
+        diagnostic.event === 'ai-session-pending-runtime-promotion-result'
+        && diagnostic.failureReasons?.includes('stale-pending')), false);
 
     let resolveCancelled;
     let cancelledCalls = 0;
@@ -3076,6 +3106,7 @@ async function runAiSessionProjectHydrationPromotionChecks() {
     assert.strictEqual(cancelledProjection[0].codexSessions[0].name, 'Original Name');
     assert.deepStrictEqual(cancelled.aliasesSet, [], 'an absent pending identity must retire the old settlement');
     assert.deepStrictEqual(cancelled.syncs, [], 'an invalidated generation must not synchronize');
+    assert.deepStrictEqual(cancelled.promotions, [], 'an invalidated project scope must not emit a promotion handoff');
 
     let reentered = false;
     let reentrantController;
@@ -3099,6 +3130,24 @@ async function runAiSessionProjectHydrationPromotionChecks() {
     assert.strictEqual(reentrantCalls, 1, 'synchronous sync reentry must retain the successful settlement memo');
     assert.deepStrictEqual(reentrant.aliasesSet, [['codex', 'session-final', 'Promoted Alias']]);
     assert.deepStrictEqual(reentrant.syncs, ['sync']);
+    assert.deepStrictEqual(reentrant.promotions, ['promoted']);
+
+    const notificationFailure = createHarness({
+        runtimeCoordinator: {
+            getActive: () => [],
+            getPending: () => [pendingRuntime],
+            promotePending: () => [finalRuntime],
+        },
+        onPromoted: () => { throw new TypeError('do not expose this text'); },
+    });
+    notificationFailure.controller.hydrate(project('Notification failure'));
+    await flushSettlements();
+    assert.deepStrictEqual(notificationFailure.aliasesSet,
+        [['codex', 'session-final', 'Promoted Alias']]);
+    assert.ok(notificationFailure.diagnostics.some(diagnostic =>
+        diagnostic.event === 'ai-session-runtime-promotion-notification-failed'
+        && diagnostic.category === 'TypeError'));
+    assert.strictEqual(JSON.stringify(notificationFailure.diagnostics).includes('do not expose this text'), false);
 
     let visiblePending = [pendingRuntime];
     let lifecycleCalls = 0;

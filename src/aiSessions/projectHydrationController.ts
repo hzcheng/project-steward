@@ -111,6 +111,7 @@ export interface AiSessionProjectHydrationControllerOptions<TTerminal = unknown>
     runtimeCoordinator?: ProjectHydrationRuntimeCoordinator<TTerminal>;
     setAlias: (providerId: AiSessionProviderId, sessionId: string, alias: string) => void;
     syncActiveTerminal: () => void;
+    onDidPromoteRuntime?: () => void;
     getSessionComparableCwd: (providerId: AiSessionProviderId, session: CodexSession) => string;
     getExpandedProjects: () => ReadonlySet<string>;
     getActiveProviders: () => Record<string, AiSessionProviderId>;
@@ -146,7 +147,7 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
         if (!openProjects.length) {
             ++this.hydrationGeneration;
             this.cache = null;
-            this.reconcilePendingPromotionSettlements([]);
+            this.reconcilePendingPromotionSettlements([], true);
             this.logDiagnostic({
                 event: 'ai-session-hydration',
                 reason,
@@ -435,6 +436,7 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
                 this.retirePendingPromotionSettlement(entry);
                 throw error;
             }
+            this.notifyRuntimePromoted();
             return { failureReason: null };
         };
         try {
@@ -455,14 +457,31 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
     }
 
     private reconcilePendingPromotionSettlements(
-        pendingRuntimes: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[]
+        pendingRuntimes: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[],
+        retireInFlight: boolean = false
     ): void {
         const presentIdentities = new Set(pendingRuntimes
             .filter(runtime => !!runtime.identity.pendingId)
             .map(getPendingIdentityKey));
         for (const entry of this.pendingPromotionSettlements.values()) {
-            if (!presentIdentities.has(entry.pendingIdentityKey)) {
+            if (!presentIdentities.has(entry.pendingIdentityKey)
+                && (retireInFlight || entry.status !== 'pending')) {
                 this.retirePendingPromotionSettlement(entry);
+            }
+        }
+    }
+
+    private notifyRuntimePromoted(): void {
+        try {
+            this.options.onDidPromoteRuntime?.();
+        } catch (error) {
+            try {
+                this.logDiagnostic({
+                    event: 'ai-session-runtime-promotion-notification-failed',
+                    category: error instanceof Error ? error.name : typeof error,
+                });
+            } catch {
+                // A notification or diagnostic failure must not undo a completed promotion.
             }
         }
     }
