@@ -5733,6 +5733,14 @@ function runLifecycleParserChecks() {
     ]);
     assert.strictEqual(codexAccumulator.getSignal().executionState, 'running');
 
+    const staleCodexAccumulator = lifecycle.createCodexLifecycleAccumulator(runStartedAtMs);
+    staleCodexAccumulator.addLines([
+        JSON.stringify({ timestamp: '2026-07-15T00:00:20.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'completed' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:19.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'stale-input' } }),
+        JSON.stringify({ timestamp: '2026-07-15T00:00:21.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'stale-input' } }),
+    ]);
+    assert.strictEqual(staleCodexAccumulator.getSignal().executionState, 'stopped', 'stale events cannot mutate provider state');
+
     const kimiSignal = lifecycle.parseKimiLifecycleLines([
         JSON.stringify({ timestamp: 1784073601, message: { type: 'TurnBegin', payload: {} } }),
         JSON.stringify({ timestamp: 1784073602, message: { type: 'QuestionRequest', payload: { id: 'question-1' } } }),

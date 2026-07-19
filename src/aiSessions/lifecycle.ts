@@ -40,7 +40,8 @@ function createAccumulator(
                 }
 
                 let occurredAtMs = getOccurredAtMs(event?.timestamp);
-                if (!Number.isFinite(occurredAtMs) || occurredAtMs < runStartedAtMs) {
+                if (!Number.isFinite(occurredAtMs) || occurredAtMs < runStartedAtMs
+                    || (latest && occurredAtMs < latest.occurredAtMs)) {
                     continue;
                 }
 
