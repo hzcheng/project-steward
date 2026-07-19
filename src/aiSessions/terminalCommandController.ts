@@ -13,6 +13,10 @@ export interface AiSessionTerminalCommandRuntimeCoordinator<TTerminal> {
         provider: AiSessionProviderId,
         sessionId: string
     ): AiSessionRuntimeSnapshot<TTerminal>[];
+    getUnverifiedConflicts?(
+        provider: AiSessionProviderId,
+        sessionId: string
+    ): AiSessionRuntimeSnapshot<TTerminal>[];
     getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[];
     focus(identity: AiSessionRuntimeIdentity): Promise<void>;
     focusSelected?(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<boolean>;
@@ -99,8 +103,22 @@ export class AiSessionTerminalCommandController<
             const candidates = this.getScopedActiveCandidates(
                 projectId, providerId, sessionId, this.options
             );
+            const hasUnverifiedConflict = this.getScopedUnverifiedConflicts(
+                projectId, providerId, sessionId, this.options
+            ).length > 0;
+            if (!candidates.length && hasUnverifiedConflict) {
+                await this.options.announceStatus(
+                    projectId,
+                    'The conflicting AI session target could not be verified as a managed runtime and was not focused.'
+                );
+                return;
+            }
             if (candidates.length > 1 || candidates.some(runtime => runtime.state === 'conflict')) {
                 await this.chooseAndFocusConflict(projectId, candidates, this.options);
+                return;
+            }
+            if (candidates.length === 1 && hasUnverifiedConflict) {
+                await this.focusVerifiedSelection(projectId, candidates[0], this.options);
                 return;
             }
             const runtime = this.getScopedActiveRuntime(projectId, providerId, sessionId, this.options);
@@ -137,6 +155,14 @@ export class AiSessionTerminalCommandController<
         if (!selected) {
             return;
         }
+        await this.focusVerifiedSelection(projectId, selected, options);
+    }
+
+    private async focusVerifiedSelection(
+        projectId: string,
+        selected: AiSessionRuntimeSnapshot<TTerminal>,
+        options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
+    ): Promise<void> {
         try {
             const focused = await options.runtimeCoordinator.focusSelected(cloneRuntime(selected));
             if (!focused) {
@@ -335,6 +361,22 @@ export class AiSessionTerminalCommandController<
         return candidates.filter(runtime => this.runtimeBelongsToProject(
             ownership, providerId, sessionId, runtime, options
         )).map(cloneRuntime);
+    }
+
+    private getScopedUnverifiedConflicts(
+        projectId: string,
+        providerId: AiSessionProviderId,
+        sessionId: string,
+        options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
+    ): AiSessionRuntimeSnapshot<TTerminal>[] {
+        const ownership = this.getRuntimeProjectOwnership(projectId, options);
+        if (!ownership || !options.runtimeCoordinator.getUnverifiedConflicts) {
+            return [];
+        }
+        return options.runtimeCoordinator.getUnverifiedConflicts(providerId, sessionId)
+            .filter(runtime => this.runtimeBelongsToProject(
+                ownership, providerId, sessionId, runtime, options
+            )).map(cloneRuntime);
     }
 
     private getScopedPendingRuntime(

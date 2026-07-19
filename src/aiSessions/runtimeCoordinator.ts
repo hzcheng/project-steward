@@ -138,12 +138,27 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         provider: AiSessionProviderId,
         sessionId: string
     ): AiSessionRuntimeSnapshot<TTerminal>[] {
-        const matches = this.findMatches({ provider, sessionId });
-        const conflict = matches.length > 1 || matches.some(runtime => runtime.state === 'conflict');
+        const matches = [
+            ...this.dependencies.direct.getActive(),
+            ...this.dependencies.tmux.getActive(),
+        ].filter(runtime => runtime.state !== 'conflict'
+            && runtime.identity.provider === provider
+            && runtime.identity.sessionId === sessionId);
+        const conflict = matches.length > 1;
         return matches.map(runtime => ({
             ...cloneRuntime(runtime),
             ...(conflict ? { state: 'conflict' as const } : {}),
         }));
+    }
+
+    getUnverifiedConflicts(
+        provider: AiSessionProviderId,
+        sessionId: string
+    ): AiSessionRuntimeSnapshot<TTerminal>[] {
+        return this.getConflicts().filter(runtime =>
+            runtime.identity.provider === provider
+            && runtime.identity.sessionId === sessionId
+        ).map(cloneRuntime);
     }
 
     resume(request: AiSessionResumeRuntimeRequest): Promise<AiSessionRuntimeActionResult<TTerminal>> {
@@ -213,10 +228,9 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         const refresh = await this.refreshBackends(true);
         this.throwRefreshFailure(refresh);
         const backend = this.backendFor(selection);
-        const matches = [
-            ...backend.getActive(),
-            ...(backend.getConflicts?.() || []),
-        ].filter(runtime => selectedRuntimeMatches(selection, runtime));
+        const matches = backend.getActive()
+            .filter(runtime => runtime.state !== 'conflict'
+                && selectedRuntimeMatches(selection, runtime));
         if (matches.length !== 1) {
             return false;
         }

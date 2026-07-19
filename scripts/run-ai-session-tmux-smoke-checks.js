@@ -19,6 +19,7 @@ const { withTmuxCreationLock } = require('../out/aiSessions/tmuxCreationLock');
 const COMMAND_TIMEOUT_MS = 5_000;
 const WAIT_TIMEOUT_MS = 8_000;
 const POLL_INTERVAL_MS = 25;
+const PROVIDER_EXIT_TIMEOUT_MS = 2_000;
 const FINAL_RECORD_LOCK_KEY = 'runtime-binding-final-records';
 const configuredTmuxPath = process.env.PROJECT_STEWARD_TMUX_PATH || 'tmux';
 const serverName = `project-steward-test-${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
@@ -401,17 +402,33 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
         && call.args[2] === '-f' && call.args[3] === '/dev/null'));
 }
 
-function killIsolatedServer() {
+function killIsolatedServer(run = execFileSync, environment = isolatedEnvironment()) {
     try {
-        execFileSync(configuredTmuxPath, [...isolatedPrefix, 'kill-server'], {
-            env: isolatedEnvironment(),
+        run(configuredTmuxPath, [...isolatedPrefix, 'kill-server'], {
+            env: environment,
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: COMMAND_TIMEOUT_MS,
         });
     } catch (error) {
-        if (!(error && typeof error.status === 'number')) throw error;
+        if (isExplicitNoServerError(error)) return;
+        throw redactedCleanupCommandError('kill-server');
     }
+}
+
+function isExplicitNoServerError(error) {
+    if (!(error && typeof error.status === 'number' && error.status !== 0)) return false;
+    const stderr = asText(error.stderr).trim().toLowerCase();
+    return stderr === 'server exited unexpectedly'
+        || stderr.includes('no server running on')
+        || (stderr.includes('error connecting to ')
+            && stderr.includes('no such file or directory'));
+}
+
+function redactedCleanupCommandError(operation) {
+    const error = new Error(`The isolated tmux ${operation} cleanup command failed.`);
+    error.code = 'TMUX_SMOKE_CLEANUP_FAILED';
+    return error;
 }
 
 function captureIsolatedSocketPath() {
@@ -431,17 +448,17 @@ function captureIsolatedSocketPath() {
     }
 }
 
-function assertIsolatedServerStopped() {
+function assertIsolatedServerStopped(run = execFileSync, environment = isolatedEnvironment()) {
     try {
-        execFileSync(configuredTmuxPath, [...isolatedPrefix, 'list-sessions'], {
-            env: isolatedEnvironment(),
+        run(configuredTmuxPath, [...isolatedPrefix, 'list-sessions'], {
+            env: environment,
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: COMMAND_TIMEOUT_MS,
         });
     } catch (error) {
-        if (error && typeof error.status === 'number' && error.status !== 0) return;
-        throw error;
+        if (isExplicitNoServerError(error)) return;
+        throw redactedCleanupCommandError('list-sessions');
     }
     throw new Error(`The isolated tmux server ${serverName} remained alive after cleanup.`);
 }
@@ -503,56 +520,89 @@ function collectTrackedProviderPids(fixtures, dependencies = {}) {
     return [...pids];
 }
 
-function terminateTrackedProviderPids(pids, dependencies = {}) {
-    const kill = dependencies.kill || ((pid, signal) => process.kill(pid, signal));
+function waitForTrackedProviderExit(pids, dependencies = {}) {
+    const probe = dependencies.probe || (pid => process.kill(pid, 0));
     const wait = dependencies.wait || (delayMs => Atomics.wait(waitBuffer, 0, 0, delayMs));
-    const errors = [];
-    for (const pid of pids) {
-        try {
-            kill(pid, 0);
-            kill(pid, 'SIGTERM');
-        } catch (error) {
-            if (!(error && error.code === 'ESRCH')) errors.push(error);
+    const now = dependencies.now || (() => Date.now());
+    const timeoutMs = dependencies.timeoutMs ?? PROVIDER_EXIT_TIMEOUT_MS;
+    const pollIntervalMs = dependencies.pollIntervalMs ?? POLL_INTERVAL_MS;
+    const deadline = now() + timeoutMs;
+    const remaining = new Set(pids);
+    while (remaining.size) {
+        const errors = [];
+        for (const pid of [...remaining]) {
+            try {
+                probe(pid);
+            } catch (error) {
+                if (error && error.code === 'ESRCH') {
+                    remaining.delete(pid);
+                } else {
+                    errors.push(new Error('A provider process exit could not be verified.'));
+                }
+            }
         }
-    }
-    wait(50);
-    for (const pid of pids) {
-        try {
-            kill(pid, 0);
-            kill(pid, 'SIGKILL');
-        } catch (error) {
-            if (!(error && error.code === 'ESRCH')) errors.push(error);
+        if (errors.length) {
+            throw new CleanupAggregateError(errors,
+                'One or more provider process exits could not be verified.');
         }
-    }
-    if (errors.length) {
-        throw new CleanupAggregateError(errors, 'One or more provider fixtures could not be terminated.');
+        if (!remaining.size) return;
+        if (now() >= deadline) {
+            throw new CleanupAggregateError(
+                [new Error('Provider processes did not exit before the cleanup deadline.')],
+                'One or more provider process exits could not be verified.'
+            );
+        }
+        wait(Math.min(pollIntervalMs, Math.max(0, deadline - now())));
     }
 }
 
-function terminateProviderFixtures(fixtures) {
+function writeProviderStopFiles(fixtures, dependencies = {}) {
+    const writeStop = dependencies.writeStop
+        || (stopPath => fs.writeFileSync(stopPath, 'stop', 'utf8'));
     const errors = [];
     for (const fixture of fixtures) {
         try {
-            if (!fs.existsSync(fixture.stopPath)) {
-                fs.writeFileSync(fixture.stopPath, 'stop', 'utf8');
-            }
+            writeStop(fixture.stopPath);
         } catch (error) {
-            errors.push(error);
+            errors.push(new Error('A provider stop request could not be written.'));
         }
     }
+    if (errors.length) {
+        throw new CleanupAggregateError(errors,
+            'One or more provider stop requests could not be written.');
+    }
+}
+
+function stopAndVerifyProviderFixtures(fixtures) {
+    const errors = [];
     try {
-        terminateTrackedProviderPids(collectTrackedProviderPids(fixtures));
+        writeProviderStopFiles(fixtures);
+    } catch (error) {
+        errors.push(error);
+    }
+    let pids = [];
+    try {
+        pids = collectTrackedProviderPids(fixtures);
+    } catch (error) {
+        errors.push(new Error('Provider process evidence could not be read.'));
+    }
+    try {
+        waitForTrackedProviderExit(pids);
     } catch (error) {
         errors.push(error);
     }
     if (errors.length) {
-        throw new CleanupAggregateError(errors, 'One or more provider fixtures could not be terminated.');
+        throw new CleanupAggregateError(errors,
+            'One or more provider fixtures could not be stopped and verified.');
     }
 }
 
-function removeFixtureRoots(root, isolatedRoot, removeIsolatedRoot) {
+function removeFixtureRoots(root, isolatedRoot, serverStopped, providersStopped) {
     const errors = [];
-    const fixtureRoots = [root, ...(removeIsolatedRoot ? [isolatedRoot] : [])];
+    const fixtureRoots = [
+        ...(providersStopped ? [root] : []),
+        ...(serverStopped ? [isolatedRoot] : []),
+    ];
     for (const fixtureRoot of fixtureRoots) {
         try {
             fs.rmSync(fixtureRoot, { recursive: true, force: true });
@@ -596,8 +646,14 @@ async function runBestEffortCleanup(stages) {
         errors.push(error);
     }
     await attempt(() => stages.removeSocket(serverStopped ? socketPath : null));
-    await attempt(() => stages.terminateProviders());
-    await attempt(() => stages.removeFixtures(serverStopped));
+    let providersStopped = false;
+    try {
+        await stages.terminateProviders();
+        providersStopped = true;
+    } catch (error) {
+        errors.push(error);
+    }
+    await attempt(() => stages.removeFixtures(serverStopped, providersStopped));
     if (errors.length) {
         throw new CleanupAggregateError(errors, 'The isolated tmux smoke cleanup encountered errors.');
     }
@@ -627,9 +683,9 @@ async function main() {
                 killServer: killIsolatedServer,
                 verifyStopped: assertIsolatedServerStopped,
                 removeSocket: removeOwnStaleSocket,
-                terminateProviders: () => terminateProviderFixtures(fixtures),
-                removeFixtures: serverStopped => removeFixtureRoots(
-                    root, ownedTmuxTempRoot, serverStopped
+                terminateProviders: () => stopAndVerifyProviderFixtures(fixtures),
+                removeFixtures: (serverStopped, providersStopped) => removeFixtureRoots(
+                    root, ownedTmuxTempRoot, serverStopped, providersStopped
                 ),
             });
         } catch (error) {
@@ -646,9 +702,12 @@ async function main() {
 }
 
 module.exports = {
+    assertIsolatedServerStopped,
     collectTrackedProviderPids,
+    killIsolatedServer,
     runBestEffortCleanup,
-    terminateTrackedProviderPids,
+    waitForTrackedProviderExit,
+    writeProviderStopFiles,
 };
 
 if (require.main === module) {

@@ -5763,6 +5763,58 @@ async function runRuntimeCoordinatorChecks() {
     assert.strictEqual(await choiceCoordinator.focusSelected(staleChoice), false,
         'a stale Direct handle must not be focused after forced refresh');
     assert.strictEqual(choiceDirect.focusCalls.length, 1);
+
+    const collisionOnlyDirect = createFakeRuntimeBackend('vscode');
+    const collisionOnlyTmux = createFakeRuntimeBackend('tmux');
+    const collisionDiagnostic = fakeRuntime('tmux', 'collision-only', {
+        state: 'conflict', attached: false,
+        tmux: { layout: 'project', sessionName: 'unverified-session', windowName: 'unmanaged-window' },
+    });
+    collisionOnlyTmux.conflicts.push(collisionDiagnostic);
+    const collisionOnlyCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: collisionOnlyDirect,
+        tmux: collisionOnlyTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    assert.deepStrictEqual(
+        collisionOnlyCoordinator.getActiveCandidates('codex', 'collision-only'), [],
+        'metadata/name collision diagnostics must not become chooser candidates'
+    );
+    assert.deepStrictEqual(
+        collisionOnlyCoordinator.getUnverifiedConflicts('codex', 'collision-only'),
+        [collisionDiagnostic]
+    );
+    assert.strictEqual(await collisionOnlyCoordinator.focusSelected(collisionDiagnostic), false,
+        'a forged collision diagnostic must fail exact verified-active revalidation');
+    assert.strictEqual(collisionOnlyTmux.focusCalls.length, 0,
+        'collision selection must never select or attach an unmanaged tmux target');
+
+    const verifiedWithCollisionDirect = createFakeRuntimeBackend('vscode');
+    const verifiedWithCollisionTmux = createFakeRuntimeBackend('tmux');
+    const verifiedHandle = { name: 'verified-direct' };
+    verifiedWithCollisionDirect.active.push(fakeRuntime('vscode', 'verified-with-collision', {
+        terminal: verifiedHandle,
+    }));
+    verifiedWithCollisionTmux.conflicts.push(fakeRuntime('tmux', 'verified-with-collision', {
+        state: 'conflict', attached: false,
+        tmux: { layout: 'project', sessionName: 'collision-name', windowName: 'unmanaged-window' },
+    }));
+    const verifiedWithCollisionCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: verifiedWithCollisionDirect,
+        tmux: verifiedWithCollisionTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    const verifiedChoices = verifiedWithCollisionCoordinator.getActiveCandidates(
+        'codex', 'verified-with-collision'
+    );
+    assert.strictEqual(verifiedChoices.length, 1,
+        'a collision diagnostic must not hide a separately verified active runtime');
+    assert.strictEqual(verifiedChoices[0].backend, 'vscode');
+    assert.strictEqual(await verifiedWithCollisionCoordinator.focusSelected(verifiedChoices[0]), true);
+    assert.strictEqual(verifiedWithCollisionDirect.focusCalls.length, 1);
+    assert.strictEqual(verifiedWithCollisionTmux.focusCalls.length, 0);
 }
 
 async function runRuntimeProjectionChecks() {
@@ -6185,6 +6237,121 @@ async function runRuntimeControllerChecks() {
     assert.deepStrictEqual(conflictErrors, ['Could not choose an AI session runtime.']);
     assert.strictEqual(selectedConflicts.length, 3,
         'a rejected QuickPick boundary must perform zero focus actions');
+
+    project.codexSessions.push({ id: 'collision-only' });
+    const controllerCollisionDiagnostic = {
+        ...conflictTmux,
+        identity: { ...conflictTmux.identity, sessionId: 'collision-only' },
+        state: 'conflict',
+    };
+    let collisionChooserCalls = 0;
+    let collisionFocusCalls = 0;
+    const collisionOnlyAnnouncements = [];
+    const collisionOnlyController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getOpenProjects: () => [project],
+        getProjectSessions: candidate => candidate.codexSessions,
+        getProjectKey: () => 'pk',
+        getProjectCwd: () => '/work',
+        normalizePath: value => value,
+        runtimeCoordinator: {
+            getById: () => null,
+            getActiveCandidates: () => [],
+            getUnverifiedConflicts: () => [controllerCollisionDiagnostic],
+            getPending: () => [],
+            focus: async () => { collisionFocusCalls++; },
+            focusSelected: async () => { collisionFocusCalls++; return true; },
+            detach: async () => undefined,
+        },
+        chooseRuntimeConflict: async () => { collisionChooserCalls++; return controllerCollisionDiagnostic; },
+        confirmRuntimeClose: async () => undefined,
+        announceStatus: async (projectId, message) => collisionOnlyAnnouncements.push([projectId, message]),
+        showErrorMessage: async () => undefined,
+        getProviderLabel: () => 'CODEX',
+        refresh: () => undefined,
+    });
+    await collisionOnlyController.focusActive('project', 'codex', 'collision-only');
+    assert.strictEqual(collisionChooserCalls, 0,
+        'a lone unverified collision must not open the runtime chooser');
+    assert.strictEqual(collisionFocusCalls, 0);
+    assert.deepStrictEqual(collisionOnlyAnnouncements, [[
+        'project',
+        'The conflicting AI session target could not be verified as a managed runtime and was not focused.',
+    ]]);
+
+    const otherProjectCollision = {
+        ...controllerCollisionDiagnostic,
+        identity: {
+            ...controllerCollisionDiagnostic.identity,
+            projectKey: 'other-pk',
+            cwd: '/other',
+        },
+    };
+    let crossProjectFocusCalls = 0;
+    const crossProjectAnnouncements = [];
+    const crossProjectCollisionController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getOpenProjects: () => [project, otherProject],
+        getProjectSessions: candidate => candidate.codexSessions,
+        getProjectKey: candidate => candidate.id === 'project' ? 'pk' : 'other-pk',
+        getProjectCwd: candidate => candidate.path,
+        normalizePath: value => value,
+        runtimeCoordinator: {
+            getById: () => direct,
+            getActiveCandidates: () => [direct],
+            getUnverifiedConflicts: () => [otherProjectCollision],
+            getPending: () => [],
+            focus: async () => { crossProjectFocusCalls++; },
+            focusSelected: async () => { throw new Error('cross-project collision must not change routing'); },
+            detach: async () => undefined,
+        },
+        chooseRuntimeConflict: async () => { throw new Error('cross-project collision must not open chooser'); },
+        confirmRuntimeClose: async () => undefined,
+        announceStatus: async (projectId, message) => crossProjectAnnouncements.push([projectId, message]),
+        showErrorMessage: async () => undefined,
+        getProviderLabel: () => 'CODEX',
+        refresh: () => undefined,
+    });
+    await crossProjectCollisionController.focusActive('project', 'codex', 'direct-session');
+    assert.strictEqual(crossProjectFocusCalls, 1,
+        'a collision owned by another project must not alter the current project focus route');
+    assert.deepStrictEqual(crossProjectAnnouncements, []);
+
+    project.codexSessions.push({ id: 'verified-with-collision' });
+    const verifiedControllerRuntime = {
+        ...conflictDirect,
+        identity: { ...conflictDirect.identity, sessionId: 'verified-with-collision' },
+        state: 'active',
+    };
+    let verifiedCollisionChooserCalls = 0;
+    const verifiedCollisionFocuses = [];
+    const verifiedCollisionController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getOpenProjects: () => [project],
+        getProjectSessions: candidate => candidate.codexSessions,
+        getProjectKey: () => 'pk',
+        getProjectCwd: () => '/work',
+        normalizePath: value => value,
+        runtimeCoordinator: {
+            getById: () => null,
+            getActiveCandidates: () => [verifiedControllerRuntime],
+            getUnverifiedConflicts: () => [controllerCollisionDiagnostic],
+            getPending: () => [],
+            focus: async () => { throw new Error('identity focus must remain ambiguity-safe'); },
+            focusSelected: async runtime => { verifiedCollisionFocuses.push(runtime); return true; },
+            detach: async () => undefined,
+        },
+        chooseRuntimeConflict: async () => { verifiedCollisionChooserCalls++; return undefined; },
+        confirmRuntimeClose: async () => undefined,
+        announceStatus: async () => undefined,
+        showErrorMessage: async () => undefined,
+        getProviderLabel: () => 'CODEX',
+        refresh: () => undefined,
+    });
+    await verifiedCollisionController.focusActive('project', 'codex', 'verified-with-collision');
+    assert.strictEqual(verifiedCollisionChooserCalls, 0);
+    assert.strictEqual(verifiedCollisionFocuses.length, 1,
+        'one verified runtime must remain focusable despite a separate unverified collision');
 
     const normalizeCanonicalPath = value => value
         .replace(/\\/g, '/')
@@ -6862,6 +7029,8 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
     assert.ok(source.includes('invocationId'));
     assert.ok(source.includes('readProviderInvocations'));
     assert.ok(source.includes('collectTrackedProviderPids'));
+    assert.strictEqual(source.includes("'SIGTERM'"), false);
+    assert.strictEqual(source.includes("'SIGKILL'"), false);
     assert.strictEqual(source.includes('new AggregateError'), false,
         'the smoke harness must remain compatible with Node runtimes before global AggregateError');
     assert.ok(source.includes('assert.deepStrictEqual(projectOne.tmux, concurrentProjectOne.tmux)'));
@@ -6878,8 +7047,8 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
     ];
     for (const failingStage of cleanupStages) {
         const calls = [];
-        const stages = Object.fromEntries(cleanupStages.map(stage => [stage, async value => {
-            calls.push([stage, value]);
+        const stages = Object.fromEntries(cleanupStages.map(stage => [stage, async (...values) => {
+            calls.push([stage, ...values]);
             if (stage === failingStage) throw new Error(`${stage} failed`);
             return stage === 'captureSocket' ? '/owned/socket' : undefined;
         }]));
@@ -6902,7 +7071,71 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
         assert.strictEqual(calls.find(call => call[0] === 'removeFixtures')[1],
             failingStage === 'verifyStopped' ? false : true,
             'a live or unverifiable server must retain its owned tmux root while other fixtures clean up');
+        assert.strictEqual(calls.find(call => call[0] === 'removeFixtures')[2],
+            failingStage === 'terminateProviders' ? false : true,
+            'an unverifiable provider set must retain its fixture root');
     }
+
+    const noServerError = Object.assign(new Error('raw no server path'), {
+        status: 1,
+        stderr: 'no server running on /private/test/socket',
+    });
+    let noServerKillCalls = 0;
+    smokeHarness.killIsolatedServer(() => {
+        noServerKillCalls++;
+        throw noServerError;
+    }, {});
+    assert.strictEqual(noServerKillCalls, 1,
+        'an explicit no-server result must be treated as already stopped without retry');
+
+    const exitedServerError = Object.assign(new Error('raw exited server path'), {
+        status: 1,
+        stderr: 'server exited unexpectedly\n',
+    });
+    smokeHarness.assertIsolatedServerStopped(() => { throw exitedServerError; }, {});
+
+    const ordinaryKillError = () => Object.assign(new Error('raw secret /private/work'), {
+        status: 1,
+        stderr: 'permission denied: /private/work',
+    });
+    let ordinaryKillCalls = 0;
+    await assert.rejects(smokeHarness.runBestEffortCleanup({
+        captureSocket: async () => '/owned/socket',
+        killServer: async () => smokeHarness.killIsolatedServer(() => {
+            ordinaryKillCalls++;
+            if (ordinaryKillCalls === 1) throw ordinaryKillError();
+        }, {}),
+        verifyStopped: async () => undefined,
+        removeSocket: async () => undefined,
+        terminateProviders: async () => undefined,
+        removeFixtures: async () => undefined,
+    }), error => error && error.name === 'CleanupAggregateError'
+        && !JSON.stringify(error.errors.map(item => item.message)).includes('/private/work'));
+    assert.strictEqual(ordinaryKillCalls, 2,
+        'an ordinary numeric kill failure must reach the orchestrator retry');
+
+    let repeatedKillCalls = 0;
+    const repeatedCleanupCalls = [];
+    await assert.rejects(smokeHarness.runBestEffortCleanup({
+        captureSocket: async () => '/owned/socket',
+        killServer: async () => {
+            repeatedKillCalls++;
+            smokeHarness.killIsolatedServer(() => { throw ordinaryKillError(); }, {});
+        },
+        verifyStopped: async () => {
+            repeatedCleanupCalls.push('verifyStopped');
+            throw new Error('server status unavailable');
+        },
+        removeSocket: async socketPath => repeatedCleanupCalls.push(['removeSocket', socketPath]),
+        terminateProviders: async () => undefined,
+        removeFixtures: async (serverStopped, providersStopped) => {
+            repeatedCleanupCalls.push(['removeFixtures', serverStopped, providersStopped]);
+        },
+    }), error => error && error.name === 'CleanupAggregateError' && error.errors.length >= 3);
+    assert.strictEqual(repeatedKillCalls, 2);
+    assert.deepStrictEqual(repeatedCleanupCalls, [
+        'verifyStopped', ['removeSocket', null], ['removeFixtures', false, true],
+    ], 'two ordinary kill failures must still verify and retain the tmux root');
     assert.deepStrictEqual(smokeHarness.collectTrackedProviderPids([
         { invocationId: 'one', pidPath: '/one.pid', invocationLogPath: '/shared.jsonl' },
         { invocationId: 'two', pidPath: '/two.pid', invocationLogPath: '/shared.jsonl' },
@@ -6919,23 +7152,51 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
             : pidPath === '/one.pid' ? 102 : null,
     }), [101, 102, 103],
     'cleanup must track every ledger PID, deduplicate it, ignore foreign/invalid rows, and retain pidPath fallback');
-    const terminationCalls = [];
-    const terminatedPids = new Set();
-    smokeHarness.terminateTrackedProviderPids([101, 102], {
-        kill: (pid, signal) => {
-            terminationCalls.push([pid, signal]);
-            if (signal === 0 && terminatedPids.has(pid)) {
+    const probeCalls = [];
+    const probeCounts = new Map();
+    let probeNow = 0;
+    smokeHarness.waitForTrackedProviderExit([101, 102], {
+        probe: pid => {
+            probeCalls.push(pid);
+            const count = (probeCounts.get(pid) || 0) + 1;
+            probeCounts.set(pid, count);
+            if (pid === 102 || count > 1) {
                 const error = new Error('gone');
                 error.code = 'ESRCH';
                 throw error;
             }
-            if (signal === 'SIGTERM') terminatedPids.add(pid);
         },
-        wait: () => undefined,
+        now: () => probeNow,
+        wait: delayMs => { probeNow += delayMs; },
+        timeoutMs: 100,
+        pollIntervalMs: 10,
     });
-    assert.deepStrictEqual(terminationCalls, [
-        [101, 0], [101, 'SIGTERM'], [102, 0], [102, 'SIGTERM'], [101, 0], [102, 0],
-    ], 'provider fallback termination must attempt every tracked PID and verify it exited');
+    assert.deepStrictEqual(probeCalls, [101, 102, 101],
+        'provider cleanup must verify every ledger PID until all report ESRCH');
+
+    const reusedPidProbes = [];
+    let timeoutNow = 0;
+    assert.throws(() => smokeHarness.waitForTrackedProviderExit([777], {
+        probe: pid => { reusedPidProbes.push(pid); },
+        now: () => timeoutNow,
+        wait: delayMs => { timeoutNow += delayMs; },
+        timeoutMs: 20,
+        pollIntervalMs: 10,
+    }), error => error && error.name === 'CleanupAggregateError');
+    assert.ok(reusedPidProbes.length >= 2,
+        'a stale or reused PID must only be observed until the bounded timeout');
+
+    const stopWrites = [];
+    assert.throws(() => smokeHarness.writeProviderStopFiles([
+        { stopPath: '/stop/one' }, { stopPath: '/stop/two' }, { stopPath: '/stop/three' },
+    ], {
+        writeStop: stopPath => {
+            stopWrites.push(stopPath);
+            if (stopPath === '/stop/two') throw new Error('write failed');
+        },
+    }), error => error && error.name === 'CleanupAggregateError');
+    assert.deepStrictEqual(stopWrites, ['/stop/one', '/stop/two', '/stop/three'],
+        'provider cleanup must request every controlled stop file even when one write fails');
 }
 
 async function main() {

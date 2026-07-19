@@ -19,6 +19,7 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 -   Prevent concurrent or ambiguous tmux creation, metadata collisions, reload recovery, and attach failures from resending a provider command or modifying unmanaged tmux targets.
 -   Make runtime conflicts explicitly selectable without ambiguous focus or detach, use accessible native session actions, and harden isolated tmux smoke cleanup and provider-invocation evidence.
+-   Keep unmanaged tmux collision diagnostics out of the runtime chooser, classify cleanup failures conservatively, and verify controlled provider exit without sending process signals.
 
 ## [2.1.2] 2026-07-19
 
