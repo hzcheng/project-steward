@@ -102,6 +102,22 @@ export interface AiSessionRuntimeSnapshot<TTerminal = unknown> {
     tmux?: AiSessionTmuxLocator;
 }
 
+export class AiSessionRuntimeConflictError extends Error {
+    readonly conflicts: AiSessionRuntimeSnapshot[];
+
+    constructor(conflicts: readonly AiSessionRuntimeSnapshot[]) {
+        super('Multiple or conflicting AI session runtimes were discovered.');
+        this.name = 'AiSessionRuntimeConflictError';
+        this.conflicts = (conflicts || []).map(runtime => ({
+            ...runtime,
+            state: 'conflict',
+            identity: { ...runtime.identity },
+            ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
+        }));
+        Object.setPrototypeOf(this, AiSessionRuntimeConflictError.prototype);
+    }
+}
+
 export interface AiSessionPendingRuntimeSnapshot<TTerminal = unknown> extends AiSessionRuntimeSnapshot<TTerminal> {
     state: 'pending';
     createdAt: string;
@@ -119,6 +135,7 @@ export interface AiSessionRuntimeBackend<TTerminal = unknown> {
     refresh(force?: boolean): Promise<void>;
     getActive(): AiSessionRuntimeSnapshot<TTerminal>[];
     getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[];
+    getConflicts?(): AiSessionRuntimeSnapshot<TTerminal>[];
     find(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot<TTerminal>[];
     focus(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void>;
     detach(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void>;

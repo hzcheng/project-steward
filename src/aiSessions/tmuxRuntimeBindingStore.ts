@@ -56,6 +56,20 @@ export interface TmuxKnownRuntimeBinding {
     lastSeenAtMs: number;
 }
 
+export interface TmuxInactiveRuntimeBinding {
+    version: 1;
+    state: 'completed' | 'stopped';
+    provider: AiSessionProviderId;
+    sessionId: string;
+    projectKey: string;
+    cwd: string;
+    layout: AiSessionTmuxLayout;
+    locator: AiSessionTmuxLocator;
+    markerPath: string;
+    runStartedAtMs: number;
+    detectedAtMs: number;
+}
+
 export interface TmuxConsumedPendingBinding {
     version: 1;
     state: 'consumed';
@@ -111,7 +125,9 @@ export type TmuxAmbiguousRuntimeBinding = TmuxAmbiguousRuntimeBindingBase & (
     }
 );
 
-type TmuxRuntimeBinding = TmuxPendingRuntimeBinding | TmuxKnownRuntimeBinding
+type TmuxFinalRuntimeBinding = TmuxKnownRuntimeBinding | TmuxInactiveRuntimeBinding;
+
+type TmuxRuntimeBinding = TmuxPendingRuntimeBinding | TmuxFinalRuntimeBinding
     | TmuxAmbiguousRuntimeBinding | TmuxConsumedPendingBinding | TmuxPromotingRuntimeBinding;
 
 export class TmuxRuntimeBindingStore {
@@ -128,6 +144,10 @@ export class TmuxRuntimeBindingStore {
 
     listKnown(): Promise<TmuxKnownRuntimeBinding[]> {
         return this.serialize(() => this.listKnownUnlocked(true));
+    }
+
+    listInactive(): Promise<TmuxInactiveRuntimeBinding[]> {
+        return this.serialize(() => this.listInactiveUnlocked(true));
     }
 
     getPending(pendingId: string): Promise<TmuxPendingRuntimeBinding | null> {
@@ -150,16 +170,36 @@ export class TmuxRuntimeBindingStore {
                 return null;
             }
             const filePath = this.recordPath('known', provider, sessionId);
-            const record = validateKnownRecord(await readJsonRegularFile(filePath));
+            const record = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
             if (!record || record.provider !== provider || record.sessionId !== sessionId
                 || !isCanonicalRecordPath(filePath, record)) {
                 return null;
             }
-            if (isKnownExpired(record, this.now())) {
+            if (isFinalRuntimeExpired(record, this.now())) {
                 await removeFile(filePath);
                 return null;
             }
-            return cloneKnown(record);
+            return record.state === 'known' ? cloneKnown(record) : null;
+        });
+    }
+
+    getInactive(provider: AiSessionProviderId, sessionId: string): Promise<TmuxInactiveRuntimeBinding | null> {
+        return this.serialize(async () => {
+            if (!isProviderId(provider) || !isBoundedString(sessionId, MAX_ID_LENGTH)) {
+                return null;
+            }
+            const filePath = this.recordPath('known', provider, sessionId);
+            const record = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
+            if (!record || record.provider !== provider || record.sessionId !== sessionId
+                || !isCanonicalRecordPath(filePath, record)) {
+                return null;
+            }
+            if (isFinalRuntimeExpired(record, this.now())) {
+                await removeFile(filePath);
+                return null;
+            }
+            return record.state === 'completed' || record.state === 'stopped'
+                ? cloneInactive(record) : null;
         });
     }
 
@@ -299,8 +339,77 @@ export class TmuxRuntimeBindingStore {
             return Promise.resolve();
         }
         return this.serialize(async () => {
-            await this.writeRecord(this.recordPath('known', validated.provider, validated.sessionId), validated);
+            const filePath = this.recordPath('known', validated.provider, validated.sessionId);
+            const current = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
+            if (current && current.provider === validated.provider
+                && current.sessionId === validated.sessionId
+                && (current.state === 'completed' || current.state === 'stopped')) {
+                return;
+            }
+            await this.writeRecord(filePath, validated);
             await this.listKnownUnlocked(true);
+        });
+    }
+
+    setInactive(record: TmuxInactiveRuntimeBinding): Promise<void> {
+        const validated = validateInactiveRecord(record, this.now());
+        if (!validated || isInactiveExpired(validated, this.now())) {
+            return Promise.reject(new Error('The inactive tmux binding is invalid or expired.'));
+        }
+        return this.serialize(async () => {
+            await this.writeRecord(
+                this.recordPath('known', validated.provider, validated.sessionId),
+                validated
+            );
+            await this.listInactiveUnlocked(true);
+        });
+    }
+
+    transitionKnownToInactive(
+        record: TmuxInactiveRuntimeBinding,
+        expectedLastSeenAtMs: number
+    ): Promise<boolean> {
+        const validated = validateInactiveRecord(record, this.now());
+        if (!validated || isInactiveExpired(validated, this.now())
+            || !isFiniteNonNegative(expectedLastSeenAtMs)) {
+            return Promise.reject(new Error('The inactive tmux binding transition is invalid or expired.'));
+        }
+        return this.serialize(async () => {
+            const filePath = this.recordPath('known', validated.provider, validated.sessionId);
+            const current = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
+            if (!current || current.state !== 'known'
+                || current.provider !== validated.provider
+                || current.sessionId !== validated.sessionId
+                || current.projectKey !== validated.projectKey
+                || current.layout !== validated.layout
+                || !locatorsEqual(current.locator, validated.locator)
+                || current.lastSeenAtMs !== expectedLastSeenAtMs
+                || !isCanonicalRecordPath(filePath, current)) {
+                return false;
+            }
+            await this.writeRecord(filePath, validated);
+            await this.listInactiveUnlocked(true);
+            return true;
+        });
+    }
+
+    acknowledgeInactive(provider: AiSessionProviderId, sessionId: string): Promise<void> {
+        if (!isProviderId(provider) || !isBoundedString(sessionId, MAX_ID_LENGTH)) {
+            return Promise.resolve();
+        }
+        return this.serialize(async () => {
+            const filePath = this.recordPath('known', provider, sessionId);
+            const record = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
+            if (!record) {
+                await removeFileDurably(filePath);
+                return;
+            }
+            if (record.provider !== provider || record.sessionId !== sessionId
+                || !isCanonicalRecordPath(filePath, record)
+                || record.state === 'known') {
+                return;
+            }
+            await removeFileDurably(filePath);
         });
     }
 
@@ -308,7 +417,14 @@ export class TmuxRuntimeBindingStore {
         if (!isProviderId(provider) || !isBoundedString(sessionId, MAX_ID_LENGTH)) {
             return Promise.resolve();
         }
-        return this.serialize(() => removeFile(this.recordPath('known', provider, sessionId)));
+        return this.serialize(async () => {
+            const filePath = this.recordPath('known', provider, sessionId);
+            const record = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
+            if (record?.state === 'known' && record.provider === provider
+                && record.sessionId === sessionId && isCanonicalRecordPath(filePath, record)) {
+                await removeFile(filePath);
+            }
+        });
     }
 
     reconcileKnown(live: readonly AiSessionRuntimeSnapshot[]): Promise<void> {
@@ -329,7 +445,11 @@ export class TmuxRuntimeBindingStore {
                     lastSeenAtMs: this.now(),
                 });
                 if (record) {
-                    await this.writeRecord(this.recordPath('known', record.provider, record.sessionId), record);
+                    const filePath = this.recordPath('known', record.provider, record.sessionId);
+                    const current = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
+                    if (!current || current.state === 'known') {
+                        await this.writeRecord(filePath, record);
+                    }
                 }
             }
             await this.listKnownUnlocked(true);
@@ -361,19 +481,35 @@ export class TmuxRuntimeBindingStore {
     }
 
     private async listKnownUnlocked(pruneToCap: boolean): Promise<TmuxKnownRuntimeBinding[]> {
-        const entries: Array<{ filePath: string; record: TmuxKnownRuntimeBinding }> = [];
+        const entries = await this.listFinalRuntimeUnlocked(pruneToCap);
+        return entries.filter((entry): entry is { filePath: string; record: TmuxKnownRuntimeBinding } =>
+            entry.record.state === 'known').map(entry => cloneKnown(entry.record));
+    }
+
+    private async listInactiveUnlocked(pruneToCap: boolean): Promise<TmuxInactiveRuntimeBinding[]> {
+        const entries = await this.listFinalRuntimeUnlocked(pruneToCap);
+        return entries.filter((entry): entry is { filePath: string; record: TmuxInactiveRuntimeBinding } =>
+            entry.record.state === 'completed' || entry.record.state === 'stopped')
+            .map(entry => cloneInactive(entry.record));
+    }
+
+    private async listFinalRuntimeUnlocked(
+        pruneToCap: boolean
+    ): Promise<Array<{ filePath: string; record: TmuxFinalRuntimeBinding }>> {
+        const entries: Array<{ filePath: string; record: TmuxFinalRuntimeBinding }> = [];
         for (const filePath of await listJsonFiles(this.root)) {
-            const record = validateKnownRecord(await readJsonRegularFile(filePath));
+            const record = validateFinalRuntimeRecord(await readJsonRegularFile(filePath), this.now());
             if (!record || !isCanonicalRecordPath(filePath, record)) {
                 continue;
             }
-            if (isKnownExpired(record, this.now())) {
+            if (isFinalRuntimeExpired(record, this.now())) {
                 await removeFile(filePath);
             } else {
                 entries.push({ filePath, record });
             }
         }
-        entries.sort((left, right) => right.record.lastSeenAtMs - left.record.lastSeenAtMs
+        entries.sort((left, right) => finalRuntimePriority(left.record) - finalRuntimePriority(right.record)
+            || finalRuntimeTimestamp(right.record) - finalRuntimeTimestamp(left.record)
             || left.record.provider.localeCompare(right.record.provider)
             || left.record.sessionId.localeCompare(right.record.sessionId));
         if (pruneToCap && entries.length > MAX_KNOWN_RECORDS) {
@@ -382,7 +518,7 @@ export class TmuxRuntimeBindingStore {
             }
             entries.length = MAX_KNOWN_RECORDS;
         }
-        return entries.map(entry => cloneKnown(entry.record));
+        return entries;
     }
 
     private async getPendingLifecycleByIdUnlocked<T extends TmuxAmbiguousRuntimeBinding
@@ -511,16 +647,19 @@ function isUnsupportedNoFollowError(error: unknown): boolean {
 }
 
 function isCanonicalRecordPath(filePath: string, record: TmuxRuntimeBinding): boolean {
-    const identity = record.state === 'pending'
-        ? [record.pendingId]
-        : record.state === 'known'
-            ? [record.provider, record.sessionId]
-            : record.state === 'consumed'
-                ? [record.provider, record.projectKey, record.pendingId]
-                : record.state === 'promoting'
-                    ? [record.provider, record.projectKey, record.pendingId]
-                    : ambiguousRecordIdentityParts(record);
-    return path.basename(filePath) === getRecordFilename(record.state, ...identity);
+    let identity: string[];
+    if (record.state === 'pending') {
+        identity = [record.pendingId];
+    } else if (record.state === 'known' || record.state === 'completed' || record.state === 'stopped') {
+        identity = [record.provider, record.sessionId];
+    } else if (record.state === 'consumed' || record.state === 'promoting') {
+        identity = [record.provider, record.projectKey, record.pendingId];
+    } else {
+        identity = ambiguousRecordIdentityParts(record as TmuxAmbiguousRuntimeBinding);
+    }
+    const canonicalState = record.state === 'completed' || record.state === 'stopped'
+        ? 'known' : record.state;
+    return path.basename(filePath) === getRecordFilename(canonicalState, ...identity);
 }
 
 function getRecordFilename(
@@ -539,6 +678,29 @@ async function removeFile(filePath: string): Promise<void> {
     } catch (error) {
         if (!isNodeError(error, 'ENOENT')) {
             throw error;
+        }
+    }
+}
+
+async function removeFileDurably(filePath: string): Promise<void> {
+    try {
+        await fs.unlink(filePath);
+    } catch (error) {
+        if (!isNodeError(error, 'ENOENT')) {
+            throw error;
+        }
+    }
+    let directory: fs.FileHandle | undefined;
+    try {
+        directory = await fs.open(path.dirname(filePath), 'r');
+        await directory.sync();
+    } catch (error) {
+        if (!isNodeError(error, 'ENOENT')) {
+            throw error;
+        }
+    } finally {
+        if (directory) {
+            await directory.close();
         }
     }
 }
@@ -728,7 +890,9 @@ function validateKnownRecord(value: unknown): TmuxKnownRuntimeBinding | null {
     }
     const record = value as Record<string, unknown>;
     const locator = validateLocator(record.locator);
-    if (record.version !== RECORD_VERSION || record.state !== 'known' || !isProviderId(record.provider)
+    if (record.version !== RECORD_VERSION
+        || (record.state !== undefined && record.state !== 'known')
+        || !isProviderId(record.provider)
         || !isBoundedString(record.sessionId, MAX_ID_LENGTH) || !isBoundedString(record.projectKey, MAX_ID_LENGTH)
         || !isLayout(record.layout) || !locator || locator.layout !== record.layout
         || !isFiniteNonNegative(record.lastSeenAtMs)) {
@@ -744,6 +908,49 @@ function validateKnownRecord(value: unknown): TmuxKnownRuntimeBinding | null {
         locator,
         lastSeenAtMs: record.lastSeenAtMs,
     };
+}
+
+function validateInactiveRecord(
+    value: unknown,
+    nowMs: number = Date.now()
+): TmuxInactiveRuntimeBinding | null {
+    if (!isObject(value)) {
+        return null;
+    }
+    const record = value as Record<string, unknown>;
+    const locator = validateLocator(record.locator);
+    if (record.version !== RECORD_VERSION
+        || (record.state !== 'completed' && record.state !== 'stopped')
+        || !isProviderId(record.provider) || !isBoundedString(record.sessionId, MAX_ID_LENGTH)
+        || !isBoundedString(record.projectKey, MAX_ID_LENGTH)
+        || !isBoundedPath(record.cwd) || !isLayout(record.layout)
+        || !locator || locator.layout !== record.layout
+        || !isBoundedPath(record.markerPath)
+        || !isFinitePositive(record.runStartedAtMs)
+        || !isFinitePositive(record.detectedAtMs)
+        || !Number.isFinite(nowMs) || record.detectedAtMs > nowMs + MAX_FUTURE_SKEW_MS) {
+        return null;
+    }
+    return {
+        version: 1,
+        state: record.state,
+        provider: record.provider,
+        sessionId: record.sessionId,
+        projectKey: record.projectKey,
+        cwd: record.cwd,
+        layout: record.layout,
+        locator,
+        markerPath: record.markerPath,
+        runStartedAtMs: record.runStartedAtMs,
+        detectedAtMs: record.detectedAtMs,
+    };
+}
+
+function validateFinalRuntimeRecord(
+    value: unknown,
+    nowMs: number = Date.now()
+): TmuxFinalRuntimeBinding | null {
+    return validateKnownRecord(value) || validateInactiveRecord(value, nowMs);
 }
 
 function validateLocator(value: unknown): AiSessionTmuxLocator | null {
@@ -774,6 +981,10 @@ function clonePending(record: TmuxPendingRuntimeBinding): TmuxPendingRuntimeBind
 }
 
 function cloneKnown(record: TmuxKnownRuntimeBinding): TmuxKnownRuntimeBinding {
+    return { ...record, locator: { ...record.locator } };
+}
+
+function cloneInactive(record: TmuxInactiveRuntimeBinding): TmuxInactiveRuntimeBinding {
     return { ...record, locator: { ...record.locator } };
 }
 
@@ -876,6 +1087,22 @@ function isKnownExpired(record: TmuxKnownRuntimeBinding, now: number): boolean {
     return now - record.lastSeenAtMs >= KNOWN_TTL_MS;
 }
 
+function isInactiveExpired(record: TmuxInactiveRuntimeBinding, now: number): boolean {
+    return now - record.detectedAtMs >= KNOWN_TTL_MS;
+}
+
+function isFinalRuntimeExpired(record: TmuxFinalRuntimeBinding, now: number): boolean {
+    return record.state === 'known' ? isKnownExpired(record, now) : isInactiveExpired(record, now);
+}
+
+function finalRuntimePriority(record: TmuxFinalRuntimeBinding): number {
+    return record.state === 'completed' ? 0 : record.state === 'known' ? 1 : 2;
+}
+
+function finalRuntimeTimestamp(record: TmuxFinalRuntimeBinding): number {
+    return record.state === 'known' ? record.lastSeenAtMs : record.detectedAtMs;
+}
+
 function isObject(value: unknown): value is object {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -904,6 +1131,15 @@ function isDateString(value: unknown): value is string {
 
 function isFiniteNonNegative(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isFinitePositive(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function isBoundedPath(value: unknown): value is string {
+    return typeof value === 'string' && value.length <= MAX_PATH_LENGTH
+        && !CONTROL_CHARACTERS.test(value);
 }
 
 function isNodeError(error: unknown, code: string): boolean {

@@ -2,6 +2,8 @@
 
 import * as vscode from 'vscode';
 
+const VISIBLE_VIEW_FAILURE_MESSAGE = 'Unexpected Project Steward view failure.';
+
 export interface SidebarStewardViewProviderOptions {
     getWebviewOptions: () => vscode.WebviewOptions;
     renderContent: (webview: vscode.Webview) => string;
@@ -27,8 +29,10 @@ export class SidebarStewardViewProvider implements vscode.WebviewViewProvider {
         webviewView.webview.onDidReceiveMessage(async message => {
             try {
                 await this.options.onMessage(message);
-            } catch (error) {
-                this.options.logError('Failed to handle a Project Steward message.', error);
+            } catch (_error) {
+                this.options.logError(
+                    'Failed to handle a Project Steward message.', sanitizedViewFailure()
+                );
             }
         });
 
@@ -46,9 +50,10 @@ export class SidebarStewardViewProvider implements vscode.WebviewViewProvider {
         if (this._view) {
             try {
                 this._view.webview.html = this.options.renderContent(this._view.webview);
-            } catch (error) {
-                this.options.logError('Failed to render Project Steward view.', error);
-                this._view.webview.html = this.options.renderError(error);
+            } catch (_error) {
+                const failure = sanitizedViewFailure();
+                this.options.logError('Failed to render Project Steward view.', failure);
+                this._view.webview.html = this.options.renderError(failure);
             }
         }
     }
@@ -67,11 +72,16 @@ export class SidebarStewardViewProvider implements vscode.WebviewViewProvider {
             if (webviewView.visible) {
                 this.refresh();
             }
-        } catch (error) {
-            this.options.logError('Failed to prepare Project Steward view.', error);
+        } catch (_error) {
+            const failure = sanitizedViewFailure();
+            this.options.logError('Failed to prepare Project Steward view.', failure);
             if (webviewView.visible) {
-                webviewView.webview.html = this.options.renderError(error);
+                webviewView.webview.html = this.options.renderError(failure);
             }
         }
     }
+}
+
+function sanitizedViewFailure(): Error {
+    return new Error(VISIBLE_VIEW_FAILURE_MESSAGE);
 }

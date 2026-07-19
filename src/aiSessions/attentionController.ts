@@ -38,6 +38,13 @@ export interface AiSessionAttentionControllerOptions<TRuntime extends AiSessionA
     nowMs: () => number;
 }
 
+export interface AiSessionAttentionEvaluation {
+    enabled: boolean;
+    published: boolean;
+    inScopeSessionKeys: string[];
+    eventIdsBySession: Record<string, string[]>;
+}
+
 export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRuntimeEntry = AiSessionAttentionRuntimeEntry> {
     private readonly monitor: AiSessionAttentionMonitor;
     private remoteAggregate: AttentionAggregate | null = null;
@@ -47,7 +54,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         this.monitor = new AiSessionAttentionMonitor({ now: options.nowMs });
     }
 
-    async evaluate(): Promise<boolean> {
+    async evaluate(): Promise<AiSessionAttentionEvaluation> {
         if (!this.options.isEnabled()) {
             this.monitor.evaluate([]);
             this.remoteAggregate = null;
@@ -55,7 +62,12 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             const published = await this.options.publish([], true);
             this.options.scheduleRefresh('attention');
             this.postProjectsUpdated();
-            return published;
+            return {
+                enabled: false,
+                published,
+                inScopeSessionKeys: [],
+                eventIdsBySession: {},
+            };
         }
 
         const projects = this.options.getOpenProjects();
@@ -87,7 +99,13 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         if (!this.remoteAggregate) {
             this.postProjectsUpdated();
         }
-        return this.options.publish(this.localItems);
+        const published = await this.options.publish(this.localItems);
+        return {
+            enabled: true,
+            published,
+            inScopeSessionKeys: [...ownedSessions.keys()].sort(),
+            eventIdsBySession: groupEventIdsBySession(this.localItems),
+        };
     }
 
     acknowledge(eventIds: string[]): void {
@@ -258,30 +276,131 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     }
 }
 
-export interface SettleAiSessionRuntimeLifecycleOptions {
-    state: 'completed' | 'stopped';
-    evaluateAttention: () => Promise<boolean>;
-    getEventIds: () => string[];
-    acknowledgePublished: (eventIds: string[]) => Promise<void>;
-    acknowledgeLocal: (eventIds: string[]) => void;
-    release: () => void | Promise<void>;
+function groupEventIdsBySession(items: readonly AttentionPayloadItem[]): Record<string, string[]> {
+    const result: Record<string, string[]> = {};
+    for (const item of items) {
+        const eventIds = result[item.sessionKey] || [];
+        if (!eventIds.includes(item.eventId)) {
+            eventIds.push(item.eventId);
+            eventIds.sort();
+        }
+        result[item.sessionKey] = eventIds;
+    }
+    return result;
 }
 
-export async function settleAiSessionRuntimeLifecycle(
-    options: SettleAiSessionRuntimeLifecycleOptions
-): Promise<boolean> {
-    const published = await options.evaluateAttention();
-    if (!published) {
-        return false;
+export interface AiSessionRuntimeLifecycleCandidate {
+    key: string;
+    sessionKey?: string;
+    state: 'completed' | 'stopped';
+}
+
+export type AiSessionRuntimeLifecycleFailureOperation =
+    | 'evaluate'
+    | 'acknowledge-published'
+    | 'acknowledge-local'
+    | 'release';
+
+export interface SettleAiSessionRuntimeLifecyclesOptions<TCandidate extends AiSessionRuntimeLifecycleCandidate> {
+    candidates: readonly TCandidate[];
+    evaluateAttention: () => Promise<AiSessionAttentionEvaluation>;
+    acknowledgePublished: (eventIds: string[]) => Promise<void>;
+    acknowledgeLocal: (eventIds: string[]) => void;
+    release: (candidate: TCandidate) => void | Promise<void>;
+    reportFailure?: (
+        operation: AiSessionRuntimeLifecycleFailureOperation,
+        category: 'unexpected',
+        key: string | undefined
+    ) => void;
+}
+
+export interface AiSessionRuntimeLifecycleSettlementResult {
+    releasedKeys: string[];
+    retainedKeys: string[];
+}
+
+export async function settleAiSessionRuntimeLifecycles<
+    TCandidate extends AiSessionRuntimeLifecycleCandidate
+>(
+    options: SettleAiSessionRuntimeLifecyclesOptions<TCandidate>
+): Promise<AiSessionRuntimeLifecycleSettlementResult> {
+    const candidates = deduplicateLifecycleCandidates(options.candidates);
+    let evaluation: AiSessionAttentionEvaluation;
+    try {
+        evaluation = await options.evaluateAttention();
+    } catch (_error) {
+        options.reportFailure?.('evaluate', 'unexpected', undefined);
+        return {
+            releasedKeys: [],
+            retainedKeys: candidates.map(candidate => candidate.key).sort(),
+        };
     }
-    if (options.state === 'completed') {
-        const eventIds = options.getEventIds();
-        if (!eventIds.length) {
-            return false;
+
+    const inScope = new Set(evaluation.inScopeSessionKeys);
+    const candidateSessionKey = (candidate: TCandidate): string => candidate.sessionKey || candidate.key;
+    const safeToRelease = candidates.filter(candidate =>
+        candidate.state === 'stopped' || !evaluation.enabled
+        || !inScope.has(candidateSessionKey(candidate)));
+    const completionWithEvents = candidates.filter(candidate => candidate.state === 'completed'
+        && evaluation.enabled && inScope.has(candidateSessionKey(candidate))
+        && evaluation.published
+        && (evaluation.eventIdsBySession[candidateSessionKey(candidate)] || []).length > 0);
+    const eventIds = Array.from(new Set(completionWithEvents.reduce((result, candidate) => {
+        result.push(...evaluation.eventIdsBySession[candidateSessionKey(candidate)] || []);
+        return result;
+    }, [] as string[]))).sort();
+    let acknowledgedCompletions: TCandidate[] = [];
+    if (eventIds.length) {
+        let publishedAcknowledged = false;
+        try {
+            await options.acknowledgePublished(eventIds);
+            publishedAcknowledged = true;
+        } catch (_error) {
+            options.reportFailure?.('acknowledge-published', 'unexpected', undefined);
         }
-        await options.acknowledgePublished(eventIds);
-        options.acknowledgeLocal(eventIds);
+        if (publishedAcknowledged) {
+            try {
+                options.acknowledgeLocal(eventIds);
+                acknowledgedCompletions = completionWithEvents;
+            } catch (_error) {
+                options.reportFailure?.('acknowledge-local', 'unexpected', undefined);
+            }
+        }
     }
-    await options.release();
-    return true;
+
+    const eligibleByKey = new Map<string, TCandidate>();
+    for (const candidate of [...safeToRelease, ...acknowledgedCompletions]) {
+        eligibleByKey.set(candidate.key, candidate);
+    }
+    const releasedKeys: string[] = [];
+    for (const candidate of [...eligibleByKey.values()].sort((left, right) =>
+        left.key.localeCompare(right.key))) {
+        try {
+            await options.release(candidate);
+            releasedKeys.push(candidate.key);
+        } catch (_error) {
+            options.reportFailure?.('release', 'unexpected', candidate.key);
+        }
+    }
+    const released = new Set(releasedKeys);
+    return {
+        releasedKeys,
+        retainedKeys: candidates.map(candidate => candidate.key)
+            .filter(key => !released.has(key)).sort(),
+    };
+}
+
+function deduplicateLifecycleCandidates<TCandidate extends AiSessionRuntimeLifecycleCandidate>(
+    candidates: readonly TCandidate[]
+): TCandidate[] {
+    const byKey = new Map<string, TCandidate>();
+    for (const candidate of candidates) {
+        if (candidate && candidate.key && (candidate.state === 'completed' || candidate.state === 'stopped')) {
+            const existing = byKey.get(candidate.key);
+            if (!existing || (existing.state === 'stopped' && candidate.state === 'completed')) {
+                byKey.set(candidate.key, candidate);
+            }
+        }
+    }
+    return [...byKey.values()];
 }

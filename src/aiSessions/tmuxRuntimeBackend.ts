@@ -14,7 +14,7 @@ import type {
     AiSessionTmuxLocator,
     TmuxRuntimeUnavailableReason,
 } from './runtimeTypes';
-import { TmuxRuntimeUnavailableError } from './runtimeTypes';
+import { AiSessionRuntimeConflictError, TmuxRuntimeUnavailableError } from './runtimeTypes';
 import { getTmuxRuntimeKey, ProjectTmuxLayout, SessionTmuxLayout } from './tmuxLayout';
 import { TmuxAttachBinding, TmuxAttachBindingStore } from './tmuxAttachBindingStore';
 import { TmuxClient, TmuxClientError } from './tmuxClient';
@@ -26,7 +26,7 @@ import {
     TmuxPendingRuntimeBinding,
     validateTmuxPendingRuntimeBinding,
 } from './tmuxRuntimeBindingStore';
-import { TmuxRuntimeDiscovery } from './tmuxRuntimeDiscovery';
+import { getTmuxCollisionRuntimes, TmuxRuntimeDiscovery } from './tmuxRuntimeDiscovery';
 
 const PROJECT_BOOTSTRAP_WINDOW = 'project-steward';
 const SESSION_WINDOW = 'ai-session';
@@ -91,6 +91,15 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             this.withAttach(runtime) as AiSessionPendingRuntimeSnapshot<TTerminal>);
     }
 
+    getConflicts(): AiSessionRuntimeSnapshot<TTerminal>[] {
+        const getDiagnostics = this.dependencies.discovery.getDiagnostics;
+        const diagnostics = typeof getDiagnostics === 'function'
+            ? getDiagnostics.call(this.dependencies.discovery)
+            : [];
+        return getTmuxCollisionRuntimes(diagnostics)
+            .map(runtime => this.withAttach(runtime));
+    }
+
     find(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot<TTerminal>[] {
         return this.dependencies.discovery.find(identity).map(runtime => this.withAttach(runtime));
     }
@@ -108,6 +117,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         const lockKey = getTmuxRuntimeKey(identity);
         const runtime = await this.withCreationLocks(identity, layout, lockKey, async () => {
             await this.dependencies.discovery.refresh(true);
+            this.throwIfCollision(identity);
             const existing = this.findVerified(identity, locator);
             if (existing) {
                 await this.dependencies.runtimeStore.removeAmbiguous(identity);
@@ -153,6 +163,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         const lockKey = pendingLifecycleLockKey(identity.pendingId as string);
         const runtime = await this.withCreationLocks(identity, layout, lockKey, async () => {
             await this.dependencies.discovery.refresh(true);
+            this.throwIfCollision(identity);
             const lifecycle = await this.auditPendingId(identity);
             const existing = this.findVerified(identity, locator) as AiSessionPendingRuntimeSnapshot | undefined;
             if (existing) {
@@ -228,6 +239,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             await this.requireAvailable();
             await this.dependencies.discovery.refresh(true);
             const pendingIdentityValue = identityFromPendingBinding(storedPending);
+            this.throwIfCollision(pendingIdentityValue);
             const consumedByPendingId = await this.dependencies.runtimeStore.getConsumedByPendingId(pendingId);
             if (consumedByPendingId
                 && !pendingLifecycleIdentityMatches(consumedByPendingId, pendingIdentityValue)) {
@@ -269,6 +281,8 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 finalLockKey,
                 async () => {
                     await this.dependencies.discovery.refresh(true);
+                    this.throwIfCollision(pendingIdentityValue);
+                    this.throwIfCollision(identity);
                     const intent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
                     const expectedIntent = promotionIntent(currentBinding, {
                         ...pendingSnapshot,
@@ -836,6 +850,14 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             .find(runtime => !!runtime.tmux && locatorsEqual(runtime.tmux, locator));
     }
 
+    private throwIfCollision(identity: AiSessionRuntimeIdentity): void {
+        const conflicts = this.getConflicts().filter(runtime =>
+            runtimeIdentitiesMatch(runtime.identity, identity));
+        if (conflicts.length) {
+            throw new AiSessionRuntimeConflictError(conflicts);
+        }
+    }
+
     private async attachAndFocus<T extends AiSessionRuntimeSnapshot>(
         runtime: T,
         terminalName: string
@@ -984,6 +1006,21 @@ function finalIdentity(identity: AiSessionRuntimeIdentity & { sessionId: string 
         cwd: identity.cwd,
         sessionId: identity.sessionId,
     };
+}
+
+function runtimeIdentitiesMatch(
+    left: AiSessionRuntimeIdentity,
+    right: AiSessionRuntimeIdentity
+): boolean {
+    if (!left || !right || left.provider !== right.provider
+        || left.projectKey !== right.projectKey) {
+        return false;
+    }
+    if (right.sessionId !== undefined) {
+        return left.sessionId === right.sessionId;
+    }
+    return left.pendingId === right.pendingId
+        && (!right.cwd || left.cwd === right.cwd);
 }
 
 function getRestoredAttachTerminalName(runtime: AiSessionRuntimeSnapshot): string {

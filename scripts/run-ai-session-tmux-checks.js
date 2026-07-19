@@ -468,15 +468,17 @@ function createTmuxBackendHarness(options = {}) {
 }
 
 function runtimeRecordFilename(record) {
+    const canonicalState = record.state === 'completed' || record.state === 'stopped'
+        ? 'known' : record.state;
     const identity = record.state === 'pending'
         ? [record.pendingId]
         : record.state === 'consumed' || record.state === 'promoting'
             ? [record.provider, record.projectKey, record.pendingId]
             : [record.provider, record.sessionId];
     const digest = crypto.createHash('sha256')
-        .update(JSON.stringify([1, record.state, ...identity]), 'utf8')
+        .update(JSON.stringify([1, canonicalState, ...identity]), 'utf8')
         .digest('hex');
-    return `${record.state}-${digest}.json`;
+    return `${canonicalState}-${digest}.json`;
 }
 
 function runRuntimeConfigurationChecks() {
@@ -1678,6 +1680,100 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(lifecycleDiscovery.getInactive(), []);
     assert.deepStrictEqual(removedKnown, [['codex', 's1']]);
 
+    const restartRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-inactive-restart-'));
+    try {
+        const restartStore = new runtimeStoreModule.TmuxRuntimeBindingStore(restartRoot, () => now);
+        await restartStore.setKnown(known);
+        let restartRows = [finalRow];
+        const beforeRestart = new discoveryModule.TmuxRuntimeDiscovery({
+            client: { listWindows: async () => restartRows },
+            bindingStore: restartStore,
+            markerIsCurrent: () => true,
+            nowMs: () => now,
+        });
+        await beforeRestart.refresh(true);
+        restartRows = [];
+        await beforeRestart.refresh(true);
+        assert.strictEqual(beforeRestart.getInactive()[0].state, 'completed');
+        assert.strictEqual(await restartStore.getKnown('codex', 's1'), null,
+            'persisted inactive records must not appear as known hints');
+
+        const afterRestart = new discoveryModule.TmuxRuntimeDiscovery({
+            client: { listWindows: async () => [] },
+            bindingStore: new runtimeStoreModule.TmuxRuntimeBindingStore(restartRoot, () => now),
+            markerIsCurrent: () => { throw new Error('restart must not reclassify persisted inactive'); },
+            nowMs: () => now,
+        });
+        await afterRestart.refresh(true);
+        assert.strictEqual(afterRestart.getInactive()[0].state, 'completed',
+            'a new discovery instance must restore completed inactive state from disk');
+
+        const originalUnlink = fs.promises.unlink;
+        fs.promises.unlink = async filePath => {
+            if (path.dirname(String(filePath)) === restartRoot) {
+                const error = new Error('/secret/discovery-ack-denied');
+                error.code = 'EACCES';
+                throw error;
+            }
+            return originalUnlink.call(fs.promises, filePath);
+        };
+        try {
+            await assert.rejects(afterRestart.acknowledgeInactive(finalIdentity),
+                error => error && error.code === 'EACCES');
+        } finally {
+            fs.promises.unlink = originalUnlink;
+        }
+        assert.strictEqual(afterRestart.getInactive()[0].state, 'completed',
+            'failed durable acknowledgement must not delete discovery memory first');
+        await afterRestart.acknowledgeInactive(finalIdentity);
+        assert.deepStrictEqual(afterRestart.getInactive(), []);
+    } finally {
+        fs.rmSync(restartRoot, { recursive: true, force: true });
+    }
+
+    const staleInactive = {
+        identity: { ...finalIdentity }, backend: 'tmux', state: 'completed',
+        markerPath: '/tmp/s1.done', runStartedAtMs: 900, attached: false,
+        tmux: { ...finalLocator },
+    };
+    let persistedInactive = [{
+        version: 1, state: 'completed', provider: 'codex', sessionId: 's1',
+        projectKey: 'pk', cwd: '/work', layout: 'project', locator: { ...finalLocator },
+        markerPath: '/tmp/s1.done', runStartedAtMs: 900, detectedAtMs: now,
+    }];
+    let blockInactiveRead = false;
+    const inactiveReadStarted = deferred();
+    const releaseInactiveRead = deferred();
+    const generationStore = {
+        listPending: async () => [],
+        listKnown: async () => [],
+        listInactive: async () => {
+            const captured = persistedInactive.map(record => ({ ...record, locator: { ...record.locator } }));
+            if (blockInactiveRead) {
+                inactiveReadStarted.resolve();
+                await releaseInactiveRead.promise;
+            }
+            return captured;
+        },
+        reconcileKnown: async () => undefined,
+        setInactive: async () => undefined,
+        acknowledgeInactive: async () => { persistedInactive = []; },
+    };
+    const generationDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [] }, bindingStore: generationStore,
+        markerIsCurrent: () => false, nowMs: () => now,
+    });
+    await generationDiscovery.refresh(true);
+    assert.deepStrictEqual(generationDiscovery.getInactive(), [staleInactive]);
+    blockInactiveRead = true;
+    const staleRefresh = generationDiscovery.refresh(true);
+    await inactiveReadStarted.promise;
+    await generationDiscovery.acknowledgeInactive(finalIdentity);
+    releaseInactiveRead.resolve();
+    await staleRefresh;
+    assert.deepStrictEqual(generationDiscovery.getInactive(), [],
+        'a stale concurrent refresh generation must not resurrect acknowledged inactive state');
+
     const stoppedRemoved = [];
     let stoppedRows = [finalRow];
     const stoppedDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
@@ -1818,6 +1914,119 @@ async function runTmuxStoreChecks() {
             lastSeenAtMs,
             ...overrides,
         });
+        const inactive = (sessionId, state, detectedAtMs, overrides = {}) => ({
+            version: 1,
+            state,
+            provider: 'codex',
+            sessionId,
+            projectKey: 'pk',
+            cwd: '/work',
+            layout: 'project',
+            locator: {
+                layout: 'project',
+                sessionName: 'project-steward-p-a',
+                windowName: `ai-codex-${sessionId}`,
+            },
+            markerPath: `/tmp/${sessionId}.done`,
+            runStartedAtMs: now - 1000,
+            detectedAtMs,
+            ...overrides,
+        });
+
+        const inactiveRoot = path.join(root, 'inactive-lifecycle');
+        const inactiveStore = new runtimeStoreModule.TmuxRuntimeBindingStore(inactiveRoot, () => now);
+        const transitioningKnown = known('inactive-restart', now - 100);
+        const completedInactive = inactive('inactive-restart', 'completed', now);
+        await inactiveStore.setKnown(transitioningKnown);
+        const lifecycleSlot = path.join(inactiveRoot, runtimeRecordFilename(transitioningKnown));
+        assert.strictEqual(fs.existsSync(lifecycleSlot), true);
+        assert.strictEqual(await inactiveStore.transitionKnownToInactive(
+            completedInactive, transitioningKnown.lastSeenAtMs
+        ), true);
+        assert.deepStrictEqual(fs.readdirSync(inactiveRoot).filter(name => name.endsWith('.json')),
+            [path.basename(lifecycleSlot)],
+            'known-to-inactive conversion must atomically reuse one canonical final lifecycle slot');
+        assert.strictEqual(await inactiveStore.getKnown('codex', 'inactive-restart'), null,
+            'inactive final records must never be returned as duplicate-prevention known hints');
+        assert.deepStrictEqual(await inactiveStore.listKnown(), []);
+        assert.deepStrictEqual(await inactiveStore.listInactive(), [completedInactive]);
+        const restartedInactiveStore = new runtimeStoreModule.TmuxRuntimeBindingStore(inactiveRoot, () => now);
+        assert.deepStrictEqual(await restartedInactiveStore.listInactive(), [completedInactive],
+            'completed inactive lifecycle state must survive extension-host restart');
+
+        const staleTransitionStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            path.join(root, 'stale-inactive-transition'), () => now
+        );
+        const staleKnown = known('stale-transition', now - 200);
+        const refreshedKnown = known('stale-transition', now - 50);
+        await staleTransitionStore.setKnown(staleKnown);
+        await staleTransitionStore.setKnown(refreshedKnown);
+        assert.strictEqual(await staleTransitionStore.transitionKnownToInactive(
+            inactive('stale-transition', 'stopped', now), staleKnown.lastSeenAtMs
+        ), false, 'a stale disappearance must not overwrite a concurrently refreshed known record');
+        assert.deepStrictEqual(await staleTransitionStore.getKnown('codex', 'stale-transition'),
+            refreshedKnown);
+
+        const legacyKnownRoot = path.join(root, 'legacy-known-no-discriminator');
+        fs.mkdirSync(legacyKnownRoot);
+        const normalizedLegacyKnown = known('legacy-known', now - 100);
+        const legacyKnown = { ...normalizedLegacyKnown };
+        delete legacyKnown.state;
+        fs.writeFileSync(path.join(legacyKnownRoot, runtimeRecordFilename(normalizedLegacyKnown)),
+            JSON.stringify(legacyKnown));
+        const legacyKnownStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            legacyKnownRoot, () => now
+        );
+        assert.deepStrictEqual(await legacyKnownStore.getKnown('codex', 'legacy-known'),
+            normalizedLegacyKnown, 'legacy final records without a discriminator parse as known');
+
+        const originalUnlink = fs.promises.unlink;
+        fs.promises.unlink = async filePath => {
+            if (path.resolve(String(filePath)) === path.resolve(lifecycleSlot)) {
+                const error = new Error('/secret/inactive-ack-denied');
+                error.code = 'EACCES';
+                throw error;
+            }
+            return originalUnlink.call(fs.promises, filePath);
+        };
+        try {
+            await assert.rejects(
+                restartedInactiveStore.acknowledgeInactive('codex', 'inactive-restart'),
+                error => error && error.code === 'EACCES'
+            );
+        } finally {
+            fs.promises.unlink = originalUnlink;
+        }
+        assert.deepStrictEqual(await restartedInactiveStore.listInactive(), [completedInactive],
+            'failed acknowledgement persistence must retain inactive lifecycle ownership');
+        await restartedInactiveStore.acknowledgeInactive('codex', 'inactive-restart');
+        await restartedInactiveStore.acknowledgeInactive('codex', 'inactive-restart');
+        assert.deepStrictEqual(await restartedInactiveStore.listInactive(), [],
+            'inactive acknowledgement must be idempotent');
+
+        const inactiveCapRoot = path.join(root, 'inactive-cap');
+        fs.mkdirSync(inactiveCapRoot);
+        const completedPriority = inactive('priority-completed', 'completed', now - 10_000);
+        fs.writeFileSync(path.join(inactiveCapRoot, runtimeRecordFilename(completedPriority)),
+            JSON.stringify(completedPriority));
+        for (let index = 0; index < 512; index++) {
+            const stopped = inactive(`cap-stopped-${index}`, 'stopped', now - index);
+            fs.writeFileSync(path.join(inactiveCapRoot, runtimeRecordFilename(stopped)), JSON.stringify(stopped));
+        }
+        const inactiveCapStore = new runtimeStoreModule.TmuxRuntimeBindingStore(inactiveCapRoot, () => now);
+        const cappedInactive = await inactiveCapStore.listInactive();
+        assert.strictEqual(cappedInactive.length, 512);
+        assert.strictEqual(cappedInactive.some(record => record.sessionId === 'priority-completed'), true,
+            'deterministic cap pruning must retain completed records before newer stopped records');
+        assert.strictEqual(cappedInactive.some(record => record.sessionId === 'cap-stopped-511'), false);
+        const expiredInactiveStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            inactiveCapRoot, () => now + (30 * 24 * 60 * 60 * 1000)
+        );
+        assert.deepStrictEqual(await expiredInactiveStore.listInactive(), [],
+            'inactive lifecycle records expire at the 30-day boundary');
+        await assert.rejects(inactiveStore.setInactive(inactive('bad-run', 'completed', now, {
+            runStartedAtMs: 0,
+        })), /inactive tmux binding is invalid/);
 
         assert.strictEqual(
             runtimeStoreModule.validateTmuxPendingRuntimeBinding(
@@ -2639,6 +2848,44 @@ async function runTmuxStoreChecks() {
 
 async function runTmuxBackendChecks() {
     const backendModule = require('../out/aiSessions/tmuxRuntimeBackend');
+    const backendCollisionIdentity = {
+        provider: 'codex', projectKey: 'backend-collision-project', cwd: '/work',
+        sessionId: 'backend-collision-session',
+    };
+    const backendCollisionExpected = new tmuxLayout.SessionTmuxLayout()
+        .getLocator(backendCollisionIdentity);
+    let backendCollisionMutationCalls = 0;
+    const backendCollision = new backendModule.TmuxRuntimeBackend({
+        platform: 'linux',
+        client: {
+            checkAvailability: async () => ({ available: true, version: '3.4' }),
+            hasSession: async () => { backendCollisionMutationCalls++; return false; },
+            getExecutablePath: () => 'tmux',
+        },
+        discovery: {
+            refresh: async () => undefined, getActive: () => [], getPending: () => [], find: () => [],
+            getDiagnostics: () => [{
+                kind: 'tmux-locator-collision', identity: { ...backendCollisionIdentity },
+                actual: { ...backendCollisionExpected, sessionName: `${backendCollisionExpected.sessionName}-occupied` },
+                expected: { ...backendCollisionExpected },
+            }],
+        },
+        runtimeStore: { getAmbiguous: async () => null, removeAmbiguous: async () => undefined },
+        attachStore: { get: () => null, set: () => undefined, remove: () => undefined, flush: async () => undefined },
+        withCreationLock: async (_key, operation) => operation(),
+        createTerminal: () => { throw new Error('attach must not be reached'); },
+        nowMs: () => Date.parse('2026-07-18T10:00:00Z'),
+    });
+    await assert.rejects(
+        backendCollision.ensureResume({
+            identity: backendCollisionIdentity, projectName: 'Collision', terminalName: 'Collision',
+            launch: { executable: 'codex', args: ['resume'], markerPath: '/tmp/collision.done' },
+        }, 'session'),
+        error => error && error.name === 'AiSessionRuntimeConflictError'
+            && Array.isArray(error.conflicts) && error.conflicts.length === 1
+    );
+    assert.strictEqual(backendCollisionMutationCalls, 0,
+        'backend forced refresh collision guard must run before any tmux mutation/provider dispatch');
     const projectHarness = createTmuxBackendHarness({
         getAttachTerminalName: runtime => runtime.tmux.layout === 'project'
             ? 'Project Steward: App [tmux]'
@@ -4148,6 +4395,7 @@ function createFakeRuntimeBackend(backend, options = {}) {
         backend,
         active: [],
         pending: [],
+        conflicts: [],
         refreshCalls: [],
         ensureResumeCalls: 0,
         ensurePendingCalls: 0,
@@ -4159,6 +4407,7 @@ function createFakeRuntimeBackend(backend, options = {}) {
     fake.refresh = async force => {
         fake.refreshCalls.push(force);
         if (options.refreshError) throw options.refreshError;
+        if (options.onRefresh) options.onRefresh(fake, force);
     };
     fake.getActive = () => fake.active.map(runtime => ({
         ...runtime,
@@ -4169,6 +4418,11 @@ function createFakeRuntimeBackend(backend, options = {}) {
         ...runtime,
         identity: { ...runtime.identity },
         excludedSessionIds: runtime.excludedSessionIds.slice(),
+    }));
+    fake.getConflicts = () => fake.conflicts.map(runtime => ({
+        ...runtime,
+        identity: { ...runtime.identity },
+        ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
     }));
     fake.find = identity => fake.getActive().filter(item =>
         item.identity.provider === identity.provider
@@ -4379,6 +4633,125 @@ async function runRuntimeCoordinatorChecks() {
     assert.strictEqual(configurationReads, 0);
     conflict.conflicts[0].identity.sessionId = 'mutated';
     assert.strictEqual(coordinator.getActive().some(runtime => runtime.identity.sessionId === 'mutated'), false);
+
+    const freshCollisionTmux = createFakeRuntimeBackend('tmux', {
+        onRefresh: backend => {
+            backend.active = [];
+            backend.conflicts = [fakeRuntime('tmux', 'fresh-collision', {
+                state: 'conflict', attached: false,
+                tmux: { layout: 'session', sessionName: 'fresh-collision-target' },
+            })];
+        },
+    });
+    const freshCollisionDirect = createFakeRuntimeBackend('vscode');
+    const freshCollisionCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: freshCollisionDirect,
+        tmux: freshCollisionTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    const freshCollisionResult = await freshCollisionCoordinator.resume(
+        fakeResumeRequest('fresh-collision')
+    );
+    assert.strictEqual(freshCollisionResult.status, 'conflict',
+        'a collision discovered by the action forced refresh must be an atomic resume input');
+    assert.strictEqual(freshCollisionDirect.ensureResumeCalls, 0);
+    assert.strictEqual(freshCollisionTmux.ensureResumeCalls, 0,
+        'a fresh collision must never dispatch a provider resume command');
+    freshCollisionResult.conflicts[0].tmux.sessionName = 'mutated';
+    assert.strictEqual(freshCollisionCoordinator.getConflicts()[0].tmux.sessionName,
+        'fresh-collision-target', 'coordinator conflict snapshots must be defensive copies');
+
+    const freshPendingCollisionTmux = createFakeRuntimeBackend('tmux', {
+        onRefresh: backend => {
+            backend.conflicts = [{
+                ...fakeRuntime('tmux', undefined, { state: 'conflict', attached: false }),
+                identity: {
+                    provider: 'codex', projectKey: 'pk', cwd: '/work',
+                    pendingId: 'fresh-pending-collision',
+                },
+                tmux: { layout: 'project', sessionName: 'pending-collision', windowName: 'occupied' },
+            }];
+        },
+    });
+    const freshPendingCollisionCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: createFakeRuntimeBackend('vscode'), tmux: freshPendingCollisionTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    const freshPendingCollision = await freshPendingCollisionCoordinator.create(
+        fakeCreateRequest('fresh-pending-collision')
+    );
+    assert.strictEqual(freshPendingCollision.status, 'conflict');
+    assert.strictEqual(freshPendingCollisionTmux.ensurePendingCalls, 0,
+        'a fresh pending collision must never dispatch a provider create command');
+
+    const backendConflictRuntime = fakeRuntime('tmux', 'backend-typed-conflict', {
+        state: 'conflict', attached: false,
+        tmux: { layout: 'session', sessionName: 'backend-typed-conflict' },
+    });
+    const typedConflictTmux = createFakeRuntimeBackend('tmux', {
+        ensureError: new runtimeTypesModule.AiSessionRuntimeConflictError([backendConflictRuntime]),
+    });
+    let typedConflictFallbackChoices = 0;
+    const typedConflictCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: createFakeRuntimeBackend('vscode'), tmux: typedConflictTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => { typedConflictFallbackChoices++; return 'direct'; },
+    });
+    const typedBackendConflict = await typedConflictCoordinator.resume(
+        fakeResumeRequest('backend-typed-conflict')
+    );
+    assert.strictEqual(typedBackendConflict.status, 'conflict');
+    assert.strictEqual(typedConflictFallbackChoices, 0,
+        'a typed collision error must never enter unavailable fallback');
+
+    const plainNamedConflict = Object.assign(new Error('plain named collision'), {
+        name: 'AiSessionRuntimeConflictError', conflicts: [backendConflictRuntime],
+    });
+    const plainConflictTmux = createFakeRuntimeBackend('tmux', { ensureError: plainNamedConflict });
+    let plainConflictFallbackChoices = 0;
+    const plainConflictCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: createFakeRuntimeBackend('vscode'), tmux: plainConflictTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => { plainConflictFallbackChoices++; return 'direct'; },
+    });
+    await assert.rejects(plainConflictCoordinator.resume(
+        fakeResumeRequest('plain-named-conflict')
+    ), error => error === plainNamedConflict);
+    assert.strictEqual(plainConflictFallbackChoices, 0,
+        'plain conflict-shaped errors must fail closed instead of entering fallback');
+
+    for (const operation of ['focus', 'detach']) {
+        let firstRefresh = true;
+        const guardedTmux = createFakeRuntimeBackend('tmux', {
+            onRefresh: backend => {
+                if (firstRefresh) {
+                    firstRefresh = false;
+                    backend.active = [];
+                    backend.conflicts = [fakeRuntime('tmux', `guarded-${operation}`, {
+                        state: 'conflict', attached: false,
+                        tmux: { layout: 'session', sessionName: `guarded-${operation}` },
+                    })];
+                }
+            },
+        });
+        guardedTmux.active.push(fakeRuntime('tmux', `guarded-${operation}`, {
+            attached: false,
+            tmux: { layout: 'session', sessionName: `guarded-${operation}` },
+        }));
+        const guardedActionCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+            direct: createFakeRuntimeBackend('vscode'), tmux: guardedTmux,
+            getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
+            chooseTmuxFallback: async () => 'cancel',
+        });
+        await guardedActionCoordinator[operation]({
+            provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: `guarded-${operation}`,
+        });
+        assert.deepStrictEqual(guardedTmux[`${operation}Calls`], [],
+            `${operation} must not act on a runtime replaced by a fresh collision`);
+        assert.deepStrictEqual(guardedTmux.refreshCalls, [true]);
+    }
 
     const duplicate = createFakeRuntimeBackend('vscode');
     duplicate.active.push(fakeRuntime('vscode', 'duplicate'));

@@ -16,6 +16,7 @@ import {
     parseManagedTmuxMetadata,
 } from './tmuxLayout';
 import type {
+    TmuxInactiveRuntimeBinding,
     TmuxKnownRuntimeBinding,
     TmuxPendingRuntimeBinding,
 } from './tmuxRuntimeBindingStore';
@@ -40,6 +41,13 @@ interface TmuxDiscoveryClient {
 interface TmuxDiscoveryBindingStore {
     listPending(): Promise<TmuxPendingRuntimeBinding[]>;
     listKnown(): Promise<TmuxKnownRuntimeBinding[]>;
+    listInactive?(): Promise<TmuxInactiveRuntimeBinding[]>;
+    setInactive?(record: TmuxInactiveRuntimeBinding): Promise<void>;
+    transitionKnownToInactive?(
+        record: TmuxInactiveRuntimeBinding,
+        expectedLastSeenAtMs: number
+    ): Promise<boolean>;
+    acknowledgeInactive?(provider: AiSessionRuntimeIdentity['provider'], sessionId: string): Promise<void>;
     reconcileKnown(live: readonly AiSessionRuntimeSnapshot[]): Promise<void>;
     removeKnown?(provider: AiSessionRuntimeIdentity['provider'], sessionId: string): Promise<void>;
 }
@@ -160,12 +168,16 @@ export class TmuxRuntimeDiscovery {
             return;
         }
         const key = finalIdentityKey(identity.provider, identity.sessionId);
+        this.cacheGeneration++;
+        this.successfulAtMs = null;
+        if (this.options.bindingStore.acknowledgeInactive) {
+            await this.options.bindingStore.acknowledgeInactive(identity.provider, identity.sessionId);
+        } else if (this.options.bindingStore.removeKnown) {
+            await this.options.bindingStore.removeKnown(identity.provider, identity.sessionId);
+        }
         this.retainedInactive.delete(key);
         this.inactive = this.inactive.filter(runtime =>
             finalIdentityKey(runtime.identity.provider, runtime.identity.sessionId || '') !== key);
-        if (this.options.bindingStore.removeKnown) {
-            await this.options.bindingStore.removeKnown(identity.provider, identity.sessionId);
-        }
     }
 
     find(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot[] {
@@ -181,13 +193,23 @@ export class TmuxRuntimeDiscovery {
 
     private async refreshUncached(cacheGeneration: number): Promise<void> {
         const result = await this.enumerate();
+        if (this.cacheGeneration !== cacheGeneration) {
+            return;
+        }
         this.active = result.active.map(cloneRuntime);
         this.pending = result.pending.map(clonePendingRuntime);
         this.inactive = result.inactive.map(cloneRuntime);
         this.diagnostics = result.diagnostics.map(cloneDiagnostic);
-        if (this.cacheGeneration === cacheGeneration) {
-            this.successfulAtMs = this.nowMs();
+        this.retainedInactive.clear();
+        for (const runtime of result.inactive) {
+            const sessionId = runtime.identity.sessionId;
+            if (sessionId) {
+                this.retainedInactive.set(
+                    finalIdentityKey(runtime.identity.provider, sessionId), cloneRuntime(runtime)
+                );
+            }
         }
+        this.successfulAtMs = this.nowMs();
     }
 
     private async enumerate(): Promise<DiscoveryResult> {
@@ -196,9 +218,12 @@ export class TmuxRuntimeDiscovery {
             throw new Error('The tmux window enumeration exceeded its bounded row limit.');
         }
         const rows = listed.slice();
-        const [pendingBindings, knownBindings] = await Promise.all([
+        const [pendingBindings, knownBindings, persistedInactiveBindings] = await Promise.all([
             this.options.bindingStore.listPending(),
             this.options.bindingStore.listKnown(),
+            this.options.bindingStore.listInactive
+                ? this.options.bindingStore.listInactive()
+                : Promise.resolve([] as TmuxInactiveRuntimeBinding[]),
         ]);
         const pendingByLocator = groupPendingByLocator(pendingBindings);
         const previousActive = this.active.filter(runtime => runtime.state === 'active');
@@ -287,9 +312,20 @@ export class TmuxRuntimeDiscovery {
             previousActive,
             collisionIdentityKeys
         );
+        const retainedInactive = new Map<string, AiSessionRuntimeSnapshot>();
+        for (const runtime of this.retainedInactive.values()) {
+            const sessionId = runtime.identity.sessionId;
+            if (sessionId) {
+                retainedInactive.set(finalIdentityKey(runtime.identity.provider, sessionId), cloneRuntime(runtime));
+            }
+        }
+        for (const record of persistedInactiveBindings) {
+            retainedInactive.set(finalIdentityKey(record.provider, record.sessionId),
+                inactiveSnapshotFromBinding(record));
+        }
         for (const runtime of liveActive) {
             if (runtime.identity.sessionId) {
-                this.retainedInactive.delete(finalIdentityKey(
+                retainedInactive.delete(finalIdentityKey(
                     runtime.identity.provider, runtime.identity.sessionId
                 ));
             }
@@ -300,12 +336,26 @@ export class TmuxRuntimeDiscovery {
                 continue;
             }
             const key = finalIdentityKey(runtime.identity.provider, sessionId);
-            const retained = this.retainedInactive.get(key);
+            const retained = retainedInactive.get(key);
             if (!retained || (retained.state !== 'completed' && runtime.state === 'completed')) {
-                this.retainedInactive.set(key, cloneRuntime(runtime));
+                const binding = inactiveBindingFromSnapshot(runtime, this.nowMs());
+                const known = knownBindings.find(candidate =>
+                    finalIdentityMatchesKnown(runtime.identity, candidate)
+                    && !!runtime.tmux && locatorsEqual(runtime.tmux, candidate.locator));
+                let persisted = true;
+                if (known && this.options.bindingStore.transitionKnownToInactive) {
+                    persisted = await this.options.bindingStore.transitionKnownToInactive(
+                        binding, known.lastSeenAtMs
+                    );
+                } else if (this.options.bindingStore.setInactive) {
+                    await this.options.bindingStore.setInactive(binding);
+                }
+                if (persisted) {
+                    retainedInactive.set(key, cloneRuntime(runtime));
+                }
             }
         }
-        const inactive = [...this.retainedInactive.values()].filter(runtime =>
+        const inactive = [...retainedInactive.values()].filter(runtime =>
             !collisionIdentityKeys.has(identityKey(runtime.identity))
             && !liveActive.some(liveRuntime => finalIdentitiesMatch(
                 liveRuntime.identity, runtime.identity
@@ -386,6 +436,30 @@ export function findTmuxCollisionRuntime(
     };
 }
 
+export function getTmuxCollisionRuntimes(
+    diagnostics: readonly AiSessionTmuxDiscoveryDiagnostic[]
+): AiSessionRuntimeSnapshot[] {
+    const byIdentity = new Map<string, AiSessionRuntimeSnapshot>();
+    for (const diagnostic of diagnostics) {
+        if (diagnostic.kind !== 'tmux-locator-collision') {
+            continue;
+        }
+        const key = identityKey(diagnostic.identity);
+        if (!byIdentity.has(key)) {
+            byIdentity.set(key, {
+                identity: { ...diagnostic.identity },
+                backend: 'tmux',
+                state: 'conflict',
+                markerPath: '',
+                runStartedAtMs: 0,
+                attached: false,
+                tmux: { ...diagnostic.expected },
+            });
+        }
+    }
+    return [...byIdentity.values()].map(cloneRuntime);
+}
+
 export function isCurrentRuntimeMarker(markerPath: string, runStartedAtMs: number): boolean {
     if (!markerPath || !Number.isFinite(runStartedAtMs) || runStartedAtMs <= 0) {
         return false;
@@ -399,6 +473,48 @@ export function isCurrentRuntimeMarker(markerPath: string, runStartedAtMs: numbe
     } catch (_error) {
         return false;
     }
+}
+
+function inactiveBindingFromSnapshot(
+    runtime: AiSessionRuntimeSnapshot,
+    detectedAtMs: number
+): TmuxInactiveRuntimeBinding {
+    if (!runtime.identity.sessionId || !runtime.tmux
+        || (runtime.state !== 'completed' && runtime.state !== 'stopped')) {
+        throw new Error('An inactive tmux runtime requires a final managed identity.');
+    }
+    return {
+        version: 1,
+        state: runtime.state,
+        provider: runtime.identity.provider,
+        sessionId: runtime.identity.sessionId,
+        projectKey: runtime.identity.projectKey,
+        cwd: runtime.identity.cwd,
+        layout: runtime.tmux.layout,
+        locator: { ...runtime.tmux },
+        markerPath: runtime.markerPath,
+        runStartedAtMs: runtime.runStartedAtMs,
+        detectedAtMs,
+    };
+}
+
+function inactiveSnapshotFromBinding(
+    record: TmuxInactiveRuntimeBinding
+): AiSessionRuntimeSnapshot {
+    return {
+        identity: {
+            provider: record.provider,
+            projectKey: record.projectKey,
+            cwd: record.cwd,
+            sessionId: record.sessionId,
+        },
+        backend: 'tmux',
+        state: record.state,
+        markerPath: record.markerPath,
+        runStartedAtMs: record.runStartedAtMs,
+        attached: false,
+        tmux: { ...record.locator },
+    };
 }
 
 function finalIdentityKey(provider: AiSessionRuntimeIdentity['provider'], sessionId: string): string {

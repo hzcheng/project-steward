@@ -32,6 +32,7 @@ export interface AiSessionArchiveControllerOptions<TRuntime extends AiSessionArc
     getOpenProjects: () => Project[];
     getProjectSessions: (project: Project, providerId: AiSessionProviderId) => CodexSession[];
     getRuntimeById: (providerId: AiSessionProviderId, sessionId: string) => TRuntime | null;
+    refreshRuntimeGuard?: () => Promise<void>;
     isRuntimeComplete: (runtime: TRuntime) => boolean;
     focusRuntime: (runtime: TRuntime) => unknown;
     deleteRuntimeMarker: (runtime: TRuntime) => void;
@@ -60,21 +61,24 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
         }
 
         const sessionProvider = this.options.getProvider(providerId);
+        if (!await this.refreshRuntimeGuard(sessionId)) {
+            return;
+        }
         let runtime = this.options.getRuntimeById(providerId, sessionId);
-        if (runtime && runtime.state !== 'stopped' && !this.options.isRuntimeComplete(runtime)) {
-            this.options.showWarningMessage(`This ${sessionProvider.label} session has an active runtime. Exit the AI provider before archiving it.`);
-            try {
-                await this.options.focusRuntime(runtime);
-            } catch (error) {
-                this.options.logUnexpectedError('focus-runtime', error, sessionId);
-                this.options.showErrorMessage('Could not focus the AI session terminal.');
-                this.options.refresh();
-            }
+        if (await this.blockActiveRuntime(sessionProvider.label, runtime, sessionId)) {
             return;
         }
 
         const accepted = await this.options.confirmSingleArchive(sessionProvider.label);
         if (!accepted) {
+            return;
+        }
+
+        if (!await this.refreshRuntimeGuard(sessionId)) {
+            return;
+        }
+        runtime = this.options.getRuntimeById(providerId, sessionId);
+        if (await this.blockActiveRuntime(sessionProvider.label, runtime, sessionId)) {
             return;
         }
 
@@ -126,6 +130,9 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
 
     async archiveSessions(projectId: string, providerId: string, sessionIds: unknown): Promise<void> {
         const validProviderId = this.options.isProviderId(providerId) ? providerId : null;
+        if (!await this.refreshRuntimeGuard()) {
+            return;
+        }
         await executeBatchAiSessionArchiveRequest({ projectId, provider: providerId, sessionIds }, {
             resolveProject: requestedProjectId => validProviderId
                 ? this.options.getOpenProjects().find(candidate => candidate.id === requestedProjectId)
@@ -146,6 +153,9 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
                 const accepted = await this.options.confirmBatchArchive(
                     `Archive ${confirmation.eligibleCount} selected ${providerLabel} ${confirmation.eligibleCount === 1 ? 'session' : 'sessions'}?${pinnedText}`
                 );
+                if (accepted && !await this.refreshRuntimeGuard()) {
+                    return false;
+                }
                 return Boolean(accepted);
             },
             reportScopeRejected: () => {
@@ -175,6 +185,46 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
             refresh: () => this.options.refresh(),
         });
         this.options.syncActiveRuntime();
+    }
+
+    private async refreshRuntimeGuard(sessionId?: string): Promise<boolean> {
+        if (!this.options.refreshRuntimeGuard) {
+            return true;
+        }
+        try {
+            await this.options.refreshRuntimeGuard();
+            return true;
+        } catch (_error) {
+            this.options.logUnexpectedError(
+                'refresh-runtime-guard',
+                new Error('AI session runtime refresh failed.'),
+                sessionId
+            );
+            this.options.showErrorMessage('Could not verify the AI session runtime.');
+            this.options.refresh();
+            return false;
+        }
+    }
+
+    private async blockActiveRuntime(
+        providerLabel: string,
+        runtime: TRuntime | null,
+        sessionId: string
+    ): Promise<boolean> {
+        if (!runtime || runtime.state === 'stopped' || this.options.isRuntimeComplete(runtime)) {
+            return false;
+        }
+        this.options.showWarningMessage(
+            `This ${providerLabel} session has an active runtime. Exit the AI provider before archiving it.`
+        );
+        try {
+            await this.options.focusRuntime(runtime);
+        } catch (error) {
+            this.options.logUnexpectedError('focus-runtime', error, sessionId);
+            this.options.showErrorMessage('Could not focus the AI session terminal.');
+            this.options.refresh();
+        }
+        return true;
     }
 
     private logRejectedBatchAiSessionSelections(

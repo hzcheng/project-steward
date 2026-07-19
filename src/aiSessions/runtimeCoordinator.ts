@@ -12,7 +12,7 @@ import type {
     AiSessionRuntimeIdentity,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
-import { TmuxRuntimeUnavailableError } from './runtimeTypes';
+import { AiSessionRuntimeConflictError, TmuxRuntimeUnavailableError } from './runtimeTypes';
 
 export type AiSessionTmuxFallbackChoice = 'direct' | 'direct-anyway' | 'settings' | 'cancel';
 
@@ -60,11 +60,19 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         const runtimes = [
             ...this.dependencies.direct.getActive(),
             ...this.dependencies.tmux.getActive(),
+            ...this.getConflicts().filter(runtime => Boolean(runtime.identity.sessionId)),
         ].map(cloneRuntime);
         const counts = countFinalIdentities(runtimes);
         return runtimes.map(runtime => counts.get(finalIdentityKey(runtime.identity)) > 1
             ? { ...runtime, state: 'conflict' }
             : runtime);
+    }
+
+    getConflicts(): AiSessionRuntimeSnapshot<TTerminal>[] {
+        return [
+            ...(this.dependencies.direct.getConflicts?.() || []),
+            ...(this.dependencies.tmux.getConflicts?.() || []),
+        ].map(runtime => ({ ...cloneRuntime(runtime), state: 'conflict' }));
     }
 
     getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[] {
@@ -99,6 +107,11 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         sessionId: string
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
         await this.refreshBackends(true);
+        const refreshedConflicts = this.getConflicts().filter(runtime =>
+            runtime.identity.pendingId === pendingId);
+        if (refreshedConflicts.length) {
+            return refreshedConflicts.map(runtime => ({ ...cloneRuntime(runtime), state: 'conflict' }));
+        }
         const directMatches = this.dependencies.direct.getPending().filter(runtime =>
             runtime.identity.pendingId === pendingId);
         const tmuxMatches = this.dependencies.tmux.getPending().filter(runtime =>
@@ -120,16 +133,20 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
     }
 
     async focus(identity: AiSessionRuntimeIdentity): Promise<void> {
+        const refresh = await this.refreshBackends(true);
+        this.throwRefreshFailure(refresh);
         const matches = this.matchesForIdentity(identity);
-        if (matches.length !== 1) {
+        if (matches.length !== 1 || matches[0].state === 'conflict') {
             return;
         }
         await this.backendFor(matches[0]).focus(cloneRuntime(matches[0]));
     }
 
     async detach(identity: AiSessionRuntimeIdentity): Promise<void> {
+        const refresh = await this.refreshBackends(true);
+        this.throwRefreshFailure(refresh);
         const matches = this.matchesForIdentity(identity);
-        if (matches.length !== 1) {
+        if (matches.length !== 1 || matches[0].state === 'conflict') {
             return;
         }
         await this.backendFor(matches[0]).detach(cloneRuntime(matches[0]));
@@ -148,7 +165,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             throw refresh.directError;
         }
         const matches = this.findMatches(request.identity);
-        if (matches.length > 1) {
+        if (matches.length > 1 || matches.some(runtime => runtime.state === 'conflict')) {
             return conflictResult(matches);
         }
         if (matches.length === 1) {
@@ -180,6 +197,9 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             const runtime = await this.dependencies.tmux.ensureResume(request, configuration.tmuxLayout);
             return { status: 'started', runtime: cloneRuntime(runtime) };
         } catch (error) {
+            if (error instanceof AiSessionRuntimeConflictError) {
+                return conflictResult(error.conflicts as AiSessionRuntimeSnapshot<TTerminal>[]);
+            }
             if (!this.isTmuxUnavailable(error)) {
                 throw error;
             }
@@ -196,9 +216,13 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         if (refresh.directError) {
             throw refresh.directError;
         }
-        const existing = this.getPending().filter(runtime =>
-            runtime.identity.pendingId === request.identity.pendingId);
-        if (existing.length > 1) {
+        const existing: AiSessionRuntimeSnapshot<TTerminal>[] = [
+            ...this.getPending().filter(runtime =>
+                runtime.identity.pendingId === request.identity.pendingId),
+            ...this.getConflicts().filter(runtime =>
+                runtime.identity.pendingId === request.identity.pendingId),
+        ];
+        if (existing.length > 1 || existing.some(runtime => runtime.state === 'conflict')) {
             return conflictResult(existing);
         }
         if (existing.length === 1) {
@@ -222,6 +246,9 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             const runtime = await this.dependencies.tmux.ensurePending(request, configuration.tmuxLayout);
             return { status: 'started', runtime: cloneRuntime(runtime) };
         } catch (error) {
+            if (error instanceof AiSessionRuntimeConflictError) {
+                return conflictResult(error.conflicts as AiSessionRuntimeSnapshot<TTerminal>[]);
+            }
             if (!this.isTmuxUnavailable(error)) {
                 throw error;
             }
@@ -284,6 +311,15 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         return { directError, tmuxError };
     }
 
+    private throwRefreshFailure(outcome: RefreshOutcome): void {
+        if (outcome.directError) {
+            throw outcome.directError;
+        }
+        if (outcome.tmuxError) {
+            throw outcome.tmuxError;
+        }
+    }
+
     private findMatches(identity: Pick<AiSessionRuntimeIdentity, 'provider' | 'sessionId'>): AiSessionRuntimeSnapshot<TTerminal>[] {
         if (!identity?.provider || !identity.sessionId) {
             return [];
@@ -291,6 +327,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         return [
             ...this.dependencies.direct.getActive(),
             ...this.dependencies.tmux.getActive(),
+            ...this.getConflicts().filter(runtime => Boolean(runtime.identity.sessionId)),
         ].filter(runtime => runtime.identity.provider === identity.provider
             && runtime.identity.sessionId === identity.sessionId);
     }
@@ -300,7 +337,8 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             return this.findMatches(identity);
         }
         return identity?.pendingId
-            ? this.getPending().filter(runtime => samePendingIdentity(runtime.identity, identity))
+            ? [...this.getPending(), ...this.getConflicts()]
+                .filter(runtime => samePendingIdentity(runtime.identity, identity))
             : [];
     }
 
