@@ -17,7 +17,11 @@ import type {
     WorkspaceAiSessionViewModel,
 } from '../aiSessions/types';
 import { getAiSessionKey, prepareAiSessionsForDisplay } from '../aiSessions/sessionHelpers';
-import { assignPathToWorkspaceRoot, getWorkspaceHostPathComparisonKey } from './sessionAssignment';
+import {
+    assignPathToWorkspaceRoot,
+    getWorkspaceHostPathComparisonKey,
+    normalizeWorkspaceHostPath,
+} from './sessionAssignment';
 import type { OpenWorkspace, WorkspaceRoot } from './types';
 import { buildWorkspaceAiSessionViewModel } from './viewModels';
 
@@ -43,7 +47,7 @@ export function getWorkspaceAiSessionCandidatePaths(workspace: OpenWorkspace | n
     return (workspace?.roots || [])
         .slice()
         .sort((left, right) => left.ordinal - right.ordinal)
-        .map(root => root.hostPath)
+        .map(root => normalizeWorkspaceHostPath(root.hostPath))
         .filter(candidatePath => {
             const key = getWorkspaceHostPathComparisonKey(candidatePath);
             if (!key || seen.has(key)) {

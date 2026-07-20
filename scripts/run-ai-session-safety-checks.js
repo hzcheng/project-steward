@@ -433,9 +433,10 @@ function runWorkspaceSessionHydrationChecks() {
         navigationUri: 'file:///work/platform.code-workspace',
         environment: 'local',
         roots: [
-            { id: 'root-app', name: 'App', uri: 'file:///work/app', hostPath: '/work/app', ordinal: 0 },
+            { id: 'root-app', name: 'App', uri: 'file:///work/app', hostPath: '/work/app/', ordinal: 0 },
             { id: 'root-api', name: 'API', uri: 'file:///work/app/api', hostPath: '/work/app/api', ordinal: 1 },
-            { id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/web', ordinal: 2 },
+            { id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/./web', ordinal: 2 },
+            { id: 'root-web-duplicate', name: 'Web duplicate', uri: 'file:///work/web/', hostPath: '/work/web/', ordinal: 3 },
         ],
     };
     const reads = { codex: [], kimi: [], claude: [] };
@@ -555,7 +556,7 @@ function runWorkspaceSessionHydrationChecks() {
         assert.deepStrictEqual(
             reads[provider.id][0].candidatePaths,
             ['/work/app', '/work/app/api', '/work/web'],
-            `${provider.id} must receive every workspace root in one scan`
+            `${provider.id} must receive normalized unique workspace roots in one scan`
         );
     }
 
