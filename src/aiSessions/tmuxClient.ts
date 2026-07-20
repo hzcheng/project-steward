@@ -74,10 +74,17 @@ export interface TmuxWindowRecord {
     metadata: Record<string, string>;
 }
 
+export interface TmuxActiveWindowRecord {
+    sessionName: string;
+    windowName: string;
+    windowId: string;
+}
+
 type TmuxOperation =
     | 'check-version'
     | 'list-commands'
     | 'list-windows'
+    | 'get-active-window'
     | 'has-session'
     | 'create-session'
     | 'create-window'
@@ -213,6 +220,35 @@ export class TmuxClient {
             });
         }
         return records;
+    }
+
+    async getActiveWindow(sessionName: string): Promise<TmuxActiveWindowRecord | null> {
+        if (typeof sessionName !== 'string' || !isTargetField(sessionName)) {
+            throw new TypeError('The tmux session name is invalid.');
+        }
+        await this.requireAvailable();
+        const result = await this.invoke('get-active-window', [
+            'list-windows', '-t', sessionName, '-F', LIST_WINDOWS_FORMAT,
+        ]);
+        if (result.exitCode !== 0) {
+            if (isMissingSessionResult(result)) {
+                return null;
+            }
+            throw resultError('get-active-window', result);
+        }
+        const rows = parseWindowRows(result.stdout, 'get-active-window');
+        if (rows.some(row => row.sessionName !== sessionName)) {
+            throw new TmuxClientError('get-active-window', 'invalid-output');
+        }
+        const active = rows.filter(row => row.active);
+        if (active.length > 1) {
+            throw new TmuxClientError('get-active-window', 'invalid-output');
+        }
+        return active.length ? {
+            sessionName: active[0].sessionName,
+            windowName: active[0].windowName,
+            windowId: active[0].windowId,
+        } : null;
     }
 
     async hasSession(sessionName: string): Promise<boolean> {
@@ -572,27 +608,28 @@ function parseCommandNames(stdout: string): Set<string> {
 }
 
 function parseWindowRows(
-    stdout: string
+    stdout: string,
+    operation: TmuxOperation = 'list-windows'
 ): Array<Omit<TmuxWindowRecord, 'metadata' | 'sessionMetadata' | 'windowMetadata'>> {
     if (stdout.length > MAX_LIST_OUTPUT_LENGTH) {
-        throw new TmuxClientError('list-windows', 'invalid-output');
+        throw new TmuxClientError(operation, 'invalid-output');
     }
     if (!stdout) {
         return [];
     }
     const lines = stdout.endsWith('\n') ? stdout.slice(0, -1).split('\n') : stdout.split('\n');
     if (lines.length > MAX_LIST_ROWS || lines.some(line => !line)) {
-        throw new TmuxClientError('list-windows', 'invalid-output');
+        throw new TmuxClientError(operation, 'invalid-output');
     }
     return lines.map(line => {
         const fields = line.split(FIELD_SEPARATOR);
         if (fields.length !== 4) {
-            throw new TmuxClientError('list-windows', 'invalid-output');
+            throw new TmuxClientError(operation, 'invalid-output');
         }
         const [sessionName, windowName, windowId, active] = fields;
         if (!isTargetField(sessionName) || !isTargetField(windowName)
             || !/^@[0-9]+$/.test(windowId) || (active !== '0' && active !== '1')) {
-            throw new TmuxClientError('list-windows', 'invalid-output');
+            throw new TmuxClientError(operation, 'invalid-output');
         }
         return { sessionName, windowName, windowId, active: active === '1' };
     });

@@ -755,6 +755,77 @@ async function runTmuxClientChecks() {
     });
     assert.ok(calls.every(call => Array.isArray(call.args)));
 
+    const activeWindowCalls = [];
+    let activeWindowResult = {
+        exitCode: 0,
+        stdout: [
+            'project-session\u001fbase\u001f@1\u001f0',
+            'project-session\u001fai-codex-a\u001f@2\u001f1',
+        ].join('\n') + '\n',
+        stderr: '',
+    };
+    const activeWindowClient = new tmuxClientModule.TmuxClient('/opt/private/tmux', {
+        run: async (_file, args) => {
+            activeWindowCalls.push(args);
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.2a\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return activeWindowResult;
+        },
+    });
+    assert.deepStrictEqual(await activeWindowClient.getActiveWindow('project-session'), {
+        sessionName: 'project-session', windowName: 'ai-codex-a', windowId: '@2',
+    });
+    assert.deepStrictEqual(activeWindowCalls.slice(-1)[0], [
+        'list-windows', '-t', 'project-session', '-F',
+        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}',
+    ]);
+
+    activeWindowResult = { exitCode: 0, stdout: '', stderr: '' };
+    assert.strictEqual(await activeWindowClient.getActiveWindow('project-session'), null);
+
+    activeWindowResult = {
+        exitCode: 0,
+        stdout: [
+            'project-session\u001fa\u001f@1\u001f1',
+            'project-session\u001fb\u001f@2\u001f1',
+        ].join('\n') + '\n',
+        stderr: '',
+    };
+    await assert.rejects(activeWindowClient.getActiveWindow('project-session'), error =>
+        error.operation === 'get-active-window' && error.category === 'invalid-output');
+
+    activeWindowResult = {
+        exitCode: 0,
+        stdout: 'foreign-session\u001fa\u001f@1\u001f1\n',
+        stderr: '',
+    };
+    await assert.rejects(activeWindowClient.getActiveWindow('project-session'), error =>
+        error.operation === 'get-active-window' && error.category === 'invalid-output');
+
+    activeWindowResult = { exitCode: 0, stdout: 'x'.repeat(1024 * 1024 + 1), stderr: '' };
+    await assert.rejects(activeWindowClient.getActiveWindow('project-session'), error =>
+        error.operation === 'get-active-window' && error.category === 'invalid-output');
+
+    activeWindowResult = { exitCode: 1, stdout: '', stderr: "can't find session: project-session" };
+    assert.strictEqual(await activeWindowClient.getActiveWindow('project-session'), null);
+
+    activeWindowResult = {
+        exitCode: 2,
+        stdout: 'secret stdout',
+        stderr: 'secret stderr for project-session',
+    };
+    await assert.rejects(activeWindowClient.getActiveWindow('project-session'), error => {
+        assert.strictEqual(error.operation, 'get-active-window');
+        assert.strictEqual(error.category, 'nonzero-exit');
+        for (const secret of ['project-session', 'secret stdout', 'secret stderr', '/opt/private/tmux']) {
+            assert.ok(!error.message.includes(secret));
+        }
+        return true;
+    });
+    await assert.rejects(activeWindowClient.getActiveWindow('bad\nsession'), TypeError);
+
     const metadataCalls = [];
     const optionValues = {
         'session-a|managed': '1',
