@@ -164,7 +164,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
     resume(request: AiSessionResumeRuntimeRequest): Promise<AiSessionRuntimeActionResult<TTerminal>> {
         const input = snapshotResumeRequest(request);
         const key = `resume:${input.identity.provider}:${input.identity.sessionId}`;
-        return this.singleFlight(key, () => this.resumeOnce(input));
+        return this.singleFlight(key, () => this.resumeOnce(input), 'focused');
     }
 
     create(request: AiSessionCreateRuntimeRequest): Promise<AiSessionRuntimeActionResult<TTerminal>> {
@@ -480,9 +480,11 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
 
     private singleFlight(
         key: string,
-        operation: () => Promise<AiSessionRuntimeActionResult<TTerminal>>
+        operation: () => Promise<AiSessionRuntimeActionResult<TTerminal>>,
+        joinedStartedStatus?: 'focused'
     ): Promise<AiSessionRuntimeActionResult<TTerminal>> {
         let promise = this.inFlight.get(key);
+        const joined = promise !== undefined;
         if (!promise) {
             promise = Promise.resolve().then(operation);
             this.inFlight.set(key, promise);
@@ -491,7 +493,13 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
                 () => this.releaseFlight(key, promise)
             );
         }
-        return promise.then(cloneActionResult);
+        return promise.then(result => {
+            const cloned = cloneActionResult(result);
+            if (joined && joinedStartedStatus && cloned.status === 'started') {
+                cloned.status = joinedStartedStatus;
+            }
+            return cloned;
+        });
     }
 
     private releaseFlight(key: string, promise: Promise<AiSessionRuntimeActionResult<TTerminal>>): void {

@@ -162,21 +162,24 @@ export class AiSessionResumeController<
             return;
         }
 
+        const project = this.options.getOpenProjects().find(candidate => candidate.id === projectId);
+        const session = project ? this.options.getProjectSession(project, providerId, sessionId) : null;
         const sessionProvider = this.options.getProvider(providerId);
-        if (!sessionProvider) {
+        if (!project || !session) {
+            this.options.showWarningMessage(`Selected ${sessionProvider?.label || 'AI'} session not found.`);
             return;
         }
 
-        const project = this.options.getOpenProjects().find(candidate => candidate.id === projectId);
-        const session = project ? this.options.getProjectSession(project, providerId, sessionId) : null;
-        if (!project || !session) {
-            this.options.showWarningMessage(`Selected ${sessionProvider.label} session not found.`);
+        const directoryScope = await this.options.resolveDirectoryScope(
+            project, session, providerId, explicitRootId
+        );
+        if (!directoryScope || !sessionProvider) {
             return;
         }
 
         if (isRuntimeOptions(this.options)) {
             await this.resumeRuntime(
-                project, providerId, session, sessionProvider, this.options, explicitRootId
+                project, providerId, session, sessionProvider, directoryScope, this.options
             );
             return;
         }
@@ -189,12 +192,6 @@ export class AiSessionResumeController<
             return;
         }
 
-        const directoryScope = await this.options.resolveDirectoryScope(
-            project, session, providerId, explicitRootId
-        );
-        if (!directoryScope) {
-            return;
-        }
         if (!this.options.beginResume(providerId, session.id)) {
             return;
         }
@@ -259,8 +256,8 @@ export class AiSessionResumeController<
         providerId: AiSessionProviderId,
         session: CodexSession,
         sessionProvider: AiSessionResumeProvider,
-        options: AiSessionResumeRuntimeControllerOptions<TTerminal>,
-        explicitRootId?: string
+        directoryScope: AiSessionDirectoryScope,
+        options: AiSessionResumeRuntimeControllerOptions<TTerminal>
     ): Promise<void> {
         if (options.getRuntimeConflict?.(providerId, session.id)) {
             options.refresh();
@@ -272,12 +269,6 @@ export class AiSessionResumeController<
         }
         if (!sessionProvider.buildResumeLaunchSpec) {
             throw new Error('AI session runtime resume is not configured.');
-        }
-        const directoryScope = await options.resolveDirectoryScope(
-            project, session, providerId, explicitRootId
-        );
-        if (!directoryScope) {
-            return;
         }
         const cwd = directoryScope.primaryCwd;
         const projectKey = options.getProjectKey(project);

@@ -2535,7 +2535,7 @@ async function runWorkspaceLaunchPreflightControllerChecks() {
     let resumeError = null;
     const resume = new AiSessionResumeController({
         getOpenProjects: () => [project],
-        getProvider: () => ({
+        getProvider: () => providerPresent ? ({
             label: 'Codex',
             terminalEnvKey: 'CODEX_SESSION_ID',
             buildResumeLaunchSpec: (_sessionId, directoryScope) => {
@@ -2544,7 +2544,7 @@ async function runWorkspaceLaunchPreflightControllerChecks() {
                     executable: 'codex', args: ['resume', session.id], cwd: directoryScope.primaryCwd,
                 };
             },
-        }),
+        }) : null,
         getProjectSession: (_project, providerId, sessionId) =>
             providerId === 'codex' && sessionId === session.id ? session : null,
         resolveDirectoryScope: (resolvedProject, resolvedSession, providerId, explicitRootId) =>
@@ -2626,6 +2626,49 @@ async function runWorkspaceLaunchPreflightControllerChecks() {
     await assertCreateBlockedWithoutPartials(() => { providerPresent = false; });
     await assertCreateBlockedWithoutPartials(() => { capabilityStatus = 'unavailable'; });
     await assertCreateBlockedWithoutPartials(() => { capabilityStatus = 'unsupported'; });
+
+    const assertResumeBlockedWithoutPartials = async (configure, expectedWarning) => {
+        trusted = true;
+        providerPresent = true;
+        capabilityStatus = 'supported';
+        invalidDirectories.clear();
+        session.cwd = '/work/api/packages/service';
+        configure();
+        const requestsBefore = resumeRequests.length;
+        const scopesBefore = resumeScopes.length;
+        const markersBefore = resumeMarkerRequests.length;
+        const writesBefore = primaryRootWrites.length;
+        const warningsBefore = warnings.length;
+        await resume.resumeProjectSession(project.id, 'codex', session.id);
+        assert.strictEqual(resumeRequests.length, requestsBefore);
+        assert.strictEqual(resumeScopes.length, scopesBefore);
+        assert.strictEqual(resumeMarkerRequests.length, markersBefore);
+        assert.strictEqual(primaryRootWrites.length, writesBefore);
+        assert.ok(warnings.slice(warningsBefore).some(message => message.includes(expectedWarning)),
+            `blocked resume must surface a warning containing ${expectedWarning}`);
+    };
+    await assertResumeBlockedWithoutPartials(() => { trusted = false; }, 'Restricted Mode');
+    await assertResumeBlockedWithoutPartials(() => { invalidDirectories.add('/work/docs'); }, 'Docs');
+    await assertResumeBlockedWithoutPartials(() => { providerPresent = false; }, 'no longer available');
+    await assertResumeBlockedWithoutPartials(() => { capabilityStatus = 'unavailable'; }, 'unavailable');
+    await assertResumeBlockedWithoutPartials(() => { capabilityStatus = 'unsupported'; }, '--add-dir');
+
+    trusted = true;
+    providerPresent = true;
+    capabilityStatus = 'unsupported';
+    invalidDirectories.clear();
+    session.cwd = '/work/web/packages/app';
+    const multiRootWorkspaceRoots = workspace.roots;
+    workspace.roots = [multiRootWorkspaceRoots[0]];
+    const requestsBeforeSingleRootResume = resumeRequests.length;
+    const writesBeforeSingleRootResume = primaryRootWrites.length;
+    await resume.resumeProjectSession(project.id, 'codex', session.id);
+    assert.strictEqual(resumeRequests.length, requestsBeforeSingleRootResume + 1,
+        'a provider without multi-root support must still resume in a single-root workspace');
+    assert.strictEqual(primaryRootWrites.length, writesBeforeSingleRootResume + 1);
+    assert.strictEqual(resumeRequests.at(-1).directoryScope.primaryRootId, 'root-web');
+    workspace.roots = multiRootWorkspaceRoots;
+
     assert.ok(warnings.some(message => message.includes('Restricted Mode')));
     assert.ok(warnings.some(message => message.includes('Docs')));
     assert.ok(warnings.some(message => message.includes('Codex')));

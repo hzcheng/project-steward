@@ -5181,6 +5181,7 @@ function createFakeRuntimeBackend(backend, options = {}) {
         lifecycleBlockers: [],
         refreshCalls: [],
         ensureResumeCalls: 0,
+        ensureResumeRequests: [],
         ensurePendingCalls: 0,
         focusCalls: [],
         detachCalls: [],
@@ -5219,6 +5220,7 @@ function createFakeRuntimeBackend(backend, options = {}) {
     fake.detach = async runtime => { fake.detachCalls.push(runtime); };
     fake.ensureResume = async (request, layout) => {
         fake.ensureResumeCalls++;
+        fake.ensureResumeRequests.push(request);
         if (options.resumeGate) await options.resumeGate.promise;
         if (remainingEnsureErrors > 0) {
             remainingEnsureErrors--;
@@ -5696,9 +5698,64 @@ async function runRuntimeCoordinatorChecks() {
     assert.strictEqual(guardedDirect.ensureResumeCalls, 1);
     gate.resolve();
     const sharedResults = await Promise.all([first, second]);
+    assert.deepStrictEqual(sharedResults.map(result => result.status), ['started', 'focused'],
+        'only the request that owns the launch may receive a started result');
     assert.strictEqual(sharedResults[0].runtime.identity.sessionId, 'single');
     sharedResults[0].runtime.identity.sessionId = 'changed';
     assert.strictEqual(sharedResults[1].runtime.identity.sessionId, 'single');
+
+    const scopedGate = deferred();
+    const scopedDirect = createFakeRuntimeBackend('vscode', { resumeGate: scopedGate });
+    const scopedCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: scopedDirect,
+        tmux: createFakeRuntimeBackend('tmux'),
+        getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    const scopedProject = {
+        id: 'scoped-project', name: 'Scoped Project', path: '/work/first',
+        codexSessions: [{ id: 'scoped-session', cwd: '/work/first' }],
+    };
+    const firstScope = createDirectoryScope('/work/first', ['/work/second']);
+    const secondScope = createDirectoryScope('/work/second', ['/work/first']);
+    const rememberedScopes = [];
+    const createScopedResumeController = directoryScope => new ResumeController({
+        getOpenProjects: () => [scopedProject],
+        getProvider: () => ({
+            label: 'Codex',
+            terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: sessionId => ({
+                executable: 'codex', args: ['resume', sessionId], cwd: directoryScope.primaryCwd,
+            }),
+        }),
+        getProjectSession: (candidate, providerId, sessionId) =>
+            candidate === scopedProject && providerId === 'codex'
+                ? candidate.codexSessions.find(session => session.id === sessionId)
+                : null,
+        resolveDirectoryScope: async () => directoryScope,
+        rememberDirectoryScope: scope => { rememberedScopes.push(scope); },
+        runtimeCoordinator: scopedCoordinator,
+        getProjectKey: () => 'scoped-project-key',
+        getTerminalName: () => 'Codex: Scoped Session',
+        getMarkerPath: () => '/tmp/scoped.marker',
+        showWarningMessage: () => undefined,
+        announceStatus: async () => undefined,
+        refresh: () => undefined,
+        showActiveTab: async () => undefined,
+    });
+    const firstScopedResume = createScopedResumeController(firstScope)
+        .resumeProjectSession(scopedProject.id, 'codex', 'scoped-session');
+    const secondScopedResume = createScopedResumeController(secondScope)
+        .resumeProjectSession(scopedProject.id, 'codex', 'scoped-session');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(scopedDirect.ensureResumeCalls, 1,
+        'concurrent resume requests for one session must launch exactly once');
+    assert.strictEqual(scopedDirect.ensureResumeRequests[0].directoryScope, firstScope,
+        'the first request scope must own the single launch');
+    scopedGate.resolve();
+    await Promise.all([firstScopedResume, secondScopedResume]);
+    assert.deepStrictEqual(rememberedScopes, [firstScope],
+        'only the scope used by the actual launch may be persisted');
 
     const pendingGate = deferred();
     const guardedPending = createFakeRuntimeBackend('vscode', { pendingGate });
