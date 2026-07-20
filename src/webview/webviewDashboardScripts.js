@@ -93,8 +93,10 @@ function filterDashboardCatalog(catalog, query) {
             ? { id: 'open-workspaces', title: 'OPEN WORKSPACES', type: 'open-workspace', items: catalog.openWorkspaces }
             : { id: 'open-projects', title: 'OPEN PROJECTS', type: 'open-project', items: catalog.openProjects },
         { id: 'saved-projects', title: 'SAVED PROJECTS', type: 'saved-project', items: catalog.savedProjects },
-        { id: 'todos', title: 'TODO RESULTS', type: 'todo', items: catalog.todos },
     ];
+    if (!workspaceCatalog) {
+        sections.push({ id: 'todos', title: 'TODO RESULTS', type: 'todo', items: catalog.todos });
+    }
     return sections
         .map(section => ({
             id: section.id,

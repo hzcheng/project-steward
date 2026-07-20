@@ -3363,6 +3363,12 @@ function runControllerChecks(source) {
         JSON.parse(JSON.stringify(todoSections.map(section => section.id))),
         ['todos']
     );
+    const workspaceTodoSections = context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'ship');
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(workspaceTodoSections.map(section => section.title))),
+        [],
+        'v2 search must expose exactly AI SESSIONS, OPEN WORKSPACES, and SAVED PROJECTS'
+    );
     assert.strictEqual(context.filterDashboardCatalog(makeDashboardCatalog(), 'missing').length, 0);
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(context.normalizeDashboardSearchCatalog(null))),
