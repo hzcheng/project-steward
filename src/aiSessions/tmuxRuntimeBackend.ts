@@ -56,6 +56,13 @@ interface AttachTerminal {
 interface AttachEntry<TTerminal> {
     terminal: TTerminal;
     binding: TmuxAttachBinding;
+    focusedBinding?: TmuxAttachBinding | null;
+}
+
+export interface TmuxFocusedRuntimeSyncResult {
+    monitored: boolean;
+    changed: boolean;
+    identity: AiSessionRuntimeIdentity | null;
 }
 
 export interface TmuxRuntimeBackendDependencies<TTerminal> {
@@ -475,8 +482,46 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             return null;
         }
         const entry = [...this.attaches.values()].find(candidate => candidate.terminal === terminal);
-        const runtime = entry ? this.runtimeForBinding(entry.binding) : undefined;
+        const binding = entry?.focusedBinding !== undefined
+            ? entry.focusedBinding
+            : entry?.binding;
+        const runtime = binding ? this.runtimeForBinding(binding) : undefined;
         return runtime ? this.withAttach(runtime) : null;
+    }
+
+    async syncFocusedRuntime(
+        terminal: TTerminal | null | undefined
+    ): Promise<TmuxFocusedRuntimeSyncResult> {
+        const entry = terminal
+            ? [...this.attaches.values()].find(candidate => candidate.terminal === terminal)
+            : undefined;
+        const previous = this.getFocusedRuntime(terminal);
+        if (!entry || entry.binding.layout !== 'project') {
+            return {
+                monitored: false, changed: false,
+                identity: previous ? { ...previous.identity } : null,
+            };
+        }
+        const activeWindow = await this.dependencies.client.getActiveWindow(entry.binding.sessionName);
+        const matches = activeWindow ? [
+            ...this.dependencies.discovery.getActive(),
+            ...this.dependencies.discovery.getPending(),
+        ].filter(runtime => runtime.tmux?.layout === 'project'
+            && runtime.identity.projectKey === entry.binding.projectKey
+            && runtime.tmux.sessionName === activeWindow.sessionName
+            && runtime.tmux.windowName === activeWindow.windowName) : [];
+        if (matches.length > 1) {
+            throw new Error('The active tmux window maps to multiple managed runtimes.');
+        }
+        const next = matches[0];
+        entry.focusedBinding = next
+            ? attachBinding(next, entry.binding.terminalNamePrefix)
+            : null;
+        return {
+            monitored: true,
+            changed: !runtimeIdentityEquals(previous?.identity || null, next?.identity || null),
+            identity: next ? { ...next.identity } : null,
+        };
     }
 
     async detach(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void> {
@@ -510,7 +555,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 this.dependencies.attachStore.remove(processId);
                 continue;
             }
-            this.attaches.set(registryKey(runtime), { terminal, binding });
+            this.attaches.set(registryKey(runtime), { terminal, binding, focusedBinding: binding });
         }
         await this.dependencies.attachStore.flush();
     }
@@ -917,11 +962,13 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 shellArgs: ['attach-session', '-t', runtime.tmux.sessionName],
                 env: { TMUX: null },
             });
-            entry = { terminal, binding };
+            entry = { terminal, binding, focusedBinding: binding };
             this.attaches.set(key, entry);
             this.dependencies.attachStore.set(attachTerminal(terminal).processId, binding);
         } else {
-            entry.binding = attachBinding(runtime, entry.binding.terminalNamePrefix);
+            const binding = attachBinding(runtime, entry.binding.terminalNamePrefix);
+            entry.binding = binding;
+            entry.focusedBinding = binding;
             this.dependencies.attachStore.set(
                 attachTerminal(entry.terminal).processId, entry.binding
             );
@@ -1025,18 +1072,28 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     ): Promise<void> {
         const oldKey = registryKey(pending);
         const newKey = registryKey(promoted);
-        if (oldKey === newKey) {
-            return;
-        }
         const entry = this.attaches.get(oldKey);
         if (!entry) {
             return;
         }
-        this.attaches.delete(oldKey);
-        const binding = attachBinding(promoted, entry.binding.terminalNamePrefix);
-        this.attaches.set(newKey, { terminal: entry.terminal, binding });
-        this.dependencies.attachStore.set(attachTerminal(entry.terminal).processId, binding);
-        await this.dependencies.attachStore.flush();
+        const nextBinding = attachBinding(promoted, entry.binding.terminalNamePrefix);
+        const updatePersisted = bindingTargetsRuntime(entry.binding, pending);
+        const updateFocused = entry.focusedBinding !== undefined
+            && bindingTargetsRuntime(entry.focusedBinding, pending);
+        if (oldKey !== newKey) {
+            this.attaches.delete(oldKey);
+            this.attaches.set(newKey, entry);
+        }
+        if (updatePersisted) {
+            entry.binding = nextBinding;
+            this.dependencies.attachStore.set(attachTerminal(entry.terminal).processId, nextBinding);
+        }
+        if (updateFocused) {
+            entry.focusedBinding = nextBinding;
+        }
+        if (updatePersisted) {
+            await this.dependencies.attachStore.flush();
+        }
     }
 }
 
@@ -1062,6 +1119,36 @@ function runtimeIdentitiesMatch(
     }
     return left.pendingId === right.pendingId
         && (!right.cwd || left.cwd === right.cwd);
+}
+
+function runtimeIdentityEquals(
+    left: AiSessionRuntimeIdentity | null,
+    right: AiSessionRuntimeIdentity | null
+): boolean {
+    if (!left || !right) {
+        return left === right;
+    }
+    return left.provider === right.provider
+        && left.projectKey === right.projectKey
+        && left.sessionId === right.sessionId
+        && left.pendingId === right.pendingId;
+}
+
+function bindingTargetsRuntime(
+    binding: TmuxAttachBinding | null | undefined,
+    runtime: AiSessionRuntimeSnapshot
+): boolean {
+    if (!binding || !runtime.tmux
+        || binding.layout !== runtime.tmux.layout
+        || binding.projectKey !== runtime.identity.projectKey
+        || binding.sessionName !== runtime.tmux.sessionName) {
+        return false;
+    }
+    if (binding.layout === 'project') {
+        return binding.windowName === runtime.tmux.windowName;
+    }
+    return (!binding.provider || binding.provider === runtime.identity.provider)
+        && (!binding.sessionId || binding.sessionId === runtime.identity.sessionId);
 }
 
 function getRestoredAttachTerminalName(runtime: AiSessionRuntimeSnapshot): string {

@@ -96,6 +96,7 @@ function createTmuxBackendHarness(options = {}) {
     let failFinalMetadataIdentityWriteCount = options.failFinalMetadataIdentityWriteCount || 0;
     let failPromotionClearPendingCount = options.failPromotionClearPendingCount || 0;
     let failConfigureWindowTimeoutCount = options.failConfigureWindowTimeoutCount || 0;
+    let activeWindowError = null;
     let promotionRenameOccurred = false;
 
     function syncMetadata(row) {
@@ -261,6 +262,20 @@ function createTmuxBackendHarness(options = {}) {
                 windowMetadata: { ...row.windowMetadata },
                 metadata: { ...row.metadata },
             }));
+        },
+        getActiveWindow: async sessionName => {
+            operations.push({ type: 'get-active-window', sessionName });
+            if (activeWindowError) {
+                const error = activeWindowError;
+                activeWindowError = null;
+                throw error;
+            }
+            const activeRows = windows.filter(row => row.sessionName === sessionName && row.active);
+            return activeRows.length === 1 ? {
+                sessionName: activeRows[0].sessionName,
+                windowName: activeRows[0].windowName,
+                windowId: activeRows[0].windowId,
+            } : null;
         },
         hasSession: async name => {
             const exists = windows.some(item => item.sessionName === name);
@@ -476,6 +491,7 @@ function createTmuxBackendHarness(options = {}) {
         pending, known, ambiguous, consumed, promoting, attachBindings,
         failNextAttach() { failAttachCount++; },
         failNextShow() { failShowCount++; },
+        failNextActiveWindow(error) { activeWindowError = error; },
         get stateReadCount() { return stateReadCount; },
     };
 }
@@ -3461,6 +3477,42 @@ async function runTmuxBackendChecks() {
     await projectBackend.focus(secondProject);
     assert.strictEqual(projectBackend.getFocusedRuntime(projectHarness.terminals[1]).identity.sessionId, 's2',
         'project layout focus must follow the selected managed window');
+    projectHarness.windows.forEach(row => {
+        row.active = row.sessionName === secondProject.tmux.sessionName
+            && row.windowName === firstProject.tmux.windowName;
+    });
+    const manualSwitch = await projectBackend.syncFocusedRuntime(projectHarness.terminals[1]);
+    assert.strictEqual(manualSwitch.monitored, true);
+    assert.strictEqual(manualSwitch.changed, true);
+    assert.strictEqual(manualSwitch.identity.sessionId, 's1');
+    assert.strictEqual(projectBackend.getFocusedRuntime(projectHarness.terminals[1]).identity.sessionId, 's1');
+    assert.strictEqual((await projectBackend.syncFocusedRuntime(projectHarness.terminals[1])).changed, false);
+
+    projectHarness.windows.forEach(row => { row.active = false; });
+    projectHarness.windows.push({
+        sessionName: firstProject.tmux.sessionName,
+        windowName: 'base',
+        windowId: '@999',
+        active: true,
+        sessionMetadata: {}, windowMetadata: {}, metadata: {},
+    });
+    const unmanaged = await projectBackend.syncFocusedRuntime(projectHarness.terminals[1]);
+    assert.deepStrictEqual(unmanaged, { monitored: true, changed: true, identity: null });
+    assert.strictEqual(projectBackend.getFocusedRuntime(projectHarness.terminals[1]), null);
+
+    projectHarness.windows.forEach(row => {
+        row.active = row.sessionName === firstProject.tmux.sessionName
+            && row.windowName === firstProject.tmux.windowName;
+    });
+    await projectBackend.syncFocusedRuntime(projectHarness.terminals[1]);
+    projectHarness.windows.forEach(row => {
+        row.active = row.sessionName === secondProject.tmux.sessionName
+            && row.windowName === secondProject.tmux.windowName;
+    });
+    projectHarness.failNextActiveWindow(new Error('query failed with private tmux details'));
+    await assert.rejects(projectBackend.syncFocusedRuntime(projectHarness.terminals[1]), /query failed/);
+    assert.strictEqual(projectBackend.getFocusedRuntime(projectHarness.terminals[1]).identity.sessionId, 's1',
+        'query failure must preserve the last verified focus');
     const focusedBinding = projectHarness.attachBindings.get(await projectHarness.terminals[1].processId);
     assert.strictEqual(focusedBinding.windowName, secondProject.tmux.windowName);
     await projectBackend.detach(firstProject);
@@ -3599,6 +3651,20 @@ async function runTmuxBackendChecks() {
     assert.deepStrictEqual(sessionManagedRow.windowMetadata, {
         managed: '1', version: '1', layout: 'session',
     });
+
+    const sessionFocusHarness = createTmuxBackendHarness();
+    const sessionFocusBackend = new backendModule.TmuxRuntimeBackend(sessionFocusHarness.dependencies);
+    const sessionFocusRuntime = await sessionFocusBackend.ensureResume({
+        identity: { provider: 'codex', projectKey: 'session-focus', cwd: '/work', sessionId: 'sf1' },
+        projectName: 'App', terminalName: 'Codex: sf1',
+        launch: { executable: 'codex', args: ['resume', 'sf1'], markerPath: '/tmp/sf1' },
+    }, 'session');
+    const queryCount = sessionFocusHarness.operations.filter(item => item.type === 'get-active-window').length;
+    assert.deepStrictEqual(await sessionFocusBackend.syncFocusedRuntime(sessionFocusRuntime.terminal), {
+        monitored: false, changed: false, identity: { ...sessionFocusRuntime.identity },
+    });
+    assert.strictEqual(sessionFocusHarness.operations.filter(item => item.type === 'get-active-window').length,
+        queryCount, 'session layout must remain active-terminal driven');
 
     const invalidPendingCases = [
         {
@@ -4254,7 +4320,14 @@ async function runTmuxBackendChecks() {
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
         launch: { executable: 'kimi', args: ['new'], markerPath: '/tmp/project-pending' },
     }, 'project');
+    const projectPromotionTerminal = projectPending.terminal;
+    assert.strictEqual(projectPromotionBackend.getFocusedRuntime(projectPromotionTerminal)
+        .identity.pendingId, 'project-pending');
     const projectPromoted = await projectPromotionBackend.promotePending('project-pending', 'project-final');
+    assert.strictEqual(projectPromotionBackend.getFocusedRuntime(projectPromotionTerminal)
+        .identity.sessionId, 'project-final');
+    assert.strictEqual(projectPromotionHarness.attachBindings.get(await projectPromotionTerminal.processId)
+        .windowName, projectPromoted[0].tmux.windowName);
     assert.strictEqual(projectPromoted.length, 1);
     assert.strictEqual(projectPromoted[0].identity.sessionId, 'project-final');
     assert.strictEqual(projectPromotionHarness.operations.filter(item => item.type === 'rename-window').length, 1);
