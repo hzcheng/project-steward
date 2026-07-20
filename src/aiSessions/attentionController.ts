@@ -371,6 +371,10 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                 return sessionKey;
             }
         }
+        const runKey = /^(codex|kimi|claude):(.+):\d+:(?:vscode|tmux)$/.exec(attentionKey);
+        if (runKey) {
+            return `${runKey[1]}:${runKey[2]}`;
+        }
         return attentionKey;
     }
 

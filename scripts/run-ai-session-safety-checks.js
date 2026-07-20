@@ -2181,7 +2181,7 @@ async function runAiSessionAttentionControllerChecks() {
         postProjectsUpdated: () => undefined,
         nowMs: () => nowMs,
     });
-    const retainedKey = 'codex:session-a:900:tmux';
+    const retainedKey = 'codex:session-a:800:tmux';
     await retainedController.evaluate([{
         providerId: 'codex',
         sessionId: 'session-a',
@@ -2218,7 +2218,7 @@ async function runAiSessionAttentionControllerChecks() {
     const boundedEvaluation = await boundedController.evaluate(Array.from({ length: 1001 }, (_, index) => ({
         providerId: 'codex',
         sessionId: 'session-a',
-        attentionKey: `codex:session-a:${index}:tmux`,
+        attentionKey: `codex:session-a:${index + 1}:tmux`,
         runtime: { ...oldInactiveRuntime, runStartedAtMs: index + 1 },
     })));
     assert.strictEqual(boundedPublished[0].length, 1000,
@@ -2226,15 +2226,47 @@ async function runAiSessionAttentionControllerChecks() {
     assert.strictEqual(Math.min(...boundedPublished[0].map(item => item.observedAtMs)), 2,
         'the bounded publication keeps the newest completion observations');
     assert.strictEqual(
-        boundedController.getLocalSnapshot()['codex:session-a:0:tmux'],
+        boundedController.getLocalSnapshot()['codex:session-a:1:tmux'],
         undefined,
         'the oldest overflow event is discarded instead of accumulating locally'
     );
     assert.deepStrictEqual(
         boundedEvaluation.overflowedSessionKeys,
-        ['codex:session-a:0:tmux'],
+        ['codex:session-a:1:tmux'],
         'lifecycle settlement receives explicit evidence for the discarded event'
     );
+
+    const equalTimestampPublished = [];
+    const equalTimestampController = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getOpenProjects: () => projects,
+        getProviders: () => providersForTest,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
+        getRuntimeById: () => null,
+        isRuntimeComplete: runtime => runtime.state === 'completed',
+        publish: async items => { equalTimestampPublished.push(items); return true; },
+        scheduleRefresh: () => undefined,
+        postProjectsUpdated: () => undefined,
+        nowMs: () => nowMs,
+    });
+    await equalTimestampController.evaluate([
+        {
+            providerId: 'codex',
+            sessionId: 'session-a',
+            attentionKey: 'codex:session-a:850:vscode',
+            runtime: { ...oldInactiveRuntime, backend: 'vscode', runStartedAtMs: 850 },
+        },
+        {
+            providerId: 'codex',
+            sessionId: 'session-a',
+            attentionKey: 'codex:session-a:850:tmux',
+            runtime: { ...oldInactiveRuntime, runStartedAtMs: 850 },
+        },
+    ]);
+    const equalTimestampEventIds = equalTimestampPublished[0].map(item => item.eventId);
+    assert.deepStrictEqual(equalTimestampEventIds, equalTimestampEventIds.slice().sort(),
+        'equal-timestamp owner items use event ID as a deterministic tie-break');
 
     const completionOrder = [];
     let evaluationCount = 0;
@@ -2428,7 +2460,7 @@ async function runAiSessionAttentionControllerChecks() {
         generatedAtMs: 1200,
         sessions: [{
             projectId: attentionProject.getAttentionProjectKey('/work/remote'),
-            sessionKey: 'kimi:remote',
+            sessionKey: 'kimi:remote:1200:tmux',
             reasons: ['input-required'],
             eventIds: ['remote-event'],
             observedAtMs: 1200,
@@ -2437,7 +2469,7 @@ async function runAiSessionAttentionControllerChecks() {
     assert.strictEqual(controller.setRemoteAggregate(remoteAggregate), true);
     assert.strictEqual(controller.setRemoteAggregate(remoteAggregate), false);
     assert.strictEqual(controller.hasRemoteAggregate(), true);
-    assert.strictEqual(controller.getEffectiveAggregate().sessions[0].sessionKey, 'kimi:remote');
+    assert.strictEqual(controller.getEffectiveAggregate().sessions[0].sessionKey, 'kimi:remote:1200:tmux');
     assert.deepStrictEqual(controller.getRecoverySessionEvents().map(item => item.sessionKey), ['kimi:remote']);
 
     enabled = false;
