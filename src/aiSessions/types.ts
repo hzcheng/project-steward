@@ -2,7 +2,12 @@
 
 import type { AiSessionProviderId, CodexSession } from '../models';
 import type { BatchAiSessionArchiveResult } from './archiveBatch';
-import type { AiSessionExecutionState, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
+import type {
+    AiSessionAttentionReason,
+    AiSessionExecutionState,
+    AiSessionLifecycleRequest,
+    AiSessionLifecycleSignal,
+} from './lifecycle';
 import type { DashboardSearchCatalog } from '../webview/dashboardViewModel';
 import type { AiSessionLaunchSpec } from './launchSpec';
 import type { AiSessionRuntimeBackendId, AiSessionRuntimeIdentity, AiSessionTmuxLayout } from './runtimeTypes';
@@ -56,6 +61,9 @@ export interface ActiveAiSessionViewModel {
     createdAt?: string;
     pinned?: boolean;
     attentionEventId?: string;
+    primaryRootId?: string;
+    primaryRootLabel?: string;
+    outsideWorkspace?: boolean;
 }
 
 export interface AiSessionReadResult {
@@ -121,6 +129,26 @@ export interface AiSessionViewModel {
     pinned?: boolean;
     active?: boolean;
     focused?: boolean;
+    attention?: { eventId: string; reason: AiSessionAttentionReason; unread: boolean };
+    primaryRootId?: string;
+    primaryRootLabel?: string;
+    outsideWorkspace?: boolean;
+}
+
+export interface WorkspaceAiSessionViewModel {
+    workspaceScopeIdentity: string;
+    workspaceNavigationIdentity: string;
+    activeProvider: AiSessionProviderId;
+    expanded: boolean;
+    providers: AiSessionProviderSummary[];
+    sessionsByProvider: Partial<Record<AiSessionProviderId, AiSessionViewModel[]>>;
+    unavailableProviders: AiSessionProviderId[];
+    aiSessionCount: number;
+    attentionCount: number;
+    defaultTab: AiSessionTabId;
+    activeSessions: ActiveAiSessionViewModel[];
+    activeSessionCount: number;
+    activeAttentionCount: number;
 }
 
 export interface OpenProjectAiSessionViewModel {

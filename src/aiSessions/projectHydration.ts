@@ -7,6 +7,9 @@ import type { AiSessionProviderDefinition, AiSessionReadResult } from './types';
 import { getAttentionProjectKey, getAttentionSessionLookupKey } from './attentionProject';
 import { getAiSessionKey, prepareAiSessionsForDisplay } from './sessionHelpers';
 
+export { hydrateWorkspaceAiSessions } from '../workspaces/sessionHydration';
+export type { HydrateWorkspaceAiSessionsInput } from '../workspaces/sessionHydration';
+
 export interface HydrateOpenProjectsWithAiSessionsInput {
     projects: Project[];
     providers: readonly Pick<AiSessionProviderDefinition, 'id' | 'projectSessionsKey' | 'projectSessionsUnavailableKey'>[];

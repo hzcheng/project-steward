@@ -6,6 +6,8 @@ import type { Project } from '../models';
 import { getProjectPathPart, normalizeComparableProjectPath, uriToProjectPath } from '../projects/openProjectMatcher';
 import { normalizeAiSessionComparablePath } from './sessionHelpers';
 
+export { getWorkspaceAiSessionCandidatePaths } from '../workspaces/sessionHydration';
+
 export interface AiSessionOpenProjectCandidate<TProject extends { id: string } = Project> {
     project: TProject;
     path: string;

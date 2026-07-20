@@ -37,6 +37,9 @@ const providers = require('../out/aiSessions/providers');
 const providerAvailability = require('../out/aiSessions/providerAvailability');
 const workspaceSessionScope = require('../out/workspaces/sessionScope');
 const workspaceSessionAssignment = require('../out/workspaces/sessionAssignment');
+const workspaceSessionHydration = require('../out/workspaces/sessionHydration');
+const WorkspaceSessionHydrationController = require('../out/workspaces/sessionHydrationController')
+    .WorkspaceSessionHydrationController;
 const workspacePrimaryRootStore = require('../out/workspaces/primaryRootStore');
 const WorkspacePrimaryRootStore = workspacePrimaryRootStore.WorkspacePrimaryRootStore;
 const AiSessionTerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
@@ -418,6 +421,155 @@ function runWorkspaceSessionAssignmentChecks() {
     assert.strictEqual(
         workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/api/src', duplicateRoots).id,
         'root-first'
+    );
+}
+
+function runWorkspaceSessionHydrationChecks() {
+    const workspace = {
+        navigationIdentity: 'workspace-navigation',
+        scopeIdentity: 'workspace-scope',
+        kind: 'savedMultiRoot',
+        displayName: 'Platform',
+        navigationUri: 'file:///work/platform.code-workspace',
+        environment: 'local',
+        roots: [
+            { id: 'root-app', name: 'App', uri: 'file:///work/app', hostPath: '/work/app', ordinal: 0 },
+            { id: 'root-api', name: 'API', uri: 'file:///work/app/api', hostPath: '/work/app/api', ordinal: 1 },
+            { id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/web', ordinal: 2 },
+        ],
+    };
+    const reads = { codex: [], kimi: [], claude: [] };
+    const resultFor = (provider, sessions, available = true) => ({
+        id: provider,
+        label: provider[0].toUpperCase() + provider.slice(1),
+        terminalCwdFields: provider === 'kimi' ? ['workDir'] : ['cwd'],
+        service: {
+            getSessions: options => {
+                reads[provider].push(options);
+                return { available, sessions, scannedFiles: sessions.length, parsedFiles: sessions.length };
+            },
+        },
+    });
+    const providersForHydration = [
+        resultFor('codex', [
+            { id: 'api-history', name: 'API history', cwd: '/work/app/api/service', updatedAt: '2026-07-20T12:00:00Z' },
+            { id: 'api-history', name: 'Duplicate API history', cwd: '/work/app/api/duplicate', updatedAt: '2026-07-20T13:00:00Z' },
+            { id: 'web-history', name: 'Web history', cwd: '/work/web/client', updatedAt: '2026-07-20T11:00:00Z' },
+            { id: 'outside-history', name: 'Inactive outside history', cwd: '/work/removed' },
+        ]),
+        resultFor('kimi', [], false),
+        resultFor('claude', [{ id: 'app-history', name: 'App history', cwd: '/work/app/client' }]),
+    ];
+    const readCoordinator = new AiSessionReadCoordinator(providersForHydration, () => undefined);
+    const runtime = (provider, backend, cwd, id, overrides = {}) => ({
+        identity: createTestAiSessionRuntimeIdentity(provider, cwd, id, {
+            workspaceScopeIdentity: workspace.scopeIdentity,
+            workspaceNavigationIdentity: workspace.navigationIdentity,
+            workspaceRootHostPaths: workspace.roots.map(root => root.hostPath),
+            ...overrides,
+        }),
+        backend,
+        state: id.pendingId ? 'pending' : 'active',
+        markerPath: `/markers/${id.sessionId || id.pendingId}`,
+        runStartedAtMs: id.pendingId ? 20 : 30,
+        attached: backend === 'vscode',
+        ...(backend === 'tmux' ? { tmux: { layout: 'project', sessionName: `tmux-${id.sessionId || id.pendingId}` } } : {}),
+        ...(id.pendingId ? {
+            createdAt: id.pendingId === 'pending-direct'
+                ? '2026-07-20T10:00:00Z' : '2026-07-20T10:01:00Z',
+            excludedSessionIds: [],
+            title: id.pendingId === 'pending-direct' ? 'Direct pending' : 'Tmux pending',
+        } : {}),
+    });
+    const outsideNavigationRuntime = runtime('codex', 'vscode', '/work/removed', { sessionId: 'removed-active' }, {
+        workspaceScopeIdentity: 'removed-scope',
+        workspaceRootHostPaths: ['/work/removed'],
+    });
+    const outsideOverlapRuntime = runtime('claude', 'tmux', '/work/previous', { sessionId: 'overlap-active' }, {
+        workspaceScopeIdentity: 'previous-scope',
+        workspaceNavigationIdentity: 'previous-navigation',
+        workspaceRootHostPaths: ['/work/app', '/work/previous'],
+    });
+    const unmanagedRuntime = runtime('codex', 'tmux', '/unrelated', { sessionId: 'unmanaged-active' }, {
+        workspaceScopeIdentity: 'unrelated-scope',
+        workspaceNavigationIdentity: 'unrelated-navigation',
+        workspaceRootHostPaths: ['/unrelated'],
+    });
+    const activeRuntimes = [
+        outsideNavigationRuntime,
+        outsideOverlapRuntime,
+        unmanagedRuntime,
+        runtime('codex', 'tmux', '/work/web', { sessionId: 'web-history' }),
+    ];
+    const pendingRuntimes = [
+        runtime('codex', 'vscode', '/work/app', { pendingId: 'pending-direct' }),
+        runtime('claude', 'tmux', '/work/app/api', { pendingId: 'pending-tmux' }),
+        runtime('codex', 'vscode', '/work/removed-pending', { pendingId: 'pending-outside' }),
+    ];
+    const controller = new WorkspaceSessionHydrationController({
+        providers: providersForHydration,
+        readCoordinator,
+        incrementalScanMaxFiles: 100,
+        getRefreshReason: () => 'workspace-test',
+        getSessionComparableCwd: (providerId, session) => providerId === 'kimi' ? session.workDir : session.cwd,
+        getPinnedSessions: () => new Set(),
+        getAliases: () => ({}),
+        getActiveProvider: () => 'codex',
+        getExpanded: () => true,
+        getActiveRuntimes: () => activeRuntimes,
+        getPendingRuntimes: () => pendingRuntimes,
+        getExecutionSnapshot: () => ({}),
+        getFocusedIdentity: () => outsideNavigationRuntime.identity,
+    });
+
+    const result = controller.hydrate(workspace);
+
+    assert.strictEqual(result.workspaceScopeIdentity, workspace.scopeIdentity);
+    assert.strictEqual(result.workspaceNavigationIdentity, workspace.navigationIdentity);
+    assert.deepStrictEqual(result.sessionsByProvider.codex.map(value => [value.id, value.primaryRootId]), [
+        ['api-history', 'root-api'],
+        ['web-history', 'root-web'],
+    ]);
+    assert.strictEqual(result.sessionsByProvider.codex[0].name, 'API history');
+    assert.deepStrictEqual(result.sessionsByProvider.claude.map(value => [value.id, value.primaryRootId]), [
+        ['app-history', 'root-app'],
+    ]);
+    assert.deepStrictEqual(result.unavailableProviders, ['kimi']);
+    assert.strictEqual(result.providers.find(provider => provider.id === 'kimi').unavailable, true);
+    assert.strictEqual(result.activeSessions[0].sessionId, 'removed-active');
+    assert.strictEqual(result.activeSessions[0].primaryRootLabel, 'Outside workspace');
+    assert.strictEqual(result.activeSessions[0].outsideWorkspace, true);
+    assert.ok(result.activeSessions.some(session => session.sessionId === 'overlap-active'
+        && session.outsideWorkspace === true));
+    assert.ok(!result.activeSessions.some(session => session.sessionId === 'unmanaged-active'));
+    assert.ok(result.activeSessions.some(session => session.sessionId === 'web-history'
+        && session.backend === 'tmux' && session.primaryRootId === 'root-web'));
+    assert.ok(result.activeSessions.some(session => session.pending && session.backend === 'vscode'
+        && session.primaryRootId === 'root-app'));
+    assert.ok(result.activeSessions.some(session => session.pending && session.backend === 'tmux'
+        && session.primaryRootId === 'root-api'));
+    assert.ok(!result.activeSessions.some(session => session.key === 'pending:codex:pending-outside'));
+    assert.strictEqual(result.cardCount, undefined, 'hydration must not create per-root cards');
+    for (const provider of providersForHydration) {
+        assert.strictEqual(reads[provider.id].length, 1, `${provider.id} must be read once`);
+        assert.deepStrictEqual(
+            reads[provider.id][0].candidatePaths,
+            ['/work/app', '/work/app/api', '/work/web'],
+            `${provider.id} must receive every workspace root in one scan`
+        );
+    }
+
+    assert.strictEqual(
+        workspaceSessionHydration.hasWorkspaceRuntimeContinuity(workspace, outsideNavigationRuntime),
+        true
+    );
+    assert.strictEqual(
+        workspaceSessionHydration.hasWorkspaceRuntimeContinuity(workspace, outsideOverlapRuntime),
+        true
+    );
+    assert.strictEqual(
+        workspaceSessionHydration.hasWorkspaceRuntimeContinuity(workspace, unmanagedRuntime),
+        false
     );
 }
 
@@ -10202,6 +10354,7 @@ async function main() {
     runAssignmentChecks();
     await runWorkspaceSessionScopeChecks();
     runWorkspaceSessionAssignmentChecks();
+    runWorkspaceSessionHydrationChecks();
     runDashboardSearchCatalogChecks();
     runDashboardDiagnosticsChecks();
     runAttentionProjectionChecks();

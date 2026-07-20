@@ -3,6 +3,9 @@
 import type { AiSessionProviderId, CodexSession, Project } from '../models';
 import type { AiSessionProviderDefinition, AiSessionViewModel, OpenProjectAiSessionViewModel } from './types';
 
+export { buildWorkspaceAiSessionViewModel } from '../workspaces/viewModels';
+export type { BuildWorkspaceAiSessionViewModelInput } from '../workspaces/viewModels';
+
 export interface BuildOpenProjectAiSessionViewModelInput {
     project: Project;
     providers: readonly Pick<AiSessionProviderDefinition, 'id' | 'label' | 'projectSessionsKey' | 'projectSessionsUnavailableKey'>[];

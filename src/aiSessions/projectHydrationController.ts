@@ -26,6 +26,12 @@ import type {
 } from './types';
 import { sanitizeAiSessionAlias } from './aliasStore';
 
+export { WorkspaceSessionHydrationController } from '../workspaces/sessionHydrationController';
+export type {
+    WorkspaceSessionHydrationControllerOptions,
+    WorkspaceSessionHydrationReadCoordinator,
+} from '../workspaces/sessionHydrationController';
+
 type HydrationProvider = Pick<
     AiSessionProviderDefinition,
     | 'id'
