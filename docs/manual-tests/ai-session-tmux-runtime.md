@@ -1,12 +1,12 @@
 # AI Session tmux Runtime Acceptance Record
 
-Date: 2026-07-19
+Date: 2026-07-20
 
 Feature branch: `feat/session-tmux-support`
 
 ## Evidence policy
 
-`PASS (automated)` below means the named command was actually executed in the recorded environment. `NOT RUN` means no claim is made for that platform or manual UI flow. This session did not install a VSIX or invoke the repository's `install-local` workflow because installation was not authorized.
+`PASS (automated)` below means the named command was actually executed in the recorded environment. `NOT RUN` means no claim is made for that platform or manual UI flow. The repository's `install-local` workflow packaged both VSIX files but could not complete through the disconnected VS Code management IPC route. A standalone Dev Container server CLI fallback installed the main extension; no installed UI behavior was exercised.
 
 ## Environment actually exercised
 
@@ -18,7 +18,9 @@ Feature branch: `feat/session-tmux-support`
 | tmux | `/usr/bin/tmux`, tmux 3.2a |
 | Node.js / npm | Node.js v26.5.0 / npm 12.0.1 |
 | VS Code remote CLI | 1.127.0, commit `4fe60c8b1cdac1c4c174f2fb180d0d758272d713`, x64 |
-| Extension installation | NOT RUN; no VSIX installed |
+| Extension installation | `hzcheng.project-steward@2.1.2` installed in the Dev Container; installed `dist/dashboard.js` matched the freshly built bundle by SHA-256 |
+
+The inherited VS Code IPC socket refused connections and the active management route remained disconnected, so the repository installer did not reach a successful extension-host response. The bounded standalone server CLI fallback installed the main VSIX into the Dev Container workspace extension host and listed the exact version. The UI-only attention bridge was also accepted into the remote server extension directory during diagnosis, but that is not evidence of correct local UI-host placement or execution. All installed UI behavior remains `NOT RUN`.
 
 ## Executed evidence
 
@@ -41,7 +43,7 @@ Feature branch: `feat/session-tmux-support`
 | PASS (automated) | Fresh execution-handoff verification commands | On 2026-07-19, `npm run test:tmux`, `npm run test:safety`, `npm run test:tmux:smoke`, `npm run test-compile`, `npm run vscode:prepublish`, and `npm run test:release-packaging` each exited 0. Production webpack emitted deprecation warnings only; release packaging printed `Release packaging checks passed.` |
 | PASS (automated) | Explicit focused-session refresh | Successful active, pending, legacy Direct, runtime-backed, and conflict-selected focus paths request an immediate refresh; missing and failed targets do not claim focus. |
 | PASS (automated) | Project tmux active-window synchronization | Managed A→B, managed→unmanaged, unchanged, query failure, pending promotion, visibility gating, single-flight, and disposal checks passed. |
-| NOT RUN | Installed UI focused-session retest | Awaiting manual Project Steward click and tmux-internal window-switch verification after installing the new VSIX. |
+| NOT RUN | Installed UI focused-session retest | The main VSIX is installed and hash-verified; Project Steward clicks and tmux-internal window switches still await manual verification after the VS Code UI reconnects. |
 
 ## Manual acceptance matrix
 
@@ -52,16 +54,16 @@ Feature branch: `feat/session-tmux-support`
 | macOS, absolute Homebrew tmux path | NOT RUN | No macOS/Homebrew host was available. |
 | Remote SSH | NOT RUN | No SSH extension host was exercised. |
 | Dev Container, real tmux backend internals | PASS (automated) | Production backend/client/discovery/store code ran against isolated tmux 3.2a as recorded above. |
-| Dev Container, installed extension UI | NOT RUN | No VSIX was installed; project-card click, confirmation, viewer focus, and notifications were not manually exercised. |
+| Dev Container, installed extension UI | NOT RUN | The main VSIX was installed and hash-verified through the standalone server fallback, but project-card click, confirmation, viewer focus, and notifications were not manually exercised. |
 | WSL | NOT RUN | No WSL environment was available. |
 | Native Windows unsupported warning | NOT RUN | No native Windows extension host was available. Source/unit checks cover the unsupported-platform result only. |
 | Project layout, actual Codex/Kimi/Claude CLIs | NOT RUN | Smoke used all three provider identities with controlled fake provider processes; it did not invoke provider CLIs. |
 | Session layout, actual Codex/Kimi/Claude CLIs | NOT RUN | Smoke used controlled fake providers only. |
-| New and resumed provider sessions through UI | NOT RUN | No extension UI installation or provider credentials were used. |
-| First-turn green Running dot after tmux promotion | NOT RUN | The new handoff race and provider/layout matrix passed automated checks, but the repaired build was not installed or exercised through the VS Code UI in this verification run. |
+| New and resumed provider sessions through UI | NOT RUN | The installed extension UI and provider credentials were not exercised. |
+| First-turn green Running dot after tmux promotion | NOT RUN | The new handoff race and provider/layout matrix passed automated checks, and the build was installed, but it was not exercised through the VS Code UI in this verification run. |
 | Detach and reattach through UI | NOT RUN | Real pane survival and fake attach-registry behavior passed automated checks; interactive VS Code terminal reattach was not run. |
-| Developer: Reload Window | NOT RUN | Requires an installed extension UI. |
-| Complete VS Code close and reopen | NOT RUN | Requires an installed extension UI. |
+| Developer: Reload Window | NOT RUN | The extension was installed, but the reload flow was not exercised. |
+| Complete VS Code close and reopen | NOT RUN | The extension was installed, but the full close/reopen flow was not exercised. |
 | Remote disconnect and reconnect | NOT RUN | No Remote SSH host was available. |
 | Mode/layout/executable changes with live runtimes | NOT RUN | Automated configuration and no-migration checks passed, but the Settings UI flow was not run. |
 | Multiple clients sharing the project current window | NOT RUN | Requires two interactive clients attached to one project tmux session. |

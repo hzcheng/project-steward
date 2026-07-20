@@ -23,6 +23,9 @@ const REQUIRED_COMMANDS = [
     'show-options',
     'select-window',
     'attach-session',
+    'has-session',
+    'rename-session',
+    'rename-window',
 ] as const;
 
 export type TmuxUnavailableCategory =

@@ -57,6 +57,8 @@ interface AttachEntry<TTerminal> {
     terminal: TTerminal;
     binding: TmuxAttachBinding;
     focusedBinding?: TmuxAttachBinding | null;
+    focusEpoch: number;
+    explicitSelections: number;
 }
 
 export interface TmuxFocusedRuntimeSyncResult {
@@ -492,9 +494,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     async syncFocusedRuntime(
         terminal: TTerminal | null | undefined
     ): Promise<TmuxFocusedRuntimeSyncResult> {
-        const entry = terminal
-            ? [...this.attaches.values()].find(candidate => candidate.terminal === terminal)
+        const registered = terminal
+            ? [...this.attaches.entries()].find(([, candidate]) => candidate.terminal === terminal)
             : undefined;
+        const key = registered?.[0];
+        const entry = registered?.[1];
         const previous = this.getFocusedRuntime(terminal);
         if (!entry || entry.binding.layout !== 'project') {
             return {
@@ -502,7 +506,16 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 identity: previous ? { ...previous.identity } : null,
             };
         }
+        const focusEpoch = entry.focusEpoch;
         const activeWindow = await this.dependencies.client.getActiveWindow(entry.binding.sessionName);
+        if (!key || this.attaches.get(key) !== entry
+            || entry.focusEpoch !== focusEpoch || entry.explicitSelections > 0) {
+            const current = this.getFocusedRuntime(terminal);
+            return {
+                monitored: true, changed: false,
+                identity: current ? { ...current.identity } : null,
+            };
+        }
         const matches = activeWindow ? [
             ...this.dependencies.discovery.getActive(),
             ...this.dependencies.discovery.getPending(),
@@ -517,6 +530,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         entry.focusedBinding = next
             ? attachBinding(next, entry.binding.terminalNamePrefix)
             : null;
+        entry.focusEpoch++;
         return {
             monitored: true,
             changed: !runtimeIdentityEquals(previous?.identity || null, next?.identity || null),
@@ -533,6 +547,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!entry) {
             return;
         }
+        entry.focusEpoch++;
         this.attaches.delete(key);
         const terminal = attachTerminal(entry.terminal);
         this.dependencies.attachStore.remove(terminal.processId);
@@ -555,7 +570,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 this.dependencies.attachStore.remove(processId);
                 continue;
             }
-            this.attaches.set(registryKey(runtime), { terminal, binding, focusedBinding: binding });
+            this.attaches.set(registryKey(runtime), {
+                terminal, binding, focusedBinding: binding, focusEpoch: 0, explicitSelections: 0,
+            });
         }
         await this.dependencies.attachStore.flush();
     }
@@ -565,6 +582,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             if (entry.terminal !== terminal) {
                 continue;
             }
+            entry.focusEpoch++;
             this.attaches.delete(key);
             this.dependencies.attachStore.remove(attachTerminal(terminal).processId);
         }
@@ -951,42 +969,59 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!runtime.tmux) {
             throw new Error('A tmux runtime must include a locator.');
         }
-        await this.dependencies.client.selectWindow(runtime.tmux);
         const key = registryKey(runtime);
-        let entry = this.attaches.get(key);
-        if (!entry) {
-            const binding = attachBinding(runtime, terminalName);
-            const terminal = this.dependencies.createTerminal({
-                name: terminalName,
-                shellPath: this.dependencies.client.getExecutablePath(),
-                shellArgs: ['attach-session', '-t', runtime.tmux.sessionName],
-                env: { TMUX: null },
-            });
-            entry = { terminal, binding, focusedBinding: binding };
-            this.attaches.set(key, entry);
-            this.dependencies.attachStore.set(attachTerminal(terminal).processId, binding);
-        } else {
-            const binding = attachBinding(runtime, entry.binding.terminalNamePrefix);
-            entry.binding = binding;
-            entry.focusedBinding = binding;
-            this.dependencies.attachStore.set(
-                attachTerminal(entry.terminal).processId, entry.binding
-            );
+        const selectingEntry = this.attaches.get(key);
+        if (selectingEntry) {
+            selectingEntry.focusEpoch++;
+            selectingEntry.explicitSelections++;
         }
         try {
-            attachTerminal(entry.terminal).show();
-        } catch (error) {
-            this.attaches.delete(key);
-            this.dependencies.attachStore.remove(attachTerminal(entry.terminal).processId);
-            try {
-                attachTerminal(entry.terminal).dispose();
-            } catch (_disposeError) {
-                // Preserve the original show failure.
+            await this.dependencies.client.selectWindow(runtime.tmux);
+            let entry = this.attaches.get(key);
+            if (!entry) {
+                const binding = attachBinding(runtime, terminalName);
+                const terminal = this.dependencies.createTerminal({
+                    name: terminalName,
+                    shellPath: this.dependencies.client.getExecutablePath(),
+                    shellArgs: ['attach-session', '-t', runtime.tmux.sessionName],
+                    env: { TMUX: null },
+                });
+                entry = {
+                    terminal, binding, focusedBinding: binding,
+                    focusEpoch: 0, explicitSelections: 0,
+                };
+                this.attaches.set(key, entry);
+                this.dependencies.attachStore.set(attachTerminal(terminal).processId, binding);
+            } else {
+                const binding = attachBinding(runtime, entry.binding.terminalNamePrefix);
+                entry.binding = binding;
+                entry.focusedBinding = binding;
+                entry.focusEpoch++;
+                this.dependencies.attachStore.set(
+                    attachTerminal(entry.terminal).processId, entry.binding
+                );
             }
-            throw error;
+            try {
+                attachTerminal(entry.terminal).show();
+            } catch (error) {
+                entry.focusEpoch++;
+                this.attaches.delete(key);
+                this.dependencies.attachStore.remove(attachTerminal(entry.terminal).processId);
+                try {
+                    attachTerminal(entry.terminal).dispose();
+                } catch (_disposeError) {
+                    // Preserve the original show failure.
+                }
+                throw error;
+            }
+            await this.dependencies.attachStore.flush();
+            return this.withAttach(runtime) as T & AiSessionRuntimeSnapshot<TTerminal>;
+        } finally {
+            if (selectingEntry) {
+                selectingEntry.focusEpoch++;
+                selectingEntry.explicitSelections--;
+            }
         }
-        await this.dependencies.attachStore.flush();
-        return this.withAttach(runtime) as T & AiSessionRuntimeSnapshot<TTerminal>;
     }
 
     private getAttachTerminalName(runtime: AiSessionRuntimeSnapshot): string {
@@ -1080,7 +1115,8 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         const updatePersisted = bindingTargetsRuntime(entry.binding, pending);
         const updateFocused = entry.focusedBinding !== undefined
             && bindingTargetsRuntime(entry.focusedBinding, pending);
-        if (oldKey !== newKey) {
+        const changesRegistry = oldKey !== newKey;
+        if (changesRegistry) {
             this.attaches.delete(oldKey);
             this.attaches.set(newKey, entry);
         }
@@ -1090,6 +1126,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         }
         if (updateFocused) {
             entry.focusedBinding = nextBinding;
+        }
+        if (changesRegistry || updatePersisted || updateFocused) {
+            entry.focusEpoch++;
         }
         if (updatePersisted) {
             await this.dependencies.attachStore.flush();

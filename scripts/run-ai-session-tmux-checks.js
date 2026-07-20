@@ -97,6 +97,7 @@ function createTmuxBackendHarness(options = {}) {
     let failPromotionClearPendingCount = options.failPromotionClearPendingCount || 0;
     let failConfigureWindowTimeoutCount = options.failConfigureWindowTimeoutCount || 0;
     let activeWindowError = null;
+    let activeWindowDeferred = null;
     let promotionRenameOccurred = false;
 
     function syncMetadata(row) {
@@ -271,11 +272,17 @@ function createTmuxBackendHarness(options = {}) {
                 throw error;
             }
             const activeRows = windows.filter(row => row.sessionName === sessionName && row.active);
-            return activeRows.length === 1 ? {
+            const result = activeRows.length === 1 ? {
                 sessionName: activeRows[0].sessionName,
                 windowName: activeRows[0].windowName,
                 windowId: activeRows[0].windowId,
             } : null;
+            if (activeWindowDeferred) {
+                const pendingResult = activeWindowDeferred;
+                activeWindowDeferred = null;
+                await pendingResult.promise;
+            }
+            return result;
         },
         hasSession: async name => {
             const exists = windows.some(item => item.sessionName === name);
@@ -492,6 +499,10 @@ function createTmuxBackendHarness(options = {}) {
         failNextAttach() { failAttachCount++; },
         failNextShow() { failShowCount++; },
         failNextActiveWindow(error) { activeWindowError = error; },
+        deferNextActiveWindow() {
+            activeWindowDeferred = deferred();
+            return activeWindowDeferred;
+        },
         get stateReadCount() { return stateReadCount; },
     };
 }
@@ -740,7 +751,7 @@ function runTmuxLayoutChecks() {
 async function runTmuxClientChecks() {
     const requiredCommands = [
         'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
-        'select-window', 'attach-session',
+        'select-window', 'attach-session', 'has-session', 'rename-session', 'rename-window',
     ];
     const calls = [];
     const runner = {
@@ -1070,6 +1081,22 @@ async function runTmuxClientChecks() {
         category: 'missing-capability',
         message: 'The configured tmux does not provide all required commands.',
     });
+    for (const omittedCommand of ['has-session', 'rename-session', 'rename-window']) {
+        const omittedCapabilityClient = new tmuxClientModule.TmuxClient('tmux', {
+            run: async (_file, args) => args[0] === '-V'
+                ? { exitCode: 0, stdout: 'tmux 3.2\n', stderr: '' }
+                : {
+                    exitCode: 0,
+                    stdout: requiredCommands.filter(name => name !== omittedCommand).join('\n'),
+                    stderr: '',
+                },
+        });
+        assert.deepStrictEqual(await omittedCapabilityClient.checkAvailability(), {
+            available: false,
+            category: 'missing-capability',
+            message: 'The configured tmux does not provide all required commands.',
+        }, `availability must require ${omittedCommand}`);
+    }
 
     const invalidVersionClient = new tmuxClientModule.TmuxClient('tmux', {
         run: async () => ({ exitCode: 0, stdout: 'tmux   \n', stderr: 'credential=never-report' }),
@@ -3488,6 +3515,16 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(projectBackend.getFocusedRuntime(projectHarness.terminals[1]).identity.sessionId, 's1');
     assert.strictEqual((await projectBackend.syncFocusedRuntime(projectHarness.terminals[1])).changed, false);
 
+    const deferredExplicitFocusQuery = projectHarness.deferNextActiveWindow();
+    const staleExplicitFocusSync = projectBackend.syncFocusedRuntime(projectHarness.terminals[1]);
+    await projectBackend.focus(secondProject);
+    deferredExplicitFocusQuery.resolve();
+    assert.deepStrictEqual(await staleExplicitFocusSync, {
+        monitored: true, changed: false, identity: { ...secondProject.identity },
+    }, 'a query superseded by explicit focus must not report a stale change');
+    assert.strictEqual(projectBackend.getFocusedRuntime(projectHarness.terminals[1]).identity.sessionId, 's2',
+        'a query superseded by explicit focus must not overwrite the selected runtime');
+
     projectHarness.windows.forEach(row => { row.active = false; });
     projectHarness.windows.push({
         sessionName: firstProject.tmux.sessionName,
@@ -4323,9 +4360,16 @@ async function runTmuxBackendChecks() {
     const projectPromotionTerminal = projectPending.terminal;
     assert.strictEqual(projectPromotionBackend.getFocusedRuntime(projectPromotionTerminal)
         .identity.pendingId, 'project-pending');
+    const deferredPromotionQuery = projectPromotionHarness.deferNextActiveWindow();
+    const stalePromotionSync = projectPromotionBackend.syncFocusedRuntime(projectPromotionTerminal);
     const projectPromoted = await projectPromotionBackend.promotePending('project-pending', 'project-final');
+    deferredPromotionQuery.resolve();
+    assert.deepStrictEqual(await stalePromotionSync, {
+        monitored: true, changed: false, identity: { ...projectPromoted[0].identity },
+    }, 'a query superseded by promotion must not report a stale change');
     assert.strictEqual(projectPromotionBackend.getFocusedRuntime(projectPromotionTerminal)
-        .identity.sessionId, 'project-final');
+        .identity.sessionId, 'project-final',
+        'a query superseded by promotion must not overwrite the promoted runtime');
     assert.strictEqual(projectPromotionHarness.attachBindings.get(await projectPromotionTerminal.processId)
         .windowName, projectPromoted[0].tmux.windowName);
     assert.strictEqual(projectPromoted.length, 1);
