@@ -3,6 +3,7 @@
 import type { AiSessionProviderId, CodexSession, Project } from '../models';
 import type { AttentionAggregate } from './attentionAggregate';
 import { aggregateAttentionSnapshots } from './attentionAggregate';
+import { MAX_ATTENTION_ITEMS } from './attentionPayload';
 import type { AttentionPayloadItem } from './attentionPayload';
 import AiSessionAttentionMonitor from './attentionMonitor';
 import type { AiSessionAttentionSnapshot } from './attentionMonitor';
@@ -43,6 +44,7 @@ export interface AiSessionAttentionEvaluation {
     published: boolean;
     inScopeSessionKeys: string[];
     eventIdsBySession: Record<string, string[]>;
+    overflowedSessionKeys: string[];
 }
 
 export interface AiSessionAttentionRuntimeOverride<TRuntime> {
@@ -78,16 +80,19 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                 published,
                 inScopeSessionKeys: [],
                 eventIdsBySession: {},
+                overflowedSessionKeys: [],
             };
         }
 
         const projects = this.options.getOpenProjects();
         const providers = this.options.getProviders();
         const ownedSessions = this.getOwnedSessions(projects, providers, runtimeOverrides);
-        this.attentionKeysBySession.clear();
         for (const [attentionKey, owned] of ownedSessions) {
             const keys = this.attentionKeysBySession.get(owned.baseSessionKey) || [];
-            keys.push(attentionKey);
+            if (!keys.includes(attentionKey)) {
+                keys.push(attentionKey);
+                keys.sort();
+            }
             this.attentionKeysBySession.set(owned.baseSessionKey, keys);
         }
         const signalsByProvider = this.getSignalsByProvider(providers, ownedSessions);
@@ -108,11 +113,14 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             };
         });
 
-        if (this.monitor.evaluate(inputs).length) {
+        const events = this.monitor.evaluate(inputs);
+        this.pruneAttentionKeysBySession();
+        if (events.length) {
             this.options.scheduleRefresh('attention');
         }
 
-        this.localItems = this.buildLocalItems(projects, providers);
+        const localResult = this.buildLocalItems(projects, providers);
+        this.localItems = localResult.items;
         if (!this.remoteAggregate) {
             this.postProjectsUpdated();
         }
@@ -122,12 +130,14 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             published,
             inScopeSessionKeys: [...ownedSessions.keys()].sort(),
             eventIdsBySession: groupEventIdsBySession(this.localItems),
+            overflowedSessionKeys: localResult.overflowedSessionKeys,
         };
     }
 
     acknowledge(eventIds: string[]): void {
         this.monitor.acknowledge(eventIds);
-        this.localItems = this.buildLocalItems(this.options.getOpenProjects(), this.options.getProviders());
+        const result = this.buildLocalItems(this.options.getOpenProjects(), this.options.getProviders());
+        this.localItems = result.items;
     }
 
     setRemoteAggregate(aggregate: AttentionAggregate): boolean {
@@ -176,11 +186,14 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
 
         Object.entries(this.monitor.getSnapshot()).forEach(([sessionKey, snapshot]) => {
             if (snapshot.event?.eventId) {
-                addEvent(sessionKey, snapshot.event.eventId);
+                addEvent(this.getLogicalSessionKey(sessionKey), snapshot.event.eventId);
             }
         });
         this.getEffectiveAggregate().sessions.forEach(session => {
-            session.eventIds.forEach(eventId => addEvent(session.sessionKey, eventId));
+            session.eventIds.forEach(eventId => addEvent(
+                this.getLogicalSessionKey(session.sessionKey),
+                eventId
+            ));
         });
         return Array.from(bySession.entries())
             .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
@@ -296,7 +309,10 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         }, {} as Record<AiSessionProviderId, Record<string, AiSessionLifecycleSignal>>);
     }
 
-    private buildLocalItems(projects: Project[], providers: AiSessionAttentionProvider[]): AttentionPayloadItem[] {
+    private buildLocalItems(
+        projects: Project[],
+        providers: AiSessionAttentionProvider[]
+    ): { items: AttentionPayloadItem[]; overflowedSessionKeys: string[] } {
         const snapshot = this.monitor.getSnapshot();
         const items: AttentionPayloadItem[] = [];
         for (const project of projects) {
@@ -326,7 +342,36 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                 }
             }
         }
-        return items;
+        const sorted = items
+            .sort((left, right) => right.observedAtMs - left.observedAtMs
+                || (left.eventId || '').localeCompare(right.eventId || ''));
+        const retained = sorted.slice(0, MAX_ATTENTION_ITEMS);
+        const overflowedSessionKeys = sorted.slice(MAX_ATTENTION_ITEMS)
+            .map(item => item.sessionKey);
+        this.monitor.discard(overflowedSessionKeys);
+        this.pruneAttentionKeysBySession();
+        return { items: retained, overflowedSessionKeys };
+    }
+
+    private pruneAttentionKeysBySession(): void {
+        const snapshotKeys = new Set(Object.keys(this.monitor.getSnapshot()));
+        for (const [sessionKey, attentionKeys] of this.attentionKeysBySession) {
+            const retained = attentionKeys.filter(key => snapshotKeys.has(key));
+            if (retained.length) {
+                this.attentionKeysBySession.set(sessionKey, retained);
+            } else {
+                this.attentionKeysBySession.delete(sessionKey);
+            }
+        }
+    }
+
+    private getLogicalSessionKey(attentionKey: string): string {
+        for (const [sessionKey, attentionKeys] of this.attentionKeysBySession) {
+            if (attentionKeys.includes(attentionKey)) {
+                return sessionKey;
+            }
+        }
+        return attentionKey;
     }
 
     private getSessionKey(providerId: AiSessionProviderId, sessionId: string): string {

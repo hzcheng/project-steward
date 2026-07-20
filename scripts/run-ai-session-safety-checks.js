@@ -2088,6 +2088,7 @@ async function runAiSessionAttentionControllerChecks() {
         eventIdsBySession: {
             'codex:session-a': [published[0].items[0].eventId],
         },
+        overflowedSessionKeys: [],
     }, 'attention evaluation must expose structured scope, publication, and event evidence');
     assert.deepStrictEqual(scheduled, ['attention']);
     assert.strictEqual(published.length, 1);
@@ -2159,9 +2160,81 @@ async function runAiSessionAttentionControllerChecks() {
     assert.deepStrictEqual(multiRunEvaluation.inScopeSessionKeys, [
         'codex:session-a:700:tmux', 'codex:session-a:800:vscode',
     ]);
-    assert.strictEqual(coexistPublished[1].length, 2,
-        'same-session inactive runs must publish stable distinct lifecycle events');
-    assert.notStrictEqual(coexistPublished[1][0].eventId, coexistPublished[1][1].eventId);
+    assert.strictEqual(coexistPublished[1].length, 3,
+        'same-session inactive runs must publish stable distinct lifecycle events alongside retained events');
+    assert.strictEqual(new Set(coexistPublished[1].map(item => item.eventId)).size, 3);
+
+    const retainedPublished = [];
+    const retainedController = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getOpenProjects: () => projects,
+        getProviders: () => providersForTest,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
+        getRuntimeById: () => null,
+        isRuntimeComplete: runtime => runtime.state === 'completed',
+        publish: async items => {
+            retainedPublished.push(items.map(item => ({ ...item })));
+            return true;
+        },
+        scheduleRefresh: () => undefined,
+        postProjectsUpdated: () => undefined,
+        nowMs: () => nowMs,
+    });
+    const retainedKey = 'codex:session-a:900:tmux';
+    await retainedController.evaluate([{
+        providerId: 'codex',
+        sessionId: 'session-a',
+        attentionKey: retainedKey,
+        runtime: oldInactiveRuntime,
+    }]);
+    const retainedEventId = retainedPublished[0][0].eventId;
+    await retainedController.evaluate();
+    assert.deepStrictEqual(retainedPublished[1], [retainedPublished[0][0]],
+        'an owner snapshot must keep publishing unread completion after runtime removal');
+    assert.deepStrictEqual(retainedController.getRecoverySessionEvents(), [{
+        sessionKey: 'codex:session-a',
+        eventIds: [retainedEventId],
+    }], 'a Session click must address its retained per-run attention event');
+    retainedController.acknowledge([retainedEventId]);
+    await retainedController.evaluate();
+    assert.deepStrictEqual(retainedPublished[2], [],
+        'explicit Session acknowledgement removes the retained owner item');
+
+    const boundedPublished = [];
+    const boundedController = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getOpenProjects: () => projects,
+        getProviders: () => providersForTest,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
+        getRuntimeById: () => null,
+        isRuntimeComplete: runtime => runtime.state === 'completed',
+        publish: async items => { boundedPublished.push(items); return true; },
+        scheduleRefresh: () => undefined,
+        postProjectsUpdated: () => undefined,
+        nowMs: () => nowMs,
+    });
+    const boundedEvaluation = await boundedController.evaluate(Array.from({ length: 1001 }, (_, index) => ({
+        providerId: 'codex',
+        sessionId: 'session-a',
+        attentionKey: `codex:session-a:${index}:tmux`,
+        runtime: { ...oldInactiveRuntime, runStartedAtMs: index + 1 },
+    })));
+    assert.strictEqual(boundedPublished[0].length, 1000,
+        'retained attention publication must respect the protocol item bound');
+    assert.strictEqual(Math.min(...boundedPublished[0].map(item => item.observedAtMs)), 2,
+        'the bounded publication keeps the newest completion observations');
+    assert.strictEqual(
+        boundedController.getLocalSnapshot()['codex:session-a:0:tmux'],
+        undefined,
+        'the oldest overflow event is discarded instead of accumulating locally'
+    );
+    assert.deepStrictEqual(
+        boundedEvaluation.overflowedSessionKeys,
+        ['codex:session-a:0:tmux'],
+        'lifecycle settlement receives explicit evidence for the discarded event'
+    );
 
     const completionOrder = [];
     let evaluationCount = 0;
@@ -2181,6 +2254,7 @@ async function runAiSessionAttentionControllerChecks() {
                 published: true,
                 inScopeSessionKeys: ['codex:published', 'kimi:missing-event'],
                 eventIdsBySession: { 'codex:published': ['completed-event'] },
+                overflowedSessionKeys: [],
             };
         },
         acknowledgePublished: async eventIds => {
@@ -2217,6 +2291,7 @@ async function runAiSessionAttentionControllerChecks() {
             published: false,
             inScopeSessionKeys: ['codex:unpublished'],
             eventIdsBySession: { 'codex:unpublished': ['unpublished-event'] },
+            overflowedSessionKeys: [],
         }),
         acknowledgePublished: async () => undefined,
         acknowledgeLocal: () => undefined,
@@ -2233,6 +2308,7 @@ async function runAiSessionAttentionControllerChecks() {
         candidates: [{ key: 'codex:disabled', state: 'completed' }],
         evaluateAttention: async () => ({
             enabled: false, published: true, inScopeSessionKeys: [], eventIdsBySession: {},
+            overflowedSessionKeys: [],
         }),
         acknowledgePublished: async () => undefined,
         acknowledgeLocal: () => undefined,
@@ -2266,6 +2342,7 @@ async function runAiSessionAttentionControllerChecks() {
                 published: true,
                 inScopeSessionKeys: [`codex:${rejectedOperation}`],
                 eventIdsBySession: { [`codex:${rejectedOperation}`]: ['event'] },
+                overflowedSessionKeys: [],
             }),
             acknowledgePublished: async () => {
                 if (rejectedOperation === 'acknowledge-published') throw new Error('/secret/published');
@@ -2371,6 +2448,7 @@ async function runAiSessionAttentionControllerChecks() {
     assert.deepStrictEqual(scheduled.slice(-1), ['attention']);
     assert.deepStrictEqual(disabledEvaluation, {
         enabled: false, published: true, inScopeSessionKeys: [], eventIdsBySession: {},
+        overflowedSessionKeys: [],
     });
 }
 

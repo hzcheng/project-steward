@@ -106,6 +106,12 @@ export default class AiSessionAttentionMonitor {
         }
     }
 
+    discard(keys: string[]): void {
+        for (const key of new Set(keys || [])) {
+            this.entries.delete(key);
+        }
+    }
+
     getSnapshot(): Record<string, AiSessionAttentionSnapshot> {
         const result: Record<string, AiSessionAttentionSnapshot> = {};
         for (const [key, entry] of this.entries) {
