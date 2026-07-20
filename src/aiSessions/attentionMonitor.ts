@@ -88,8 +88,8 @@ export default class AiSessionAttentionMonitor {
             events.push(event);
         }
 
-        for (const key of this.entries.keys()) {
-            if (!seen.has(key)) {
+        for (const [key, entry] of this.entries) {
+            if (!seen.has(key) && entry.state !== 'needsAttention') {
                 this.entries.delete(key);
             }
         }
@@ -104,6 +104,16 @@ export default class AiSessionAttentionMonitor {
                 entry.stateChangedAt = this.now();
             }
         }
+    }
+
+    discard(keys: string[]): void {
+        for (const key of new Set(keys || [])) {
+            this.entries.delete(key);
+        }
+    }
+
+    clear(): void {
+        this.entries.clear();
     }
 
     getSnapshot(): Record<string, AiSessionAttentionSnapshot> {

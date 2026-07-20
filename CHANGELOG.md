@@ -2,7 +2,29 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
-## [Unreleased]
+## [2.1.3] 2026-07-20
+
+### Added
+
+-   Add an opt-in persistent tmux runtime for new and resumed Codex, Kimi, and Claude sessions, with machine-scoped executable and layout settings.
+-   Add the default project layout (one tmux session per project and one window per AI session) and an isolated one-session-per-AI-session layout.
+-   Show tmux backend, detached, and runtime-conflict state in Active Sessions, with backend-specific Detach Terminal actions.
+
+### Changed
+
+-   Discover and reuse live managed runtimes independently of the current runtime preference, while keeping Direct Terminal as the default and requiring explicit fallback when tmux is unavailable.
+-   Keep tmux-backed sessions active after their VS Code viewer is detached, as long as the execution host remains awake and running.
+
+### Fixed
+
+-   Preserve `OTHER WINDOWS` attention badges when Remote SSH, WSL, or Dev Container navigation uses a full VS Code Remote URI.
+-   Preserve completed AI Session attention in `OTHER WINDOWS` after VS Code Terminal or tmux runtime cleanup, until the user clicks the Session or project card.
+-   Acknowledge attention from project-card clicks, clear retained attention when the feature is disabled, and rescan all runtime backends before archive confirmation.
+-   Prevent concurrent or ambiguous tmux creation, metadata collisions, reload recovery, and attach failures from resending a provider command or modifying unmanaged tmux targets.
+-   Renew long-running tmux creation locks so active owners are not mistaken for stale claims.
+-   Make runtime conflicts explicitly selectable without ambiguous focus or detach, use accessible native session actions, and harden isolated tmux smoke cleanup and provider-invocation evidence.
+-   Keep unmanaged tmux collision diagnostics out of the runtime chooser, classify cleanup failures conservatively, and verify controlled provider exit without sending process signals.
+-   Preserve offline provider-completion evidence and live known-runtime hints independently, keep initial and restored tmux terminal titles consistent, and mark retained snapshots stale after discovery failures.
 
 ## [2.1.2] 2026-07-19
 

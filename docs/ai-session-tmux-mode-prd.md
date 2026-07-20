@@ -1,5 +1,7 @@
 # AI Session Tmux Mode PRD
 
+> Superseded by `docs/superpowers/specs/2026-07-18-ai-session-tmux-runtime-design.md`. Do not use the decisions or open questions below for implementation; the newer design reflects the current AI session runtime architecture and the confirmed project/session tmux layout decision.
+
 ## 背景
 
 Project Steward 现在可以在 `OPEN PROJECT` 卡片下展示 Codex、Kimi、Claude 等智能体 session。用户点击某个 session 时，插件会打开 VS Code 自带的集成终端，并运行对应 provider 的恢复命令，例如：

@@ -2,7 +2,7 @@
     "name": "project-steward",
     "displayName": "Project Steward",
     "description": "Organize local, SSH, and Dev Container projects in a synchronized project steward.",
-    "version": "2.1.2",
+    "version": "2.1.3",
     "publisher": "hzcheng",
     "license": "MIT",
     "icon": "media/extension_icon.png",
@@ -123,6 +123,36 @@
                     "minimum": 1,
                     "markdownDescription": "Maximum number of AI session rows visible in an expanded project card before the session list scrolls."
                 },
+                "projectSteward.aiSessionTerminalMode": {
+                    "type": "string",
+                    "enum": [
+                        "vscode",
+                        "tmux"
+                    ],
+                    "default": "vscode",
+                    "scope": "machine",
+                    "description": "Choose whether new AI sessions run in VS Code terminals or managed tmux sessions. tmux preserves a process only while its execution host remains awake and running."
+                },
+                "projectSteward.aiSessionTmuxLayout": {
+                    "type": "string",
+                    "enum": [
+                        "project",
+                        "session"
+                    ],
+                    "enumDescriptions": [
+                        "Group AI sessions as windows in one managed tmux session per project.",
+                        "Run every AI session in its own managed tmux session."
+                    ],
+                    "default": "project",
+                    "scope": "machine",
+                    "description": "Choose how managed tmux sessions are organized."
+                },
+                "projectSteward.aiSessionTmuxPath": {
+                    "type": "string",
+                    "default": "tmux",
+                    "scope": "machine",
+                    "description": "Executable name resolved through the current extension host's PATH, or an absolute executable path. Enter one executable only, without additional tmux arguments or a shell command."
+                },
                 "projectSteward.maxVisibleTodosPerGroup": {
                     "type": "number",
                     "default": 5,
@@ -220,7 +250,9 @@
         "test-compile": "tsc -p ./",
         "test:open-projects": "npm run test-compile && npm run attention:bridge:compile && node scripts/run-open-project-safety-checks.js",
         "test:dashboard": "npm run test-compile && node scripts/run-dashboard-webview-checks.js",
-        "test:safety": "npm run test-compile && npm run attention:bridge:compile && node scripts/run-ai-session-safety-checks.js && node scripts/run-open-project-safety-checks.js",
+        "test:safety": "npm run test-compile && npm run attention:bridge:compile && node scripts/run-ai-session-tmux-checks.js && node scripts/run-ai-session-safety-checks.js && node scripts/run-open-project-safety-checks.js",
+        "test:tmux": "npm run test-compile && node scripts/run-ai-session-tmux-checks.js",
+        "test:tmux:smoke": "npm run test-compile && node scripts/run-ai-session-tmux-smoke-checks.js",
         "test:architecture-baseline": "node scripts/run-performance-architecture-baseline-checks.js",
         "test:release-notes": "node scripts/run-release-notes-checks.js",
         "test:release-packaging": "node scripts/run-release-packaging-checks.js",

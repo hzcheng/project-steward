@@ -4,11 +4,17 @@ import type { AiSessionProviderId } from '../models';
 import type { AiSessionProvider, AiSessionProviderDefinition, AiSessionService } from './types';
 import {
     buildClaudeNewSessionCommand,
+    buildClaudeNewSessionLaunchSpec,
     buildClaudeResumeCommand,
+    buildClaudeResumeLaunchSpec,
     buildCodexNewSessionCommand,
+    buildCodexNewSessionLaunchSpec,
     buildCodexResumeCommand,
+    buildCodexResumeLaunchSpec,
     buildKimiNewSessionCommand,
+    buildKimiNewSessionLaunchSpec,
     buildKimiResumeCommand,
+    buildKimiResumeLaunchSpec,
 } from './commandBuilders';
 
 export const AI_SESSION_PROVIDER_IDS: AiSessionProviderId[] = ['codex', 'kimi', 'claude'];
@@ -24,6 +30,8 @@ export const AI_SESSION_PROVIDER_DEFINITIONS: Record<AiSessionProviderId, AiSess
         projectSessionsKey: 'codexSessions',
         projectSessionsUnavailableKey: 'codexSessionsUnavailable',
         terminalCwdFields: ['cwd'],
+        buildResumeLaunchSpec: buildCodexResumeLaunchSpec,
+        buildNewSessionLaunchSpec: (cwd, _title, markerPath) => buildCodexNewSessionLaunchSpec(cwd, null, markerPath),
         buildResumeCommand: buildCodexResumeCommand,
         buildNewSessionCommand: (cwd, _title, markerPath) => buildCodexNewSessionCommand(cwd, null, markerPath),
     },
@@ -37,6 +45,8 @@ export const AI_SESSION_PROVIDER_DEFINITIONS: Record<AiSessionProviderId, AiSess
         projectSessionsKey: 'kimiSessions',
         projectSessionsUnavailableKey: 'kimiSessionsUnavailable',
         terminalCwdFields: ['workDir', 'cwd'],
+        buildResumeLaunchSpec: buildKimiResumeLaunchSpec,
+        buildNewSessionLaunchSpec: (cwd, _title, markerPath) => buildKimiNewSessionLaunchSpec(cwd, null, markerPath),
         buildResumeCommand: buildKimiResumeCommand,
         buildNewSessionCommand: (cwd, _title, markerPath) => buildKimiNewSessionCommand(cwd, null, markerPath),
     },
@@ -50,6 +60,8 @@ export const AI_SESSION_PROVIDER_DEFINITIONS: Record<AiSessionProviderId, AiSess
         projectSessionsKey: 'claudeSessions',
         projectSessionsUnavailableKey: 'claudeSessionsUnavailable',
         terminalCwdFields: ['workDir', 'cwd'],
+        buildResumeLaunchSpec: buildClaudeResumeLaunchSpec,
+        buildNewSessionLaunchSpec: buildClaudeNewSessionLaunchSpec,
         buildResumeCommand: buildClaudeResumeCommand,
         buildNewSessionCommand: buildClaudeNewSessionCommand,
     },

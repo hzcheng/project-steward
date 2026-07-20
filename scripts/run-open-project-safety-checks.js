@@ -15,6 +15,7 @@ Module._load = function (request, parent, isMain) {
 };
 const protocol = require('../out/openProjects/protocol');
 const projection = require('../out/openProjects/projection');
+const attentionProject = require('../out/aiSessions/attentionProject');
 const { default: OpenProjectBridgeClient } = require('../out/openProjects/bridgeClient');
 const { OpenProjectDashboardController } = require('../out/openProjects/dashboardController');
 const { OpenProjectWorkspaceController } = require('../out/openProjects/workspaceController');
@@ -292,6 +293,40 @@ function runOpenProjectPublicationChecks() {
     assert.strictEqual(replaced.projects[0].uri, exactWindowUri);
     assert.strictEqual(publication.projects[0].uri, 'vscode-remote://dev-container%2Bcurrent/workspaces/AiToEarn');
     assert.deepStrictEqual(replaceOpenProjectPublicationUris(publication, []), publication);
+}
+
+function runRemoteAttentionIdentityChecks() {
+    const localPath = '/workspaces/reddb-dual-active';
+    const remoteUri = 'vscode-remote://dev-container%2Btarget/workspaces/reddb-dual-active';
+    const attentionProjectId = attentionProject.getAttentionProjectKey(localPath);
+    const publication = makePublication({
+        projects: [makeRecord({ uri: localPath, remoteType: 'devContainer' })],
+    });
+    const replaced = replaceOpenProjectPublicationUris(publication, [remoteUri]);
+    assert.strictEqual(replaced.projects[0].uri, remoteUri);
+
+    const cards = projection.projectOpenProjectCards([], makeAggregate([
+        makeRegistration(OTHER, 4000, remoteUri, { projects: replaced.projects }),
+    ]), SELF);
+    assert.strictEqual(cards[0].path, remoteUri);
+
+    const annotated = attentionProject.withAttentionProjects(cards, {
+        protocolVersion: 1,
+        aggregateRevision: 'a'.repeat(64),
+        generatedAtMs: 10,
+        sessions: [{
+            projectId: attentionProjectId,
+            sessionKey: 'codex:019f7d85-3b51-7b82-8590-02409fcdffcd',
+            eventIds: ['event-remote'],
+            reasons: ['completed'],
+            observedAtMs: 9,
+        }],
+    });
+    assert.strictEqual(
+        annotated[0].aiSessionAttentionCount,
+        1,
+        'OTHER WINDOWS must derive the workspace-host attention identity from its remote URI'
+    );
 }
 
 function runIdentityChecks() {
@@ -2094,6 +2129,7 @@ async function runCoordinatorWiringChecks() {
 async function main() {
     runProtocolChecks();
     runOpenProjectPublicationChecks();
+    runRemoteAttentionIdentityChecks();
     runIdentityChecks();
     runRecordChecks();
     runProjectionChecks();

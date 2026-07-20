@@ -59,11 +59,29 @@ Use the star on each project card to pin or unpin a project. Favorites appear in
 
 ### AI Sessions
 
-Open a current-workspace project card to switch between `ACTIVE` and `SESSIONS`. `ACTIVE` collects every Codex, Kimi, and Claude session that is open in a live VS Code terminal. `SESSIONS` keeps the complete history for the selected provider, including sessions that are already active. Clicking an active session focuses its terminal; clicking an inactive history entry resumes it.
+Open a current-workspace project card to switch between `ACTIVE` and `SESSIONS`. `ACTIVE` collects every live Codex, Kimi, and Claude runtime, including detached managed tmux runtimes. `SESSIONS` keeps the complete history for the selected provider, including sessions that are already active. Clicking an active session focuses or attaches its terminal; clicking an inactive history entry resumes it.
 
 Use `NEW` to choose Codex, Kimi, or Claude explicitly before Project Steward opens the terminal. Active sessions must be closed before they can be archived.
 
-Selecting a session opens a VS Code terminal and runs the matching resume command for that provider. Project Steward avoids opening duplicate terminals for the same session. If a matching terminal is still running, it focuses that terminal; if the prior session terminal has completed, it reuses the terminal and runs the resume command again.
+Direct Terminal remains the default. In this mode, selecting a session opens a VS Code terminal and runs the matching resume command for that provider. Project Steward avoids opening duplicate terminals for the same session. If a matching terminal is still running, it focuses that terminal; if the prior session terminal has completed, it reuses the terminal and runs the resume command again.
+
+### Persistent tmux runtimes
+
+Set `projectSteward.aiSessionTerminalMode` to `tmux` to run new and resumed AI sessions in managed tmux targets. A quiet `tmux` badge identifies these runtimes in `ACTIVE`, even after the global mode or layout changes. Project Steward always reuses a live runtime before consulting the current creation preference.
+
+The default `project` layout creates one managed tmux session per project card and one window per AI session. It keeps one attach terminal per project in each VS Code extension instance. The optional `session` layout creates an independent tmux session and attach terminal for each AI session.
+
+`Detach Terminal…` closes only the VS Code viewer. The provider process and its `ACTIVE` row remain alive in tmux, and selecting the row attaches again without restarting the provider. Project Steward does not provide a force-kill action; attach and exit the provider normally when you want it to stop.
+
+If discovery finds more than one verified live runtime for the same AI session, the row shows `Runtime conflict` and hides Close/Detach. Selecting it opens a runtime chooser that identifies Direct versus tmux, layout, attachment state, and the exact terminal or tmux target. Metadata or name-collision diagnostics are never offered as runtime targets and are scoped to their owning project; a collision with no verified runtime produces a safe status announcement and no focus action. Cancelling or choosing a runtime that changes before the forced refresh also performs no action.
+
+If a tmux discovery refresh fails, Project Steward keeps the last successful runtime snapshot visible with a quiet `stale` label. Selecting the row retries discovery; one failed tmux command never declares the provider completed or stopped.
+
+Tmux persistence is bounded by the execution host: the computer must remain awake and running, and an SSH host, WSL distribution, or Dev Container must remain available. Laptop sleep, host shutdown, and container stop suspend or terminate work according to that environment.
+
+Project Steward never silently falls back to a Direct Terminal when tmux is unavailable. The warning lets you use a VS Code terminal for that operation or open Settings. If a previous tmux runtime cannot be verified, the explicit Direct fallback includes a duplicate-runtime warning.
+
+In the `project` layout, tmux owns one shared current window. If multiple VS Code windows or other tmux clients attach to the same managed project session, selecting a window in one client changes the window shown by the others.
 
 You can also create, rename locally, pin, copy session IDs, and archive sessions from the session list to keep the panel manageable.
 
@@ -97,6 +115,10 @@ AI session discovery reads the provider data available to the extension host:
 - Dev Container sessions require Project Steward to be installed or running in that Dev Container environment
 
 If a Dev Container project opens correctly but its AI sessions do not appear, install Project Steward in the Dev Container and reload the window.
+
+Tmux is resolved and run by the active extension host. Install tmux on the local machine for a local window, on the SSH host for Remote SSH, inside the Dev Container for a container workspace, or inside WSL for a WSL workspace. The executable setting is machine-scoped, so each host can use its own `PATH` or absolute path.
+
+Native Windows extension hosts are not supported by the tmux backend in this release. Use Project Steward from WSL, Remote SSH, or a Dev Container to run tmux on a POSIX extension host. Direct Terminal mode continues to work on native Windows.
 
 ## Syncing Projects
 
@@ -145,6 +167,22 @@ Common options:
 - `projectSteward.customProjectPathColor`
 - `projectSteward.customCss`
 
+AI runtime options (all machine-scoped):
+
+- `projectSteward.aiSessionTerminalMode`: `vscode` (default) or `tmux`; affects creation only and never migrates a live runtime.
+- `projectSteward.aiSessionTmuxLayout`: `project` (default, one project session with AI windows) or `session` (one tmux session per AI session).
+- `projectSteward.aiSessionTmuxPath`: one executable name resolved through the extension host's `PATH`, or one absolute executable path. Do not add arguments or shell syntax.
+
+Example:
+
+```json
+{
+  "projectSteward.aiSessionTerminalMode": "tmux",
+  "projectSteward.aiSessionTmuxLayout": "project",
+  "projectSteward.aiSessionTmuxPath": "/usr/bin/tmux"
+}
+```
+
 The UI uses VS Code theme colors by default, so it should fit both light and dark themes.
 
 ## Development
@@ -171,6 +209,18 @@ Run webpack for local extension development:
 
 ```bash
 npm run webpack
+```
+
+Run the fake-tmux suite used by ordinary safety CI:
+
+```bash
+npm run test:tmux
+```
+
+Run the opt-in real tmux smoke test against a unique isolated server (never the user's default tmux server):
+
+```bash
+PROJECT_STEWARD_TMUX_PATH=/usr/bin/tmux npm run test:tmux:smoke
 ```
 
 Package, test, and install locally:

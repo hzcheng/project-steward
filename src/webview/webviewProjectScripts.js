@@ -114,7 +114,8 @@ function restoreAiSessionViewState(projectDiv, viewState, requestedTab) {
             && (!viewState.focusedRow.panel || panel?.getAttribute('data-ai-session-panel') === viewState.focusedRow.panel);
     });
     var selectedPanel = projectDiv.querySelector('[data-ai-session-panel="' + normalizeAiSessionTab(requestedTab) + '"]');
-    (match || selectedPanel?.querySelector('.codex-session-row') || selectedTab)?.focus();
+    var rowToFocus = match || selectedPanel?.querySelector('.codex-session-row');
+    (rowToFocus?.querySelector('.ai-session-primary-action') || selectedTab)?.focus();
 }
 
 function restoreAiSessionListScroll(list, requestedScrollTop) {
@@ -594,22 +595,26 @@ function initProjects() {
             return true;
         }
 
-        var closeTerminalAction = target.closest('[data-action="close-ai-session-terminal"]');
-        if (closeTerminalAction) {
-            var closeRow = closeTerminalAction.closest('.codex-session-row[data-session-provider]');
-            var closeProvider = closeRow && closeRow.getAttribute('data-session-provider');
-            if (closeRow && isAiSessionProvider(closeProvider)) {
-                var closeMessage = {
-                    type: 'close-ai-session-terminal',
+        var terminalAction = target.closest('[data-action="close-ai-session-terminal"], [data-action="detach-ai-session-terminal"]');
+        if (terminalAction) {
+            var terminalRow = terminalAction.closest('.codex-session-row[data-session-provider][data-session-backend]');
+            var terminalProvider = terminalRow && terminalRow.getAttribute('data-session-provider');
+            var terminalBackend = terminalRow && terminalRow.getAttribute('data-session-backend');
+            var requestedDetach = terminalAction.getAttribute('data-action') === 'detach-ai-session-terminal';
+            if (terminalRow && isAiSessionProvider(terminalProvider)
+                && ((requestedDetach && terminalBackend === 'tmux')
+                    || (!requestedDetach && terminalBackend === 'vscode'))) {
+                var terminalMessage = {
+                    type: requestedDetach ? 'detach-ai-session-terminal' : 'close-ai-session-terminal',
                     projectId,
-                    provider: closeProvider,
+                    provider: terminalProvider,
                 };
-                if (closeRow.hasAttribute('data-session-pending')) {
-                    closeMessage.pendingCreatedAt = closeRow.getAttribute('data-pending-created-at');
+                if (terminalRow.hasAttribute('data-session-pending')) {
+                    terminalMessage.pendingCreatedAt = terminalRow.getAttribute('data-pending-created-at');
                 } else {
-                    closeMessage.sessionId = closeRow.getAttribute('data-session-id');
+                    terminalMessage.sessionId = terminalRow.getAttribute('data-session-id');
                 }
-                window.vscode.postMessage(closeMessage);
+                window.vscode.postMessage(terminalMessage);
             }
             return true;
         }
@@ -659,7 +664,9 @@ function initProjects() {
             return true;
         }
 
-        var pendingSessionRow = target.closest('.codex-session-row[data-session-pending]');
+        var primarySessionAction = target.closest('[data-action="activate-ai-session"]');
+        var pendingSessionRow = primarySessionAction
+            ? primarySessionAction.closest('.codex-session-row[data-session-pending]') : null;
         if (pendingSessionRow) {
             var pendingProvider = pendingSessionRow.getAttribute('data-session-provider');
             var pendingCreatedAt = pendingSessionRow.getAttribute('data-pending-created-at');
@@ -674,9 +681,10 @@ function initProjects() {
             return true;
         }
 
-        var sessionRow = target.closest('.codex-session-row[data-session-id]');
+        var sessionRow = primarySessionAction
+            ? primarySessionAction.closest('.codex-session-row[data-session-id]') : null;
         if (!sessionRow)
-            return false;
+            return !!target.closest('.codex-session-row');
 
         var sessionId = sessionRow.getAttribute("data-session-id");
         if (!sessionId)
@@ -1181,6 +1189,8 @@ function initProjects() {
     var contextMenuAiSessionProvider = null;
     var contextMenuAiSessionProjectId = null;
     var contextMenuAiSessionActive = false;
+    var contextMenuAiSessionBackend = null;
+    var contextMenuAiSessionConflict = false;
     var contextMenuAiSessionOrigin = null;
     var latestAiSessionUpdateSequence = 0;
 
@@ -1213,12 +1223,14 @@ function initProjects() {
 
         var sessionRow = e.target.closest('.codex-session-row[data-session-id][data-session-provider]');
         if (sessionRow) {
-            contextMenuAiSessionOrigin = sessionRow;
+            contextMenuAiSessionOrigin = sessionRow.querySelector('.ai-session-primary-action') || sessionRow;
             contextMenuAiSessionId = sessionRow.getAttribute("data-session-id");
             contextMenuAiSessionProvider = sessionRow.getAttribute("data-session-provider");
             var sessionProjectDiv = sessionRow.closest('.project[data-id]');
             contextMenuAiSessionProjectId = sessionProjectDiv ? sessionProjectDiv.getAttribute("data-id") : null;
             contextMenuAiSessionActive = sessionRow.hasAttribute('data-session-active');
+            contextMenuAiSessionBackend = sessionRow.getAttribute('data-session-backend') || 'vscode';
+            contextMenuAiSessionConflict = sessionRow.hasAttribute('data-session-conflict');
             if (!contextMenuAiSessionId || !isAiSessionProvider(contextMenuAiSessionProvider))
                 return;
 
@@ -1230,7 +1242,16 @@ function initProjects() {
             var archiveMenuItem = sessionContextMenuElement.querySelector('[data-action="archive"]');
             var closeMenuItem = sessionContextMenuElement.querySelector('[data-action="close-terminal"]');
             if (archiveMenuItem) archiveMenuItem.classList.toggle('disabled', contextMenuAiSessionActive);
-            if (closeMenuItem) closeMenuItem.classList.toggle('disabled', !contextMenuAiSessionActive);
+            if (closeMenuItem) {
+                var terminalActionLabel = contextMenuAiSessionBackend === 'tmux'
+                    ? 'Detach Terminal…' : 'Close Terminal…';
+                closeMenuItem.textContent = terminalActionLabel;
+                closeMenuItem.setAttribute('aria-label', terminalActionLabel);
+                closeMenuItem.toggleAttribute('hidden', contextMenuAiSessionConflict);
+                closeMenuItem.classList.toggle(
+                    'disabled', !contextMenuAiSessionActive || contextMenuAiSessionConflict
+                );
+            }
 
             showContextMenu(sessionContextMenuElement, e);
             if (e.keyboardTrigger) {
@@ -1381,9 +1402,10 @@ function initProjects() {
                 });
                 break;
             case 'close-terminal':
-                if (!contextMenuAiSessionActive) break;
+                if (!contextMenuAiSessionActive || contextMenuAiSessionConflict) break;
                 window.vscode.postMessage({
-                    type: 'close-ai-session-terminal',
+                    type: contextMenuAiSessionBackend === 'tmux'
+                        ? 'detach-ai-session-terminal' : 'close-ai-session-terminal',
                     projectId: contextMenuAiSessionProjectId,
                     provider: contextMenuAiSessionProvider,
                     sessionId: contextMenuAiSessionId,
@@ -1402,6 +1424,8 @@ function initProjects() {
         contextMenuAiSessionProvider = null;
         contextMenuAiSessionProjectId = null;
         contextMenuAiSessionActive = false;
+        contextMenuAiSessionBackend = null;
+        contextMenuAiSessionConflict = false;
         contextMenuAiSessionOrigin = null;
         document.querySelectorAll(".custom-context-menu").forEach(element =>
             element.classList.remove("visible")
@@ -2103,12 +2127,14 @@ function initProjects() {
         var interactiveChild = e.target && e.target.closest
             ? e.target.closest('button, input, select, textarea, a[href]')
             : null;
-        if (sessionRow && !interactiveChild
+        var primarySessionAction = e.target && e.target.closest
+            ? e.target.closest('.ai-session-primary-action') : null;
+        if (sessionRow && (!interactiveChild || primarySessionAction)
             && (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey))) {
             e.preventDefault();
             var sessionRowRect = sessionRow.getBoundingClientRect();
             onContextMenu({
-                target: sessionRow,
+                target: primarySessionAction || sessionRow,
                 preventDefault: () => {},
                 clientX: sessionRowRect.left + 8,
                 clientY: sessionRowRect.top + 8,
@@ -2116,16 +2142,6 @@ function initProjects() {
             });
             return;
         }
-        if (sessionRow && !interactiveChild && e.key === 'Enter') {
-            var rowProject = sessionRow.closest('.project[data-id]');
-            var rowProjectId = rowProject && rowProject.getAttribute('data-id');
-            if (rowProjectId) {
-                e.preventDefault();
-                onTriggerAiSessionAction(sessionRow, rowProjectId);
-            }
-            return;
-        }
-
         if (e.key === "Escape") {
             var editForm = e.target && e.target.closest ? e.target.closest('.todo-edit-form') : null;
             if (editForm) {

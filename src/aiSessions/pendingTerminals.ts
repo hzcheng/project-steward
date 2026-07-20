@@ -4,6 +4,7 @@ import type { AiSessionProviderId, CodexSession } from '../models';
 import { compareAiSessionUpdatedAt } from './sessionHelpers';
 import { normalizeAiSessionProjectPath } from './projectCandidates';
 import { getAiSessionComparableCwd } from './sessionPaths';
+import type { AiSessionPendingRuntimeSnapshot } from './runtimeTypes';
 import type { AiSessionProviderDefinition, AiSessionReadResult } from './types';
 
 type AiSessionPendingTerminalProvider = Pick<
@@ -11,12 +12,10 @@ type AiSessionPendingTerminalProvider = Pick<
     'id' | 'terminalNamePrefix' | 'projectSessionsKey' | 'terminalCwdFields'
 >;
 
-export interface PendingAiSessionTerminalMatchInput {
-    provider: AiSessionProviderId;
-    cwd: string;
-    createdAt: string;
-    excludedSessionIds: string[];
-}
+export type PendingAiSessionRuntimeMatchInput = Pick<
+    AiSessionPendingRuntimeSnapshot,
+    'identity' | 'createdAt' | 'excludedSessionIds'
+>;
 
 export function getAiSessionIdsForCwd(
     providerId: AiSessionProviderId,
@@ -36,7 +35,7 @@ export function getAiSessionIdsForCwd(
 }
 
 export function findPendingAiSessionTerminalMatch(
-    pendingTerminal: PendingAiSessionTerminalMatchInput,
+    pendingRuntime: PendingAiSessionRuntimeMatchInput,
     sessionResult: AiSessionReadResult,
     claimedSessionKeys: Set<string>,
     getSessionKey: (providerId: AiSessionProviderId, sessionId: string) => string,
@@ -46,14 +45,19 @@ export function findPendingAiSessionTerminalMatch(
         return null;
     }
 
-    let createdAt = Date.parse(pendingTerminal.createdAt);
+    const providerId = pendingRuntime.identity.provider;
+    const comparableCwd = normalizeAiSessionProjectPath(pendingRuntime.identity.cwd);
+    const createdAt = Date.parse(pendingRuntime.createdAt);
+    if (!comparableCwd || !Number.isFinite(createdAt)) {
+        return null;
+    }
     return sessionResult.sessions
         .filter(session => {
-            let sessionKey = getSessionKey(pendingTerminal.provider, session.id);
-            let sessionCwd = normalizeAiSessionProjectPath(getAiSessionComparableCwd(pendingTerminal.provider, session, providers));
-            let updatedAt = session.updatedAt ? Date.parse(session.updatedAt) : NaN;
-            return sessionCwd === pendingTerminal.cwd
-                && !pendingTerminal.excludedSessionIds.includes(session.id)
+            const sessionKey = getSessionKey(providerId, session.id);
+            const sessionCwd = normalizeAiSessionProjectPath(getAiSessionComparableCwd(providerId, session, providers));
+            const updatedAt = session.updatedAt ? Date.parse(session.updatedAt) : NaN;
+            return sessionCwd === comparableCwd
+                && !pendingRuntime.excludedSessionIds.includes(session.id)
                 && !claimedSessionKeys.has(sessionKey)
                 && !isNaN(updatedAt)
                 && updatedAt >= createdAt;
