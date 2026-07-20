@@ -1259,12 +1259,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 .some(runtime => runtime.terminal === terminal);
             aiSessionRuntimeCoordinator.handleClosedTerminal(terminal);
             aiSessionExecutionController.evaluate();
-            closedSessions.forEach(identity => {
-                void runSafeAiSessionRuntimeLifecycleTask(
-                    'acknowledge-closed-attention',
-                    () => acknowledgeAiSessionAttention(identity)
-                );
-            });
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
             if (closedSessions.length || hadRuntimeClient) {
                 refreshAiSessionViewsIncrementally();
