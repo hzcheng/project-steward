@@ -2,7 +2,7 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
-## [Unreleased]
+## [2.1.3] 2026-07-20
 
 ### Added
 
