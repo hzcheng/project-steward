@@ -18,6 +18,7 @@ import type {
 } from './pendingTerminalResolver';
 import { getAiSessionScanMaxFiles } from './scanOptions';
 import type { AiSessionPendingRuntimeSnapshot, AiSessionRuntimeSnapshot } from './runtimeTypes';
+import { cloneAiSessionRuntimeIdentity } from './runtimeTypes';
 import type {
     AiSessionAssignmentCandidate,
     AiSessionProviderDefinition,
@@ -109,6 +110,7 @@ export interface AiSessionProjectHydrationControllerOptions<TTerminal = unknown>
         }): void;
     };
     runtimeCoordinator?: ProjectHydrationRuntimeCoordinator<TTerminal>;
+    getWorkspaceScopeIdentity?: () => string | null;
     setAlias: (providerId: AiSessionProviderId, sessionId: string, alias: string) => void;
     syncActiveTerminal: () => void;
     onDidPromoteRuntime?: () => void;
@@ -316,72 +318,28 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
         claimedSessionKeys: ReadonlySet<string>;
     } {
         if (this.options.runtimeCoordinator) {
+            const workspaceScopeIdentity = this.options.getWorkspaceScopeIdentity?.();
+            const inCurrentScope = <TRuntime extends AiSessionRuntimeSnapshot<TTerminal>>(
+                runtime: TRuntime
+            ): boolean => this.options.getWorkspaceScopeIdentity === undefined
+                || !!workspaceScopeIdentity
+                    && runtime.identity.workspaceScopeIdentity === workspaceScopeIdentity;
             return {
-                activeRuntimes: this.options.runtimeCoordinator.getActive().map(cloneRuntime),
-                pendingRuntimes: this.options.runtimeCoordinator.getPending().map(clonePendingRuntime),
+                activeRuntimes: this.options.runtimeCoordinator.getActive()
+                    .filter(inCurrentScope).map(cloneRuntime),
+                pendingRuntimes: this.options.runtimeCoordinator.getPending()
+                    .filter(inCurrentScope).map(clonePendingRuntime),
                 runtimeCoordinator: this.options.runtimeCoordinator,
                 claimedSessionKeys: new Set(),
             };
         }
 
-        const legacyPendingTerminals = this.options.terminalService.getPendingTerminals();
-        const pendingById = new Map<string, LegacyPendingTerminalResolution<TTerminal>>();
-        const pendingRuntimes = legacyPendingTerminals.map((pending, index) => {
-            const pendingId = `legacy:${pending.provider}:${pending.createdAt}:${index}`;
-            pendingById.set(pendingId, pending);
-            return {
-                identity: {
-                    provider: pending.provider,
-                    projectKey: pending.cwd,
-                    cwd: pending.cwd,
-                    pendingId,
-                },
-                backend: 'vscode' as const,
-                state: 'pending' as const,
-                markerPath: pending.markerPath,
-                runStartedAtMs: finiteTimestamp(pending.createdAt),
-                attached: true,
-                terminal: pending.terminal,
-                createdAt: pending.createdAt,
-                excludedSessionIds: [...pending.excludedSessionIds],
-                ...(pending.title === undefined ? {} : { title: pending.title }),
-            };
-        });
         const runtimeCoordinator: PendingAiSessionRuntimeCoordinator<TTerminal> = {
-            promotePending: (pendingId, sessionId) => {
-                const pending = pendingById.get(pendingId);
-                if (!pending) {
-                    return [];
-                }
-                this.options.terminalService.track(pending.provider, sessionId, {
-                    terminal: pending.terminal,
-                    markerPath: pending.markerPath,
-                    runStartedAtMs: finiteTimestamp(pending.createdAt),
-                    cwd: pending.cwd,
-                });
-                this.options.terminalService.replacePendingTerminals(
-                    this.options.terminalService.getPendingTerminals()
-                        .filter(candidate => candidate.terminal !== pending.terminal)
-                );
-                return [{
-                    identity: {
-                        provider: pending.provider,
-                        projectKey: pending.cwd,
-                        cwd: pending.cwd,
-                        sessionId,
-                    },
-                    backend: 'vscode',
-                    state: 'active',
-                    markerPath: pending.markerPath,
-                    runStartedAtMs: finiteTimestamp(pending.createdAt),
-                    attached: true,
-                    terminal: pending.terminal,
-                }];
-            },
+            promotePending: () => [],
         };
         return {
             activeRuntimes: [],
-            pendingRuntimes,
+            pendingRuntimes: [],
             runtimeCoordinator,
             claimedSessionKeys: this.options.terminalService.getTrackedSessionKeys(this.options.getSessionKey),
         };
@@ -613,7 +571,7 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
                 }))
                 .sort((left, right) => left.sessionKey < right.sessionKey ? -1 : left.sessionKey > right.sessionKey ? 1 : 0),
             activeRuntimes: input.activeRuntimes.map(runtime => ({
-                identity: { ...runtime.identity },
+                identity: cloneAiSessionRuntimeIdentity(runtime.identity),
                 backend: runtime.backend,
                 state: runtime.state,
                 conflict: runtime.state === 'conflict',
@@ -623,7 +581,7 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
                 ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
             })),
             pendingRuntimes: input.pendingRuntimes.map(pending => ({
-                identity: { ...pending.identity },
+                identity: cloneAiSessionRuntimeIdentity(pending.identity),
                 backend: pending.backend,
                 state: pending.state,
                 markerPath: pending.markerPath,
@@ -658,7 +616,7 @@ function cloneRuntime<TTerminal>(
 ): AiSessionRuntimeSnapshot<TTerminal> {
     return {
         ...runtime,
-        identity: { ...runtime.identity },
+        identity: cloneAiSessionRuntimeIdentity(runtime.identity),
         ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
     };
 }
@@ -684,7 +642,9 @@ function getPendingIdentityKey<TTerminal>(
 ): string {
     return JSON.stringify([
         pending.identity.provider,
-        pending.identity.projectKey,
+        pending.identity.workspaceScopeIdentity,
+        pending.identity.workspaceNavigationIdentity,
+        pending.identity.workspaceRootHostPaths.slice().sort(),
         pending.identity.cwd,
         pending.identity.pendingId || '',
     ]);

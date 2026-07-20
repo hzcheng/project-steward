@@ -9,8 +9,12 @@ import type {
     AiSessionTmuxLayout,
     AiSessionTmuxLocator,
 } from './runtimeTypes';
+import {
+    getAiSessionRuntimeRootSnapshotKey,
+    isValidAiSessionRuntimeIdentity,
+} from './runtimeTypes';
 
-const METADATA_VERSION = 1;
+const METADATA_VERSION = 2;
 const MAX_ID_LENGTH = 512;
 const MAX_MARKER_LENGTH = 4096;
 const MAX_CREATED_AT_LENGTH = 200;
@@ -20,7 +24,10 @@ export const TMUX_METADATA_OPTIONS = {
     managed: '@project-steward-managed',
     version: '@project-steward-version',
     layout: '@project-steward-layout',
-    projectKey: '@project-steward-project-key',
+    workspaceScopeIdentity: '@project-steward-workspace-scope-identity',
+    workspaceNavigationIdentity: '@project-steward-workspace-navigation-identity',
+    workspaceRootHostPaths: '@project-steward-workspace-root-host-paths',
+    cwd: '@project-steward-cwd',
     provider: '@project-steward-provider',
     sessionId: '@project-steward-session-id',
     pendingId: '@project-steward-pending-id',
@@ -34,8 +41,8 @@ export class ProjectTmuxLayout {
         const sessionId = requireIdentityId(identity.sessionId, 'sessionId');
         return {
             layout: 'project',
-            sessionName: getProjectSessionName(identity.projectKey),
-            windowName: `ai-${identity.provider}-${hashIdentityId(identity.provider, sessionId)}`,
+            sessionName: getProjectSessionName(identity.workspaceScopeIdentity),
+            windowName: `ai-${identity.provider}-${hashIdentityId(identity, sessionId)}`,
         };
     }
 
@@ -44,8 +51,8 @@ export class ProjectTmuxLayout {
         const pendingId = requireIdentityId(identity.pendingId, 'pendingId');
         return {
             layout: 'project',
-            sessionName: getProjectSessionName(identity.projectKey),
-            windowName: `pending-${identity.provider}-${hashIdentityId(identity.provider, pendingId)}`,
+            sessionName: getProjectSessionName(identity.workspaceScopeIdentity),
+            windowName: `pending-${identity.provider}-${hashIdentityId(identity, pendingId)}`,
         };
     }
 }
@@ -56,7 +63,7 @@ export class SessionTmuxLayout {
         const sessionId = requireIdentityId(identity.sessionId, 'sessionId');
         return {
             layout: 'session',
-            sessionName: `project-steward-s-${identity.provider}-${hashIdentityId(identity.provider, sessionId)}`,
+            sessionName: `project-steward-s-${identity.provider}-${hashIdentityId(identity, sessionId)}`,
         };
     }
 
@@ -65,7 +72,7 @@ export class SessionTmuxLayout {
         const pendingId = requireIdentityId(identity.pendingId, 'pendingId');
         return {
             layout: 'session',
-            sessionName: `project-steward-pending-${identity.provider}-${hashIdentityId(identity.provider, pendingId)}`,
+            sessionName: `project-steward-pending-${identity.provider}-${hashIdentityId(identity, pendingId)}`,
         };
     }
 }
@@ -79,7 +86,16 @@ export function getTmuxRuntimeKey(identity: AiSessionRuntimeIdentity): string {
     }
     const kind = hasSessionId ? 'session' : 'pending';
     const id = requireIdentityId(hasSessionId ? identity.sessionId : identity.pendingId, `${kind}Id`);
-    return JSON.stringify([METADATA_VERSION, identity.provider, identity.projectKey, kind, id]);
+    return JSON.stringify([
+        METADATA_VERSION,
+        identity.provider,
+        identity.workspaceScopeIdentity,
+        identity.workspaceNavigationIdentity,
+        JSON.parse(getAiSessionRuntimeRootSnapshotKey(identity)),
+        identity.cwd,
+        kind,
+        id,
+    ]);
 }
 
 export function parseManagedTmuxMetadata(values: unknown): AiSessionManagedTmuxMetadata | null {
@@ -89,7 +105,13 @@ export function parseManagedTmuxMetadata(values: unknown): AiSessionManagedTmuxM
     const record = values as Record<string, unknown>;
     if (record.managed !== '1' || record.version !== String(METADATA_VERSION)
         || !isTmuxLayout(record.layout) || !isAiSessionProviderIdValue(record.provider)
-        || !isBoundedString(record.projectKey, MAX_ID_LENGTH)) {
+        || !isBoundedString(record.workspaceScopeIdentity, MAX_ID_LENGTH)
+        || !isBoundedString(record.workspaceNavigationIdentity, MAX_MARKER_LENGTH)
+        || !isBoundedString(record.cwd, MAX_MARKER_LENGTH)) {
+        return null;
+    }
+    const workspaceRootHostPaths = parseWorkspaceRootHostPaths(record.workspaceRootHostPaths);
+    if (!workspaceRootHostPaths) {
         return null;
     }
 
@@ -107,7 +129,10 @@ export function parseManagedTmuxMetadata(values: unknown): AiSessionManagedTmuxM
     const base: AiSessionManagedTmuxMetadataBase = {
         version: METADATA_VERSION,
         layout: record.layout,
-        projectKey: record.projectKey,
+        workspaceScopeIdentity: record.workspaceScopeIdentity,
+        workspaceNavigationIdentity: record.workspaceNavigationIdentity,
+        workspaceRootHostPaths,
+        cwd: record.cwd,
         provider: record.provider,
         ...(createdAt !== undefined ? { createdAt } : {}),
         ...(marker !== undefined ? { marker } : {}),
@@ -116,20 +141,22 @@ export function parseManagedTmuxMetadata(values: unknown): AiSessionManagedTmuxM
         if (record.pendingId !== undefined || !isBoundedString(record.sessionId, MAX_ID_LENGTH)) {
             return null;
         }
-        return { ...base, sessionId: record.sessionId };
+        const result = { ...base, sessionId: record.sessionId };
+        return isValidAiSessionRuntimeIdentity(result) ? result : null;
     }
     if (!isBoundedString(record.pendingId, MAX_ID_LENGTH)) {
         return null;
     }
-    return { ...base, pendingId: record.pendingId };
+    const result = { ...base, pendingId: record.pendingId };
+    return isValidAiSessionRuntimeIdentity(result) ? result : null;
 }
 
-function getProjectSessionName(projectKey: string): string {
-    return `project-steward-p-${hash(projectKey)}`;
+function getProjectSessionName(workspaceScopeIdentity: string): string {
+    return `project-steward-p-${hash(workspaceScopeIdentity)}`;
 }
 
-function hashIdentityId(provider: string, id: string): string {
-    return hash(`${provider}:${id}`);
+function hashIdentityId(identity: AiSessionRuntimeIdentity, id: string): string {
+    return hash(`${identity.workspaceScopeIdentity}:${identity.provider}:${id}`);
 }
 
 function hash(value: string): string {
@@ -140,9 +167,38 @@ function validateIdentityBase(identity: AiSessionRuntimeIdentity): void {
     if (!identity || !isAiSessionProviderIdValue(identity.provider)) {
         throw new Error('Unknown AI session provider.');
     }
-    if (!isBoundedString(identity.projectKey, MAX_ID_LENGTH)) {
-        throw new Error('projectKey must be a non-empty bounded string without control characters.');
+    if (!isValidAiSessionRuntimeIdentity(identity)) {
+        throw new Error('The tmux runtime workspace identity is invalid.');
     }
+}
+
+function parseWorkspaceRootHostPaths(value: unknown): string[] | null {
+    let parsed = value;
+    if (typeof value === 'string') {
+        try {
+            parsed = JSON.parse(value);
+        } catch (_error) {
+            return null;
+        }
+    }
+    if (!Array.isArray(parsed)) {
+        return null;
+    }
+    const identity = {
+        provider: 'codex' as const,
+        workspaceScopeIdentity: 'validation',
+        workspaceNavigationIdentity: 'validation',
+        workspaceRootHostPaths: parsed,
+        cwd: '',
+        sessionId: 'validation',
+    };
+    for (const candidate of parsed) {
+        identity.cwd = typeof candidate === 'string' ? candidate : '';
+        if (isValidAiSessionRuntimeIdentity(identity)) {
+            return [...parsed] as string[];
+        }
+    }
+    return null;
 }
 
 function requireIdentityId(value: unknown, name: string): string {

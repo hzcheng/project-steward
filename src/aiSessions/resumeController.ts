@@ -88,11 +88,11 @@ export interface AiSessionResumeRuntimeControllerOptions<
     TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal
 > extends AiSessionResumeControllerCommonOptions {
     runtimeCoordinator: AiSessionResumeRuntimeCoordinator<TTerminal>;
-    getProjectKey: (project: Project) => string;
     announceStatus: (projectId: string, message: string) => Thenable<unknown> | Promise<unknown>;
     getRuntimeConflict?: (
         providerId: AiSessionProviderId,
-        sessionId: string
+        sessionId: string,
+        workspaceScopeIdentity: string
     ) => AiSessionRuntimeSnapshot<TTerminal> | null;
 }
 
@@ -259,7 +259,9 @@ export class AiSessionResumeController<
         directoryScope: AiSessionDirectoryScope,
         options: AiSessionResumeRuntimeControllerOptions<TTerminal>
     ): Promise<void> {
-        if (options.getRuntimeConflict?.(providerId, session.id)) {
+        if (options.getRuntimeConflict?.(
+            providerId, session.id, directoryScope.workspaceScopeIdentity
+        )) {
             options.refresh();
             await options.announceStatus(
                 project.id,
@@ -271,7 +273,6 @@ export class AiSessionResumeController<
             throw new Error('AI session runtime resume is not configured.');
         }
         const cwd = directoryScope.primaryCwd;
-        const projectKey = options.getProjectKey(project);
         const markerPath = options.getMarkerPath(providerId, session.id);
         const launch = cloneLaunchSpec(
             sessionProvider.buildResumeLaunchSpec(session.id, directoryScope, markerPath)
@@ -280,7 +281,9 @@ export class AiSessionResumeController<
             identity: {
                 provider: providerId,
                 sessionId: session.id,
-                projectKey,
+                workspaceScopeIdentity: directoryScope.workspaceScopeIdentity,
+                workspaceNavigationIdentity: directoryScope.workspaceNavigationIdentity,
+                workspaceRootHostPaths: [...directoryScope.workspaceRootHostPaths],
                 cwd,
             },
             projectName: project.name || 'AI Session',
@@ -352,7 +355,6 @@ function validateControllerOptions<
     }
     if (typeof options.runtimeCoordinator.resume !== 'function'
         || typeof options.resolveDirectoryScope !== 'function'
-        || typeof (options as AiSessionResumeRuntimeControllerOptions<TTerminal>).getProjectKey !== 'function'
         || typeof (options as AiSessionResumeRuntimeControllerOptions<TTerminal>).announceStatus !== 'function') {
         throw new Error('AI session resume runtime controller options are invalid.');
     }

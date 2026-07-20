@@ -10,6 +10,8 @@ import type {
     ActiveAiSessionTerminalResolution,
 } from './activeTerminalHighlight';
 import AiSessionTerminalBindingStore from './terminalBindingStore';
+import type { AiSessionRuntimeIdentity } from './runtimeTypes';
+import { cloneAiSessionRuntimeIdentity } from './runtimeTypes';
 import { getAiSessionTerminalName } from './sessionPaths';
 import { AiSessionLaunchSpec, serializeDirectLaunchCommand } from './launchSpec';
 import type { AiSessionActiveTerminalRuntime, AiSessionDirectoryScope, AiSessionProviderDefinition, AiSessionTerminalEntry } from './types';
@@ -36,6 +38,7 @@ export interface PendingAiSessionTerminal {
     createdAt: string;
     excludedSessionIds: string[];
     title?: string;
+    runtimeIdentity?: AiSessionRuntimeIdentity;
 }
 
 export interface TrackedAiSessionTerminal {
@@ -46,6 +49,7 @@ export interface TrackedAiSessionTerminal {
     runStartedAtMs: number;
     cwd?: string;
     released?: boolean;
+    runtimeIdentity?: AiSessionRuntimeIdentity;
 }
 
 export interface AiSessionRuntimeLaunchOptions {
@@ -157,6 +161,9 @@ export default class AiSessionTerminalService {
     track(providerId: AiSessionProviderId, sessionId: string, entry: AiSessionTerminalEntry<vscode.Terminal>, persist = true) {
         let normalizedEntry = {
             ...entry,
+            ...(entry.runtimeIdentity
+                ? { runtimeIdentity: cloneAiSessionRuntimeIdentity(entry.runtimeIdentity) }
+                : {}),
             runStartedAtMs: Number.isFinite(entry?.runStartedAtMs) ? entry.runStartedAtMs : Date.now(),
         };
         let releasedSessions = this.releasedTerminalSessions.get(normalizedEntry.terminal);
@@ -165,13 +172,17 @@ export default class AiSessionTerminalService {
             this.releasedTerminalSessions.delete(normalizedEntry.terminal);
         }
         this.getTerminalMap(providerId).set(sessionId, normalizedEntry);
-        if (persist) {
+        if (persist && normalizedEntry.runtimeIdentity) {
+            const identity = normalizedEntry.runtimeIdentity;
             this.bindingStore?.setBound(normalizedEntry.terminal.processId, {
                 providerId,
                 sessionId,
+                workspaceScopeIdentity: identity.workspaceScopeIdentity,
+                workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+                workspaceRootHostPaths: [...identity.workspaceRootHostPaths],
+                cwd: identity.cwd,
                 markerPath: normalizedEntry.markerPath,
                 runStartedAtMs: normalizedEntry.runStartedAtMs,
-                ...(normalizedEntry.cwd ? { cwd: normalizedEntry.cwd } : {}),
             });
         }
     }
@@ -192,11 +203,17 @@ export default class AiSessionTerminalService {
         this.markTerminalSessionReleased(entry.terminal, providerId, sessionId);
         this.deleteEntryMarker(entry);
         this.getTerminalMap(providerId).delete(sessionId);
-        this.bindingStore?.setReleased(entry.terminal.processId, {
-            providerId,
-            sessionId,
-            markerPath: entry.markerPath,
-        });
+        if (entry.runtimeIdentity) {
+            this.bindingStore?.setReleased(entry.terminal.processId, {
+                providerId,
+                sessionId,
+                workspaceScopeIdentity: entry.runtimeIdentity.workspaceScopeIdentity,
+                workspaceNavigationIdentity: entry.runtimeIdentity.workspaceNavigationIdentity,
+                workspaceRootHostPaths: [...entry.runtimeIdentity.workspaceRootHostPaths],
+                cwd: entry.runtimeIdentity.cwd,
+                markerPath: entry.markerPath,
+            });
+        }
     }
 
     trackPending(entry: PendingAiSessionTerminal, persist = true) {
@@ -206,6 +223,9 @@ export default class AiSessionTerminalService {
 
         this.pendingTerminals.push({
             ...entry,
+            ...(entry.runtimeIdentity
+                ? { runtimeIdentity: cloneAiSessionRuntimeIdentity(entry.runtimeIdentity) }
+                : {}),
             excludedSessionIds: Array.isArray(entry.excludedSessionIds) ? entry.excludedSessionIds.filter(id => !!id) : [],
         });
         this.pendingTerminals = this.trimPendingTerminals(this.pendingTerminals);
@@ -228,10 +248,17 @@ export default class AiSessionTerminalService {
     }
 
     private persistPendingBinding(entry: PendingAiSessionTerminal, processId: number | PromiseLike<number | undefined>) {
+        if (!entry.runtimeIdentity?.pendingId) {
+            return;
+        }
         this.bindingStore?.setPending(processId, {
             providerId: entry.provider,
+            pendingId: entry.runtimeIdentity.pendingId,
+            workspaceScopeIdentity: entry.runtimeIdentity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: entry.runtimeIdentity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: [...entry.runtimeIdentity.workspaceRootHostPaths],
             markerPath: entry.markerPath,
-            cwd: entry.cwd,
+            cwd: entry.runtimeIdentity.cwd,
             createdAt: entry.createdAt,
             excludedSessionIds: entry.excludedSessionIds || [],
             ...(entry.title === undefined ? {} : { title: entry.title }),
@@ -243,6 +270,9 @@ export default class AiSessionTerminalService {
         return this.pendingTerminals.map(entry => ({
             ...entry,
             excludedSessionIds: [...entry.excludedSessionIds],
+            ...(entry.runtimeIdentity
+                ? { runtimeIdentity: cloneAiSessionRuntimeIdentity(entry.runtimeIdentity) }
+                : {}),
         }));
     }
 
@@ -258,6 +288,9 @@ export default class AiSessionTerminalService {
                     runStartedAtMs: entry.runStartedAtMs,
                     ...(entry.cwd ? { cwd: entry.cwd } : {}),
                     ...(entry.released ? { released: true } : {}),
+                    ...(entry.runtimeIdentity
+                        ? { runtimeIdentity: cloneAiSessionRuntimeIdentity(entry.runtimeIdentity) }
+                        : {}),
                 });
             }
         }
@@ -360,7 +393,15 @@ export default class AiSessionTerminalService {
                     terminal,
                     markerPath: binding.markerPath,
                     runStartedAtMs: binding.runStartedAtMs,
-                    ...(binding.cwd ? { cwd: binding.cwd } : {}),
+                    cwd: binding.cwd,
+                    runtimeIdentity: {
+                        provider: binding.providerId,
+                        sessionId: binding.sessionId,
+                        workspaceScopeIdentity: binding.workspaceScopeIdentity,
+                        workspaceNavigationIdentity: binding.workspaceNavigationIdentity,
+                        workspaceRootHostPaths: [...binding.workspaceRootHostPaths],
+                        cwd: binding.cwd,
+                    },
                 }, false);
                 return;
             }
@@ -378,6 +419,14 @@ export default class AiSessionTerminalService {
                     terminal,
                     markerPath: binding.markerPath,
                     cwd: binding.cwd,
+                    runtimeIdentity: {
+                        provider: binding.providerId,
+                        pendingId: binding.pendingId,
+                        workspaceScopeIdentity: binding.workspaceScopeIdentity,
+                        workspaceNavigationIdentity: binding.workspaceNavigationIdentity,
+                        workspaceRootHostPaths: [...binding.workspaceRootHostPaths],
+                        cwd: binding.cwd,
+                    },
                     createdAt: binding.createdAt,
                     excludedSessionIds: binding.excludedSessionIds,
                     ...(binding.title === undefined ? {} : { title: binding.title }),

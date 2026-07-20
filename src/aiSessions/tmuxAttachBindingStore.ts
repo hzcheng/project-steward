@@ -1,9 +1,10 @@
 'use strict';
 
 import type { AiSessionProviderId } from '../models';
-import type { AiSessionTmuxLayout } from './runtimeTypes';
+import type { AiSessionRuntimeIdentity, AiSessionTmuxLayout } from './runtimeTypes';
+import { cloneAiSessionRuntimeIdentity, isValidAiSessionRuntimeIdentity } from './runtimeTypes';
 
-export const AI_SESSION_TMUX_ATTACH_PROCESS_BINDING_KEY_PREFIX = 'aiSessionTmuxAttachProcessBinding.v1.';
+export const AI_SESSION_TMUX_ATTACH_PROCESS_BINDING_KEY_PREFIX = 'aiSessionTmuxAttachProcessBinding.v2.';
 
 const MAX_ID_LENGTH = 512;
 const MAX_TITLE_LENGTH = 200;
@@ -15,13 +16,17 @@ export interface TmuxAttachBindingState {
 }
 
 export interface TmuxAttachBinding {
-    version: 1;
+    version: 2;
     layout: AiSessionTmuxLayout;
-    projectKey: string;
+    workspaceScopeIdentity: string;
+    workspaceNavigationIdentity: string;
+    workspaceRootHostPaths: string[];
+    cwd: string;
     sessionName: string;
     windowName?: string;
-    provider?: AiSessionProviderId;
+    provider: AiSessionProviderId;
     sessionId?: string;
+    pendingId?: string;
     terminalNamePrefix: string;
 }
 
@@ -43,7 +48,7 @@ export class TmuxAttachBindingStore {
         }
         try {
             const record = validateRecord(this.state.get(getBindingKey(processId), null as unknown));
-            return record ? { ...record } : null;
+            return record ? cloneBinding(record) : null;
         } catch (error) {
             this.reportErrorOnce(error);
             return null;
@@ -55,7 +60,7 @@ export class TmuxAttachBindingStore {
         if (!record) {
             return;
         }
-        this.enqueueWrite(processId, record);
+        this.enqueueWrite(processId, cloneBinding(record));
     }
 
     remove(processId: TmuxAttachProcessId): void {
@@ -73,7 +78,7 @@ export class TmuxAttachBindingStore {
             if (!isProcessId(pid)) {
                 return;
             }
-            await this.state.update(getBindingKey(pid), record ? { ...record } : undefined);
+            await this.state.update(getBindingKey(pid), record ? cloneBinding(record) : undefined);
         }).catch(error => this.reportErrorOnce(error));
     }
 
@@ -116,12 +121,22 @@ function validateRecord(value: unknown): TmuxAttachBinding | null {
         return null;
     }
     const record = value as Record<string, unknown>;
-    if (record.version !== 1 || !isLayout(record.layout)
-        || !isBoundedString(record.projectKey, MAX_ID_LENGTH)
+    if (record.version !== 2 || !isLayout(record.layout)
         || !isBoundedString(record.sessionName, MAX_ID_LENGTH)
         || !isBoundedString(record.terminalNamePrefix, MAX_TITLE_LENGTH)
-        || (record.provider !== undefined && !isProviderId(record.provider))
-        || (record.sessionId !== undefined && !isBoundedString(record.sessionId, MAX_ID_LENGTH))) {
+        || !isProviderId(record.provider)) {
+        return null;
+    }
+    const identity = {
+        provider: record.provider,
+        workspaceScopeIdentity: record.workspaceScopeIdentity,
+        workspaceNavigationIdentity: record.workspaceNavigationIdentity,
+        workspaceRootHostPaths: record.workspaceRootHostPaths,
+        cwd: record.cwd,
+        ...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+        ...(record.pendingId === undefined ? {} : { pendingId: record.pendingId }),
+    };
+    if (!isValidAiSessionRuntimeIdentity(identity)) {
         return null;
     }
     if (record.layout === 'project' && record.windowName !== undefined
@@ -132,15 +147,24 @@ function validateRecord(value: unknown): TmuxAttachBinding | null {
         return null;
     }
     return {
-        version: 1,
+        version: 2,
         layout: record.layout,
-        projectKey: record.projectKey,
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: [...identity.workspaceRootHostPaths],
+        cwd: identity.cwd,
         sessionName: record.sessionName,
         ...(record.windowName === undefined ? {} : { windowName: record.windowName as string }),
-        ...(record.provider === undefined ? {} : { provider: record.provider as AiSessionProviderId }),
+        provider: identity.provider,
         ...(record.sessionId === undefined ? {} : { sessionId: record.sessionId as string }),
+        ...(record.pendingId === undefined ? {} : { pendingId: record.pendingId as string }),
         terminalNamePrefix: record.terminalNamePrefix,
     };
+}
+
+function cloneBinding(binding: TmuxAttachBinding): TmuxAttachBinding {
+    const identity = cloneAiSessionRuntimeIdentity(binding as TmuxAttachBinding & AiSessionRuntimeIdentity);
+    return { ...binding, workspaceRootHostPaths: [...identity.workspaceRootHostPaths] };
 }
 
 function isProcessId(value: unknown): value is number {

@@ -57,7 +57,7 @@ import { DirectTerminalRuntimeBackend } from './aiSessions/directTerminalRuntime
 import { AiSessionRuntimeCoordinator } from './aiSessions/runtimeCoordinator';
 import type { AiSessionTmuxFallbackContext } from './aiSessions/runtimeCoordinator';
 import type { AiSessionRuntimeSnapshot } from './aiSessions/runtimeTypes';
-import { TmuxRuntimeUnavailableError } from './aiSessions/runtimeTypes';
+import { cloneAiSessionRuntimeIdentity, TmuxRuntimeUnavailableError } from './aiSessions/runtimeTypes';
 import { TmuxClient, TmuxClientError } from './aiSessions/tmuxClient';
 import { TmuxRuntimeBindingStore } from './aiSessions/tmuxRuntimeBindingStore';
 import { TmuxAttachBindingStore } from './aiSessions/tmuxAttachBindingStore';
@@ -381,10 +381,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         chooseTmuxFallback: chooseAiSessionTmuxFallback,
         hasLiveTmuxOwnership,
         hasKnownTmuxHint: async identity => Boolean(identity.sessionId
-            && await tmuxRuntimeStore.getKnown(identity.provider, identity.sessionId)),
+            && await tmuxRuntimeStore.getKnown(identity.provider, identity.sessionId,
+                identity.workspaceScopeIdentity)),
         clearKnownTmuxHint: async identity => {
             if (identity.sessionId) {
-                await tmuxRuntimeStore.removeKnown(identity.provider, identity.sessionId);
+                await tmuxRuntimeStore.removeKnown(identity.provider, identity.sessionId,
+                    identity.workspaceScopeIdentity);
             }
         },
     });
@@ -423,6 +425,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         readCoordinator: aiSessionReadCoordinator,
         terminalService: aiSessionTerminalService,
         runtimeCoordinator: aiSessionRuntimeCoordinator,
+        getWorkspaceScopeIdentity: () => getCurrentOpenWorkspace()?.scopeIdentity || null,
         setAlias: (providerId, sessionId, alias) => aiSessionAliasController.set(providerId, sessionId, alias),
         syncActiveTerminal: () => activeAiSessionTerminalHighlighter.sync(),
         onDidPromoteRuntime: () => {
@@ -562,7 +565,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
         },
         runtimeCoordinator: aiSessionRuntimeCoordinator,
-        getProjectKey: getOpenProjectAiSessionKey,
         createPendingId: () => randomBytes(16).toString('hex'),
         showInputBox: options => vscode.window.showInputBox(options),
         showActiveTab: projectId => provider.postMessage({
@@ -624,7 +626,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getOpenProjects,
         getProjectSessions: (project, providerId) => getProviderProjectAiSessions(project, providerId, aiSessionProviders),
         runtimeCoordinator: aiSessionRuntimeCoordinator,
-        getProjectKey: getOpenProjectAiSessionKey,
+        getWorkspaceScopeIdentity: () => getCurrentOpenWorkspace()?.scopeIdentity || null,
         getProjectCwd: getOpenProjectAiSessionTerminalCwd,
         normalizePath: normalizeAiSessionProjectPath,
         confirmRuntimeClose: (message, action) => vscode.window.showWarningMessage(
@@ -681,7 +683,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getTerminalName: (providerId, session) => getProviderAiSessionTerminalName(providerId, session, aiSessionProviders),
         runtimeCoordinator: aiSessionRuntimeCoordinator,
         getRuntimeConflict: getAiSessionRuntimeCollision,
-        getProjectKey: getOpenProjectAiSessionKey,
         getMarkerPath: (providerId, sessionId) => aiSessionTerminalService.getMarkerPath(providerId, sessionId),
         showWarningMessage: message => vscode.window.showWarningMessage(message),
         showErrorMessage: message => vscode.window.showErrorMessage(message),
@@ -715,7 +716,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
     const aiSessionExecutionController = new AiSessionExecutionController({
         getActiveSessions: () => aiSessionRuntimeCoordinator.getActive()
-            .filter(runtime => runtime.state !== 'conflict' && Boolean(runtime.identity.sessionId))
+            .filter(runtime => runtimeBelongsToCurrentWorkspace(runtime)
+                && runtime.state !== 'conflict' && Boolean(runtime.identity.sessionId))
             .map(runtime => ({
                 provider: runtime.identity.provider,
                 sessionId: runtime.identity.sessionId as string,
@@ -772,7 +774,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (!sessionId || (runtime.state !== 'completed' && runtime.state !== 'stopped')) {
                 continue;
             }
-            const key = `${runtime.identity.provider}:${sessionId}:${runtime.runStartedAtMs}:${runtime.backend}`;
+            const key = `${runtime.identity.workspaceScopeIdentity}:${runtime.identity.provider}:${sessionId}:${runtime.runStartedAtMs}:${runtime.backend}`;
             if (settlingAiSessionRuntimeKeys.has(key)) {
                 continue;
             }
@@ -782,7 +784,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 state: runtime.state,
                 runtime: {
                     ...runtime,
-                    identity: { ...runtime.identity },
+                    identity: cloneAiSessionRuntimeIdentity(runtime.identity),
                     ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
                 },
             });
@@ -1349,13 +1351,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         isComplete: resolution => aiSessionTerminalService.isComplete(resolution.entry),
         publish: identity => postActiveAiSessionTerminalChanged(identity),
         onComplete: resolution => {
+            if (!resolution.entry.runtimeIdentity) {
+                return;
+            }
             queueAiSessionRuntimeSettlements([{
-                identity: {
-                    provider: resolution.provider,
-                    sessionId: resolution.sessionId,
-                    projectKey: resolution.entry.cwd || '',
-                    cwd: resolution.entry.cwd || '',
-                },
+                identity: cloneAiSessionRuntimeIdentity(resolution.entry.runtimeIdentity),
                 backend: 'vscode',
                 state: 'completed',
                 markerPath: resolution.entry.markerPath,
@@ -1379,13 +1379,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     tmuxFocusedRuntimeMonitor.start();
     const aiSessionTerminalCompletionInterval = setInterval(() => {
         const completedSessions = aiSessionTerminalService.getCompletedSessions();
-        const completedRuntimes = completedSessions.map(resolution => ({
-                identity: {
-                    provider: resolution.provider,
-                    sessionId: resolution.sessionId,
-                    projectKey: resolution.entry.cwd || '',
-                    cwd: resolution.entry.cwd || '',
-                },
+        const completedRuntimes = completedSessions.filter(resolution =>
+            !!resolution.entry.runtimeIdentity).map(resolution => ({
+                identity: cloneAiSessionRuntimeIdentity(resolution.entry.runtimeIdentity),
                 backend: 'vscode',
                 state: 'completed',
                 markerPath: resolution.entry.markerPath,
@@ -1662,40 +1658,46 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         providerId: AiSessionProviderId,
         sessionId: string
     ): AiSessionRuntimeSnapshot<vscode.Terminal> | null {
-        const collision = getAiSessionRuntimeCollision(providerId, sessionId);
+        const workspaceScopeIdentity = getCurrentOpenWorkspace()?.scopeIdentity;
+        if (!workspaceScopeIdentity) {
+            return null;
+        }
+        const collision = getAiSessionRuntimeCollision(
+            providerId, sessionId, workspaceScopeIdentity
+        );
         if (collision) {
             return collision;
         }
-        const live = aiSessionRuntimeCoordinator.getById(providerId, sessionId);
+        const live = aiSessionRuntimeCoordinator.getById(
+            providerId, sessionId, workspaceScopeIdentity
+        );
         if (live) {
             return live;
         }
         const liveConflicts = aiSessionRuntimeCoordinator.getActive().filter(runtime =>
-            runtime.identity.provider === providerId && runtime.identity.sessionId === sessionId);
+            runtime.identity.provider === providerId && runtime.identity.sessionId === sessionId
+            && runtime.identity.workspaceScopeIdentity === workspaceScopeIdentity);
         if (liveConflicts.length > 1) {
             return { ...liveConflicts[0], state: 'conflict' };
         }
         const inactiveTmux: AiSessionRuntimeSnapshot<vscode.Terminal>[] = tmuxRuntimeDiscovery.getInactive()
             .filter(runtime => runtime.identity.provider === providerId
-                && runtime.identity.sessionId === sessionId)
+                && runtime.identity.sessionId === sessionId
+                && runtime.identity.workspaceScopeIdentity === workspaceScopeIdentity)
             .map(runtime => {
                 const { terminal: _terminal, ...detached } = runtime;
                 return {
                     ...detached,
-                    identity: { ...runtime.identity },
+                    identity: cloneAiSessionRuntimeIdentity(runtime.identity),
                     ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
                 };
             });
         const completedDirect = aiSessionTerminalService.getTrackedTerminalEntries()
             .filter(entry => entry.provider === providerId && entry.sessionId === sessionId
-                && aiSessionTerminalService.isComplete(entry))
+                && aiSessionTerminalService.isComplete(entry) && !!entry.runtimeIdentity
+                && entry.runtimeIdentity.workspaceScopeIdentity === workspaceScopeIdentity)
             .map(entry => ({
-                identity: {
-                    provider: entry.provider,
-                    projectKey: entry.cwd || '',
-                    cwd: entry.cwd || '',
-                    sessionId: entry.sessionId,
-                },
+                identity: cloneAiSessionRuntimeIdentity(entry.runtimeIdentity),
                 backend: 'vscode' as const,
                 state: 'completed' as const,
                 markerPath: entry.markerPath,
@@ -1709,21 +1711,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     function getAiSessionRuntimeCollision(
         providerId: AiSessionProviderId,
-        sessionId: string
+        sessionId: string,
+        workspaceScopeIdentity: string
     ): AiSessionRuntimeSnapshot<vscode.Terminal> | null {
         return findTmuxCollisionRuntime(
-            tmuxRuntimeDiscovery.getDiagnostics(), providerId, sessionId
+            tmuxRuntimeDiscovery.getDiagnostics(), providerId, sessionId,
+            workspaceScopeIdentity
         ) as AiSessionRuntimeSnapshot<vscode.Terminal> | null;
     }
 
     function getProjectedAiSessionActiveRuntimes(): AiSessionRuntimeSnapshot<vscode.Terminal>[] {
-        return aiSessionRuntimeCoordinator.getActive();
+        return aiSessionRuntimeCoordinator.getActive().filter(runtimeBelongsToCurrentWorkspace);
     }
 
     function getFocusedAiSessionRuntimeIdentity() {
         const activeTerminal = vscode.window.activeTerminal || null;
         const tmuxRuntime = tmuxRuntimeBackend.getFocusedRuntime(activeTerminal);
-        return tmuxRuntime?.identity || activeAiSessionTerminalHighlighter.getIdentity();
+        return tmuxRuntime && runtimeBelongsToCurrentWorkspace(tmuxRuntime)
+            ? tmuxRuntime.identity
+            : activeAiSessionTerminalHighlighter.getIdentity();
+    }
+
+    function runtimeBelongsToCurrentWorkspace(
+        runtime: AiSessionRuntimeSnapshot<vscode.Terminal>
+    ): boolean {
+        const workspaceScopeIdentity = getCurrentOpenWorkspace()?.scopeIdentity;
+        return !!workspaceScopeIdentity
+            && runtime.identity.workspaceScopeIdentity === workspaceScopeIdentity;
     }
 
     function getAiSessionTmuxAttachTerminalName(
@@ -1731,7 +1745,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ): string | undefined {
         const projects = getOpenProjects();
         const project = projects.find(candidate =>
-            getOpenProjectAiSessionKey(candidate) === runtime.identity.projectKey);
+            normalizeAiSessionProjectPath(getOpenProjectAiSessionTerminalCwd(candidate))
+                === normalizeAiSessionProjectPath(runtime.identity.cwd));
         if (runtime.tmux?.layout === 'project') {
             return boundedAiSessionTmuxTitle(
                 `Project Steward: ${project?.name || 'AI Project'} [tmux]`
@@ -1897,7 +1912,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             projects: hydrated,
             providers: AI_SESSION_PROVIDER_DEFINITIONS,
             activeRuntimes: getProjectedAiSessionActiveRuntimes(),
-            pendingRuntimes: aiSessionRuntimeCoordinator.getPending(),
+            pendingRuntimes: aiSessionRuntimeCoordinator.getPending()
+                .filter(runtimeBelongsToCurrentWorkspace),
+            workspaceScopeIdentity: getCurrentOpenWorkspace()?.scopeIdentity || null,
             executionSnapshot: aiSessionExecutionController.getSnapshot(),
             focusedIdentity: getFocusedAiSessionRuntimeIdentity(),
             getProjectCwd: getOpenProjectAiSessionTerminalCwd,

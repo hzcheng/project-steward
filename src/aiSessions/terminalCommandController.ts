@@ -6,16 +6,23 @@ import type {
     AiSessionRuntimeIdentity,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
+import { aiSessionRuntimeIdentitiesEqual, cloneAiSessionRuntimeIdentity } from './runtimeTypes';
 
 export interface AiSessionTerminalCommandRuntimeCoordinator<TTerminal> {
-    getById(provider: AiSessionProviderId, sessionId: string): AiSessionRuntimeSnapshot<TTerminal> | null;
+    getById(
+        provider: AiSessionProviderId,
+        sessionId: string,
+        workspaceScopeIdentity: string
+    ): AiSessionRuntimeSnapshot<TTerminal> | null;
     getActiveCandidates?(
         provider: AiSessionProviderId,
-        sessionId: string
+        sessionId: string,
+        workspaceScopeIdentity: string
     ): AiSessionRuntimeSnapshot<TTerminal>[];
     getUnverifiedConflicts?(
         provider: AiSessionProviderId,
-        sessionId: string
+        sessionId: string,
+        workspaceScopeIdentity: string
     ): AiSessionRuntimeSnapshot<TTerminal>[];
     getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[];
     focus(identity: AiSessionRuntimeIdentity): Promise<void>;
@@ -43,7 +50,7 @@ export interface AiSessionTerminalCommandRuntimeControllerOptions<
     TTerminal extends { show(): void; dispose(): void }
 > extends AiSessionTerminalCommandControllerCommonOptions {
     runtimeCoordinator: AiSessionTerminalCommandRuntimeCoordinator<TTerminal>;
-    getProjectKey: (project: Project) => string;
+    getWorkspaceScopeIdentity: () => string | null;
     confirmRuntimeClose(
         message: string,
         action: 'Close Terminal' | 'Detach Terminal'
@@ -348,7 +355,9 @@ export class AiSessionTerminalCommandController<
         options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
     ): AiSessionRuntimeSnapshot<TTerminal> | null {
         const ownership = this.getRuntimeProjectOwnership(projectId, options);
-        const runtime = options.runtimeCoordinator.getById(providerId, sessionId);
+        const runtime = ownership ? options.runtimeCoordinator.getById(
+            providerId, sessionId, ownership.workspaceScopeIdentity
+        ) : null;
         return ownership && runtime && this.runtimeBelongsToProject(
             ownership, providerId, sessionId, runtime, options
         )
@@ -368,8 +377,12 @@ export class AiSessionTerminalCommandController<
         }
         const coordinator = options.runtimeCoordinator;
         const candidates = coordinator.getActiveCandidates
-            ? coordinator.getActiveCandidates(providerId, sessionId)
-            : [coordinator.getById(providerId, sessionId)].filter(Boolean) as AiSessionRuntimeSnapshot<TTerminal>[];
+            ? coordinator.getActiveCandidates(
+                providerId, sessionId, ownership.workspaceScopeIdentity
+            )
+            : [coordinator.getById(
+                providerId, sessionId, ownership.workspaceScopeIdentity
+            )].filter(Boolean) as AiSessionRuntimeSnapshot<TTerminal>[];
         return candidates.filter(runtime => this.runtimeBelongsToProject(
             ownership, providerId, sessionId, runtime, options
         )).map(cloneRuntime);
@@ -385,7 +398,9 @@ export class AiSessionTerminalCommandController<
         if (!ownership || !options.runtimeCoordinator.getUnverifiedConflicts) {
             return [];
         }
-        return options.runtimeCoordinator.getUnverifiedConflicts(providerId, sessionId)
+        return options.runtimeCoordinator.getUnverifiedConflicts(
+            providerId, sessionId, ownership.workspaceScopeIdentity
+        )
             .filter(runtime => this.runtimeBelongsToProject(
                 ownership, providerId, sessionId, runtime, options
             )).map(cloneRuntime);
@@ -415,11 +430,13 @@ export class AiSessionTerminalCommandController<
     ): RuntimeProjectOwnership | null {
         const openProjects = options.getOpenProjects().map(project => ({
             project,
-            canonicalKey: options.getProjectKey(project),
             normalizedCwd: options.normalizePath(options.getProjectCwd(project)),
         }));
         const requested = openProjects.find(candidate => candidate.project.id === projectId);
-        return requested ? { requested, openProjects } : null;
+        const workspaceScopeIdentity = options.getWorkspaceScopeIdentity();
+        return requested && workspaceScopeIdentity
+            ? { requested, openProjects, workspaceScopeIdentity }
+            : null;
     }
 
     private runtimeBelongsToProject(
@@ -429,13 +446,8 @@ export class AiSessionTerminalCommandController<
         runtime: AiSessionRuntimeSnapshot<TTerminal>,
         options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
     ): boolean {
-        if (runtime.identity.projectKey) {
-            const projectKeyOwner = ownership.openProjects.find(candidate => {
-                return candidate.canonicalKey === runtime.identity.projectKey;
-            });
-            if (projectKeyOwner) {
-                return projectKeyOwner === ownership.requested;
-            }
+        if (runtime.identity.workspaceScopeIdentity !== ownership.workspaceScopeIdentity) {
+            return false;
         }
         const runtimeCwd = options.normalizePath(runtime.identity.cwd);
         if (runtimeCwd) {
@@ -496,7 +508,7 @@ function cloneRuntime<TTerminal>(
 ): AiSessionRuntimeSnapshot<TTerminal> {
     return {
         ...runtime,
-        identity: { ...runtime.identity },
+        identity: cloneAiSessionRuntimeIdentity(runtime.identity),
         ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
     };
 }
@@ -514,22 +526,16 @@ function clonePendingRuntime<TTerminal>(
 
 interface RuntimeProjectDescriptor {
     project: Project;
-    canonicalKey: string;
     normalizedCwd: string;
 }
 
 interface RuntimeProjectOwnership {
     requested: RuntimeProjectDescriptor;
     openProjects: RuntimeProjectDescriptor[];
+    workspaceScopeIdentity: string;
 }
 
-interface RuntimeIdentityToken {
-    provider: AiSessionProviderId;
-    projectKey: string;
-    cwd: string;
-    sessionId?: string;
-    pendingId?: string;
-}
+type RuntimeIdentityToken = AiSessionRuntimeIdentity;
 
 type RuntimeSelectionToken<TTerminal> = {
     backend: 'vscode';
@@ -548,7 +554,7 @@ type RuntimeSelectionToken<TTerminal> = {
 function createSelectionToken<TTerminal>(
     runtime: AiSessionRuntimeSnapshot<TTerminal>
 ): RuntimeSelectionToken<TTerminal> | null {
-    const identity = { ...runtime.identity };
+    const identity = cloneAiSessionRuntimeIdentity(runtime.identity);
     if (runtime.backend === 'vscode') {
         return runtime.terminal
             ? { backend: 'vscode', identity, terminal: runtime.terminal }
@@ -576,11 +582,7 @@ function selectionTokensEqual<TTerminal>(
 }
 
 function identitiesEqual(left: RuntimeIdentityToken, right: RuntimeIdentityToken): boolean {
-    return left.provider === right.provider
-        && left.projectKey === right.projectKey
-        && left.cwd === right.cwd
-        && left.sessionId === right.sessionId
-        && left.pendingId === right.pendingId;
+    return aiSessionRuntimeIdentitiesEqual(left, right);
 }
 
 function isRuntimeOptions<TTerminal extends { show(): void; dispose(): void }>(
@@ -602,7 +604,7 @@ function validateControllerOptions<TTerminal extends { show(): void; dispose(): 
         || typeof coordinator.focus !== 'function'
         || typeof coordinator.detach !== 'function'
         || typeof runtimeOptions.getOpenProjects !== 'function'
-        || typeof runtimeOptions.getProjectKey !== 'function'
+        || typeof runtimeOptions.getWorkspaceScopeIdentity !== 'function'
         || typeof runtimeOptions.confirmRuntimeClose !== 'function'
         || typeof runtimeOptions.announceStatus !== 'function') {
         throw new Error('AI session terminal runtime controller options are invalid.');

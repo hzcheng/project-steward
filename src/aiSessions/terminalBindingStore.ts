@@ -1,6 +1,11 @@
 'use strict';
 
 import type { AiSessionProviderId } from '../models';
+import type { AiSessionRuntimeIdentity } from './runtimeTypes';
+import {
+    cloneAiSessionRuntimeIdentity,
+    isValidAiSessionRuntimeIdentity,
+} from './runtimeTypes';
 
 export const AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX = 'aiSessionTerminalProcessBinding.v2.';
 
@@ -17,13 +22,17 @@ export interface AiSessionTerminalBindingState {
 interface AiSessionTerminalBindingBase {
     version: 2;
     providerId: AiSessionProviderId;
+    workspaceScopeIdentity: string;
+    workspaceNavigationIdentity: string;
+    workspaceRootHostPaths: string[];
+    cwd: string;
     markerPath: string;
     updatedAtMs: number;
 }
 
 export interface PendingAiSessionTerminalBinding extends AiSessionTerminalBindingBase {
     state: 'pending';
-    cwd: string;
+    pendingId: string;
     createdAt: string;
     excludedSessionIds: string[];
     title?: string;
@@ -33,7 +42,6 @@ export interface BoundAiSessionTerminalBinding extends AiSessionTerminalBindingB
     state: 'bound';
     sessionId: string;
     runStartedAtMs: number;
-    cwd?: string;
 }
 
 export interface ReleasedAiSessionTerminalBinding extends AiSessionTerminalBindingBase {
@@ -198,37 +206,44 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         if (!isBoundedString(record.sessionId, MAX_ID_LENGTH) || !isFiniteNonNegative(record.runStartedAtMs)) {
             return null;
         }
-        const cwd = record.cwd === undefined
-            ? undefined
-            : isBoundedString(record.cwd, MAX_PATH_LENGTH) ? record.cwd : null;
-        if (cwd === null) {
+        const identity = validateIdentity(record, { sessionId: record.sessionId });
+        if (!identity) {
             return null;
         }
         return {
             version: 2,
             state: 'bound',
             providerId: record.providerId,
-            sessionId: record.sessionId,
+            workspaceScopeIdentity: identity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: [...identity.workspaceRootHostPaths],
+            cwd: identity.cwd,
+            sessionId: identity.sessionId as string,
             markerPath: record.markerPath,
             runStartedAtMs: record.runStartedAtMs,
-            ...(cwd ? { cwd } : {}),
             updatedAtMs: record.updatedAtMs,
         };
     }
     if (record.state === 'released') {
-        if (!isBoundedString(record.sessionId, MAX_ID_LENGTH)) {
+        const identity = validateIdentity(record, { sessionId: record.sessionId });
+        if (!identity) {
             return null;
         }
         return {
             version: 2,
             state: 'released',
             providerId: record.providerId,
-            sessionId: record.sessionId,
+            workspaceScopeIdentity: identity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: [...identity.workspaceRootHostPaths],
+            cwd: identity.cwd,
+            sessionId: identity.sessionId as string,
             markerPath: record.markerPath,
             updatedAtMs: record.updatedAtMs,
         };
     }
-    if (!isBoundedString(record.cwd, MAX_PATH_LENGTH) || typeof record.createdAt !== 'string'
+    const identity = validateIdentity(record, { pendingId: record.pendingId });
+    if (!identity || typeof record.createdAt !== 'string'
         || !Number.isFinite(Date.parse(record.createdAt)) || !Array.isArray(record.excludedSessionIds)
         || record.excludedSessionIds.length > MAX_EXCLUDED_SESSION_IDS
         || record.excludedSessionIds.some(id => !isBoundedString(id, MAX_ID_LENGTH))
@@ -239,8 +254,12 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         version: 2,
         state: 'pending',
         providerId: record.providerId,
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: [...identity.workspaceRootHostPaths],
         markerPath: record.markerPath,
-        cwd: record.cwd,
+        cwd: identity.cwd,
+        pendingId: identity.pendingId as string,
         createdAt: record.createdAt,
         excludedSessionIds: [...record.excludedSessionIds] as string[],
         ...(record.title === undefined ? {} : { title: record.title as string }),
@@ -250,8 +269,25 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
 
 function cloneRecord(record: AiSessionTerminalBinding): AiSessionTerminalBinding {
     return record.state === 'pending'
-        ? { ...record, excludedSessionIds: [...record.excludedSessionIds] }
-        : { ...record };
+        ? { ...record, workspaceRootHostPaths: [...record.workspaceRootHostPaths], excludedSessionIds: [...record.excludedSessionIds] }
+        : { ...record, workspaceRootHostPaths: [...record.workspaceRootHostPaths] };
+}
+
+function validateIdentity(
+    record: Record<string, unknown>,
+    id: { sessionId: unknown } | { pendingId: unknown }
+): AiSessionRuntimeIdentity | null {
+    const identity = {
+        provider: record.providerId,
+        workspaceScopeIdentity: record.workspaceScopeIdentity,
+        workspaceNavigationIdentity: record.workspaceNavigationIdentity,
+        workspaceRootHostPaths: record.workspaceRootHostPaths,
+        cwd: record.cwd,
+        ...id,
+    };
+    return isValidAiSessionRuntimeIdentity(identity)
+        ? cloneAiSessionRuntimeIdentity(identity)
+        : null;
 }
 
 function isProcessId(value: unknown): value is number {

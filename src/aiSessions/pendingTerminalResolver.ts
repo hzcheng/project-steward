@@ -6,6 +6,7 @@ import type {
     AiSessionPendingRuntimeSnapshot,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
+import { cloneAiSessionRuntimeIdentity, isValidAiSessionRuntimeIdentity } from './runtimeTypes';
 import type { AiSessionProviderDefinition, AiSessionReadResult } from './types';
 
 type AiSessionPendingRuntimeProvider = Pick<
@@ -148,7 +149,9 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
 function getPendingIdentityKey<TTerminal>(runtime: AiSessionPendingRuntimeSnapshot<TTerminal>): string {
     return JSON.stringify([
         runtime.identity.provider,
-        runtime.identity.projectKey,
+        runtime.identity.workspaceScopeIdentity,
+        runtime.identity.workspaceNavigationIdentity,
+        runtime.identity.workspaceRootHostPaths.slice().sort(),
         runtime.identity.cwd,
         runtime.identity.pendingId || '',
     ]);
@@ -208,9 +211,7 @@ function isRuntimeSnapshot(value: unknown): value is AiSessionRuntimeSnapshot<un
     if (!isRecord(value) || !isRecord(value.identity)) {
         return false;
     }
-    return typeof value.identity.provider === 'string'
-        && typeof value.identity.projectKey === 'string'
-        && typeof value.identity.cwd === 'string'
+    return isValidAiSessionRuntimeIdentity(value.identity)
         && typeof value.identity.sessionId === 'string'
         && (value.backend === 'vscode' || value.backend === 'tmux')
         && typeof value.state === 'string'
@@ -232,7 +233,7 @@ function clonePendingRuntime<TTerminal>(
 ): AiSessionPendingRuntimeSnapshot<TTerminal> {
     return {
         ...runtime,
-        identity: { ...runtime.identity },
+        identity: cloneAiSessionRuntimeIdentity(runtime.identity),
         ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
         state: 'pending',
         excludedSessionIds: [...runtime.excludedSessionIds],

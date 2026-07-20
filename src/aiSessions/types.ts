@@ -5,13 +5,14 @@ import type { BatchAiSessionArchiveResult } from './archiveBatch';
 import type { AiSessionExecutionState, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
 import type { DashboardSearchCatalog } from '../webview/dashboardViewModel';
 import type { AiSessionLaunchSpec } from './launchSpec';
-import type { AiSessionRuntimeBackendId, AiSessionTmuxLayout } from './runtimeTypes';
+import type { AiSessionRuntimeBackendId, AiSessionRuntimeIdentity, AiSessionTmuxLayout } from './runtimeTypes';
 
 export interface AiSessionTerminalEntry<TTerminal = unknown> {
     terminal: TTerminal;
     markerPath: string;
     runStartedAtMs: number;
     cwd?: string;
+    runtimeIdentity?: AiSessionRuntimeIdentity;
     released?: boolean;
 }
 

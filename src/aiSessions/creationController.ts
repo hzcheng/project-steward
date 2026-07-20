@@ -10,6 +10,7 @@ import type {
     AiSessionCreateRuntimeRequest,
     AiSessionPendingRuntimeSnapshot,
     AiSessionRuntimeActionResult,
+    AiSessionRuntimeIdentity,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
 import type { AiSessionDirectoryScope } from './types';
@@ -40,6 +41,7 @@ export interface PendingAiSessionTerminal {
     createdAt: string;
     excludedSessionIds: string[];
     title?: string;
+    runtimeIdentity?: AiSessionRuntimeIdentity;
 }
 
 export interface AiSessionCreationRuntimeCoordinator {
@@ -80,7 +82,6 @@ export interface AiSessionCreationControllerCommonOptions {
 
 export interface AiSessionCreationRuntimeControllerOptions extends AiSessionCreationControllerCommonOptions {
     runtimeCoordinator: AiSessionCreationRuntimeCoordinator;
-    getProjectKey: (project: Project) => string;
     createPendingId: () => string;
     announceStatus: (projectId: string, message: string) => Thenable<unknown> | Promise<unknown>;
 }
@@ -216,7 +217,6 @@ export class AiSessionCreationController {
             throw new Error('AI session runtime creation is not configured.');
         }
         const cwd = directoryScope.primaryCwd;
-        const projectKey = options.getProjectKey(project);
         const pendingId = options.createPendingId();
         if (!isValidAiSessionRuntimeIdentityId(pendingId)) {
             throw new Error('AI session pending identity is invalid.');
@@ -236,7 +236,14 @@ export class AiSessionCreationController {
             sessionProvider.buildNewSessionLaunchSpec(directoryScope, fields.title, markerPath)
         );
         const request: AiSessionCreateRuntimeRequest = {
-            identity: { provider: providerId, projectKey, cwd, pendingId },
+            identity: {
+                provider: providerId,
+                workspaceScopeIdentity: directoryScope.workspaceScopeIdentity,
+                workspaceNavigationIdentity: directoryScope.workspaceNavigationIdentity,
+                workspaceRootHostPaths: [...directoryScope.workspaceRootHostPaths],
+                cwd,
+                pendingId,
+            },
             projectName: project.name || 'New Session',
             terminalName,
             createdAt,
@@ -306,7 +313,6 @@ function validateControllerOptions(options: AiSessionCreationControllerOptions):
         || typeof coordinator.getActive !== 'function'
         || typeof coordinator.getPending !== 'function'
         || typeof runtimeOptions.resolveDirectoryScope !== 'function'
-        || typeof runtimeOptions.getProjectKey !== 'function'
         || typeof runtimeOptions.createPendingId !== 'function'
         || typeof runtimeOptions.announceStatus !== 'function') {
         throw new Error('AI session creation runtime controller options are invalid.');

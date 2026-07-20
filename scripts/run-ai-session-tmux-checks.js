@@ -139,7 +139,7 @@ function createTmuxBackendHarness(options = {}) {
 
     function ambiguousKey(identity) {
         const kind = identity.sessionId !== undefined ? 'session' : 'pending';
-        return JSON.stringify([identity.provider, identity.projectKey, kind,
+        return JSON.stringify([identity.provider, identity.workspaceScopeIdentity, kind,
             identity.sessionId !== undefined ? identity.sessionId : identity.pendingId]);
     }
 
@@ -241,11 +241,14 @@ function createTmuxBackendHarness(options = {}) {
                 const sessionId = runtime.identity.sessionId;
                 if (sessionId && runtime.tmux) {
                     known.set(`${runtime.identity.provider}:${sessionId}`, {
-                        version: 1,
+                        version: 2,
                         state: 'known',
                         provider: runtime.identity.provider,
                         sessionId,
-                        projectKey: runtime.identity.projectKey,
+                        workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+                        workspaceNavigationIdentity: runtime.identity.workspaceNavigationIdentity,
+                        workspaceRootHostPaths: [...runtime.identity.workspaceRootHostPaths],
+                        cwd: runtime.identity.cwd,
                         layout: runtime.tmux.layout,
                         locator: { ...runtime.tmux },
                         lastSeenAtMs: Date.parse('2026-07-18T10:00:00Z'),
@@ -399,7 +402,7 @@ function createTmuxBackendHarness(options = {}) {
             const item = windows.find(candidate => candidate.sessionName === sessionName
                 && candidate.windowName === windowName);
             const values = item ? { ...item.windowMetadata } : {};
-            return options.corruptPendingMetadata ? { ...values, projectKey: 'wrong-scope' } : values;
+            return options.corruptPendingMetadata ? { ...values, workspaceScopeIdentity: 'wrong-scope' } : values;
         },
         configureManagedWindow: async (sessionName, windowName) => {
             operations.push({ type: 'configure-window', sessionName, windowName });
@@ -524,10 +527,10 @@ function runtimeRecordFilename(record) {
     const identity = record.state === 'pending'
         ? [record.pendingId]
         : record.state === 'consumed' || record.state === 'promoting'
-            ? [record.provider, record.projectKey, record.pendingId]
-            : [record.provider, record.sessionId];
+            ? [record.provider, record.workspaceScopeIdentity, record.pendingId]
+            : [record.provider, record.workspaceScopeIdentity, record.sessionId];
     const digest = crypto.createHash('sha256')
-        .update(JSON.stringify([1, canonicalState, ...identity]), 'utf8')
+        .update(JSON.stringify([2, canonicalState, ...identity]), 'utf8')
         .digest('hex');
     return `${canonicalState}-${digest}.json`;
 }
@@ -692,82 +695,100 @@ function runTmuxLayoutChecks() {
     for (const invalidId of ['', '   ', 'pending id', 'pending\ncontrol', '../unsafe', 'x'.repeat(513)]) {
         assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentityId(invalidId), false);
     }
-    const identity = { provider: 'codex', projectKey: 'project-key', cwd: '/work/app', sessionId: 'session-1' };
+    const identity = { provider: 'codex', workspaceScopeIdentity: 'project-key', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work/app'], cwd: '/work/app', sessionId: 'session-1' };
     const project = new tmuxLayout.ProjectTmuxLayout().getLocator(identity);
     const session = new tmuxLayout.SessionTmuxLayout().getLocator(identity);
     assert.deepStrictEqual(project, {
         layout: 'project',
         sessionName: 'project-steward-p-857b61585ca6ee92',
-        windowName: 'ai-codex-391f442b59834258',
+        windowName: 'ai-codex-33e62d2489174976',
     });
     assert.deepStrictEqual(session, {
         layout: 'session',
-        sessionName: 'project-steward-s-codex-391f442b59834258',
+        sessionName: 'project-steward-s-codex-33e62d2489174976',
     });
     assert.strictEqual(new tmuxLayout.ProjectTmuxLayout().getLocator(identity).sessionName, project.sessionName);
     const pendingIdentity = { ...identity, sessionId: undefined, pendingId: 'p1' };
     assert.deepStrictEqual(new tmuxLayout.ProjectTmuxLayout().getPendingLocator(pendingIdentity), {
         layout: 'project',
         sessionName: 'project-steward-p-857b61585ca6ee92',
-        windowName: 'pending-codex-20634e8befb9ebc9',
+        windowName: 'pending-codex-3f26128a9ac32c34',
     });
     assert.deepStrictEqual(new tmuxLayout.SessionTmuxLayout().getPendingLocator(pendingIdentity), {
         layout: 'session',
-        sessionName: 'project-steward-pending-codex-20634e8befb9ebc9',
+        sessionName: 'project-steward-pending-codex-3f26128a9ac32c34',
     });
     assert.deepStrictEqual(tmuxLayout.parseManagedTmuxMetadata({
-        managed: '1', version: '1', layout: 'project', projectKey: 'project-key', provider: 'codex', sessionId: 'session-1'
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'scope-1',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: JSON.stringify(['/work/api', '/work/web']),
+        cwd: '/work/web', provider: 'codex', sessionId: 's1'
     }), {
-        version: 1, layout: 'project', projectKey: 'project-key', provider: 'codex', sessionId: 'session-1'
+        version: 2, layout: 'project', workspaceScopeIdentity: 'scope-1',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work/api', '/work/web'],
+        cwd: '/work/web', provider: 'codex', sessionId: 's1'
     });
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '1', layout: 'project', workspaceScopeIdentity: 'scope-1',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: JSON.stringify(['/work/web']),
+        cwd: '/work/web', provider: 'codex', sessionId: 's1', projectKey: 'old'
+    }), null);
     assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({ managed: '1', version: '99' }), null);
 
     assert.deepStrictEqual(tmuxLayout.TMUX_METADATA_OPTIONS, {
         managed: '@project-steward-managed',
         version: '@project-steward-version',
         layout: '@project-steward-layout',
-        projectKey: '@project-steward-project-key',
+        workspaceScopeIdentity: '@project-steward-workspace-scope-identity',
+        workspaceNavigationIdentity: '@project-steward-workspace-navigation-identity',
+        workspaceRootHostPaths: '@project-steward-workspace-root-host-paths',
+        cwd: '@project-steward-cwd',
         provider: '@project-steward-provider',
         sessionId: '@project-steward-session-id',
         pendingId: '@project-steward-pending-id',
         createdAt: '@project-steward-created-at',
         marker: '@project-steward-marker',
     });
-    assert.strictEqual(tmuxLayout.getTmuxRuntimeKey(identity), '[1,"codex","project-key","session","session-1"]');
-    assert.strictEqual(tmuxLayout.getTmuxRuntimeKey({ ...identity, sessionId: undefined, pendingId: 'p1' }), '[1,"codex","project-key","pending","p1"]');
+    assert.strictEqual(tmuxLayout.getTmuxRuntimeKey(identity), '[2,"codex","project-key","nav-1",["/work/app"],"/work/app","session","session-1"]');
+    assert.strictEqual(tmuxLayout.getTmuxRuntimeKey({ ...identity, sessionId: undefined, pendingId: 'p1' }), '[2,"codex","project-key","nav-1",["/work/app"],"/work/app","pending","p1"]');
+    const reorderedRoots = { ...identity, workspaceRootHostPaths: ['/work/web', '/work/app'] };
+    const sortedRoots = { ...identity, workspaceRootHostPaths: ['/work/app', '/work/web'] };
+    assert.strictEqual(tmuxLayout.getTmuxRuntimeKey(reorderedRoots), tmuxLayout.getTmuxRuntimeKey(sortedRoots));
+    assert.notStrictEqual(tmuxLayout.getTmuxRuntimeKey(identity), tmuxLayout.getTmuxRuntimeKey({
+        ...identity, workspaceScopeIdentity: 'other-scope'
+    }));
+    assert.ok(!project.sessionName.includes('/work/app') && !session.sessionName.includes('/work/app'));
     assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, sessionId: '' }));
     assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, provider: 'other' }));
-    assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, projectKey: 'x'.repeat(513) }));
+    assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, workspaceScopeIdentity: 'x'.repeat(513) }));
     assert.throws(() => new tmuxLayout.SessionTmuxLayout().getLocator({ ...identity, sessionId: 'session\u001f1' }));
     assert.throws(() => new tmuxLayout.SessionTmuxLayout().getPendingLocator({ ...identity, sessionId: undefined, pendingId: '' }));
     assert.throws(() => tmuxLayout.getTmuxRuntimeKey({ ...identity, sessionId: undefined, pendingId: undefined }));
     assert.throws(() => tmuxLayout.getTmuxRuntimeKey({ ...identity, pendingId: 'p1' }));
-    assert.deepStrictEqual(new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, pendingId: 'ignored' }), project);
-    assert.deepStrictEqual(new tmuxLayout.SessionTmuxLayout().getPendingLocator({ ...pendingIdentity, sessionId: 'ignored' }), {
-        layout: 'session', sessionName: 'project-steward-pending-codex-20634e8befb9ebc9'
-    });
+    assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, pendingId: 'rejected' }));
+    assert.throws(() => new tmuxLayout.SessionTmuxLayout().getPendingLocator({ ...pendingIdentity, sessionId: 'rejected' }));
     assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
-        managed: '1', version: '1', layout: 'other', projectKey: 'project-key', provider: 'codex', sessionId: 'session-1'
+        managed: '1', version: '2', layout: 'other', workspaceScopeIdentity: 'project-key', provider: 'codex', sessionId: 'session-1'
     }), null);
     assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
-        managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'other', sessionId: 'session-1'
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'other', sessionId: 'session-1'
     }), null);
     assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
-        managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex', sessionId: 'session\n1'
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'codex', sessionId: 'session\n1'
     }), null);
     assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
-        managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex'
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'codex'
     }), null);
     assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
-        managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex',
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'codex',
         sessionId: 'session-1', pendingId: 'p1'
     }), null);
     assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
-        managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex',
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'codex',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: JSON.stringify(['/work/app']), cwd: '/work/app',
         pendingId: 'p1', createdAt: '2026-07-18T01:02:03.000Z', marker: '/tmp/p1.done'
     }).pendingId, 'p1');
     for (const invalidField of [
-        { projectKey: 'x'.repeat(513) },
+        { workspaceScopeIdentity: 'x'.repeat(513) },
         { sessionId: 'x'.repeat(513) },
         { createdAt: 'x'.repeat(201) },
         { createdAt: 'not-a-date' },
@@ -776,7 +797,7 @@ function runTmuxLayoutChecks() {
         { marker: '/tmp/control\u007f' },
     ]) {
         assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
-            managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex',
+            managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'codex',
             sessionId: 'session-1', ...invalidField
         }), null);
     }
@@ -890,17 +911,20 @@ async function runTmuxClientChecks() {
     const metadataCalls = [];
     const optionValues = {
         'session-a|managed': '1',
-        'session-a|version': '1',
+        'session-a|version': '2',
         'session-a|layout': 'project',
-        'session-a|projectKey': 'project-key',
+        'session-a|workspaceScopeIdentity': 'project-key',
+        'session-a|workspaceNavigationIdentity': 'nav-1',
+        'session-a|workspaceRootHostPaths': '["/work"]',
+        'session-a|cwd': '/work',
         '@12|managed': '1',
-        '@12|version': '1',
+        '@12|version': '2',
         '@12|layout': 'project',
         '@12|provider': 'codex',
         '@12|sessionId': 'session-id-12',
         '@12|marker': '/tmp/done-12 marker',
         '@13|managed': '1',
-        '@13|version': '1',
+        '@13|version': '2',
         '@13|layout': 'project',
         '@13|provider': 'kimi',
         '@13|sessionId': 'session-id-13',
@@ -948,13 +972,19 @@ async function runTmuxClientChecks() {
             active: true,
             sessionMetadata: {
                 managed: '1',
-                version: '1',
+                version: '2',
                 layout: 'project',
-                projectKey: 'project-key',
+                workspaceScopeIdentity: 'project-key',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: '["/work"]',
+                cwd: '/work',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: '["/work"]',
+                cwd: '/work',
             },
             windowMetadata: {
                 managed: '1',
-                version: '1',
+                version: '2',
                 layout: 'project',
                 provider: 'codex',
                 sessionId: 'session-id-12',
@@ -962,9 +992,12 @@ async function runTmuxClientChecks() {
             },
             metadata: {
                 managed: '1',
-                version: '1',
+                version: '2',
                 layout: 'project',
-                projectKey: 'project-key',
+                workspaceScopeIdentity: 'project-key',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: '["/work"]',
+                cwd: '/work',
                 provider: 'codex',
                 sessionId: 'session-id-12',
                 marker: '/tmp/done-12 marker',
@@ -977,13 +1010,16 @@ async function runTmuxClientChecks() {
             active: false,
             sessionMetadata: {
                 managed: '1',
-                version: '1',
+                version: '2',
                 layout: 'project',
-                projectKey: 'project-key',
+                workspaceScopeIdentity: 'project-key',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: '["/work"]',
+                cwd: '/work',
             },
             windowMetadata: {
                 managed: '1',
-                version: '1',
+                version: '2',
                 layout: 'project',
                 provider: 'kimi',
                 sessionId: 'session-id-13',
@@ -991,9 +1027,12 @@ async function runTmuxClientChecks() {
             },
             metadata: {
                 managed: '1',
-                version: '1',
+                version: '2',
                 layout: 'project',
-                projectKey: 'project-key',
+                workspaceScopeIdentity: 'project-key',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: '["/work"]',
+                cwd: '/work',
                 provider: 'kimi',
                 sessionId: 'session-id-13',
                 marker: '/tmp/done-13 marker',
@@ -1007,12 +1046,13 @@ async function runTmuxClientChecks() {
         ])));
     }
     assert.deepStrictEqual(await metadataClient.getSessionOptions('session-a'), {
-        managed: '1', version: '1', layout: 'project', projectKey: 'project-key',
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'project-key',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
     });
     assert.deepStrictEqual(await metadataClient.getWindowOptions('session-a', 'window-a'), {
         provider: 'claude', sessionId: 'public-window-lookup',
     });
-    await metadataClient.setSessionOptions('session-a', { managed: '1', version: '1' });
+    await metadataClient.setSessionOptions('session-a', { managed: '1', version: '2' });
     await metadataClient.setWindowOptions('session-a', 'window-a', {
         provider: 'codex', sessionId: 'session-id',
     });
@@ -1360,14 +1400,16 @@ async function runTmuxClientChecks() {
 
 async function runTmuxDiscoveryChecks() {
     const finalIdentity = {
-        provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1',
+        provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1',
     };
     const finalLocator = new tmuxLayout.ProjectTmuxLayout().getLocator(finalIdentity);
     const finalSessionMetadata = {
-        managed: '1', version: '1', layout: 'project', projectKey: 'pk',
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'pk',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: JSON.stringify(['/work']),
+        cwd: '/work',
     };
     const finalWindowMetadata = {
-        managed: '1', version: '1', layout: 'project',
+        managed: '1', version: '2', layout: 'project',
         provider: 'codex', sessionId: 's1', marker: '/tmp/s1.done',
         createdAt: '2026-07-18T10:00:00Z',
     };
@@ -1398,7 +1440,7 @@ async function runTmuxDiscoveryChecks() {
     await discovery.refresh();
     assert.strictEqual(lists, 1);
     assert.deepStrictEqual(discovery.getActive(), [{
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         backend: 'tmux',
         state: 'active',
         markerPath: '/tmp/s1.done',
@@ -1506,27 +1548,31 @@ async function runTmuxDiscoveryChecks() {
     assert.strictEqual(failedCacheLists, 2);
 
     const pendingIdentity = {
-        provider: 'kimi', projectKey: 'pending-project', cwd: '/work/pending', pendingId: 'p1',
+        provider: 'kimi', workspaceScopeIdentity: 'pending-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work/pending'], cwd: '/work/pending', pendingId: 'p1',
     };
     const pendingLocator = new tmuxLayout.ProjectTmuxLayout().getPendingLocator(pendingIdentity);
     const pendingBinding = {
-        version: 1, state: 'pending', pendingId: 'p1', provider: 'kimi',
-        projectKey: 'pending-project', cwd: '/work/pending',
+        version: 2, state: 'pending', pendingId: 'p1', provider: 'kimi',
+        workspaceScopeIdentity: 'pending-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work/pending'], cwd: '/work/pending',
         createdAt: '2026-07-18T11:00:00Z', excludedSessionIds: ['old-session'],
         title: 'Pending title', layout: 'project', locator: pendingLocator,
     };
     const pendingWindowMetadata = {
-        managed: '1', version: '1', layout: 'project', provider: 'kimi', pendingId: 'p1',
+        managed: '1', version: '2', layout: 'project', provider: 'kimi', pendingId: 'p1',
         createdAt: pendingBinding.createdAt, marker: '/tmp/p1.done',
     };
     const pendingDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [{
             ...pendingLocator, windowId: '@2', active: true,
             sessionMetadata: {
-                managed: '1', version: '1', layout: 'project', projectKey: 'pending-project',
+                managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'pending-project',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: JSON.stringify(['/work/pending']), cwd: '/work/pending',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: JSON.stringify(['/work/pending']), cwd: '/work/pending',
             },
             windowMetadata: pendingWindowMetadata,
-            metadata: { projectKey: 'pending-project', ...pendingWindowMetadata },
+            metadata: { workspaceScopeIdentity: 'pending-project', ...pendingWindowMetadata },
         }] },
         bindingStore: {
             listPending: async () => [pendingBinding], listKnown: async () => [],
@@ -1549,7 +1595,7 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(pendingDiscovery.getPending()[0].excludedSessionIds, ['old-session']);
 
     const collisionIdentity = {
-        provider: 'claude', projectKey: 'collision-project', cwd: '', sessionId: 'collision-session',
+        provider: 'claude', workspaceScopeIdentity: 'collision-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'collision-session',
     };
     const collisionExpected = new tmuxLayout.ProjectTmuxLayout().getLocator(collisionIdentity);
     const collisionActual = {
@@ -1557,13 +1603,18 @@ async function runTmuxDiscoveryChecks() {
         windowName: `${collisionExpected.windowName}-occupied`,
     };
     const collisionMetadata = {
-        managed: '1', version: '1', layout: 'project', provider: 'claude',
+        managed: '1', version: '2', layout: 'project', provider: 'claude',
         sessionId: 'collision-session', marker: '/tmp/collision.done',
     };
     const collisionKnown = {
-        version: 1, state: 'known', provider: 'claude', sessionId: 'collision-session',
-        projectKey: 'collision-project', layout: 'project', locator: collisionExpected,
+        version: 2, state: 'known', provider: 'claude', sessionId: 'collision-session',
+        workspaceScopeIdentity: 'collision-project', workspaceNavigationIdentity: 'nav-1',
+        workspaceRootHostPaths: ['/work'], cwd: '/work', layout: 'project', locator: collisionExpected,
         lastSeenAtMs: 900,
+    };
+    const collisionSessionMetadata = {
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'collision-project',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: JSON.stringify(['/work']), cwd: '/work',
     };
     const collisionReconciled = [];
     const collisionRemoved = [];
@@ -1576,30 +1627,23 @@ async function runTmuxDiscoveryChecks() {
             return [
             {
                 ...collisionActual, windowId: '@3', active: true,
-                sessionMetadata: {
-                    managed: '1', version: '1', layout: 'project', projectKey: 'collision-project',
-                },
+                sessionMetadata: collisionSessionMetadata,
                 windowMetadata: collisionMetadata,
-                metadata: { projectKey: 'collision-project', ...collisionMetadata },
+                metadata: { workspaceScopeIdentity: 'collision-project', ...collisionMetadata },
             },
             {
                 ...collisionActual, windowId: '@3-duplicate', active: false,
-                sessionMetadata: {
-                    managed: '1', version: '1', layout: 'project', projectKey: 'collision-project',
-                },
+                sessionMetadata: collisionSessionMetadata,
                 windowMetadata: collisionMetadata,
-                metadata: { projectKey: 'collision-project', ...collisionMetadata },
+                metadata: { workspaceScopeIdentity: 'collision-project', ...collisionMetadata },
             },
             {
                 ...collisionExpected, windowId: '@4', active: true,
-                sessionMetadata: {
-                    managed: '1', version: '1', layout: 'project',
-                    projectKey: 'collision-project',
-                },
+                sessionMetadata: collisionSessionMetadata,
                 windowMetadata: collisionMetadata,
                 metadata: {
-                    managed: '1', version: '1', layout: 'project',
-                    projectKey: 'collision-project', provider: 'claude', sessionId: 'collision-session',
+                    managed: '1', version: '2', layout: 'project',
+                    workspaceScopeIdentity: 'collision-project', provider: 'claude', sessionId: 'collision-session',
                 },
             },
             {
@@ -1634,26 +1678,36 @@ async function runTmuxDiscoveryChecks() {
         actual: collisionActual, expected: collisionExpected,
     });
     const collisionSnapshot = discoveryModule.findTmuxCollisionRuntime(
-        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session',
+        collisionIdentity.workspaceScopeIdentity
     );
     assert.strictEqual(collisionSnapshot.state, 'conflict');
     assert.strictEqual(collisionSnapshot.backend, 'tmux');
     assert.deepStrictEqual(collisionSnapshot.identity, collisionIdentity);
     assert.deepStrictEqual(collisionSnapshot.tmux, collisionExpected);
     const stableCollisionSnapshot = discoveryModule.findTmuxCollisionRuntime(
-        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session',
+        collisionIdentity.workspaceScopeIdentity
     );
     collisionSnapshot.identity.sessionId = 'mutated';
     collisionSnapshot.tmux.sessionName = 'mutated';
     assert.deepStrictEqual(discoveryModule.findTmuxCollisionRuntime(
-        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session',
+        collisionIdentity.workspaceScopeIdentity
     ), stableCollisionSnapshot, 'synthetic collision snapshots must be stable defensive copies');
+    assert.strictEqual(discoveryModule.findTmuxCollisionRuntime(
+        [{ ...collisionDiscovery.getDiagnostics()[0], identity: {
+            ...collisionIdentity, workspaceScopeIdentity: 'other-scope',
+        } }],
+        'claude', 'collision-session', collisionIdentity.workspaceScopeIdentity
+    ), null, 'collision lookup must not cross workspaceScopeIdentity');
     collisionListFailure = true;
     await assert.rejects(collisionDiscovery.refresh(true), /collision refresh failed/);
     assert.strictEqual(collisionDiscovery.getDiagnostics()[0].stale, true,
         'retained collision diagnostics must be marked stale after a failed refresh');
     assert.strictEqual(discoveryModule.findTmuxCollisionRuntime(
-        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session',
+        collisionIdentity.workspaceScopeIdentity
     ).stale, true, 'synthetic collision runtimes must preserve diagnostic staleness');
 
     const pendingCollisionActual = {
@@ -1665,10 +1719,12 @@ async function runTmuxDiscoveryChecks() {
         client: { listWindows: async () => [{
             ...pendingCollisionActual, windowId: '@pending-collision', active: false,
             sessionMetadata: {
-                managed: '1', version: '1', layout: 'project', projectKey: 'pending-project',
+                managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'pending-project',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: JSON.stringify(['/work/pending']), cwd: '/work/pending',
             },
             windowMetadata: pendingWindowMetadata,
-            metadata: { projectKey: 'pending-project', ...pendingWindowMetadata },
+            metadata: { workspaceScopeIdentity: 'pending-project', ...pendingWindowMetadata },
         }] },
         bindingStore: {
             listPending: async () => [pendingBinding], listKnown: async () => [],
@@ -1684,21 +1740,22 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(pendingCollisionRemoved, []);
     assert.deepStrictEqual(pendingCollisionDiscovery.getDiagnostics(), [{
         kind: 'tmux-locator-collision',
-        identity: { ...pendingIdentity, cwd: '' },
+        identity: pendingIdentity,
         actual: pendingCollisionActual,
         expected: pendingLocator,
     }]);
 
     const sessionIdentity = {
-        provider: 'codex', projectKey: 'session-project', cwd: '', sessionId: 'session-layout-id',
+        provider: 'codex', workspaceScopeIdentity: 'session-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'session-layout-id',
     };
     const sessionLocator = new tmuxLayout.SessionTmuxLayout().getLocator(sessionIdentity);
     const sessionMetadata = {
-        managed: '1', version: '1', layout: 'session', projectKey: 'session-project',
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'session-project',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: JSON.stringify(['/work']), cwd: '/work',
         provider: 'codex', sessionId: 'session-layout-id', marker: '/tmp/session.done',
     };
     const sessionWindowMetadata = {
-        managed: '1', version: '1', layout: 'session',
+        managed: '1', version: '2', layout: 'session',
     };
     const sessionDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [
@@ -1764,7 +1821,7 @@ async function runTmuxDiscoveryChecks() {
     const invalidProjectScopeDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [{
             ...finalLocator, windowId: '@invalid-project-scope', active: true,
-            sessionMetadata: { projectKey: 'pk' },
+            sessionMetadata: { workspaceScopeIdentity: 'pk' },
             windowMetadata: finalWindowMetadata,
             metadata: { ...finalSessionMetadata, ...finalWindowMetadata },
         }] },
@@ -1797,7 +1854,8 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(disagreeingSessionDiscovery.getActive(), []);
 
     const known = {
-        version: 1, state: 'known', provider: 'codex', sessionId: 's1', projectKey: 'pk',
+        version: 2, state: 'known', provider: 'codex', sessionId: 's1', workspaceScopeIdentity: 'pk',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
         layout: 'project', locator: finalLocator, lastSeenAtMs: 900,
     };
 
@@ -1890,8 +1948,8 @@ async function runTmuxDiscoveryChecks() {
     const releaseAcknowledgement = deferred();
     let persistedAcknowledgementExpected;
     const mutationBinding = {
-        version: 1, state: 'completed', provider: 'codex', sessionId: 'mutation-ack',
-        projectKey: 'pk', cwd: '/work', layout: 'project',
+        version: 2, state: 'completed', provider: 'codex', sessionId: 'mutation-ack',
+        workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', layout: 'project',
         locator: {
             layout: 'project', sessionName: 'project-pk', windowName: 'mutation-ack',
         },
@@ -1918,7 +1976,7 @@ async function runTmuxDiscoveryChecks() {
     await acknowledgementEntered.promise;
     callerOwnedExpected.identity.provider = 'kimi';
     callerOwnedExpected.identity.sessionId = 'mutated-session';
-    callerOwnedExpected.identity.projectKey = 'mutated-project';
+    callerOwnedExpected.identity.workspaceScopeIdentity = 'mutated-project';
     callerOwnedExpected.identity.cwd = '/mutated';
     callerOwnedExpected.tmux.layout = 'session';
     callerOwnedExpected.tmux.sessionName = 'mutated-tmux';
@@ -2014,12 +2072,12 @@ async function runTmuxDiscoveryChecks() {
             discoveryAckRoot, () => now, discoveryAckLock
         );
         const discoveryAckIdentity = {
-            provider: 'codex', sessionId: 'discovery-ack-cas', projectKey: 'pk', cwd: '/work',
+            provider: 'codex', sessionId: 'discovery-ack-cas', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
         };
         const discoveryAckLocator = new tmuxLayout.ProjectTmuxLayout()
             .getLocator(discoveryAckIdentity);
         const oldDiscoveryAck = {
-            version: 1, state: 'completed', ...discoveryAckIdentity, layout: 'project',
+            version: 2, state: 'completed', ...discoveryAckIdentity, layout: 'project',
             locator: discoveryAckLocator, markerPath: '/tmp/discovery-ack-old.done',
             runStartedAtMs: 900, detectedAtMs: 990,
         };
@@ -2044,14 +2102,26 @@ async function runTmuxDiscoveryChecks() {
             runStartedAtMs: 950, detectedAtMs: now,
         };
         await discoveryAckStoreA.setInactive(newDiscoveryAck);
+        const otherScopeDiscoveryAck = {
+            ...newDiscoveryAck,
+            workspaceScopeIdentity: 'other-scope',
+            workspaceNavigationIdentity: 'other-nav',
+            markerPath: '/tmp/discovery-ack-other-scope.done',
+            runStartedAtMs: 975,
+            detectedAtMs: now + 1,
+        };
+        await discoveryAckStoreA.setInactive(otherScopeDiscoveryAck);
         assert.strictEqual(await discoveryAckB.acknowledgeInactive(lateOldExpected), 'stale',
             'a second discovery must not clear a newer run with its retained old snapshot');
         assert.deepStrictEqual(await discoveryAckStoreA.getInactive(
-            'codex', 'discovery-ack-cas'
+            'codex', 'discovery-ack-cas', discoveryAckIdentity.workspaceScopeIdentity
         ), newDiscoveryAck);
         assert.strictEqual(discoveryAckB.getInactive()[0].runStartedAtMs,
             newDiscoveryAck.runStartedAtMs,
             'a stale acknowledgement must reload and retain the current lifecycle blocker');
+        assert.strictEqual(discoveryAckB.getInactive()[0].identity.workspaceScopeIdentity,
+            discoveryAckIdentity.workspaceScopeIdentity,
+            'stale acknowledgement reload must not cross workspaceScopeIdentity');
     } finally {
         fs.rmSync(discoveryAckRoot, { recursive: true, force: true });
     }
@@ -2063,8 +2133,8 @@ async function runTmuxDiscoveryChecks() {
         tmux: { ...finalLocator },
     };
     let persistedInactive = [{
-        version: 1, state: 'completed', provider: 'codex', sessionId: 's1',
-        projectKey: 'pk', cwd: '/work', layout: 'project', locator: { ...finalLocator },
+        version: 2, state: 'completed', provider: 'codex', sessionId: 's1',
+        workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', layout: 'project', locator: { ...finalLocator },
         markerPath: '/tmp/s1.done', runStartedAtMs: 900, detectedAtMs: now,
     }];
     let blockInactiveRead = false;
@@ -2212,11 +2282,13 @@ async function runTmuxStoreChecks() {
     try {
         const store = new runtimeStoreModule.TmuxRuntimeBindingStore(root, () => now);
         const pending = (pendingId, createdAt, overrides = {}) => ({
-            version: 1,
+            version: 2,
             state: 'pending',
             pendingId,
             provider: 'codex',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
             cwd: '/work',
             createdAt,
             excludedSessionIds: [],
@@ -2230,11 +2302,14 @@ async function runTmuxStoreChecks() {
             ...overrides,
         });
         const known = (sessionId, lastSeenAtMs, overrides = {}) => ({
-            version: 1,
+            version: 2,
             state: 'known',
             provider: 'codex',
             sessionId,
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
+            cwd: '/work',
             layout: 'project',
             locator: {
                 layout: 'project',
@@ -2245,11 +2320,13 @@ async function runTmuxStoreChecks() {
             ...overrides,
         });
         const inactive = (sessionId, state, detectedAtMs, overrides = {}) => ({
-            version: 1,
+            version: 2,
             state,
             provider: 'codex',
             sessionId,
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
             cwd: '/work',
             layout: 'project',
             locator: {
@@ -2365,18 +2442,19 @@ async function runTmuxStoreChecks() {
         assert.strictEqual(await acknowledgementCasA.acknowledgeInactive(newAcknowledgement),
             'missing', 'same-run duplicate acknowledgement is idempotent');
 
-        const legacyKnownRoot = path.join(root, 'legacy-known-no-discriminator');
-        fs.mkdirSync(legacyKnownRoot);
-        const normalizedLegacyKnown = known('legacy-known', now - 100);
-        const legacyKnown = { ...normalizedLegacyKnown };
-        delete legacyKnown.state;
-        fs.writeFileSync(path.join(legacyKnownRoot, runtimeRecordFilename(normalizedLegacyKnown)),
-            JSON.stringify(legacyKnown));
-        const legacyKnownStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
-            legacyKnownRoot, () => now
+        const missingStateKnownRoot = path.join(root, 'v2-known-no-discriminator');
+        fs.mkdirSync(missingStateKnownRoot);
+        const normalizedKnown = known('missing-state-known', now - 100);
+        const missingStateKnown = { ...normalizedKnown };
+        delete missingStateKnown.state;
+        fs.writeFileSync(path.join(missingStateKnownRoot, runtimeRecordFilename(normalizedKnown)),
+            JSON.stringify(missingStateKnown));
+        const missingStateKnownStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            missingStateKnownRoot, () => now
         );
-        assert.deepStrictEqual(await legacyKnownStore.getKnown('codex', 'legacy-known'),
-            normalizedLegacyKnown, 'legacy final records without a discriminator parse as known');
+        assert.strictEqual(await missingStateKnownStore.getKnown(
+            'codex', 'missing-state-known', normalizedKnown.workspaceScopeIdentity
+        ), null, 'v2 final records without the exact known-state discriminator are ignored');
 
         const crossHostRoot = path.join(root, 'cross-host-final-records');
         const crossHostRecords = path.join(crossHostRoot, 'records');
@@ -2404,7 +2482,7 @@ async function runTmuxStoreChecks() {
         const crossNew = known('cross-host', now);
         const crossRuntime = {
             identity: {
-                provider: 'codex', sessionId: 'cross-host', projectKey: 'pk', cwd: '/work',
+                provider: 'codex', sessionId: 'cross-host', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
             },
             backend: 'tmux', state: 'active', markerPath: '/tmp/cross-host.done',
             runStartedAtMs: now - 1000, attached: false, tmux: { ...crossNew.locator },
@@ -2574,13 +2652,16 @@ async function runTmuxStoreChecks() {
         ), null);
 
         const ambiguousIdentity = {
-            provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 'ambiguous-session',
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'ambiguous-session',
         };
         const ambiguousRecord = {
-            version: 1,
+            version: 2,
             state: 'ambiguous',
             provider: 'codex',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
+            cwd: '/work',
             sessionId: 'ambiguous-session',
             layout: 'session',
             locator: {
@@ -2595,15 +2676,17 @@ async function runTmuxStoreChecks() {
         assert.deepStrictEqual(await restartedStore.getAmbiguous(ambiguousIdentity), ambiguousRecord);
         await restartedStore.removeAmbiguous(ambiguousIdentity);
         assert.strictEqual(await store.getAmbiguous(ambiguousIdentity), null);
-        await assert.rejects(store.setAmbiguous({ ...ambiguousRecord, projectKey: '' }),
+        await assert.rejects(store.setAmbiguous({ ...ambiguousRecord, workspaceScopeIdentity: '' }),
             /ambiguous tmux binding is invalid/);
         assert.strictEqual(await store.getAmbiguous(ambiguousIdentity), null);
 
         const pendingAmbiguousRecord = {
-            version: 1,
+            version: 2,
             state: 'ambiguous',
             provider: 'kimi',
-            projectKey: 'pending-ambiguous-project',
+            workspaceScopeIdentity: 'pending-ambiguous-project',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/pending-ambiguous'],
             pendingId: 'global-ambiguous-pending',
             cwd: '/pending-ambiguous',
             createdAt: '2026-07-18T09:59:00Z',
@@ -2621,7 +2704,8 @@ async function runTmuxStoreChecks() {
         const conflictingPendingAmbiguous = {
             ...pendingAmbiguousRecord,
             provider: 'claude',
-            projectKey: 'other-pending-ambiguous-project',
+            workspaceScopeIdentity: 'other-pending-ambiguous-project',
+            workspaceRootHostPaths: ['/other-pending-ambiguous'],
             cwd: '/other-pending-ambiguous',
             locator: { layout: 'session', sessionName: 'project-steward-s-claude-pending-ambiguous' },
         };
@@ -2630,12 +2714,18 @@ async function runTmuxStoreChecks() {
             /Multiple.*pending ID/);
         await store.removeAmbiguous({
             provider: pendingAmbiguousRecord.provider,
-            projectKey: pendingAmbiguousRecord.projectKey,
+            workspaceScopeIdentity: pendingAmbiguousRecord.workspaceScopeIdentity,
+            workspaceNavigationIdentity: pendingAmbiguousRecord.workspaceNavigationIdentity,
+            workspaceRootHostPaths: pendingAmbiguousRecord.workspaceRootHostPaths,
+            cwd: pendingAmbiguousRecord.cwd,
             pendingId: pendingAmbiguousRecord.pendingId,
         });
         await store.removeAmbiguous({
             provider: conflictingPendingAmbiguous.provider,
-            projectKey: conflictingPendingAmbiguous.projectKey,
+            workspaceScopeIdentity: conflictingPendingAmbiguous.workspaceScopeIdentity,
+            workspaceNavigationIdentity: conflictingPendingAmbiguous.workspaceNavigationIdentity,
+            workspaceRootHostPaths: conflictingPendingAmbiguous.workspaceRootHostPaths,
+            cwd: conflictingPendingAmbiguous.cwd,
             pendingId: conflictingPendingAmbiguous.pendingId,
         });
 
@@ -2698,12 +2788,14 @@ async function runTmuxStoreChecks() {
         })), /invalid or expired/);
         assert.deepStrictEqual((await store.listPending()).map(record => record.pendingId), ['p-old', 'p-new']);
 
-        const consumedIdentity = { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'p-used' };
+        const consumedIdentity = { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-used' };
         const consumedRecord = {
-            version: 1,
+            version: 2,
             state: 'consumed',
             provider: 'codex',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
             cwd: '/work',
             pendingId: 'p-used',
             finalSessionId: 's-used',
@@ -2736,35 +2828,20 @@ async function runTmuxStoreChecks() {
             legacyConsumedRoot, () => now
         );
         const legacyConsumedIdentity = {
-            provider: 'codex', projectKey: 'legacy-consumed-project', cwd: '/fresh-work',
+            provider: 'codex', workspaceScopeIdentity: 'legacy-consumed-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/fresh-work'], cwd: '/fresh-work',
             pendingId: 'legacy-consumed-pending',
         };
-        assert.deepStrictEqual(await legacyConsumedStore.getConsumed(legacyConsumedIdentity),
-            legacyConsumedRecord);
-        assert.deepStrictEqual(await legacyConsumedStore.getConsumedByPendingId('legacy-consumed-pending'),
-            legacyConsumedRecord);
+        assert.strictEqual(await legacyConsumedStore.getConsumed(legacyConsumedIdentity), null);
+        assert.strictEqual(await legacyConsumedStore.getConsumedByPendingId('legacy-consumed-pending'), null);
         await assert.rejects(legacyConsumedStore.setConsumed(legacyConsumedRecord),
             /consumed tmux binding is invalid/);
-        const legacyConsumedHarness = createTmuxBackendHarness();
-        legacyConsumedHarness.dependencies.runtimeStore = legacyConsumedStore;
-        const legacyBackendModule = require('../out/aiSessions/tmuxRuntimeBackend');
-        await assert.rejects(
-            new legacyBackendModule.TmuxRuntimeBackend(legacyConsumedHarness.dependencies).ensurePending({
-                identity: legacyConsumedIdentity,
-                projectName: 'App', terminalName: 'Codex: Legacy Consumed',
-                createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
-                launch: { executable: 'codex', args: ['new'], cwd: '/fresh-work' },
-            }, 'session'),
-            /pending ID.*identity|already consumed/i
-        );
-        assert.strictEqual(legacyConsumedHarness.operations.some(item =>
-            item.type === 'new-session' || item.type === 'new-window'), false);
         assert.strictEqual(fs.readFileSync(legacyConsumedPath, 'utf8'), legacyConsumedBytes);
 
         const conflictingConsumedRecord = {
             ...consumedRecord,
             provider: 'kimi',
-            projectKey: 'other-consumed-project',
+            workspaceScopeIdentity: 'other-consumed-project',
+            workspaceRootHostPaths: ['/other-consumed'],
             cwd: '/other-consumed',
             finalSessionId: 'other-used',
             finalLocator: { layout: 'session', sessionName: 'project-steward-s-kimi-other-used' },
@@ -2794,10 +2871,12 @@ async function runTmuxStoreChecks() {
         );
 
         const promotingRecord = {
-            version: 1,
+            version: 2,
             state: 'promoting',
             provider: 'codex',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
             pendingId: 'p-promoting',
             cwd: '/work',
             createdAt: '2026-07-18T09:59:00Z',
@@ -2819,15 +2898,15 @@ async function runTmuxStoreChecks() {
         });
         assert.strictEqual(await store.setPromoting(promotingRecord), true);
         const readPromoting = await restartedStore.getPromoting({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         });
         assert.deepStrictEqual(readPromoting, promotingRecord);
         readPromoting.sourceLocator.windowName = 'mutated';
         assert.strictEqual((await store.getPromoting({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         })).sourceLocator.windowName, 'pending-codex-p-promoting');
         assert.strictEqual(await store.getPromoting({
-            provider: 'codex', projectKey: 'other', cwd: '/work', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'other', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         }), null);
         assert.deepStrictEqual(await restartedStore.getPromotingByPendingId('p-promoting'), promotingRecord);
         await store.setPending(promotingRecord.pendingBinding);
@@ -2843,7 +2922,9 @@ async function runTmuxStoreChecks() {
         }), /promoting tmux binding is invalid/);
         const conflictingPromoting = {
             ...promotingRecord,
-            projectKey: 'other-project',
+            workspaceScopeIdentity: 'other-project',
+            workspaceNavigationIdentity: 'nav-other',
+            workspaceRootHostPaths: ['/other'],
             cwd: '/other',
             sourceLocator: {
                 layout: 'project', sessionName: 'project-steward-p-other', windowName: 'pending-codex-p-promoting',
@@ -2854,20 +2935,22 @@ async function runTmuxStoreChecks() {
         };
         conflictingPromoting.pendingBinding = {
             ...promotingRecord.pendingBinding,
-            projectKey: conflictingPromoting.projectKey,
+            workspaceScopeIdentity: conflictingPromoting.workspaceScopeIdentity,
+            workspaceNavigationIdentity: conflictingPromoting.workspaceNavigationIdentity,
+            workspaceRootHostPaths: conflictingPromoting.workspaceRootHostPaths,
             cwd: conflictingPromoting.cwd,
             locator: { ...conflictingPromoting.sourceLocator },
         };
         await store.setPromoting(conflictingPromoting);
         await assert.rejects(restartedStore.getPromotingByPendingId('p-promoting'), /Multiple.*pending ID/);
         await store.removePromoting({
-            provider: 'codex', projectKey: 'other-project', cwd: '/other', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'other-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/other'], cwd: '/other', pendingId: 'p-promoting',
         });
         await restartedStore.removePromoting({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         });
         assert.strictEqual(await store.getPromoting({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         }), null);
 
         await store.setKnown(known('s-old', now - 2));
@@ -2909,7 +2992,7 @@ async function runTmuxStoreChecks() {
         };
         const queuedSetRecord = known('queued-set', now);
         const queuedLiveIdentity = {
-            identity: { provider: 'kimi', projectKey: 'pk-queued', cwd: '/queued', sessionId: 'queued-live' },
+            identity: { provider: 'kimi', workspaceScopeIdentity: 'pk-queued', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/queued'], cwd: '/queued', sessionId: 'queued-live' },
             backend: 'tmux',
             state: 'active',
             markerPath: '/tmp/queued.done',
@@ -3136,25 +3219,28 @@ async function runTmuxStoreChecks() {
         );
         await legacyReconcileStore.reconcileKnown([{
             identity: {
-                provider: 'codex', projectKey: 'legacy-project', cwd: '', sessionId: 'legacy-live',
+                provider: 'codex', workspaceScopeIdentity: 'legacy-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'legacy-live',
             },
             backend: 'tmux', state: 'active', markerPath: '', runStartedAtMs: 0,
             attached: false,
             tmux: { layout: 'session', sessionName: 'project-steward-s-codex-legacy' },
         }]);
         assert.deepStrictEqual(await legacyReconcileStore.getKnown('codex', 'legacy-live'), {
-            version: 1,
+            version: 2,
             state: 'known',
             provider: 'codex',
             sessionId: 'legacy-live',
-            projectKey: 'legacy-project',
+            workspaceScopeIdentity: 'legacy-project',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
+            cwd: '/work',
             layout: 'session',
             locator: { layout: 'session', sessionName: 'project-steward-s-codex-legacy' },
             lastSeenAtMs: now,
         }, 'legacy managed metadata without a run timestamp must retain a duplicate-prevention hint');
 
         await store.reconcileKnown([{
-            identity: { provider: 'kimi', projectKey: 'pk-live', cwd: '/live', sessionId: 'live' },
+            identity: { provider: 'kimi', workspaceScopeIdentity: 'pk-live', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/live'], cwd: '/live', sessionId: 'live' },
             backend: 'tmux',
             state: 'active',
             markerPath: '/tmp/live.done',
@@ -3162,7 +3248,7 @@ async function runTmuxStoreChecks() {
             attached: false,
             tmux: { layout: 'session', sessionName: 'project-steward-s-kimi-live' },
         }, {
-            identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 'ignored-vscode' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'ignored-vscode' },
             backend: 'vscode',
             state: 'active',
             markerPath: '/tmp/vscode.done',
@@ -3187,9 +3273,12 @@ async function runTmuxStoreChecks() {
         };
         const attach = new attachStoreModule.TmuxAttachBindingStore(bindingState);
         const binding = {
-            version: 1,
+            version: 2,
             layout: 'project',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
+            cwd: '/work',
             sessionName: 'project-steward-p-a',
             windowName: 'ai-codex-a',
             provider: 'codex',
@@ -3199,17 +3288,17 @@ async function runTmuxStoreChecks() {
         attach.set(Promise.resolve(41), binding);
         await attach.flush();
         assert.deepStrictEqual(attach.get(41), binding);
-        assert.deepStrictEqual([...state.keys()], ['aiSessionTmuxAttachProcessBinding.v1.41']);
+        assert.deepStrictEqual([...state.keys()], ['aiSessionTmuxAttachProcessBinding.v2.41']);
         const minimalBinding = {
-            version: 1,
+            version: 2,
             layout: 'project',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
             sessionName: 'project-steward-p-a',
             terminalNamePrefix: 'Project Steward:',
         };
         attach.set(Promise.resolve(44), minimalBinding);
         await attach.flush();
-        assert.deepStrictEqual(attach.get(44), minimalBinding);
+        assert.strictEqual(attach.get(44), null);
         attach.remove(Promise.resolve(44));
         attach.set(Promise.resolve(0), binding);
         attach.set(Promise.resolve(42), { ...binding, layout: 'session' });
@@ -3219,6 +3308,17 @@ async function runTmuxStoreChecks() {
         attach.remove(Promise.resolve(41));
         await attach.flush();
         assert.strictEqual(state.size, 0);
+
+        state.set('aiSessionTmuxAttachProcessBinding.v1.45', {
+            ...binding,
+            version: 1,
+            projectKey: binding.workspaceScopeIdentity,
+            workspaceScopeIdentity: undefined,
+            workspaceNavigationIdentity: undefined,
+            workspaceRootHostPaths: undefined,
+            cwd: undefined,
+        });
+        assert.strictEqual(attach.get(45), null, 'v1 attach bindings must be ignored');
 
         let inside = 0;
         let highestInside = 0;
@@ -3451,7 +3551,7 @@ async function runTmuxStoreChecks() {
 async function runTmuxBackendChecks() {
     const backendModule = require('../out/aiSessions/tmuxRuntimeBackend');
     const backendCollisionIdentity = {
-        provider: 'codex', projectKey: 'backend-collision-project', cwd: '/work',
+        provider: 'codex', workspaceScopeIdentity: 'backend-collision-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
         sessionId: 'backend-collision-session',
     };
     const backendCollisionExpected = new tmuxLayout.SessionTmuxLayout()
@@ -3489,7 +3589,7 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(backendCollisionMutationCalls, 0,
         'backend forced refresh collision guard must run before any tmux mutation/provider dispatch');
     const backendLifecycleIdentity = {
-        provider: 'codex', projectKey: 'backend-lifecycle-project', cwd: '/work',
+        provider: 'codex', workspaceScopeIdentity: 'backend-lifecycle-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
         sessionId: 'backend-lifecycle-session',
     };
     const backendLifecycleBlocker = {
@@ -3533,13 +3633,13 @@ async function runTmuxBackendChecks() {
     });
     const projectBackend = new backendModule.TmuxRuntimeBackend(projectHarness.dependencies);
     const firstProject = await projectBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App',
         terminalName: 'AI Sessions: App',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/m1' },
     }, 'project');
     const secondProject = await projectBackend.ensureResume({
-        identity: { provider: 'claude', projectKey: 'pk', cwd: '/work', sessionId: 's2' },
+        identity: { provider: 'claude', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's2' },
         projectName: 'App',
         terminalName: 'AI Sessions: App',
         launch: { executable: 'claude', args: ['--resume', 's2'], markerPath: '/tmp/m2' },
@@ -3548,7 +3648,7 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 2);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'configure-window').length, 2);
     const firstProjectRequest = {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'AI Sessions: App',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/m1' },
     };
@@ -3651,10 +3751,11 @@ async function runTmuxBackendChecks() {
     const projectManagedRows = projectHarness.windows.filter(row => row.windowMetadata.provider);
     assert.strictEqual(projectManagedRows.length, 2);
     assert.deepStrictEqual(projectManagedRows[0].sessionMetadata, {
-        managed: '1', version: '1', layout: 'project', projectKey: 'pk',
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'pk',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
     });
     assert.deepStrictEqual(projectManagedRows[0].windowMetadata, {
-        managed: '1', version: '1', layout: 'project', provider: 'codex', sessionId: 's1',
+        managed: '1', version: '2', layout: 'project', provider: 'codex', sessionId: 's1',
         createdAt: '2026-07-18T10:00:00.000Z', marker: '/tmp/m1',
     });
     assert.ok(projectHarness.operations.findIndex(item => item.type === 'availability')
@@ -3665,12 +3766,12 @@ async function runTmuxBackendChecks() {
     const concurrentProjectBackendB = new backendModule.TmuxRuntimeBackend(concurrentProjectHarness.dependencies);
     await Promise.all([
         concurrentProjectBackendA.ensureResume({
-            identity: { provider: 'codex', projectKey: 'concurrent', cwd: '/work', sessionId: 'a' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'concurrent', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'a' },
             projectName: 'App', terminalName: 'AI Sessions: Concurrent',
             launch: { executable: 'codex', args: ['resume', 'a'] },
         }, 'project'),
         concurrentProjectBackendB.ensureResume({
-            identity: { provider: 'claude', projectKey: 'concurrent', cwd: '/work', sessionId: 'b' },
+            identity: { provider: 'claude', workspaceScopeIdentity: 'concurrent', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'b' },
             projectName: 'App', terminalName: 'AI Sessions: Concurrent',
             launch: { executable: 'claude', args: ['--resume', 'b'] },
         }, 'project'),
@@ -3680,11 +3781,11 @@ async function runTmuxBackendChecks() {
 
     const projectOwnershipHarness = createTmuxBackendHarness();
     const requestedOwnershipIdentity = {
-        provider: 'codex', projectKey: 'requested-project', cwd: '/work', sessionId: 'requested-session',
+        provider: 'codex', workspaceScopeIdentity: 'requested-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'requested-session',
     };
     const requestedOwnershipLocator = new tmuxLayout.ProjectTmuxLayout().getLocator(requestedOwnershipIdentity);
     const wrongOwnershipRuntime = {
-        identity: { provider: 'claude', projectKey: 'different-project', cwd: '', sessionId: 'other-session' },
+        identity: { provider: 'claude', workspaceScopeIdentity: 'different-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'other-session' },
         backend: 'tmux', state: 'active', markerPath: '', runStartedAtMs: 0, attached: false,
         tmux: {
             layout: 'project', sessionName: requestedOwnershipLocator.sessionName, windowName: 'ai-claude-other',
@@ -3694,10 +3795,10 @@ async function runTmuxBackendChecks() {
         sessionName: requestedOwnershipLocator.sessionName,
         windowName: 'ai-claude-other', windowId: '@hash-collision', active: true,
         sessionMetadata: {
-            managed: '1', version: '1', layout: 'project', projectKey: 'different-project',
+            managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'different-project',
         },
         windowMetadata: {
-            managed: '1', version: '1', layout: 'project', provider: 'claude', sessionId: 'other-session',
+            managed: '1', version: '2', layout: 'project', provider: 'claude', sessionId: 'other-session',
         },
         metadata: {},
     });
@@ -3721,7 +3822,7 @@ async function runTmuxBackendChecks() {
 
     const lifecycleAckHarness = createTmuxBackendHarness();
     const lifecycleAckIdentity = {
-        provider: 'codex', projectKey: 'lifecycle-ack', cwd: '/work', sessionId: 'ack-then-resume',
+        provider: 'codex', workspaceScopeIdentity: 'lifecycle-ack', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'ack-then-resume',
     };
     let lifecycleAckBlockers = [{
         identity: { ...lifecycleAckIdentity }, backend: 'tmux', state: 'completed',
@@ -3751,12 +3852,12 @@ async function runTmuxBackendChecks() {
     const sessionHarness = createTmuxBackendHarness();
     const sessionBackend = new backendModule.TmuxRuntimeBackend(sessionHarness.dependencies);
     await sessionBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: s1',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/s1' },
     }, 'session');
     await sessionBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's2' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's2' },
         projectName: 'App', terminalName: 'Codex: s2',
         launch: { executable: 'codex', args: ['resume', 's2'], markerPath: '/tmp/s2' },
     }, 'session');
@@ -3767,17 +3868,18 @@ async function runTmuxBackendChecks() {
         'initial session-layout viewers must use the same tmux-specific naming as reattach');
     const sessionManagedRow = sessionHarness.windows[0];
     assert.deepStrictEqual(sessionManagedRow.sessionMetadata, {
-        managed: '1', version: '1', layout: 'session', projectKey: 'pk', provider: 'codex',
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'pk', provider: 'codex',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
         sessionId: 's1', createdAt: '2026-07-18T10:00:00.000Z', marker: '/tmp/s1',
     });
     assert.deepStrictEqual(sessionManagedRow.windowMetadata, {
-        managed: '1', version: '1', layout: 'session',
+        managed: '1', version: '2', layout: 'session',
     });
 
     const sessionFocusHarness = createTmuxBackendHarness();
     const sessionFocusBackend = new backendModule.TmuxRuntimeBackend(sessionFocusHarness.dependencies);
     const sessionFocusRuntime = await sessionFocusBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'session-focus', cwd: '/work', sessionId: 'sf1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'session-focus', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'sf1' },
         projectName: 'App', terminalName: 'Codex: sf1',
         launch: { executable: 'codex', args: ['resume', 'sf1'], markerPath: '/tmp/sf1' },
     }, 'session');
@@ -3812,8 +3914,8 @@ async function runTmuxBackendChecks() {
         const invalidBackend = new backendModule.TmuxRuntimeBackend(invalidHarness.dependencies);
         await assert.rejects(invalidBackend.ensurePending({
             identity: {
-                provider: 'codex', projectKey: 'invalid-pending', cwd: '/work',
-                pendingId: invalidCase.label,
+                provider: 'codex', workspaceScopeIdentity: 'invalid-pending', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
+                pendingId: invalidCase.label.replace(/ /g, '-'),
             },
             projectName: 'App', terminalName: 'Codex: Invalid',
             createdAt: invalidCase.createdAt,
@@ -3829,12 +3931,12 @@ async function runTmuxBackendChecks() {
     const invalidLayoutHarness = createTmuxBackendHarness();
     const invalidLayoutBackend = new backendModule.TmuxRuntimeBackend(invalidLayoutHarness.dependencies);
     await assert.rejects(invalidLayoutBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 'bad-layout' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'bad-layout' },
         projectName: 'App', terminalName: 'Codex: Invalid Layout',
         launch: { executable: 'codex', args: ['resume', 'bad-layout'] },
     }, 'invalid'), /layout/i);
     await assert.rejects(invalidLayoutBackend.ensurePending({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'bad-layout' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'bad-layout' },
         projectName: 'App', terminalName: 'Codex: Invalid Layout',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'] },
@@ -3844,27 +3946,27 @@ async function runTmuxBackendChecks() {
     const invalidDispatchCases = [
         {
             label: 'cwd nul',
-            identity: { provider: 'codex', projectKey: 'invalid-dispatch', cwd: '/work\0bad', sessionId: 's1' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'invalid-dispatch', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work\0bad'], cwd: '/work\0bad', sessionId: 's1' },
             launch: { executable: 'codex', args: ['resume', 's1'] },
         },
         {
             label: 'executable nul',
-            identity: { provider: 'codex', projectKey: 'invalid-dispatch', cwd: '/work', sessionId: 's2' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'invalid-dispatch', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's2' },
             launch: { executable: 'codex\0bad', args: ['resume', 's2'] },
         },
         {
             label: 'argument nul',
-            identity: { provider: 'codex', projectKey: 'invalid-dispatch', cwd: '/work', sessionId: 's3' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'invalid-dispatch', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's3' },
             launch: { executable: 'codex', args: ['resume', 's3\0bad'] },
         },
         {
             label: 'launch cwd nul',
-            identity: { provider: 'codex', projectKey: 'invalid-dispatch', cwd: '/work', sessionId: 's4' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'invalid-dispatch', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's4' },
             launch: { executable: 'codex', args: ['resume', 's4'], cwd: '/work\0bad' },
         },
         {
             label: 'marker nul',
-            identity: { provider: 'codex', projectKey: 'invalid-dispatch', cwd: '/work', sessionId: 's5' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'invalid-dispatch', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's5' },
             launch: { executable: 'codex', args: ['resume', 's5'], markerPath: '/tmp/bad\0marker' },
         },
     ];
@@ -3889,7 +3991,7 @@ async function runTmuxBackendChecks() {
     });
     const oversizedArgsHarness = createTmuxBackendHarness();
     await assert.rejects(new backendModule.TmuxRuntimeBackend(oversizedArgsHarness.dependencies).ensureResume({
-        identity: { provider: 'codex', projectKey: 'oversized-args', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'oversized-args', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: Oversized Args',
         launch: { executable: 'codex', args: oversizedArgs },
     }, 'session'), /too many provider launch arguments/);
@@ -3900,7 +4002,7 @@ async function runTmuxBackendChecks() {
     sparseArgs[1] = 's1';
     const sparseArgsHarness = createTmuxBackendHarness();
     await assert.rejects(new backendModule.TmuxRuntimeBackend(sparseArgsHarness.dependencies).ensureResume({
-        identity: { provider: 'codex', projectKey: 'sparse-args', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'sparse-args', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: Sparse Args',
         launch: { executable: 'codex', args: sparseArgs },
     }, 'session'), /dense provider launch arguments/);
@@ -3918,7 +4020,7 @@ async function runTmuxBackendChecks() {
     const oversizedExclusionsHarness = createTmuxBackendHarness();
     await assert.rejects(new backendModule.TmuxRuntimeBackend(oversizedExclusionsHarness.dependencies).ensurePending({
         identity: {
-            provider: 'kimi', projectKey: 'oversized-exclusions', cwd: '/work', pendingId: 'pending',
+            provider: 'kimi', workspaceScopeIdentity: 'oversized-exclusions', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending',
         },
         projectName: 'App', terminalName: 'Kimi: Oversized Exclusions',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: oversizedExclusions,
@@ -3931,7 +4033,7 @@ async function runTmuxBackendChecks() {
     sparseExclusions[1] = 'old';
     const sparseExclusionsHarness = createTmuxBackendHarness();
     await assert.rejects(new backendModule.TmuxRuntimeBackend(sparseExclusionsHarness.dependencies).ensurePending({
-        identity: { provider: 'kimi', projectKey: 'sparse-exclusions', cwd: '/work', pendingId: 'pending' },
+        identity: { provider: 'kimi', workspaceScopeIdentity: 'sparse-exclusions', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending' },
         projectName: 'App', terminalName: 'Kimi: Sparse Exclusions',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: sparseExclusions,
         launch: { executable: 'kimi', args: ['new'] },
@@ -3946,8 +4048,8 @@ async function runTmuxBackendChecks() {
         get identity() {
             switchingIdentityReads++;
             return switchingIdentityReads === 1
-                ? { provider: 'codex', projectKey: 'single-read-container', cwd: '/work', sessionId: 'stable' }
-                : { provider: 'codex', projectKey: 'switched-container', cwd: '/changed', sessionId: 'changed' };
+                ? { provider: 'codex', workspaceScopeIdentity: 'single-read-container', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'stable' }
+                : { provider: 'codex', workspaceScopeIdentity: 'switched-container', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/changed'], cwd: '/changed', sessionId: 'changed' };
         },
         projectName: 'App', terminalName: 'Codex: Single Read Container',
         get launch() {
@@ -3962,7 +4064,7 @@ async function runTmuxBackendChecks() {
     ).ensureResume(switchingContainerRequest, 'session');
     assert.strictEqual(switchingIdentityReads, 1);
     assert.strictEqual(switchingLaunchReads, 1);
-    assert.strictEqual(switchingContainerRuntime.identity.projectKey, 'single-read-container');
+    assert.strictEqual(switchingContainerRuntime.identity.workspaceScopeIdentity, 'single-read-container');
     assert.strictEqual(switchingContainerRuntime.identity.sessionId, 'stable');
     const switchingContainerCreate = switchingContainerHarness.operations.find(item => item.type === 'new-session');
     assert.strictEqual(switchingContainerCreate.cwd, '/work');
@@ -3970,7 +4072,7 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(switchingContainerCreate.command.includes('changed'), false);
 
     const siblingMutationIdentity = {
-        provider: 'codex', projectKey: 'sibling-stable', cwd: '/work', sessionId: 'sibling-stable',
+        provider: 'codex', workspaceScopeIdentity: 'sibling-stable', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'sibling-stable',
     };
     const siblingMutationArgs = ['resume', 'sibling-stable'];
     const siblingMutationHarness = createTmuxBackendHarness();
@@ -3979,7 +4081,7 @@ async function runTmuxBackendChecks() {
     ).ensureResume({
         identity: siblingMutationIdentity,
         get projectName() {
-            siblingMutationIdentity.projectKey = 'sibling-mutated';
+            siblingMutationIdentity.workspaceScopeIdentity = 'sibling-mutated';
             return 'App';
         },
         terminalName: 'Codex: Sibling Mutation',
@@ -3992,7 +4094,7 @@ async function runTmuxBackendChecks() {
             },
         },
     }, 'session');
-    assert.strictEqual(siblingMutationRuntime.identity.projectKey, 'sibling-stable');
+    assert.strictEqual(siblingMutationRuntime.identity.workspaceScopeIdentity, 'sibling-stable');
     const siblingMutationCreate = siblingMutationHarness.operations.find(item => item.type === 'new-session');
     assert.ok(siblingMutationCreate.command.includes('sibling-stable'));
     assert.strictEqual(siblingMutationCreate.command.includes('sibling-mutated'), false);
@@ -4011,7 +4113,7 @@ async function runTmuxBackendChecks() {
     const switchingLengthRuntime = await new backendModule.TmuxRuntimeBackend(
         switchingLengthHarness.dependencies
     ).ensureResume({
-        identity: { provider: 'codex', projectKey: 'single-read-length', cwd: '/work', sessionId: 'stable-length' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'single-read-length', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'stable-length' },
         projectName: 'App', terminalName: 'Codex: Single Read Length',
         launch: { executable: 'codex', args: switchingLengthArgs },
     }, 'session');
@@ -4033,7 +4135,7 @@ async function runTmuxBackendChecks() {
     const switchingElementHarness = createTmuxBackendHarness();
     await new backendModule.TmuxRuntimeBackend(switchingElementHarness.dependencies).ensureResume({
         identity: {
-            provider: 'codex', projectKey: 'single-read-element', cwd: '/work', sessionId: 'stable-element',
+            provider: 'codex', workspaceScopeIdentity: 'single-read-element', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'stable-element',
         },
         projectName: 'App', terminalName: 'Codex: Single Read Element',
         launch: { executable: 'codex', args: switchingElementArgs },
@@ -4047,7 +4149,7 @@ async function runTmuxBackendChecks() {
     const switchingPendingHarness = createTmuxBackendHarness();
     const switchingPendingRequest = {
         identity: {
-            provider: 'kimi', projectKey: 'single-read-pending', cwd: '/work', pendingId: 'single-read-pending',
+            provider: 'kimi', workspaceScopeIdentity: 'single-read-pending', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'single-read-pending',
         },
         projectName: 'App', terminalName: 'Kimi: Single Read Pending', createdAt: '2026-07-18T09:59:00Z',
         get excludedSessionIds() {
@@ -4078,7 +4180,7 @@ async function runTmuxBackendChecks() {
         const launchBudgetHarness = createTmuxBackendHarness();
         await assert.rejects(new backendModule.TmuxRuntimeBackend(launchBudgetHarness.dependencies).ensureResume({
             identity: {
-                provider: 'codex', projectKey: `budget-${launchBudgetCase.label}`, cwd: '/work', sessionId: 's1',
+                provider: 'codex', workspaceScopeIdentity: `budget-${launchBudgetCase.label}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1',
             },
             projectName: 'App', terminalName: 'Codex: Budget',
             launch: { executable: 'codex', args: launchBudgetCase.args, markerPath: '/tmp/budget' },
@@ -4089,7 +4191,7 @@ async function runTmuxBackendChecks() {
 
     const e2bigHarness = createTmuxBackendHarness({ failCreateSessionE2bigCount: 1 });
     const e2bigRequest = {
-        identity: { provider: 'codex', projectKey: 'e2big', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'e2big', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: E2BIG',
         launch: { executable: 'codex', args: ['resume', 's1'] },
     };
@@ -4103,7 +4205,7 @@ async function runTmuxBackendChecks() {
     const resumeSnapshotHarness = createTmuxBackendHarness({ availabilityGate: resumeAvailabilityGate });
     const resumeSnapshotRequest = {
         identity: {
-            provider: 'codex', projectKey: 'snapshot-resume', cwd: '/original', sessionId: 'original-session',
+            provider: 'codex', workspaceScopeIdentity: 'snapshot-resume', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/original'], cwd: '/original', sessionId: 'original-session',
         },
         projectName: 'Original Project', terminalName: 'Codex: Original',
         launch: {
@@ -4113,7 +4215,7 @@ async function runTmuxBackendChecks() {
     };
     const resumeSnapshotPromise = new backendModule.TmuxRuntimeBackend(resumeSnapshotHarness.dependencies)
         .ensureResume(resumeSnapshotRequest, 'session');
-    resumeSnapshotRequest.identity.projectKey = 'mutated-project';
+    resumeSnapshotRequest.identity.workspaceScopeIdentity = 'mutated-project';
     resumeSnapshotRequest.identity.cwd = '/mutated';
     resumeSnapshotRequest.identity.sessionId = 'mutated-session';
     resumeSnapshotRequest.launch.executable = 'mutated-provider';
@@ -4123,7 +4225,7 @@ async function runTmuxBackendChecks() {
     resumeSnapshotRequest.terminalName = 'Codex: Mutated';
     resumeAvailabilityGate.resolve();
     const resumeSnapshotRuntime = await resumeSnapshotPromise;
-    assert.strictEqual(resumeSnapshotRuntime.identity.projectKey, 'snapshot-resume');
+    assert.strictEqual(resumeSnapshotRuntime.identity.workspaceScopeIdentity, 'snapshot-resume');
     assert.strictEqual(resumeSnapshotRuntime.identity.sessionId, 'original-session');
     assert.match(resumeSnapshotHarness.terminals[0].name, /^Project Steward: codex .+ \[tmux\]$/);
     const resumeSnapshotCreate = resumeSnapshotHarness.operations.find(item => item.type === 'new-session');
@@ -4145,7 +4247,7 @@ async function runTmuxBackendChecks() {
     });
     const pendingSnapshotRequest = {
         identity: {
-            provider: 'kimi', projectKey: 'snapshot-pending', cwd: '/original', pendingId: 'original-pending',
+            provider: 'kimi', workspaceScopeIdentity: 'snapshot-pending', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/original'], cwd: '/original', pendingId: 'original-pending',
         },
         projectName: 'Original Project', terminalName: 'Kimi: Original',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: ['original-exclusion'], title: 'Original title',
@@ -4180,7 +4282,7 @@ async function runTmuxBackendChecks() {
     const basePendingNow = Date.parse('2026-07-18T10:00:00Z');
     const futurePendingHarness = createTmuxBackendHarness({ nowMs: () => basePendingNow });
     await assert.rejects(new backendModule.TmuxRuntimeBackend(futurePendingHarness.dependencies).ensurePending({
-        identity: { provider: 'codex', projectKey: 'future', cwd: '/work', pendingId: 'future-pending' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'future', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'future-pending' },
         projectName: 'App', terminalName: 'Codex: Future',
         createdAt: '2026-07-18T10:05:01Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'] },
@@ -4199,7 +4301,7 @@ async function runTmuxBackendChecks() {
         },
     });
     await assert.rejects(new backendModule.TmuxRuntimeBackend(lockExpiryHarness.dependencies).ensurePending({
-        identity: { provider: 'codex', projectKey: 'lock-expiry', cwd: '/work', pendingId: 'lock-expiry' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'lock-expiry', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'lock-expiry' },
         projectName: 'App', terminalName: 'Codex: Lock Expiry',
         createdAt: '2026-07-17T10:00:01Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'] },
@@ -4213,7 +4315,7 @@ async function runTmuxBackendChecks() {
         afterProviderCreate: async () => { acceptedNow += 2000; },
     });
     await new backendModule.TmuxRuntimeBackend(acceptedHarness.dependencies).ensurePending({
-        identity: { provider: 'kimi', projectKey: 'accepted', cwd: '/work', pendingId: 'accepted-pending' },
+        identity: { provider: 'kimi', workspaceScopeIdentity: 'accepted', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'accepted-pending' },
         projectName: 'App', terminalName: 'Kimi: Accepted',
         createdAt: '2026-07-17T10:00:01Z', excludedSessionIds: [],
         launch: { executable: 'kimi', args: ['new'] },
@@ -4221,7 +4323,7 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(acceptedHarness.pending.get('accepted-pending').acceptedAtMs, basePendingNow);
 
     const globalMismatchRequest = pendingId => ({
-        identity: { provider: 'codex', projectKey: 'global-request', cwd: '/work', pendingId },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'global-request', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId },
         projectName: 'App', terminalName: 'Codex: Global Pending',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'] },
@@ -4231,7 +4333,7 @@ async function runTmuxBackendChecks() {
             label: 'promoting',
             seed(harness, pendingId) {
                 const record = {
-                    pendingId, provider: 'kimi', projectKey: 'other-promoting', cwd: '/other-promoting',
+                    pendingId, provider: 'kimi', workspaceScopeIdentity: 'other-promoting', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/other-promoting'], cwd: '/other-promoting',
                 };
                 harness.promoting.set('global-mismatch-promoting', record);
             },
@@ -4240,7 +4342,7 @@ async function runTmuxBackendChecks() {
             label: 'consumed',
             seed(harness, pendingId) {
                 const record = {
-                    pendingId, provider: 'kimi', projectKey: 'other-consumed', cwd: '/other-consumed',
+                    pendingId, provider: 'kimi', workspaceScopeIdentity: 'other-consumed', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/other-consumed'], cwd: '/other-consumed',
                 };
                 harness.consumed.set('global-mismatch-consumed', record);
             },
@@ -4249,7 +4351,7 @@ async function runTmuxBackendChecks() {
             label: 'ambiguous',
             seed(harness, pendingId) {
                 const record = {
-                    pendingId, provider: 'kimi', projectKey: 'other-ambiguous', cwd: '/other-ambiguous',
+                    pendingId, provider: 'kimi', workspaceScopeIdentity: 'other-ambiguous', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/other-ambiguous'], cwd: '/other-ambiguous',
                 };
                 harness.ambiguous.set('global-mismatch-ambiguous', record);
             },
@@ -4258,7 +4360,7 @@ async function runTmuxBackendChecks() {
             label: 'live pending',
             seed(harness, pendingId) {
                 harness.pending.set(pendingId, {
-                    pendingId, provider: 'kimi', projectKey: 'other-live', cwd: '/other-live',
+                    pendingId, provider: 'kimi', workspaceScopeIdentity: 'other-live', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/other-live'], cwd: '/other-live',
                     acceptedAtMs: basePendingNow,
                 });
             },
@@ -4280,16 +4382,16 @@ async function runTmuxBackendChecks() {
         const promotionMismatchHarness = createTmuxBackendHarness();
         const pendingId = `promotion-global-mismatch-${promotionMismatchState}`;
         const sourceIdentity = {
-            provider: 'codex', projectKey: 'promotion-global-source', cwd: '/source', pendingId,
+            provider: 'codex', workspaceScopeIdentity: 'promotion-global-source', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/source'], cwd: '/source', pendingId,
         };
         const sourceLocator = new tmuxLayout.SessionTmuxLayout().getPendingLocator(sourceIdentity);
         promotionMismatchHarness.pending.set(pendingId, {
-            version: 1, state: 'pending', ...sourceIdentity,
+            version: 2, state: 'pending', ...sourceIdentity,
             createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
             acceptedAtMs: basePendingNow, layout: 'session', locator: sourceLocator,
         });
         const mismatchedRecord = {
-            pendingId, provider: 'kimi', projectKey: 'promotion-global-other', cwd: '/other',
+            pendingId, provider: 'kimi', workspaceScopeIdentity: 'promotion-global-other', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/other'], cwd: '/other',
         };
         promotionMismatchHarness[promotionMismatchState].set(
             `promotion-global-${promotionMismatchState}`, mismatchedRecord
@@ -4309,7 +4411,7 @@ async function runTmuxBackendChecks() {
     const concurrentGlobalRequests = [
         {
             identity: {
-                provider: 'codex', projectKey: 'concurrent-global-a', cwd: '/work-a',
+                provider: 'codex', workspaceScopeIdentity: 'concurrent-global-a', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work-a'], cwd: '/work-a',
                 pendingId: concurrentPendingId,
             },
             projectName: 'App A', terminalName: 'Codex: Concurrent Global A',
@@ -4318,7 +4420,7 @@ async function runTmuxBackendChecks() {
         },
         {
             identity: {
-                provider: 'kimi', projectKey: 'concurrent-global-b', cwd: '/work-b',
+                provider: 'kimi', workspaceScopeIdentity: 'concurrent-global-b', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work-b'], cwd: '/work-b',
                 pendingId: concurrentPendingId,
             },
             projectName: 'App B', terminalName: 'Kimi: Concurrent Global B',
@@ -4341,13 +4443,13 @@ async function runTmuxBackendChecks() {
     const winningRequest = concurrentGlobalResults[0].status === 'fulfilled'
         ? concurrentGlobalRequests[0] : concurrentGlobalRequests[1];
     assert.strictEqual(concurrentGlobalBinding.provider, winningRequest.identity.provider);
-    assert.strictEqual(concurrentGlobalBinding.projectKey, winningRequest.identity.projectKey);
+    assert.strictEqual(concurrentGlobalBinding.workspaceScopeIdentity, winningRequest.identity.workspaceScopeIdentity);
     assert.strictEqual(concurrentGlobalBinding.cwd, winningRequest.identity.cwd);
 
     const pendingHarness = createTmuxBackendHarness();
     const pendingBackend = new backendModule.TmuxRuntimeBackend(pendingHarness.dependencies);
     const pendingRequest = {
-        identity: { provider: 'claude', projectKey: 'pk', cwd: '/work', pendingId: 'pending-1' },
+        identity: { provider: 'claude', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-1' },
         projectName: 'App', terminalName: 'Claude: New',
         createdAt: '2026-07-18T09:59:00Z',
         excludedSessionIds: ['old'],
@@ -4380,7 +4482,7 @@ async function runTmuxBackendChecks() {
     assert.ok(pendingHarness.operations.findIndex(item => item.type === 'store-consumed')
         < pendingHarness.operations.findIndex(item => item.type === 'remove-pending'));
     assert.ok(pendingHarness.operations.some(item => item.type === 'lock' && item.key === tmuxLayout.getTmuxRuntimeKey({
-        provider: 'claude', projectKey: 'pk', cwd: '/work', sessionId: 'final-1',
+        provider: 'claude', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'final-1',
     })));
     assert.ok(pendingHarness.operations.some(item =>
         item.type === 'lock' && item.key === 'pending:pending-1'));
@@ -4394,7 +4496,7 @@ async function runTmuxBackendChecks() {
 
     const corruptPendingHarness = createTmuxBackendHarness({ corruptPendingMetadata: true });
     await assert.rejects(new backendModule.TmuxRuntimeBackend(corruptPendingHarness.dependencies).ensurePending({
-        identity: { provider: 'codex', projectKey: 'corrupt', cwd: '/work', pendingId: 'corrupt-pending' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'corrupt', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'corrupt-pending' },
         projectName: 'App', terminalName: 'Codex: Corrupt',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'] },
@@ -4406,7 +4508,7 @@ async function runTmuxBackendChecks() {
     const pendingRecoveryHarness = createTmuxBackendHarness({ failSetPendingCount: 1 });
     const pendingRecoveryRequest = {
         identity: {
-            provider: 'kimi', projectKey: 'pending-recovery', cwd: '/work', pendingId: 'recover-pending',
+            provider: 'kimi', workspaceScopeIdentity: 'pending-recovery', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'recover-pending',
         },
         projectName: 'App', terminalName: 'Kimi: Recover',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: ['old'], title: 'Recover',
@@ -4436,7 +4538,7 @@ async function runTmuxBackendChecks() {
     const projectPromotionBackend = new backendModule.TmuxRuntimeBackend(projectPromotionHarness.dependencies);
     const projectPending = await projectPromotionBackend.ensurePending({
         identity: {
-            provider: 'kimi', projectKey: 'project-promotion', cwd: '/work', pendingId: 'project-pending',
+            provider: 'kimi', workspaceScopeIdentity: 'project-promotion', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'project-pending',
         },
         projectName: 'App', terminalName: 'AI Sessions: Project Promotion',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
@@ -4469,7 +4571,7 @@ async function runTmuxBackendChecks() {
         const recoveryHarness = createTmuxBackendHarness({ failSetConsumedCount: 1 });
         const recoveryRequest = {
             identity: {
-                provider: 'claude', projectKey: `promotion-recovery-${recoveryLayout}`, cwd: '/work',
+                provider: 'claude', workspaceScopeIdentity: `promotion-recovery-${recoveryLayout}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                 pendingId: `promotion-recovery-pending-${recoveryLayout}`,
             },
             projectName: 'App', terminalName: `Claude: Promotion Recovery ${recoveryLayout}`,
@@ -4510,7 +4612,7 @@ async function runTmuxBackendChecks() {
     const intentLiveHarness = createTmuxBackendHarness({ failSetConsumedCount: 1 });
     const intentLiveRequest = {
         identity: {
-            provider: 'codex', projectKey: 'intent-live-a', cwd: '/work-a',
+            provider: 'codex', workspaceScopeIdentity: 'intent-live-a', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work-a'], cwd: '/work-a',
             pendingId: 'intent-live-shared-pending',
         },
         projectName: 'App A', terminalName: 'Codex: Intent Live A',
@@ -4526,7 +4628,7 @@ async function runTmuxBackendChecks() {
     const intentA = JSON.parse(JSON.stringify(Array.from(intentLiveHarness.promoting.values())[0]));
     const bindingA = intentLiveHarness.pending.get(intentLiveRequest.identity.pendingId);
     const identityB = {
-        provider: 'kimi', projectKey: 'intent-live-b', cwd: '/work-b',
+        provider: 'kimi', workspaceScopeIdentity: 'intent-live-b', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work-b'], cwd: '/work-b',
         pendingId: intentLiveRequest.identity.pendingId,
     };
     const bindingB = {
@@ -4580,7 +4682,7 @@ async function runTmuxBackendChecks() {
         });
         const ambiguousPromotionRequest = {
             identity: {
-                provider: 'kimi', projectKey: `ambiguous-promotion-${ambiguousPromotionLayout}`, cwd: '/work',
+                provider: 'kimi', workspaceScopeIdentity: `ambiguous-promotion-${ambiguousPromotionLayout}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                 pendingId: `ambiguous-promotion-pending-${ambiguousPromotionLayout}`,
             },
             projectName: 'App', terminalName: `Kimi: Ambiguous Promotion ${ambiguousPromotionLayout}`,
@@ -4620,7 +4722,7 @@ async function runTmuxBackendChecks() {
             });
             const transitionRequest = {
                 identity: {
-                    provider: 'codex', projectKey: `transition-${transitionLayout}-${transitionFailure}`, cwd: '/work',
+                    provider: 'codex', workspaceScopeIdentity: `transition-${transitionLayout}-${transitionFailure}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                     pendingId: `transition-pending-${transitionLayout}-${transitionFailure}`,
                 },
                 projectName: 'App', terminalName: `Codex: ${transitionFailure}`,
@@ -4670,7 +4772,7 @@ async function runTmuxBackendChecks() {
         });
         const expiredIntentRequest = {
             identity: {
-                provider: 'claude', projectKey: `expired-intent-${expiredIntentLayout}`, cwd: '/work',
+                provider: 'claude', workspaceScopeIdentity: `expired-intent-${expiredIntentLayout}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                 pendingId: `expired-intent-pending-${expiredIntentLayout}`,
             },
             projectName: 'App', terminalName: `Claude: Expired Intent ${expiredIntentLayout}`,
@@ -4714,7 +4816,7 @@ async function runTmuxBackendChecks() {
         });
         const occupiedExpiredRequest = {
             identity: {
-                provider: 'codex', projectKey: `occupied-expired-${occupiedExpiredLayout}`, cwd: '/work',
+                provider: 'codex', workspaceScopeIdentity: `occupied-expired-${occupiedExpiredLayout}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                 pendingId: `occupied-expired-pending-${occupiedExpiredLayout}`,
             },
             projectName: 'App', terminalName: `Codex: Occupied Expired ${occupiedExpiredLayout}`,
@@ -4737,22 +4839,28 @@ async function runTmuxBackendChecks() {
         if (occupiedExpiredLayout === 'project') {
             renamedRow.windowName = occupiedExpiredIntent.sourceLocator.windowName;
             renamedRow.sessionMetadata = {
-                managed: '1', version: '1', layout: 'project',
-                projectKey: occupiedExpiredIntent.projectKey,
+                managed: '1', version: '2', layout: 'project',
+                workspaceScopeIdentity: occupiedExpiredIntent.workspaceScopeIdentity,
+                workspaceNavigationIdentity: occupiedExpiredIntent.workspaceNavigationIdentity,
+                workspaceRootHostPaths: JSON.stringify(occupiedExpiredIntent.workspaceRootHostPaths),
+                cwd: occupiedExpiredIntent.cwd,
             };
             renamedRow.windowMetadata = {
-                managed: '1', version: '1', layout: 'project', provider: occupiedExpiredIntent.provider,
+                managed: '1', version: '2', layout: 'project', provider: occupiedExpiredIntent.provider,
                 createdAt: occupiedExpiredIntent.createdAt, pendingId: occupiedExpiredIntent.pendingId,
                 marker: occupiedExpiredIntent.markerPath,
             };
         } else {
             renamedRow.sessionMetadata = {
-                managed: '1', version: '1', layout: 'session', provider: occupiedExpiredIntent.provider,
-                projectKey: occupiedExpiredIntent.projectKey,
+                managed: '1', version: '2', layout: 'session', provider: occupiedExpiredIntent.provider,
+                workspaceScopeIdentity: occupiedExpiredIntent.workspaceScopeIdentity,
+                workspaceNavigationIdentity: occupiedExpiredIntent.workspaceNavigationIdentity,
+                workspaceRootHostPaths: JSON.stringify(occupiedExpiredIntent.workspaceRootHostPaths),
+                cwd: occupiedExpiredIntent.cwd,
                 createdAt: occupiedExpiredIntent.createdAt, pendingId: occupiedExpiredIntent.pendingId,
                 marker: occupiedExpiredIntent.markerPath,
             };
-            renamedRow.windowMetadata = { managed: '1', version: '1', layout: 'session' };
+            renamedRow.windowMetadata = { managed: '1', version: '2', layout: 'session' };
         }
         renamedRow.metadata = { ...renamedRow.sessionMetadata, ...renamedRow.windowMetadata };
         occupiedExpiredHarness.windows.push({
@@ -4786,7 +4894,7 @@ async function runTmuxBackendChecks() {
         let gatePromotion = false;
         let promotionLockHeld = false;
         const delayedIdentity = {
-            provider: 'codex', projectKey: `delayed-${delayedLayout}`, cwd: '/work',
+            provider: 'codex', workspaceScopeIdentity: `delayed-${delayedLayout}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
             pendingId: `delayed-pending-${delayedLayout}`,
         };
         const delayedLockKey = `pending:${delayedIdentity.pendingId}`;
@@ -4831,7 +4939,7 @@ async function runTmuxBackendChecks() {
     const failedPromotionBackend = new backendModule.TmuxRuntimeBackend(failedPromotionHarness.dependencies);
     await failedPromotionBackend.ensurePending({
         identity: {
-            provider: 'kimi', projectKey: 'failed-promotion', cwd: '/work', pendingId: 'failed-pending',
+            provider: 'kimi', workspaceScopeIdentity: 'failed-promotion', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'failed-pending',
         },
         projectName: 'App', terminalName: 'Kimi: Failed Promotion',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
@@ -4847,14 +4955,14 @@ async function runTmuxBackendChecks() {
     const unknownPromotionBackend = new backendModule.TmuxRuntimeBackend(unknownPromotionHarness.dependencies);
     await unknownPromotionBackend.ensurePending({
         identity: {
-            provider: 'codex', projectKey: 'unknown-promotion', cwd: '/work', pendingId: 'unknown-pending',
+            provider: 'codex', workspaceScopeIdentity: 'unknown-promotion', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'unknown-pending',
         },
         projectName: 'App', terminalName: 'Codex: Unknown Promotion',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'] },
     }, 'session');
     const unknownFinalIdentity = {
-        provider: 'codex', projectKey: 'unknown-promotion', cwd: '/work', sessionId: 'unknown-final',
+        provider: 'codex', workspaceScopeIdentity: 'unknown-promotion', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'unknown-final',
     };
     const unknownFinalLocator = new tmuxLayout.SessionTmuxLayout().getLocator(unknownFinalIdentity);
     unknownPromotionHarness.windows.push({
@@ -4872,12 +4980,12 @@ async function runTmuxBackendChecks() {
     const collisionHarness = createTmuxBackendHarness();
     const collisionBackend = new backendModule.TmuxRuntimeBackend(collisionHarness.dependencies);
     await collisionBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'collision', cwd: '/work', sessionId: 'final' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'collision', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'final' },
         projectName: 'App', terminalName: 'AI Sessions: Collision',
         launch: { executable: 'codex', args: ['resume', 'final'], markerPath: '/tmp/final' },
     }, 'project');
     await collisionBackend.ensurePending({
-        identity: { provider: 'codex', projectKey: 'collision', cwd: '/work', pendingId: 'pending' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'collision', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending' },
         projectName: 'App', terminalName: 'AI Sessions: Collision',
         createdAt: '2026-07-18T09:58:00Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/pending-collision' },
@@ -4891,7 +4999,7 @@ async function runTmuxBackendChecks() {
     const attachFailureHarness = createTmuxBackendHarness({ failAttachCount: 1 });
     const attachFailureBackend = new backendModule.TmuxRuntimeBackend(attachFailureHarness.dependencies);
     const attachFailureRequest = {
-        identity: { provider: 'kimi', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'kimi', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Kimi: s1',
         launch: { executable: 'kimi', args: ['--resume', 's1'], markerPath: '/tmp/k1' },
     };
@@ -4918,7 +5026,7 @@ async function runTmuxBackendChecks() {
     const ambiguousHarness = createTmuxBackendHarness({ ambiguousCreateCount: 1 });
     const ambiguousBackend = new backendModule.TmuxRuntimeBackend(ambiguousHarness.dependencies);
     const ambiguousRequest = {
-        identity: { provider: 'codex', projectKey: 'ambiguous', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'ambiguous', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: s1',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/a1' },
     };
@@ -4932,11 +5040,12 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(ambiguousHarness.pending.size, 0);
     const recoveredAmbiguousRow = ambiguousHarness.windows[0];
     recoveredAmbiguousRow.sessionMetadata = {
-        managed: '1', version: '1', layout: 'session', projectKey: 'ambiguous',
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'ambiguous',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
         provider: 'codex', sessionId: 's1', marker: '/tmp/a1',
     };
     recoveredAmbiguousRow.windowMetadata = {
-        managed: '1', version: '1', layout: 'session',
+        managed: '1', version: '2', layout: 'session',
     };
     recoveredAmbiguousRow.metadata = {
         ...recoveredAmbiguousRow.sessionMetadata, ...recoveredAmbiguousRow.windowMetadata,
@@ -4945,11 +5054,12 @@ async function runTmuxBackendChecks() {
         .ensureResume(ambiguousRequest, 'session');
     assert.strictEqual(recoveredAmbiguous.identity.sessionId, 's1');
     assert.deepStrictEqual(ambiguousHarness.known.get('codex:s1'), {
-        version: 1, state: 'known', provider: 'codex', sessionId: 's1',
-        projectKey: 'ambiguous', layout: 'session',
+        version: 2, state: 'known', provider: 'codex', sessionId: 's1',
+        workspaceScopeIdentity: 'ambiguous', workspaceNavigationIdentity: 'nav-1',
+        workspaceRootHostPaths: ['/work'], cwd: '/work', layout: 'session',
         locator: { layout: 'session', sessionName: recoveredAmbiguousRow.sessionName },
         lastSeenAtMs: Date.parse('2026-07-18T10:00:00Z'),
-    }, 'ambiguous recovery without createdAt must fall back to a legacy known hint');
+    }, 'ambiguous recovery without createdAt must retain a v2 known hint');
     assert.strictEqual(ambiguousHarness.ambiguous.size, 0);
     assert.strictEqual(ambiguousHarness.operations.filter(item => item.type === 'new-session').length, 1);
 
@@ -4957,16 +5067,17 @@ async function runTmuxBackendChecks() {
         ambiguousCreateCount: 1,
         prepareAmbiguousWindow: row => {
             row.sessionMetadata = {
-                managed: '1', version: '1', layout: 'session', projectKey: 'ambiguous-lifecycle',
+                managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'ambiguous-lifecycle',
+                workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
                 provider: 'codex', sessionId: 's2',
                 createdAt: '2026-07-18T09:59:00.000Z', marker: '/tmp/a2',
             };
-            row.windowMetadata = { managed: '1', version: '1', layout: 'session' };
+            row.windowMetadata = { managed: '1', version: '2', layout: 'session' };
             row.metadata = { ...row.sessionMetadata, ...row.windowMetadata };
         },
     });
     const ambiguousLifecycleRequest = {
-        identity: { provider: 'codex', projectKey: 'ambiguous-lifecycle', cwd: '/work', sessionId: 's2' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'ambiguous-lifecycle', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's2' },
         projectName: 'App', terminalName: 'Codex: s2',
         launch: { executable: 'codex', args: ['resume', 's2'], markerPath: '/tmp/a2' },
     };
@@ -4976,8 +5087,9 @@ async function runTmuxBackendChecks() {
     const recoveredLifecycleRow = ambiguousLifecycleHarness.windows[0];
     assert.strictEqual(recoveredLifecycle.identity.sessionId, 's2');
     assert.deepStrictEqual(ambiguousLifecycleHarness.known.get('codex:s2'), {
-        version: 1, state: 'known', provider: 'codex', sessionId: 's2',
-        projectKey: 'ambiguous-lifecycle', layout: 'session',
+        version: 2, state: 'known', provider: 'codex', sessionId: 's2',
+        workspaceScopeIdentity: 'ambiguous-lifecycle', workspaceNavigationIdentity: 'nav-1',
+        workspaceRootHostPaths: ['/work'], layout: 'session',
         locator: { layout: 'session', sessionName: recoveredLifecycleRow.sessionName },
         lastSeenAtMs: Date.parse('2026-07-18T10:00:00Z'),
         cwd: '/work', markerPath: '/tmp/a2',
@@ -4987,7 +5099,7 @@ async function runTmuxBackendChecks() {
     const ambiguousPendingHarness = createTmuxBackendHarness({ ambiguousCreateCount: 1 });
     const ambiguousPendingRequest = {
         identity: {
-            provider: 'claude', projectKey: 'ambiguous-pending', cwd: '/work', pendingId: 'pending-ambiguous',
+            provider: 'claude', workspaceScopeIdentity: 'ambiguous-pending', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-ambiguous',
         },
         projectName: 'App', terminalName: 'Claude: Ambiguous',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
@@ -5008,7 +5120,7 @@ async function runTmuxBackendChecks() {
 
     const nonzeroSessionHarness = createTmuxBackendHarness({ failCreateSessionNonzeroCount: 1 });
     const nonzeroSessionRequest = {
-        identity: { provider: 'codex', projectKey: 'nonzero-session', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'nonzero-session', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: Nonzero',
         launch: { executable: 'codex', args: ['resume', 's1'] },
     };
@@ -5024,7 +5136,7 @@ async function runTmuxBackendChecks() {
 
     const nonzeroProjectHarness = createTmuxBackendHarness({ failCreateWindowNonzeroCount: 1 });
     const nonzeroProjectRequest = {
-        identity: { provider: 'claude', projectKey: 'nonzero-project', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'claude', workspaceScopeIdentity: 'nonzero-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Claude: Nonzero',
         launch: { executable: 'claude', args: ['--resume', 's1'] },
     };
@@ -5040,7 +5152,7 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(nonzeroProjectHarness.operations.filter(item => item.type === 'new-window').length, 2);
 
     const occupiedHarness = createTmuxBackendHarness();
-    const occupiedIdentity = { provider: 'codex', projectKey: 'occupied', cwd: '/work', sessionId: 's1' };
+    const occupiedIdentity = { provider: 'codex', workspaceScopeIdentity: 'occupied', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' };
     const occupiedLocator = new tmuxLayout.SessionTmuxLayout().getLocator(occupiedIdentity);
     occupiedHarness.windows.push({
         ...occupiedLocator, windowName: 'shell', windowId: '@occupied', active: true,
@@ -5056,18 +5168,18 @@ async function runTmuxBackendChecks() {
     const occupiedProjectHarness = createTmuxBackendHarness();
     const occupiedProjectBackend = new backendModule.TmuxRuntimeBackend(occupiedProjectHarness.dependencies);
     await occupiedProjectBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'occupied-project', cwd: '/work', sessionId: 'existing' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'occupied-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'existing' },
         projectName: 'App', terminalName: 'AI Sessions: Occupied',
         launch: { executable: 'codex', args: ['resume', 'existing'] },
     }, 'project');
     const unknownProjectIdentity = {
-        provider: 'claude', projectKey: 'occupied-project', cwd: '/work', sessionId: 'unknown',
+        provider: 'claude', workspaceScopeIdentity: 'occupied-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'unknown',
     };
     const unknownProjectLocator = new tmuxLayout.ProjectTmuxLayout().getLocator(unknownProjectIdentity);
     occupiedProjectHarness.windows.push({
         ...unknownProjectLocator, windowId: '@occupied-project', active: false,
         sessionMetadata: {
-            managed: '1', version: '1', layout: 'project', projectKey: 'occupied-project',
+            managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'occupied-project',
         },
         windowMetadata: {}, metadata: {},
     });
@@ -5082,7 +5194,7 @@ async function runTmuxBackendChecks() {
     });
     const unavailablePosixBackend = new backendModule.TmuxRuntimeBackend(unavailablePosixHarness.dependencies);
     await assert.rejects(unavailablePosixBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: s1',
         launch: { executable: 'codex', args: ['resume', 's1'] },
     }, 'session'), /tmux unavailable/);
@@ -5091,7 +5203,7 @@ async function runTmuxBackendChecks() {
     const unavailableHarness = createTmuxBackendHarness({ platform: 'win32' });
     const unavailableBackend = new backendModule.TmuxRuntimeBackend(unavailableHarness.dependencies);
     await assert.rejects(unavailableBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: s1',
         launch: { executable: 'codex', args: ['resume', 's1'] },
     }, 'session'), /POSIX/);
@@ -5100,7 +5212,7 @@ async function runTmuxBackendChecks() {
     const restoreHarness = createTmuxBackendHarness();
     const restoreBackend = new backendModule.TmuxRuntimeBackend(restoreHarness.dependencies);
     const restorable = await restoreBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'restore', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'restore', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'AI Sessions: Restore',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/r1' },
     }, 'project');
@@ -5134,7 +5246,7 @@ async function runTmuxBackendChecks() {
 
 function fakeRuntime(backend, sessionId, overrides = {}) {
     return {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId },
         backend,
         state: 'active',
         markerPath: '/tmp/m',
@@ -5146,22 +5258,24 @@ function fakeRuntime(backend, sessionId, overrides = {}) {
 
 function fakeResumeRequest(sessionId) {
     return {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId },
         projectName: 'App',
         terminalName: 'Codex: App',
         launch: { executable: 'codex', args: ['resume', sessionId], markerPath: '/tmp/m' },
+        directoryScope: createDirectoryScope('/work'),
     };
 }
 
 function fakeCreateRequest(pendingId) {
     return {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId },
         projectName: 'App',
         terminalName: 'Codex: App',
         createdAt: '2026-07-18T10:00:00.000Z',
         excludedSessionIds: ['old'],
         title: 'New work',
         launch: { executable: 'codex', args: [], markerPath: '/tmp/pending' },
+        directoryScope: createDirectoryScope('/work'),
     };
 }
 
@@ -5266,10 +5380,18 @@ async function runDirectBackendChecks() {
     const terminals = [{
         provider: 'codex', sessionId: 'existing', terminal: terminalA,
         markerPath: '/tmp/existing', runStartedAtMs: 10, cwd: '/work',
+        runtimeIdentity: {
+            provider: 'codex', workspaceScopeIdentity: '/work', workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'existing',
+        },
     }];
     const pending = [{
         provider: 'codex', terminal: terminalPending, markerPath: '/tmp/pending', cwd: '/work',
         createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: ['old'], title: 'New work',
+        runtimeIdentity: {
+            provider: 'codex', workspaceScopeIdentity: '/work', workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: '2026-07-18T10:00:00.000Z',
+        },
     }];
     const operations = [];
     let nextTerminal = 1;
@@ -5321,7 +5443,7 @@ async function runDirectBackendChecks() {
     const projected = backend.getActive();
     assert.strictEqual(projected.length, 1);
     assert.deepStrictEqual(projected[0].identity, {
-        provider: 'codex', projectKey: '/work', cwd: '/work', sessionId: 'existing',
+        provider: 'codex', workspaceScopeIdentity: '/work', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'existing',
     });
     projected[0].identity.sessionId = 'mutated';
     assert.strictEqual(backend.getActive()[0].identity.sessionId, 'existing');
@@ -5341,6 +5463,10 @@ async function runDirectBackendChecks() {
     terminals.push({
         provider: 'codex', sessionId: 'completed', terminal: completedTerminal,
         markerPath: '/tmp/complete', runStartedAtMs: 20, cwd: '/work',
+        runtimeIdentity: {
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'completed',
+        },
     });
     const createCountBeforeCompleted = operations.filter(item => item.type === 'create').length;
     await assert.rejects(backend.ensureResume(fakeResumeRequest('completed')),
@@ -5359,6 +5485,10 @@ async function runDirectBackendChecks() {
     terminals.push({
         provider: 'codex', sessionId: 'completed', terminal: duplicateCompletedTerminal,
         markerPath: '/tmp/duplicate-active', runStartedAtMs: 21, cwd: '/work',
+        runtimeIdentity: {
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'completed',
+        },
     });
     await assert.rejects(backend.ensureResume(fakeResumeRequest('completed')), /Multiple Direct Terminal/);
     assert.strictEqual(operations.filter(item => item.type === 'create').length, createCountBeforeCompleted);
@@ -5369,7 +5499,7 @@ async function runDirectBackendChecks() {
     cwdRejectedRequest.launch.cwd = '/work';
     await backend.ensureResume(cwdRejectedRequest);
     const cwdRejectedLaunch = operations.filter(item => item.type === 'launch').pop().launch;
-    assert.strictEqual(Object.prototype.hasOwnProperty.call(cwdRejectedLaunch, 'cwd'), false);
+    assert.strictEqual(cwdRejectedLaunch.cwd, '/work');
     assert.strictEqual(cwdRejectedRequest.launch.cwd, '/work');
 
     rejectNextCwd = true;
@@ -5377,7 +5507,7 @@ async function runDirectBackendChecks() {
     pendingCwdRejectedRequest.launch.cwd = '/work';
     await backend.ensurePending(pendingCwdRejectedRequest);
     const pendingCwdRejectedLaunch = operations.filter(item => item.type === 'launch').pop().launch;
-    assert.strictEqual(Object.prototype.hasOwnProperty.call(pendingCwdRejectedLaunch, 'cwd'), false);
+    assert.strictEqual(pendingCwdRejectedLaunch.cwd, '/work');
     assert.strictEqual(pendingCwdRejectedRequest.launch.cwd, '/work');
 
     const created = await backend.ensurePending(fakeCreateRequest('pending-1'));
@@ -5427,7 +5557,7 @@ async function runRuntimeCoordinatorChecks() {
             hasLiveTmuxOwnership: async () => false,
         });
         await isolatedCoordinator[operation]({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: `direct-${operation}`,
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: `direct-${operation}`,
         });
         assert.deepStrictEqual(isolatedDirect.refreshCalls, [true]);
         assert.deepStrictEqual(unavailableTmux.refreshCalls, [],
@@ -5575,7 +5705,7 @@ async function runRuntimeCoordinatorChecks() {
             backend.conflicts = [{
                 ...fakeRuntime('tmux', undefined, { state: 'conflict', attached: false }),
                 identity: {
-                    provider: 'codex', projectKey: 'pk', cwd: '/work',
+                    provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                     pendingId: 'fresh-pending-collision',
                 },
                 tmux: { layout: 'project', sessionName: 'pending-collision', windowName: 'occupied' },
@@ -5654,7 +5784,7 @@ async function runRuntimeCoordinatorChecks() {
             chooseTmuxFallback: async () => 'cancel',
         });
         await guardedActionCoordinator[operation]({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: `guarded-${operation}`,
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: `guarded-${operation}`,
         });
         assert.deepStrictEqual(guardedTmux[`${operation}Calls`], [],
             `${operation} must not act on a runtime replaced by a fresh collision`);
@@ -5671,7 +5801,7 @@ async function runRuntimeCoordinatorChecks() {
         chooseTmuxFallback: async () => 'cancel',
     });
     assert.strictEqual((await duplicateCoordinator.resume(fakeResumeRequest('duplicate'))).status, 'conflict');
-    assert.strictEqual(duplicateCoordinator.getById('codex', 'duplicate'), null);
+    assert.strictEqual(duplicateCoordinator.getById('codex', 'duplicate', 'pk'), null);
 
     configuration = { ...configuration, mode: 'tmux', tmuxLayout: 'session' };
     direct.active.push(fakeRuntime('vscode', 'existing-direct'));
@@ -5716,8 +5846,14 @@ async function runRuntimeCoordinatorChecks() {
         id: 'scoped-project', name: 'Scoped Project', path: '/work/first',
         codexSessions: [{ id: 'scoped-session', cwd: '/work/first' }],
     };
-    const firstScope = createDirectoryScope('/work/first', ['/work/second']);
-    const secondScope = createDirectoryScope('/work/second', ['/work/first']);
+    const firstScope = Object.freeze({
+        ...createDirectoryScope('/work/first', ['/work/second']),
+        workspaceScopeIdentity: 'scope:scoped-project',
+    });
+    const secondScope = Object.freeze({
+        ...createDirectoryScope('/work/second', ['/work/first']),
+        workspaceScopeIdentity: 'scope:scoped-project',
+    });
     const rememberedScopes = [];
     const createScopedResumeController = directoryScope => new ResumeController({
         getOpenProjects: () => [scopedProject],
@@ -5750,8 +5886,10 @@ async function runRuntimeCoordinatorChecks() {
     await new Promise(resolve => setImmediate(resolve));
     assert.strictEqual(scopedDirect.ensureResumeCalls, 1,
         'concurrent resume requests for one session must launch exactly once');
-    assert.strictEqual(scopedDirect.ensureResumeRequests[0].directoryScope, firstScope,
-        'the first request scope must own the single launch');
+    assert.deepStrictEqual(scopedDirect.ensureResumeRequests[0].directoryScope, firstScope,
+        'the first request scope snapshot must own the single launch');
+    assert.notStrictEqual(scopedDirect.ensureResumeRequests[0].directoryScope, firstScope,
+        'the launch scope must be a defensive snapshot');
     scopedGate.resolve();
     await Promise.all([firstScopedResume, secondScopedResume]);
     assert.deepStrictEqual(rememberedScopes, [firstScope],
@@ -5794,7 +5932,7 @@ async function runRuntimeCoordinatorChecks() {
     for (const backend of [pendingConflictDirect, pendingConflictTmux]) {
         backend.pending.push({
             ...fakeRuntime(backend.backend, undefined),
-            identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'action-conflict' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'action-conflict' },
             state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: ['old'],
         });
     }
@@ -6122,7 +6260,7 @@ async function runRuntimeCoordinatorChecks() {
         const promoteDirect = createFakeRuntimeBackend('vscode');
         promoteDirect.pending.push({
             ...fakeRuntime('vscode', undefined),
-            identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'guarded-promote' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'guarded-promote' },
             state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
         });
         const promoteCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
@@ -6152,25 +6290,25 @@ async function runRuntimeCoordinatorChecks() {
     routedTmux.active.push(fakeRuntime('tmux', 'tmux-route'));
     routedTmux.pending.push({
         ...fakeRuntime('tmux', undefined),
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-route' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-route' },
         state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
     });
     await routed.focus(fakeResumeRequest('tmux-route').identity);
-    await routed.focus({ provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-route' });
+    await routed.focus({ provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-route' });
     await routed.detach(fakeResumeRequest('direct-route').identity);
     assert.strictEqual(routedTmux.focusCalls.length, 2);
     assert.strictEqual(routedDirect.detachCalls.length, 1);
     routedDirect.pending.push({
         ...fakeRuntime('vscode', undefined),
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-conflict' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-conflict' },
         state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
     });
     routedTmux.pending.push({
         ...fakeRuntime('tmux', undefined),
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-conflict' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-conflict' },
         state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
     });
-    await routed.focus({ provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-conflict' });
+    await routed.focus({ provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-conflict' });
     assert.strictEqual(routedDirect.focusCalls.length, 0);
     assert.strictEqual(routedTmux.focusCalls.length, 2);
     const promotedPending = await routed.promotePending('pending-route', 'promoted-route');
@@ -6205,7 +6343,7 @@ async function runRuntimeCoordinatorChecks() {
         getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
         chooseTmuxFallback: async () => 'cancel',
     });
-    const choices = choiceCoordinator.getActiveCandidates('codex', 'choice');
+    const choices = choiceCoordinator.getActiveCandidates('codex', 'choice', 'pk');
     assert.strictEqual(choices.length, 2);
     assert.ok(choices.every(runtime => runtime.state === 'conflict'));
     assert.strictEqual(await choiceCoordinator.focusSelected(choices[0]), true);
@@ -6216,7 +6354,7 @@ async function runRuntimeCoordinatorChecks() {
     assert.strictEqual(choiceTmux.focusCalls.length, 1,
         'an exact tmux conflict choice must focus its selected locator');
 
-    const staleChoice = choiceCoordinator.getActiveCandidates('codex', 'choice')[0];
+    const staleChoice = choiceCoordinator.getActiveCandidates('codex', 'choice', 'pk')[0];
     choiceDirect.refresh = async force => {
         choiceDirect.refreshCalls.push(force);
         choiceDirect.active[0] = {
@@ -6242,11 +6380,11 @@ async function runRuntimeCoordinatorChecks() {
         chooseTmuxFallback: async () => 'cancel',
     });
     assert.deepStrictEqual(
-        collisionOnlyCoordinator.getActiveCandidates('codex', 'collision-only'), [],
+        collisionOnlyCoordinator.getActiveCandidates('codex', 'collision-only', 'pk'), [],
         'metadata/name collision diagnostics must not become chooser candidates'
     );
     assert.deepStrictEqual(
-        collisionOnlyCoordinator.getUnverifiedConflicts('codex', 'collision-only'),
+        collisionOnlyCoordinator.getUnverifiedConflicts('codex', 'collision-only', 'pk'),
         [collisionDiagnostic]
     );
     assert.strictEqual(await collisionOnlyCoordinator.focusSelected(collisionDiagnostic), false,
@@ -6271,7 +6409,7 @@ async function runRuntimeCoordinatorChecks() {
         chooseTmuxFallback: async () => 'cancel',
     });
     const verifiedChoices = verifiedWithCollisionCoordinator.getActiveCandidates(
-        'codex', 'verified-with-collision'
+        'codex', 'verified-with-collision', 'pk'
     );
     assert.strictEqual(verifiedChoices.length, 1,
         'a collision diagnostic must not hide a separately verified active runtime');
@@ -6288,7 +6426,7 @@ async function runRuntimeProjectionChecks() {
         claude: { id: 'claude', label: 'Claude', projectSessionsKey: 'claudeSessions' },
     };
     const activeRuntimes = [{
-        identity: { provider: 'codex', sessionId: 's1', projectKey: 'pk', cwd: '/work' },
+        identity: { provider: 'codex', sessionId: 's1', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
         markerPath: '/tmp/m',
         state: 'active',
         runStartedAtMs: 1,
@@ -6308,13 +6446,22 @@ async function runRuntimeProjectionChecks() {
         }],
         providers: providerFixtures,
         executionSnapshot: {},
-        activeRuntimes,
+        activeRuntimes: [activeRuntimes[0], {
+            ...activeRuntimes[0],
+            identity: {
+                ...activeRuntimes[0].identity,
+                workspaceScopeIdentity: 'other-scope',
+            },
+        }],
         pendingRuntimes: [],
+        workspaceScopeIdentity: 'pk',
         focusedIdentity: null,
         getProjectCwd: project => project.path,
         normalizePath: value => value,
     });
     const model = projected[0].activeAiSessions[0];
+    assert.strictEqual(projected[0].activeAiSessions.length, 1,
+        'runtime projection must not cross workspaceScopeIdentity for identical cwd and session ID');
     assert.strictEqual(model.backend, 'tmux');
     assert.strictEqual(model.tmuxLayout, 'project');
     assert.strictEqual(model.attached, false);
@@ -6346,7 +6493,7 @@ async function runRuntimeProjectionChecks() {
         executionSnapshot: {},
         activeRuntimes,
         pendingRuntimes: [],
-        focusedIdentity: { provider: 'codex', sessionId: 's1', projectKey: 'pk', cwd: '/work' },
+        focusedIdentity: { provider: 'codex', sessionId: 's1', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work' ], cwd: '/work' },
         getProjectCwd: project => project.path,
         normalizePath: value => value,
     });
@@ -6433,7 +6580,7 @@ async function runRuntimeProjectionChecks() {
     assert.strictEqual(historyFallback[1].activeAiSessions.length, 1);
 
     const tmuxPending = {
-        identity: { provider: 'codex', pendingId: 'pending-focus', projectKey: 'pk', cwd: '/work' },
+        identity: { provider: 'codex', pendingId: 'pending-focus', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
         backend: 'tmux', state: 'pending', markerPath: '/tmp/pending-focus.done',
         runStartedAtMs: Date.parse('2026-07-18T10:00:00Z'), attached: false,
         tmux: { layout: 'session', sessionName: 'project-steward-pending-codex-a' },
@@ -6445,7 +6592,7 @@ async function runRuntimeProjectionChecks() {
         executionSnapshot: {},
         activeRuntimes: [],
         pendingRuntimes: [tmuxPending],
-        focusedIdentity: { provider: 'codex', pendingId: 'pending-focus', projectKey: 'other', cwd: '/other' },
+        focusedIdentity: { provider: 'codex', pendingId: 'pending-focus', workspaceScopeIdentity: 'other', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/other' ], cwd: '/other' },
         getProjectCwd: project => project.path,
         normalizePath: value => value,
     });
@@ -6465,7 +6612,7 @@ async function runRuntimeProjectionChecks() {
             identity: { ...tmuxPending.identity },
             backend: 'vscode', attached: true, tmux: undefined, stale: true,
         }, tmuxPending],
-        focusedIdentity: { provider: 'codex', pendingId: 'pending-focus', projectKey: 'pk', cwd: '/work' },
+        focusedIdentity: { provider: 'codex', pendingId: 'pending-focus', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work' ], cwd: '/work' },
         getProjectCwd: project => project.path,
         normalizePath: value => value,
     });
@@ -6522,9 +6669,8 @@ async function runRuntimeProjectionChecks() {
         getProjectCwd: project => project.path,
         normalizePath: value => value,
     });
-    assert.strictEqual(legacyOnly[0].activeAiSessions.length, 2);
-    assert.ok(legacyOnly[0].activeAiSessions.every(model => model.backend === 'vscode'));
-    assert.ok(legacyOnly[0].activeAiSessions.every(model => model.attached === true));
+    assert.deepStrictEqual(legacyOnly[0].activeAiSessions, [],
+        'legacy terminal projections are ignored without v2 runtime snapshots');
 
     const noLegacyFallback = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
@@ -6558,22 +6704,22 @@ async function runRuntimeControllerChecks() {
     };
     const directTerminalHandle = { name: 'direct-terminal-handle' };
     const direct = {
-        identity: { provider: 'codex', sessionId: 'direct-session', projectKey: 'pk', cwd: '/work' },
+        identity: { provider: 'codex', sessionId: 'direct-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
         backend: 'vscode', state: 'active', markerPath: '/tmp/direct.done',
         runStartedAtMs: 1, attached: true, terminal: directTerminalHandle,
     };
     const tmux = {
-        identity: { provider: 'codex', sessionId: 'tmux-session', projectKey: 'pk', cwd: '/work' },
+        identity: { provider: 'codex', sessionId: 'tmux-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
         backend: 'tmux', state: 'active', markerPath: '/tmp/tmux.done',
         runStartedAtMs: 2, attached: false,
         tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-a' },
     };
-    const legacy = {
-        identity: { provider: 'codex', sessionId: 'legacy-session', projectKey: '', cwd: '' },
+    const otherScope = {
+        identity: { provider: 'codex', sessionId: 'legacy-session', workspaceScopeIdentity: 'other-scope', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
         backend: 'vscode', state: 'active', markerPath: '/tmp/legacy.done',
         runStartedAtMs: 3, attached: true, terminal: { name: 'legacy-terminal-handle' },
     };
-    const runtimes = [direct, tmux, legacy];
+    const runtimes = [direct, tmux, otherScope];
     const coordinator = {
         focused: [], detached: [],
         getById(provider, sessionId) {
@@ -6590,6 +6736,7 @@ async function runRuntimeControllerChecks() {
         getOpenProjects: () => [project, otherProject],
         getProjectSessions: (candidate, provider) => candidate[`${provider}Sessions`] || [],
         getProjectKey: candidate => candidate.id === 'project' ? 'pk' : 'other-pk',
+        getWorkspaceScopeIdentity: () => 'pk',
         getProjectCwd: candidate => candidate.path,
         normalizePath: value => value,
         runtimeCoordinator: coordinator,
@@ -6605,15 +6752,14 @@ async function runRuntimeControllerChecks() {
 
     await controller.focusActive('project', 'codex', 'direct-session');
     assert.deepStrictEqual(coordinator.focused, [{
-        provider: 'codex', sessionId: 'direct-session', projectKey: 'pk', cwd: '/work',
+        provider: 'codex', sessionId: 'direct-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
     }]);
     await controller.focusActive('other-project', 'codex', 'direct-session');
     assert.strictEqual(coordinator.focused.length, 1,
         'duplicate history must not override an authoritative runtime project identity');
     await controller.focusActive('other-project', 'codex', 'legacy-session');
-    assert.deepStrictEqual(coordinator.focused[1], {
-        provider: 'codex', sessionId: 'legacy-session', projectKey: '', cwd: '',
-    }, 'history may scope only a genuinely unattributed legacy runtime');
+    assert.strictEqual(coordinator.focused.length, 1,
+        'runtime lookup must not cross workspaceScopeIdentity even when cwd and history match');
     await controller.closeTerminal({
         projectId: 'other-project', providerId: 'codex', sessionId: 'direct-session',
     });
@@ -6650,7 +6796,7 @@ async function runRuntimeControllerChecks() {
         'a forged backend-specific route must be rejected before confirmation');
     assert.strictEqual(coordinator.detached.length, 2,
         'a forged backend-specific route must not detach the resolved runtime');
-    assert.deepStrictEqual(runtimes, [direct, tmux, legacy], 'controller calls must not mutate runtime snapshots');
+    assert.deepStrictEqual(runtimes, [direct, tmux, otherScope], 'controller calls must not mutate runtime snapshots');
 
     const conflictDirect = {
         ...direct,
@@ -6690,6 +6836,7 @@ async function runRuntimeControllerChecks() {
         getOpenProjects: () => [project],
         getProjectSessions: candidate => candidate.codexSessions,
         getProjectKey: () => 'pk',
+        getWorkspaceScopeIdentity: () => 'pk',
         getProjectCwd: () => '/work',
         normalizePath: value => value,
         runtimeCoordinator: conflictCoordinator,
@@ -6736,6 +6883,7 @@ async function runRuntimeControllerChecks() {
         getOpenProjects: () => [project],
         getProjectSessions: candidate => candidate.codexSessions,
         getProjectKey: () => 'pk',
+        getWorkspaceScopeIdentity: () => 'pk',
         getProjectCwd: () => '/work',
         normalizePath: value => value,
         runtimeCoordinator: {
@@ -6767,7 +6915,7 @@ async function runRuntimeControllerChecks() {
         ...controllerCollisionDiagnostic,
         identity: {
             ...controllerCollisionDiagnostic.identity,
-            projectKey: 'other-pk',
+            workspaceScopeIdentity: 'other-pk',
             cwd: '/other',
         },
     };
@@ -6778,6 +6926,7 @@ async function runRuntimeControllerChecks() {
         getOpenProjects: () => [project, otherProject],
         getProjectSessions: candidate => candidate.codexSessions,
         getProjectKey: candidate => candidate.id === 'project' ? 'pk' : 'other-pk',
+        getWorkspaceScopeIdentity: () => 'pk',
         getProjectCwd: candidate => candidate.path,
         normalizePath: value => value,
         runtimeCoordinator: {
@@ -6814,6 +6963,7 @@ async function runRuntimeControllerChecks() {
         getOpenProjects: () => [project],
         getProjectSessions: candidate => candidate.codexSessions,
         getProjectKey: () => 'pk',
+        getWorkspaceScopeIdentity: () => 'pk',
         getProjectCwd: () => '/work',
         normalizePath: value => value,
         runtimeCoordinator: {
@@ -6857,7 +7007,7 @@ async function runRuntimeControllerChecks() {
     const inferredRuntime = {
         identity: {
             provider: 'codex', sessionId: 'legacy-inferred-session',
-            projectKey: '/repo/subdir', cwd: '/repo/subdir/',
+            workspaceScopeIdentity: 'scope-current', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/repo/subdir'], cwd: '/repo/subdir',
         },
         backend: 'vscode', state: 'active', markerPath: '/tmp/legacy-inferred.done',
         runStartedAtMs: 4, attached: true, terminal: { name: 'legacy-inferred-terminal' },
@@ -6865,7 +7015,7 @@ async function runRuntimeControllerChecks() {
     const keyOwnedByOtherRuntime = {
         identity: {
             provider: 'codex', sessionId: 'key-owned-by-other-session',
-            projectKey: 'canonical:/other-repo', cwd: '/repo/subdir',
+            workspaceScopeIdentity: 'scope-other', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/repo/subdir'], cwd: '/repo/subdir',
         },
         backend: 'vscode', state: 'active', markerPath: '/tmp/key-owned-other.done',
         runStartedAtMs: 5, attached: true, terminal: { name: 'key-owned-other-terminal' },
@@ -6873,7 +7023,7 @@ async function runRuntimeControllerChecks() {
     const cwdOwnedByOtherRuntime = {
         identity: {
             provider: 'codex', sessionId: 'cwd-owned-by-other-session',
-            projectKey: 'legacy:/unmatched', cwd: '/other-repo///',
+            workspaceScopeIdentity: 'scope-current', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/other-repo'], cwd: '/other-repo',
         },
         backend: 'vscode', state: 'active', markerPath: '/tmp/cwd-owned-other.done',
         runStartedAtMs: 6, attached: true, terminal: { name: 'cwd-owned-other-terminal' },
@@ -6895,6 +7045,7 @@ async function runRuntimeControllerChecks() {
         getOpenProjects: () => [requestedFallbackProject, explicitOtherProject],
         getProjectSessions: (candidate, provider) => candidate[`${provider}Sessions`] || [],
         getProjectKey: candidate => `canonical:${normalizeCanonicalPath(candidate.path)}`,
+        getWorkspaceScopeIdentity: () => 'scope-current',
         getProjectCwd: candidate => candidate.path,
         normalizePath: normalizeCanonicalPath,
         runtimeCoordinator: fallbackCoordinator,
@@ -6910,12 +7061,12 @@ async function runRuntimeControllerChecks() {
 
     await fallbackController.focusActive('repo-project', 'codex', 'legacy-inferred-session');
     assert.deepStrictEqual(fallbackFocused, [{ ...inferredRuntime.identity }],
-        'legacy inferred non-empty identity fields may use requested history when no open project matches');
+        'v2 runtime lookup accepts the current scope and normalized project cwd');
     await fallbackController.closeTerminal({
         projectId: 'repo-project', providerId: 'codex', sessionId: 'legacy-inferred-session',
     });
     assert.deepStrictEqual(fallbackDetached, [{ ...inferredRuntime.identity }],
-        'legacy inferred runtime detach may use requested history when no open project matches');
+        'v2 runtime detach accepts the current scope and normalized project cwd');
     assert.deepStrictEqual(fallbackConfirmations, ['Close Terminal']);
 
     await fallbackController.focusActive('repo-project', 'codex', 'key-owned-by-other-session');
@@ -6923,9 +7074,9 @@ async function runRuntimeControllerChecks() {
         projectId: 'repo-project', providerId: 'codex', sessionId: 'key-owned-by-other-session',
     });
     assert.strictEqual(fallbackFocused.length, 1,
-        'history must not override a projectKey owned by another open project');
+        'history must not override a workspaceScopeIdentity owned by another workspace');
     assert.strictEqual(fallbackDetached.length, 1,
-        'detach must reject a projectKey owned by another open project');
+        'detach must reject a workspaceScopeIdentity owned by another workspace');
     assert.strictEqual(fallbackConfirmations.length, 1,
         'wrong-project runtime must be rejected before confirmation');
 
@@ -6935,17 +7086,16 @@ async function runRuntimeControllerChecks() {
     await fallbackController.focusActive('other-repo-project', 'codex', 'key-owned-by-other-session');
     await fallbackController.focusActive('other-repo-project', 'codex', 'cwd-owned-by-other-session');
     assert.deepStrictEqual(fallbackFocused.slice(1), [
-        { ...keyOwnedByOtherRuntime.identity },
         { ...cwdOwnedByOtherRuntime.identity },
-    ], 'canonical project keys and normalized cwd values must resolve across all open projects');
+    ], 'workspace scope and normalized cwd must both match across all open projects');
 
     const directRaceRuntime = terminal => ({
-        identity: { provider: 'codex', sessionId: 'race-session', projectKey: 'pk', cwd: '/work' },
+        identity: { provider: 'codex', sessionId: 'race-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
         backend: 'vscode', state: 'active', markerPath: '/tmp/race.done',
         runStartedAtMs: 1, attached: true, terminal,
     });
     const tmuxRaceRuntime = (sessionName = 'managed-a', windowName = 'window-a') => ({
-        identity: { provider: 'codex', sessionId: 'race-session', projectKey: 'pk', cwd: '/work' },
+        identity: { provider: 'codex', sessionId: 'race-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
         backend: 'tmux', state: 'active', markerPath: '/tmp/race.done',
         runStartedAtMs: 1, attached: false,
         tmux: { layout: 'project', sessionName, windowName },
@@ -6986,6 +7136,7 @@ async function runRuntimeControllerChecks() {
             getProjectSessions: () => [{ id: 'race-session' }],
             runtimeCoordinator: raceCoordinator,
             getProjectKey: () => 'pk',
+            getWorkspaceScopeIdentity: () => 'pk',
             getProjectCwd: () => '/work',
             normalizePath: value => value,
             confirmRuntimeClose: async (_message, action) => {
@@ -7048,7 +7199,7 @@ async function runRuntimeControllerChecks() {
     assert.strictEqual(confirmErrorRace.detached.length, 0);
     assert.deepStrictEqual(confirmErrorRace.errors, ['Could not confirm the AI session terminal action.']);
     const pendingRaceRuntime = {
-        identity: { provider: 'codex', pendingId: 'race-pending', projectKey: 'pk', cwd: '/work' },
+        identity: { provider: 'codex', pendingId: 'race-pending', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
         backend: 'tmux', state: 'pending', markerPath: '/tmp/pending.done',
         runStartedAtMs: 1, attached: false, createdAt: '2026-07-19T05:00:00.000Z',
         excludedSessionIds: [], tmux: { layout: 'session', sessionName: 'pending-managed-a' },
@@ -7141,14 +7292,15 @@ async function runRuntimeControllerChecks() {
     });
     await resume.resumeProjectSession('project', 'codex', 'tmux-session');
     assert.deepStrictEqual(resumeRequests[0].identity, {
-        provider: 'codex', sessionId: 'tmux-session', projectKey: 'pk', cwd: '/work',
+        provider: 'codex', sessionId: 'tmux-session', workspaceScopeIdentity: 'scope:/work', workspaceNavigationIdentity: 'navigation:/work', workspaceRootHostPaths: ['/work'], cwd: '/work',
     });
 
     let collisionResumeCalls = 0;
+    const collisionLookups = [];
     const collisionAnnouncements = [];
     const collisionRefreshes = [];
     const controllerCollisionSnapshot = {
-        identity: { provider: 'codex', sessionId: 'tmux-session', projectKey: 'pk', cwd: '/work' },
+        identity: { provider: 'codex', sessionId: 'tmux-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
         backend: 'tmux', state: 'conflict', markerPath: '', runStartedAtMs: 0,
         attached: false, tmux: { layout: 'session', sessionName: 'collision' },
     };
@@ -7171,7 +7323,10 @@ async function runRuntimeControllerChecks() {
         announceStatus: async (_projectId, message) => { collisionAnnouncements.push(message); },
         refresh: () => { collisionRefreshes.push('refresh'); },
         showActiveTab: () => undefined,
-        getRuntimeConflict: () => controllerCollisionSnapshot,
+        getRuntimeConflict: (...identity) => {
+            collisionLookups.push(identity);
+            return controllerCollisionSnapshot;
+        },
         runtimeCoordinator: {
             resume: async () => { collisionResumeCalls++; return { status: 'started' }; },
         },
@@ -7179,6 +7334,9 @@ async function runRuntimeControllerChecks() {
     await collisionResume.resumeProjectSession('project', 'codex', 'tmux-session');
     assert.strictEqual(collisionResumeCalls, 0,
         'a discovery locator collision must block resume dispatch');
+    assert.deepStrictEqual(collisionLookups, [[
+        'codex', 'tmux-session', 'scope:/work',
+    ]], 'resume collision lookup must use the resolved workspaceScopeIdentity');
     assert.deepStrictEqual(collisionRefreshes, ['refresh']);
     assert.deepStrictEqual(collisionAnnouncements, [
         'Multiple live runtimes match this AI session.',
@@ -7192,6 +7350,7 @@ async function runRuntimeControllerChecks() {
         getOpenProjects: () => [project],
         getProjectSessions: candidate => candidate.codexSessions,
         getProjectKey: () => 'pk',
+        getWorkspaceScopeIdentity: () => 'pk',
         getProjectCwd: candidate => candidate.path,
         normalizePath: value => value,
         runtimeCoordinator: {

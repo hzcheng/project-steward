@@ -9,6 +9,7 @@ import type {
     AiSessionRuntimeIdentity,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
+import { cloneAiSessionRuntimeIdentity } from './runtimeTypes';
 import type {
     ActiveAiSessionStatus,
     ActiveAiSessionViewModel,
@@ -22,6 +23,7 @@ type LegacyPendingTerminal = Pick<PendingAiSessionTerminal, 'provider' | 'cwd' |
 export interface ApplyAiSessionRuntimeProjectionInput {
     projects: Project[];
     providers: Record<AiSessionProviderId, ProjectionProvider>;
+    workspaceScopeIdentity?: string | null;
     activeRuntimes?: AiSessionRuntimeSnapshot[];
     pendingRuntimes?: AiSessionPendingRuntimeSnapshot[];
     /** @deprecated Transitional input until dashboard composition consumes the runtime coordinator. */
@@ -174,44 +176,17 @@ function projectWithRuntime(
 }
 
 function resolveActiveRuntimes(input: ApplyAiSessionRuntimeProjectionInput): AiSessionRuntimeSnapshot[] {
-    if (input.activeRuntimes !== undefined) {
-        return input.activeRuntimes.map(cloneRuntime);
-    }
-    return (input.activeTerminals || []).map(runtime => ({
-        identity: {
-            provider: runtime.provider,
-            projectKey: runtime.cwd || '',
-            cwd: runtime.cwd || '',
-            sessionId: runtime.sessionId,
-        },
-        backend: 'vscode',
-        state: 'active',
-        markerPath: '',
-        runStartedAtMs: runtime.runStartedAtMs,
-        attached: true,
-    }));
+    return (input.activeRuntimes || [])
+        .filter(runtime => !input.workspaceScopeIdentity
+            || runtime.identity.workspaceScopeIdentity === input.workspaceScopeIdentity)
+        .map(cloneRuntime);
 }
 
 function resolvePendingRuntimes(input: ApplyAiSessionRuntimeProjectionInput): AiSessionPendingRuntimeSnapshot[] {
-    if (input.pendingRuntimes !== undefined) {
-        return input.pendingRuntimes.map(clonePendingRuntime);
-    }
-    return (input.pendingTerminals || []).map(pending => ({
-        identity: {
-            provider: pending.provider,
-            projectKey: pending.cwd || '',
-            cwd: pending.cwd || '',
-            pendingId: pending.createdAt,
-        },
-        backend: 'vscode',
-        state: 'pending',
-        markerPath: '',
-        runStartedAtMs: parseTimestamp(pending.createdAt),
-        attached: true,
-        createdAt: pending.createdAt,
-        excludedSessionIds: [],
-        ...(pending.title === undefined ? {} : { title: pending.title }),
-    }));
+    return (input.pendingRuntimes || [])
+        .filter(runtime => !input.workspaceScopeIdentity
+            || runtime.identity.workspaceScopeIdentity === input.workspaceScopeIdentity)
+        .map(clonePendingRuntime);
 }
 
 function deduplicateActiveRuntimes(runtimes: AiSessionRuntimeSnapshot[]): AiSessionRuntimeSnapshot[] {
@@ -223,7 +198,9 @@ function deduplicateActiveRuntimes(runtimes: AiSessionRuntimeSnapshot[]): AiSess
             withoutFinalIdentity.push(runtime);
             continue;
         }
-        const key = getSessionKey(runtime.identity.provider, sessionId);
+        const key = `${runtime.identity.workspaceScopeIdentity}:${getSessionKey(
+            runtime.identity.provider, sessionId
+        )}`;
         const existing = byIdentity.get(key);
         if (!existing) {
             byIdentity.set(key, runtime);
@@ -231,7 +208,7 @@ function deduplicateActiveRuntimes(runtimes: AiSessionRuntimeSnapshot[]): AiSess
         }
         byIdentity.set(key, {
             ...existing,
-            identity: { ...existing.identity },
+            identity: cloneAiSessionRuntimeIdentity(existing.identity),
             state: 'conflict',
             ...(existing.stale || runtime.stale ? { stale: true } : {}),
         });
@@ -250,7 +227,9 @@ function deduplicatePendingRuntimes(
             withoutPendingIdentity.push(runtime);
             continue;
         }
-        const key = getPendingKey(runtime.identity.provider, pendingId);
+        const key = `${runtime.identity.workspaceScopeIdentity}:${getPendingKey(
+            runtime.identity.provider, pendingId
+        )}`;
         const group = byIdentity.get(key) || [];
         group.push(runtime);
         byIdentity.set(key, group);
@@ -259,7 +238,7 @@ function deduplicatePendingRuntimes(
         const representative = group.slice().sort(comparePendingRepresentatives)[0];
         return group.length === 1 ? representative : {
             ...representative,
-            identity: { ...representative.identity },
+            identity: cloneAiSessionRuntimeIdentity(representative.identity),
             ...(representative.tmux ? { tmux: { ...representative.tmux } } : {}),
             excludedSessionIds: [...representative.excludedSessionIds],
             projectionConflict: true,
@@ -285,7 +264,9 @@ function getPendingRepresentativeKey(runtime: AiSessionPendingRuntimeSnapshot): 
         runtime.state,
         runtime.identity.provider,
         runtime.identity.pendingId || '',
-        runtime.identity.projectKey,
+        runtime.identity.workspaceScopeIdentity,
+        runtime.identity.workspaceNavigationIdentity,
+        runtime.identity.workspaceRootHostPaths.slice().sort(),
         runtime.identity.cwd,
         runtime.title === undefined ? null : runtime.title,
         runtime.createdAt,
@@ -383,7 +364,7 @@ function shortSessionId(sessionId: string): string {
 function cloneRuntime(runtime: AiSessionRuntimeSnapshot): AiSessionRuntimeSnapshot {
     return {
         ...runtime,
-        identity: { ...runtime.identity },
+        identity: cloneAiSessionRuntimeIdentity(runtime.identity),
         ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
     };
 }
