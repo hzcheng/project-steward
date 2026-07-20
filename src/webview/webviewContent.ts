@@ -783,15 +783,15 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     var executionStatus = `<span class="ai-session-execution-status" aria-label="${executionAriaLabel}"><span class="ai-session-execution-dot" aria-hidden="true"></span>${executionLabel}</span>`;
     var runtimeStatusLabel = model.status === 'conflict' || model.conflict ? 'Runtime conflict'
         : model.status === 'needsAttention' ? 'Needs attention'
-            : model.status === 'focused' ? 'Focused'
-                : '';
-    var runtimeBadge = model.backend === 'tmux'
-        ? '<span class="ai-session-runtime-badge" title="Managed tmux runtime">tmux</span>'
-        : '';
+            : '';
+    var runtimeBadgeDescription = model.backend === 'tmux'
+        ? 'Managed tmux runtime'
+        : 'Direct VS Code terminal';
+    var runtimeBadge = `<span class="ai-session-runtime-badge" title="${runtimeBadgeDescription}" aria-label="${runtimeBadgeDescription}">${model.backend}</span>`;
     var staleStatus = model.stale
         ? '<span class="ai-session-stale-status" title="Runtime status is stale">stale</span>'
         : '';
-    var metadata = [runtimeBadge, staleStatus, providerLabel, runtimeStatusLabel, executionStatus, createdAt, shortSessionId].filter(Boolean).join(' · ');
+    var metadata = [staleStatus, runtimeStatusLabel, executionStatus, createdAt, shortSessionId].filter(Boolean).join(' · ');
     var attentionIndicator = model.needsAttention
         ? '<span class="ai-session-attention-indicator" title="AI session needs attention" aria-label="AI session needs attention"></span>'
         : '';
@@ -829,7 +829,7 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
             ${attentionIndicator}
             <span class="codex-session-icon">${Icons.terminalLine}</span>
             <span class="codex-session-text">
-                <span class="codex-session-name">${sessionName}</span>
+                <span class="codex-session-title-line">${runtimeBadge}<span class="codex-session-name">${sessionName}</span></span>
                 <span class="codex-session-meta">${metadata}</span>
             </span>
         </button>
