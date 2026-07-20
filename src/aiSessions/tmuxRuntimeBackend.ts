@@ -1223,6 +1223,7 @@ function snapshotResumeRequest(request: AiSessionResumeRuntimeRequest): AiSessio
         projectName,
         terminalName,
         launch,
+        directoryScope: request.directoryScope,
     };
 }
 
@@ -1246,6 +1247,7 @@ function snapshotPendingRequest(request: AiSessionCreateRuntimeRequest): AiSessi
         excludedSessionIds,
         ...(title === undefined ? {} : { title }),
         launch,
+        directoryScope: request.directoryScope,
     };
 }
 

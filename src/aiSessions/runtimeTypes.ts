@@ -2,6 +2,7 @@
 
 import type { AiSessionProviderId } from '../models';
 import type { AiSessionLaunchSpec } from './launchSpec';
+import type { AiSessionDirectoryScope } from './types';
 
 const MAX_RUNTIME_IDENTITY_ID_LENGTH = 512;
 const SAFE_RUNTIME_IDENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
@@ -165,6 +166,7 @@ export interface AiSessionResumeRuntimeRequest {
     projectName: string;
     terminalName: string;
     launch: AiSessionLaunchSpec;
+    directoryScope: AiSessionDirectoryScope;
 }
 
 export interface AiSessionCreateRuntimeRequest {
@@ -175,6 +177,7 @@ export interface AiSessionCreateRuntimeRequest {
     excludedSessionIds: string[];
     title?: string;
     launch: AiSessionLaunchSpec;
+    directoryScope: AiSessionDirectoryScope;
 }
 
 export interface AiSessionRuntimeActionResult<TTerminal = unknown> {

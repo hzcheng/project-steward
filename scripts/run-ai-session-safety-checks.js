@@ -93,7 +93,8 @@ const openProjectService = require('../out/projects/openProjectService');
 const webviewContentModule = require('../out/webview/webviewContent');
 const dashboardViewModel = require('../out/webview/dashboardViewModel');
 const AiSessionDashboardController = require('../out/aiSessions/dashboardController').AiSessionDashboardController;
-const AiSessionCommandController = require('../out/aiSessions/commandController').AiSessionCommandController;
+const aiSessionCommandControllerModule = require('../out/aiSessions/commandController');
+const AiSessionCommandController = aiSessionCommandControllerModule.AiSessionCommandController;
 const AiSessionCreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
 const AiSessionResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const AiSessionAttentionController = require('../out/aiSessions/attentionController').AiSessionAttentionController;
@@ -2058,6 +2059,7 @@ async function runAiSessionRuntimeControllerChecks() {
         launch: {
             executable: 'codex', args: ['new', 'Test Title'], cwd: '/work/a', markerPath: '/tmp/new.marker',
         },
+        directoryScope: createTestAiSessionDirectoryScope('/work/a'),
     });
     assert.deepStrictEqual(existingIds, ['existing-a', 'existing-b']);
     assert.deepStrictEqual(launchSpec, {
@@ -2223,6 +2225,7 @@ async function runAiSessionRuntimeControllerChecks() {
         launch: {
             executable: 'codex', args: ['resume', session.id], cwd: '/work/a', markerPath: '/tmp/resume.marker',
         },
+        directoryScope: createTestAiSessionDirectoryScope('/work/a'),
     });
     assert.deepStrictEqual(session, {
         id: 'session-a', name: 'Session A', cwd: '/work/a', updatedAt: '2026-07-19T03:00:00Z',
@@ -2371,6 +2374,263 @@ async function runWorkspaceScopeControllerLaunchChecks() {
         });
         assert.strictEqual(resumeRequests[0].identity.cwd, scope.primaryCwd);
     }
+}
+
+async function runWorkspaceLaunchPreflightControllerChecks() {
+    const project = Object.freeze({ id: 'workspace-a', name: 'Workspace A', path: '/legacy/project-path' });
+    const workspace = {
+        navigationIdentity: 'navigation-a',
+        scopeIdentity: 'scope-a',
+        kind: 'savedMultiRoot',
+        displayName: 'Workspace A',
+        navigationUri: 'file:///work/workspace.code-workspace',
+        environment: 'local',
+        roots: [{
+            id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/web', ordinal: 0,
+        }, {
+            id: 'root-api', name: 'API', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 1,
+        }],
+    };
+    let trusted = true;
+    let providerPresent = true;
+    let capabilityStatus = 'supported';
+    let activeEditorUri = { fsPath: '/work/api/src/index.ts' };
+    let lastUsedRootId = 'root-web';
+    let pickerResult;
+    const invalidDirectories = new Set();
+    const warnings = [];
+    const primaryRootWrites = [];
+    const capabilityRequests = [];
+    const pickedRoots = [];
+    const commandController = new AiSessionCommandController({
+        getOpenProjects: () => [project],
+        getProjectKey: () => 'legacy-project-key',
+        getOpenWorkspace: () => workspace,
+        getActiveEditorUri: () => activeEditorUri,
+        isWorkspaceTrusted: () => trusted,
+        getProvider: providerId => providerPresent ? {
+            id: providerId, label: 'Codex', commandName: 'codex',
+        } : null,
+        getProviderDirectoryCapability: async provider => {
+            capabilityRequests.push(provider.id);
+            return { status: capabilityStatus };
+        },
+        getPrimaryRootId: currentWorkspace => {
+            assert.strictEqual(currentWorkspace, workspace);
+            return lastUsedRootId;
+        },
+        setPrimaryRootId: async (scopeIdentity, rootId) => primaryRootWrites.push([scopeIdentity, rootId]),
+        pickWorkspaceRoot: async (currentWorkspace, action) => {
+            pickedRoots.push([currentWorkspace.scopeIdentity, action]);
+            return pickerResult;
+        },
+        isDirectory: hostPath => !invalidDirectories.has(hostPath),
+        showWarningMessage: message => warnings.push(message),
+        isProviderId: value => value === 'codex',
+        setExpanded: async () => undefined,
+        setActiveProvider: async () => undefined,
+        togglePin: () => false,
+        getAliases: () => ({}),
+        saveAliases: () => undefined,
+        getOriginalName: () => null,
+        getSessionKey: () => '',
+        showInputBox: async () => undefined,
+        writeClipboard: async () => undefined,
+        showInformationMessage: () => undefined,
+        refresh: () => undefined,
+    });
+
+    const activeEditorScope = await commandController.resolveDirectoryScope(project, 'codex');
+    assert.strictEqual(activeEditorScope.primaryRootId, 'root-api',
+        'the active editor root must win over the last-used root for implicit creation');
+    assert.deepStrictEqual(activeEditorScope.additionalDirectories, ['/work/web']);
+
+    const explicitScope = await commandController.resolveDirectoryScope(
+        project, 'codex', undefined, 'root-web'
+    );
+    assert.strictEqual(explicitScope.primaryRootId, 'root-web',
+        'New Session in… must use the explicit root');
+
+    const createRequests = [];
+    const createScopes = [];
+    const markerRequests = [];
+    let createResult = { status: 'started', runtime: {} };
+    let createError = null;
+    const creation = new AiSessionCreationController({
+        isProviderId: value => value === 'codex',
+        getOpenProjects: () => [project],
+        pickProvider: async () => 'codex',
+        getProviderLabel: () => 'Codex',
+        getProvider: () => ({
+            label: 'Codex',
+            terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: directoryScope => {
+                createScopes.push(directoryScope);
+                return {
+                    executable: 'codex', args: ['--cd', directoryScope.primaryCwd], cwd: directoryScope.primaryCwd,
+                };
+            },
+        }),
+        resolveDirectoryScope: (resolvedProject, providerId, explicitRootId) =>
+            commandController.resolveDirectoryScope(resolvedProject, providerId, undefined, explicitRootId),
+        rememberDirectoryScope: directoryScope => commandController.rememberDirectoryScope(directoryScope),
+        runtimeCoordinator: {
+            create: async request => {
+                createRequests.push(request);
+                if (createError) {
+                    const error = createError;
+                    createError = null;
+                    throw error;
+                }
+                return createResult;
+            },
+            getActive: () => [],
+            getPending: () => [],
+        },
+        getProjectKey: () => 'legacy-project-key',
+        createPendingId: () => `pending-${createRequests.length + 1}`,
+        showInputBox: async () => '',
+        showActiveTab: async () => undefined,
+        announceStatus: async () => undefined,
+        showWarningMessage: async () => undefined,
+        showErrorMessage: async () => undefined,
+        refresh: () => undefined,
+        getExistingSessionIdsForCwd: () => [],
+        getPendingMarkerPath: () => {
+            markerRequests.push('create');
+            return '/tmp/create.marker';
+        },
+        scheduleNewSessionRefresh: () => undefined,
+        nowMs: () => Date.parse('2026-07-20T10:00:00.000Z'),
+    });
+
+    await creation.createSession(project.id);
+    assert.deepStrictEqual(createRequests[0].directoryScope, activeEditorScope);
+    assert.strictEqual(createRequests[0].identity.cwd, activeEditorScope.primaryCwd);
+    assert.strictEqual(createScopes[0], createRequests[0].directoryScope);
+    assert.deepStrictEqual(primaryRootWrites, [[workspace.scopeIdentity, activeEditorScope.primaryRootId]]);
+
+    await creation.createSession(project.id, 'root-web');
+    assert.strictEqual(createRequests[1].directoryScope.primaryRootId, 'root-web');
+    assert.deepStrictEqual(primaryRootWrites[1], [workspace.scopeIdentity, 'root-web']);
+
+    createResult = { status: 'focused', runtime: {} };
+    await creation.createSession(project.id, 'root-api');
+    assert.strictEqual(primaryRootWrites.length, 2,
+        'focusing an existing runtime must not persist a scope that was not launched');
+    createResult = { status: 'started', runtime: {} };
+
+    createError = new Error('launch failed');
+    await creation.createSession(project.id, 'root-api');
+    assert.strictEqual(primaryRootWrites.length, 2,
+        'a failed launch must not persist the selected root');
+
+    const session = {
+        id: 'session-a', name: 'Session A', cwd: '/work/api/packages/service', updatedAt: '2026-07-20T09:00:00Z',
+    };
+    const resumeRequests = [];
+    const resumeScopes = [];
+    const resumeMarkerRequests = [];
+    let resumeResult = { status: 'started', runtime: {} };
+    let resumeError = null;
+    const resume = new AiSessionResumeController({
+        getOpenProjects: () => [project],
+        getProvider: () => ({
+            label: 'Codex',
+            terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: (_sessionId, directoryScope) => {
+                resumeScopes.push(directoryScope);
+                return {
+                    executable: 'codex', args: ['resume', session.id], cwd: directoryScope.primaryCwd,
+                };
+            },
+        }),
+        getProjectSession: (_project, providerId, sessionId) =>
+            providerId === 'codex' && sessionId === session.id ? session : null,
+        resolveDirectoryScope: (resolvedProject, resolvedSession, providerId, explicitRootId) =>
+            commandController.resolveDirectoryScope(resolvedProject, providerId, resolvedSession, explicitRootId),
+        rememberDirectoryScope: directoryScope => commandController.rememberDirectoryScope(directoryScope),
+        runtimeCoordinator: {
+            resume: async request => {
+                resumeRequests.push(request);
+                if (resumeError) {
+                    const error = resumeError;
+                    resumeError = null;
+                    throw error;
+                }
+                return resumeResult;
+            },
+        },
+        getProjectKey: () => 'legacy-project-key',
+        getTerminalName: () => 'Codex: Session A',
+        getMarkerPath: () => {
+            resumeMarkerRequests.push('resume');
+            return '/tmp/resume.marker';
+        },
+        showWarningMessage: () => undefined,
+        showErrorMessage: async () => undefined,
+        announceStatus: async () => undefined,
+        refresh: () => undefined,
+        showActiveTab: async () => undefined,
+    });
+
+    workspace.roots.push({
+        id: 'root-docs', name: 'Docs', uri: 'file:///work/docs', hostPath: '/work/docs', ordinal: 2,
+    });
+    await resume.resumeProjectSession(project.id, 'codex', session.id, 'root-web');
+    assert.strictEqual(resumeRequests[0].directoryScope.primaryRootId, 'root-api',
+        'a current historical cwd must win over an explicit resume fallback');
+    assert.deepStrictEqual(resumeRequests[0].directoryScope.workspaceRootHostPaths,
+        ['/work/web', '/work/api', '/work/docs'], 'resume must recalculate all current roots');
+    assert.strictEqual(resumeRequests[0].identity.cwd, resumeRequests[0].directoryScope.primaryCwd);
+    assert.strictEqual(resumeScopes[0], resumeRequests[0].directoryScope);
+    assert.deepStrictEqual(primaryRootWrites[2], [workspace.scopeIdentity, 'root-api']);
+
+    session.cwd = '/historical/outside-workspace';
+    pickerResult = 'root-web';
+    await resume.resumeProjectSession(project.id, 'codex', session.id);
+    assert.deepStrictEqual(pickedRoots.slice(-1)[0], [workspace.scopeIdentity, 'resume']);
+    assert.strictEqual(resumeRequests[1].directoryScope.primaryRootId, 'root-web');
+    assert.deepStrictEqual(primaryRootWrites[3], [workspace.scopeIdentity, 'root-web']);
+
+    pickerResult = undefined;
+    const resumeRequestCountBeforeCancel = resumeRequests.length;
+    const resumeMarkerCountBeforeCancel = resumeMarkerRequests.length;
+    await resume.resumeProjectSession(project.id, 'codex', session.id);
+    assert.strictEqual(resumeRequests.length, resumeRequestCountBeforeCancel);
+    assert.strictEqual(resumeMarkerRequests.length, resumeMarkerCountBeforeCancel,
+        'picker cancellation must happen before marker creation');
+
+    pickerResult = 'root-api';
+    resumeError = new Error('resume launch failed');
+    await resume.resumeProjectSession(project.id, 'codex', session.id);
+    assert.strictEqual(primaryRootWrites.length, 4,
+        'a failed resume launch must not persist the selected root');
+
+    const assertCreateBlockedWithoutPartials = async configure => {
+        trusted = true;
+        providerPresent = true;
+        capabilityStatus = 'supported';
+        invalidDirectories.clear();
+        configure();
+        const requestsBefore = createRequests.length;
+        const markersBefore = markerRequests.length;
+        const writesBefore = primaryRootWrites.length;
+        await creation.createSession(project.id);
+        assert.strictEqual(createRequests.length, requestsBefore);
+        assert.strictEqual(markerRequests.length, markersBefore);
+        assert.strictEqual(primaryRootWrites.length, writesBefore);
+    };
+    await assertCreateBlockedWithoutPartials(() => { trusted = false; });
+    await assertCreateBlockedWithoutPartials(() => { invalidDirectories.add('/work/docs'); });
+    await assertCreateBlockedWithoutPartials(() => { providerPresent = false; });
+    await assertCreateBlockedWithoutPartials(() => { capabilityStatus = 'unavailable'; });
+    await assertCreateBlockedWithoutPartials(() => { capabilityStatus = 'unsupported'; });
+    assert.ok(warnings.some(message => message.includes('Restricted Mode')));
+    assert.ok(warnings.some(message => message.includes('Docs')));
+    assert.ok(warnings.some(message => message.includes('Codex')));
+    assert.ok(warnings.some(message => message.includes('--add-dir')));
+    assert.ok(capabilityRequests.length > 0);
 }
 
 async function runAiSessionAttentionControllerChecks() {
@@ -9680,6 +9940,7 @@ async function main() {
     await runAiSessionTerminalCommandControllerChecks();
     await runAiSessionRuntimeControllerChecks();
     await runWorkspaceScopeControllerLaunchChecks();
+    await runWorkspaceLaunchPreflightControllerChecks();
     await runAiSessionAttentionControllerChecks();
     await runAiSessionExecutionControllerChecks();
     await runSidebarStewardViewProviderOrderingChecks();

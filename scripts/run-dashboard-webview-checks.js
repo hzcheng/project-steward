@@ -3697,7 +3697,8 @@ function runSourceContractChecks(source) {
     const routerSource = fs.readFileSync(routerPath, 'utf8');
     assert.ok(routerSource.includes('export interface DashboardMessageHandlers'));
     assert.ok(routerSource.includes('handlers: Record<string, DashboardMessageHandler>'));
-    assert.ok(routerSource.includes('resumeAiSession?: DashboardAiSessionMessageHandler'));
+    assert.ok(routerSource.includes('createAiSession?: DashboardAiSessionCreateMessageHandler'));
+    assert.ok(routerSource.includes('resumeAiSession?: DashboardAiSessionLaunchMessageHandler'));
     assert.ok(routerSource.includes('archiveAiSession?: DashboardAiSessionMessageHandler'));
     assert.ok(routerSource.includes('export function createDashboardMessageRouter('));
     assert.strictEqual(routerSource.includes('handleRawMessage'), false);
@@ -4220,8 +4221,11 @@ async function runDashboardMessageRouterChecks() {
                 calls.push(['selected-project', message.projectId]);
             },
         },
-        resumeAiSession: (message, providerId) => {
-            calls.push(['resume-ai-session', providerId, message.sessionId]);
+        createAiSession: (message, rootId) => {
+            calls.push(['create-ai-session', message.projectId, rootId]);
+        },
+        resumeAiSession: (message, providerId, rootId) => {
+            calls.push(['resume-ai-session', providerId, message.sessionId, rootId]);
         },
         archiveAiSession: (message, providerId) => {
             calls.push(['archive-ai-session', providerId, message.sessionId]);
@@ -4236,7 +4240,9 @@ async function runDashboardMessageRouterChecks() {
     await router({ type: 'request-projects-panel', requestId: 7 });
     await router({ type: 'request-todo-panel', requestId: 8 });
     await router({ type: 'selected-project', projectId: 'project-a' });
+    await router({ type: 'create-ai-session', projectId: 'workspace-a', rootId: 'root-api' });
     await router({ type: 'resume-ai-session', provider: 'codex', sessionId: 'c1' });
+    await router({ type: 'resume-ai-session', provider: 'codex', sessionId: 'c2', rootId: 'root-web' });
     await router({ type: 'resume-ai-session', provider: 'unknown', sessionId: 'invalid' });
     await router({ type: 'resume-kimi-session', sessionId: 'k1' });
     await router({ type: 'archive-claude-session', sessionId: 'a1' });
@@ -4246,9 +4252,11 @@ async function runDashboardMessageRouterChecks() {
         ['request-projects-panel', 7],
         ['request-todo-panel', 8],
         ['selected-project', 'project-a'],
-        ['resume-ai-session', 'codex', 'c1'],
-        ['resume-ai-session', null, 'invalid'],
-        ['resume-ai-session', 'kimi', 'k1'],
+        ['create-ai-session', 'workspace-a', 'root-api'],
+        ['resume-ai-session', 'codex', 'c1', null],
+        ['resume-ai-session', 'codex', 'c2', 'root-web'],
+        ['resume-ai-session', null, 'invalid', null],
+        ['resume-ai-session', 'kimi', 'k1', null],
         ['archive-ai-session', 'claude', 'a1'],
     ]);
 }

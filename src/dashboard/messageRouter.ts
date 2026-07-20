@@ -4,11 +4,21 @@ export type DashboardMessage = { type?: unknown; [key: string]: unknown };
 export type DashboardMessageHandlerResult = void | Promise<void> | PromiseLike<void>;
 export type DashboardMessageHandler = (message: DashboardMessage) => DashboardMessageHandlerResult;
 export type DashboardAiSessionMessageHandler = (message: DashboardMessage, providerId: string | null) => DashboardMessageHandlerResult;
+export type DashboardAiSessionLaunchMessageHandler = (
+    message: DashboardMessage,
+    providerId: string | null,
+    rootId: string | null
+) => DashboardMessageHandlerResult;
+export type DashboardAiSessionCreateMessageHandler = (
+    message: DashboardMessage,
+    rootId: string | null
+) => DashboardMessageHandlerResult;
 
 export interface DashboardMessageHandlers {
     handlers: Record<string, DashboardMessageHandler>;
     getAiSessionProviderIds?: () => readonly string[];
-    resumeAiSession?: DashboardAiSessionMessageHandler;
+    createAiSession?: DashboardAiSessionCreateMessageHandler;
+    resumeAiSession?: DashboardAiSessionLaunchMessageHandler;
     archiveAiSession?: DashboardAiSessionMessageHandler;
 }
 
@@ -23,10 +33,19 @@ export function createDashboardMessageRouter(handlers: DashboardMessageHandlers)
             return;
         }
 
+        if (messageType === 'create-ai-session' && handlers.createAiSession) {
+            await handlers.createAiSession(message, getWorkspaceRootIdFromMessage(message));
+            return;
+        }
+
         const resumeProviderId = getAiSessionProviderIdFromMessage(message, 'resume', handlers.getAiSessionProviderIds);
         if (resumeProviderId !== undefined) {
             if (handlers.resumeAiSession) {
-                await handlers.resumeAiSession(message, resumeProviderId);
+                await handlers.resumeAiSession(
+                    message,
+                    resumeProviderId,
+                    getWorkspaceRootIdFromMessage(message)
+                );
             }
             return;
         }
@@ -44,6 +63,10 @@ export function createDashboardMessageRouter(handlers: DashboardMessageHandlers)
             await handler(message);
         }
     };
+}
+
+function getWorkspaceRootIdFromMessage(message: DashboardMessage): string | null {
+    return typeof message.rootId === 'string' && message.rootId ? message.rootId : null;
 }
 
 function isDashboardMessage(message: unknown): message is DashboardMessage {

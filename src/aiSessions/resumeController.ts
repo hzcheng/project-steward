@@ -65,8 +65,12 @@ export interface AiSessionResumeControllerCommonOptions {
     resolveDirectoryScope: (
         project: Project,
         session: CodexSession,
-        providerId: AiSessionProviderId
+        providerId: AiSessionProviderId,
+        explicitRootId?: string
     ) => AiSessionDirectoryScope | null | Thenable<AiSessionDirectoryScope | null> | Promise<AiSessionDirectoryScope | null>;
+    rememberDirectoryScope?: (
+        directoryScope: AiSessionDirectoryScope
+    ) => Thenable<void> | Promise<void>;
     getTerminalName: (providerId: AiSessionProviderId, session: CodexSession) => string;
     getMarkerPath: (providerId: AiSessionProviderId, sessionId: string) => string;
     showWarningMessage: (message: string) => unknown;
@@ -151,7 +155,8 @@ export class AiSessionResumeController<
     async resumeProjectSession(
         projectId: string,
         providerId: AiSessionProviderId | null,
-        sessionId: string
+        sessionId: string,
+        explicitRootId?: string
     ): Promise<void> {
         if (!providerId) {
             return;
@@ -170,7 +175,9 @@ export class AiSessionResumeController<
         }
 
         if (isRuntimeOptions(this.options)) {
-            await this.resumeRuntime(project, providerId, session, sessionProvider, this.options);
+            await this.resumeRuntime(
+                project, providerId, session, sessionProvider, this.options, explicitRootId
+            );
             return;
         }
 
@@ -182,7 +189,9 @@ export class AiSessionResumeController<
             return;
         }
 
-        const directoryScope = await this.options.resolveDirectoryScope(project, session, providerId);
+        const directoryScope = await this.options.resolveDirectoryScope(
+            project, session, providerId, explicitRootId
+        );
         if (!directoryScope) {
             return;
         }
@@ -225,6 +234,7 @@ export class AiSessionResumeController<
 
             terminal.show();
             await this.options.sendResumeCommand(providerId, terminal, session.id, directoryScope, markerPath);
+            await this.options.rememberDirectoryScope?.(directoryScope);
             if (usedPendingTerminal) {
                 this.options.claimPendingTerminal(terminal);
             }
@@ -249,7 +259,8 @@ export class AiSessionResumeController<
         providerId: AiSessionProviderId,
         session: CodexSession,
         sessionProvider: AiSessionResumeProvider,
-        options: AiSessionResumeRuntimeControllerOptions<TTerminal>
+        options: AiSessionResumeRuntimeControllerOptions<TTerminal>,
+        explicitRootId?: string
     ): Promise<void> {
         if (options.getRuntimeConflict?.(providerId, session.id)) {
             options.refresh();
@@ -262,7 +273,9 @@ export class AiSessionResumeController<
         if (!sessionProvider.buildResumeLaunchSpec) {
             throw new Error('AI session runtime resume is not configured.');
         }
-        const directoryScope = await options.resolveDirectoryScope(project, session, providerId);
+        const directoryScope = await options.resolveDirectoryScope(
+            project, session, providerId, explicitRootId
+        );
         if (!directoryScope) {
             return;
         }
@@ -282,6 +295,7 @@ export class AiSessionResumeController<
             projectName: project.name || 'AI Session',
             terminalName: options.getTerminalName(providerId, session),
             launch,
+            directoryScope,
         };
         let result: AiSessionRuntimeActionResult<TTerminal>;
         try {
@@ -314,6 +328,9 @@ export class AiSessionResumeController<
                 'The previous runtime is still awaiting lifecycle acknowledgement.'
             );
             return;
+        }
+        if (result.status === 'started') {
+            await options.rememberDirectoryScope?.(directoryScope);
         }
         await options.showActiveTab(project.id);
         options.refresh();

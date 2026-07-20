@@ -56,8 +56,12 @@ export interface AiSessionCreationControllerCommonOptions {
     getProvider: (providerId: AiSessionProviderId) => AiSessionCreationProvider;
     resolveDirectoryScope: (
         project: Project,
-        providerId: AiSessionProviderId
+        providerId: AiSessionProviderId,
+        explicitRootId?: string
     ) => AiSessionDirectoryScope | null | Thenable<AiSessionDirectoryScope | null> | Promise<AiSessionDirectoryScope | null>;
+    rememberDirectoryScope?: (
+        directoryScope: AiSessionDirectoryScope
+    ) => Thenable<void> | Promise<void>;
     showInputBox: (options: vscode.InputBoxOptions) => Thenable<string | undefined>;
     showActiveTab: (projectId: string) => Thenable<unknown> | Promise<unknown>;
     showWarningMessage: (message: string, ...items: string[]) => Thenable<string | undefined>;
@@ -112,7 +116,7 @@ export class AiSessionCreationController {
         this.options = options;
     }
 
-    async createSession(projectId: string): Promise<void> {
+    async createSession(projectId: string, explicitRootId?: string): Promise<void> {
         if (this.creating) {
             return;
         }
@@ -131,7 +135,7 @@ export class AiSessionCreationController {
             if (!fields) {
                 return;
             }
-            await this.createProviderSession(providerId, project, fields);
+            await this.createProviderSession(providerId, project, fields, explicitRootId);
         } finally {
             this.creating = false;
         }
@@ -156,9 +160,10 @@ export class AiSessionCreationController {
     private async createProviderSession(
         providerId: AiSessionProviderId,
         project: Project,
-        fields: NewAiSessionFields
+        fields: NewAiSessionFields,
+        explicitRootId?: string
     ): Promise<void> {
-        const directoryScope = await this.options.resolveDirectoryScope(project, providerId);
+        const directoryScope = await this.options.resolveDirectoryScope(project, providerId, explicitRootId);
         if (!directoryScope) {
             return;
         }
@@ -194,6 +199,7 @@ export class AiSessionCreationController {
         this.options.refresh();
         terminal.show();
         await this.options.sendNewSessionCommand(providerId, terminal, directoryScope, fields.title, markerPath);
+        await this.options.rememberDirectoryScope?.(directoryScope);
         this.options.scheduleNewSessionRefresh(providerId);
     }
 
@@ -237,6 +243,7 @@ export class AiSessionCreationController {
             excludedSessionIds: existingSessionIds,
             title: fields.title,
             launch,
+            directoryScope,
         };
         let result: AiSessionRuntimeActionResult<vscode.Terminal>;
         try {
@@ -266,6 +273,9 @@ export class AiSessionCreationController {
                 'Runtime creation is still awaiting lifecycle acknowledgement.'
             );
             return;
+        }
+        if (result.status === 'started') {
+            await options.rememberDirectoryScope?.(directoryScope);
         }
         await options.showActiveTab(project.id);
         options.refresh();

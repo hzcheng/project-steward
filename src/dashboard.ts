@@ -1,7 +1,8 @@
 'use strict';
 import * as vscode from 'vscode';
+import { execFile } from 'child_process';
 import { randomBytes } from 'crypto';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import * as path from 'path';
 import { Project, GroupOrder, ProjectRemoteType, StewardInfos, ProjectOpenType, ReopenStewardReason, AiSessionProviderId, isAiSessionProviderId } from './models';
 import { getAiSessionsDiv, getProjectSearchText, getProjectsPanelContent, getStewardContent } from './webview/webviewContent';
@@ -38,6 +39,11 @@ import { getAiSessionKey } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_DEFINITIONS, createAiSessionProviderRegistry, getAiSessionProviderLabel } from './aiSessions/providers';
 import { applyAiSessionRuntimeProjection } from './aiSessions/activeSessionProjection';
 import { isCommandAvailableOnPath } from './aiSessions/providerAvailability';
+import { ProviderDirectoryCapabilityProbe } from './aiSessions/providerDirectoryCapability';
+import type {
+    BoundedChildProcessOptions,
+    BoundedChildProcessResult,
+} from './aiSessions/providerDirectoryCapability';
 import { getOpenProjectAiSessionKey, getOpenProjectTerminalCwd as getOpenProjectAiSessionTerminalCwd, normalizeAiSessionProjectPath } from './aiSessions/projectCandidates';
 import { getAiSessionComparableCwd as getProviderAiSessionComparableCwd, getAiSessionTerminalName as getProviderAiSessionTerminalName, getProjectAiSessions as getProviderProjectAiSessions } from './aiSessions/sessionPaths';
 import { getAiSessionIdsForCwd } from './aiSessions/pendingTerminals';
@@ -111,12 +117,67 @@ import { DashboardStartupController, settleMigration } from './dashboard/startup
 import { getDashboardWebviewOptions } from './dashboard/webviewOptions';
 import { OpenProjectDashboardController } from './openProjects/dashboardController';
 import { OpenProjectWorkspaceController } from './openProjects/workspaceController';
+import { WorkspaceContextResolver } from './workspaces/contextResolver';
+import { WorkspacePrimaryRootStore } from './workspaces/primaryRootStore';
+import type { OpenWorkspace } from './workspaces/types';
 import { buildDashboardSearchCatalog } from './webview/dashboardViewModel';
 
 const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
 const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
 const AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS = 10000;
 const AI_SESSION_INCREMENTAL_SCAN_MAX_FILES = 2000;
+
+function resolveAiProviderExecutable(commandName: string): string | null {
+    if (!commandName) {
+        return null;
+    }
+    if (path.isAbsolute(commandName)) {
+        return existsSync(commandName) ? commandName : null;
+    }
+
+    const windows = process.platform === 'win32';
+    const pathValue = process.env.PATH || process.env.Path || '';
+    const extensions = windows
+        ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+        : [''];
+    for (const directory of pathValue.split(path.delimiter).filter(Boolean)) {
+        for (const extension of extensions) {
+            const candidate = path.join(directory, `${commandName}${extension}`);
+            if (existsSync(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    return null;
+}
+
+function runBoundedAiProviderHelp(
+    executable: string,
+    args: readonly string[],
+    options: BoundedChildProcessOptions
+): Promise<BoundedChildProcessResult> {
+    return new Promise(resolve => {
+        execFile(executable, [...args], {
+            timeout: options.timeoutMs,
+            maxBuffer: options.maxOutputBytes,
+            encoding: 'utf8',
+            windowsHide: true,
+        }, (error, stdout, stderr) => {
+            const childError = error as unknown as NodeJS.ErrnoException & {
+                code?: string | number;
+                killed?: boolean;
+            };
+            resolve({
+                exitCode: error
+                    ? (typeof childError.code === 'number' ? childError.code : null)
+                    : 0,
+                stdout: typeof stdout === 'string' ? stdout : '',
+                stderr: typeof stderr === 'string' ? stderr : '',
+                timedOut: Boolean(error && childError.killed),
+            });
+        });
+    });
+}
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const outputChannel = vscode.window.createOutputChannel('Project Steward');
@@ -383,21 +444,60 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         context.globalState.get(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY) as string[],
         () => context.globalState.update(OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY, undefined)
     );
+    const workspaceContextResolver = new WorkspaceContextResolver();
+    const workspacePrimaryRootStore = new WorkspacePrimaryRootStore(context.globalState);
+    const getCurrentOpenWorkspace = (): OpenWorkspace | null => workspaceContextResolver.resolve({
+        workspaceFile: vscode.workspace.workspaceFile,
+        workspaceFolders: vscode.workspace.workspaceFolders,
+        workspaceName: vscode.workspace.name,
+        remoteName: vscode.env.remoteName,
+    });
+    const providerDirectoryCapability = new ProviderDirectoryCapabilityProbe({
+        resolveExecutable: commandName => resolveAiProviderExecutable(commandName),
+        run: (executable, args, options) => runBoundedAiProviderHelp(executable, args, options),
+    }, message => outputChannel.appendLine(message));
     const aiSessionCommandController = new AiSessionCommandController({
         getOpenProjects,
         getProjectKey: getOpenProjectAiSessionKey,
-        resolveDirectoryScope: project => {
-            const primaryCwd = getOpenProjectAiSessionTerminalCwd(project);
-            const workspaceIdentity = getOpenProjectAiSessionKey(project);
-            return Object.freeze({
-                workspaceNavigationIdentity: workspaceIdentity,
-                workspaceScopeIdentity: workspaceIdentity,
-                workspaceRootHostPaths: Object.freeze([primaryCwd]) as string[],
-                primaryRootId: project.id,
-                primaryCwd,
-                additionalDirectories: Object.freeze([]) as string[],
-            });
+        getOpenWorkspace: getCurrentOpenWorkspace,
+        getActiveEditorUri: () => vscode.window.activeTextEditor?.document.uri,
+        isWorkspaceTrusted: () => (
+            vscode.workspace as typeof vscode.workspace & { isTrusted?: boolean }
+        ).isTrusted !== false,
+        getProvider: getRegisteredAiSessionProvider,
+        getProviderDirectoryCapability: providerDefinition =>
+            providerDirectoryCapability.probe(providerDefinition),
+        getPrimaryRootId: workspace => workspacePrimaryRootStore.getPrimaryRootId(
+            workspace.scopeIdentity,
+            workspace.roots
+        ),
+        setPrimaryRootId: (scopeIdentity, rootId) =>
+            workspacePrimaryRootStore.setPrimaryRootId(scopeIdentity, rootId),
+        pickWorkspaceRoot: async (workspace, action) => {
+            const selected = await vscode.window.showQuickPick(
+                workspace.roots.map(root => ({
+                    label: root.name,
+                    description: root.hostPath,
+                    rootId: root.id,
+                })),
+                {
+                    placeHolder: 'Select a workspace root',
+                    ignoreFocusOut: true,
+                    title: action === 'resume'
+                        ? 'Resume AI Session in Workspace Root'
+                        : 'New AI Session in Workspace Root',
+                } as vscode.QuickPickOptions & { title: string }
+            );
+            return selected?.rootId;
         },
+        isDirectory: hostPath => {
+            try {
+                return statSync(hostPath).isDirectory();
+            } catch (error) {
+                return false;
+            }
+        },
+        showWarningMessage: message => vscode.window.showWarningMessage(message),
         isProviderId: isAiSessionProviderId,
         setExpanded: (projectKey, expanded) => aiSessionProjectStateStore.setExpanded(projectKey, expanded),
         setActiveProvider: (projectKey, providerId) => aiSessionProjectStateStore.setActiveProvider(projectKey, providerId),
@@ -450,8 +550,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         pickProvider: pickAiSessionProvider,
         getProviderLabel: getAiSessionProviderLabel,
         getProvider: getRegisteredAiSessionProvider,
-        resolveDirectoryScope: (project, providerId) =>
-            aiSessionCommandController.resolveDirectoryScope(project, providerId),
+        resolveDirectoryScope: (project, providerId, explicitRootId) =>
+            aiSessionCommandController.resolveDirectoryScope(
+                project, providerId, undefined, explicitRootId
+            ),
+        rememberDirectoryScope: async directoryScope => {
+            try {
+                await aiSessionCommandController.rememberDirectoryScope(directoryScope);
+            } catch (error) {
+                logError('Could not save the AI session workspace root.', error);
+            }
+        },
         runtimeCoordinator: aiSessionRuntimeCoordinator,
         getProjectKey: getOpenProjectAiSessionKey,
         createPendingId: () => randomBytes(16).toString('hex'),
@@ -558,8 +667,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getOpenProjects,
         getProvider: getRegisteredAiSessionProvider,
         getProjectSession: (project, providerId, sessionId) => getProviderProjectAiSessions(project, providerId, aiSessionProviders).find(session => session.id === sessionId),
-        resolveDirectoryScope: (project, session, providerId) =>
-            aiSessionCommandController.resolveDirectoryScope(project, providerId, session),
+        resolveDirectoryScope: (project, session, providerId, explicitRootId) =>
+            aiSessionCommandController.resolveDirectoryScope(
+                project, providerId, session, explicitRootId
+            ),
+        rememberDirectoryScope: async directoryScope => {
+            try {
+                await aiSessionCommandController.rememberDirectoryScope(directoryScope);
+            } catch (error) {
+                logError('Could not save the AI session workspace root.', error);
+            }
+        },
         getTerminalName: (providerId, session) => getProviderAiSessionTerminalName(providerId, session, aiSessionProviders),
         runtimeCoordinator: aiSessionRuntimeCoordinator,
         getRuntimeConflict: getAiSessionRuntimeCollision,
@@ -1004,9 +1122,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             'select-ai-session-provider': async e => {
                 await aiSessionCommandController.selectProvider(e.projectId as string, e.provider as string);
             },
-            'create-ai-session': async e => {
-                await aiSessionCreationController.createSession(e.projectId as string);
-            },
             'focus-ai-session-terminal': async e => {
                 await aiSessionTerminalCommandController.focusActive(
                     e.projectId as string,
@@ -1112,11 +1227,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             // Collapse-all is a per-webview convenience action.
             'toggle-all-groups': () => undefined,
         },
-        resumeAiSession: async (e, providerId) => {
+        createAiSession: async (e, rootId) => {
+            await aiSessionCreationController.createSession(
+                e.projectId as string,
+                rootId || undefined
+            );
+        },
+        resumeAiSession: async (e, providerId, rootId) => {
             await aiSessionResumeController.resumeProjectSession(
                 e.projectId as string,
                 providerId as AiSessionProviderId | null,
-                e.sessionId as string
+                e.sessionId as string,
+                rootId || undefined
             );
         },
         archiveAiSession: async (e, providerId) => {
