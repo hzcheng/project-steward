@@ -39,6 +39,9 @@ Feature branch: `feat/session-tmux-support`
 | PASS (automated) | Ten consecutive pure tmux runs | `node scripts/run-ai-session-tmux-checks.js` passed runs 1 through 10 consecutively against the final compiled output, with zero failures. |
 | PASS (automated) | Final build and regression matrix | Dashboard, Open Project, architecture baseline, lint, development webpack, production prepublish, and `git diff --check` all exited 0. Lint reported repository warnings only; webpack reported deprecation warnings only. |
 | PASS (automated) | Fresh execution-handoff verification commands | On 2026-07-19, `npm run test:tmux`, `npm run test:safety`, `npm run test:tmux:smoke`, `npm run test-compile`, `npm run vscode:prepublish`, and `npm run test:release-packaging` each exited 0. Production webpack emitted deprecation warnings only; release packaging printed `Release packaging checks passed.` |
+| PASS (automated) | Explicit focused-session refresh | Successful active, pending, legacy Direct, runtime-backed, and conflict-selected focus paths request an immediate refresh; missing and failed targets do not claim focus. |
+| PASS (automated) | Project tmux active-window synchronization | Managed A→B, managed→unmanaged, unchanged, query failure, pending promotion, visibility gating, single-flight, and disposal checks passed. |
+| NOT RUN | Installed UI focused-session retest | Awaiting manual Project Steward click and tmux-internal window-switch verification after installing the new VSIX. |
 
 ## Manual acceptance matrix
 
