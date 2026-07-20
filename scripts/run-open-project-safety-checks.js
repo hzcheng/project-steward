@@ -438,6 +438,39 @@ function runWorkspaceContextResolverChecks() {
     assert.strictEqual(saved.environment, 'local');
     assert.deepStrictEqual(saved.roots.map(root => root.ordinal), [0, 1]);
 
+    const savedWithoutWorkspaceName = resolver.resolve({
+        workspaceFile: uri('file:///work/fallback.code-workspace'),
+        remoteName: undefined,
+        workspaceFolders: [folder('saved root name', uri('file:///work/saved-root'))],
+    });
+    assert.strictEqual(savedWithoutWorkspaceName.displayName, 'fallback.code-workspace');
+    const untitledWithoutWorkspaceName = resolver.resolve({
+        workspaceFile: uri('untitled:Untitled-3'),
+        remoteName: undefined,
+        workspaceFolders: [folder('untitled root name', uri('file:///work/untitled-root'))],
+    });
+    assert.strictEqual(untitledWithoutWorkspaceName.displayName, 'Untitled-3');
+    const singleFolderWithoutWorkspaceName = resolver.resolve({
+        workspaceFile: null,
+        remoteName: undefined,
+        workspaceFolders: [folder('single root name', uri('file:///work/single-root'))],
+    });
+    assert.strictEqual(singleFolderWithoutWorkspaceName.displayName, 'single root name');
+    const noRootSavedWorkspace = resolver.resolve({
+        workspaceFile: uri('file:///work/no-roots.code-workspace'),
+        remoteName: undefined,
+        workspaceFolders: [],
+    });
+    assert.strictEqual(noRootSavedWorkspace.displayName, 'no-roots.code-workspace');
+    assert.deepStrictEqual(noRootSavedWorkspace.roots, []);
+    const noRootUntitledWorkspace = resolver.resolve({
+        workspaceFile: uri('untitled:'),
+        remoteName: undefined,
+        workspaceFolders: [],
+    });
+    assert.strictEqual(noRootUntitledWorkspace.displayName, 'Workspace');
+    assert.deepStrictEqual(noRootUntitledWorkspace.roots, []);
+
     const first = resolver.resolve({
         workspaceFile: uri('untitled:Untitled-1'),
         workspaceName: 'Frontend + API',
@@ -535,6 +568,25 @@ function runWorkspaceContextResolverChecks() {
     assert.strictEqual(encoded.roots[0].id, decoded.roots[0].id);
     assert.strictEqual(encoded.roots[0].hostPath, '/extension-host/team space');
     assert.strictEqual(decoded.roots[0].hostPath, '/different-host-path');
+
+    const literalPercentEscape = resolver.resolve({
+        workspaceFile: null,
+        workspaceName: 'Literal percent escape',
+        remoteName: undefined,
+        workspaceFolders: [folder('literal', uri(
+            'file:///work/a%252Fb',
+            { path: '/work/a%2Fb', fsPath: '/work/a%2Fb' }
+        ))],
+    });
+    const pathSeparator = resolver.resolve({
+        workspaceFile: null,
+        workspaceName: 'Path separator',
+        remoteName: undefined,
+        workspaceFolders: [folder('separator', uri('file:///work/a/b'))],
+    });
+    assert.notStrictEqual(literalPercentEscape.navigationIdentity, pathSeparator.navigationIdentity);
+    assert.notStrictEqual(literalPercentEscape.scopeIdentity, pathSeparator.scopeIdentity);
+    assert.notStrictEqual(literalPercentEscape.roots[0].id, pathSeparator.roots[0].id);
 
     for (const [remoteName, environment] of [
         [undefined, 'local'],

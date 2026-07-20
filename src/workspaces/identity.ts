@@ -9,13 +9,7 @@ export interface WorkspaceUriIdentitySource {
 }
 
 function normalizeUriComponent(value: string): string {
-    try {
-        return decodeURIComponent(value || '').normalize('NFC');
-    } catch (error) {
-        return (value || '')
-            .replace(/%[0-9a-fA-F]{2}/g, escape => escape.toUpperCase())
-            .normalize('NFC');
-    }
+    return (value || '').normalize('NFC');
 }
 
 export function normalizeWorkspaceUri(uri: WorkspaceUriIdentitySource): string {

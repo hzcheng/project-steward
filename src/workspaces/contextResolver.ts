@@ -56,6 +56,11 @@ function resolveKind(workspaceFile: WorkspaceUri | null | undefined): OpenWorksp
         : 'savedMultiRoot';
 }
 
+function getWorkspaceFileBasename(workspaceFile: WorkspaceUri | null | undefined): string {
+    const uriPath = workspaceFile?.path?.replace(/\/+$/g, '') || '';
+    return uriPath.substring(uriPath.lastIndexOf('/') + 1);
+}
+
 export class WorkspaceContextResolver {
     resolve(context: WorkspaceContext): OpenWorkspace | null {
         const workspaceFolders = context.workspaceFolders || [];
@@ -79,7 +84,10 @@ export class WorkspaceContextResolver {
             navigationIdentity: createWorkspaceUriIdentity(navigationUri),
             scopeIdentity: createWorkspaceScopeIdentity(workspaceFolders.map(folder => folder.uri)),
             kind,
-            displayName: context.workspaceName || workspaceFolders[0]?.name || 'Workspace',
+            displayName: context.workspaceName
+                || getWorkspaceFileBasename(context.workspaceFile)
+                || workspaceFolders[0]?.name
+                || 'Workspace',
             navigationUri: navigationUri.toString(),
             environment: resolveEnvironment(context.remoteName),
             roots,
