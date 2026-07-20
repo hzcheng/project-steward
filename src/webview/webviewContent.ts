@@ -445,6 +445,13 @@ function getProjectDiv(
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
+    var navigationActiveSessionCount = isProjectNavigation ? (project.openProjectActiveSessionCount || 0) : 0;
+    var projectIconClass = navigationActiveSessionCount > 0
+        ? 'project-kind-icon session-running'
+        : 'project-kind-icon';
+    if (navigationActiveSessionCount > 0) {
+        projectIconTitle = `${projectIconTitle} — ${navigationActiveSessionCount} active session${navigationActiveSessionCount === 1 ? '' : 's'} running`;
+    }
     var favoriteTitle = project.favorite ? 'Remove From Favorites' : 'Add To Favorites';
     var projectActions = options.readOnlyProjects || isProjectNavigation
         ? ''
@@ -515,7 +522,7 @@ function getProjectDiv(
         ${saveBadge}
         ${projectActionsWrapper}
         <div class="fitty-container project-title-row">
-            <span class="project-kind-icon" title="${projectIconTitle}">
+            <span class="${projectIconClass}" title="${projectIconTitle}">
                 ${projectIcon}
             </span>
             <h2 class="project-header">

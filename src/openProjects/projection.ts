@@ -92,7 +92,10 @@ function getEnvironmentLabel(remoteType: OpenProjectRemoteType): string {
     }
 }
 
-export function createOpenProjectRecords(projects: Project[]): OpenProjectRecord[] {
+export function createOpenProjectRecords(
+    projects: Project[],
+    activeSessionCounts?: ReadonlyMap<string, number>
+): OpenProjectRecord[] {
     return (projects || []).map((project, ordinal) => {
         const record: OpenProjectRecord = {
             localProjectId: project.id,
@@ -104,6 +107,10 @@ export function createOpenProjectRecords(projects: Project[]): OpenProjectRecord
         };
         if (project.color) {
             record.color = project.color;
+        }
+        const activeSessionCount = activeSessionCounts?.get(project.id) || 0;
+        if (activeSessionCount > 0) {
+            record.activeSessionCount = activeSessionCount;
         }
         return record;
     });
@@ -157,6 +164,7 @@ function createNavigationCard(candidate: NavigationCandidate): Project {
         openProjectCardKind: 'projectNavigation',
         openProjectSourceInstanceId: candidate.instanceId,
         openProjectEnvironmentLabel: getEnvironmentLabel(candidate.project.remoteType),
+        openProjectActiveSessionCount: candidate.project.activeSessionCount || 0,
     } as Project;
     return project;
 }

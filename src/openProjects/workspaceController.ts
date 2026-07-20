@@ -13,6 +13,7 @@ export interface OpenProjectWorkspaceControllerOptions {
     getSavedProjects: () => Project[];
     getCurrentRemoteName: () => string | undefined;
     isFolderGitRepo: (projectPath: string) => boolean;
+    getActiveSessionCounts?: () => ReadonlyMap<string, number>;
     publishRecords: (records: OpenProjectRecord[], followsFocusEvent: boolean) => unknown;
 }
 
@@ -33,7 +34,10 @@ export class OpenProjectWorkspaceController {
     }
 
     getOpenProjectRecords(): OpenProjectRecord[] {
-        return createOpenProjectRecords(this.getRawOpenProjects());
+        return createOpenProjectRecords(
+            this.getRawOpenProjects(),
+            this.options.getActiveSessionCounts ? this.options.getActiveSessionCounts() : undefined
+        );
     }
 
     publish(followsFocusEvent = false): void {

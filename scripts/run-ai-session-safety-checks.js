@@ -4638,6 +4638,13 @@ function runWebviewContentChecks() {
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
     const sidebarStyles = extractExactScssBlock(styles, 'body.steward-sidebar');
+    assert.ok(styles.includes('.project-kind-icon.session-running'),
+        'styles must define the session-running kind icon animation');
+    assert.ok(styles.includes('@keyframes steward-session-running-halo'));
+    assert.ok(styles.includes('@keyframes steward-session-running-pulse'));
+    assert.ok(compiledStyles.includes('.session-running'));
+    assert.ok(compiledStyles.includes('steward-session-running-halo'));
+    assert.ok(compiledStyles.includes('steward-session-running-pulse'));
     assert.strictEqual(sidebarStyles.includes('.project[data-current-workspace]'), false,
         'current workspace shell state must be owned by the shared item card');
     assert.strictEqual(sidebarStyles.includes('.project-border'), false,
@@ -5257,6 +5264,36 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.ok(hasProjectAccent(html, 'background: #00aacc;'));
     assert.ok(navigationHtml.includes('title="SSH Project"'));
     assert.match(navigationHtml, /class="project-description" title="Other workspace">\s*Other workspace\s*<\/p>/);
+
+    const runningNavigation = webviewContentModule.getOpenProjectsGroupContent([
+        {
+            id: 'other-running', name: 'Other Running', path: '/work/other-running',
+            remoteType: models.ProjectRemoteType.SSH,
+            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 2,
+        },
+    ], false, { config });
+    assert.ok(runningNavigation.includes('class="project-kind-icon session-running"'),
+        'navigation cards with running sessions must animate the kind icon');
+    assert.ok(runningNavigation.includes('title="SSH Project — 2 active sessions running"'));
+    const idleNavigation = webviewContentModule.getOpenProjectsGroupContent([
+        {
+            id: 'other-idle', name: 'Other Idle', path: '/work/other-idle',
+            remoteType: models.ProjectRemoteType.SSH,
+            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 0,
+        },
+    ], false, { config });
+    assert.ok(idleNavigation.includes('class="project-kind-icon"'));
+    assert.ok(!idleNavigation.includes('session-running'),
+        'navigation cards without running sessions must not animate the kind icon');
+    const currentWithSessions = webviewContentModule.getOpenProjectsGroupContent([
+        {
+            id: 'current-with-sessions', name: 'Current', path: '/work/current',
+            remoteType: models.ProjectRemoteType.SSH,
+            openProjectCardKind: 'current', openProjectActiveSessionCount: 2,
+        },
+    ], false, { config });
+    assert.ok(!currentWithSessions.includes('session-running'),
+        'current-workspace cards must not use the navigation session-running animation');
 
     assert.ok(html.includes('role="tablist"'));
     assert.ok(html.includes('data-dashboard-tab="open"'));
