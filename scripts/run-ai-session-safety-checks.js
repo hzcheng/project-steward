@@ -120,6 +120,17 @@ const TODO_SEARCH_ITEMS = [{
     searchText: 'preserve ai catalog release medium non-empty ai safety fixture',
 }];
 
+function createTestAiSessionDirectoryScope(primaryCwd, additionalDirectories = []) {
+    return Object.freeze({
+        workspaceNavigationIdentity: `navigation:${primaryCwd}`,
+        workspaceScopeIdentity: `scope:${primaryCwd}`,
+        workspaceRootHostPaths: Object.freeze([primaryCwd, ...additionalDirectories]),
+        primaryRootId: `root:${primaryCwd}`,
+        primaryCwd,
+        additionalDirectories: Object.freeze([...additionalDirectories]),
+    });
+}
+
 function decodePowerShellPayload(command) {
     const prefix = 'powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ';
     assert.ok(command.startsWith(prefix));
@@ -1391,6 +1402,7 @@ async function runAiSessionCommandControllerChecks() {
     const controller = new AiSessionCommandController({
         getOpenProjects: () => projects,
         getProjectKey: project => `key:${project.path}`,
+        resolveDirectoryScope: project => createTestAiSessionDirectoryScope(project.path),
         isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
         setExpanded: async (projectKey, value) => expanded.push([projectKey, value]),
         setActiveProvider: async (projectKey, providerId) => activeProviders.push([projectKey, providerId]),
@@ -1417,6 +1429,7 @@ async function runAiSessionCommandControllerChecks() {
 
     await controller.toggleSessionsExpanded('project-a', true);
     assert.deepStrictEqual(expanded, [['key:/work/a', true]]);
+    assert.strictEqual((await controller.resolveDirectoryScope(projects[0], 'codex')).primaryCwd, '/work/a');
 
     await controller.selectProvider('project-a', 'kimi');
     assert.deepStrictEqual(activeProviders, [['key:/work/a', 'kimi']]);
@@ -1484,7 +1497,7 @@ async function runAiSessionCreationControllerChecks() {
             label: providerId.toUpperCase(),
             terminalNamePrefix: `${providerId}-terminal`,
         }),
-        getTerminalCwd: project => project.path,
+        resolveDirectoryScope: project => createTestAiSessionDirectoryScope(project.path),
         getUsableTerminalCwd: () => usableCwd,
         showInputBox: async () => inputValues.shift(),
         showActiveTab: async projectId => activeTabRequests.push(projectId),
@@ -1514,7 +1527,7 @@ async function runAiSessionCreationControllerChecks() {
             tracked.push(pending);
             pendingKeys.add(`${pending.provider}:${pending.createdAt}`);
         },
-        sendNewSessionCommand: async (providerId, terminal, cwd, title, markerPath) => sent.push([providerId, terminal, cwd, title, markerPath]),
+        sendNewSessionCommand: async (providerId, terminal, scope, title, markerPath) => sent.push([providerId, terminal, scope, title, markerPath]),
         scheduleNewSessionRefresh: providerId => scheduled.push(providerId),
         isPending: (providerId, createdAt) => pendingKeys.has(`${providerId}:${createdAt}`),
         removePending: (providerId, createdAt) => {
@@ -1553,7 +1566,10 @@ async function runAiSessionCreationControllerChecks() {
     assert.strictEqual(tracked[0].cwd, '/work/a');
     assert.deepStrictEqual(tracked[0].excludedSessionIds, ['existing:codex:/work/a']);
     assert.strictEqual(tracked[0].title, 'Test Title');
-    assert.deepStrictEqual(sent[0], ['codex', terminals[0].terminal, '/work/a', 'Test Title', '/tmp/codex.marker']);
+    assert.strictEqual(sent[0][0], 'codex');
+    assert.strictEqual(sent[0][1], terminals[0].terminal);
+    assert.strictEqual(sent[0][2].primaryCwd, '/work/a');
+    assert.deepStrictEqual(sent[0].slice(3), ['Test Title', '/tmp/codex.marker']);
     assert.deepStrictEqual(scheduled, ['codex']);
     assert.strictEqual(terminals[0].terminal.showCalls, 1);
     assert.deepStrictEqual(activeTabRequests, ['project-a']);
@@ -1567,7 +1583,10 @@ async function runAiSessionCreationControllerChecks() {
     assert.strictEqual(terminals[1].options.cwd, null);
     assert.deepStrictEqual(existingSessionInputs[1], ['kimi', '/work/a']);
     assert.strictEqual(tracked[1].cwd, '/work/a');
-    assert.deepStrictEqual(sent[1], ['kimi', terminals[1].terminal, null, '', '/tmp/kimi.marker']);
+    assert.strictEqual(sent[1][0], 'kimi');
+    assert.strictEqual(sent[1][1], terminals[1].terminal);
+    assert.strictEqual(sent[1][2].primaryCwd, '/work/a');
+    assert.deepStrictEqual(sent[1].slice(3), ['', '/tmp/kimi.marker']);
     assert.strictEqual(timeoutQueue.length, 0, 'elapsed time must not own the pending lifecycle');
     assert.strictEqual(pendingKeys.has(`kimi:${tracked[1].createdAt}`), true);
     assert.deepStrictEqual(removed, []);
@@ -1618,7 +1637,7 @@ async function runAiSessionResumeControllerChecks() {
         getOpenProjects: () => projects,
         getProvider: providerId => ({ label: providerId.toUpperCase(), terminalEnvKey: `${providerId.toUpperCase()}_SESSION_ID` }),
         getProjectSession: (project, providerId, sessionId) => project.id === 'project-a' && providerId === 'codex' && sessionId === session.id ? session : null,
-        getTerminalCwd: () => '/work/a',
+        resolveDirectoryScope: () => createTestAiSessionDirectoryScope('/work/a'),
         getTerminalName: (providerId, value) => `${providerId}: ${value.name}`,
         getComparableCwd: () => '/work/a',
         getUsableTerminalCwd: cwd => cwd,
@@ -1642,11 +1661,11 @@ async function runAiSessionResumeControllerChecks() {
         },
         track: (providerId, sessionId, entry) => tracked.push([providerId, sessionId, entry]),
         claimPendingTerminal: terminal => claimedPendingTerminals.push(terminal),
-        sendResumeCommand: async (providerId, terminal, sessionId, cwd, markerPath) => {
+        sendResumeCommand: async (providerId, terminal, sessionId, scope, markerPath) => {
             if (rejectResumeSend) {
                 throw new Error('send failed');
             }
-            sent.push([providerId, terminal, sessionId, cwd, markerPath]);
+            sent.push([providerId, terminal, sessionId, scope, markerPath]);
         },
         showWarningMessage: message => warnings.push(message),
         syncActiveTerminal: () => synced.push('sync'),
@@ -1685,7 +1704,11 @@ async function runAiSessionResumeControllerChecks() {
     assert.strictEqual(tracked[0][2].markerPath, `/tmp/codex-${session.id}.marker`);
     assert.strictEqual(tracked[0][2].runStartedAtMs, 123456);
     assert.strictEqual(tracked[0][2].cwd, '/work/a');
-    assert.deepStrictEqual(sent[0], ['codex', tracked[0][2].terminal, session.id, null, `/tmp/codex-${session.id}.marker`]);
+    assert.strictEqual(sent[0][0], 'codex');
+    assert.strictEqual(sent[0][1], tracked[0][2].terminal);
+    assert.strictEqual(sent[0][2], session.id);
+    assert.strictEqual(sent[0][3].primaryCwd, '/work/a');
+    assert.strictEqual(sent[0][4], `/tmp/codex-${session.id}.marker`);
     assert.deepStrictEqual(finishes.slice(-1)[0], ['codex', session.id]);
     assert.deepStrictEqual(synced, ['sync']);
     assert.strictEqual(runtimeRefreshes.length, 2);
@@ -1696,7 +1719,11 @@ async function runAiSessionResumeControllerChecks() {
     await controller.resumeProjectSession('project-a', 'codex', session.id);
     assert.strictEqual(created.length, 1);
     assert.strictEqual(tracked[1][2].terminal, pendingTerminal.terminal);
-    assert.deepStrictEqual(sent[1], ['codex', pendingTerminal.terminal, session.id, '/work/a', '/tmp/pending.marker']);
+    assert.strictEqual(sent[1][0], 'codex');
+    assert.strictEqual(sent[1][1], pendingTerminal.terminal);
+    assert.strictEqual(sent[1][2], session.id);
+    assert.strictEqual(sent[1][3].primaryCwd, '/work/a');
+    assert.strictEqual(sent[1][4], '/tmp/pending.marker');
     assert.deepStrictEqual(claimedPendingTerminals, [pendingTerminal.terminal]);
     assert.deepStrictEqual(activeTabRequests, ['project-a', 'project-a', 'project-a']);
 
@@ -1731,10 +1758,11 @@ async function runAiSessionResumeControllerChecks() {
     assert.strictEqual(created.length, createdCountBeforeReleasedResume, 'a released terminal must be reused');
     assert.strictEqual(tracked.length, trackedCountBeforeReleasedResume + 1);
     assert.strictEqual(tracked[tracked.length - 1][2].terminal, releasedTerminal);
-    assert.deepStrictEqual(
-        sent[sentCountBeforeReleasedResume],
-        ['codex', releasedTerminal, session.id, '/work/a', '/tmp/released.marker']
-    );
+    assert.strictEqual(sent[sentCountBeforeReleasedResume][0], 'codex');
+    assert.strictEqual(sent[sentCountBeforeReleasedResume][1], releasedTerminal);
+    assert.strictEqual(sent[sentCountBeforeReleasedResume][2], session.id);
+    assert.strictEqual(sent[sentCountBeforeReleasedResume][3].primaryCwd, '/work/a');
+    assert.strictEqual(sent[sentCountBeforeReleasedResume][4], '/tmp/released.marker');
     assert.strictEqual(activeTabRequests.length, activeTabCountBeforeReject + 1);
 }
 
@@ -1978,7 +2006,7 @@ async function runAiSessionRuntimeControllerChecks() {
         }),
         getProjectKey: () => 'project-key-a',
         createPendingId: () => pendingIdOverride === null ? `pending-${++nextPending}` : pendingIdOverride,
-        getTerminalCwd: () => '/work/a',
+        resolveDirectoryScope: () => createTestAiSessionDirectoryScope('/work/a'),
         getUsableTerminalCwd: cwd => cwd,
         showInputBox: async () => '  Test Title  ',
         showActiveTab: async projectId => creationTabs.push(projectId),
@@ -2142,7 +2170,7 @@ async function runAiSessionRuntimeControllerChecks() {
         }),
         getProjectSession: (_project, provider, id) => provider === 'codex' && id === session.id ? session : null,
         getProjectKey: () => 'project-key-a',
-        getTerminalCwd: () => '/work/a',
+        resolveDirectoryScope: () => createTestAiSessionDirectoryScope('/work/a'),
         getTerminalName: () => 'Codex: Session A',
         getComparableCwd: () => '/work/a',
         getUsableTerminalCwd: cwd => cwd,
@@ -2216,6 +2244,133 @@ async function runAiSessionRuntimeControllerChecks() {
     assert.deepStrictEqual(resumeFailures, [['resume-runtime', 'resume failed', 'tmux']]);
     assert.strictEqual(resumeTabs.length, 2);
     assert.strictEqual(resumeRefreshes.length, 5);
+}
+
+async function runWorkspaceScopeControllerLaunchChecks() {
+    const project = Object.freeze({ id: 'workspace-a', name: 'Workspace A', path: '/legacy/project-path' });
+    const scope = Object.freeze({
+        workspaceNavigationIdentity: 'navigation-a',
+        workspaceScopeIdentity: 'scope-a',
+        workspaceRootHostPaths: Object.freeze(['/work/web', '/work/api', '/work/文档']),
+        primaryRootId: 'root-web',
+        primaryCwd: '/work/web',
+        additionalDirectories: Object.freeze(['/work/api', '/work/文档']),
+    });
+    for (const providerId of ['codex', 'kimi', 'claude']) {
+        const createScopes = [];
+        const createRequests = [];
+        const createLaunch = Object.freeze({
+            executable: providerId,
+            args: Object.freeze(['create', providerId]),
+            cwd: scope.primaryCwd,
+            markerPath: `/tmp/${providerId}-create.marker`,
+        });
+        const creation = new AiSessionCreationController({
+            isProviderId: value => value === providerId,
+            getOpenProjects: () => [project],
+            pickProvider: async () => providerId,
+            getProviderLabel: () => providerId,
+            getProvider: () => ({
+                label: providerId,
+                terminalNamePrefix: providerId,
+                buildNewSessionLaunchSpec: directoryScope => {
+                    createScopes.push(directoryScope);
+                    return createLaunch;
+                },
+            }),
+            resolveDirectoryScope: async resolvedProject => {
+                assert.strictEqual(resolvedProject, project);
+                return scope;
+            },
+            getProjectKey: () => 'legacy-project-key',
+            createPendingId: () => `pending-${providerId}`,
+            showInputBox: async () => '',
+            showActiveTab: async () => undefined,
+            announceStatus: async () => undefined,
+            showWarningMessage: async () => undefined,
+            refresh: () => undefined,
+            getExistingSessionIdsForCwd: () => [],
+            getPendingMarkerPath: () => `/tmp/${providerId}-create.marker`,
+            scheduleNewSessionRefresh: () => undefined,
+            nowMs: () => Date.parse('2026-07-20T10:00:00.000Z'),
+            runtimeCoordinator: {
+                create: async request => {
+                    createRequests.push(request);
+                    return { status: 'started', runtime: {} };
+                },
+                getActive: () => [],
+                getPending: () => [],
+            },
+        });
+        await creation.createSession(project.id);
+        assert.strictEqual(createScopes[0], scope,
+            `${providerId} creation must pass the injected complete scope unchanged to its builder`);
+        assert.deepStrictEqual(createRequests[0].launch, {
+            executable: providerId,
+            args: ['create', providerId],
+            cwd: scope.primaryCwd,
+            markerPath: `/tmp/${providerId}-create.marker`,
+        });
+        assert.strictEqual(createRequests[0].identity.cwd, scope.primaryCwd);
+
+        const session = Object.freeze({
+            id: `${providerId}-session`,
+            name: `${providerId} Session`,
+            cwd: '/historical/session-path',
+            updatedAt: '2026-07-20T09:00:00.000Z',
+        });
+        const resumeScopes = [];
+        const resumeRequests = [];
+        const resumeLaunch = Object.freeze({
+            executable: providerId,
+            args: Object.freeze(['resume', session.id]),
+            cwd: scope.primaryCwd,
+            markerPath: `/tmp/${providerId}-resume.marker`,
+        });
+        const resume = new AiSessionResumeController({
+            getOpenProjects: () => [project],
+            getProvider: () => ({
+                label: providerId,
+                terminalEnvKey: `${providerId}_SESSION_ID`,
+                buildResumeLaunchSpec: (sessionId, directoryScope) => {
+                    assert.strictEqual(sessionId, session.id);
+                    resumeScopes.push(directoryScope);
+                    return resumeLaunch;
+                },
+            }),
+            getProjectSession: (_project, requestedProvider, sessionId) => (
+                requestedProvider === providerId && sessionId === session.id ? session : null
+            ),
+            resolveDirectoryScope: async (resolvedProject, resolvedSession) => {
+                assert.strictEqual(resolvedProject, project);
+                assert.strictEqual(resolvedSession, session);
+                return scope;
+            },
+            getProjectKey: () => 'legacy-project-key',
+            getTerminalName: () => `${providerId}: Session`,
+            getMarkerPath: () => `/tmp/${providerId}-resume.marker`,
+            showWarningMessage: () => undefined,
+            announceStatus: async () => undefined,
+            refresh: () => undefined,
+            showActiveTab: async () => undefined,
+            runtimeCoordinator: {
+                resume: async request => {
+                    resumeRequests.push(request);
+                    return { status: 'started', runtime: {} };
+                },
+            },
+        });
+        await resume.resumeProjectSession(project.id, providerId, session.id);
+        assert.strictEqual(resumeScopes[0], scope,
+            `${providerId} resume must pass the injected complete scope unchanged to its builder`);
+        assert.deepStrictEqual(resumeRequests[0].launch, {
+            executable: providerId,
+            args: ['resume', session.id],
+            cwd: scope.primaryCwd,
+            markerPath: `/tmp/${providerId}-resume.marker`,
+        });
+        assert.strictEqual(resumeRequests[0].identity.cwd, scope.primaryCwd);
+    }
 }
 
 async function runAiSessionAttentionControllerChecks() {
@@ -4369,7 +4524,7 @@ async function runAiSessionTerminalPersistenceChecks() {
         await readyRetryService.sendNewSessionCommand(
             'codex',
             readyRetryTerminal,
-            '/work/app',
+            createTestAiSessionDirectoryScope('/work/app'),
             'Retry after ready',
             path.join(tempRoot, 'retry-after-ready.done')
         );
@@ -7940,6 +8095,14 @@ function runAiSessionProviderMaxFilesChecks() {
 }
 
 function runProviderChecks() {
+    const scope = {
+        workspaceNavigationIdentity: 'navigation',
+        workspaceScopeIdentity: 'scope',
+        workspaceRootHostPaths: ['/work/app'],
+        primaryRootId: 'root-app',
+        primaryCwd: '/work/app',
+        additionalDirectories: [],
+    };
     assert.deepStrictEqual(providers.AI_SESSION_PROVIDER_IDS, ['codex', 'kimi', 'claude']);
     assert.strictEqual(providers.getAiSessionProviderLabel('codex'), 'Codex');
     assert.strictEqual(providers.getAiSessionProviderLabel('kimi'), 'Kimi');
@@ -7953,11 +8116,11 @@ function runProviderChecks() {
     assert.deepStrictEqual(providers.getAiSessionProviderDefinition('kimi').terminalCwdFields, ['workDir', 'cwd']);
     assert.deepStrictEqual(providers.getAiSessionProviderDefinition('claude').terminalCwdFields, ['workDir', 'cwd']);
     assert.strictEqual(
-        providers.getAiSessionProviderDefinition('codex').buildNewSessionCommand('/work/app', 'Ignored Title', null),
+        providers.getAiSessionProviderDefinition('codex').buildNewSessionCommand(scope, 'Ignored Title', null),
         "codex --cd '/work/app'"
     );
     assert.strictEqual(
-        providers.getAiSessionProviderDefinition('claude').buildNewSessionCommand('/work/app', 'Useful Title', null),
+        providers.getAiSessionProviderDefinition('claude').buildNewSessionCommand(scope, 'Useful Title', null),
         "cd '/work/app' && claude --name 'Useful Title'"
     );
 }
@@ -8091,8 +8254,77 @@ function runProviderLifecycleServiceChecks() {
 }
 
 function runCommandBuilderChecks() {
+    const scope = Object.freeze({
+        workspaceNavigationIdentity: 'workspace-navigation',
+        workspaceScopeIdentity: 'workspace-scope',
+        workspaceRootHostPaths: Object.freeze(['/work/web', '/work/api', '/work/文档']),
+        primaryRootId: 'root-web',
+        primaryCwd: '/work/web',
+        additionalDirectories: Object.freeze(['/work/api', '/work/文档']),
+    });
+    const hostileScope = Object.freeze({
+        workspaceNavigationIdentity: 'hostile-navigation',
+        workspaceScopeIdentity: 'hostile-scope',
+        workspaceRootHostPaths: Object.freeze([
+            '/work/space dir',
+            '/work/"quoted"',
+            "/work/owner's $HOME; & docs 文档",
+            'C:\\Repo\\api',
+        ]),
+        primaryRootId: 'root-space',
+        primaryCwd: '/work/space dir',
+        additionalDirectories: Object.freeze([
+            '/work/"quoted"',
+            "/work/owner's $HOME; & docs 文档",
+            'C:\\Repo\\api',
+        ]),
+    });
+    const marker = '/tmp/provider.done';
+    assert.deepStrictEqual(commands.buildCodexNewSessionLaunchSpec(scope, 'fix tests', marker), {
+        executable: 'codex',
+        args: ['--cd', '/work/web', '--add-dir', '/work/api', '--add-dir', '/work/文档', 'fix tests'],
+        markerPath: marker,
+        windowsDirectShell: 'powershell',
+    });
+    assert.deepStrictEqual(commands.buildCodexResumeLaunchSpec('c1', scope, marker), {
+        executable: 'codex',
+        args: ['resume', '--cd', '/work/web', '--add-dir', '/work/api', '--add-dir', '/work/文档', 'c1'],
+        markerPath: marker,
+        windowsDirectShell: 'current',
+    });
+    assert.deepStrictEqual(commands.buildKimiNewSessionLaunchSpec(scope, 'fix tests', marker), {
+        executable: 'kimi',
+        args: ['--work-dir', '/work/web', '--add-dir', '/work/api', '--add-dir', '/work/文档', '--prompt', 'fix tests'],
+        markerPath: marker,
+        windowsDirectShell: 'powershell',
+    });
+    assert.deepStrictEqual(commands.buildKimiResumeLaunchSpec('k1', scope, marker).args, [
+        '--work-dir', '/work/web', '--add-dir', '/work/api', '--add-dir', '/work/文档', '--resume', 'k1',
+    ]);
+    assert.deepStrictEqual(commands.buildClaudeNewSessionLaunchSpec(scope, 'fix tests', marker), {
+        executable: 'claude',
+        args: ['--add-dir', '/work/api', '/work/文档', '--name', 'fix tests'],
+        cwd: '/work/web',
+        markerPath: marker,
+        windowsDirectShell: 'powershell',
+    });
+    assert.deepStrictEqual(commands.buildClaudeResumeLaunchSpec('c1', scope, marker), {
+        executable: 'claude',
+        args: ['--add-dir', '/work/api', '/work/文档', '--resume', 'c1'],
+        cwd: '/work/web', markerPath: marker, windowsDirectShell: 'current',
+    });
     assert.deepStrictEqual(
-        commands.buildClaudeNewSessionLaunchSpec('/work/app', "Useful; 'Title'", '/tmp/claude.done'),
+        commands.buildCodexNewSessionLaunchSpec(hostileScope, null, null).args,
+        [
+            '--cd', '/work/space dir',
+            '--add-dir', '/work/"quoted"',
+            '--add-dir', "/work/owner's $HOME; & docs 文档",
+            '--add-dir', 'C:\\Repo\\api',
+        ],
+        'launch specs preserve whitespace, quotes, Unicode, metacharacters, and Windows separators before serialization'
+    );
+    assert.deepStrictEqual(
+        commands.buildClaudeNewSessionLaunchSpec({ ...scope, primaryCwd: '/work/app', additionalDirectories: [] }, "Useful; 'Title'", '/tmp/claude.done'),
         {
             executable: 'claude',
             args: ['--name', "Useful; 'Title'"],
@@ -8103,41 +8335,92 @@ function runCommandBuilderChecks() {
     );
     assert.strictEqual(
         launchSpec.serializeDirectLaunchCommand(
-            commands.buildKimiNewSessionLaunchSpec('/work/app', "owner's task", null),
+            commands.buildKimiNewSessionLaunchSpec({ ...scope, primaryCwd: '/work/app', additionalDirectories: [] }, "owner's task", null),
             'linux'
         ),
         "kimi --work-dir '/work/app' --prompt 'owner'\\''s task'"
     );
     assert.strictEqual(
-        commands.buildCodexResumeCommand('abc123', '/work/My App', null, 'linux'),
+        commands.buildCodexResumeCommand('abc123', { ...scope, primaryCwd: '/work/My App', additionalDirectories: [] }, null, 'linux'),
         "codex resume --cd '/work/My App' 'abc123'"
     );
     assert.strictEqual(
-        commands.buildKimiNewSessionCommand('/work/app', "owner's task", null, 'linux'),
+        commands.buildKimiNewSessionCommand({ ...scope, primaryCwd: '/work/app', additionalDirectories: [] }, "owner's task", null, 'linux'),
         "kimi --work-dir '/work/app' --prompt 'owner'\\''s task'"
     );
-    let markedCommand = commands.buildClaudeResumeCommand('session-1', '/work/app', '/tmp/session.done', 'linux');
+    let markedCommand = commands.buildClaudeResumeCommand('session-1', { ...scope, primaryCwd: '/work/app', additionalDirectories: [] }, '/tmp/session.done', 'linux');
     assert.ok(markedCommand.startsWith('sh -lc '));
     assert.ok(markedCommand.includes('claude --resume'));
     assert.ok(markedCommand.includes('rm -f'));
     assert.ok(markedCommand.includes(': >'));
     assert.ok(markedCommand.includes('/tmp/session.done'));
 
-    let markedCodexNewCommand = commands.buildCodexNewSessionCommand('/work/app', null, '/tmp/new-codex.done', 'linux');
+    let markedCodexNewCommand = commands.buildCodexNewSessionCommand({ ...scope, primaryCwd: '/work/app', additionalDirectories: [] }, null, '/tmp/new-codex.done', 'linux');
     assert.ok(markedCodexNewCommand.startsWith('sh -lc '));
     assert.ok(markedCodexNewCommand.includes("codex --cd"));
     assert.ok(markedCodexNewCommand.includes('/tmp/new-codex.done'));
 
-    let windowsCommand = commands.buildClaudeResumeCommand('session-1', 'C:\\Repo', 'C:\\Temp\\session.done', 'win32');
+    let windowsCommand = commands.buildClaudeResumeCommand('session-1', { ...scope, primaryCwd: 'C:\\Repo', additionalDirectories: [] }, 'C:\\Temp\\session.done', 'win32');
     let windowsPayload = decodePowerShellPayload(windowsCommand);
     assert.ok(windowsPayload.includes("Set-Location -LiteralPath 'C:\\Repo'"));
     assert.ok(windowsPayload.includes("Remove-Item -LiteralPath 'C:\\Temp\\session.done'"));
     assert.ok(windowsPayload.includes("New-Item -ItemType File -Force -Path 'C:\\Temp\\session.done'"));
-    let windowsNewCommand = commands.buildCodexNewSessionCommand('C:\\Repo', null, 'C:\\Temp\\new-codex.done', 'win32');
+    let windowsNewCommand = commands.buildCodexNewSessionCommand({ ...scope, primaryCwd: 'C:\\Repo', additionalDirectories: [] }, null, 'C:\\Temp\\new-codex.done', 'win32');
     let windowsNewPayload = decodePowerShellPayload(windowsNewCommand);
     assert.ok(windowsNewPayload.includes("codex --cd 'C:\\Repo'"));
     assert.ok(windowsNewPayload.includes("New-Item -ItemType File -Force -Path 'C:\\Temp\\new-codex.done'"));
     assert.strictEqual(commands.quotePowerShellArg("O'Brien"), "'O''Brien'");
+}
+
+async function runProviderDirectoryCapabilityChecks() {
+    const capability = require('../out/aiSessions/providerDirectoryCapability');
+    const executions = [];
+    const diagnostics = [];
+    const results = {
+        '/resolved/codex': { exitCode: 0, stdout: 'Usage\n  --add-dir <DIR>  Add writable directory', stderr: '' },
+        '/resolved/kimi': { exitCode: 0, stdout: '', stderr: 'Options:\n--add-dir PATH' },
+        '/resolved/claude': { exitCode: 0, stdout: '  --add-dir <directories...>', stderr: '' },
+        '/resolved/legacy': { exitCode: 0, stdout: 'Usage: legacy --work-dir PATH', stderr: '' },
+        '/resolved/nonzero': { exitCode: 2, stdout: '', stderr: 'SECRET stderr from child' },
+        '/resolved/timeout': { exitCode: null, stdout: '', stderr: 'SECRET timeout detail', timedOut: true },
+        '/resolved/large': { exitCode: 0, stdout: `prefix ${'x'.repeat(90_000)} --add-dir SECRET_AFTER_BOUND`, stderr: '' },
+    };
+    const adapter = {
+        resolveExecutable: commandName => commandName === 'missing' ? null : `/resolved/${commandName}`,
+        run: async (executable, args, options) => {
+            executions.push({ executable, args: [...args], options: { ...options } });
+            return results[executable];
+        },
+    };
+    const probe = new capability.ProviderDirectoryCapabilityProbe(adapter, message => diagnostics.push(message));
+    const provider = (id, commandName = id) => ({ id, commandName });
+    const supported = await Promise.all([
+        probe.probe(provider('codex')),
+        probe.probe(provider('codex')),
+        probe.probe(provider('kimi')),
+        probe.probe(provider('claude')),
+    ]);
+    assert.deepStrictEqual(supported.map(result => result.status), [
+        'supported', 'supported', 'supported', 'supported',
+    ]);
+    assert.strictEqual(executions.filter(run => run.executable === '/resolved/codex').length, 1,
+        'concurrent probes execute --help once per resolved executable/provider ID');
+    assert.ok(executions.every(run => (
+        run.args.length === 1 && run.args[0] === '--help'
+        && run.options.timeoutMs > 0
+        && run.options.maxOutputBytes > 0
+        && run.options.maxOutputBytes <= 64 * 1024
+    )), 'every capability probe is a bounded --help execution');
+
+    assert.strictEqual((await probe.probe(provider('legacy'))).status, 'unsupported');
+    assert.strictEqual((await probe.probe(provider('nonzero'))).status, 'unavailable');
+    assert.strictEqual((await probe.probe(provider('timeout'))).status, 'unavailable');
+    assert.strictEqual((await probe.probe(provider('missing'))).status, 'unavailable');
+    assert.strictEqual((await probe.probe(provider('large'))).status, 'unsupported',
+        'help parsing must ignore output beyond the configured byte bound');
+    assert.ok(diagnostics.length >= 3);
+    assert.ok(diagnostics.every(message => !message.includes('SECRET')),
+        'capability diagnostics must not expose child output or executable details');
 }
 
 function runLifecycleParserChecks() {
@@ -9396,6 +9679,7 @@ async function main() {
     await runAiSessionResumeControllerChecks();
     await runAiSessionTerminalCommandControllerChecks();
     await runAiSessionRuntimeControllerChecks();
+    await runWorkspaceScopeControllerLaunchChecks();
     await runAiSessionAttentionControllerChecks();
     await runAiSessionExecutionControllerChecks();
     await runSidebarStewardViewProviderOrderingChecks();
@@ -9434,6 +9718,7 @@ async function main() {
     runProviderChecks();
     runProviderLifecycleServiceChecks();
     runCommandBuilderChecks();
+    await runProviderDirectoryCapabilityChecks();
     runLifecycleParserChecks();
     runIncrementalJsonlLifecycleReaderChecks();
     runAttentionMonitorChecks();

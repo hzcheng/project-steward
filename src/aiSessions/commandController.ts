@@ -2,12 +2,18 @@
 
 import type * as vscode from 'vscode';
 
-import type { AiSessionProviderId, Project } from '../models';
+import type { AiSessionProviderId, CodexSession, Project } from '../models';
 import { sanitizeAiSessionAlias } from './aliasStore';
+import type { AiSessionDirectoryScope } from './types';
 
 export interface AiSessionCommandControllerOptions {
     getOpenProjects: () => Project[];
     getProjectKey: (project: Project) => string;
+    resolveDirectoryScope: (
+        project: Project,
+        providerId: AiSessionProviderId,
+        session?: CodexSession
+    ) => AiSessionDirectoryScope | null | Thenable<AiSessionDirectoryScope | null> | Promise<AiSessionDirectoryScope | null>;
     isProviderId: (value: string) => value is AiSessionProviderId;
     setExpanded: (projectKey: string, expanded: boolean) => Thenable<unknown>;
     setActiveProvider: (projectKey: string, providerId: AiSessionProviderId) => Thenable<unknown>;
@@ -24,6 +30,14 @@ export interface AiSessionCommandControllerOptions {
 
 export class AiSessionCommandController {
     constructor(private readonly options: AiSessionCommandControllerOptions) {
+    }
+
+    resolveDirectoryScope(
+        project: Project,
+        providerId: AiSessionProviderId,
+        session?: CodexSession
+    ): AiSessionDirectoryScope | null | Thenable<AiSessionDirectoryScope | null> | Promise<AiSessionDirectoryScope | null> {
+        return this.options.resolveDirectoryScope(project, providerId, session);
     }
 
     async toggleSessionsExpanded(projectId: string, expanded: boolean): Promise<void> {

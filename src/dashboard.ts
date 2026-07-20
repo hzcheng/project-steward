@@ -39,7 +39,7 @@ import { AI_SESSION_PROVIDER_DEFINITIONS, createAiSessionProviderRegistry, getAi
 import { applyAiSessionRuntimeProjection } from './aiSessions/activeSessionProjection';
 import { isCommandAvailableOnPath } from './aiSessions/providerAvailability';
 import { getOpenProjectAiSessionKey, getOpenProjectTerminalCwd as getOpenProjectAiSessionTerminalCwd, normalizeAiSessionProjectPath } from './aiSessions/projectCandidates';
-import { getAiSessionComparableCwd as getProviderAiSessionComparableCwd, getAiSessionTerminalCwd as getProviderAiSessionTerminalCwd, getAiSessionTerminalName as getProviderAiSessionTerminalName, getProjectAiSessions as getProviderProjectAiSessions } from './aiSessions/sessionPaths';
+import { getAiSessionComparableCwd as getProviderAiSessionComparableCwd, getAiSessionTerminalName as getProviderAiSessionTerminalName, getProjectAiSessions as getProviderProjectAiSessions } from './aiSessions/sessionPaths';
 import { getAiSessionIdsForCwd } from './aiSessions/pendingTerminals';
 import { getAiSessionTerminalCandidates } from './aiSessions/terminalCandidates';
 import { AiSessionReadCoordinator } from './aiSessions/readCoordinator';
@@ -386,6 +386,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const aiSessionCommandController = new AiSessionCommandController({
         getOpenProjects,
         getProjectKey: getOpenProjectAiSessionKey,
+        resolveDirectoryScope: project => {
+            const primaryCwd = getOpenProjectAiSessionTerminalCwd(project);
+            const workspaceIdentity = getOpenProjectAiSessionKey(project);
+            return Object.freeze({
+                workspaceNavigationIdentity: workspaceIdentity,
+                workspaceScopeIdentity: workspaceIdentity,
+                workspaceRootHostPaths: Object.freeze([primaryCwd]) as string[],
+                primaryRootId: project.id,
+                primaryCwd,
+                additionalDirectories: Object.freeze([]) as string[],
+            });
+        },
         isProviderId: isAiSessionProviderId,
         setExpanded: (projectKey, expanded) => aiSessionProjectStateStore.setExpanded(projectKey, expanded),
         setActiveProvider: (projectKey, providerId) => aiSessionProjectStateStore.setActiveProvider(projectKey, providerId),
@@ -438,7 +450,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         pickProvider: pickAiSessionProvider,
         getProviderLabel: getAiSessionProviderLabel,
         getProvider: getRegisteredAiSessionProvider,
-        getTerminalCwd: getOpenProjectAiSessionTerminalCwd,
+        resolveDirectoryScope: (project, providerId) =>
+            aiSessionCommandController.resolveDirectoryScope(project, providerId),
         runtimeCoordinator: aiSessionRuntimeCoordinator,
         getProjectKey: getOpenProjectAiSessionKey,
         createPendingId: () => randomBytes(16).toString('hex'),
@@ -545,7 +558,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getOpenProjects,
         getProvider: getRegisteredAiSessionProvider,
         getProjectSession: (project, providerId, sessionId) => getProviderProjectAiSessions(project, providerId, aiSessionProviders).find(session => session.id === sessionId),
-        getTerminalCwd: (providerId, session, project) => getProviderAiSessionTerminalCwd(providerId, session, project, aiSessionProviders),
+        resolveDirectoryScope: (project, session, providerId) =>
+            aiSessionCommandController.resolveDirectoryScope(project, providerId, session),
         getTerminalName: (providerId, session) => getProviderAiSessionTerminalName(providerId, session, aiSessionProviders),
         runtimeCoordinator: aiSessionRuntimeCoordinator,
         getRuntimeConflict: getAiSessionRuntimeCollision,

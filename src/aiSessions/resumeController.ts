@@ -7,6 +7,7 @@ import type {
     AiSessionRuntimeActionResult,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
+import type { AiSessionDirectoryScope } from './types';
 
 export interface AiSessionResumeTerminal {
     show(): void;
@@ -20,7 +21,11 @@ export interface AiSessionResumeTerminalEntry<TTerminal extends AiSessionResumeT
 export interface AiSessionResumeProvider {
     label: string;
     terminalEnvKey: string;
-    buildResumeLaunchSpec?: (sessionId: string, cwd: string, markerPath: string) => AiSessionLaunchSpec;
+    buildResumeLaunchSpec?: (
+        sessionId: string,
+        scope: AiSessionDirectoryScope,
+        markerPath: string
+    ) => AiSessionLaunchSpec;
 }
 
 export interface AiSessionResumeRuntimeCoordinator<TTerminal> {
@@ -57,7 +62,11 @@ export interface AiSessionResumeControllerCommonOptions {
     getOpenProjects: () => Project[];
     getProvider: (providerId: AiSessionProviderId) => AiSessionResumeProvider | null;
     getProjectSession: (project: Project, providerId: AiSessionProviderId, sessionId: string) => CodexSession | null | undefined;
-    getTerminalCwd: (providerId: AiSessionProviderId, session: CodexSession, project: Project) => string;
+    resolveDirectoryScope: (
+        project: Project,
+        session: CodexSession,
+        providerId: AiSessionProviderId
+    ) => AiSessionDirectoryScope | null | Thenable<AiSessionDirectoryScope | null> | Promise<AiSessionDirectoryScope | null>;
     getTerminalName: (providerId: AiSessionProviderId, session: CodexSession) => string;
     getMarkerPath: (providerId: AiSessionProviderId, sessionId: string) => string;
     showWarningMessage: (message: string) => unknown;
@@ -114,7 +123,7 @@ export interface AiSessionResumeLegacyControllerOptions<
         providerId: AiSessionProviderId,
         terminal: TTerminal,
         sessionId: string,
-        cwd: string | null,
+        scope: AiSessionDirectoryScope,
         markerPath: string
     ) => Thenable<void> | Promise<void>;
     syncActiveTerminal: () => void;
@@ -165,7 +174,6 @@ export class AiSessionResumeController<
             return;
         }
 
-        let cwd = this.options.getUsableTerminalCwd(this.options.getTerminalCwd(providerId, session, project));
         const existingTerminal = this.options.getExistingTerminal(providerId, session);
         if (existingTerminal && !this.options.isTerminalComplete(existingTerminal)) {
             existingTerminal.terminal.show();
@@ -174,9 +182,14 @@ export class AiSessionResumeController<
             return;
         }
 
+        const directoryScope = await this.options.resolveDirectoryScope(project, session, providerId);
+        if (!directoryScope) {
+            return;
+        }
         if (!this.options.beginResume(providerId, session.id)) {
             return;
         }
+        let cwd = this.options.getUsableTerminalCwd(directoryScope.primaryCwd);
 
         const terminalName = this.options.getTerminalName(providerId, session);
         let terminal = existingTerminal?.terminal;
@@ -211,7 +224,7 @@ export class AiSessionResumeController<
             }
 
             terminal.show();
-            await this.options.sendResumeCommand(providerId, terminal, session.id, cwd, markerPath);
+            await this.options.sendResumeCommand(providerId, terminal, session.id, directoryScope, markerPath);
             if (usedPendingTerminal) {
                 this.options.claimPendingTerminal(terminal);
             }
@@ -249,11 +262,15 @@ export class AiSessionResumeController<
         if (!sessionProvider.buildResumeLaunchSpec) {
             throw new Error('AI session runtime resume is not configured.');
         }
-        const cwd = options.getTerminalCwd(providerId, session, project);
+        const directoryScope = await options.resolveDirectoryScope(project, session, providerId);
+        if (!directoryScope) {
+            return;
+        }
+        const cwd = directoryScope.primaryCwd;
         const projectKey = options.getProjectKey(project);
         const markerPath = options.getMarkerPath(providerId, session.id);
         const launch = cloneLaunchSpec(
-            sessionProvider.buildResumeLaunchSpec(session.id, cwd, markerPath)
+            sessionProvider.buildResumeLaunchSpec(session.id, directoryScope, markerPath)
         );
         const request: AiSessionResumeRuntimeRequest = {
             identity: {
@@ -326,6 +343,7 @@ function validateControllerOptions<
         return;
     }
     if (typeof options.runtimeCoordinator.resume !== 'function'
+        || typeof options.resolveDirectoryScope !== 'function'
         || typeof (options as AiSessionResumeRuntimeControllerOptions<TTerminal>).getProjectKey !== 'function'
         || typeof (options as AiSessionResumeRuntimeControllerOptions<TTerminal>).announceStatus !== 'function') {
         throw new Error('AI session resume runtime controller options are invalid.');

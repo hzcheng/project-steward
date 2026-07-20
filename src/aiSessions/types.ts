@@ -92,10 +92,10 @@ export interface AiSessionProviderDefinition {
     projectSessionsKey: 'codexSessions' | 'kimiSessions' | 'claudeSessions';
     projectSessionsUnavailableKey: 'codexSessionsUnavailable' | 'kimiSessionsUnavailable' | 'claudeSessionsUnavailable';
     terminalCwdFields: Array<'cwd' | 'workDir'>;
-    buildResumeLaunchSpec: (sessionId: string, cwd: string, markerPath: string) => AiSessionLaunchSpec;
-    buildNewSessionLaunchSpec: (cwd: string, title: string, markerPath: string) => AiSessionLaunchSpec;
-    buildResumeCommand: (sessionId: string, cwd: string, markerPath: string) => string;
-    buildNewSessionCommand: (cwd: string, title: string, markerPath: string) => string;
+    buildResumeLaunchSpec: (sessionId: string, scope: AiSessionDirectoryScope, markerPath: string) => AiSessionLaunchSpec;
+    buildNewSessionLaunchSpec: (scope: AiSessionDirectoryScope, title: string, markerPath: string) => AiSessionLaunchSpec;
+    buildResumeCommand: (sessionId: string, scope: AiSessionDirectoryScope, markerPath: string) => string;
+    buildNewSessionCommand: (scope: AiSessionDirectoryScope, title: string, markerPath: string) => string;
 }
 
 export interface AiSessionProvider extends AiSessionProviderDefinition {
