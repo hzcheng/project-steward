@@ -1589,10 +1589,13 @@ async function runAiSessionTerminalCommandControllerChecks() {
 
     await controller.focusPending('app', 'claude', '2026-07-18T03:00:00Z');
     assert.strictEqual(pendingTerminal.showCalls, 1);
+    assert.deepStrictEqual(refreshes, ['refresh']);
     await controller.focusActive('app', 'codex', 'c1');
     assert.strictEqual(activeTerminal.showCalls, 1);
+    assert.deepStrictEqual(refreshes, ['refresh', 'refresh']);
     await controller.focusActive('app', 'kimi', 'historyless');
     assert.strictEqual(historylessTerminal.showCalls, 1, 'matching binding cwd scopes a historyless active session');
+    assert.deepStrictEqual(refreshes, ['refresh', 'refresh', 'refresh']);
 
     await controller.focusActive('other', 'codex', 'c1');
     await controller.focusActive('app', 'codex', 'missing');
@@ -1609,13 +1612,13 @@ async function runAiSessionTerminalCommandControllerChecks() {
     confirmation = 'Close Terminal';
     await controller.closeTerminal({ projectId: 'app', providerId: 'codex', sessionId: 'c1' });
     assert.strictEqual(activeTerminal.disposeCalls, 1);
-    assert.strictEqual(refreshes.length, 1);
+    assert.strictEqual(refreshes.length, 4);
 
     await controller.closeTerminal({
         projectId: 'app', providerId: 'claude', pendingCreatedAt: '2026-07-18T03:00:00Z',
     });
     assert.strictEqual(pendingTerminal.disposeCalls, 1);
-    assert.strictEqual(refreshes.length, 2);
+    assert.strictEqual(refreshes.length, 5);
 
     await controller.closeTerminal({ projectId: 'other', providerId: 'codex', sessionId: 'c1' });
     await controller.closeTerminal({
@@ -1625,7 +1628,69 @@ async function runAiSessionTerminalCommandControllerChecks() {
 
     await controller.closeTerminal({ projectId: 'app', providerId: 'claude', sessionId: 'failing' });
     assert.deepStrictEqual(errors, ['Could not close the AI session terminal.']);
-    assert.strictEqual(refreshes.length, 2);
+    assert.strictEqual(refreshes.length, 5);
+
+    const runtimeRefreshes = [];
+    const runtimeAnnouncements = [];
+    let runtimeCandidates;
+    let focusSelectedResult = true;
+    const runtime = {
+        identity: { provider: 'codex', sessionId: 'c1', projectKey: 'key:/work/app', cwd: '/work/app' },
+        backend: 'tmux', state: 'active', markerPath: '/tmp/c1.done', runStartedAtMs: 1,
+        attached: true,
+        tmux: { layout: 'project', sessionName: 'project-steward-p-app', windowName: 'ai-codex-c1' },
+    };
+    const runtimePending = {
+        identity: { provider: 'claude', pendingId: 'pending-1', projectKey: 'key:/work/app', cwd: '/work/app' },
+        backend: 'tmux', state: 'pending', markerPath: '/tmp/pending.done', runStartedAtMs: 2,
+        attached: true, createdAt: '2026-07-20T00:00:00.000Z', excludedSessionIds: [],
+        tmux: { layout: 'project', sessionName: 'project-steward-p-app', windowName: 'pending-claude-1' },
+    };
+    const runtimeController = new AiSessionTerminalCommandController({
+        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
+        getOpenProjects: () => [{
+            id: 'app', path: '/work/app', codexSessions: [{ id: 'c1' }],
+            kimiSessions: [], claudeSessions: [],
+        }],
+        getProjectSessions: (project, providerId) => project[`${providerId}Sessions`] || [],
+        getProjectKey: project => `key:${project.path}`,
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+        runtimeCoordinator: {
+            getById: (_providerId, sessionId) => sessionId === 'c1' ? runtime : null,
+            getActiveCandidates: (_providerId, sessionId) => sessionId === 'c1'
+                ? (runtimeCandidates || [runtime]) : [],
+            getUnverifiedConflicts: () => [],
+            getPending: () => [runtimePending],
+            focus: async () => undefined,
+            focusSelected: async () => focusSelectedResult,
+            detach: async () => undefined,
+        },
+        confirmRuntimeClose: async () => undefined,
+        chooseRuntimeConflict: async runtimes => runtimes[0],
+        announceStatus: async (_projectId, message) => runtimeAnnouncements.push(message),
+        showErrorMessage: async () => undefined,
+        getProviderLabel: providerId => providerId.toUpperCase(),
+        refresh: () => runtimeRefreshes.push('refresh'),
+    });
+    await runtimeController.focusActive('app', 'codex', 'c1');
+    await runtimeController.focusPending('app', 'claude', '2026-07-20T00:00:00.000Z');
+    assert.deepStrictEqual(runtimeRefreshes, ['refresh', 'refresh']);
+
+    runtimeCandidates = [{ ...runtime, state: 'conflict' }];
+    await runtimeController.focusActive('app', 'codex', 'c1');
+    assert.deepStrictEqual(runtimeRefreshes, ['refresh', 'refresh', 'refresh']);
+
+    focusSelectedResult = false;
+    await runtimeController.focusActive('app', 'codex', 'c1');
+    assert.strictEqual(runtimeRefreshes.length, 4,
+        'a stale selected runtime keeps its existing invalidation refresh without adding a success refresh');
+    assert.strictEqual(runtimeAnnouncements.length, 1);
+
+    runtimeCandidates = [];
+    await runtimeController.focusActive('app', 'codex', 'missing');
+    await runtimeController.focusPending('app', 'claude', 'missing');
+    assert.strictEqual(runtimeRefreshes.length, 4, 'missing targets must not refresh');
 }
 
 async function runAiSessionRuntimeControllerChecks() {

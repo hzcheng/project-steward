@@ -125,6 +125,7 @@ export class AiSessionTerminalCommandController<
             if (runtime) {
                 try {
                     await this.options.runtimeCoordinator.focus({ ...runtime.identity });
+                    this.options.refresh();
                 } catch (error) {
                     await this.handleRuntimeActionFailure(
                         'focus-runtime', 'Could not focus the AI session terminal.',
@@ -134,7 +135,11 @@ export class AiSessionTerminalCommandController<
             }
             return;
         }
-        this.getScopedActiveTerminal(projectId, providerId, sessionId, this.options)?.show();
+        const terminal = this.getScopedActiveTerminal(projectId, providerId, sessionId, this.options);
+        if (terminal) {
+            terminal.show();
+            this.options.refresh();
+        }
     }
 
     private async chooseAndFocusConflict(
@@ -171,7 +176,9 @@ export class AiSessionTerminalCommandController<
                     projectId,
                     'The selected AI session runtime changed before it could be focused.'
                 );
+                return;
             }
+            options.refresh();
         } catch (error) {
             await this.handleRuntimeActionFailure(
                 'focus-selected-runtime', 'Could not focus the selected AI session runtime.',
@@ -189,6 +196,7 @@ export class AiSessionTerminalCommandController<
             if (runtime) {
                 try {
                     await this.options.runtimeCoordinator.focus({ ...runtime.identity });
+                    this.options.refresh();
                 } catch (error) {
                     await this.handleRuntimeActionFailure(
                         'focus-runtime', 'Could not focus the AI session terminal.',
@@ -198,7 +206,11 @@ export class AiSessionTerminalCommandController<
             }
             return;
         }
-        this.getScopedPendingTerminal(projectId, providerId, createdAt, this.options)?.show();
+        const terminal = this.getScopedPendingTerminal(projectId, providerId, createdAt, this.options);
+        if (terminal) {
+            terminal.show();
+            this.options.refresh();
+        }
     }
 
     async closeTerminal(request: CloseAiSessionTerminalRequest): Promise<void> {
