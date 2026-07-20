@@ -88,8 +88,8 @@ export default class AiSessionAttentionMonitor {
             events.push(event);
         }
 
-        for (const key of this.entries.keys()) {
-            if (!seen.has(key)) {
+        for (const [key, entry] of this.entries) {
+            if (!seen.has(key) && entry.state !== 'needsAttention') {
                 this.entries.delete(key);
             }
         }

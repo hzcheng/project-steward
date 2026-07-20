@@ -7967,6 +7967,27 @@ function runAttentionMonitorChecks() {
     monitor.acknowledge([events[0].eventId]);
     assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'acknowledged');
 
+    const retentionMonitor = new AiSessionAttentionMonitor({ now: () => now });
+    const retentionEvents = retentionMonitor.evaluate([{
+        key: 'codex:retained',
+        signal: signal('retained-complete', 'needsAttention', 'completed'),
+    }]);
+    assert.deepStrictEqual(retentionMonitor.evaluate([]), [],
+        'runtime removal does not generate a second attention event');
+    assert.strictEqual(
+        retentionMonitor.getSnapshot()['codex:retained'].state,
+        'needsAttention',
+        'runtime removal must retain unread completion attention'
+    );
+    retentionMonitor.acknowledge([retentionEvents[0].eventId]);
+    assert.strictEqual(retentionMonitor.getSnapshot()['codex:retained'].state, 'acknowledged');
+    retentionMonitor.evaluate([]);
+    assert.strictEqual(
+        retentionMonitor.getSnapshot()['codex:retained'],
+        undefined,
+        'an explicitly acknowledged entry may be pruned after runtime removal'
+    );
+
     const beforeReload = new AiSessionAttentionMonitor({ now: () => now });
     const acknowledgedBeforeReload = beforeReload.evaluate([{
         key: 'codex:reloaded',
