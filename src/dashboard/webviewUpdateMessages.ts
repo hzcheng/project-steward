@@ -1,10 +1,21 @@
 'use strict';
 
-import { Group, Project, StewardInfos } from '../models';
+import { Group, Project, StewardInfos, WorkspaceCardViewModel } from '../models';
 import type { OpenProjectAiSessionViewModel, AiSessionsUpdatedMessage } from '../aiSessions/types';
 import type { TodoSearchCatalogItem } from '../todos/types';
 import { buildDashboardSearchCatalog, DashboardSearchCatalog } from '../webview/dashboardViewModel';
-import { getOpenProjectsGroupContent } from '../webview/webviewContent';
+import { getCurrentWorkspaceGroupContent, getOpenProjectsGroupContent } from '../webview/webviewContent';
+
+export interface WorkspaceUpdatedMessage {
+    type: 'workspace-updated';
+    version: 2;
+    currentWorkspaceCount: 0 | 1;
+    html: string;
+}
+
+export interface BuildWorkspaceUpdatedMessageInput {
+    card: WorkspaceCardViewModel | null;
+}
 
 export interface OpenProjectsUpdatedMessage {
     type: 'open-projects-updated';
@@ -45,6 +56,18 @@ export function buildOpenProjectsUpdatedMessage(input: BuildOpenProjectsUpdatedM
             input.collapsed,
             input.stewardInfos,
         ),
+    };
+}
+
+export function buildWorkspaceUpdatedMessage(input: BuildWorkspaceUpdatedMessageInput): WorkspaceUpdatedMessage {
+    const card = input.card && input.card.kind === 'current' && input.card.roots.length
+        ? input.card
+        : null;
+    return {
+        type: 'workspace-updated',
+        version: 2,
+        currentWorkspaceCount: card ? 1 : 0,
+        html: getCurrentWorkspaceGroupContent(card, false),
     };
 }
 

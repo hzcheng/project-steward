@@ -237,6 +237,7 @@ function runDashboardUpdateMessageChecks() {
         Module._load = previousModuleLoad;
     }
     const todoSearchItems = makeDashboardCatalog().todos;
+    const workspaceCard = makeWorkspaceCardFixture(3);
     const openMessage = dashboardUpdateMessages.buildOpenProjectsUpdatedMessage({
         groups: [],
         cards: [],
@@ -253,11 +254,149 @@ function runDashboardUpdateMessageChecks() {
         openProjects: [],
         todoSearchItems,
     });
+    const workspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({
+        card: workspaceCard,
+    });
 
     assert.deepStrictEqual(openMessage.searchCatalog.todos, todoSearchItems,
         'OPEN incremental catalog rebuilds must preserve real TODO search items');
     assert.deepStrictEqual(aiMessage.searchCatalog.todos, todoSearchItems,
         'AI incremental catalog rebuilds must preserve real TODO search items');
+    assert.strictEqual(workspaceMessage.type, 'workspace-updated');
+    assert.strictEqual(workspaceMessage.version, 2);
+    assert.strictEqual(workspaceMessage.currentWorkspaceCount, 1);
+    assert.ok(workspaceMessage.html.includes('data-workspace-scope-identity="scope-dashboard"'));
+    const emptyWorkspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({ card: null });
+    assert.strictEqual(emptyWorkspaceMessage.currentWorkspaceCount, 0);
+    assert.strictEqual(emptyWorkspaceMessage.html.includes('class="workspace-card'), false);
+}
+
+function makeWorkspaceCardFixture(rootCount) {
+    const roots = [
+        { id: 'root-app', name: 'App', ordinal: 0 },
+        { id: 'root-api', name: 'API', ordinal: 1 },
+        { id: 'root-docs', name: 'Docs', ordinal: 2 },
+    ].slice(0, rootCount);
+    return {
+        id: 'workspace-dashboard',
+        kind: 'current',
+        navigationIdentity: 'navigation-dashboard',
+        scopeIdentity: 'scope-dashboard',
+        name: 'Dashboard',
+        environmentLabel: 'Local',
+        roots,
+        attentionCount: 1,
+        aiSessions: {
+            workspaceScopeIdentity: 'scope-dashboard',
+            workspaceNavigationIdentity: 'navigation-dashboard',
+            activeProvider: 'codex',
+            expanded: true,
+            providers: [
+                { id: 'codex', label: 'Codex', count: 1 },
+                { id: 'kimi', label: 'Kimi', count: 0 },
+                { id: 'claude', label: 'Claude', count: 0 },
+            ],
+            sessionsByProvider: {
+                codex: [{
+                    id: 'session-api', name: 'API work', provider: 'codex',
+                    primaryRootId: 'root-api', primaryRootLabel: 'API',
+                }],
+                kimi: [],
+                claude: [],
+            },
+            unavailableProviders: [],
+            aiSessionCount: 1,
+            attentionCount: 0,
+            defaultTab: 'sessions',
+            activeSessions: [{
+                key: 'codex:session-api', provider: 'codex', sessionId: 'session-api', name: 'API work',
+                executionState: 'running', focused: false, needsAttention: false, pending: false,
+                backend: 'vscode', attached: true, primaryRootId: 'root-api', primaryRootLabel: 'API',
+            }],
+            activeSessionCount: 1,
+            activeAttentionCount: 0,
+        },
+    };
+}
+
+function runWorkspaceCardRenderingChecks() {
+    const previousModuleLoad = Module._load;
+    let webviewContent;
+    try {
+        Module._load = function (request, parent, isMain) {
+            if (request === 'vscode') return {};
+            return previousModuleLoad.call(this, request, parent, isMain);
+        };
+        webviewContent = require('../out/webview/webviewContent');
+    } finally {
+        Module._load = previousModuleLoad;
+    }
+
+    const emptyHtml = webviewContent.getCurrentWorkspaceGroupContent(null, false);
+    assert.strictEqual((emptyHtml.match(/class="workspace-card/g) || []).length, 0);
+
+    const singleHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(1), false);
+    assert.strictEqual((singleHtml.match(/class="workspace-card/g) || []).length, 1);
+    assert.strictEqual((singleHtml.match(/class="codex-sessions"/g) || []).length, 1);
+    assert.ok(singleHtml.includes('Local · 1 folder'));
+    assert.strictEqual(singleHtml.includes('class="ai-session-root-chip"'), false,
+        'single-root workspaces must not repeat the only root on every session row');
+    const unhydratedCard = makeWorkspaceCardFixture(1);
+    delete unhydratedCard.aiSessions;
+    const unhydratedHtml = webviewContent.getCurrentWorkspaceGroupContent(unhydratedCard, false);
+    assert.strictEqual((unhydratedHtml.match(/class="codex-sessions"/g) || []).length, 1,
+        'a current card must keep one AI module while hydration is temporarily unavailable');
+
+    const multiHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(3), false);
+    assert.strictEqual((multiHtml.match(/class="workspace-card/g) || []).length, 1);
+    assert.strictEqual((multiHtml.match(/class="codex-sessions"/g) || []).length, 1);
+    assert.ok(multiHtml.includes('Local · 3 folders'));
+    assert.strictEqual((multiHtml.match(/class="workspace-root-tag"/g) || []).length, 3);
+    assert.ok(multiHtml.includes('data-primary-root-id="root-api"'));
+    assert.ok(multiHtml.includes('class="ai-session-root-chip"'));
+    assert.ok(multiHtml.includes('data-action="new-session-in"'));
+    assert.strictEqual(multiHtml.includes('data-action="selected-project"'), false);
+    assert.strictEqual(multiHtml.includes('data-project-navigation'), false);
+    assert.strictEqual(multiHtml.includes('data-has-save-action'), false);
+
+    const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
+    const consistencyBody = extractFunctionBody(projectSource, 'isWorkspaceUpdateDomConsistent');
+    assert.ok(consistencyBody.includes('currentWorkspaceCount'));
+    assert.strictEqual(/rootCount|sessionCount|aiSessionCount/.test(consistencyBody), false,
+        'current-card DOM consistency must not equate card count with roots or sessions');
+    const stateBody = extractFunctionBody(projectSource, 'getWorkspaceUpdateDomState');
+    assert.ok(stateBody.includes('.open-current-workspace-group'));
+    assert.ok(stateBody.includes('.workspace-card[data-workspace-scope-identity]'));
+    assert.strictEqual(/workspace-root|codex-session-row/.test(stateBody), false);
+
+    let createdReplacementHolder = false;
+    const currentCard = {};
+    const duplicateCardOutsideCurrentGroup = {};
+    const currentGroup = {
+        contains: card => card === currentCard,
+    };
+    const wrapper = {
+        querySelector: selector => selector === '.open-current-workspace-group' ? currentGroup : null,
+        querySelectorAll: selector => selector === '.workspace-card[data-current-workspace][data-workspace-scope-identity]'
+            ? [currentCard, duplicateCardOutsideCurrentGroup]
+            : [],
+    };
+    const context = {
+        document: {
+            querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null,
+            createElement: () => {
+                createdReplacementHolder = true;
+                throw new Error('a duplicate current card must be rejected before parsing replacement HTML');
+            },
+        },
+        window: {},
+    };
+    vm.runInNewContext(projectSource, context);
+    assert.strictEqual(context.applyWorkspaceUpdate({
+        type: 'workspace-updated', version: 2, currentWorkspaceCount: 1, html: '<div></div>',
+    }), false);
+    assert.strictEqual(createdReplacementHolder, false,
+        'the v2 handler must not mount another current card when one exists outside the owned group');
 }
 
 function createSearchResultElement(tagName) {
@@ -4224,6 +4363,9 @@ async function runDashboardMessageRouterChecks() {
         createAiSession: (message, rootId) => {
             calls.push(['create-ai-session', message.projectId, rootId]);
         },
+        newSessionIn: (message, rootId) => {
+            calls.push(['new-session-in', message.projectId, rootId]);
+        },
         resumeAiSession: (message, providerId, rootId) => {
             calls.push(['resume-ai-session', providerId, message.sessionId, rootId]);
         },
@@ -4241,6 +4383,8 @@ async function runDashboardMessageRouterChecks() {
     await router({ type: 'request-todo-panel', requestId: 8 });
     await router({ type: 'selected-project', projectId: 'project-a' });
     await router({ type: 'create-ai-session', projectId: 'workspace-a', rootId: 'root-api' });
+    await router({ type: 'new-session-in', projectId: 'workspace-a' });
+    await router({ type: 'new-session-in', projectId: 'workspace-a', rootId: 'root-api' });
     await router({ type: 'resume-ai-session', provider: 'codex', sessionId: 'c1' });
     await router({ type: 'resume-ai-session', provider: 'codex', sessionId: 'c2', rootId: 'root-web' });
     await router({ type: 'resume-ai-session', provider: 'unknown', sessionId: 'invalid' });
@@ -4252,13 +4396,25 @@ async function runDashboardMessageRouterChecks() {
         ['request-projects-panel', 7],
         ['request-todo-panel', 8],
         ['selected-project', 'project-a'],
-        ['create-ai-session', 'workspace-a', 'root-api'],
+        ['create-ai-session', 'workspace-a', null],
+        ['new-session-in', 'workspace-a', 'root-api'],
         ['resume-ai-session', 'codex', 'c1', null],
         ['resume-ai-session', 'codex', 'c2', 'root-web'],
         ['resume-ai-session', null, 'invalid', null],
         ['resume-ai-session', 'kimi', 'k1', null],
         ['archive-ai-session', 'claude', 'a1'],
     ]);
+
+    const genericNewSessionCalls = [];
+    const routerWithoutNewSessionHandler = routerModule.createDashboardMessageRouter({
+        handlers: {
+            'new-session-in': message => genericNewSessionCalls.push(message.rootId),
+        },
+    });
+    await routerWithoutNewSessionHandler({ type: 'new-session-in', projectId: 'workspace-a' });
+    await routerWithoutNewSessionHandler({ type: 'new-session-in', projectId: 'workspace-a', rootId: 'root-api' });
+    assert.deepStrictEqual(genericNewSessionCalls, [],
+        'new-session-in must remain a validated reserved route when its dedicated handler is unavailable');
 }
 
 async function main() {
@@ -4291,6 +4447,7 @@ async function main() {
     await runDashboardTodoMigrationSequencingChecks();
     await runTodoHostMutationChecks();
     runDashboardUpdateMessageChecks();
+    runWorkspaceCardRenderingChecks();
     runTodoViewModelChecks();
     runTodoOrderingInteractionChecks();
     runTodoSearchResultRenderingChecks(source);

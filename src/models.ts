@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import type { TodoSearchCatalogItem } from './todos/types';
 import { StorageOption, VSCODE_REMOTE_PREFIX, WSL_DEFAULT_REGEX } from "./constants";
 import type { AiSessionAttentionReason } from './aiSessions/lifecycle';
-import type { ActiveAiSessionViewModel, AiSessionTabId } from './aiSessions/types';
+import type { ActiveAiSessionViewModel, AiSessionTabId, WorkspaceAiSessionViewModel } from './aiSessions/types';
 
 export class Group {
     id: string;
@@ -81,6 +81,18 @@ export class Project {
     static getRandomId(prepend: string = null) {
         return generateRandomId(prepend);
     }
+}
+
+export interface WorkspaceCardViewModel {
+    id: string;
+    kind: 'current' | 'navigation';
+    navigationIdentity: string;
+    scopeIdentity: string;
+    name: string;
+    environmentLabel: string;
+    roots: Array<{ id: string; name: string; ordinal: number }>;
+    aiSessions?: WorkspaceAiSessionViewModel;
+    attentionCount: number;
 }
 
 export function sanitizeProjectName(name: string) {

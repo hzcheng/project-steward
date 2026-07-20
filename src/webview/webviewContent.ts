@@ -11,6 +11,7 @@ import {
     sanitizeProjectName,
     AiSessionProviderId,
     CodexSession,
+    WorkspaceCardViewModel,
 } from '../models';
 import {
     FAVORITES_GROUP_ID,
@@ -40,6 +41,29 @@ interface GroupSectionOptions {
     systemBadge: string;
     projectAttentionMode: ProjectAttentionMode;
     sessionFx?: string;
+}
+
+interface AiSessionRenderOptions {
+    workspaceRoots?: Array<{ id: string; name: string; ordinal: number }>;
+    showRootChips?: boolean;
+}
+
+interface RootLabeledAiSession extends CodexSession {
+    primaryRootId?: string;
+    primaryRootLabel?: string;
+}
+
+interface AiSessionSurfaceViewModel {
+    id: string;
+    activeAiSessionProvider?: AiSessionProviderId;
+    activeAiSessionTab?: AiSessionTabId;
+    codexSessions?: RootLabeledAiSession[];
+    kimiSessions?: RootLabeledAiSession[];
+    claudeSessions?: RootLabeledAiSession[];
+    codexSessionsUnavailable?: boolean;
+    kimiSessionsUnavailable?: boolean;
+    claudeSessionsUnavailable?: boolean;
+    activeAiSessions?: ActiveAiSessionViewModel[];
 }
 
 export function getStewardContent(
@@ -244,6 +268,99 @@ export function getOpenProjectsGroupContent(
         projectAttentionMode: 'navigation',
         sessionFx: getSessionFx(infos),
     })}`;
+}
+
+export function getCurrentWorkspaceGroupContent(
+    card: WorkspaceCardViewModel | null,
+    hasOtherWindows: boolean = false
+): string {
+    const currentCard = card && card.kind === 'current' && card.roots.length ? card : null;
+    return `
+<div class="group steward-section open-current-workspace-group ${currentCard ? '' : 'no-projects'}" data-group-id="${OPEN_CURRENT_WORKSPACE_GROUP_ID}" data-virtual-group data-system-group="${OPEN_CURRENT_WORKSPACE_GROUP_ID}">
+    <div class="group-title steward-section-header steward-group-header">
+        <span class="group-title-text">${OPEN_CURRENT_WORKSPACE_GROUP_NAME}</span>
+        <span class="group-title-badge">Live</span>
+    </div>
+    <div class="group-list">
+        <div class="drop-signal"></div>
+        ${currentCard ? getWorkspaceCardDiv(currentCard) : getOpenCurrentWorkspaceEmptyState(hasOtherWindows)}
+    </div>
+</div>`;
+}
+
+function getWorkspaceCardDiv(card: WorkspaceCardViewModel): string {
+    const roots = card.roots.slice().sort((left, right) => left.ordinal - right.ordinal);
+    const rootCount = roots.length;
+    const workspaceName = escapeAttribute(sanitizeProjectName(card.name) || 'Workspace');
+    const environmentLabel = escapeAttribute(sanitizeProjectName(card.environmentLabel) || 'Local');
+    const folderLabel = `${rootCount} folder${rootCount === 1 ? '' : 's'}`;
+    const aiSessions = card.aiSessions;
+    const aiSessionCount = aiSessions?.aiSessionCount || 0;
+    const activeSessionCount = aiSessions?.activeSessionCount || 0;
+    const attentionCount = card.attentionCount || 0;
+    const summaryParts = [
+        aiSessionCount ? `${aiSessionCount} AI session${aiSessionCount === 1 ? '' : 's'}` : '',
+        activeSessionCount ? `${activeSessionCount} active AI session${activeSessionCount === 1 ? '' : 's'}` : '',
+        attentionCount ? `${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention` : '',
+    ].filter(Boolean);
+    const summaryLabel = escapeAttribute(summaryParts.join(', '));
+    const badge = summaryParts.length
+        ? `<span class="project-codex-badge" data-ai-session-total-count="${aiSessionCount}" data-ai-session-active-count="${activeSessionCount}" data-ai-session-attention-count="${attentionCount}" title="${summaryLabel}" aria-label="${summaryLabel}">${
+            aiSessionCount ? `<span class="ai-session-total-count">AI ${aiSessionCount}</span>` : ''
+        }${activeSessionCount ? `<span class="ai-session-active-count" aria-label="${activeSessionCount} active AI session${activeSessionCount === 1 ? '' : 's'}">●${activeSessionCount}</span>` : ''
+        }${attentionCount ? `<b class="ai-session-attention-count" aria-label="${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention">${attentionCount}</b>` : ''
+        }</span>`
+        : '';
+    const rootTags = roots.map(root =>
+        `<span class="workspace-root-tag" data-workspace-root-id="${escapeAttribute(root.id)}">${escapeAttribute(sanitizeProjectName(root.name) || 'Folder')}</span>`
+    ).join('');
+    const sessionSection = getAiSessionsDiv(getWorkspaceAiSessionSurface(card), {
+        workspaceRoots: roots,
+        showRootChips: rootCount > 1,
+    });
+
+    return `<div class="project-container" data-nodrag>
+    <div class="workspace-card project steward-item-card" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="current" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" data-open-project data-current-workspace data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
+        <div class="project-aura"></div>
+        <div class="project-border steward-item-accent"></div>
+        <div class="fitty-container project-title-row">
+            <span class="project-kind-icon" title="Workspace">${Icons.folder}</span>
+            <h2 class="project-header">${workspaceName}</h2>
+        </div>
+        <p class="project-description workspace-metadata">${environmentLabel} · ${folderLabel}</p>
+        <div class="workspace-root-tags" aria-label="Workspace folders">${rootTags}</div>
+        ${badge}
+        ${sessionSection}
+    </div>
+</div>`;
+}
+
+function getWorkspaceAiSessionSurface(card: WorkspaceCardViewModel): AiSessionSurfaceViewModel {
+    const aiSessions = card.aiSessions;
+    if (!aiSessions) {
+        return {
+            id: card.id,
+            activeAiSessionProvider: 'codex',
+            activeAiSessionTab: 'sessions',
+            codexSessions: [],
+            kimiSessions: [],
+            claudeSessions: [],
+            activeAiSessions: [],
+        };
+    }
+    const unavailable = new Set(aiSessions.unavailableProviders || []);
+    return {
+        id: card.id,
+        activeAiSessionProvider: aiSessions.activeProvider,
+        activeAiSessionTab: aiSessions.defaultTab,
+        codexSessions: aiSessions.sessionsByProvider.codex || [],
+        kimiSessions: aiSessions.sessionsByProvider.kimi || [],
+        claudeSessions: aiSessions.sessionsByProvider.claude || [],
+        codexSessionsUnavailable: unavailable.has('codex'),
+        kimiSessionsUnavailable: unavailable.has('kimi'),
+        claudeSessionsUnavailable: unavailable.has('claude'),
+        activeAiSessions: aiSessions.activeSessions.slice(),
+    };
 }
 
 export function getProjectsPanelContent(groups: Group[], infos: StewardInfos): string {
@@ -566,7 +683,7 @@ export function getProjectSearchText(project: Project): string {
     return `${project.name || ''} ${description} ${aiSessionSearchText}`.toLowerCase();
 }
 
-export function getAiSessionsDiv(project: Project): string {
+export function getAiSessionsDiv(project: AiSessionSurfaceViewModel, options: AiSessionRenderOptions = {}): string {
     var codexSessions = project.codexSessions || [];
     var kimiSessions = project.kimiSessions || [];
     var claudeSessions = project.claudeSessions || [];
@@ -576,26 +693,44 @@ export function getAiSessionsDiv(project: Project): string {
         : activeProvider === 'claude' ? claudeSessions : codexSessions;
     var activeSessions = project.activeAiSessions || [];
     var selectedTab: AiSessionTabId = project.activeAiSessionTab || (activeSessions.length ? 'active' : 'sessions');
-    project = { ...project, activeAiSessionTab: selectedTab } as Project;
+    project = { ...project, activeAiSessionTab: selectedTab };
     var totalSessionCount = codexSessions.length + kimiSessions.length + claudeSessions.length;
 
     return `
 <div class="codex-sessions" data-selected-ai-session-tab="${selectedTab}">
     <div class="ai-session-module-header">
         <span class="ai-session-module-title">AI SESSIONS</span>
-        <button type="button" class="ai-session-create-button" data-action="create-ai-session" aria-label="New AI Session" title="New AI Session"><span aria-hidden="true">+</span><span>NEW</span></button>
+        <span class="ai-session-create-actions">
+            <button type="button" class="ai-session-create-button" data-action="create-ai-session" aria-label="New AI Session" title="New AI Session"><span aria-hidden="true">+</span><span>NEW</span></button>
+            ${getNewSessionInMenu(options.workspaceRoots || [])}
+        </span>
     </div>
     <div class="ai-session-tabs" role="tablist" aria-label="AI Session views">
         ${getAiSessionTabButton(project, 'active', activeSessions.length)}
         ${getAiSessionTabButton(project, 'sessions', totalSessionCount)}
     </div>
-    ${getActiveAiSessionPanel(project, activeSessions)}
-    ${getAiSessionHistoryPanel(project, activeProvider, historySessionsForProvider)}
+    ${getActiveAiSessionPanel(project, activeSessions, options)}
+    ${getAiSessionHistoryPanel(project, activeProvider, historySessionsForProvider, options)}
     <div class="ai-session-live-region" data-ai-session-live-region aria-live="polite" aria-atomic="true"></div>
 </div>`;
 }
 
-function getAiSessionTabButton(project: Project, tab: AiSessionTabId, count: number): string {
+function getNewSessionInMenu(roots: Array<{ id: string; name: string; ordinal: number }>): string {
+    if (roots.length < 2) {
+        return '';
+    }
+    const rootActions = roots.map(root => {
+        const rootId = escapeAttribute(root.id);
+        const rootName = escapeAttribute(sanitizeProjectName(root.name) || 'Folder');
+        return `<button type="button" role="menuitem" data-action="new-session-in" data-root-id="${rootId}">${rootName}</button>`;
+    }).join('');
+    return `<details class="ai-session-create-in-menu">
+        <summary data-action="open-new-session-in" title="New Session in…" aria-label="New Session in…">IN…</summary>
+        <span class="ai-session-create-in-options" role="menu" aria-label="Choose primary workspace folder">${rootActions}</span>
+    </details>`;
+}
+
+function getAiSessionTabButton(project: AiSessionSurfaceViewModel, tab: AiSessionTabId, count: number): string {
     var projectId = escapeAttribute(project.id || 'project');
     var selected = project.activeAiSessionTab === tab;
     var isActiveTab = tab === 'active';
@@ -610,11 +745,15 @@ function getAiSessionTabButton(project: Project, tab: AiSessionTabId, count: num
     return `<button type="button" id="${tabId}" role="tab" data-action="select-ai-session-tab" data-tab="${tab}" data-ai-session-tab="${tab}" aria-selected="${selected}" aria-controls="${panelId}" tabindex="${selected ? '0' : '-1'}"><span>${isActiveTab ? 'ACTIVE' : 'SESSIONS'}</span><span class="ai-session-tab-count">${count}</span>${attentionDot}</button>`;
 }
 
-function getActiveAiSessionPanel(project: Project, sessions: ActiveAiSessionViewModel[]): string {
+function getActiveAiSessionPanel(
+    project: AiSessionSurfaceViewModel,
+    sessions: ActiveAiSessionViewModel[],
+    options: AiSessionRenderOptions
+): string {
     var projectId = escapeAttribute(project.id || 'project');
     var selected = project.activeAiSessionTab === 'active';
     var rows = sessions.length
-        ? sessions.map(getActiveAiSessionRow).join('\n')
+        ? sessions.map(session => getActiveAiSessionRow(session, options.showRootChips)).join('\n')
         : `<div class="codex-sessions-empty ai-session-active-empty">
             <strong>No active sessions</strong>
             <span>Start a new AI session or open one from Sessions.</span>
@@ -629,9 +768,10 @@ function getActiveAiSessionPanel(project: Project, sessions: ActiveAiSessionView
 }
 
 function getAiSessionHistoryPanel(
-    project: Project,
+    project: AiSessionSurfaceViewModel,
     activeProvider: AiSessionProviderId,
-    sessions: CodexSession[]
+    sessions: CodexSession[],
+    options: AiSessionRenderOptions
 ): string {
     var projectId = escapeAttribute(project.id || 'project');
     var selected = project.activeAiSessionTab === 'sessions';
@@ -653,7 +793,8 @@ function getAiSessionHistoryPanel(
             session,
             activeProvider,
             (project.activeAiSessions || []).find(runtime =>
-                runtime.provider === activeProvider && runtime.sessionId === session.id)
+                runtime.provider === activeProvider && runtime.sessionId === session.id),
+            options.showRootChips
         )).join('\n')
         : `<div class="codex-sessions-empty"><span>${emptyText}</span>${otherProviderHasHistory ? '<small>Other providers have sessions.</small>' : ''}</div>`;
 
@@ -694,7 +835,7 @@ function getManageAiSessionsButton(activeProvider: AiSessionProviderId): string 
     return `<button type="button" class="ai-session-manage-button" data-action="manage-ai-sessions" data-provider="${activeProvider}" title="${label}" aria-label="${label}" aria-pressed="false">${Icons.manage}</button>`;
 }
 
-function getActiveAiSessionProvider(project: Project): AiSessionProviderId {
+function getActiveAiSessionProvider(project: AiSessionSurfaceViewModel): AiSessionProviderId {
     if (isAiProvider(project.activeAiSessionProvider)) {
         return project.activeAiSessionProvider;
     }
@@ -726,9 +867,10 @@ function getAiProviderLabel(providerId: AiSessionProviderId): string {
 }
 
 function getCodexSessionRow(
-    session: CodexSession,
+    session: RootLabeledAiSession,
     provider: AiSessionProviderId,
-    runtime?: ActiveAiSessionViewModel
+    runtime?: ActiveAiSessionViewModel,
+    showRootChip: boolean = false
 ) {
     var sessionName = escapeAttribute(sanitizeProjectName(session.name || session.id));
     var sessionId = escapeAttribute(session.id || '');
@@ -770,15 +912,23 @@ function getCodexSessionRow(
     if (runtime?.stale) {
         primaryAriaLabel += ', runtime status is stale';
     }
+    var primaryRootId = session.primaryRootId || runtime?.primaryRootId || '';
+    var primaryRootLabel = session.primaryRootLabel || runtime?.primaryRootLabel || '';
+    var rootAttributes = showRootChip && primaryRootId
+        ? ` data-primary-root-id="${escapeAttribute(primaryRootId)}"`
+        : '';
+    var rootChip = showRootChip && primaryRootLabel
+        ? `<span class="ai-session-root-chip">${escapeAttribute(sanitizeProjectName(primaryRootLabel))}</span>`
+        : '';
 
     return `
-<div class="codex-session-row" role="group" aria-label="${providerLabel} session ${sessionName}"${runtimeAttributes}${pinned ? ' data-session-pinned' : ''}${active ? ' data-session-active' : ''}${needsAttention ? ' data-ai-session-attention data-session-event-id="' + escapeAttribute(session.attention.eventId) + '"' : ''} data-session-id="${sessionId}" data-session-provider="${provider}">
+<div class="codex-session-row" role="group" aria-label="${providerLabel} session ${sessionName}"${runtimeAttributes}${rootAttributes}${pinned ? ' data-session-pinned' : ''}${active ? ' data-session-active' : ''}${needsAttention ? ' data-ai-session-attention data-session-event-id="' + escapeAttribute(session.attention.eventId) + '"' : ''} data-session-id="${sessionId}" data-session-provider="${provider}">
     ${batchCheckbox}
     <button type="button" class="ai-session-primary-action" data-action="activate-ai-session" aria-label="${primaryAriaLabel}" title="${primaryAction} ${providerLabel} Session">
         ${attentionIndicator}
         <span class="codex-session-icon">${Icons.terminalLine}</span>
         <span class="codex-session-text">
-            <span class="codex-session-name">${sessionName}</span>
+            ${rootChip ? `<span class="codex-session-title-line"><span class="codex-session-name">${sessionName}</span>${rootChip}</span>` : `<span class="codex-session-name">${sessionName}</span>`}
             <span class="codex-session-meta">${activeStatus}${active && metadata ? ' · ' : ''}${metadata}</span>
         </span>
     </button>
@@ -789,7 +939,7 @@ function getCodexSessionRow(
 </div>`;
 }
 
-function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
+function getActiveAiSessionRow(model: ActiveAiSessionViewModel, showRootChip: boolean = false): string {
     var providerLabel = getAiProviderLabel(model.provider);
     var sessionName = escapeAttribute(sanitizeProjectName(model.name || model.sessionId || `New ${providerLabel} session`));
     var sessionId = escapeAttribute(model.sessionId || '');
@@ -843,12 +993,18 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     if (model.stale) {
         primaryAriaLabel += ', runtime status is stale';
     }
-    return `<div class="codex-session-row active-ai-session-row" role="group" aria-label="${providerLabel} session ${sessionName}" data-session-provider="${model.provider}" data-execution-state="${model.executionState}"${runtimeAttributes}${pendingAttributes}${model.pinned ? ' data-session-pinned' : ''}${model.focused ? ' data-session-focused' : ''}${model.needsAttention ? ' data-session-needs-attention' : ''}${attentionAttributes}>
+    var rootAttributes = showRootChip && model.primaryRootId
+        ? ` data-primary-root-id="${escapeAttribute(model.primaryRootId)}"`
+        : '';
+    var rootChip = showRootChip && model.primaryRootLabel
+        ? `<span class="ai-session-root-chip">${escapeAttribute(sanitizeProjectName(model.primaryRootLabel))}</span>`
+        : '';
+    return `<div class="codex-session-row active-ai-session-row" role="group" aria-label="${providerLabel} session ${sessionName}" data-session-provider="${model.provider}" data-execution-state="${model.executionState}"${runtimeAttributes}${rootAttributes}${pendingAttributes}${model.pinned ? ' data-session-pinned' : ''}${model.focused ? ' data-session-focused' : ''}${model.needsAttention ? ' data-session-needs-attention' : ''}${attentionAttributes}>
         <button type="button" class="ai-session-primary-action" data-action="activate-ai-session" aria-label="${primaryAriaLabel}" title="${primaryAction} ${providerLabel} Session">
             ${attentionIndicator}
             <span class="codex-session-icon">${Icons.terminalLine}</span>
             <span class="codex-session-text">
-                <span class="codex-session-title-line">${runtimeBadge}<span class="codex-session-name">${sessionName}</span></span>
+                <span class="codex-session-title-line">${runtimeBadge}<span class="codex-session-name">${sessionName}</span>${rootChip}</span>
                 <span class="codex-session-meta">${metadata}</span>
             </span>
         </button>

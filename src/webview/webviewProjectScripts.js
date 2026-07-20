@@ -125,6 +125,63 @@ function restoreAiSessionListScroll(list, requestedScrollTop) {
     list.scrollTop = Math.min(scrollTop, maxScrollTop);
 }
 
+function getWorkspaceUpdateDomState(root) {
+    var currentGroup = root.matches?.('.open-current-workspace-group')
+        ? root
+        : root.querySelector('.open-current-workspace-group');
+    return {
+        currentWorkspaceCount: currentGroup
+            ? currentGroup.querySelectorAll('.workspace-card[data-workspace-scope-identity]').length
+            : 0,
+    };
+}
+
+function isWorkspaceUpdateDomConsistent(message, root) {
+    if (message.currentWorkspaceCount !== 0 && message.currentWorkspaceCount !== 1) {
+        return false;
+    }
+    return getWorkspaceUpdateDomState(root).currentWorkspaceCount === message.currentWorkspaceCount;
+}
+
+function applyWorkspaceUpdate(message) {
+    if (!message
+        || message.type !== 'workspace-updated'
+        || message.version !== 2
+        || (message.currentWorkspaceCount !== 0 && message.currentWorkspaceCount !== 1)
+        || typeof message.html !== 'string') {
+        return false;
+    }
+
+    var wrapper = document.querySelector('.sticky-groups-wrapper');
+    var currentGroup = wrapper && wrapper.querySelector('.open-current-workspace-group');
+    if (!wrapper || !currentGroup || typeof document.createElement !== 'function') {
+        return false;
+    }
+    var currentCards = Array.from(wrapper.querySelectorAll('.workspace-card[data-current-workspace][data-workspace-scope-identity]'));
+    if (currentCards.some(card => !currentGroup.contains(card))) {
+        return false;
+    }
+
+    var holder = document.createElement('div');
+    holder.innerHTML = message.html.trim();
+    var replacement = holder.firstElementChild;
+    if (!replacement
+        || holder.children.length !== 1
+        || !replacement.matches('.open-current-workspace-group')
+        || !isWorkspaceUpdateDomConsistent(message, replacement)) {
+        return false;
+    }
+
+    currentGroup.replaceWith(replacement);
+    if (typeof restoreAiSessionTabsFromState === 'function') {
+        restoreAiSessionTabsFromState(replacement, window.vscode);
+    }
+    if (typeof window.__projectStewardSyncCollapseButton === 'function') {
+        window.__projectStewardSyncCollapseButton();
+    }
+    return true;
+}
+
 function applyOpenProjectsUpdate(message) {
     if (!message
         || message.type !== 'open-projects-updated'
@@ -513,6 +570,9 @@ function initProjects() {
 
     function onTriggerAiSessionAction(target, projectId) {
         var projectDiv = target.closest('.project[data-id]');
+        if (target.closest('[data-action="open-new-session-in"]')) {
+            return true;
+        }
         var tabAction = target.closest('[data-action="select-ai-session-tab"][data-tab]');
         if (tabAction) {
             var selectedTab = normalizeAiSessionTab(tabAction.getAttribute('data-tab'));
@@ -537,6 +597,20 @@ function initProjects() {
                 projectId,
             });
 
+            return true;
+        }
+
+        var newSessionInAction = target.closest('[data-action="new-session-in"][data-root-id]');
+        if (newSessionInAction) {
+            var rootId = newSessionInAction.getAttribute('data-root-id');
+            if (rootId) {
+                window.vscode.postMessage({
+                    type: 'new-session-in',
+                    projectId,
+                    rootId,
+                });
+                newSessionInAction.closest('details')?.removeAttribute('open');
+            }
             return true;
         }
 
@@ -1621,6 +1695,24 @@ function initProjects() {
                     syncCollapseButton('todo');
                 }
             }, 0);
+        }
+        if (message && message.type === 'workspace-updated') {
+            if (!applyWorkspaceUpdate(message)) {
+                requestFullRefresh('invalid-workspace-update');
+                return;
+            }
+            if (batchAiSessionState.projectId) {
+                syncAiSessionBatchManagementDom(findOpenProjectDiv(batchAiSessionState.projectId));
+            }
+            syncActiveAiSessionTerminalDom();
+            updateStickyGroupHeaderOffset();
+            var renderedWorkspaceState = getWorkspaceUpdateDomState(document);
+            window.vscode.postMessage({
+                type: 'workspace-rendered',
+                version: 2,
+                currentWorkspaceCount: renderedWorkspaceState.currentWorkspaceCount,
+            });
+            return;
         }
         if (message && message.type === 'open-projects-updated') {
             if (!applyOpenProjectsUpdate(message)) {

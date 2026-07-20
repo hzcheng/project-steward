@@ -5754,6 +5754,29 @@ function runWebviewContentChecks() {
     assert.ok(sessionTabsHtml.includes('class="ai-session-module-header"'));
     assert.ok(sessionTabsHtml.includes('data-action="create-ai-session"'));
     assert.ok(!sessionTabsHtml.includes('data-action="create-ai-session" data-provider='));
+    const workspaceHtml = webviewContentModule.getCurrentWorkspaceGroupContent({
+        id: 'workspace-a', kind: 'current', navigationIdentity: 'navigation-a', scopeIdentity: 'scope-a',
+        name: 'Workspace A', environmentLabel: 'Local', attentionCount: 0,
+        roots: [
+            { id: 'root-app', name: 'App', ordinal: 0 },
+            { id: 'root-api', name: 'API', ordinal: 1 },
+        ],
+        aiSessions: {
+            workspaceScopeIdentity: 'scope-a', workspaceNavigationIdentity: 'navigation-a',
+            activeProvider: 'codex', expanded: true,
+            providers: [{ id: 'codex', label: 'Codex', count: 1 }],
+            sessionsByProvider: { codex: [{
+                id: 'c1', name: 'Codex live', provider: 'codex', primaryRootId: 'root-api', primaryRootLabel: 'API',
+            }] },
+            unavailableProviders: [], aiSessionCount: 1, attentionCount: 0, defaultTab: 'sessions',
+            activeSessions: [], activeSessionCount: 0, activeAttentionCount: 0,
+        },
+    }, false);
+    assert.strictEqual((workspaceHtml.match(/class="workspace-card/g) || []).length, 1);
+    assert.strictEqual((workspaceHtml.match(/class="codex-sessions"/g) || []).length, 1);
+    assert.ok(workspaceHtml.includes('data-primary-root-id="root-api"'));
+    assert.ok(workspaceHtml.includes('class="ai-session-root-chip"'));
+    assert.ok(workspaceHtml.includes('data-action="new-session-in" data-root-id="root-api"'));
     assert.ok(sessionTabsHtml.includes('role="tablist" aria-label="AI Session views"'));
     assert.ok(sessionTabsHtml.includes('data-ai-session-tab="active"'));
     assert.ok(sessionTabsHtml.includes('data-ai-session-tab="sessions"'));
@@ -7173,6 +7196,16 @@ function runBatchAiSessionWebviewChecks() {
     };
     eventListeners.click({ button: 0, target: newSessionTarget });
 
+    const newSessionInTarget = {
+        getAttribute: attribute => attribute === 'data-root-id' ? 'root-api' : null,
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') return projectA;
+            if (selector === '[data-action="new-session-in"][data-root-id]') return newSessionInTarget;
+            return null;
+        },
+    };
+    eventListeners.click({ button: 0, target: newSessionInTarget });
+
     const closeActiveTarget = {
         getAttribute: attribute => attribute === 'data-action' ? 'close-ai-session-terminal' : null,
         closest: selector => {
@@ -7215,6 +7248,8 @@ function runBatchAiSessionWebviewChecks() {
         createdAt: '2026-07-18T08:00:00Z',
     }, {
         type: 'create-ai-session', projectId: 'project-a',
+    }, {
+        type: 'new-session-in', projectId: 'project-a', rootId: 'root-api',
     }, {
         type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'codex', sessionId: 'active-session',
     }, {
