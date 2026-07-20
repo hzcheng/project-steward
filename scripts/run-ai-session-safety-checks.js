@@ -94,6 +94,8 @@ const AiSessionCreationController = require('../out/aiSessions/creationControlle
 const AiSessionResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const AiSessionAttentionController = require('../out/aiSessions/attentionController').AiSessionAttentionController;
 const AiSessionExecutionController = require('../out/aiSessions/executionController').AiSessionExecutionController;
+const TmuxFocusedRuntimeMonitor = require('../out/aiSessions/tmuxFocusedRuntimeMonitor')
+    .TmuxFocusedRuntimeMonitor;
 const settleAiSessionRuntimeLifecycles = require('../out/aiSessions/attentionController').settleAiSessionRuntimeLifecycles;
 const runAiSessionRuntimeLifecycleTask = require('../out/aiSessions/attentionController').runAiSessionRuntimeLifecycleTask;
 const AiSessionArchiveController = require('../out/aiSessions/archiveController').AiSessionArchiveController;
@@ -3592,6 +3594,87 @@ function runActiveAiSessionTerminalHighlightChecks() {
     assert.strictEqual(timers.filter(timer => timer.active).length, 0);
 }
 
+async function runTmuxFocusedRuntimeMonitorChecks() {
+    let visible = true;
+    const terminal = { name: 'Project tmux attach' };
+    let activeTerminal = terminal;
+    const timers = [];
+    const refreshes = [];
+    const errors = [];
+    let syncCalls = 0;
+    let resolveSync;
+    let rejectSync;
+    const monitor = new TmuxFocusedRuntimeMonitor({
+        isVisible: () => visible,
+        getActiveTerminal: () => activeTerminal,
+        syncFocusedRuntime: () => {
+            syncCalls++;
+            return new Promise((resolve, reject) => {
+                resolveSync = resolve;
+                rejectSync = reject;
+            });
+        },
+        refresh: () => refreshes.push('refresh'),
+        onError: error => errors.push(error),
+        setInterval: (callback, intervalMs) => {
+            const handle = { callback, intervalMs, active: true };
+            timers.push(handle);
+            return handle;
+        },
+        clearInterval: handle => { handle.active = false; },
+    });
+    monitor.start();
+    monitor.start();
+    assert.strictEqual(timers.length, 1);
+    assert.strictEqual(timers[0].intervalMs, 1_000);
+    const first = monitor.request();
+    const joined = monitor.request();
+    assert.strictEqual(first, joined);
+    assert.strictEqual(syncCalls, 1);
+    resolveSync({ monitored: true, changed: true, identity: {
+        provider: 'codex', sessionId: 's1', projectKey: 'pk', cwd: '/work/app',
+    } });
+    await first;
+    assert.deepStrictEqual(refreshes, ['refresh']);
+
+    const unchanged = monitor.request();
+    resolveSync({ monitored: true, changed: false, identity: null });
+    await unchanged;
+    assert.deepStrictEqual(refreshes, ['refresh']);
+
+    visible = false;
+    const callsBeforeHidden = syncCalls;
+    await monitor.request();
+    timers[0].callback();
+    await Promise.resolve();
+    assert.strictEqual(syncCalls, callsBeforeHidden);
+
+    visible = true;
+    activeTerminal = terminal;
+    const staleTerminal = monitor.request();
+    activeTerminal = { name: 'Other terminal' };
+    resolveSync({ monitored: true, changed: true, identity: null });
+    await staleTerminal;
+    assert.deepStrictEqual(refreshes, ['refresh'],
+        'a result for a no-longer-active terminal must not refresh');
+
+    activeTerminal = terminal;
+    const rejected = monitor.request();
+    rejectSync(new Error('private tmux query failure'));
+    await rejected;
+    assert.strictEqual(errors.length, 1);
+
+    const disposedRequest = monitor.request();
+    monitor.dispose();
+    resolveSync({ monitored: true, changed: true, identity: null });
+    await disposedRequest;
+    assert.strictEqual(timers[0].active, false);
+    assert.deepStrictEqual(refreshes, ['refresh']);
+    const callsAfterDispose = syncCalls;
+    await monitor.request();
+    assert.strictEqual(syncCalls, callsAfterDispose);
+}
+
 function runAiSessionTerminalResolutionChecks() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-active-terminal-'));
     try {
@@ -4595,6 +4678,12 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('await tmuxRuntimeBackend.restoreAttachTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
+    assert.ok(dashboard.includes('new TmuxFocusedRuntimeMonitor<vscode.Terminal>({'));
+    assert.ok(dashboard.includes('tmuxFocusedRuntimeMonitor.start();'));
+    assert.ok((dashboard.match(/void tmuxFocusedRuntimeMonitor\.request\(\);/g) || []).length >= 2,
+        'view visibility and active-terminal changes must both request reconciliation');
+    assert.ok(dashboard.includes("logAiSessionRuntimeFailure('sync-focused-runtime', error)"));
+    assert.ok(dashboard.includes('context.subscriptions.push(tmuxFocusedRuntimeMonitor);'));
     assert.match(dashboard, /const acknowledgeAiSessionAttention = async[\s\S]*?await aiSessionAttentionBridgeClient\.acknowledge\(eventIds\);[\s\S]*?aiSessionAttentionController\.acknowledge\(eventIds\)/);
     assert.match(dashboard, /settleAiSessionRuntimeLifecycles\(\{[\s\S]*?candidates:[\s\S]*?evaluateAttention: \(\) => evaluateAiSessionAttention\([\s\S]*?attentionKey: candidate\.key[\s\S]*?acknowledgePublished[\s\S]*?acknowledgeLocal[\s\S]*?release:/);
     assert.match(dashboard, /aggregate => \{[\s\S]*?setRemoteAggregate\(aggregate\)[\s\S]*?getReleasedSessions\(\)\.forEach/);
@@ -8780,6 +8869,7 @@ async function main() {
     runKeyChecks();
     runBatchAiSessionArchiveChecks();
     runActiveAiSessionTerminalHighlightChecks();
+    await runTmuxFocusedRuntimeMonitorChecks();
     runAiSessionTerminalResolutionChecks();
     await runAiSessionTerminalBindingStoreChecks();
     await runAiSessionTerminalPersistenceChecks();

@@ -61,6 +61,7 @@ import {
     TmuxRuntimeDiscovery,
 } from './aiSessions/tmuxRuntimeDiscovery';
 import { TmuxRuntimeBackend } from './aiSessions/tmuxRuntimeBackend';
+import { TmuxFocusedRuntimeMonitor } from './aiSessions/tmuxFocusedRuntimeMonitor';
 import { withTmuxCreationLock } from './aiSessions/tmuxCreationLock';
 import type { AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionService, AiSessionTerminalEntry, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
 import { AiSessionDashboardController } from './aiSessions/dashboardController';
@@ -1124,6 +1125,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         onVisibleChanged: async visible => {
             setAiSessionWatchersActive(visible);
             activeAiSessionTerminalHighlighter.setVisible(visible);
+            if (visible) {
+                void tmuxFocusedRuntimeMonitor.request();
+            }
             await dashboardRuntimeController.handleAiSessionViewVisibilityChanged(visible);
         },
         logError,
@@ -1208,6 +1212,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
         clearInterval: handle => clearInterval(handle as NodeJS.Timeout),
     });
+    const tmuxFocusedRuntimeMonitor = new TmuxFocusedRuntimeMonitor<vscode.Terminal>({
+        isVisible: () => provider.visible,
+        getActiveTerminal: () => vscode.window.activeTerminal || null,
+        syncFocusedRuntime: terminal => tmuxRuntimeBackend.syncFocusedRuntime(terminal),
+        refresh: refreshAiSessionViewsIncrementally,
+        onError: error => logAiSessionRuntimeFailure('sync-focused-runtime', error),
+        setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
+        clearInterval: handle => clearInterval(handle as NodeJS.Timeout),
+    });
+    tmuxFocusedRuntimeMonitor.start();
     const aiSessionTerminalCompletionInterval = setInterval(() => {
         const completedSessions = aiSessionTerminalService.getCompletedSessions();
         const completedRuntimes = completedSessions.map(resolution => ({
@@ -1234,6 +1248,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTerminal(() => {
             activeAiSessionTerminalHighlighter.sync();
+            void tmuxFocusedRuntimeMonitor.request();
             refreshAiSessionViewsIncrementally();
             void runSafeAiSessionRuntimeLifecycleTask(
                 'evaluate-attention-active-terminal', evaluateAiSessionAttention
@@ -1267,6 +1282,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
         }));
     context.subscriptions.push(activeAiSessionTerminalHighlighter);
+    context.subscriptions.push(tmuxFocusedRuntimeMonitor);
     context.subscriptions.push(openProjectBridgeClient);
     context.subscriptions.push(aiSessionAttentionBridgeClient);
     context.subscriptions.push({
