@@ -23,6 +23,99 @@
 - Keep diagnostics privacy-bounded: no prompts, responses, session names, commands, executable paths, raw root paths, or raw exception messages.
 - Every task ends green and is committed independently. Do not proceed past the navigation feasibility gate until its real matrix has evidence.
 
+## Definition of Done and Acceptance Gates
+
+The feature is not accepted merely because it compiles or because the current
+card looks correct in one local workspace. All gates below are release
+blocking.
+
+### Product acceptance
+
+1. An empty VS Code window renders no live workspace card. Every non-empty
+   single-folder, saved multi-root, or untitled multi-root window renders
+   exactly one `CURRENT WORKSPACE` card.
+2. Workspace roots appear only as metadata/root chips. No root is rendered,
+   searched, published, saved, or navigated as a sibling live card.
+3. `OTHER WINDOWS` renders at most one card per `navigationIdentity`, excludes
+   the current instance, and never exposes provider/session details.
+4. Clicking an other-window card either focuses the exact `navigationUri` or
+   takes the documented native fallback. It never opens a member root as a new
+   single-folder window and never replaces the source window with a root.
+5. Every successful multi-root new/resume launch for Codex, Kimi, and Claude
+   has one correct primary cwd and grants every other valid current root using
+   that provider's native `--add-dir` argument shape.
+6. Primary-root selection follows explicit choice → active editor → last used
+   root → first root. Nested-root session assignment uses the longest valid
+   path match, and multi-root session rows show the correct root chip.
+7. An invalid root, Restricted Mode, an unavailable provider, or a provider
+   without verified `--add-dir` support creates no marker, terminal, tmux
+   object, pending runtime, or partially scoped provider process.
+8. Running Direct Terminal and tmux sessions keep an immutable launch-time
+   scope. A removed-root runtime appears as `Outside workspace` only with the
+   continuity evidence defined by the design; historical sessions outside the
+   current roots do not appear.
+9. Protocol v2 publishes zero or one workspace per instance, uses only the
+   `open-workspaces/v2` registry, rejects v1 state, and degrades only
+   `OTHER WINDOWS` on capability mismatch or bridge failure.
+10. Saving a single-folder or saved multi-root workspace creates one unchanged
+    `Project` record through the existing store. Saving an untitled multi-root
+    workspace survives Extension Host restart and creates a project only after
+    a matching scope is saved. Existing projects, groups, favorites, colors,
+    descriptions, and member-folder entries remain semantically identical.
+11. Workspace-level attention de-duplicates event/session evidence across
+    roots. Search headings are exactly `AI SESSIONS`, `OPEN WORKSPACES`, and
+    `SAVED PROJECTS`, and session results reveal the owning workspace/session.
+12. No production source retains v1 open-project commands, registry readers,
+    root-card compatibility projection, runtime `projectKey`, or a migration
+    path for legacy terminal/tmux bindings.
+
+### Automated acceptance
+
+All commands below must exit 0 from a clean worktree built from the final
+commit:
+
+```bash
+npm run lint
+npm run test:safety
+npm run test:dashboard
+npm run test:tmux:smoke
+npm run test:architecture-baseline
+npm run test:release-notes
+npm run test:release-packaging
+```
+
+The safety suites must contain explicit assertions for every product criterion
+above; a source-string assertion alone is insufficient when behavior can be
+tested through a pure controller, store, projection, or launch-spec boundary.
+`git diff --check` must be clean, and the final forbidden-vocabulary scan must
+return no production matches.
+
+### Manual acceptance evidence
+
+Record results in
+`docs/superpowers/reports/2026-07-20-workspace-first-acceptance.md` with these
+columns: environment, workspace kind, provider, runtime layout, action,
+expected result, observed result, evidence, and status.
+
+- Navigation must cover all 12 environment/workspace-kind cells: Local, SSH,
+  WSL, and Dev Container × single-folder, saved multi-root, and untitled
+  multi-root.
+- Launch ownership must cover all 108 cells: the same four environments ×
+  three workspace kinds × Codex/Kimi/Claude × Direct Terminal/project-layout
+  tmux/session-layout tmux. Every cell exercises both new and resume.
+- Attention, archive, root add/remove, workspace save, window close/unregister,
+  Restricted Mode, and missing-capability behavior must each be exercised at
+  least once per environment and workspace kind, with every provider/runtime
+  path covered by the 108-cell launch matrix.
+- Saved-project preservation must compare a checked-in representative fixture
+  before activation, after ordinary use, and after saving an encompassing
+  workspace.
+
+Each cell is `PASS`, `FAIL`, or `BLOCKED`. `FAIL` is release blocking.
+`BLOCKED` is also release blocking unless that cell is explicitly removed from
+the documented support matrix before release. Navigation cells may use the
+specified safe fallback and still pass; opening a member root never passes.
+
 ## Change Map
 
 | Boundary | New source of truth | Existing code replaced or adapted |
