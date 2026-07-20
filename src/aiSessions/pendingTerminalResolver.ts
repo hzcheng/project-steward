@@ -6,7 +6,11 @@ import type {
     AiSessionPendingRuntimeSnapshot,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
-import { cloneAiSessionRuntimeIdentity, isValidAiSessionRuntimeIdentity } from './runtimeTypes';
+import {
+    aiSessionRuntimeIdentitiesEqual,
+    cloneAiSessionRuntimeIdentity,
+    isValidAiSessionRuntimeIdentity,
+} from './runtimeTypes';
 import type { AiSessionProviderDefinition, AiSessionReadResult } from './types';
 
 type AiSessionPendingRuntimeProvider = Pick<
@@ -201,9 +205,12 @@ export function getPendingAiSessionPromotionFailureReason(
     if (runtime.state !== 'active') {
         return 'non-active-runtime';
     }
-    if (runtime.identity.provider !== pendingIdentity.provider
-        || runtime.identity.workspaceScopeIdentity !== pendingIdentity.workspaceScopeIdentity
-        || runtime.identity.sessionId !== sessionId) {
+    const expectedIdentity = {
+        ...cloneAiSessionRuntimeIdentity(pendingIdentity),
+        pendingId: undefined,
+        sessionId,
+    };
+    if (!aiSessionRuntimeIdentitiesEqual(runtime.identity, expectedIdentity)) {
         return 'identity-mismatch';
     }
     return null;

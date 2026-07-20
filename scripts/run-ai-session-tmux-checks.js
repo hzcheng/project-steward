@@ -506,7 +506,9 @@ function runtimeRecordFilename(record) {
     const canonicalState = record.state === 'completed' || record.state === 'stopped'
         ? 'known' : record.state;
     const identity = record.state === 'pending' || record.state === 'consumed' || record.state === 'promoting'
-            ? [record.provider, record.workspaceScopeIdentity, record.pendingId]
+            ? [record.provider, record.workspaceScopeIdentity, record.workspaceNavigationIdentity,
+                JSON.stringify(Array.isArray(record.workspaceRootHostPaths)
+                    ? record.workspaceRootHostPaths.slice().sort() : []), record.cwd, record.pendingId]
             : [record.provider, record.workspaceScopeIdentity, record.sessionId];
     const digest = crypto.createHash('sha256')
         .update(JSON.stringify([2, canonicalState, ...identity]), 'utf8')
@@ -1820,6 +1822,12 @@ async function runTmuxDiscoveryChecks() {
                 windowMetadata: { ...sessionWindowMetadata, provider: 'codex' },
                 metadata: { ...sessionMetadata, ...sessionWindowMetadata },
             },
+            {
+                ...sessionLocator, windowName: 'legacy', windowId: '@legacy-session-window', active: false,
+                sessionMetadata,
+                windowMetadata: { ...sessionWindowMetadata, projectKey: 'legacy-project' },
+                metadata: { ...sessionMetadata, ...sessionWindowMetadata, projectKey: 'legacy-project' },
+            },
         ] },
         bindingStore: {
             listPending: async () => [], listKnown: async () => [],
@@ -2807,6 +2815,33 @@ async function runTmuxStoreChecks() {
         assert.strictEqual((await store.getPending(pendingIdentity(
             pending('p-new', '2026-07-18T09:59:00Z')
         ))).pendingId, 'p-new');
+        const sameScopeRoot = path.join(root, 'same-scope-pending-snapshots');
+        const sameScopeStore = new runtimeStoreModule.TmuxRuntimeBindingStore(sameScopeRoot, () => now);
+        const sameScopePendingA = pending('same-scope-pending', '2026-07-18T09:59:00Z', {
+            workspaceNavigationIdentity: 'nav:a',
+            workspaceRootHostPaths: ['/work/a'],
+            cwd: '/work/a',
+            locator: { layout: 'session', sessionName: 'pending-a' },
+            layout: 'session',
+        });
+        const sameScopePendingB = pending('same-scope-pending', '2026-07-18T09:59:01Z', {
+            workspaceNavigationIdentity: 'nav:b',
+            workspaceRootHostPaths: ['/work/b'],
+            cwd: '/work/b',
+            locator: { layout: 'session', sessionName: 'pending-b' },
+            layout: 'session',
+        });
+        await sameScopeStore.setPending(sameScopePendingA);
+        await sameScopeStore.setPending(sameScopePendingB);
+        assert.strictEqual((await sameScopeStore.listPending()).length, 2,
+            'same provider/scope/pending ID with different immutable snapshots must not overwrite');
+        assert.deepStrictEqual(await sameScopeStore.getPending(pendingIdentity(sameScopePendingA)),
+            sameScopePendingA);
+        assert.deepStrictEqual(await sameScopeStore.getPending(pendingIdentity(sameScopePendingB)),
+            sameScopePendingB);
+        await sameScopeStore.removePending(pendingIdentity(sameScopePendingA));
+        assert.deepStrictEqual(await sameScopeStore.listPending(), [sameScopePendingB],
+            'removing one immutable pending identity must retain the other');
         await assert.rejects(store.setPending(pending('future-created-persisted', '2026-07-18T10:05:01Z', {
             acceptedAtMs: now,
         })), /invalid or expired/);
@@ -4417,12 +4452,12 @@ async function runTmuxBackendChecks() {
         },
         {
             identity: {
-                provider: 'kimi', workspaceScopeIdentity: 'concurrent-global-b', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work-b'], cwd: '/work-b',
+                provider: 'codex', workspaceScopeIdentity: 'concurrent-global-b', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work-b'], cwd: '/work-b',
                 pendingId: concurrentPendingId,
             },
-            projectName: 'App B', terminalName: 'Kimi: Concurrent Global B',
+            projectName: 'App B', terminalName: 'Codex: Concurrent Global B',
             createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
-            launch: { executable: 'kimi', args: ['new'], cwd: '/work-b' },
+            launch: { executable: 'codex', args: ['new'], cwd: '/work-b' },
         },
     ];
     const concurrentGlobalResults = await Promise.allSettled(concurrentGlobalRequests.map(request =>

@@ -278,18 +278,20 @@ export class TmuxRuntimeBindingStore {
             return Promise.reject(new Error('The pending tmux binding is invalid or expired.'));
         }
         return this.serialize(async () => {
-            await this.writeRecord(this.recordPath('pending', validated.provider,
-                validated.workspaceScopeIdentity, validated.pendingId), validated);
+            await this.writeRecord(this.recordPath(
+                'pending', ...pendingRecordIdentityParts(validated)
+            ), validated);
             return true;
         });
     }
 
     getConsumed(identity: AiSessionRuntimeIdentity): Promise<TmuxConsumedPendingBinding | null> {
         return this.serialize(async () => {
-            if (!identity || identity.sessionId !== undefined || !isValidAiSessionRuntimeIdentity(identity)) {
+            const identityParts = pendingIdentityParts(identity);
+            if (!identityParts) {
                 return null;
             }
-            const filePath = this.recordPath('consumed', identity.provider, identity.workspaceScopeIdentity, identity.pendingId);
+            const filePath = this.recordPath('consumed', ...identityParts);
             const record = validateConsumedRecord(await readJsonRegularFile(filePath));
             return record && consumedRecordMatchesIdentity(record, identity)
                 && isCanonicalRecordPath(filePath, record) ? cloneConsumed(record) : null;
@@ -302,8 +304,9 @@ export class TmuxRuntimeBindingStore {
             return Promise.reject(new Error('The consumed tmux binding is invalid.'));
         }
         return this.serialize(async () => {
-            await this.writeRecord(this.recordPath('consumed', validated.provider,
-                validated.workspaceScopeIdentity, validated.pendingId), validated);
+            await this.writeRecord(this.recordPath(
+                'consumed', ...pendingRecordIdentityParts(validated)
+            ), validated);
             return true;
         });
     }
@@ -327,8 +330,9 @@ export class TmuxRuntimeBindingStore {
             return Promise.reject(new Error('The promoting tmux binding is invalid.'));
         }
         return this.serialize(async () => {
-            await this.writeRecord(this.recordPath('promoting', validated.provider,
-                validated.workspaceScopeIdentity, validated.pendingId), validated);
+            await this.writeRecord(this.recordPath(
+                'promoting', ...pendingRecordIdentityParts(validated)
+            ), validated);
             return true;
         });
     }
@@ -713,11 +717,11 @@ function isUnsupportedNoFollowError(error: unknown): boolean {
 function isCanonicalRecordPath(filePath: string, record: TmuxRuntimeBinding): boolean {
     let identity: string[];
     if (record.state === 'pending') {
-        identity = [record.provider, record.workspaceScopeIdentity, record.pendingId];
+        identity = pendingRecordIdentityParts(record);
     } else if (record.state === 'known' || record.state === 'completed' || record.state === 'stopped') {
         identity = [record.provider, record.workspaceScopeIdentity, record.sessionId];
     } else if (record.state === 'consumed' || record.state === 'promoting') {
-        identity = [record.provider, record.workspaceScopeIdentity, record.pendingId];
+        identity = pendingRecordIdentityParts(record);
     } else {
         identity = ambiguousRecordIdentityParts(record as TmuxAmbiguousRuntimeBinding);
     }
@@ -1163,8 +1167,33 @@ function pendingRecordMatchesIdentity(
 
 function pendingIdentityParts(identity: AiSessionRuntimeIdentity): string[] | null {
     return identity && identity.sessionId === undefined && isValidAiSessionRuntimeIdentity(identity)
-        ? [identity.provider, identity.workspaceScopeIdentity, identity.pendingId]
+        ? [
+            identity.provider,
+            identity.workspaceScopeIdentity,
+            identity.workspaceNavigationIdentity,
+            getAiSessionRuntimeRootSnapshotKey(identity),
+            identity.cwd,
+            identity.pendingId as string,
+        ]
         : null;
+}
+
+function pendingRecordIdentityParts(record: {
+    provider: AiSessionProviderId;
+    workspaceScopeIdentity: string;
+    workspaceNavigationIdentity: string;
+    workspaceRootHostPaths: string[];
+    cwd: string;
+    pendingId: string;
+}): string[] {
+    return [
+        record.provider,
+        record.workspaceScopeIdentity,
+        record.workspaceNavigationIdentity,
+        getAiSessionRuntimeRootSnapshotKey(record as AiSessionRuntimeIdentity),
+        record.cwd,
+        record.pendingId,
+    ];
 }
 
 function promotingRecordMatchesIdentity(
@@ -1184,17 +1213,36 @@ function ambiguousIdentityParts(identity: AiSessionRuntimeIdentity): string[] | 
         return null;
     }
     const id = hasSessionId ? identity.sessionId : identity.pendingId;
-    return isBoundedString(id, MAX_ID_LENGTH)
-        ? [identity.provider, identity.workspaceScopeIdentity, hasSessionId ? 'session' : 'pending', id]
-        : null;
+    if (!isBoundedString(id, MAX_ID_LENGTH)) {
+        return null;
+    }
+    return hasSessionId
+        ? [identity.provider, identity.workspaceScopeIdentity, 'session', id]
+        : [
+            identity.provider,
+            identity.workspaceScopeIdentity,
+            'pending',
+            identity.workspaceNavigationIdentity,
+            getAiSessionRuntimeRootSnapshotKey(identity),
+            identity.cwd,
+            id,
+        ];
 }
 
 function ambiguousRecordIdentityParts(record: TmuxAmbiguousRuntimeBinding): string[] {
-    return [
+    return record.sessionId !== undefined ? [
         record.provider,
         record.workspaceScopeIdentity,
-        record.sessionId !== undefined ? 'session' : 'pending',
-        record.sessionId !== undefined ? record.sessionId : record.pendingId,
+        'session',
+        record.sessionId,
+    ] : [
+        record.provider,
+        record.workspaceScopeIdentity,
+        'pending',
+        record.workspaceNavigationIdentity,
+        getAiSessionRuntimeRootSnapshotKey(record as AiSessionRuntimeIdentity),
+        record.cwd,
+        record.pendingId,
     ];
 }
 

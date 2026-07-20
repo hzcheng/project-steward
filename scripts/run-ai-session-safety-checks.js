@@ -951,6 +951,28 @@ async function runPendingTerminalResolverChecks() {
         reason: 'identity-mismatch',
         promote: async () => [finalRuntime(validPending, 'other-session')],
     }, {
+        reason: 'identity-mismatch',
+        promote: async (_identity, sessionId) => [finalRuntime(validPending, sessionId, {
+            identity: {
+                ...validPending.identity,
+                workspaceScopeIdentity: 'scope:/other-workspace',
+                pendingId: undefined,
+                sessionId,
+            },
+        })],
+    }, {
+        reason: 'identity-mismatch',
+        promote: async (_identity, sessionId) => [finalRuntime(validPending, sessionId, {
+            identity: {
+                ...validPending.identity,
+                workspaceNavigationIdentity: 'nav:/different',
+                workspaceRootHostPaths: ['/different-root'],
+                cwd: '/different-root',
+                pendingId: undefined,
+                sessionId,
+            },
+        })],
+    }, {
         reason: 'promotion-error',
         promote: async () => { throw new Error('promotion failed'); },
     }];
@@ -3984,6 +4006,36 @@ async function runAiSessionProjectHydrationPromotionChecks() {
     assert.deepStrictEqual(delayed.aliasesSet, [['codex', 'session-final', 'Promoted Alias']]);
     assert.deepStrictEqual(delayed.syncs, ['sync']);
     assert.deepStrictEqual(delayed.promotions, ['promoted']);
+
+    const settlementMismatchIdentities = [{
+        ...finalRuntime.identity,
+        workspaceScopeIdentity: 'scope:/other-workspace',
+    }, {
+        ...finalRuntime.identity,
+        workspaceNavigationIdentity: 'nav:/different',
+        workspaceRootHostPaths: ['/different-root'],
+        cwd: '/different-root',
+    }];
+    for (const mismatchedIdentity of settlementMismatchIdentities) {
+        const mismatch = createHarness({
+            runtimeCoordinator: {
+                getActive: () => [],
+                getPending: () => [pendingRuntime],
+                promotePending: () => [{ ...finalRuntime, identity: mismatchedIdentity }],
+            },
+        });
+        mismatch.controller.hydrate(project('Mismatched settlement'));
+        await flushSettlements();
+        assert.deepStrictEqual(mismatch.aliasesSet, [],
+            'a mismatched promotion settlement must not set an alias');
+        assert.deepStrictEqual(mismatch.syncs, [],
+            'a mismatched promotion settlement must not synchronize runtime state');
+        assert.deepStrictEqual(mismatch.promotions, [],
+            'a mismatched promotion settlement must not notify promotion consumers');
+        assert.ok(mismatch.diagnostics.some(diagnostic =>
+            diagnostic.event === 'ai-session-pending-runtime-promotion-result'
+            && diagnostic.failureReasons?.includes('identity-mismatch')));
+    }
 
     let resolveGeneration;
     let generationCalls = 0;

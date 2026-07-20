@@ -689,18 +689,10 @@ function isProjectSessionOwnershipBase(values: Record<string, string>): boolean 
 }
 
 function isSessionWindowOwnershipBase(values: Record<string, string>): boolean {
-    return values.managed === '1'
+    return Object.keys(values).length === 3
+        && values.managed === '1'
         && values.version === '2'
-        && values.layout === 'session'
-        && values.workspaceScopeIdentity === undefined
-        && values.workspaceNavigationIdentity === undefined
-        && values.workspaceRootHostPaths === undefined
-        && values.cwd === undefined
-        && values.provider === undefined
-        && values.sessionId === undefined
-        && values.pendingId === undefined
-        && values.createdAt === undefined
-        && values.marker === undefined;
+        && values.layout === 'session';
 }
 
 function actualLocator(
