@@ -72,9 +72,13 @@ run's event. UI recovery data folds the retained run event IDs back under the
 logical `provider:sessionId` key so clicking the visible Session acknowledges
 all of its retained events.
 
-The number of retained events remains bounded by the existing attention
-payload limits. When the bound is reached, the controller preserves the newest
-valid events and never emits an oversized bridge payload.
+The number of retained events remains bounded by the existing 1,000-item
+attention payload limit. When the bound is reached, the controller preserves
+the newest valid events, discards older overflow events from local retention,
+and never emits an oversized bridge payload. Overflow is an explicit
+best-effort degradation: a completed runtime whose event was discarded only
+because of this safety limit may still be released, avoiding a permanently
+blocked Session at the cost of dropping that old reminder.
 
 ## Lifecycle Settlement
 
@@ -87,6 +91,9 @@ follows:
   after `publish()` returns `true`.
 - An in-scope completed candidate with no event evidence or a failed
   publication remains owned for retry.
+- An in-scope completed candidate whose event was generated but explicitly
+  discarded by the 1,000-item safety limit may be released after the bounded
+  snapshot is published successfully.
 
 Settlement no longer calls either the bridge acknowledgement command or the
 local monitor acknowledgement method. Those methods are reserved for explicit
@@ -148,7 +155,9 @@ The safety suite will prove all of the following:
    run cannot clear an unacknowledged later run.
 9. Attention-disabled and genuinely stopped runtimes continue to settle
    without producing a badge.
-10. Source-wiring checks reject reintroduction of automatic acknowledgement in
+10. A 1,001-event evaluation publishes the newest 1,000 items, discards the
+    oldest retained item, and does not leave that overflow runtime blocked.
+11. Source-wiring checks reject reintroduction of automatic acknowledgement in
     the lifecycle settlement path.
 
 Focused tests run before the full compile, safety, tmux smoke, and release

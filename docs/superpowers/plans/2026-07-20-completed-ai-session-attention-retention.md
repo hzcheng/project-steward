@@ -15,6 +15,9 @@
 - Preserve distinct per-run event IDs of the form `provider:sessionId:runStartedAtMs:backend`.
 - Runtime publication confirmation must never call a user-acknowledgement API.
 - A failed publication must retain the completed runtime for retry.
+- At the 1,000-item protocol limit, keep the newest events, explicitly discard
+  older overflow events, and release their runtimes after successful bounded
+  publication.
 - The attention UI Bridge source, protocol, manifest, and version `0.1.3` must not change.
 - Do not bump the main extension version or resume merge/tag/release work until manual acceptance passes.
 
@@ -124,7 +127,7 @@ git commit -m "fix: retain unread attention without runtime ownership"
 
 **Interfaces:**
 - Consumes: retained monitor snapshots from Task 1 and `MAX_ATTENTION_ITEMS` from `src/aiSessions/attentionPayload.ts`.
-- Produces: `getRecoverySessionEvents()` grouped by logical `provider:sessionId`, retained owner snapshot items after runtime removal, and a maximum of 1,000 published items.
+- Produces: `getRecoverySessionEvents()` grouped by logical `provider:sessionId`, retained owner snapshot items after runtime removal, a maximum of 1,000 published items, and explicit overflow evidence for lifecycle settlement.
 
 - [ ] **Step 1: Add a failing controller retention regression**
 
@@ -188,7 +191,7 @@ const boundedController = new AiSessionAttentionController({
     postProjectsUpdated: () => undefined,
     nowMs: () => nowMs,
 });
-await boundedController.evaluate(Array.from({ length: 1001 }, (_, index) => ({
+const boundedEvaluation = await boundedController.evaluate(Array.from({ length: 1001 }, (_, index) => ({
     providerId: 'codex',
     sessionId: 'session-a',
     attentionKey: `codex:session-a:${index}:tmux`,
@@ -198,6 +201,16 @@ assert.strictEqual(boundedPublished[0].length, 1000,
     'retained attention publication must respect the protocol item bound');
 assert.strictEqual(Math.min(...boundedPublished[0].map(item => item.observedAtMs)), 2,
     'the bounded publication keeps the newest completion observations');
+assert.strictEqual(
+    boundedController.getLocalSnapshot()['codex:session-a:0:tmux'],
+    undefined,
+    'the oldest overflow event is discarded instead of accumulating locally'
+);
+assert.deepStrictEqual(
+    boundedEvaluation.overflowedSessionKeys,
+    ['codex:session-a:0:tmux'],
+    'lifecycle settlement receives explicit evidence for the discarded event'
+);
 ```
 
 - [ ] **Step 3: Compile and run the safety test to verify RED**
@@ -222,6 +235,16 @@ if (!keys.includes(attentionKey)) {
     keys.sort();
 }
 this.attentionKeysBySession.set(owned.baseSessionKey, keys);
+```
+
+Add a monitor method used only for the explicit safety-limit degradation:
+
+```ts
+discard(keys: string[]): void {
+    for (const key of new Set(keys || [])) {
+        this.entries.delete(key);
+    }
+}
 ```
 
 After `this.monitor.evaluate(inputs)`, prune mappings whose monitor entries no longer exist:
@@ -261,14 +284,27 @@ In `getRecoverySessionEvents`, call `addEvent(this.getLogicalSessionKey(sessionK
 
 - [ ] **Step 6: Bound owner items deterministically**
 
-Import `MAX_ATTENTION_ITEMS` beside `AttentionPayloadItem` and end `buildLocalItems` with:
+Import `MAX_ATTENTION_ITEMS` beside `AttentionPayloadItem`. Build all items,
+sort newest-first, retain the first 1,000, and explicitly discard the remainder:
 
 ```ts
-return items
+const sorted = items
     .sort((left, right) => right.observedAtMs - left.observedAtMs
-        || (left.eventId || '').localeCompare(right.eventId || ''))
-    .slice(0, MAX_ATTENTION_ITEMS);
+        || (left.eventId || '').localeCompare(right.eventId || ''));
+const retained = sorted.slice(0, MAX_ATTENTION_ITEMS);
+const overflowedSessionKeys = sorted.slice(MAX_ATTENTION_ITEMS)
+    .map(item => item.sessionKey);
+this.monitor.discard(overflowedSessionKeys);
+this.pruneAttentionKeysBySession();
+return { items: retained, overflowedSessionKeys };
 ```
+
+Store `overflowedSessionKeys` in `AiSessionAttentionEvaluation` and return it
+alongside `eventIdsBySession`. Disabled evaluations return an empty array. All
+existing evaluation fixtures and assertions must include the new field. Change
+`buildLocalItems` to return `{ items, overflowedSessionKeys }`; both `evaluate`
+and `acknowledge` assign `this.localItems = result.items`, while `evaluate`
+returns the result's overflow keys to lifecycle settlement.
 
 - [ ] **Step 7: Re-run the focused safety test to verify GREEN**
 
@@ -301,7 +337,7 @@ git commit -m "fix: retain completed attention owner snapshots"
 - Modify: `CHANGELOG.md:5-25`
 
 **Interfaces:**
-- Consumes: `AiSessionAttentionEvaluation.published`, `inScopeSessionKeys`, and `eventIdsBySession`.
+- Consumes: `AiSessionAttentionEvaluation.published`, `inScopeSessionKeys`, `eventIdsBySession`, and `overflowedSessionKeys`.
 - Produces: `settleAiSessionRuntimeLifecycles(options)` with only `evaluateAttention`, `release`, and optional redacted failure reporting; explicit UI handlers remain the only acknowledgement callers.
 
 - [ ] **Step 1: Rewrite the settlement test to require both backends and zero acknowledgement**
@@ -313,6 +349,7 @@ const completionOrder = [];
 const candidates = [
     { key: 'codex:session-a:700:vscode', state: 'completed', backend: 'vscode' },
     { key: 'codex:session-b:800:tmux', state: 'completed', backend: 'tmux' },
+    { key: 'codex:session-c:900:tmux', state: 'completed', backend: 'tmux' },
     { key: 'kimi:missing-event', state: 'completed', backend: 'tmux' },
     { key: 'claude:out-of-scope', state: 'completed', backend: 'vscode' },
     { key: 'codex:stopped', state: 'stopped', backend: 'tmux' },
@@ -327,12 +364,14 @@ const settled = await settleAiSessionRuntimeLifecycles({
             inScopeSessionKeys: [
                 'codex:session-a:700:vscode',
                 'codex:session-b:800:tmux',
+                'codex:session-c:900:tmux',
                 'kimi:missing-event',
             ],
             eventIdsBySession: {
                 'codex:session-a:700:vscode': ['direct-completed-event'],
                 'codex:session-b:800:tmux': ['tmux-completed-event'],
             },
+            overflowedSessionKeys: ['codex:session-c:900:tmux'],
         };
     },
     release: candidate => completionOrder.push(`release:${candidate.backend}:${candidate.key}`),
@@ -342,6 +381,7 @@ assert.deepStrictEqual(settled, {
         'claude:out-of-scope',
         'codex:session-a:700:vscode',
         'codex:session-b:800:tmux',
+        'codex:session-c:900:tmux',
         'codex:stopped',
     ],
     retainedKeys: ['kimi:missing-event'],
@@ -351,6 +391,7 @@ assert.deepStrictEqual(completionOrder, [
     'release:vscode:claude:out-of-scope',
     'release:vscode:codex:session-a:700:vscode',
     'release:tmux:codex:session-b:800:tmux',
+    'release:tmux:codex:session-c:900:tmux',
     'release:tmux:codex:stopped',
 ], 'delivery releases both backends without acknowledging user attention');
 ```
@@ -412,13 +453,15 @@ Change the failure operation union to:
 export type AiSessionRuntimeLifecycleFailureOperation = 'evaluate' | 'release';
 ```
 
-Remove both acknowledgement callbacks from `SettleAiSessionRuntimeLifecyclesOptions`. Replace the event-ID reduction and acknowledgement block with direct delivery eligibility:
+Remove both acknowledgement callbacks from `SettleAiSessionRuntimeLifecyclesOptions`. Replace the event-ID reduction and acknowledgement block with direct delivery eligibility. Explicitly bounded overflow is also delivery-safe:
 
 ```ts
+const overflowed = new Set(evaluation.overflowedSessionKeys);
 const deliveredCompletions = candidates.filter(candidate => candidate.state === 'completed'
     && evaluation.enabled && inScope.has(candidateSessionKey(candidate))
     && evaluation.published
-    && (evaluation.eventIdsBySession[candidateSessionKey(candidate)] || []).length > 0);
+    && ((evaluation.eventIdsBySession[candidateSessionKey(candidate)] || []).length > 0
+        || overflowed.has(candidateSessionKey(candidate))));
 
 const eligibleByKey = new Map<string, TCandidate>();
 for (const candidate of [...safeToRelease, ...deliveredCompletions]) {
