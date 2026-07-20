@@ -28,7 +28,10 @@ const { TodoService } = require('../out/todos/service');
 const { deleteTodoWithConfirmation, runTodoMutation } = require('../out/todos/hostMutation');
 const todoViewModel = require('../out/todos/viewModel');
 const todoWebviewContent = require('../out/todos/webviewContent');
-const { buildDashboardSearchCatalog } = require('../out/webview/dashboardViewModel');
+const {
+    buildDashboardSearchCatalog,
+    buildWorkspaceDashboardSearchCatalog,
+} = require('../out/webview/dashboardViewModel');
 const AsyncFunction = Object.getPrototypeOf(async function () { return undefined; }).constructor;
 
 const root = path.join(__dirname, '..');
@@ -222,6 +225,31 @@ function makeUpdatedDashboardCatalog() {
     };
 }
 
+function makeWorkspaceDashboardCatalog() {
+    return {
+        version: 2,
+        sessions: [{
+            key: 'codex:c1', searchText: 'fix dashboard codex c1', workspaceId: 'workspace-current',
+            workspaceNavigationIdentity: 'navigation-current', workspaceName: 'Dashboard Workspace',
+            provider: 'codex', sessionId: 'c1', name: 'Fix dashboard', active: true,
+            action: 'reveal-workspace-session',
+        }],
+        openWorkspaces: [{
+            key: 'workspace:navigation-current', navigationIdentity: 'navigation-current',
+            searchText: 'dashboard workspace local app api', workspaceId: 'workspace-current',
+            name: 'Dashboard Workspace', description: '2 folders', environmentLabel: 'Local',
+            action: 'show-current-workspace', current: true,
+        }, {
+            key: 'workspace:navigation-other', navigationIdentity: 'navigation-other',
+            searchText: 'other workspace ssh other', workspaceId: 'workspace-other',
+            name: 'Other Workspace', description: '1 folder', environmentLabel: 'SSH',
+            action: 'switch-open-workspace', current: false,
+        }],
+        savedProjects: makeDashboardCatalog().savedProjects,
+        todos: makeDashboardCatalog().todos,
+    };
+}
+
 function runDashboardUpdateMessageChecks() {
     const previousModuleLoad = Module._load;
     let dashboardUpdateMessages;
@@ -257,6 +285,7 @@ function runDashboardUpdateMessageChecks() {
     const workspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({
         card: workspaceCard,
     });
+    const workspaceSearchCatalog = buildWorkspaceDashboardSearchCatalog([], [workspaceCard], todoSearchItems);
 
     assert.deepStrictEqual(openMessage.searchCatalog.todos, todoSearchItems,
         'OPEN incremental catalog rebuilds must preserve real TODO search items');
@@ -264,6 +293,10 @@ function runDashboardUpdateMessageChecks() {
         'AI incremental catalog rebuilds must preserve real TODO search items');
     assert.strictEqual(workspaceMessage.type, 'workspace-updated');
     assert.strictEqual(workspaceMessage.version, 2);
+    assert.strictEqual(workspaceSearchCatalog.version, 2);
+    assert.deepStrictEqual(workspaceSearchCatalog.openWorkspaces.map(item => item.current), [true]);
+    assert.deepStrictEqual(workspaceSearchCatalog.sessions.map(item => item.action), ['reveal-workspace-session']);
+    assert.deepStrictEqual(workspaceSearchCatalog.todos, todoSearchItems);
     assert.strictEqual(workspaceMessage.currentWorkspaceCount, 1);
     assert.ok(workspaceMessage.html.includes('data-workspace-scope-identity="scope-dashboard"'));
     const emptyWorkspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({ card: null });
@@ -3316,6 +3349,15 @@ function runControllerChecks(source) {
         JSON.parse(JSON.stringify(sections.map(section => section.id))),
         ['ai-sessions', 'open-projects', 'saved-projects']
     );
+    const workspaceSections = context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'dashboard');
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(workspaceSections.map(section => section.title))),
+        ['AI SESSIONS', 'OPEN WORKSPACES', 'SAVED PROJECTS']
+    );
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(workspaceSections.map(section => section.id))),
+        ['ai-sessions', 'open-workspaces', 'saved-projects']
+    );
     const todoSections = context.filterDashboardCatalog(makeDashboardCatalog(), 'ship');
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(todoSections.map(section => section.id))),
@@ -3325,6 +3367,18 @@ function runControllerChecks(source) {
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(context.normalizeDashboardSearchCatalog(null))),
         { sessions: [], openProjects: [], savedProjects: [], todos: [] }
+    );
+    assert.strictEqual(
+        context.normalizeDashboardSearchCatalog(makeWorkspaceDashboardCatalog()).version,
+        2
+    );
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(context.normalizeDashboardSearchCatalog({
+            ...makeDashboardCatalog(),
+            version: 2,
+        }))),
+        { sessions: [], openProjects: [], savedProjects: [], todos: [] },
+        'a malformed v2 catalog must not downgrade into the legacy open-project boundary'
     );
     const state = {
         activeTab: 'projects',
@@ -3532,6 +3586,28 @@ function runControllerChecks(source) {
         type: 'resume-codex-session', provider: 'codex', projectId: 'current', sessionId: 'c1',
     }]);
     searchMessages.length = 0;
+
+    const workspaceRevealCalls = [];
+    context.window.__projectStewardRevealWorkspaceSession = (...args) => workspaceRevealCalls.push(args);
+    const workspaceSearchController = context.initDashboard({
+        initialSearchQuery: 'dashboard',
+        clearSearch: () => undefined,
+        postMessage: message => searchMessages.push(message),
+    });
+    workspaceSearchController.replaceSearchCatalog(makeWorkspaceDashboardCatalog());
+    const workspaceSessionSection = searchResults.children.find(section => section.dataset.sectionType === 'session');
+    const workspaceSessionResult = workspaceSessionSection.children[1];
+    assert.strictEqual(workspaceSessionResult.dataset.searchAction, 'reveal-workspace-session');
+    assert.strictEqual(workspaceSessionResult.dataset.workspaceNavigationIdentity, 'navigation-current');
+    workspaceSessionResult.closest = selector => selector === '.dashboard-search-result[data-search-action]'
+        ? workspaceSessionResult
+        : null;
+    searchResults.dispatch('click', { target: workspaceSessionResult });
+    assert.deepStrictEqual(workspaceRevealCalls, [[
+        'navigation-current', 'codex', 'c1',
+    ]], 'workspace session search must reveal its workspace row instead of resuming a root-owned session');
+    assert.deepStrictEqual(searchMessages, [], 'workspace session reveal must not post a resume action');
+
     searchController.setSearchQuery('');
     assert.deepStrictEqual(JSON.parse(JSON.stringify(searchMessages)), [
         { type: 'request-projects-panel', version: 1, requestId: 1 },
@@ -4009,8 +4085,10 @@ function runSourceContractChecks(source) {
     assert.ok(source.includes('replaceSearchCatalog'));
     assert.ok(source.includes('isSearchActive'));
     assert.ok(source.includes("title: 'TODO RESULTS'"));
+    assert.ok(source.includes("title: 'OPEN WORKSPACES'"));
     assert.ok(projectSource.includes('__projectStewardAcknowledgeSession'));
     assert.ok(projectSource.includes('__projectStewardShowCurrentProject'));
+    assert.ok(projectSource.includes('__projectStewardRevealWorkspaceSession'));
     const refreshStewardViewsBody = extractFunctionBody(extensionHostSource, 'refreshStewardViews');
     const aiSessionsMessageBody = extractFunctionBody(extensionHostSource, 'getAiSessionsUpdatedMessage');
     const openProjectsMessageBody = extractFunctionBody(extensionHostSource, 'postOpenProjectsUpdated');

@@ -42,7 +42,16 @@ function validateTodoPanelUpdatedMessage(message) {
 }
 
 function normalizeDashboardSearchCatalog(value) {
+    if (value
+        && value.version === 2
+        && Array.isArray(value.sessions)
+        && Array.isArray(value.openWorkspaces)
+        && Array.isArray(value.savedProjects)
+        && Array.isArray(value.todos)) {
+        return value;
+    }
     return value
+        && value.version === undefined
         && Array.isArray(value.sessions)
         && Array.isArray(value.openProjects)
         && Array.isArray(value.savedProjects)
@@ -77,9 +86,12 @@ function globToDashboardRegex(value) {
 function filterDashboardCatalog(catalog, query) {
     catalog = normalizeDashboardSearchCatalog(catalog);
     var regex = globToDashboardRegex(query);
+    var workspaceCatalog = catalog.version === 2;
     var sections = [
         { id: 'ai-sessions', title: 'AI SESSIONS', type: 'session', items: catalog.sessions },
-        { id: 'open-projects', title: 'OPEN PROJECTS', type: 'open-project', items: catalog.openProjects },
+        workspaceCatalog
+            ? { id: 'open-workspaces', title: 'OPEN WORKSPACES', type: 'open-workspace', items: catalog.openWorkspaces }
+            : { id: 'open-projects', title: 'OPEN PROJECTS', type: 'open-project', items: catalog.openProjects },
         { id: 'saved-projects', title: 'SAVED PROJECTS', type: 'saved-project', items: catalog.savedProjects },
         { id: 'todos', title: 'TODO RESULTS', type: 'todo', items: catalog.todos },
     ];
@@ -132,16 +144,30 @@ function renderDashboardSearchResults(container, sections) {
             var metadata = document.createElement('span');
             metadata.className = 'dashboard-search-result-meta';
             if (section.type === 'session') {
-                button.dataset.searchAction = 'resume-session';
                 button.dataset.provider = String(item.provider || '');
                 button.dataset.sessionId = String(item.sessionId || '');
-                metadata.textContent = [item.projectName, item.provider].filter(Boolean).join(' · ');
+                if (item.action === 'reveal-workspace-session') {
+                    button.dataset.searchAction = 'reveal-workspace-session';
+                    button.dataset.workspaceId = String(item.workspaceId || '');
+                    button.dataset.workspaceNavigationIdentity = String(item.workspaceNavigationIdentity || '');
+                    metadata.textContent = [item.workspaceName, item.provider].filter(Boolean).join(' · ');
+                } else {
+                    button.dataset.searchAction = 'resume-session';
+                    metadata.textContent = [item.projectName, item.provider].filter(Boolean).join(' · ');
+                }
                 if (item.active === true) {
                     var activeBadge = document.createElement('span');
                     activeBadge.className = 'dashboard-search-result-status active';
                     activeBadge.textContent = 'Active';
                     metadata.appendChild(activeBadge);
                 }
+            } else if (section.type === 'open-workspace') {
+                button.dataset.workspaceId = String(item.workspaceId || '');
+                button.dataset.workspaceNavigationIdentity = String(item.navigationIdentity || '');
+                button.dataset.searchAction = item.current === true
+                    ? 'show-current-workspace'
+                    : 'switch-open-workspace';
+                metadata.textContent = [item.description, item.environmentLabel].filter(Boolean).join(' · ');
             } else if (section.type === 'open-project') {
                 button.dataset.searchAction = item.action === 'open-current'
                     ? 'show-current-project'
@@ -387,6 +413,42 @@ function initDashboard(options) {
                 provider,
                 projectId: button.dataset.projectId,
                 sessionId: button.dataset.sessionId,
+            });
+            return;
+        }
+        if (action === 'reveal-workspace-session') {
+            if (typeof options.clearSearch === 'function') {
+                options.clearSearch();
+            } else {
+                setSearchQuery('');
+            }
+            activateTab('open', false);
+            if (typeof window.__projectStewardRevealWorkspaceSession === 'function') {
+                window.__projectStewardRevealWorkspaceSession(
+                    button.dataset.workspaceNavigationIdentity,
+                    button.dataset.provider,
+                    button.dataset.sessionId
+                );
+            }
+            return;
+        }
+        if (action === 'show-current-workspace') {
+            if (typeof options.clearSearch === 'function') {
+                options.clearSearch();
+            } else {
+                setSearchQuery('');
+            }
+            activateTab('open', false);
+            if (typeof window.__projectStewardRevealWorkspace === 'function') {
+                window.__projectStewardRevealWorkspace(button.dataset.workspaceNavigationIdentity);
+            }
+            return;
+        }
+        if (action === 'switch-open-workspace') {
+            options.postMessage({
+                type: 'selected-workspace',
+                workspaceId: button.dataset.workspaceId,
+                navigationIdentity: button.dataset.workspaceNavigationIdentity,
             });
             return;
         }

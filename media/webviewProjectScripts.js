@@ -179,6 +179,9 @@ function applyWorkspaceUpdate(message) {
     if (typeof window.__projectStewardSyncCollapseButton === 'function') {
         window.__projectStewardSyncCollapseButton();
     }
+    if (typeof window.__projectStewardRevealPendingWorkspaceSession === 'function') {
+        window.__projectStewardRevealPendingWorkspaceSession();
+    }
     return true;
 }
 
@@ -423,6 +426,7 @@ function initProjects() {
         pending: false,
     };
     var activeAiSessionTerminalState = { provider: null, sessionId: null };
+    var pendingWorkspaceSessionReveal = null;
 
     function enter(projectId, provider) {
         if (batchAiSessionState.pending)
@@ -1855,6 +1859,80 @@ function initProjects() {
         return null;
     }
 
+    function findWorkspaceDiv(navigationIdentity) {
+        if (!navigationIdentity) {
+            return null;
+        }
+        var workspaces = document.querySelectorAll('.workspace-card[data-workspace-navigation-identity]');
+        for (var workspaceDiv of workspaces) {
+            if (workspaceDiv.getAttribute('data-workspace-navigation-identity') === navigationIdentity) {
+                return workspaceDiv;
+            }
+        }
+        return null;
+    }
+
+    function focusSearchRevealTarget(target) {
+        target.setAttribute('tabindex', '-1');
+        target.focus();
+        target.scrollIntoView({ block: 'nearest' });
+        target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true });
+    }
+
+    window.__projectStewardRevealWorkspace = navigationIdentity => {
+        var workspaceDiv = findWorkspaceDiv(navigationIdentity);
+        if (!workspaceDiv) {
+            return false;
+        }
+        focusSearchRevealTarget(workspaceDiv);
+        return true;
+    };
+
+    function revealWorkspaceSession(navigationIdentity, provider, sessionId) {
+        if (!isAiSessionProvider(provider) || !sessionId) {
+            return false;
+        }
+        var workspaceDiv = findWorkspaceDiv(navigationIdentity);
+        if (!workspaceDiv) {
+            return false;
+        }
+        var workspaceId = workspaceDiv.getAttribute('data-id');
+        if (!workspaceDiv.hasAttribute('data-codex-expanded')) {
+            toggleCodexSessions(workspaceDiv, workspaceId);
+        }
+        selectAiSessionTabDom(workspaceDiv, 'sessions');
+        writeAiSessionTabState(window.vscode, workspaceId, 'sessions');
+        var sessionRow = Array.from(workspaceDiv.querySelectorAll('.codex-session-row[data-session-id][data-session-provider]'))
+            .find(row => row.getAttribute('data-session-provider') === provider
+                && row.getAttribute('data-session-id') === sessionId);
+        if (sessionRow) {
+            pendingWorkspaceSessionReveal = null;
+            focusSearchRevealTarget(sessionRow);
+            return true;
+        }
+        if (getProjectActiveAiSessionProvider(workspaceDiv) !== provider) {
+            pendingWorkspaceSessionReveal = { navigationIdentity, provider, sessionId };
+            selectAiSessionProvider(workspaceId, provider);
+            return true;
+        }
+        pendingWorkspaceSessionReveal = null;
+        focusSearchRevealTarget(workspaceDiv);
+        return false;
+    }
+
+    window.__projectStewardRevealWorkspaceSession = revealWorkspaceSession;
+    window.__projectStewardRevealPendingWorkspaceSession = () => {
+        if (!pendingWorkspaceSessionReveal) {
+            return false;
+        }
+        var pending = pendingWorkspaceSessionReveal;
+        return revealWorkspaceSession(
+            pending.navigationIdentity,
+            pending.provider,
+            pending.sessionId
+        );
+    };
+
     window.__projectStewardShowCurrentProject = projectId => {
         var projectDiv = findOpenProjectDiv(projectId);
         if (!projectDiv) {
@@ -1904,6 +1982,7 @@ function initProjects() {
         }
 
         restoreAiSessionViewState(projectDiv, viewState, requestedTab);
+        window.__projectStewardRevealPendingWorkspaceSession();
         var nextPendingCount = projectDiv.querySelectorAll('.active-ai-session-row[data-session-pending]').length;
         var nextActiveCount = projectDiv.querySelectorAll('.active-ai-session-row[data-session-active]').length;
         if (nextPendingCount < viewState.pendingCount && nextActiveCount > viewState.activeCount) {

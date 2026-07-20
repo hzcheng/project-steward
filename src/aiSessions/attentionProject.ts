@@ -11,6 +11,8 @@ export interface AttentionProjectSummary {
     sessions: Array<{ sessionKey: string; eventId: string; eventIds: string[] }>;
 }
 
+export type AttentionSummary = Pick<AttentionProjectSummary, 'attentionCount' | 'eventIds' | 'sessions'>;
+
 export function getAttentionProjectKey(projectPath: string): string {
     const canonicalPath = normalizeAiSessionComparablePath(projectPath);
     if (!canonicalPath) {
@@ -37,6 +39,55 @@ export function getAttentionProjectPath(projectPath: string): string {
 
 export function resolveAttentionProjectKey(project: { path?: string }): string {
     return getAttentionProjectKey(getAttentionProjectPath(project?.path));
+}
+
+export function getAttentionProjectKeys(projectPaths: readonly string[]): string[] {
+    return Array.from(new Set((projectPaths || [])
+        .map(projectPath => getAttentionProjectKey(getAttentionProjectPath(projectPath)))
+        .filter(Boolean)))
+        .sort();
+}
+
+export function getAttentionSummaryForProjectKeys(
+    projectKeys: readonly string[],
+    aggregate: AttentionAggregate | null
+): AttentionSummary {
+    const selectedProjectKeys = new Set((projectKeys || []).filter(Boolean));
+    const eventIds = new Set<string>();
+    const sessionEventIds = new Map<string, Set<string>>();
+    for (const session of aggregate?.sessions || []) {
+        if (!selectedProjectKeys.has(session.projectId)) {
+            continue;
+        }
+        let events = sessionEventIds.get(session.sessionKey);
+        if (!events) {
+            events = new Set<string>();
+            sessionEventIds.set(session.sessionKey, events);
+        }
+        for (const eventId of session.eventIds || []) {
+            if (!eventId) {
+                continue;
+            }
+            events.add(eventId);
+            eventIds.add(eventId);
+        }
+    }
+
+    const sessions = Array.from(sessionEventIds.entries())
+        .map(([sessionKey, events]) => {
+            const sortedEventIds = Array.from(events).sort();
+            return {
+                sessionKey,
+                eventId: sortedEventIds[0] || sessionKey,
+                eventIds: sortedEventIds,
+            };
+        })
+        .sort((left, right) => left.sessionKey.localeCompare(right.sessionKey));
+    return {
+        attentionCount: sessions.length,
+        eventIds: Array.from(eventIds).sort(),
+        sessions,
+    };
 }
 
 export function getAttentionProjectSummaries(aggregate: AttentionAggregate | null): AttentionProjectSummary[] {

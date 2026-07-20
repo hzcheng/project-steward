@@ -24,6 +24,7 @@ const AiSessionExecutionMonitor = require('../out/aiSessions/executionMonitor').
 const attentionPayload = require('../out/aiSessions/attentionPayload');
 const attentionAggregate = require('../out/aiSessions/attentionAggregate');
 const attentionProject = require('../out/aiSessions/attentionProject');
+const workspaceAttentionProjection = require('../out/workspaces/attentionProjection');
 const AiSessionReadCoordinator = require('../out/aiSessions/readCoordinator').AiSessionReadCoordinator;
 const aiSessionViewModels = require('../out/aiSessions/viewModels');
 const aiSessionProjectHydration = require('../out/aiSessions/projectHydration');
@@ -610,6 +611,66 @@ function runDashboardSearchCatalogChecks() {
     });
     assert.strictEqual(serialized.includes('</script>'), false);
     assert.deepStrictEqual(JSON.parse(serialized).savedProjects[0].name, '</script><script>bad()</script>');
+
+    const currentWorkspace = {
+        id: 'workspace-current', kind: 'current', navigationIdentity: 'navigation-current',
+        scopeIdentity: 'scope-current', name: 'Dashboard Workspace', environmentLabel: 'Local',
+        roots: [
+            { id: 'root-app', name: 'App', ordinal: 0 },
+            { id: 'root-api', name: 'API', ordinal: 1 },
+        ],
+        attentionCount: 0,
+        aiSessions: {
+            workspaceScopeIdentity: 'scope-current',
+            workspaceNavigationIdentity: 'navigation-current',
+            sessionsByProvider: {
+                codex: [{
+                    id: 'c1', name: 'Fix dashboard', provider: 'codex',
+                    primaryRootId: 'root-api', primaryRootLabel: 'API', active: true,
+                }],
+            },
+        },
+    };
+    const otherWorkspace = {
+        id: 'workspace-other', kind: 'navigation', navigationIdentity: 'navigation-other',
+        scopeIdentity: 'scope-other', name: 'Other Workspace', environmentLabel: 'SSH',
+        roots: [{ id: 'root-other', name: 'Other', ordinal: 0 }], attentionCount: 0,
+    };
+    const workspaceCatalog = dashboardViewModel.buildWorkspaceDashboardSearchCatalog(
+        groups,
+        [
+            otherWorkspace,
+            currentWorkspace,
+            { ...otherWorkspace, id: 'workspace-other-duplicate', name: 'Duplicate publisher' },
+            { ...otherWorkspace, id: 'workspace-current-shadow', navigationIdentity: 'navigation-current' },
+        ],
+    );
+    assert.strictEqual(workspaceCatalog.version, 2);
+    assert.strictEqual(workspaceCatalog.openWorkspaces.filter(item => item.current).length, 1);
+    assert.deepStrictEqual(
+        workspaceCatalog.openWorkspaces.map(item => item.navigationIdentity),
+        ['navigation-current', 'navigation-other']
+    );
+    assert.strictEqual(workspaceCatalog.openWorkspaces.some(item => item.rootId), false);
+    assert.deepStrictEqual(workspaceCatalog.savedProjects, catalog.savedProjects,
+        'workspace search must leave saved-project construction unchanged');
+    assert.deepStrictEqual(workspaceCatalog.sessions.map(item => ({
+        action: item.action,
+        workspaceId: item.workspaceId,
+        workspaceNavigationIdentity: item.workspaceNavigationIdentity,
+        provider: item.provider,
+        sessionId: item.sessionId,
+        rootId: item.rootId,
+        projectId: item.projectId,
+    })), [{
+        action: 'reveal-workspace-session',
+        workspaceId: 'workspace-current',
+        workspaceNavigationIdentity: 'navigation-current',
+        provider: 'codex',
+        sessionId: 'c1',
+        rootId: undefined,
+        projectId: undefined,
+    }]);
 }
 
 function runDashboardDiagnosticsChecks() {
@@ -677,6 +738,71 @@ function runAttentionProjectionChecks() {
     assert.strictEqual(index.get(attentionProject.getAttentionSessionLookupKey(
         attentionProject.getAttentionProjectKey('/work/current'), 'kimi:k1'
     )).eventIds[0], 'e2');
+
+    const workspace = {
+        navigationIdentity: 'navigation-workspace',
+        roots: [
+            { uri: 'file:///work/app' },
+            { uri: 'file:///work/api' },
+        ],
+    };
+    const workspaceAggregate = {
+        protocolVersion: 1,
+        aggregateRevision: '1'.repeat(64),
+        generatedAtMs: 4,
+        sessions: [
+            {
+                projectId: attentionProject.getAttentionProjectKey('/work/app'),
+                sessionKey: 'codex:shared', reasons: ['completed'],
+                eventIds: ['event-one', 'event-two'], observedAtMs: 1,
+            },
+            {
+                projectId: attentionProject.getAttentionProjectKey('/work/api'),
+                sessionKey: 'codex:shared', reasons: ['completed'],
+                eventIds: ['event-one', 'event-two'], observedAtMs: 2,
+            },
+            {
+                projectId: attentionProject.getAttentionProjectKey('/work/api'),
+                sessionKey: 'codex:shared', reasons: ['input-required'],
+                eventIds: ['event-two', 'event-three'], observedAtMs: 3,
+            },
+            {
+                projectId: attentionProject.getAttentionProjectKey('/work/api'),
+                sessionKey: 'kimi:second', reasons: ['failed'],
+                eventIds: ['event-four'], observedAtMs: 4,
+            },
+        ],
+    };
+    const workspaceSummary = workspaceAttentionProjection.getWorkspaceAttentionSummary(
+        workspace,
+        workspaceAggregate
+    );
+    assert.strictEqual(workspaceSummary.attentionCount, 2,
+        'one provider session observed through multiple roots must count once');
+    assert.deepStrictEqual(workspaceSummary.eventIds, [
+        'event-four', 'event-one', 'event-three', 'event-two',
+    ]);
+    assert.deepStrictEqual(workspaceSummary.sessions, [{
+        sessionKey: 'codex:shared',
+        eventId: 'event-one',
+        eventIds: ['event-one', 'event-three', 'event-two'],
+    }, {
+        sessionKey: 'kimi:second',
+        eventId: 'event-four',
+        eventIds: ['event-four'],
+    }]);
+
+    const otherWindowAttention = workspaceAttentionProjection.getOtherWorkspaceAttention({
+        navigationIdentity: 'navigation-other',
+        roots: [
+            { uri: 'vscode-remote://ssh-remote+fixture/work/app' },
+            { uri: 'vscode-remote://ssh-remote+fixture/work/api' },
+        ],
+    }, workspaceAggregate);
+    assert.deepStrictEqual(otherWindowAttention, {
+        navigationIdentity: 'navigation-other',
+        attentionCount: 2,
+    }, 'other-window attention joins by privacy-bounded root URIs without session details');
 }
 
 function runFavoriteProjectOrderChecks() {
@@ -6802,6 +6928,7 @@ function runBatchAiSessionWebviewChecks() {
     };
     const createProject = (projectId, provider) => {
         const attributes = new Set(['data-open-project']);
+        const attributeValues = { 'data-id': projectId };
         let rows = [];
         let replacementRows = null;
         const sessionSection = {};
@@ -6833,10 +6960,16 @@ function runBatchAiSessionWebviewChecks() {
                 nextRows.forEach(row => { row.project = project; });
                 replacementRows = nextRows;
             },
-            getAttribute: attribute => attribute === 'data-id' ? projectId : null,
+            getAttribute: attribute => attributeValues[attribute] || null,
             hasAttribute: attribute => attributes.has(attribute),
-            removeAttribute: attribute => attributes.delete(attribute),
-            setAttribute: attribute => attributes.add(attribute),
+            removeAttribute: attribute => {
+                attributes.delete(attribute);
+                delete attributeValues[attribute];
+            },
+            setAttribute: (attribute, value) => {
+                attributes.add(attribute);
+                attributeValues[attribute] = String(value ?? '');
+            },
             toggleAttribute: (attribute, force) => {
                 if (force) {
                     attributes.add(attribute);
@@ -6862,8 +6995,12 @@ function runBatchAiSessionWebviewChecks() {
             querySelectorAll: selector => {
                 if (selector === '.ai-session-batch-actions button') return batchButtons;
                 if (selector === '.codex-session-row[data-session-id]') return rows;
+                if (selector === '.codex-session-row[data-session-id][data-session-provider]') return rows;
                 return [];
             },
+            focus: () => {},
+            scrollIntoView: () => {},
+            addEventListener: () => {},
         };
         return project;
     };
@@ -6877,6 +7014,17 @@ function runBatchAiSessionWebviewChecks() {
     projectB.replaceRowsOnNextUpdate([sameIdOtherProviderRow]);
     projectB.querySelector('.codex-sessions').outerHTML = '';
     const projects = [projectA, projectB];
+    const workspaceProject = createProject('workspace-current', 'codex');
+    const workspaceSessionRow = createSessionRow('codex', 'workspace-session');
+    let workspaceSessionFocuses = 0;
+    let workspaceSessionScrolls = 0;
+    workspaceSessionRow.focus = () => { workspaceSessionFocuses += 1; };
+    workspaceSessionRow.scrollIntoView = () => { workspaceSessionScrolls += 1; };
+    workspaceSessionRow.addEventListener = () => {};
+    workspaceProject.setAttribute('data-workspace-navigation-identity', 'navigation-current');
+    workspaceProject.setAttribute('data-codex-expanded', '');
+    workspaceProject.replaceRowsOnNextUpdate([workspaceSessionRow]);
+    workspaceProject.querySelector('.codex-sessions').outerHTML = '';
     let attentionBadge = null;
     const attentionProjectClasses = new Set();
     const attentionRow = createSessionRow('codex', 'attention-session');
@@ -7025,6 +7173,9 @@ function runBatchAiSessionWebviewChecks() {
                 if (selector === '.project[data-open-project][data-id]') {
                     return projects;
                 }
+                if (selector === '.workspace-card[data-workspace-navigation-identity]') {
+                    return [workspaceProject];
+                }
                 if (selector === '.project[data-ai-session-managing], .project[data-ai-session-pending]') {
                     return projects.filter(project => project.hasAttribute('data-ai-session-managing')
                         || project.hasAttribute('data-ai-session-pending'));
@@ -7137,6 +7288,14 @@ function runBatchAiSessionWebviewChecks() {
         type: 'request-ai-session-attention-state',
     });
     messages.length = 0;
+
+    assert.strictEqual(context.window.__projectStewardRevealWorkspaceSession(
+        'navigation-current', 'codex', 'workspace-session'
+    ), true);
+    assert.strictEqual(workspaceSessionFocuses, 1);
+    assert.strictEqual(workspaceSessionScrolls, 1);
+    assert.deepStrictEqual(messages, [],
+        'revealing a workspace session must not resume it or target a synthetic root project');
 
     const navigationProject = {
         getAttribute: attribute => attribute === 'data-id' ? '__openProjectNavigation-other' : null,
