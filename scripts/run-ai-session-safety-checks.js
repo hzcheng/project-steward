@@ -4664,20 +4664,24 @@ function runWebviewContentChecks() {
             {
                 key: 'codex:c1', provider: 'codex', sessionId: 'c1', name: 'Codex live',
                 executionState: 'running', focused: true, needsAttention: false, pending: false,
+                backend: 'vscode', attached: true,
             },
             {
                 key: 'kimi:k2', provider: 'kimi', sessionId: 'k2', name: 'Kimi waiting',
                 executionState: 'stopped', focused: false, needsAttention: true, pending: false,
                 attentionEventId: 'attention-1',
+                backend: 'tmux', attached: false, tmuxLayout: 'project',
             },
             {
                 key: 'claude:c3', provider: 'claude', sessionId: 'c3', name: 'Claude running',
                 executionState: 'running', focused: false, needsAttention: false, pending: false,
+                backend: 'vscode', attached: true,
             },
             {
                 key: 'pending:claude:2026-07-18T03:00:00Z', provider: 'claude', name: 'New Claude',
                 executionState: 'starting', focused: false, needsAttention: false, pending: true,
                 createdAt: '2026-07-18T03:00:00Z',
+                backend: 'vscode', attached: true,
             },
         ],
     });
@@ -4702,6 +4706,18 @@ function runWebviewContentChecks() {
     assert.ok(sessionTabsHtml.includes('aria-hidden="true"></span>Starting</span>'));
     assert.ok(sessionTabsHtml.includes('AI session needs attention'));
     assert.ok(sessionTabsHtml.includes('data-session-focused'));
+    assert.ok(sessionTabsHtml.includes(
+        '<span class="codex-session-title-line"><span class="ai-session-runtime-badge" title="Direct VS Code terminal" aria-label="Direct VS Code terminal">vscode</span><span class="codex-session-name">Codex live</span></span>'
+    ), 'a VS Code backend badge must appear before the focused Session name');
+    assert.ok(sessionTabsHtml.includes(
+        '<span class="codex-session-title-line"><span class="ai-session-runtime-badge" title="Managed tmux runtime" aria-label="Managed tmux runtime">tmux</span><span class="codex-session-name">Kimi waiting</span></span>'
+    ), 'a tmux backend badge must appear before the Session name');
+    const activeMetadata = Array.from(sessionTabsHtml.matchAll(
+        /<span class="codex-session-meta">([\s\S]*?)<\/span>\s*<\/span>/g
+    ), match => match[1]);
+    assert.ok(activeMetadata.length >= 4, 'every Active Session fixture must expose a metadata line');
+    assert.ok(activeMetadata.every(metadata => !/Codex|Kimi|Claude|Focused/.test(metadata)),
+        'Active Session metadata must omit redundant Provider and Focused labels');
     assert.ok(sessionTabsHtml.includes('data-session-needs-attention'));
     assert.ok(!sessionTabsHtml.includes('data-session-status='));
     assert.ok(sessionTabsHtml.includes('data-session-pending'));

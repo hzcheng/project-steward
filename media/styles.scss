@@ -2907,6 +2907,22 @@ body.steward-sidebar {
             gap: 2px;
         }
 
+        .codex-session-title-line {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            min-width: 0;
+
+            .ai-session-runtime-badge {
+                flex: 0 0 auto;
+            }
+
+            .codex-session-name {
+                flex: 1 1 auto;
+                min-width: 0;
+            }
+        }
+
         .codex-session-name,
         .codex-session-meta {
             overflow: hidden;
