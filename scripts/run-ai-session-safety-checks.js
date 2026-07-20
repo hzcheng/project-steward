@@ -4675,7 +4675,7 @@ function runWebviewContentChecks() {
             {
                 key: 'claude:c3', provider: 'claude', sessionId: 'c3', name: 'Claude running',
                 executionState: 'running', focused: false, needsAttention: false, pending: false,
-                backend: 'vscode', attached: true,
+                backend: 'vscode', attached: true, status: 'conflict', conflict: true, stale: true,
             },
             {
                 key: 'pending:claude:2026-07-18T03:00:00Z', provider: 'claude', name: 'New Claude',
@@ -4713,11 +4713,23 @@ function runWebviewContentChecks() {
         '<span class="codex-session-title-line"><span class="ai-session-runtime-badge" title="Managed tmux runtime" aria-label="Managed tmux runtime">tmux</span><span class="codex-session-name">Kimi waiting</span></span>'
     ), 'a tmux backend badge must appear before the Session name');
     const activeMetadata = Array.from(sessionTabsHtml.matchAll(
-        /<span class="codex-session-meta">([\s\S]*?)<\/span>\s*<\/span>/g
+        /<div class="codex-session-row active-ai-session-row"[\s\S]*?<span class="codex-session-meta">([\s\S]*?)<\/span>\s*<\/span>/g
     ), match => match[1]);
     assert.ok(activeMetadata.length >= 4, 'every Active Session fixture must expose a metadata line');
     assert.ok(activeMetadata.every(metadata => !/Codex|Kimi|Claude|Focused/.test(metadata)),
         'Active Session metadata must omit redundant Provider and Focused labels');
+    assert.ok(activeMetadata.every(metadata => metadata.startsWith(
+        '<span class="ai-session-execution-status"'
+    )), 'every Active Session metadata line must begin with execution state');
+    assert.ok(activeMetadata.every(metadata => !metadata.includes('Needs attention')),
+        'the attention dot must not be duplicated by visible metadata text');
+    assert.ok(sessionTabsHtml.includes(
+        '<span class="ai-session-attention-indicator" title="AI session needs attention" aria-label="AI session needs attention"></span>'
+    ), 'the attention dot must retain its tooltip and accessible label');
+    assert.ok(activeMetadata.some(metadata =>
+        metadata.includes('Running</span> · <span class="ai-session-stale-status"')
+        && metadata.includes('</span> · Runtime conflict · ')
+    ), 'stale and conflict diagnostics must follow execution state');
     assert.ok(sessionTabsHtml.includes('data-session-needs-attention'));
     assert.ok(!sessionTabsHtml.includes('data-session-status='));
     assert.ok(sessionTabsHtml.includes('data-session-pending'));

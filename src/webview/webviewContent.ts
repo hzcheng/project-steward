@@ -781,9 +781,7 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
         : model.executionState === 'starting' ? 'Waiting for AI activity'
             : 'AI is not currently executing';
     var executionStatus = `<span class="ai-session-execution-status" aria-label="${executionAriaLabel}"><span class="ai-session-execution-dot" aria-hidden="true"></span>${executionLabel}</span>`;
-    var runtimeStatusLabel = model.status === 'conflict' || model.conflict ? 'Runtime conflict'
-        : model.status === 'needsAttention' ? 'Needs attention'
-            : '';
+    var runtimeStatusLabel = model.status === 'conflict' || model.conflict ? 'Runtime conflict' : '';
     var runtimeBadgeDescription = model.backend === 'tmux'
         ? 'Managed tmux runtime'
         : 'Direct VS Code terminal';
@@ -791,7 +789,7 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     var staleStatus = model.stale
         ? '<span class="ai-session-stale-status" title="Runtime status is stale">stale</span>'
         : '';
-    var metadata = [staleStatus, runtimeStatusLabel, executionStatus, createdAt, shortSessionId].filter(Boolean).join(' · ');
+    var metadata = [executionStatus, staleStatus, runtimeStatusLabel, createdAt, shortSessionId].filter(Boolean).join(' · ');
     var attentionIndicator = model.needsAttention
         ? '<span class="ai-session-attention-indicator" title="AI session needs attention" aria-label="AI session needs attention"></span>'
         : '';
