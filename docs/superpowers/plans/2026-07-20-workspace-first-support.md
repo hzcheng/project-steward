@@ -303,17 +303,21 @@ git commit -m "feat: define workspace ai session scope"
 
 ---
 
-### Task 3: Build provider-native multi-root launch specifications
+### Task 3: Cut the provider launch call chain to workspace scopes
 
 **Files:**
 - Modify: `src/aiSessions/types.ts`
 - Modify: `src/aiSessions/commandBuilders.ts`
 - Modify: `src/aiSessions/providers.ts`
 - Create: `src/aiSessions/providerDirectoryCapability.ts`
+- Modify: `src/aiSessions/creationController.ts`
+- Modify: `src/aiSessions/resumeController.ts`
+- Modify: `src/aiSessions/commandController.ts`
+- Modify: `src/dashboard.ts`
 - Modify: `scripts/run-ai-session-safety-checks.js`
 
 **Interfaces:**
-- Changes: provider builder parameters from `cwd: string` to `scope: AiSessionDirectoryScope`.
+- Changes atomically: provider builder parameters and every production caller from `cwd: string` to `scope: AiSessionDirectoryScope`.
 - Produces: cached `ProviderDirectoryCapabilityProbe.probe(provider)` with `supported | unsupported | unavailable` results.
 
 - [ ] **Step 1: Add failing launch-spec and capability tests**
@@ -339,6 +343,12 @@ assert.deepStrictEqual(buildClaudeResumeLaunchSpec('c1', scope, marker), {
 
 Probe tests must verify one bounded `--help` execution per executable per activation, accepted help text for all three CLIs, timeout/nonzero/missing behavior, output-size bounds, and sanitized diagnostics.
 
+Add one happy-path creation and resume assertion per provider proving the
+controller receives a complete injected directory scope, passes it unchanged
+to the provider builder, and hands the resulting structured launch spec to the
+existing Direct Terminal/runtime boundary. The controller must not reconstruct
+a cwd from a `Project` after this task.
+
 - [ ] **Step 2: Run the AI safety check and verify RED**
 
 ```bash
@@ -349,7 +359,15 @@ Expected: launch builders reject the scope object or omit `--add-dir`.
 
 - [ ] **Step 3: Change builders and add the cached capability probe**
 
-Update `AiSessionProviderDefinition` so every launch and command builder consumes `AiSessionDirectoryScope`. Keep `serializeDirectLaunchCommand()` as the only string serializer. For Claude, pass one `--add-dir` followed by all additional directories; for Codex and Kimi, repeat the flag once per directory. Single-folder scopes have an empty additional list and preserve current command behavior.
+Update `AiSessionProviderDefinition`, creation/resume controller options, and
+all production callers in the same commit so every launch and command builder
+consumes `AiSessionDirectoryScope`. The controllers initially consume an
+injected complete-scope resolver; Task 4 supplies the production selection and
+preflight policy. Keep `serializeDirectLaunchCommand()` as the only string
+serializer. For Claude, pass one `--add-dir` followed by all additional
+directories; for Codex and Kimi, repeat the flag once per directory.
+Single-folder scopes have an empty additional list and preserve current
+command behavior.
 
 The probe executes `[commandName, '--help']` through an injected bounded child-process adapter, caches by resolved executable/provider ID, and never infers support merely from provider presence.
 
@@ -364,7 +382,7 @@ Expected: `AI session safety checks passed.`
 - [ ] **Step 5: Commit Task 3**
 
 ```bash
-git add src/aiSessions/types.ts src/aiSessions/commandBuilders.ts src/aiSessions/providers.ts src/aiSessions/providerDirectoryCapability.ts scripts/run-ai-session-safety-checks.js
+git add src/aiSessions src/dashboard.ts scripts/run-ai-session-safety-checks.js
 git commit -m "feat: launch ai providers with workspace roots"
 ```
 
@@ -401,7 +419,6 @@ The controller test should assert the handoff, not a reconstructed cwd:
 
 ```js
 assert.deepStrictEqual(runtimeRequests[0].directoryScope, expectedScope);
-assert.strictEqual(runtimeRequests[0].identity.workspaceScopeIdentity, workspace.scopeIdentity);
 assert.strictEqual(runtimeRequests[0].identity.cwd, expectedScope.primaryCwd);
 assert.deepStrictEqual(primaryRootWrites, [[workspace.scopeIdentity, expectedScope.primaryRootId]]);
 ```
@@ -414,7 +431,8 @@ Add router assertions for `{ type: 'create-ai-session', rootId: 'root-api' }` an
 npm run test-compile && node scripts/run-ai-session-safety-checks.js && node scripts/run-dashboard-webview-checks.js
 ```
 
-Expected: controller signatures still derive a single cwd from a `Project`.
+Expected: the scope-aware controllers still lack the production primary-root
+selection order, trust/capability preflight, and resume fallback policy.
 
 - [ ] **Step 3: Implement scope-first orchestration**
 
@@ -598,7 +616,10 @@ Expected: the workspace hydration modules do not exist and current hydration ret
 
 Add `primaryRootId`, `primaryRootLabel`, and optional `outsideWorkspace` to session view models. Assign history by longest root match. Include a removed-root active runtime only when continuity is proven by identical navigation identity or root-snapshot overlap; otherwise leave it unmanaged and absent. Inactive history outside current roots is omitted.
 
-Keep old project hydration exports only for saved-project callers during this task; stop using them for the live workspace. Do not add a projection from `OpenWorkspace` back to multiple `Project` instances.
+Keep old project hydration exports temporarily so the branch remains
+buildable; Tasks 7 and 10 perform the production view/controller cutover, and
+Task 14 deletes the legacy live path. Do not add a projection from
+`OpenWorkspace` back to multiple `Project` instances.
 
 - [ ] **Step 4: Run the AI safety check and verify GREEN**
 
@@ -807,17 +828,27 @@ git commit -m "feat: define open workspace protocol v2"
 
 ---
 
-### Task 10: Move the UI Bridge registry to `open-workspaces/v2`
+### Task 10: Atomically cut both extensions to `open-workspaces/v2`
 
 **Files:**
 - Create: `extensions/attention-ui-bridge/src/openWorkspacePublication.ts`
 - Create: `extensions/attention-ui-bridge/src/openWorkspaceStore.ts`
 - Create: `extensions/attention-ui-bridge/src/openWorkspaceCoordinator.ts`
 - Modify: `extensions/attention-ui-bridge/src/extension.ts`
+- Modify: `extensions/attention-ui-bridge/tsconfig.json`
+- Create: `src/openWorkspaces/bridgeClient.ts`
+- Create: `src/openWorkspaces/workspaceController.ts`
+- Create: `src/openWorkspaces/dashboardController.ts`
+- Modify: `src/dashboard/webviewUpdateMessages.ts`
+- Modify: `src/webview/webviewContent.ts`
+- Modify: `src/webview/webviewProjectScripts.js`
+- Modify: `src/dashboard.ts`
 - Modify: `scripts/run-open-project-safety-checks.js`
+- Modify: `scripts/run-dashboard-webview-checks.js`
 
 **Interfaces:**
-- Produces: protocol-v2 handshake and commands `_projectStewardOpenWorkspaces.bridge.publish`, `.unregister`, and `_projectStewardOpenWorkspaces.workspace.aggregate`.
+- Produces atomically: protocol-v2 bridge commands, main-extension client,
+  one current publication, and one card per other navigation identity.
 - Preserves: owner-specific atomic files, single bridge clock, focus stamps, leases, bounded scans, symlink defenses, malformed isolation, retries, and unregister semantics.
 
 - [ ] **Step 1: Add failing store/coordinator/wiring tests**
@@ -833,6 +864,11 @@ Port the existing production store and coordinator cases to v2 and add assertion
 - heartbeats do not change semantic revision;
 - remote URI replacement preserves navigation and root identities correctly.
 
+In the same RED phase, add main-client/controller tests for handshake success,
+queued publish/unregister lifecycle, focus publication, card grouping, and
+lightweight `OTHER WINDOWS` rendering. No committed state may require v1 bridge
+commands after this task.
+
 - [ ] **Step 2: Run bridge checks and verify RED**
 
 ```bash
@@ -843,12 +879,17 @@ Expected: new bridge modules/commands are absent.
 
 - [ ] **Step 3: Implement the v2 bridge path**
 
-Copy only the security/lifecycle mechanics from the v1 implementation, then change the parsed schema and namespace. The bridge may normalize remote workspace/root URIs but must not synthesize a workspace from `workspaceFolders` when the main extension published `null`. Do not load `open-projects/v1`.
+Copy only the security/lifecycle mechanics from the v1 implementation, then
+change the parsed schema and namespace. In the same change, wire the main
+extension client/controllers and Webview to the new command names and
+aggregate. The bridge may normalize remote workspace/root URIs but must not
+synthesize a workspace from `workspaceFolders` when the main extension
+published `null`. Neither extension may load or call v1 after this task.
 
 - [ ] **Step 4: Run bridge checks and verify GREEN**
 
 ```bash
-npm run test-compile && npm run attention:bridge:compile && node scripts/run-open-project-safety-checks.js
+npm run test-compile && npm run attention:bridge:compile && node scripts/run-open-project-safety-checks.js && node scripts/run-dashboard-webview-checks.js
 ```
 
 Expected: all open-workspace bridge checks pass.
@@ -856,18 +897,18 @@ Expected: all open-workspace bridge checks pass.
 - [ ] **Step 5: Commit Task 10**
 
 ```bash
-git add extensions/attention-ui-bridge/src scripts/run-open-project-safety-checks.js
+git add extensions/attention-ui-bridge src/openWorkspaces src/dashboard.ts src/dashboard/webviewUpdateMessages.ts src/webview scripts/run-open-project-safety-checks.js scripts/run-dashboard-webview-checks.js
 git commit -m "feat: publish workspaces through bridge protocol v2"
 ```
 
 ---
 
-### Task 11: Integrate the v2 client and other-window workspace cards
+### Task 11: Harden v2 bridge degradation and incremental updates
 
 **Files:**
-- Create: `src/openWorkspaces/bridgeClient.ts`
-- Create: `src/openWorkspaces/workspaceController.ts`
-- Create: `src/openWorkspaces/dashboardController.ts`
+- Modify: `src/openWorkspaces/bridgeClient.ts`
+- Modify: `src/openWorkspaces/workspaceController.ts`
+- Modify: `src/openWorkspaces/dashboardController.ts`
 - Modify: `src/dashboard/webviewUpdateMessages.ts`
 - Modify: `src/webview/webviewContent.ts`
 - Modify: `src/webview/webviewProjectScripts.js`
@@ -876,12 +917,15 @@ git commit -m "feat: publish workspaces through bridge protocol v2"
 - Modify: `scripts/run-dashboard-webview-checks.js`
 
 **Interfaces:**
-- Produces: one current publication, one card per other navigation identity, and explicit update-required UI on handshake mismatch.
+- Produces: explicit update-required degradation, retry/lifecycle hardening, and semantic incremental-update suppression on top of the atomic v2 cutover.
 - Consumes: `WorkspaceContextResolver`, v2 aggregate, current bridge instance ID, and workspace attention projection.
 
 - [ ] **Step 1: Add failing client/controller/incremental rendering tests**
 
-Test handshake success, mismatch without retry storms, queued publish/unregister lifecycle, focus publication, semantic-update skip, aggregate failure degradation, and card grouping. Assert root arrays are metadata only and no session/provider detail crosses the bridge.
+Test mismatch without retry storms, disposal during handshake/in-flight publish,
+semantic-update skip, aggregate delivery failure recovery, stale card
+invalidation, and current-card isolation from bridge failure. Assert root
+arrays are metadata only and no session/provider detail crosses the bridge.
 
 ```js
 assert.strictEqual(cards.filter(card => card.kind === 'current').length, 1);
@@ -898,7 +942,8 @@ Webview checks must verify `OTHER WINDOWS` has lightweight cards, no session exp
 npm run test-compile && npm run attention:bridge:compile && node scripts/run-open-project-safety-checks.js && node scripts/run-dashboard-webview-checks.js
 ```
 
-Expected: dashboard still publishes/consumes project protocol v1.
+Expected: baseline v2 wiring lacks at least one required degradation,
+lifecycle, or incremental-update behavior.
 
 - [ ] **Step 3: Wire the new controllers**
 
@@ -1062,6 +1107,7 @@ git commit -m "feat: save a live workspace as one project"
 - Modify: `src/models.ts`
 - Modify: `src/dashboard.ts`
 - Modify: `extensions/attention-ui-bridge/src/extension.ts`
+- Modify: `extensions/attention-ui-bridge/tsconfig.json`
 - Modify: `scripts/run-open-project-safety-checks.js`
 - Modify: `scripts/run-ai-session-safety-checks.js`
 - Modify: `scripts/run-performance-architecture-baseline-checks.js`
@@ -1180,7 +1226,7 @@ All seven hard gates from the design must pass, including byte-for-byte semantic
 - [ ] **Step 6: Review the final diff for privacy and compatibility boundaries**
 
 ```bash
-git diff --check HEAD~14..HEAD
+git diff --check main...HEAD
 rg -n "OPEN_PROJECT_PROTOCOL_VERSION|_projectStewardOpenProjects|open-projects/v1|openProjectCardKind|runtime\.identity\.projectKey" src extensions/attention-ui-bridge/src
 git status --short
 ```
