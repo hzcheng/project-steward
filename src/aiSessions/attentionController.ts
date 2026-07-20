@@ -404,17 +404,11 @@ export interface AiSessionRuntimeLifecycleCandidate {
     state: 'completed' | 'stopped';
 }
 
-export type AiSessionRuntimeLifecycleFailureOperation =
-    | 'evaluate'
-    | 'acknowledge-published'
-    | 'acknowledge-local'
-    | 'release';
+export type AiSessionRuntimeLifecycleFailureOperation = 'evaluate' | 'release';
 
 export interface SettleAiSessionRuntimeLifecyclesOptions<TCandidate extends AiSessionRuntimeLifecycleCandidate> {
     candidates: readonly TCandidate[];
     evaluateAttention: () => Promise<AiSessionAttentionEvaluation>;
-    acknowledgePublished: (eventIds: string[]) => Promise<void>;
-    acknowledgeLocal: (eventIds: string[]) => void;
     release: (candidate: TCandidate) => void | Promise<void>;
     reportFailure?: (
         operation: AiSessionRuntimeLifecycleFailureOperation,
@@ -464,35 +458,15 @@ export async function settleAiSessionRuntimeLifecycles<
     const safeToRelease = candidates.filter(candidate =>
         candidate.state === 'stopped' || !evaluation.enabled
         || !inScope.has(candidateSessionKey(candidate)));
-    const completionWithEvents = candidates.filter(candidate => candidate.state === 'completed'
+    const overflowed = new Set(evaluation.overflowedSessionKeys);
+    const deliveredCompletions = candidates.filter(candidate => candidate.state === 'completed'
         && evaluation.enabled && inScope.has(candidateSessionKey(candidate))
         && evaluation.published
-        && (evaluation.eventIdsBySession[candidateSessionKey(candidate)] || []).length > 0);
-    const eventIds = Array.from(new Set(completionWithEvents.reduce((result, candidate) => {
-        result.push(...evaluation.eventIdsBySession[candidateSessionKey(candidate)] || []);
-        return result;
-    }, [] as string[]))).sort();
-    let acknowledgedCompletions: TCandidate[] = [];
-    if (eventIds.length) {
-        let publishedAcknowledged = false;
-        try {
-            await options.acknowledgePublished(eventIds);
-            publishedAcknowledged = true;
-        } catch (_error) {
-            options.reportFailure?.('acknowledge-published', 'unexpected', undefined);
-        }
-        if (publishedAcknowledged) {
-            try {
-                options.acknowledgeLocal(eventIds);
-                acknowledgedCompletions = completionWithEvents;
-            } catch (_error) {
-                options.reportFailure?.('acknowledge-local', 'unexpected', undefined);
-            }
-        }
-    }
+        && ((evaluation.eventIdsBySession[candidateSessionKey(candidate)] || []).length > 0
+            || overflowed.has(candidateSessionKey(candidate))));
 
     const eligibleByKey = new Map<string, TCandidate>();
-    for (const candidate of [...safeToRelease, ...acknowledgedCompletions]) {
+    for (const candidate of [...safeToRelease, ...deliveredCompletions]) {
         eligibleByKey.set(candidate.key, candidate);
     }
     const releasedKeys: string[] = [];

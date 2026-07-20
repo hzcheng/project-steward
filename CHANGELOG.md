@@ -17,6 +17,7 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ### Fixed
 
+-   Preserve completed AI Session attention in `OTHER WINDOWS` after VS Code Terminal or tmux runtime cleanup, until the user clicks the Session or project card.
 -   Prevent concurrent or ambiguous tmux creation, metadata collisions, reload recovery, and attach failures from resending a provider command or modifying unmanaged tmux targets.
 -   Make runtime conflicts explicitly selectable without ambiguous focus or detach, use accessible native session actions, and harden isolated tmux smoke cleanup and provider-invocation evidence.
 -   Keep unmanaged tmux collision diagnostics out of the runtime chooser, classify cleanup failures conservatively, and verify controlled provider exit without sending process signals.

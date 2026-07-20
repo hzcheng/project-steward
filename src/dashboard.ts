@@ -677,8 +677,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                                 runtime: candidate.runtime,
                             }))
                         ),
-                        acknowledgePublished: eventIds => aiSessionAttentionBridgeClient.acknowledge(eventIds),
-                        acknowledgeLocal: eventIds => aiSessionAttentionController.acknowledge(eventIds),
                         release: async candidate => {
                             if (candidate.runtime.backend === 'tmux') {
                                 const acknowledgement = await tmuxRuntimeDiscovery
@@ -724,12 +722,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     aiSessionAttentionBridgeClient = new AttentionBridgeClient(
         aggregate => {
             if (aiSessionAttentionController.setRemoteAggregate(aggregate)) {
-                aiSessionTerminalService.getReleasedSessions().forEach(identity => {
-                    void runSafeAiSessionRuntimeLifecycleTask(
-                        'acknowledge-released-attention',
-                        () => acknowledgeAiSessionAttention(identity)
-                    );
-                });
                 scheduleAiSessionRefresh('attention');
                 postAiSessionAttentionProjectsUpdated(aiSessionAttentionController.getProjectSummaries());
             }

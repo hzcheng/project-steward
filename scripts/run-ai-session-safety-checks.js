@@ -2271,10 +2271,12 @@ async function runAiSessionAttentionControllerChecks() {
     const completionOrder = [];
     let evaluationCount = 0;
     const candidates = [
-        { key: 'codex:published', state: 'completed' },
-        { key: 'kimi:missing-event', state: 'completed' },
-        { key: 'claude:out-of-scope', state: 'completed' },
-        { key: 'codex:stopped', state: 'stopped' },
+        { key: 'codex:session-a:700:vscode', state: 'completed', backend: 'vscode' },
+        { key: 'codex:session-b:800:tmux', state: 'completed', backend: 'tmux' },
+        { key: 'codex:session-c:900:tmux', state: 'completed', backend: 'tmux' },
+        { key: 'kimi:missing-event', state: 'completed', backend: 'tmux' },
+        { key: 'claude:out-of-scope', state: 'completed', backend: 'vscode' },
+        { key: 'codex:stopped', state: 'stopped', backend: 'tmux' },
     ];
     const settled = await settleAiSessionRuntimeLifecycles({
         candidates,
@@ -2284,18 +2286,22 @@ async function runAiSessionAttentionControllerChecks() {
             return {
                 enabled: true,
                 published: true,
-                inScopeSessionKeys: ['codex:published', 'kimi:missing-event'],
-                eventIdsBySession: { 'codex:published': ['completed-event'] },
-                overflowedSessionKeys: [],
+                inScopeSessionKeys: [
+                    'codex:session-a:700:vscode',
+                    'codex:session-b:800:tmux',
+                    'codex:session-c:900:tmux',
+                    'kimi:missing-event',
+                ],
+                eventIdsBySession: {
+                    'codex:session-a:700:vscode': ['direct-completed-event'],
+                    'codex:session-b:800:tmux': ['tmux-completed-event'],
+                },
+                overflowedSessionKeys: ['codex:session-c:900:tmux'],
             };
         },
-        acknowledgePublished: async eventIds => {
-            completionOrder.push(`ack:${eventIds.join(',')}`);
+        release: candidate => {
+            completionOrder.push(`release:${candidate.backend}:${candidate.key}`);
         },
-        acknowledgeLocal: eventIds => {
-            completionOrder.push(`local:${eventIds.join(',')}`);
-        },
-        release: candidate => { completionOrder.push(`release:${candidate.key}`); },
         reportFailure: (operation, category, key) => {
             completionOrder.push(`failure:${operation}:${category}:${key || ''}`);
         },
@@ -2303,17 +2309,23 @@ async function runAiSessionAttentionControllerChecks() {
     assert.strictEqual(evaluationCount, 1,
         'one lifecycle settlement round must perform one global attention evaluation');
     assert.deepStrictEqual(settled, {
-        releasedKeys: ['claude:out-of-scope', 'codex:published', 'codex:stopped'],
+        releasedKeys: [
+            'claude:out-of-scope',
+            'codex:session-a:700:vscode',
+            'codex:session-b:800:tmux',
+            'codex:session-c:900:tmux',
+            'codex:stopped',
+        ],
         retainedKeys: ['kimi:missing-event'],
     });
     assert.deepStrictEqual(completionOrder, [
         'publish',
-        'ack:completed-event',
-        'local:completed-event',
-        'release:claude:out-of-scope',
-        'release:codex:published',
-        'release:codex:stopped',
-    ], 'published completion must be acknowledged before release while safe lifecycles also settle');
+        'release:vscode:claude:out-of-scope',
+        'release:vscode:codex:session-a:700:vscode',
+        'release:tmux:codex:session-b:800:tmux',
+        'release:tmux:codex:session-c:900:tmux',
+        'release:tmux:codex:stopped',
+    ], 'delivery releases both backends without acknowledging user attention');
 
     let prematureRelease = 0;
     const unpublished = await settleAiSessionRuntimeLifecycles({
@@ -2325,8 +2337,6 @@ async function runAiSessionAttentionControllerChecks() {
             eventIdsBySession: { 'codex:unpublished': ['unpublished-event'] },
             overflowedSessionKeys: [],
         }),
-        acknowledgePublished: async () => undefined,
-        acknowledgeLocal: () => undefined,
         release: () => { prematureRelease++; },
     });
     assert.deepStrictEqual(unpublished, {
@@ -2342,8 +2352,6 @@ async function runAiSessionAttentionControllerChecks() {
             enabled: false, published: true, inScopeSessionKeys: [], eventIdsBySession: {},
             overflowedSessionKeys: [],
         }),
-        acknowledgePublished: async () => undefined,
-        acknowledgeLocal: () => undefined,
         release: candidate => { disabledReleases.push(candidate.key); },
     });
     assert.deepStrictEqual(disabledReleases, ['codex:disabled'],
@@ -2353,8 +2361,6 @@ async function runAiSessionAttentionControllerChecks() {
     const rejectedSettlement = await settleAiSessionRuntimeLifecycles({
         candidates: [{ key: 'codex:rejected', state: 'completed' }],
         evaluateAttention: async () => { throw new Error('/secret/raw-evaluate'); },
-        acknowledgePublished: async () => { throw new Error('/secret/raw-ack'); },
-        acknowledgeLocal: () => { throw new Error('/secret/raw-local'); },
         release: () => { throw new Error('/secret/raw-release'); },
         reportFailure: (...args) => { containedFailures.push(args); },
     });
@@ -2364,7 +2370,7 @@ async function runAiSessionAttentionControllerChecks() {
     assert.deepStrictEqual(containedFailures, [['evaluate', 'unexpected', undefined]],
         'settlement catches rejection and reports only fixed redacted fields');
 
-    for (const rejectedOperation of ['acknowledge-published', 'acknowledge-local', 'release']) {
+    for (const rejectedOperation of ['release']) {
         const failures = [];
         let releases = 0;
         const result = await settleAiSessionRuntimeLifecycles({
@@ -2376,24 +2382,18 @@ async function runAiSessionAttentionControllerChecks() {
                 eventIdsBySession: { [`codex:${rejectedOperation}`]: ['event'] },
                 overflowedSessionKeys: [],
             }),
-            acknowledgePublished: async () => {
-                if (rejectedOperation === 'acknowledge-published') throw new Error('/secret/published');
-            },
-            acknowledgeLocal: () => {
-                if (rejectedOperation === 'acknowledge-local') throw new Error('/secret/local');
-            },
             release: () => {
                 releases++;
-                if (rejectedOperation === 'release') throw new Error('/secret/release');
+                throw new Error('/secret/release');
             },
             reportFailure: (...args) => { failures.push(args); },
         });
         assert.deepStrictEqual(result, {
             releasedKeys: [], retainedKeys: [`codex:${rejectedOperation}`],
         }, `${rejectedOperation} rejection must retain lifecycle ownership`);
-        assert.strictEqual(releases, rejectedOperation === 'release' ? 1 : 0);
+        assert.strictEqual(releases, 1);
         assert.deepStrictEqual(failures, [[rejectedOperation, 'unexpected',
-            rejectedOperation === 'release' ? `codex:${rejectedOperation}` : undefined]]);
+            `codex:${rejectedOperation}`]]);
     }
 
     const unhandledLifecycleRejections = [];
@@ -4795,8 +4795,16 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes("logAiSessionRuntimeFailure('sync-focused-runtime', error)"));
     assert.ok(dashboard.includes('context.subscriptions.push(tmuxFocusedRuntimeMonitor);'));
     assert.match(dashboard, /const acknowledgeAiSessionAttention = async[\s\S]*?await aiSessionAttentionBridgeClient\.acknowledge\(eventIds\);[\s\S]*?aiSessionAttentionController\.acknowledge\(eventIds\)/);
-    assert.match(dashboard, /settleAiSessionRuntimeLifecycles\(\{[\s\S]*?candidates:[\s\S]*?evaluateAttention: \(\) => evaluateAiSessionAttention\([\s\S]*?attentionKey: candidate\.key[\s\S]*?acknowledgePublished[\s\S]*?acknowledgeLocal[\s\S]*?release:/);
-    assert.match(dashboard, /aggregate => \{[\s\S]*?setRemoteAggregate\(aggregate\)[\s\S]*?getReleasedSessions\(\)\.forEach/);
+    const settlementCall = dashboard.match(/settleAiSessionRuntimeLifecycles\(\{[\s\S]*?\n\s*\}\);/)?.[0] || '';
+    assert.ok(settlementCall.includes('attentionKey: candidate.key'));
+    assert.ok(settlementCall.includes('release: async candidate =>'));
+    assert.ok(!settlementCall.includes('acknowledgePublished'));
+    assert.ok(!settlementCall.includes('acknowledgeLocal'));
+    assert.doesNotMatch(
+        dashboard,
+        /setRemoteAggregate\(aggregate\)[\s\S]*?getReleasedSessions\(\)\.forEach/,
+        'a later aggregate must not auto-acknowledge a delivered completion'
+    );
     assert.match(dashboard, /onComplete: resolution => \{[\s\S]*?queueAiSessionRuntimeSettlements\(\[\{/);
     assert.ok(!dashboard.includes('void settleAiSessionRuntime('),
         'lifecycle settlement scheduling must not create unhandled fire-and-forget rejections');
@@ -8185,6 +8193,19 @@ function runAttentionPayloadChecks() {
     const aggregate = attentionAggregate.aggregateAttentionSnapshots([owner], new Set(['e']), 21);
     assert.deepStrictEqual(aggregate.sessions, []);
     assert.strictEqual(aggregate.aggregateRevision.length, 64);
+
+    const republishedOwner = attentionPayload.validateAttentionOwnerSnapshot({
+        ...owner,
+        sequence: 2,
+        heartbeat: 2,
+    });
+    const acknowledgedRepublish = attentionAggregate.aggregateAttentionSnapshots(
+        [republishedOwner],
+        new Set(['e']),
+        22
+    );
+    assert.deepStrictEqual(acknowledgedRepublish.sessions, [],
+        'a project-card acknowledgement must suppress retained owner republication');
 
     const secondOwner = attentionPayload.validateAttentionOwnerSnapshot({
         ...owner,
