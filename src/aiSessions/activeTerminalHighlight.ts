@@ -7,6 +7,7 @@ export const ACTIVE_AI_SESSION_TERMINAL_CHECK_INTERVAL_MS = 1000;
 export interface ActiveAiSessionTerminalIdentity {
     provider: AiSessionProviderId;
     sessionId: string;
+    workspaceScopeIdentity: string;
 }
 
 export interface ActiveAiSessionTerminalResolution<TTerminal, TEntry>
@@ -54,7 +55,11 @@ export default class ActiveAiSessionTerminalHighlighter<TTerminal, TEntry> {
         }
 
         this.resolution = resolution;
-        this.setIdentity({ provider: resolution.provider, sessionId: resolution.sessionId }, forcePublish);
+        this.setIdentity({
+            provider: resolution.provider,
+            sessionId: resolution.sessionId,
+            workspaceScopeIdentity: resolution.workspaceScopeIdentity,
+        }, forcePublish);
         this.timer = this.dependencies.setInterval(
             () => this.checkCompletion(),
             ACTIVE_AI_SESSION_TERMINAL_CHECK_INTERVAL_MS
@@ -112,9 +117,11 @@ export default class ActiveAiSessionTerminalHighlighter<TTerminal, TEntry> {
 
     private setIdentity(identity: ActiveAiSessionTerminalIdentity | null, forcePublish: boolean = false) {
         let currentKey = this.currentIdentity
-            ? `${this.currentIdentity.provider}:${this.currentIdentity.sessionId}`
+            ? `${this.currentIdentity.workspaceScopeIdentity}:${this.currentIdentity.provider}:${this.currentIdentity.sessionId}`
             : '';
-        let nextKey = identity ? `${identity.provider}:${identity.sessionId}` : '';
+        let nextKey = identity
+            ? `${identity.workspaceScopeIdentity}:${identity.provider}:${identity.sessionId}`
+            : '';
         this.currentIdentity = identity;
         if (forcePublish || currentKey !== nextKey) {
             this.dependencies.publish(identity);

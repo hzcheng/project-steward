@@ -122,6 +122,12 @@ function validateRecord(value: unknown): TmuxAttachBinding | null {
     }
     const record = value as Record<string, unknown>;
     if (record.version !== 2 || !isLayout(record.layout)
+        || !hasExactKeys(record, [
+            'version', 'layout', 'workspaceScopeIdentity', 'workspaceNavigationIdentity',
+            'workspaceRootHostPaths', 'cwd', 'sessionName', 'provider',
+            record.sessionId === undefined ? 'pendingId' : 'sessionId', 'terminalNamePrefix',
+            ...(record.layout === 'project' ? ['windowName'] : []),
+        ])
         || !isBoundedString(record.sessionName, MAX_ID_LENGTH)
         || !isBoundedString(record.terminalNamePrefix, MAX_TITLE_LENGTH)
         || !isProviderId(record.provider)) {
@@ -160,6 +166,12 @@ function validateRecord(value: unknown): TmuxAttachBinding | null {
         ...(record.pendingId === undefined ? {} : { pendingId: record.pendingId as string }),
         terminalNamePrefix: record.terminalNamePrefix,
     };
+}
+
+function hasExactKeys(record: Record<string, unknown>, required: readonly string[]): boolean {
+    const allowed = new Set(required);
+    return required.every(key => Object.prototype.hasOwnProperty.call(record, key))
+        && Object.keys(record).every(key => allowed.has(key));
 }
 
 function cloneBinding(binding: TmuxAttachBinding): TmuxAttachBinding {

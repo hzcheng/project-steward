@@ -32,6 +32,7 @@ export type ActiveAiSessionStatus = 'starting' | 'running' | 'focused' | 'needsA
 export interface AiSessionActiveTerminalRuntime {
     provider: AiSessionProviderId;
     sessionId: string;
+    workspaceScopeIdentity: string;
     cwd?: string;
     runStartedAtMs: number;
 }

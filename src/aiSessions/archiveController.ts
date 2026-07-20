@@ -16,6 +16,7 @@ import {
 export interface AiSessionArchiveRuntimeEntry {
     state: 'pending' | 'active' | 'completed' | 'stopped' | 'conflict';
     markerPath: string;
+    identity: { workspaceScopeIdentity: string };
 }
 
 export interface AiSessionArchiveProvider {
@@ -36,7 +37,11 @@ export interface AiSessionArchiveControllerOptions<TRuntime extends AiSessionArc
     isRuntimeComplete: (runtime: TRuntime) => boolean;
     focusRuntime: (runtime: TRuntime) => unknown;
     deleteRuntimeMarker: (runtime: TRuntime) => void;
-    untrackRuntime: (providerId: AiSessionProviderId, sessionId: string) => void;
+    untrackRuntime: (
+        providerId: AiSessionProviderId,
+        sessionId: string,
+        workspaceScopeIdentity: string
+    ) => void;
     deletePin: (providerId: AiSessionProviderId, sessionId: string) => void;
     deleteAlias: (providerId: AiSessionProviderId, sessionId: string) => void;
     confirmSingleArchive: (providerLabel: string) => Thenable<string | undefined>;
@@ -122,7 +127,13 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
                     this.options.deleteRuntimeMarker(runtime);
                 }
             },
-            untrackTerminal: () => this.options.untrackRuntime(providerId, sessionId),
+            untrackTerminal: () => {
+                if (runtime) {
+                    this.options.untrackRuntime(
+                        providerId, sessionId, runtime.identity.workspaceScopeIdentity
+                    );
+                }
+            },
             deletePin: () => this.options.deletePin(providerId, sessionId),
             deleteAlias: () => this.options.deleteAlias(providerId, sessionId),
         });

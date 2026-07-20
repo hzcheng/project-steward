@@ -25,8 +25,6 @@ const MAX_EXCLUDED_SESSION_IDS = 1000;
 const MAX_RECORD_BYTES = 1024 * 1024;
 const MAX_KNOWN_RECORDS = 512;
 const MAX_INACTIVE_RECORDS = 512;
-const MAX_PENDING_LIFECYCLE_DIRECTORY_FILES = 4096;
-const MAX_PENDING_LIFECYCLE_LOOKUP_RECORDS = 512;
 const PENDING_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const KNOWN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -179,14 +177,16 @@ export class TmuxRuntimeBindingStore {
         return this.serializeFinal(() => this.listInactiveUnlocked(true));
     }
 
-    getPending(pendingId: string): Promise<TmuxPendingRuntimeBinding | null> {
+    getPending(identity: AiSessionRuntimeIdentity): Promise<TmuxPendingRuntimeBinding | null> {
         return this.serialize(async () => {
-            if (!isBoundedString(pendingId, MAX_ID_LENGTH)) {
+            const identityParts = pendingIdentityParts(identity);
+            if (!identityParts) {
                 return null;
             }
-            const filePath = this.recordPath('pending', pendingId);
+            const filePath = this.recordPath('pending', ...identityParts);
             const record = validatePersistedPendingRecord(await readJsonRegularFile(filePath), this.now());
-            if (!record || record.pendingId !== pendingId || !isCanonicalRecordPath(filePath, record)) {
+            if (!record || !pendingRecordMatchesIdentity(record, identity)
+                || !isCanonicalRecordPath(filePath, record)) {
                 return null;
             }
             return clonePending(record);
@@ -272,19 +272,14 @@ export class TmuxRuntimeBindingStore {
         });
     }
 
-    getAmbiguousByPendingId(pendingId: string): Promise<TmuxAmbiguousRuntimeBinding | null> {
-        return this.serialize(() => this.getPendingLifecycleByIdUnlocked(
-            'ambiguous', pendingId, validateAmbiguousRecord, cloneAmbiguous
-        ));
-    }
-
     setPending(record: TmuxPendingRuntimeBinding): Promise<boolean> {
         const validated = validatePersistedPendingRecord(record, this.now());
         if (!validated) {
             return Promise.reject(new Error('The pending tmux binding is invalid or expired.'));
         }
         return this.serialize(async () => {
-            await this.writeRecord(this.recordPath('pending', validated.pendingId), validated);
+            await this.writeRecord(this.recordPath('pending', validated.provider,
+                validated.workspaceScopeIdentity, validated.pendingId), validated);
             return true;
         });
     }
@@ -299,12 +294,6 @@ export class TmuxRuntimeBindingStore {
             return record && consumedRecordMatchesIdentity(record, identity)
                 && isCanonicalRecordPath(filePath, record) ? cloneConsumed(record) : null;
         });
-    }
-
-    getConsumedByPendingId(pendingId: string): Promise<TmuxConsumedPendingBinding | null> {
-        return this.serialize(() => this.getPendingLifecycleByIdUnlocked(
-            'consumed', pendingId, validateConsumedRecord, cloneConsumed
-        ));
     }
 
     setConsumed(record: TmuxConsumedPendingBinding): Promise<boolean> {
@@ -330,12 +319,6 @@ export class TmuxRuntimeBindingStore {
             return record && promotingRecordMatchesIdentity(record, identity)
                 && isCanonicalRecordPath(filePath, record) ? clonePromoting(record) : null;
         });
-    }
-
-    getPromotingByPendingId(pendingId: string): Promise<TmuxPromotingRuntimeBinding | null> {
-        return this.serialize(() => this.getPendingLifecycleByIdUnlocked(
-            'promoting', pendingId, validatePromotingRecord, clonePromoting
-        ));
     }
 
     setPromoting(record: TmuxPromotingRuntimeBinding): Promise<boolean> {
@@ -377,11 +360,11 @@ export class TmuxRuntimeBindingStore {
         return this.serialize(() => removeFile(this.recordPath('ambiguous', ...identityParts)));
     }
 
-    removePending(pendingId: string): Promise<void> {
-        if (!isBoundedString(pendingId, MAX_ID_LENGTH)) {
-            return Promise.resolve();
-        }
-        return this.serialize(() => removeFile(this.recordPath('pending', pendingId)));
+    removePending(identity: AiSessionRuntimeIdentity): Promise<void> {
+        const identityParts = pendingIdentityParts(identity);
+        return identityParts
+            ? this.serialize(() => removeFile(this.recordPath('pending', ...identityParts)))
+            : Promise.resolve();
     }
 
     setKnown(record: TmuxKnownRuntimeBinding): Promise<void> {
@@ -621,37 +604,6 @@ export class TmuxRuntimeBindingStore {
         return entries;
     }
 
-    private async getPendingLifecycleByIdUnlocked<T extends TmuxAmbiguousRuntimeBinding
-        | TmuxConsumedPendingBinding | TmuxPromotingRuntimeBinding>(
-        kind: 'ambiguous' | 'consumed' | 'promoting',
-        pendingId: string,
-        validate: (value: unknown) => T | null,
-        clone: (record: T) => T
-    ): Promise<T | null> {
-        if (!isBoundedString(pendingId, MAX_ID_LENGTH)) {
-            return null;
-        }
-        const files = await listJsonFiles(this.root);
-        if (files.length > MAX_PENDING_LIFECYCLE_DIRECTORY_FILES) {
-            throw new Error('Too many tmux lifecycle files exist for bounded pending ID lookup.');
-        }
-        const candidates = files.filter(filePath => path.basename(filePath).startsWith(`${kind}-`));
-        if (candidates.length > MAX_PENDING_LIFECYCLE_LOOKUP_RECORDS) {
-            throw new Error('Too many tmux lifecycle records exist for bounded pending ID lookup.');
-        }
-        const matches: T[] = [];
-        for (const filePath of candidates) {
-            const record = validate(await readJsonRegularFile(filePath));
-            if (record && record.pendingId === pendingId && isCanonicalRecordPath(filePath, record)) {
-                matches.push(record);
-            }
-        }
-        if (matches.length > 1) {
-            throw new Error(`Multiple tmux ${kind} records use the same pending ID.`);
-        }
-        return matches.length === 1 ? clone(matches[0]) : null;
-    }
-
     private recordPath(
         kind: 'pending' | 'known' | 'ambiguous' | 'consumed' | 'promoting',
         ...identity: string[]
@@ -761,7 +713,7 @@ function isUnsupportedNoFollowError(error: unknown): boolean {
 function isCanonicalRecordPath(filePath: string, record: TmuxRuntimeBinding): boolean {
     let identity: string[];
     if (record.state === 'pending') {
-        identity = [record.pendingId];
+        identity = [record.provider, record.workspaceScopeIdentity, record.pendingId];
     } else if (record.state === 'known' || record.state === 'completed' || record.state === 'stopped') {
         identity = [record.provider, record.workspaceScopeIdentity, record.sessionId];
     } else if (record.state === 'consumed' || record.state === 'promoting') {
@@ -824,12 +776,18 @@ function validatePendingRecord(value: unknown): TmuxPendingRuntimeBinding | null
     const record = value as Record<string, unknown>;
     const locator = validateLocator(record.locator);
     const identity = validateBindingIdentity(record, { pendingId: record.pendingId });
-    if (record.version !== RECORD_VERSION || record.state !== 'pending'
+    if (!hasExactKeys(record, [
+        'version', 'state', 'pendingId', 'provider', 'workspaceScopeIdentity',
+        'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'createdAt',
+        'excludedSessionIds', 'acceptedAtMs', 'layout', 'locator',
+    ], ['title'])
+        || record.version !== RECORD_VERSION || record.state !== 'pending'
         || !identity
         || !isDateString(record.createdAt) || !isLayout(record.layout) || !locator
         || locator.layout !== record.layout || !Array.isArray(record.excludedSessionIds)
         || record.excludedSessionIds.length > MAX_EXCLUDED_SESSION_IDS
         || record.excludedSessionIds.some(id => !isBoundedString(id, MAX_ID_LENGTH))
+        || !isFiniteNonNegative(record.acceptedAtMs)
         || (record.title !== undefined && !isOptionalTitle(record.title))) {
         return null;
     }
@@ -841,9 +799,7 @@ function validatePendingRecord(value: unknown): TmuxPendingRuntimeBinding | null
         createdAt: record.createdAt,
         excludedSessionIds: [...record.excludedSessionIds] as string[],
         ...(record.title === undefined ? {} : { title: record.title as string }),
-        acceptedAtMs: isFiniteNonNegative(record.acceptedAtMs)
-            ? record.acceptedAtMs
-            : Date.parse(record.createdAt as string),
+        acceptedAtMs: record.acceptedAtMs,
         layout: record.layout,
         locator,
     };
@@ -880,7 +836,11 @@ function validateConsumedRecord(value: unknown): TmuxConsumedPendingBinding | nu
     const record = value as Record<string, unknown>;
     const locator = validateLocator(record.finalLocator);
     const identity = validateBindingIdentity(record, { pendingId: record.pendingId });
-    if (record.version !== RECORD_VERSION || record.state !== 'consumed'
+    if (!hasExactKeys(record, [
+        'version', 'state', 'pendingId', 'provider', 'workspaceScopeIdentity',
+        'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'finalSessionId',
+        'layout', 'finalLocator', 'consumedAtMs',
+    ]) || record.version !== RECORD_VERSION || record.state !== 'consumed'
         || !identity
         || !isBoundedString(record.finalSessionId, MAX_ID_LENGTH)
         || !isLayout(record.layout) || !locator || locator.layout !== record.layout
@@ -908,7 +868,12 @@ function validatePromotingRecord(value: unknown): TmuxPromotingRuntimeBinding | 
     const finalLocator = validateLocator(record.finalLocator);
     const pendingBinding = validatePendingRecord(record.pendingBinding);
     const identity = validateBindingIdentity(record, { pendingId: record.pendingId });
-    if (record.version !== RECORD_VERSION || record.state !== 'promoting'
+    if (!hasExactKeys(record, [
+        'version', 'state', 'pendingId', 'provider', 'workspaceScopeIdentity',
+        'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'createdAt',
+        'markerPath', 'pendingBinding', 'finalSessionId', 'layout', 'sourceLocator',
+        'finalLocator', 'requestFingerprint', 'recordedAtMs',
+    ]) || record.version !== RECORD_VERSION || record.state !== 'promoting'
         || !identity
         || !isDateString(record.createdAt)
         || (record.markerPath !== '' && !isBoundedString(record.markerPath, MAX_PATH_LENGTH))
@@ -950,9 +915,21 @@ function validateAmbiguousRecord(value: unknown): TmuxAmbiguousRuntimeBinding | 
     const locator = validateLocator(record.locator);
     const hasSessionId = record.sessionId !== undefined;
     const hasPendingId = record.pendingId !== undefined;
+    const exactKeys = hasSessionId
+        ? hasExactKeys(record, [
+            'version', 'state', 'provider', 'workspaceScopeIdentity',
+            'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'layout',
+            'locator', 'acceptedAtMs', 'sessionId',
+        ])
+        : hasExactKeys(record, [
+            'version', 'state', 'provider', 'workspaceScopeIdentity',
+            'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'layout',
+            'locator', 'acceptedAtMs', 'pendingId', 'createdAt', 'excludedSessionIds',
+            'requestFingerprint',
+        ], ['title', 'markerPath']);
     const identity = hasSessionId === hasPendingId ? null : validateBindingIdentity(record,
         hasSessionId ? { sessionId: record.sessionId } : { pendingId: record.pendingId });
-    if (record.version !== RECORD_VERSION || record.state !== 'ambiguous'
+    if (!exactKeys || record.version !== RECORD_VERSION || record.state !== 'ambiguous'
         || !identity
         || !isLayout(record.layout) || !locator || locator.layout !== record.layout
         || !isFiniteNonNegative(record.acceptedAtMs)
@@ -996,7 +973,12 @@ function validateKnownRecord(value: unknown): TmuxKnownRuntimeBinding | null {
     const identity = validateBindingIdentity(record, { sessionId: record.sessionId });
     const lifecycleFieldCount = [record.markerPath, record.runStartedAtMs]
         .filter(field => field !== undefined).length;
-    if (record.version !== RECORD_VERSION || record.state !== 'known'
+    if (!hasExactKeys(record, [
+        'version', 'state', 'provider', 'sessionId', 'workspaceScopeIdentity',
+        'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'layout',
+        'locator', 'lastSeenAtMs',
+    ], ['markerPath', 'runStartedAtMs'])
+        || record.version !== RECORD_VERSION || record.state !== 'known'
         || !identity
         || !isLayout(record.layout) || !locator || locator.layout !== record.layout
         || !isFiniteNonNegative(record.lastSeenAtMs)
@@ -1030,7 +1012,11 @@ function validateInactiveRecord(
     const record = value as Record<string, unknown>;
     const locator = validateLocator(record.locator);
     const identity = validateBindingIdentity(record, { sessionId: record.sessionId });
-    if (record.version !== RECORD_VERSION
+    if (!hasExactKeys(record, [
+        'version', 'state', 'provider', 'sessionId', 'workspaceScopeIdentity',
+        'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'layout',
+        'locator', 'markerPath', 'runStartedAtMs', 'detectedAtMs',
+    ]) || record.version !== RECORD_VERSION
         || (record.state !== 'completed' && record.state !== 'stopped')
         || !identity || !isLayout(record.layout)
         || !locator || locator.layout !== record.layout
@@ -1065,7 +1051,9 @@ function validateLocator(value: unknown): AiSessionTmuxLocator | null {
         return null;
     }
     const record = value as Record<string, unknown>;
-    if (!isLayout(record.layout) || !isBoundedString(record.sessionName, MAX_ID_LENGTH)) {
+    if (!isLayout(record.layout) || !isBoundedString(record.sessionName, MAX_ID_LENGTH)
+        || !hasExactKeys(record, record.layout === 'project'
+            ? ['layout', 'sessionName', 'windowName'] : ['layout', 'sessionName'])) {
         return null;
     }
     if (record.layout === 'project') {
@@ -1076,6 +1064,16 @@ function validateLocator(value: unknown): AiSessionTmuxLocator | null {
     return record.windowName === undefined
         ? { layout: 'session', sessionName: record.sessionName }
         : null;
+}
+
+function hasExactKeys(
+    record: Record<string, unknown>,
+    required: readonly string[],
+    optional: readonly string[] = []
+): boolean {
+    const allowed = new Set([...required, ...optional]);
+    return required.every(key => Object.prototype.hasOwnProperty.call(record, key))
+        && Object.keys(record).every(key => allowed.has(key));
 }
 
 function locatorsEqual(left: AiSessionTmuxLocator, right: AiSessionTmuxLocator): boolean {
@@ -1151,6 +1149,13 @@ function clonePromoting(record: TmuxPromotingRuntimeBinding): TmuxPromotingRunti
 
 function consumedRecordMatchesIdentity(
     record: TmuxConsumedPendingBinding,
+    identity: AiSessionRuntimeIdentity
+): boolean {
+    return record.pendingId === identity.pendingId && bindingIdentitiesEqual(record, identity);
+}
+
+function pendingRecordMatchesIdentity(
+    record: TmuxPendingRuntimeBinding,
     identity: AiSessionRuntimeIdentity
 ): boolean {
     return record.pendingId === identity.pendingId && bindingIdentitiesEqual(record, identity);

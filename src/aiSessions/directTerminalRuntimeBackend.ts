@@ -199,7 +199,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     async ensurePending(request: AiSessionCreateRuntimeRequest): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>> {
         const input = snapshotCreateRequest(request);
         const duplicate = this.getPending().filter(runtime =>
-            runtime.identity.pendingId === input.identity.pendingId);
+            pendingIdentitiesEqual(runtime.identity, input.identity));
         if (duplicate.length === 1) {
             await this.focus(duplicate[0]);
             return clonePendingRuntime(duplicate[0]);
@@ -235,9 +235,13 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         return this.pendingSnapshot(pending);
     }
 
-    async promotePending(pendingId: string, sessionId: string): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
+    async promotePending(
+        identity: AiSessionRuntimeIdentity & { pendingId: string },
+        sessionId: string
+    ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
+        const expectedIdentity = cloneAiSessionRuntimeIdentity(identity);
         const matches = this.terminalService.getPendingTerminals().filter(entry =>
-            this.getPendingIdentity(entry)?.pendingId === pendingId);
+            pendingIdentitiesEqual(this.getPendingIdentity(entry), expectedIdentity));
         if (matches.length !== 1 || !sessionId) {
             return matches.map(entry => ({ ...this.pendingSnapshot(entry), state: 'conflict' }));
         }
@@ -341,6 +345,20 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             ? cloneAiSessionRuntimeIdentity(identity) as DirectPendingRuntimeMetadata
             : null;
     }
+}
+
+function pendingIdentitiesEqual(
+    left: AiSessionRuntimeIdentity | null,
+    right: AiSessionRuntimeIdentity
+): boolean {
+    return !!left?.pendingId && !!right?.pendingId
+        && left.pendingId === right.pendingId
+        && left.provider === right.provider
+        && left.workspaceScopeIdentity === right.workspaceScopeIdentity
+        && left.workspaceNavigationIdentity === right.workspaceNavigationIdentity
+        && left.cwd === right.cwd
+        && JSON.stringify(left.workspaceRootHostPaths.slice().sort())
+            === JSON.stringify(right.workspaceRootHostPaths.slice().sort());
 }
 
 function finiteDate(value: string): number {

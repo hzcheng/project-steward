@@ -974,8 +974,8 @@ async function runPendingTerminalResolverChecks() {
     const partialAliases = [];
     let partialSyncs = 0;
     const partial = await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
-        resolverOptions([first, second], async (pendingId, sessionId) => {
-            if (pendingId === 'pending-second') {
+        resolverOptions([first, second], async (identity, sessionId) => {
+            if (identity.pendingId === 'pending-second') {
                 throw new Error('later promotion failed');
             }
             return [finalRuntime(first, sessionId)];
@@ -1301,7 +1301,9 @@ function runActiveAiSessionProjectionChecks() {
             'codex:c1': { state: 'running', stateChangedAt: 100 },
             'kimi:k1': { state: 'stopped', stateChangedAt: 200 },
         },
-        focusedIdentity: { provider: 'codex', sessionId: 'c1' },
+        focusedIdentity: {
+            provider: 'codex', sessionId: 'c1', workspaceScopeIdentity: 'scope:/work/app',
+        },
         getProjectCwd: project => project.path,
         normalizePath: value => value && value.replace(/\/$/, ''),
     });
@@ -1325,6 +1327,26 @@ function runActiveAiSessionProjectionChecks() {
     assert.strictEqual(projected[0].activeAiSessionTab, 'active');
     assert.strictEqual(projects[0].codexSessions[0].active, undefined, 'projection must not mutate hydration input');
 
+    const crossScopeFocus = activeSessionProjection.applyAiSessionRuntimeProjection({
+        projects,
+        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
+        workspaceScopeIdentity: 'scope:/work/app',
+        activeRuntimes: [{
+            identity: createTestAiSessionRuntimeIdentity('codex', '/work/app', { sessionId: 'c1' }),
+            backend: 'vscode', state: 'active', markerPath: '/tmp/c1.done', runStartedAtMs: 10,
+            attached: true,
+        }],
+        pendingRuntimes: [],
+        executionSnapshot: {},
+        focusedIdentity: {
+            provider: 'codex', sessionId: 'c1', workspaceScopeIdentity: 'scope:/other-workspace',
+        },
+        getProjectCwd: project => project.path,
+        normalizePath: value => value,
+    });
+    assert.strictEqual(crossScopeFocus[0].codexSessions[0].focused, false,
+        'Direct focus from another workspace scope must not focus this scope');
+
     const swappedExecutionStates = activeSessionProjection.applyAiSessionRuntimeProjection({
         projects,
         providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
@@ -1342,7 +1364,9 @@ function runActiveAiSessionProjectionChecks() {
             'codex:c1': { state: 'stopped', stateChangedAt: 300 },
             'kimi:k1': { state: 'running', stateChangedAt: 400 },
         },
-        focusedIdentity: { provider: 'codex', sessionId: 'c1' },
+        focusedIdentity: {
+            provider: 'codex', sessionId: 'c1', workspaceScopeIdentity: 'scope:/work/app',
+        },
         getProjectCwd: project => project.path,
         normalizePath: value => value && value.replace(/\/$/, ''),
     });
@@ -3563,8 +3587,10 @@ async function runAiSessionProjectHydrationControllerChecks() {
             excludedSessionIds: [...pending.excludedSessionIds],
             ...(pending.title === undefined ? {} : { title: pending.title }),
         })),
-        promotePending: async (pendingId, sessionId) => {
-            const pending = runtimeCoordinator.getPending().find(runtime => runtime.identity.pendingId === pendingId);
+        promotePending: async (identity, sessionId) => {
+            const pending = runtimeCoordinator.getPending().find(runtime =>
+                runtime.identity.pendingId === identity.pendingId
+                && runtime.identity.workspaceScopeIdentity === identity.workspaceScopeIdentity);
             const entry = terminalService.pending.find(candidate => candidate.createdAt === pending?.createdAt);
             if (!entry) {
                 return [];
@@ -4371,8 +4397,8 @@ function runActiveAiSessionTerminalHighlightChecks() {
     let completedResolution = null;
     let timers = [];
     const resolutions = new Map([
-        [terminalA, { terminal: terminalA, provider: 'codex', sessionId: 'a', entry: { markerPath: 'a.done' } }],
-        [terminalB, { terminal: terminalB, provider: 'kimi', sessionId: 'b', entry: { markerPath: 'b.done' } }],
+        [terminalA, { terminal: terminalA, provider: 'codex', sessionId: 'a', workspaceScopeIdentity: 'scope-a', entry: { markerPath: 'a.done' } }],
+        [terminalB, { terminal: terminalB, provider: 'kimi', sessionId: 'b', workspaceScopeIdentity: 'scope-b', entry: { markerPath: 'b.done' } }],
     ]);
     const highlighter = new activeTerminalHighlight.default({
         isVisible: () => visible,
@@ -4393,16 +4419,16 @@ function runActiveAiSessionTerminalHighlightChecks() {
     });
 
     highlighter.sync();
-    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a' });
+    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a', workspaceScopeIdentity: 'scope-a' });
     const firstIdentity = highlighter.getIdentity();
-    assert.deepStrictEqual(firstIdentity, { provider: 'codex', sessionId: 'a' });
+    assert.deepStrictEqual(firstIdentity, { provider: 'codex', sessionId: 'a', workspaceScopeIdentity: 'scope-a' });
     firstIdentity.sessionId = 'mutated';
-    assert.deepStrictEqual(highlighter.getIdentity(), { provider: 'codex', sessionId: 'a' });
+    assert.deepStrictEqual(highlighter.getIdentity(), { provider: 'codex', sessionId: 'a', workspaceScopeIdentity: 'scope-a' });
     assert.strictEqual(timers.filter(timer => timer.active).length, 1);
 
     activeTerminal = terminalB;
     highlighter.sync();
-    assert.deepStrictEqual(published.pop(), { provider: 'kimi', sessionId: 'b' });
+    assert.deepStrictEqual(published.pop(), { provider: 'kimi', sessionId: 'b', workspaceScopeIdentity: 'scope-b' });
     assert.strictEqual(timers.filter(timer => timer.active).length, 1);
 
     complete.add('b');
@@ -4428,7 +4454,7 @@ function runActiveAiSessionTerminalHighlightChecks() {
     visible = true;
     highlighter.setVisible(true);
     highlighter.request();
-    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a' });
+    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a', workspaceScopeIdentity: 'scope-a' });
     assert.strictEqual(timers.filter(timer => timer.active).length, 1);
 
     resolutions.delete(terminalA);
@@ -4527,10 +4553,37 @@ function runAiSessionTerminalResolutionChecks() {
         const service = new AiSessionTerminalService(tempRoot, providers.AI_SESSION_PROVIDER_IDS.map(providerId =>
             providers.getAiSessionProviderDefinition(providerId)), 0
         );
+        const scopedA = { name: 'Codex: Shared A', creationOptions: {}, processId: Promise.resolve(42101) };
+        const scopedB = { name: 'Codex: Shared B', creationOptions: {}, processId: Promise.resolve(42102) };
+        service.track('codex', 'shared-session', {
+            terminal: scopedA, markerPath: path.join(tempRoot, 'shared-a.done'), runStartedAtMs: 1,
+            runtimeIdentity: createTestAiSessionRuntimeIdentity('codex', '/work/a', {
+                sessionId: 'shared-session',
+            }),
+        });
+        service.track('codex', 'shared-session', {
+            terminal: scopedB, markerPath: path.join(tempRoot, 'shared-b.done'), runStartedAtMs: 2,
+            runtimeIdentity: createTestAiSessionRuntimeIdentity('codex', '/work/b', {
+                sessionId: 'shared-session',
+            }),
+        });
+        assert.strictEqual(service.getTrackedTerminalEntries().filter(entry =>
+            entry.provider === 'codex' && entry.sessionId === 'shared-session').length, 2,
+        'same provider/session Direct runtimes in separate scopes must coexist');
+        assert.strictEqual(service.getById('codex', 'shared-session', 'scope:/work/a').terminal, scopedA);
+        assert.strictEqual(service.getById('codex', 'shared-session', 'scope:/work/b').terminal, scopedB);
+        service.releaseCompletedSession('codex', 'shared-session', 'scope:/work/a');
+        assert.strictEqual(service.getActiveById('codex', 'shared-session', 'scope:/work/a'), null);
+        assert.strictEqual(service.getActiveById('codex', 'shared-session', 'scope:/work/b').terminal, scopedB,
+            'releasing one scope must leave the identical Direct runtime in the other scope active');
+        service.handleClosedTerminal(scopedA);
         const tracked = { name: 'Codex: One [session-]', creationOptions: {} };
         service.track('codex', 'session-one', {
             terminal: tracked,
             markerPath: path.join(tempRoot, 'session-one.done'),
+            runtimeIdentity: createTestAiSessionRuntimeIdentity(
+                'codex', '/work/app', { sessionId: 'session-one' }
+            ),
         });
         const candidateCalls = [];
         const candidates = {
@@ -4567,6 +4620,14 @@ function runAiSessionTerminalResolutionChecks() {
             byName,
             ordinary
         );
+        service.track('codex', 'session-env', {
+            terminal: byEnv,
+            markerPath: recoveredMarkerPath,
+            runStartedAtMs: Date.now(),
+            runtimeIdentity: createTestAiSessionRuntimeIdentity(
+                'codex', '/work/app', { sessionId: 'session-env' }
+            ),
+        });
 
         const recoveredByEnv = service.resolveTerminalSession(byEnv, getCandidates);
         assert.strictEqual(recoveredByEnv.sessionId, 'session-env');
@@ -4580,34 +4641,35 @@ function runAiSessionTerminalResolutionChecks() {
             ['codex:session-env'],
             'completed terminals must be discoverable without being active or visible'
         );
-        assert.deepStrictEqual(candidateCalls, ['codex']);
+        assert.deepStrictEqual(candidateCalls, []);
 
-        service.releaseCompletedSession('codex', 'session-env');
+        service.releaseCompletedSession('codex', 'session-env', 'scope:/work/app');
         assert.strictEqual(fs.existsSync(recoveredMarkerPath), false, 'releasing a completed session removes its marker');
-        const releasedByEnv = service.getById('codex', 'session-env');
+        const releasedByEnv = service.getById('codex', 'session-env', 'scope:/work/app');
         assert.strictEqual(releasedByEnv.terminal, byEnv, 'a completed shell remains available for an explicit resume');
         assert.strictEqual(service.isComplete(releasedByEnv), true, 'a released shell must take the resume path');
         assert.strictEqual(
-            service.getActiveById('codex', 'session-env'),
+            service.getActiveById('codex', 'session-env', 'scope:/work/app'),
             null,
             'released shells must not generate a second terminal-exit attention event'
         );
         assert.deepStrictEqual(
             service.getReleasedSessions(),
-            [{ provider: 'codex', sessionId: 'session-env' }],
+            [{ provider: 'codex', sessionId: 'session-env', workspaceScopeIdentity: 'scope:/work/app' }],
             'released sessions must remain discoverable for stale bridge-event recovery'
         );
         candidateCalls.length = 0;
         assert.strictEqual(service.resolveTerminalSession(byEnv, getCandidates), null, 'active terminal resolution must ignore a completed shell');
-        assert.deepStrictEqual(candidateCalls, ['codex']);
+        assert.deepStrictEqual(candidateCalls, []);
 
         candidateCalls.length = 0;
         assert.strictEqual(service.resolveTerminalSession(archivedByEnv, getCandidates), null);
-        assert.deepStrictEqual(candidateCalls, ['codex']);
+        assert.deepStrictEqual(candidateCalls, []);
 
         candidateCalls.length = 0;
-        assert.strictEqual(service.resolveTerminalSession(byName, getCandidates).sessionId, 'named-123456');
-        assert.deepStrictEqual(candidateCalls, ['kimi']);
+        assert.strictEqual(service.resolveTerminalSession(byName, getCandidates), null,
+            'unowned terminal name inference must not create a v2 runtime identity');
+        assert.deepStrictEqual(candidateCalls, []);
 
         candidateCalls.length = 0;
         assert.strictEqual(service.resolveTerminalSession(ordinary, getCandidates), null);
@@ -4628,7 +4690,7 @@ function runAiSessionTerminalResolutionChecks() {
 
         assert.deepStrictEqual(
             service.handleClosedTerminal(tracked),
-            [{ provider: 'codex', sessionId: 'session-one' }],
+            [{ provider: 'codex', sessionId: 'session-one', workspaceScopeIdentity: 'scope:/work/app' }],
             'closing a tracked terminal must identify the session whose attention should be acknowledged'
         );
     } finally {
@@ -4661,6 +4723,20 @@ async function runAiSessionTerminalBindingStoreChecks() {
     assert.strictEqual(restoredPending.providerId, 'codex');
     assert.deepStrictEqual(restoredPending.excludedSessionIds, ['old']);
     assert.ok(stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + processId]);
+    const validPendingRecord = JSON.parse(JSON.stringify(
+        stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + processId]
+    ));
+    for (const [offset, invalid] of [
+        [1, { ...validPendingRecord, sessionId: 'also-bound' }],
+        [2, { ...validPendingRecord, projectKey: 'legacy' }],
+        [3, { ...validPendingRecord, unexpected: true }],
+        [4, (() => { const value = { ...validPendingRecord }; delete value.updatedAtMs; return value; })()],
+    ]) {
+        const invalidId = processId + offset;
+        stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + invalidId] = invalid;
+        assert.strictEqual(new AiSessionTerminalBindingStore(state).get(invalidId), null,
+            'v2 terminal bindings must reject both IDs, missing fields, legacy fields, and extras');
+    }
 
     const second = new AiSessionTerminalBindingStore(state);
     second.setBound(processId, {
@@ -5009,19 +5085,24 @@ async function runAiSessionTerminalPersistenceChecks() {
         const thirdStore = new AiSessionTerminalBindingStore(state);
         const thirdService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, thirdStore);
         await thirdService.restorePersistedTerminals([restoredBoundTerminal]);
-        assert.strictEqual(thirdService.getById('codex', 'session-new').terminal, restoredBoundTerminal);
-        assert.strictEqual(thirdService.getById('codex', 'session-new').cwd, '/work/app');
+        assert.strictEqual(thirdService.getById(
+            'codex', 'session-new', 'scope:/work/app'
+        ).terminal, restoredBoundTerminal);
+        assert.strictEqual(thirdService.getById(
+            'codex', 'session-new', 'scope:/work/app'
+        ).cwd, '/work/app');
         const activeSnapshot = thirdService.getActiveSessions();
         assert.deepStrictEqual(activeSnapshot, [{
             provider: 'codex',
             sessionId: 'session-new',
+            workspaceScopeIdentity: 'scope:/work/app',
             cwd: '/work/app',
             runStartedAtMs: 1784102400000,
         }]);
         activeSnapshot[0].cwd = '/mutated';
         assert.strictEqual(thirdService.getActiveSessions()[0].cwd, '/work/app');
 
-        thirdService.releaseCompletedSession('codex', 'session-new');
+        thirdService.releaseCompletedSession('codex', 'session-new', 'scope:/work/app');
         await thirdStore.flush();
         assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId).state, 'released');
 
@@ -5033,7 +5114,9 @@ async function runAiSessionTerminalPersistenceChecks() {
         const fourthStore = new AiSessionTerminalBindingStore(state);
         const fourthService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, fourthStore);
         await fourthService.restorePersistedTerminals([releasedTerminalAfterReload]);
-        const releasedEntryAfterReload = fourthService.getById('codex', 'session-new');
+        const releasedEntryAfterReload = fourthService.getById(
+            'codex', 'session-new', 'scope:/work/app'
+        );
         assert.strictEqual(
             releasedEntryAfterReload.terminal,
             releasedTerminalAfterReload,
@@ -5046,7 +5129,10 @@ async function runAiSessionTerminalPersistenceChecks() {
         );
         assert.deepStrictEqual(
             fourthService.getReleasedSessions(),
-            [{ provider: 'codex', sessionId: 'session-new' }],
+            [{
+                provider: 'codex', sessionId: 'session-new',
+                workspaceScopeIdentity: 'scope:/work/app',
+            }],
             'released session recovery must survive extension reload'
         );
 
@@ -5110,7 +5196,9 @@ async function runAiSessionTerminalPersistenceChecks() {
         ]);
         assert.strictEqual(restoreCompleted, true, 'one unresolved terminal processId must not block extension activation');
         assert.strictEqual(
-            timeoutService.getById('codex', 'session-after-stalled-terminal').terminal,
+            timeoutService.getById(
+                'codex', 'session-after-stalled-terminal', 'scope:/work/app'
+            ).terminal,
             recoverableTerminal
         );
 
@@ -5132,7 +5220,9 @@ async function runAiSessionTerminalPersistenceChecks() {
         };
         const reusedProcessService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, reusedProcessStore);
         await reusedProcessService.restorePersistedTerminals([ordinaryTerminalWithReusedPid]);
-        assert.strictEqual(reusedProcessService.getById('codex', 'stale-session'), null);
+        assert.strictEqual(reusedProcessService.getById(
+            'codex', 'stale-session', 'scope:/work/app'
+        ), null);
         await reusedProcessStore.flush();
         assert.strictEqual(reusedProcessStore.get(reusedProcessId), null, 'a reused PID must clear its stale binding');
     } finally {
@@ -5565,6 +5655,9 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('sessionEvents: aiSessionAttentionController.getRecoverySessionEvents()'));
     assert.ok(webviewProjectScripts.includes('message.sessionEvents'));
     assert.ok(dashboard.includes('settleAiSessionRuntimeLifecycles'));
+    assert.match(dashboard,
+        /for \(const runtime of runtimes\) \{\s*if \(!runtimeBelongsToCurrentWorkspace\(runtime\)\) \{\s*continue;\s*\}/,
+        'dashboard lifecycle attention collection must reject other scopes before session-key processing');
     assert.ok(dashboard.includes('const aiSessionAttentionController = new AiSessionAttentionController<AiSessionRuntimeSnapshot<vscode.Terminal>>({'));
     assert.ok(dashboard.includes("import { AiSessionExecutionController } from './aiSessions/executionController';"));
     assert.ok(dashboard.includes('const aiSessionExecutionController = new AiSessionExecutionController({'));

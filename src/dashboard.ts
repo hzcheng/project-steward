@@ -601,7 +601,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         isRuntimeComplete: runtime => runtime.state === 'completed',
         focusRuntime: runtime => aiSessionRuntimeCoordinator.focus({ ...runtime.identity }),
         deleteRuntimeMarker: runtime => aiSessionTerminalService.deleteMarker(runtime.markerPath),
-        untrackRuntime: (providerId, sessionId) => aiSessionTerminalService.untrack(providerId, sessionId),
+        untrackRuntime: (providerId, sessionId, workspaceScopeIdentity) =>
+            aiSessionTerminalService.untrack(providerId, sessionId, workspaceScopeIdentity),
         deletePin: (providerId, sessionId) => aiSessionPinController.remove(providerId, sessionId),
         deleteAlias: (providerId, sessionId) => aiSessionAliasController.remove(providerId, sessionId),
         confirmSingleArchive: providerLabel => vscode.window.showWarningMessage(`Archive this ${providerLabel} session?`, { modal: true }, "Archive"),
@@ -721,6 +722,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             .map(runtime => ({
                 provider: runtime.identity.provider,
                 sessionId: runtime.identity.sessionId as string,
+                workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
                 cwd: runtime.identity.cwd,
                 runStartedAtMs: runtime.runStartedAtMs,
             })),
@@ -770,6 +772,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         runtimes: readonly AiSessionRuntimeSnapshot<vscode.Terminal>[]
     ): void => {
         for (const runtime of runtimes) {
+            if (!runtimeBelongsToCurrentWorkspace(runtime)) {
+                continue;
+            }
             const sessionId = runtime.identity.sessionId;
             if (!sessionId || (runtime.state !== 'completed' && runtime.state !== 'stopped')) {
                 continue;
@@ -825,7 +830,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                             }
                             aiSessionTerminalService.releaseCompletedSession(
                                 candidate.runtime.identity.provider,
-                                candidate.runtime.identity.sessionId as string
+                                candidate.runtime.identity.sessionId as string,
+                                candidate.runtime.identity.workspaceScopeIdentity
                             );
                         },
                         reportFailure: (operation, category, key) => logAiSessionDiagnostic({

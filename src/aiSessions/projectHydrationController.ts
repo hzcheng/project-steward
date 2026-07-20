@@ -379,7 +379,7 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             }
             const failureReason = getPendingAiSessionPromotionFailureReason(
                 runtimes,
-                pendingRuntime.identity.provider,
+                pendingRuntime.identity,
                 sessionId
             );
             if (failureReason) {
@@ -405,7 +405,10 @@ export class AiSessionProjectHydrationController<TTerminal = unknown> {
             return settlement;
         };
         try {
-            const promotion = coordinator.promotePending(pendingId, sessionId);
+            const promotion = coordinator.promotePending(
+                cloneAiSessionRuntimeIdentity(pendingRuntime.identity) as typeof pendingRuntime.identity & { pendingId: string },
+                sessionId
+            );
             if (!isPromiseLike(promotion)) {
                 entry.settlement = settle(promotion);
                 return notifySuccessfulSettlement(entry.settlement);

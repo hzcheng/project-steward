@@ -662,19 +662,10 @@ function parseRowMetadata(row: DiscoveryWindowRecord): AiSessionManagedTmuxMetad
     }
     if (row.sessionMetadata.layout === 'project' && row.windowMetadata.layout === 'project') {
         if (!isProjectSessionOwnershipBase(row.sessionMetadata)
-            || row.windowMetadata.workspaceScopeIdentity !== undefined
-            || row.windowMetadata.workspaceNavigationIdentity !== undefined
-            || row.windowMetadata.workspaceRootHostPaths !== undefined
-            || row.windowMetadata.cwd !== undefined) {
+            || row.windowMetadata.workspaceScopeIdentity !== row.sessionMetadata.workspaceScopeIdentity) {
             return null;
         }
-        const windowProof = parseManagedTmuxMetadata({
-            ...row.windowMetadata,
-            workspaceScopeIdentity: row.sessionMetadata.workspaceScopeIdentity,
-            workspaceNavigationIdentity: row.sessionMetadata.workspaceNavigationIdentity,
-            workspaceRootHostPaths: row.sessionMetadata.workspaceRootHostPaths,
-            cwd: row.sessionMetadata.cwd,
-        });
+        const windowProof = parseManagedTmuxMetadata(row.windowMetadata);
         return windowProof && windowProof.layout === 'project'
             ? windowProof
             : null;
@@ -690,18 +681,11 @@ function parseRowMetadata(row: DiscoveryWindowRecord): AiSessionManagedTmuxMetad
 }
 
 function isProjectSessionOwnershipBase(values: Record<string, string>): boolean {
-    return values.managed === '1'
+    return Object.keys(values).length === 4
+        && values.managed === '1'
         && values.version === '2'
         && values.layout === 'project'
-        && typeof values.workspaceScopeIdentity === 'string'
-        && typeof values.workspaceNavigationIdentity === 'string'
-        && typeof values.workspaceRootHostPaths === 'string'
-        && typeof values.cwd === 'string'
-        && values.provider === undefined
-        && values.sessionId === undefined
-        && values.pendingId === undefined
-        && values.createdAt === undefined
-        && values.marker === undefined;
+        && typeof values.workspaceScopeIdentity === 'string';
 }
 
 function isSessionWindowOwnershipBase(values: Record<string, string>): boolean {

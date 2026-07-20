@@ -296,5 +296,8 @@ export interface AiSessionExecutableRuntimeBackend<TTerminal = unknown> extends 
         request: AiSessionCreateRuntimeRequest,
         layout?: AiSessionTmuxLayout
     ): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>>;
-    promotePending(pendingId: string, sessionId: string): Promise<AiSessionRuntimeSnapshot<TTerminal>[]>;
+    promotePending(
+        identity: AiSessionRuntimeIdentity & { pendingId: string },
+        sessionId: string
+    ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]>;
 }

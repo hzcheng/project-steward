@@ -203,7 +203,12 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         return null;
     }
     if (record.state === 'bound') {
-        if (!isBoundedString(record.sessionId, MAX_ID_LENGTH) || !isFiniteNonNegative(record.runStartedAtMs)) {
+        if (!hasExactKeys(record, [
+            'version', 'state', 'providerId', 'workspaceScopeIdentity',
+            'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'markerPath',
+            'updatedAtMs', 'sessionId', 'runStartedAtMs',
+        ]) || !isBoundedString(record.sessionId, MAX_ID_LENGTH)
+            || !isFiniteNonNegative(record.runStartedAtMs)) {
             return null;
         }
         const identity = validateIdentity(record, { sessionId: record.sessionId });
@@ -225,6 +230,13 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         };
     }
     if (record.state === 'released') {
+        if (!hasExactKeys(record, [
+            'version', 'state', 'providerId', 'workspaceScopeIdentity',
+            'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'markerPath',
+            'updatedAtMs', 'sessionId',
+        ])) {
+            return null;
+        }
         const identity = validateIdentity(record, { sessionId: record.sessionId });
         if (!identity) {
             return null;
@@ -243,7 +255,11 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         };
     }
     const identity = validateIdentity(record, { pendingId: record.pendingId });
-    if (!identity || typeof record.createdAt !== 'string'
+    if (!hasExactKeys(record, [
+        'version', 'state', 'providerId', 'workspaceScopeIdentity',
+        'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'markerPath',
+        'updatedAtMs', 'pendingId', 'createdAt', 'excludedSessionIds',
+    ], ['title']) || !identity || typeof record.createdAt !== 'string'
         || !Number.isFinite(Date.parse(record.createdAt)) || !Array.isArray(record.excludedSessionIds)
         || record.excludedSessionIds.length > MAX_EXCLUDED_SESSION_IDS
         || record.excludedSessionIds.some(id => !isBoundedString(id, MAX_ID_LENGTH))
@@ -265,6 +281,16 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         ...(record.title === undefined ? {} : { title: record.title as string }),
         updatedAtMs: record.updatedAtMs,
     };
+}
+
+function hasExactKeys(
+    record: Record<string, unknown>,
+    required: readonly string[],
+    optional: readonly string[] = []
+): boolean {
+    const allowed = new Set([...required, ...optional]);
+    return required.every(key => Object.prototype.hasOwnProperty.call(record, key))
+        && Object.keys(record).every(key => allowed.has(key));
 }
 
 function cloneRecord(record: AiSessionTerminalBinding): AiSessionTerminalBinding {

@@ -103,6 +103,15 @@ export function parseManagedTmuxMetadata(values: unknown): AiSessionManagedTmuxM
         return null;
     }
     const record = values as Record<string, unknown>;
+    const hasSessionId = record.sessionId !== undefined;
+    const hasPendingId = record.pendingId !== undefined;
+    if (hasSessionId === hasPendingId || !hasExactKeys(record, [
+        'managed', 'version', 'layout', 'workspaceScopeIdentity',
+        'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd',
+        'provider', hasSessionId ? 'sessionId' : 'pendingId',
+    ], ['createdAt', 'marker'])) {
+        return null;
+    }
     if (record.managed !== '1' || record.version !== String(METADATA_VERSION)
         || !isTmuxLayout(record.layout) || !isAiSessionProviderIdValue(record.provider)
         || !isBoundedString(record.workspaceScopeIdentity, MAX_ID_LENGTH)
@@ -137,8 +146,8 @@ export function parseManagedTmuxMetadata(values: unknown): AiSessionManagedTmuxM
         ...(createdAt !== undefined ? { createdAt } : {}),
         ...(marker !== undefined ? { marker } : {}),
     };
-    if (record.sessionId !== undefined) {
-        if (record.pendingId !== undefined || !isBoundedString(record.sessionId, MAX_ID_LENGTH)) {
+    if (hasSessionId) {
+        if (!isBoundedString(record.sessionId, MAX_ID_LENGTH)) {
             return null;
         }
         const result = { ...base, sessionId: record.sessionId };
@@ -149,6 +158,17 @@ export function parseManagedTmuxMetadata(values: unknown): AiSessionManagedTmuxM
     }
     const result = { ...base, pendingId: record.pendingId };
     return isValidAiSessionRuntimeIdentity(result) ? result : null;
+}
+
+function hasExactKeys(
+    record: Record<string, unknown>,
+    required: readonly string[],
+    optional: readonly string[] = []
+): boolean {
+    const keys = Object.keys(record);
+    const allowed = new Set([...required, ...optional]);
+    return required.every(key => Object.prototype.hasOwnProperty.call(record, key))
+        && keys.every(key => allowed.has(key));
 }
 
 function getProjectSessionName(workspaceScopeIdentity: string): string {

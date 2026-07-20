@@ -186,7 +186,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             throw new Error('The pending runtime request is invalid or expired.');
         }
         await this.requireAvailable();
-        const lockKey = pendingLifecycleLockKey(identity.pendingId as string);
+        const lockKey = pendingLifecycleLockKey(identity);
         const runtime = await this.withCreationLocks(identity, layout, lockKey, async () => {
             await this.dependencies.discovery.refresh(true);
             this.throwIfCollision(identity);
@@ -218,40 +218,31 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         ambiguous: TmuxAmbiguousRuntimeBinding | null;
         pending: TmuxPendingRuntimeBinding | null;
     }> {
-        const pendingId = identity.pendingId as string;
-        const promoting = await this.dependencies.runtimeStore.getPromotingByPendingId(pendingId);
-        if (promoting && !pendingLifecycleIdentityMatches(promoting, identity)) {
-            throw pendingIdentityConflictError();
-        }
+        const promoting = await this.dependencies.runtimeStore.getPromoting(identity);
         if (promoting) {
             throw new Error('The pending tmux runtime has a promotion in progress.');
         }
-        const consumed = await this.dependencies.runtimeStore.getConsumedByPendingId(pendingId);
-        if (consumed && !pendingLifecycleIdentityMatches(consumed, identity)) {
-            throw pendingIdentityConflictError();
-        }
+        const consumed = await this.dependencies.runtimeStore.getConsumed(identity);
         if (consumed) {
             throw consumedPendingError(consumed);
         }
-        const ambiguous = await this.dependencies.runtimeStore.getAmbiguousByPendingId(pendingId);
-        if (ambiguous && !pendingLifecycleIdentityMatches(ambiguous, identity)) {
-            throw pendingIdentityConflictError();
-        }
-        const pending = await this.dependencies.runtimeStore.getPending(pendingId);
-        if (pending && !pendingLifecycleIdentityMatches(pending, identity)) {
-            throw pendingIdentityConflictError();
-        }
+        const ambiguous = await this.dependencies.runtimeStore.getAmbiguous(identity);
+        const pending = await this.dependencies.runtimeStore.getPending(identity);
         return { ambiguous, pending };
     }
 
-    async promotePending(pendingId: string, sessionId: string): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
-        if (!isIdentityField(pendingId) || !isIdentityField(sessionId)) {
+    async promotePending(
+        identity: AiSessionRuntimeIdentity & { pendingId: string },
+        sessionId: string
+    ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
+        const pendingIdentityValue = pendingIdentity(identity);
+        if (!isValidAiSessionRuntimeIdentity(pendingIdentityValue) || !isIdentityField(sessionId)) {
             return [];
         }
         return this.dependencies.withCreationLock<AiSessionRuntimeSnapshot<TTerminal>[]>(
-            pendingLifecycleLockKey(pendingId), async () => {
-            const storedIntent = await this.dependencies.runtimeStore.getPromotingByPendingId(pendingId);
-            const storedLiveBinding = await this.dependencies.runtimeStore.getPending(pendingId);
+            pendingLifecycleLockKey(pendingIdentityValue), async () => {
+            const storedIntent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
+            const storedLiveBinding = await this.dependencies.runtimeStore.getPending(pendingIdentityValue);
             if (storedIntent && storedLiveBinding
                 && !promotionIntentMatchesLiveBinding(storedIntent, storedLiveBinding)) {
                 throw new Error('The pending tmux promotion intent conflicts with the live pending binding.');
@@ -261,31 +252,27 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             if (!storedPending) {
                 return [];
             }
+            if (!pendingLifecycleIdentityMatches(storedPending, pendingIdentityValue)) {
+                return [];
+            }
             if (storedIntent && storedIntent.finalSessionId !== sessionId) {
                 throw new Error('The pending tmux runtime has a conflicting promotion in progress.');
             }
             await this.requireAvailable();
             await this.dependencies.discovery.refresh(true);
-            const pendingIdentityValue = identityFromPendingBinding(storedPending);
             if (!storedIntent) {
                 this.throwIfCollision(pendingIdentityValue);
             }
-            const consumedByPendingId = await this.dependencies.runtimeStore.getConsumedByPendingId(pendingId);
-            if (consumedByPendingId
-                && !pendingLifecycleIdentityMatches(consumedByPendingId, pendingIdentityValue)) {
-                throw pendingIdentityConflictError();
+            const consumed = await this.dependencies.runtimeStore.getConsumed(pendingIdentityValue);
+            if (consumed && consumed.finalSessionId !== sessionId) {
+                throw new Error('The pending tmux runtime was consumed by a different promotion.');
             }
-            const ambiguousByPendingId = await this.dependencies.runtimeStore
-                .getAmbiguousByPendingId(pendingId);
-            if (ambiguousByPendingId
-                && !pendingLifecycleIdentityMatches(ambiguousByPendingId, pendingIdentityValue)) {
-                throw pendingIdentityConflictError();
-            }
-            if (ambiguousByPendingId) {
+            const ambiguous = await this.dependencies.runtimeStore.getAmbiguous(pendingIdentityValue);
+            if (ambiguous) {
                 throw new Error('The prior pending runtime creation result remains ambiguous.');
             }
             const currentIntent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
-            const freshBinding = await this.dependencies.runtimeStore.getPending(pendingId);
+            const freshBinding = await this.dependencies.runtimeStore.getPending(pendingIdentityValue);
             if (currentIntent && freshBinding
                 && !promotionIntentMatchesLiveBinding(currentIntent, freshBinding)) {
                 throw new Error('The pending tmux promotion intent conflicts with the live pending binding.');
@@ -296,10 +283,12 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 return [];
             }
             const currentPending = this.dependencies.discovery.getPending()
-                .find(runtime => runtime.identity.pendingId === pendingId
+                .find(runtime => aiSessionRuntimeIdentitiesEqual(
+                    runtime.identity, pendingIdentityValue
+                )
                     && !!runtime.tmux && locatorsEqual(runtime.tmux, currentBinding.locator));
             const pendingSnapshot = currentPending || pendingSnapshotFromBinding(currentBinding);
-            const identity: AiSessionRuntimeIdentity = {
+            const finalIdentityValue: AiSessionRuntimeIdentity = {
                 provider: currentBinding.provider,
                 workspaceScopeIdentity: currentBinding.workspaceScopeIdentity,
                 workspaceNavigationIdentity: currentBinding.workspaceNavigationIdentity,
@@ -307,8 +296,8 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 cwd: currentBinding.cwd,
                 sessionId,
             };
-            const finalLocator = getFinalLocator(identity, currentBinding.layout);
-            const finalLockKey = getTmuxRuntimeKey(identity);
+            const finalLocator = getFinalLocator(finalIdentityValue, currentBinding.layout);
+            const finalLockKey = getTmuxRuntimeKey(finalIdentityValue);
             return this.dependencies.withCreationLock<AiSessionRuntimeSnapshot<TTerminal>[]>(
                 finalLockKey,
                 async () => {
@@ -317,11 +306,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                     if (!intent) {
                         this.throwIfCollision(pendingIdentityValue);
                     }
-                    this.throwIfCollision(identity);
+                    this.throwIfCollision(finalIdentityValue);
                     const expectedIntent = promotionIntent(currentBinding, {
                         ...pendingSnapshot,
                         markerPath: intent?.markerPath ?? pendingSnapshot.markerPath,
-                    }, identity, finalLocator, this.dependencies.nowMs());
+                    }, finalIdentityValue, finalLocator, this.dependencies.nowMs());
                     if (intent && !promotionIntentsMatch(intent, expectedIntent)) {
                         throw new Error('The pending tmux runtime has a conflicting promotion in progress.');
                     }
@@ -332,25 +321,25 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                             throw new Error('The pending tmux runtime was consumed by a different promotion.');
                         }
                         await this.dependencies.runtimeStore.removePromoting(pendingIdentityValue);
-                        await this.dependencies.runtimeStore.removePending(pendingId);
-                        const completed = this.findVerified(identity, finalLocator);
+                        await this.dependencies.runtimeStore.removePending(pendingIdentityValue);
+                        const completed = this.findVerified(finalIdentityValue, finalLocator);
                         return completed ? [this.withAttach(completed)] : [];
                     }
-                    const compatible = this.findVerified(identity, finalLocator);
+                    const compatible = this.findVerified(finalIdentityValue, finalLocator);
                     if (compatible) {
                         if (!intent) {
                             return [this.withAttach(asConflict(compatible)), this.withAttach(asConflict(pendingSnapshot))];
                         }
-                        return this.completePromotion(pendingSnapshot, identity, finalLocator,
+                        return this.completePromotion(pendingSnapshot, finalIdentityValue, finalLocator,
                             compatible, pendingIdentityValue);
                     }
-                    if (intent && await this.promotionTransitionMatches(intent, identity)) {
-                        await this.writeFinalMetadata(identity, finalLocator, {
+                    if (intent && await this.promotionTransitionMatches(intent, finalIdentityValue)) {
+                        await this.writeFinalMetadata(finalIdentityValue, finalLocator, {
                             createdAt: intent.createdAt,
                             markerPath: intent.markerPath,
                         });
                         await this.dependencies.client.clearPendingMetadata(finalLocator);
-                        return this.verifyAndCompletePromotion(pendingSnapshot, identity,
+                        return this.verifyAndCompletePromotion(pendingSnapshot, finalIdentityValue,
                             finalLocator, pendingIdentityValue);
                     }
                     const sourcePendingVerified = !!currentPending || !!(intent
@@ -369,14 +358,14 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                     try {
                         const sourceLocator = currentPending?.tmux || currentBinding.locator;
                         await this.renameRuntime(sourceLocator, finalLocator);
-                        await this.writeFinalMetadata(identity, finalLocator, {
+                        await this.writeFinalMetadata(finalIdentityValue, finalLocator, {
                             createdAt: pendingSnapshot.createdAt,
                             markerPath: pendingSnapshot.markerPath,
                         });
                         await this.dependencies.client.clearPendingMetadata(finalLocator);
                     } catch (error) {
                         await this.dependencies.discovery.refresh(true);
-                        const recovered = this.findVerified(identity, finalLocator);
+                        const recovered = this.findVerified(finalIdentityValue, finalLocator);
                         if (!recovered) {
                             const sourceStillVerified = await this.pendingMetadataMatches(
                                 pendingIdentityValue, currentBinding.locator,
@@ -388,7 +377,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                             throw error;
                         }
                     }
-                    return this.verifyAndCompletePromotion(pendingSnapshot, identity,
+                    return this.verifyAndCompletePromotion(pendingSnapshot, finalIdentityValue,
                         finalLocator, pendingIdentityValue);
                 }
             );
@@ -479,7 +468,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         await this.persistKnown(identity, finalLocator, promoted);
         await this.persistConsumed(pending, identity, finalLocator);
         await this.dependencies.runtimeStore.removePromoting(pendingIdentityValue);
-        await this.dependencies.runtimeStore.removePending(pendingIdentityValue.pendingId as string);
+        await this.dependencies.runtimeStore.removePending(pendingIdentityValue);
         await this.dependencies.discovery.refresh(true);
         await this.migrateAttach(pending, promoted);
         return [this.withAttach(promoted)];
@@ -975,6 +964,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     private throwIfLifecycleBlocked(identity: AiSessionRuntimeIdentity): void {
         const blockers = this.getLifecycleBlockers().filter(runtime =>
             runtime.identity.provider === identity.provider
+            && runtime.identity.workspaceScopeIdentity === identity.workspaceScopeIdentity
             && runtime.identity.sessionId === identity.sessionId);
         if (blockers.length) {
             throw new AiSessionRuntimeLifecycleBlockedError(blockers);
@@ -1389,8 +1379,8 @@ function pendingIdentity(identity: AiSessionRuntimeIdentity & { pendingId: strin
     };
 }
 
-function pendingLifecycleLockKey(pendingId: string): string {
-    return `pending:${pendingId}`;
+function pendingLifecycleLockKey(identity: AiSessionRuntimeIdentity): string {
+    return `pending:${getTmuxRuntimeKey(identity)}`;
 }
 
 function pendingLifecycleIdentityMatches(
@@ -1507,9 +1497,6 @@ function projectSessionMetadata(identity: AiSessionRuntimeIdentity): Record<stri
         version: '2',
         layout: 'project',
         workspaceScopeIdentity: identity.workspaceScopeIdentity,
-        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
-        workspaceRootHostPaths: JSON.stringify(identity.workspaceRootHostPaths),
-        cwd: identity.cwd,
     };
 }
 
@@ -1527,12 +1514,10 @@ function fullMetadata(
         managed: '1',
         version: '2',
         layout,
-        ...(layout === 'session' ? {
-            workspaceScopeIdentity: identity.workspaceScopeIdentity,
-            workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
-            workspaceRootHostPaths: JSON.stringify(identity.workspaceRootHostPaths),
-            cwd: identity.cwd,
-        } : {}),
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: JSON.stringify(identity.workspaceRootHostPaths),
+        cwd: identity.cwd,
         provider: identity.provider,
         ...(identity.sessionId ? { sessionId: identity.sessionId } : { pendingId: identity.pendingId as string }),
         createdAt,

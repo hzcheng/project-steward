@@ -84,6 +84,9 @@ function projectWithRuntime(
         .filter(runtime => !!runtime.identity.sessionId)
         .map(runtime => getSessionKey(runtime.identity.provider, runtime.identity.sessionId)));
     const focusedKey = input.focusedIdentity?.sessionId
+        && input.focusedIdentity.workspaceScopeIdentity
+        && (!input.workspaceScopeIdentity
+            || input.focusedIdentity.workspaceScopeIdentity === input.workspaceScopeIdentity)
         ? getSessionKey(input.focusedIdentity.provider, input.focusedIdentity.sessionId)
         : null;
     const focusedPendingId = input.focusedIdentity && 'pendingId' in input.focusedIdentity

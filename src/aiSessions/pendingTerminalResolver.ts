@@ -16,7 +16,7 @@ type AiSessionPendingRuntimeProvider = Pick<
 
 export interface PendingAiSessionRuntimeCoordinator<TTerminal = unknown> {
     promotePending(
-        pendingId: string,
+        identity: AiSessionPendingRuntimeSnapshot<TTerminal>['identity'] & { pendingId: string },
         sessionId: string
     ): AiSessionRuntimeSnapshot<TTerminal>[] | Promise<AiSessionRuntimeSnapshot<TTerminal>[]>;
 }
@@ -163,13 +163,13 @@ function settlePendingAiSessionPromotion<TTerminal>(
     sessionId: string
 ): PendingAiSessionPromotionSettlement | Promise<PendingAiSessionPromotionSettlement> {
     const promotion = options.runtimeCoordinator.promotePending(
-        pendingRuntime.identity.pendingId,
+        cloneAiSessionRuntimeIdentity(pendingRuntime.identity) as typeof pendingRuntime.identity & { pendingId: string },
         sessionId
     );
     const settle = (runtimes: unknown): PendingAiSessionPromotionSettlement => {
         const failureReason = getPendingAiSessionPromotionFailureReason(
             runtimes,
-            pendingRuntime.identity.provider,
+            pendingRuntime.identity,
             sessionId
         );
         if (!failureReason) {
@@ -182,7 +182,7 @@ function settlePendingAiSessionPromotion<TTerminal>(
 
 export function getPendingAiSessionPromotionFailureReason(
     runtimes: unknown,
-    provider: AiSessionProviderId,
+    pendingIdentity: AiSessionPendingRuntimeSnapshot['identity'],
     sessionId: string
 ): PendingAiSessionPromotionFailureReason | null {
     if (!Array.isArray(runtimes) || runtimes.length === 0) {
@@ -201,7 +201,9 @@ export function getPendingAiSessionPromotionFailureReason(
     if (runtime.state !== 'active') {
         return 'non-active-runtime';
     }
-    if (runtime.identity.provider !== provider || runtime.identity.sessionId !== sessionId) {
+    if (runtime.identity.provider !== pendingIdentity.provider
+        || runtime.identity.workspaceScopeIdentity !== pendingIdentity.workspaceScopeIdentity
+        || runtime.identity.sessionId !== sessionId) {
         return 'identity-mismatch';
     }
     return null;
