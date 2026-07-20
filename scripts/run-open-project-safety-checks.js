@@ -25,6 +25,7 @@ const { ProjectOpenController } = require('../out/projects/projectOpenController
 const { ProjectMutationController } = require('../out/projects/projectMutationController');
 const { ProjectPromptController } = require('../out/projects/projectPromptController');
 const { DashboardStartupController } = require('../out/dashboard/startupController');
+const { WorkspaceContextResolver } = require('../out/workspaces/contextResolver');
 const models = require('../out/models');
 const { OpenProjectStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectStore');
 const { OpenProjectCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectCoordinator');
@@ -364,6 +365,192 @@ function runRemoteAttentionIdentityChecks() {
         1,
         'OTHER WINDOWS must derive the workspace-host attention identity from its remote URI'
     );
+}
+
+function runWorkspaceContextResolverChecks() {
+    function uri(value, overrides = {}) {
+        const match = /^([A-Za-z][A-Za-z0-9+.-]*):(?:\/\/([^/]*))?(.*)$/.exec(value);
+        assert.ok(match, `invalid URI fixture: ${value}`);
+        let decodedAuthority;
+        let decodedPath;
+        try {
+            decodedAuthority = decodeURIComponent(match[2] || '');
+            decodedPath = decodeURIComponent(match[3] || '');
+        } catch (error) {
+            decodedAuthority = match[2] || '';
+            decodedPath = match[3] || '';
+        }
+        return {
+            scheme: match[1].toLowerCase(),
+            authority: decodedAuthority,
+            path: decodedPath,
+            fsPath: decodedPath,
+            toString: () => value,
+            ...overrides,
+        };
+    }
+
+    function remoteUri(uriPath, authority = 'ssh-remote+fixture') {
+        return uri(`vscode-remote://${authority}${uriPath}`, { fsPath: uriPath });
+    }
+
+    function folder(name, folderUri) {
+        return { name, uri: folderUri };
+    }
+
+    const resolver = new WorkspaceContextResolver();
+    assert.strictEqual(resolver.resolve({
+        workspaceFile: null,
+        workspaceName: undefined,
+        remoteName: undefined,
+        workspaceFolders: [],
+    }), null);
+
+    const local = resolver.resolve({
+        workspaceFile: null,
+        workspaceName: 'Local App',
+        remoteName: undefined,
+        workspaceFolders: [folder('app', uri('file:///work/app'))],
+    });
+    assert.strictEqual(local.kind, 'singleFolder');
+    assert.strictEqual(local.displayName, 'Local App');
+    assert.strictEqual(local.navigationUri, 'file:///work/app');
+    assert.strictEqual(local.environment, 'local');
+    assert.strictEqual(local.roots.length, 1);
+    assert.strictEqual(local.roots[0].name, 'app');
+    assert.strictEqual(local.roots[0].uri, 'file:///work/app');
+    assert.strictEqual(local.roots[0].hostPath, '/work/app');
+    assert.strictEqual(local.roots[0].ordinal, 0);
+    assert.strictEqual(local.roots[0].id, local.navigationIdentity);
+
+    const saved = resolver.resolve({
+        workspaceFile: uri('file:///work/team.code-workspace'),
+        workspaceName: 'Team',
+        remoteName: undefined,
+        workspaceFolders: [
+            folder('app', uri('file:///work/app')),
+            folder('lib', uri('file:///work/lib')),
+        ],
+    });
+    assert.strictEqual(saved.kind, 'savedMultiRoot');
+    assert.strictEqual(saved.displayName, 'Team');
+    assert.strictEqual(saved.navigationUri, 'file:///work/team.code-workspace');
+    assert.strictEqual(saved.environment, 'local');
+    assert.deepStrictEqual(saved.roots.map(root => root.ordinal), [0, 1]);
+
+    const first = resolver.resolve({
+        workspaceFile: uri('untitled:Untitled-1'),
+        workspaceName: 'Frontend + API',
+        remoteName: 'ssh-remote',
+        workspaceFolders: [folder('api', remoteUri('/work/api')), folder('web', remoteUri('/work/web'))],
+    });
+    const reordered = resolver.resolve({
+        workspaceFile: uri('untitled:Untitled-1'),
+        workspaceName: 'Renamed',
+        remoteName: 'ssh-remote',
+        workspaceFolders: [folder('web', remoteUri('/work/web')), folder('api', remoteUri('/work/api'))],
+    });
+    assert.strictEqual(first.kind, 'untitledMultiRoot');
+    assert.strictEqual(first.roots.length, 2);
+    assert.strictEqual(first.scopeIdentity, reordered.scopeIdentity);
+    assert.strictEqual(first.navigationIdentity, reordered.navigationIdentity);
+    assert.deepStrictEqual(reordered.roots.map(root => root.ordinal), [0, 1]);
+    assert.deepStrictEqual(reordered.roots.map(root => root.hostPath), ['/work/web', '/work/api']);
+    assert.strictEqual(first.environment, 'ssh');
+    assert.strictEqual(reordered.displayName, 'Renamed');
+    assert.deepStrictEqual(
+        first.roots.map(root => root.id).sort(),
+        reordered.roots.map(root => root.id).sort()
+    );
+
+    const savedTransition = resolver.resolve({
+        workspaceFile: uri('file:///work/team.code-workspace'),
+        workspaceName: 'Frontend + API',
+        remoteName: 'ssh-remote',
+        workspaceFolders: [folder('api', remoteUri('/work/api')), folder('web', remoteUri('/work/web'))],
+    });
+    assert.strictEqual(savedTransition.kind, 'savedMultiRoot');
+    assert.strictEqual(savedTransition.navigationUri, 'file:///work/team.code-workspace');
+    assert.notStrictEqual(savedTransition.navigationIdentity, first.navigationIdentity);
+    assert.strictEqual(savedTransition.scopeIdentity, first.scopeIdentity);
+    assert.deepStrictEqual(savedTransition.roots, first.roots);
+
+    const withDocs = resolver.resolve({
+        workspaceFile: uri('file:///work/team.code-workspace'),
+        workspaceName: 'Frontend + API',
+        remoteName: 'ssh-remote',
+        workspaceFolders: [
+            folder('api', remoteUri('/work/api')),
+            folder('web', remoteUri('/work/web')),
+            folder('docs', remoteUri('/work/docs')),
+        ],
+    });
+    assert.strictEqual(withDocs.navigationIdentity, savedTransition.navigationIdentity);
+    assert.notStrictEqual(withDocs.scopeIdentity, savedTransition.scopeIdentity);
+    assert.deepStrictEqual(withDocs.roots.slice(0, 2), savedTransition.roots);
+    assert.strictEqual(withDocs.roots[2].hostPath, '/work/docs');
+    assert.strictEqual(withDocs.roots[2].ordinal, 2);
+    const removedDocs = resolver.resolve({
+        workspaceFile: uri('file:///work/team.code-workspace'),
+        workspaceName: 'Frontend + API',
+        remoteName: 'ssh-remote',
+        workspaceFolders: [folder('api', remoteUri('/work/api')), folder('web', remoteUri('/work/web'))],
+    });
+    assert.strictEqual(removedDocs.scopeIdentity, savedTransition.scopeIdentity);
+    assert.deepStrictEqual(removedDocs.roots, savedTransition.roots);
+
+    const nested = resolver.resolve({
+        workspaceFile: uri('untitled:Untitled-2'),
+        workspaceName: 'Nested',
+        remoteName: undefined,
+        workspaceFolders: [
+            folder('repo', uri('file:///work/repo')),
+            folder('packages', uri('file:///work/repo/packages')),
+        ],
+    });
+    assert.strictEqual(nested.roots.length, 2);
+    assert.notStrictEqual(nested.roots[0].id, nested.roots[1].id);
+    assert.deepStrictEqual(nested.roots.map(root => root.hostPath), ['/work/repo', '/work/repo/packages']);
+
+    const encoded = resolver.resolve({
+        workspaceFile: null,
+        workspaceName: 'Encoded',
+        remoteName: 'ssh-remote',
+        workspaceFolders: [folder('encoded', uri(
+            'vscode-remote://ssh-remote%2Bfixture/work/team%20space',
+            { fsPath: '/extension-host/team space' }
+        ))],
+    });
+    const decoded = resolver.resolve({
+        workspaceFile: null,
+        workspaceName: 'Decoded',
+        remoteName: 'ssh-remote',
+        workspaceFolders: [folder('decoded', uri(
+            'vscode-remote://ssh-remote+fixture/work/team space',
+            { fsPath: '/different-host-path' }
+        ))],
+    });
+    assert.strictEqual(encoded.navigationIdentity, decoded.navigationIdentity);
+    assert.strictEqual(encoded.scopeIdentity, decoded.scopeIdentity);
+    assert.strictEqual(encoded.roots[0].id, decoded.roots[0].id);
+    assert.strictEqual(encoded.roots[0].hostPath, '/extension-host/team space');
+    assert.strictEqual(decoded.roots[0].hostPath, '/different-host-path');
+
+    for (const [remoteName, environment] of [
+        [undefined, 'local'],
+        ['ssh-remote', 'ssh'],
+        ['wsl', 'wsl'],
+        ['dev-container', 'devContainer'],
+        ['codespaces', 'remote'],
+    ]) {
+        const context = resolver.resolve({
+            workspaceFile: null,
+            workspaceName: environment,
+            remoteName,
+            workspaceFolders: [folder(environment, uri('file:///work/environment'))],
+        });
+        assert.strictEqual(context.environment, environment);
+    }
 }
 
 function runIdentityChecks() {
@@ -2270,6 +2457,7 @@ async function main() {
     runProtocolChecks();
     runOpenProjectPublicationChecks();
     runRemoteAttentionIdentityChecks();
+    runWorkspaceContextResolverChecks();
     runIdentityChecks();
     runRecordChecks();
     runWorkspaceControllerRecordChecks();
