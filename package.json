@@ -153,6 +153,30 @@
                     "scope": "machine",
                     "description": "Executable name resolved through the current extension host's PATH, or an absolute executable path. Enter one executable only, without additional tmux arguments or a shell command."
                 },
+                "projectSteward.aiSessionRunningCardAnimation": {
+                    "type": "string",
+                    "enum": [
+                        "current",
+                        "sweep",
+                        "orbit",
+                        "halo",
+                        "ripple",
+                        "breath",
+                        "none"
+                    ],
+                    "enumDescriptions": [
+                        "Electric currents flow along the top and bottom card edges.",
+                        "A diagonal light beam sweeps across the card periodically.",
+                        "A glowing dot with a comet tail orbits along the card edge.",
+                        "A rotating glowing halo surrounds the project kind icon.",
+                        "Sonar ripples expand from the project kind icon.",
+                        "The whole card glow breathes softly.",
+                        "No animation; only a static tinted border."
+                    ],
+                    "default": "current",
+                    "scope": "machine",
+                    "description": "Animation shown on OTHER WINDOWS project cards while AI sessions are executing in another window."
+                },
                 "projectSteward.maxVisibleTodosPerGroup": {
                     "type": "number",
                     "default": 5,

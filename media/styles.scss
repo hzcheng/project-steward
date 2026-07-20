@@ -2169,32 +2169,132 @@ body.steward-sidebar {
             border-color: rgba(55, 148, 255, .45);
         }
 
-        .project-session-beam {
+        .project-session-fx {
             position: absolute;
-            left: 10px;
-            right: 10px;
-            height: 2px;
-            border-radius: 2px;
+            inset: 0;
             pointer-events: none;
-            background: linear-gradient(90deg,
+        }
+
+        &[data-session-fx="current"] .project-session-fx {
+            &::before,
+            &::after {
+                content: "";
+                position: absolute;
+                left: 10px;
+                right: 10px;
+                height: 2px;
+                border-radius: 2px;
+                background: linear-gradient(90deg,
+                    transparent 0%,
+                    var(--vscode-charts-blue, #3794ff) 32%,
+                    #cfe8ff 50%,
+                    var(--vscode-charts-blue, #3794ff) 68%,
+                    transparent 100%);
+                background-size: 40% 100%;
+                background-repeat: no-repeat;
+                box-shadow: 0 0 5px rgba(55, 148, 255, .8);
+                animation: steward-session-running-flow 1.6s linear infinite;
+            }
+
+            &::before {
+                top: 0;
+            }
+
+            &::after {
+                bottom: 0;
+                animation-delay: -.8s;
+            }
+        }
+
+        &[data-session-fx="sweep"] .project-session-fx {
+            inset: 0 auto 0 0;
+            width: 56px;
+            background: linear-gradient(100deg,
                 transparent 0%,
-                var(--vscode-charts-blue, #3794ff) 32%,
-                #cfe8ff 50%,
-                var(--vscode-charts-blue, #3794ff) 68%,
+                rgba(55, 148, 255, .1) 25%,
+                rgba(207, 232, 255, .34) 50%,
+                rgba(55, 148, 255, .1) 75%,
                 transparent 100%);
-            background-size: 40% 100%;
-            background-repeat: no-repeat;
-            box-shadow: 0 0 5px rgba(55, 148, 255, .8);
-            animation: steward-session-running-flow 1.6s linear infinite;
+            transform: skewX(-10deg);
+            animation: steward-session-running-sweep 2.6s ease-in-out infinite;
         }
 
-        .project-session-beam-top {
-            top: 0;
+        &[data-session-fx="orbit"] .project-session-fx {
+            &::before,
+            &::after {
+                content: "";
+                position: absolute;
+                top: 0;
+                left: 0;
+                border-radius: 50%;
+                animation: steward-session-running-orbit 3s linear infinite;
+            }
+
+            &::before {
+                width: 5px;
+                height: 5px;
+                background: #cfe8ff;
+                box-shadow: 0 0 6px 2px var(--vscode-charts-blue, #3794ff);
+            }
+
+            &::after {
+                width: 3px;
+                height: 3px;
+                background: var(--vscode-charts-blue, #3794ff);
+                box-shadow: 0 0 4px 1px var(--vscode-charts-blue, #3794ff);
+                opacity: .7;
+                animation-delay: -.18s;
+            }
         }
 
-        .project-session-beam-bottom {
-            bottom: 0;
-            animation-delay: -.8s;
+        &[data-session-fx="ripple"] .project-session-fx {
+            &::before,
+            &::after {
+                content: "";
+                position: absolute;
+                left: 24px;
+                top: 17px;
+                width: 14px;
+                height: 14px;
+                margin: -7px 0 0 -7px;
+                border: 1.5px solid var(--vscode-charts-blue, #3794ff);
+                border-radius: 50%;
+                opacity: 0;
+                animation: steward-session-running-ripple 2.1s ease-out infinite;
+            }
+
+            &::after {
+                animation-delay: 1.05s;
+            }
+        }
+
+        &[data-session-fx="halo"] .project-kind-icon {
+            position: relative;
+            color: var(--vscode-charts-blue, #3794ff);
+
+            &::before {
+                content: "";
+                position: absolute;
+                inset: 0;
+                border-radius: 999px;
+                padding: 2px;
+                background: conic-gradient(from 0deg,
+                    transparent 0deg 60deg,
+                    var(--vscode-charts-blue, #3794ff) 150deg,
+                    #cfe8ff 200deg,
+                    var(--vscode-charts-blue, #3794ff) 250deg,
+                    transparent 320deg 360deg);
+                -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+                -webkit-mask-composite: xor;
+                mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+                mask-composite: exclude;
+                animation: steward-session-running-halo 1.4s linear infinite;
+                pointer-events: none;
+            }
+        }
+
+        &[data-session-fx="breath"] {
+            animation: steward-session-running-breath 2.4s ease-in-out infinite;
         }
 
         &:hover .project-kind-icon {
@@ -3158,6 +3258,92 @@ body.steward-sidebar .project .project-codex-badge.attention-animate {
     }
 }
 
+@keyframes steward-session-running-sweep {
+    0% {
+        left: -64px;
+        opacity: 0;
+    }
+
+    12% {
+        opacity: 1;
+    }
+
+    55% {
+        left: 100%;
+        opacity: 1;
+    }
+
+    62%,
+    100% {
+        left: 100%;
+        opacity: 0;
+    }
+}
+
+@keyframes steward-session-running-orbit {
+    0%,
+    100% {
+        left: 0;
+        top: 0;
+    }
+
+    25% {
+        left: 100%;
+        top: 0;
+    }
+
+    50% {
+        left: 100%;
+        top: 100%;
+    }
+
+    75% {
+        left: 0;
+        top: 100%;
+    }
+}
+
+@keyframes steward-session-running-ripple {
+    0% {
+        transform: scale(.6);
+        opacity: .8;
+    }
+
+    80% {
+        opacity: 0;
+    }
+
+    100% {
+        transform: scale(2.8);
+        opacity: 0;
+    }
+}
+
+@keyframes steward-session-running-halo {
+    to {
+        transform: rotate(1turn);
+    }
+}
+
+@keyframes steward-session-running-breath {
+    0%,
+    100% {
+        border-color: rgba(55, 148, 255, .3);
+        box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, .05),
+            0 1px 4px rgba(0, 0, 0, .16),
+            inset 0 0 10px rgba(55, 148, 255, .1);
+    }
+
+    50% {
+        border-color: rgba(55, 148, 255, .75);
+        box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, .05),
+            0 1px 4px rgba(0, 0, 0, .16),
+            inset 0 0 22px rgba(55, 148, 255, .38);
+    }
+}
+
 @keyframes steward-ai-attention {
     0%,
     100% {
@@ -3238,7 +3424,11 @@ body.steward-sidebar .project .ai-session-attention-indicator {
     .ai-session-primary-action,
     .project-codex-badge,
     .ai-session-attention-indicator,
-    .project-session-beam {
+    .project-session-fx,
+    .project-session-fx::before,
+    .project-session-fx::after,
+    .project.session-running[data-session-fx="breath"],
+    .project.session-running[data-session-fx="halo"] .project-kind-icon::before {
         animation: none !important;
         transition: none !important;
     }

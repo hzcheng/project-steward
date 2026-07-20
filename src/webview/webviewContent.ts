@@ -39,6 +39,7 @@ interface GroupSectionOptions {
     className: string;
     systemBadge: string;
     projectAttentionMode: ProjectAttentionMode;
+    sessionFx?: string;
 }
 
 export function getStewardContent(
@@ -195,12 +196,20 @@ export function getStewardContent(
 </html>`;
 }
 
+const SESSION_FX_IDS = ['current', 'sweep', 'orbit', 'halo', 'ripple', 'breath', 'none'];
+
+function getSessionFx(infos: StewardInfos): string {
+    const configured = infos && infos.config && typeof infos.config.get === 'function'
+        ? infos.config.get('aiSessionRunningCardAnimation', 'current')
+        : 'current';
+    return SESSION_FX_IDS.indexOf(configured) !== -1 ? configured : 'current';
+}
+
 export function getOpenProjectsGroupContent(
     openProjects: Project[],
     collapsed: boolean,
     infos: StewardInfos,
-): string {
-    var currentProjects = (openProjects || []).filter(project => project.openProjectCardKind !== 'projectNavigation');
+): string {    var currentProjects = (openProjects || []).filter(project => project.openProjectCardKind !== 'projectNavigation');
     var navigationProjects = (openProjects || []).filter(project => project.openProjectCardKind === 'projectNavigation');
     var currentGroup = new Group(OPEN_CURRENT_WORKSPACE_GROUP_NAME, currentProjects);
     currentGroup.id = OPEN_CURRENT_WORKSPACE_GROUP_ID;
@@ -232,6 +241,7 @@ export function getOpenProjectsGroupContent(
         className: 'open-other-windows-group',
         systemBadge: 'Live',
         projectAttentionMode: 'navigation',
+        sessionFx: getSessionFx(infos),
     })}`;
 }
 
@@ -446,10 +456,10 @@ function getProjectDiv(
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
     var navigationActiveSessionCount = isProjectNavigation ? (project.openProjectActiveSessionCount || 0) : 0;
-    var projectCardClassModifier = navigationActiveSessionCount > 0 ? ' session-running' : '';
-    var sessionBeam = navigationActiveSessionCount > 0
-        ? '<div class="project-session-beam project-session-beam-top"></div><div class="project-session-beam project-session-beam-bottom"></div>'
-        : '';
+    var sessionFx = navigationActiveSessionCount > 0 ? (options.sessionFx || 'current') : '';
+    var projectCardClassModifier = sessionFx ? ' session-running' : '';
+    var sessionFxAttribute = sessionFx ? ` data-session-fx="${sessionFx}"` : '';
+    var sessionFxLayer = sessionFx ? '<div class="project-session-fx"></div>' : '';
     if (navigationActiveSessionCount > 0) {
         projectIconTitle = `${projectIconTitle} — ${navigationActiveSessionCount} active session${navigationActiveSessionCount === 1 ? '' : 's'} running`;
     }
@@ -510,6 +520,7 @@ function getProjectDiv(
         }${options.readOnlyProjects || isProjectNavigation ? ' data-readonly-project' : ''
         }${showCurrentAttention ? ' data-open-project' : ''
         }${isProjectNavigation ? ' data-project-navigation title="Switch to this project"' : ''
+        }${sessionFxAttribute
         }${!isProjectNavigation && project.codexSessionsExpanded ? ' data-codex-expanded' : ''
         }${!options.readOnlyProjects && !isProjectNavigation ? ' data-has-favorite-toggle' : ''
         }${!isProjectNavigation && project.showSaveAction ? ' data-has-save-action' : ''
@@ -518,7 +529,7 @@ function getProjectDiv(
         }>
         <div class="project-aura"></div>
         <div class="project-border steward-item-accent" style="${borderStyle}"></div>
-        ${sessionBeam}
+        ${sessionFxLayer}
         ${projectAttentionBadge}
         ${favoriteBadge}
         ${saveBadge}
