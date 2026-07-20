@@ -446,9 +446,10 @@ function getProjectDiv(
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
     var navigationActiveSessionCount = isProjectNavigation ? (project.openProjectActiveSessionCount || 0) : 0;
-    var projectIconClass = navigationActiveSessionCount > 0
-        ? 'project-kind-icon session-running'
-        : 'project-kind-icon';
+    var projectCardClassModifier = navigationActiveSessionCount > 0 ? ' session-running' : '';
+    var sessionBeam = navigationActiveSessionCount > 0
+        ? '<div class="project-session-beam project-session-beam-top"></div><div class="project-session-beam project-session-beam-bottom"></div>'
+        : '';
     if (navigationActiveSessionCount > 0) {
         projectIconTitle = `${projectIconTitle} — ${navigationActiveSessionCount} active session${navigationActiveSessionCount === 1 ? '' : 's'} running`;
     }
@@ -503,7 +504,7 @@ function getProjectDiv(
 
     return `
 <div class="project-container"${options.virtual && !options.draggableVirtualProjects ? ' data-nodrag' : ''}>
-    <div class="project steward-item-card" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
+    <div class="project steward-item-card${projectCardClassModifier}" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${attentionProjectKey ? ` data-attention-project-key="${attentionProjectKey}"` : ''
         }${options.virtual ? ' data-virtual-project' : ''
         }${options.readOnlyProjects || isProjectNavigation ? ' data-readonly-project' : ''
@@ -517,12 +518,13 @@ function getProjectDiv(
         }>
         <div class="project-aura"></div>
         <div class="project-border steward-item-accent" style="${borderStyle}"></div>
+        ${sessionBeam}
         ${projectAttentionBadge}
         ${favoriteBadge}
         ${saveBadge}
         ${projectActionsWrapper}
         <div class="fitty-container project-title-row">
-            <span class="${projectIconClass}" title="${projectIconTitle}">
+            <span class="project-kind-icon" title="${projectIconTitle}">
                 ${projectIcon}
             </span>
             <h2 class="project-header">

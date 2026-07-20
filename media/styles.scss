@@ -2165,35 +2165,36 @@ body.steward-sidebar {
             }
         }
 
-        .project-kind-icon.session-running {
-            position: relative;
-            border-color: transparent;
-            color: var(--vscode-charts-green, #4ec9b0);
-            animation: steward-session-running-pulse 2s ease-in-out infinite;
+        &.session-running {
+            border-color: rgba(55, 148, 255, .45);
+        }
 
-            svg {
-                filter: drop-shadow(0 0 1px var(--vscode-charts-green, #4ec9b0));
-            }
+        .project-session-beam {
+            position: absolute;
+            left: 10px;
+            right: 10px;
+            height: 2px;
+            border-radius: 2px;
+            pointer-events: none;
+            background: linear-gradient(90deg,
+                transparent 0%,
+                var(--vscode-charts-blue, #3794ff) 32%,
+                #cfe8ff 50%,
+                var(--vscode-charts-blue, #3794ff) 68%,
+                transparent 100%);
+            background-size: 40% 100%;
+            background-repeat: no-repeat;
+            box-shadow: 0 0 5px rgba(55, 148, 255, .8);
+            animation: steward-session-running-flow 1.6s linear infinite;
+        }
 
-            &::before {
-                content: "";
-                position: absolute;
-                inset: 0;
-                border-radius: 999px;
-                padding: 2px;
-                background: conic-gradient(from 0deg,
-                    transparent 0deg 60deg,
-                    var(--vscode-charts-green, #4ec9b0) 150deg,
-                    #d0fff1 200deg,
-                    var(--vscode-charts-green, #4ec9b0) 250deg,
-                    transparent 320deg 360deg);
-                -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-                -webkit-mask-composite: xor;
-                mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-                mask-composite: exclude;
-                animation: steward-session-running-halo 1.4s linear infinite;
-                pointer-events: none;
-            }
+        .project-session-beam-top {
+            top: 0;
+        }
+
+        .project-session-beam-bottom {
+            bottom: 0;
+            animation-delay: -.8s;
         }
 
         &:hover .project-kind-icon {
@@ -3147,22 +3148,13 @@ body.steward-sidebar .project .project-codex-badge.attention-animate {
     animation: steward-ai-attention 900ms ease-in-out 3;
 }
 
-@keyframes steward-session-running-halo {
+@keyframes steward-session-running-flow {
+    from {
+        background-position: -70% 0;
+    }
+
     to {
-        transform: rotate(1turn);
-    }
-}
-
-@keyframes steward-session-running-pulse {
-    0%,
-    100% {
-        background-color: rgba(78, 201, 176, .1);
-        box-shadow: inset 0 0 2px rgba(78, 201, 176, .35);
-    }
-
-    50% {
-        background-color: rgba(78, 201, 176, .28);
-        box-shadow: inset 0 0 5px rgba(78, 201, 176, .6);
+        background-position: 170% 0;
     }
 }
 
@@ -3246,8 +3238,7 @@ body.steward-sidebar .project .ai-session-attention-indicator {
     .ai-session-primary-action,
     .project-codex-badge,
     .ai-session-attention-indicator,
-    .project-kind-icon.session-running,
-    .project-kind-icon.session-running::before {
+    .project-session-beam {
         animation: none !important;
         transition: none !important;
     }

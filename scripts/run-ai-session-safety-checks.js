@@ -4638,13 +4638,11 @@ function runWebviewContentChecks() {
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
     const sidebarStyles = extractExactScssBlock(styles, 'body.steward-sidebar');
-    assert.ok(styles.includes('.project-kind-icon.session-running'),
-        'styles must define the session-running kind icon animation');
-    assert.ok(styles.includes('@keyframes steward-session-running-halo'));
-    assert.ok(styles.includes('@keyframes steward-session-running-pulse'));
-    assert.ok(compiledStyles.includes('.session-running'));
-    assert.ok(compiledStyles.includes('steward-session-running-halo'));
-    assert.ok(compiledStyles.includes('steward-session-running-pulse'));
+    assert.ok(styles.includes('.project-session-beam'),
+        'styles must define the session-running edge current');
+    assert.ok(styles.includes('@keyframes steward-session-running-flow'));
+    assert.ok(compiledStyles.includes('.project-session-beam'));
+    assert.ok(compiledStyles.includes('steward-session-running-flow'));
     assert.strictEqual(sidebarStyles.includes('.project[data-current-workspace]'), false,
         'current workspace shell state must be owned by the shared item card');
     assert.strictEqual(sidebarStyles.includes('.project-border'), false,
@@ -5272,8 +5270,14 @@ function runCurrentWorkspaceRenderingChecks() {
             openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 2,
         },
     ], false, { config });
-    assert.ok(runningNavigation.includes('class="project-kind-icon session-running"'),
-        'navigation cards with running sessions must animate the kind icon');
+    assert.ok(runningNavigation.includes('class="project steward-item-card session-running"'),
+        'navigation cards with running sessions must animate the card edge');
+    assert.ok(runningNavigation.includes('<div class="project-session-beam project-session-beam-top"></div>'),
+        'navigation cards with running sessions must render the top edge current');
+    assert.ok(runningNavigation.includes('<div class="project-session-beam project-session-beam-bottom"></div>'),
+        'navigation cards with running sessions must render the bottom edge current');
+    assert.ok(!runningNavigation.includes('project-kind-icon session-running'),
+        'the kind icon must not own the session-running animation');
     assert.ok(runningNavigation.includes('title="SSH Project — 2 active sessions running"'));
     const idleNavigation = webviewContentModule.getOpenProjectsGroupContent([
         {
@@ -5284,7 +5288,9 @@ function runCurrentWorkspaceRenderingChecks() {
     ], false, { config });
     assert.ok(idleNavigation.includes('class="project-kind-icon"'));
     assert.ok(!idleNavigation.includes('session-running'),
-        'navigation cards without running sessions must not animate the kind icon');
+        'navigation cards without running sessions must not animate the card edge');
+    assert.ok(!idleNavigation.includes('project-session-beam'),
+        'navigation cards without running sessions must not render the orbiting beam');
     const currentWithSessions = webviewContentModule.getOpenProjectsGroupContent([
         {
             id: 'current-with-sessions', name: 'Current', path: '/work/current',
@@ -5294,6 +5300,8 @@ function runCurrentWorkspaceRenderingChecks() {
     ], false, { config });
     assert.ok(!currentWithSessions.includes('session-running'),
         'current-workspace cards must not use the navigation session-running animation');
+    assert.ok(!currentWithSessions.includes('project-session-beam'),
+        'current-workspace cards must not render the orbiting beam');
 
     assert.ok(html.includes('role="tablist"'));
     assert.ok(html.includes('data-dashboard-tab="open"'));

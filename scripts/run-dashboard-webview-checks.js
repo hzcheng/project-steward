@@ -3705,7 +3705,7 @@ function runSourceContractChecks(source) {
     assert.ok(source.includes("projectSteward.activeDashboardTab"));
     assert.ok(webviewContentSource.includes('class="group steward-section'));
     assert.ok(webviewContentSource.includes('class="group-title steward-section-header steward-group-header"'));
-    assert.ok(webviewContentSource.includes('class="project steward-item-card"'));
+    assert.ok(webviewContentSource.includes('class="project steward-item-card${projectCardClassModifier}"'));
     assert.ok(webviewContentSource.includes('class="project-border steward-item-accent"'));
     assert.ok(webviewContentSource.includes('onTodoMounted: () =>'));
     assert.ok(webviewContentSource.includes("window.__projectStewardSyncCollapseButton('todo')"));
