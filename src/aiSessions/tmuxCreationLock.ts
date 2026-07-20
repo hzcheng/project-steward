@@ -1,7 +1,7 @@
 'use strict';
 
 import { createHash, randomBytes } from 'crypto';
-import { promises as fs } from 'fs';
+import { constants as fsConstants, promises as fs } from 'fs';
 import type { Stats } from 'fs';
 import * as path from 'path';
 
@@ -10,6 +10,7 @@ const HELD_DIRECTORY = 'held';
 const WAIT_TIMEOUT_MS = 5000;
 const POLL_INTERVAL_MS = 50;
 const STALE_AFTER_MS = 30000;
+const HEARTBEAT_INTERVAL_MS = Math.floor(STALE_AFTER_MS / 3);
 const CLAIM_VERSION = 1;
 const MAX_CLAIM_BYTES = 1024;
 
@@ -88,10 +89,91 @@ export async function withTmuxCreationLock<T>(
         throw new Error(`Tmux creation lock identity changed before entry ${digest}.`);
     }
 
+    const heartbeat = startOwnerHeartbeat(lockPath, heldPath, owner);
     try {
         return await operation();
     } finally {
-        await removeOwnerClaim(lockPath, heldPath, owner);
+        let cleanupFailure: unknown;
+        try {
+            await heartbeat.stop();
+        } catch (error) {
+            cleanupFailure = error;
+        }
+        try {
+            await removeOwnerClaim(lockPath, heldPath, owner);
+        } catch (error) {
+            cleanupFailure = cleanupFailure || error;
+        }
+        if (cleanupFailure) {
+            throw cleanupFailure;
+        }
+    }
+}
+
+function startOwnerHeartbeat(
+    lockPath: string,
+    heldPath: string,
+    owner: LockOwner
+): { stop: () => Promise<void> } {
+    let stopped = false;
+    let failure: unknown;
+    let inFlight: Promise<void> = Promise.resolve();
+    const heartbeat = async (): Promise<void> => {
+        if (stopped || failure) {
+            return;
+        }
+        inFlight = inFlight.then(() => renewOwnerClaim(lockPath, heldPath, owner));
+        try {
+            await inFlight;
+        } catch (error) {
+            failure = failure || error;
+        }
+    };
+    const timer = setInterval(heartbeat, HEARTBEAT_INTERVAL_MS);
+    timer.unref();
+    return {
+        stop: async () => {
+            stopped = true;
+            clearInterval(timer);
+            await inFlight.catch(error => {
+                failure = failure || error;
+            });
+            if (failure) {
+                throw failure;
+            }
+        },
+    };
+}
+
+async function renewOwnerClaim(
+    lockPath: string,
+    heldPath: string,
+    owner: LockOwner
+): Promise<void> {
+    if (path.dirname(owner.claimPath) !== heldPath || !await hasLockIdentity(lockPath, heldPath, owner)) {
+        throw new Error('Tmux creation lock identity changed during heartbeat.');
+    }
+    const claim = await readClaim(owner.claimPath);
+    if (!claim || !claimMatchesIdentity(claim.record, owner)) {
+        throw new Error('Tmux creation lock claim changed during heartbeat.');
+    }
+
+    let handle: fs.FileHandle | undefined;
+    try {
+        handle = await fs.open(owner.claimPath, fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW);
+        const stat = await handle.stat();
+        if (!stat.isFile() || stat.dev !== claim.stat.dev || stat.ino !== claim.stat.ino
+            || stat.birthtimeMs !== claim.stat.birthtimeMs
+            || !await hasLockIdentity(lockPath, heldPath, owner)) {
+            throw new Error('Tmux creation lock claim identity changed during heartbeat.');
+        }
+        const now = new Date();
+        await handle.utimes(now, now);
+    } finally {
+        await handle?.close();
+    }
+    if (!await hasLockIdentity(lockPath, heldPath, owner)) {
+        throw new Error('Tmux creation lock identity changed after heartbeat.');
     }
 }
 

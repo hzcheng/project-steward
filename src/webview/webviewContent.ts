@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getAttentionProjectKey } from '../aiSessions/attentionProject';
+import { resolveAttentionProjectKey } from '../aiSessions/attentionProject';
 import * as path from 'path';
 
 import {
@@ -474,7 +474,7 @@ function getProjectDiv(
     var projectAttentionCount = project.aiSessionAttentionCount ?? attentionCount;
     var attentionProjectKey = options.projectAttentionMode === 'none'
         ? ''
-        : getAttentionProjectKey(project.path);
+        : resolveAttentionProjectKey(project);
     var projectAttentionBadge = showNavigationAttention && projectAttentionCount
         ? `<span class="project-ai-attention-badge" title="${projectAttentionCount} AI session${projectAttentionCount === 1 ? ' needs' : 's need'} attention">${projectAttentionCount}</span>`
         : '';

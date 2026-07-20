@@ -17,8 +17,11 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ### Fixed
 
+-   Preserve `OTHER WINDOWS` attention badges when Remote SSH, WSL, or Dev Container navigation uses a full VS Code Remote URI.
 -   Preserve completed AI Session attention in `OTHER WINDOWS` after VS Code Terminal or tmux runtime cleanup, until the user clicks the Session or project card.
+-   Acknowledge attention from project-card clicks, clear retained attention when the feature is disabled, and rescan all runtime backends before archive confirmation.
 -   Prevent concurrent or ambiguous tmux creation, metadata collisions, reload recovery, and attach failures from resending a provider command or modifying unmanaged tmux targets.
+-   Renew long-running tmux creation locks so active owners are not mistaken for stale claims.
 -   Make runtime conflicts explicitly selectable without ambiguous focus or detach, use accessible native session actions, and harden isolated tmux smoke cleanup and provider-invocation evidence.
 -   Keep unmanaged tmux collision diagnostics out of the runtime chooser, classify cleanup failures conservatively, and verify controlled provider exit without sending process signals.
 -   Preserve offline provider-completion evidence and live known-runtime hints independently, keep initial and restored tmux terminal titles consistent, and mark retained snapshots stale after discovery failures.

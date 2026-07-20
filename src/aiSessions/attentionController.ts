@@ -68,7 +68,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         runtimeOverrides: readonly AiSessionAttentionRuntimeOverride<TRuntime>[] = []
     ): Promise<AiSessionAttentionEvaluation> {
         if (!this.options.isEnabled()) {
-            this.monitor.evaluate([]);
+            this.monitor.clear();
             this.remoteAggregate = null;
             this.localItems = [];
             this.attentionKeysBySession.clear();

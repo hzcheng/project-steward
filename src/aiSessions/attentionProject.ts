@@ -20,6 +20,25 @@ export function getAttentionProjectKey(projectPath: string): string {
     return crypto.createHash('sha256').update(canonicalPath).digest('hex');
 }
 
+export function getAttentionProjectPath(projectPath: string): string {
+    const uri = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/]*)(\/[^?#]*)?(?:[?#].*)?$/.exec(projectPath || '');
+    if (!uri) {
+        return projectPath;
+    }
+
+    let uriPath = uri[3] || '/';
+    if (uri[1].toLowerCase() === 'file' && uri[2] && uri[2].toLowerCase() !== 'localhost') {
+        uriPath = `//${uri[2]}${uriPath}`;
+    } else if (/^\/[A-Za-z]:\//.test(uriPath)) {
+        uriPath = uriPath.slice(1);
+    }
+    return uriPath;
+}
+
+export function resolveAttentionProjectKey(project: { path?: string }): string {
+    return getAttentionProjectKey(getAttentionProjectPath(project?.path));
+}
+
 export function getAttentionProjectSummaries(aggregate: AttentionAggregate | null): AttentionProjectSummary[] {
     const summaries = new Map<string, AttentionProjectSummary>();
     for (const item of aggregate?.sessions || []) {
@@ -67,7 +86,7 @@ export function withAttentionProjects<TProject extends { path?: string }>(
         getAttentionProjectSummaries(aggregate).map(summary => [summary.projectKey, summary] as const)
     );
     return (projects || []).map(project => {
-        const summary = summaries.get(getAttentionProjectKey(project.path));
+        const summary = summaries.get(resolveAttentionProjectKey(project));
         return {
             ...project,
             aiSessionAttentionCount: summary?.attentionCount || 0,
@@ -80,7 +99,7 @@ export function withAttentionProject<TProject extends { path?: string }>(
     project: TProject,
     aggregate: AttentionAggregate | null
 ): TProject & { aiSessionAttentionCount: number; aiSessionAttentionEventIds: string[] } {
-    const projectKey = getAttentionProjectKey(project.path);
+    const projectKey = resolveAttentionProjectKey(project);
     const summary = getAttentionProjectSummaries(aggregate).find(candidate => candidate.projectKey === projectKey);
     return {
         ...project,

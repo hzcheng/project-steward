@@ -2201,6 +2201,33 @@ async function runAiSessionAttentionControllerChecks() {
     assert.deepStrictEqual(retainedPublished[2], [],
         'explicit Session acknowledgement removes the retained owner item');
 
+    let disableClearsEnabled = true;
+    const disableClearsController = new AiSessionAttentionController({
+        isEnabled: () => disableClearsEnabled,
+        getOpenProjects: () => projects,
+        getProviders: () => providersForTest,
+        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
+        getRuntimeById: () => null,
+        isRuntimeComplete: runtime => runtime.state === 'completed',
+        publish: async () => true,
+        scheduleRefresh: () => undefined,
+        postProjectsUpdated: () => undefined,
+        nowMs: () => nowMs,
+    });
+    await disableClearsController.evaluate([{
+        providerId: 'codex',
+        sessionId: 'session-a',
+        attentionKey: retainedKey,
+        runtime: oldInactiveRuntime,
+    }]);
+    assert.ok(disableClearsController.getLocalSnapshot()[retainedKey],
+        'the setup must retain an unread attention item before disabling the feature');
+    disableClearsEnabled = false;
+    await disableClearsController.evaluate();
+    assert.deepStrictEqual(disableClearsController.getLocalSnapshot(), {},
+        'disabling attention must discard retained local events instead of reviving them on re-enable');
+
     const boundedPublished = [];
     const boundedController = new AiSessionAttentionController({
         isEnabled: () => true,
@@ -4711,7 +4738,7 @@ function runWebviewContentChecks() {
     assert.ok(webviewProjectScripts.includes(".project[data-attention-project-key]"));
     assert.ok(webviewProjectScripts.includes("project-ai-attention-badge"));
     assert.ok(styles.includes('.project-ai-attention-badge'));
-    assert.ok(webviewContent.includes('getAttentionProjectKey(project.path)'));
+    assert.ok(webviewContent.includes('resolveAttentionProjectKey(project)'));
     assert.ok(webviewContent.includes('class="ai-session-attention-indicator"'));
     assert.ok(styles.includes('.ai-session-attention-indicator'));
     assert.ok(dashboard.includes('getProjectKey: project => getAttentionProjectKey(project.path)'));
@@ -4794,7 +4821,17 @@ function runWebviewContentChecks() {
         'view visibility and active-terminal changes must both request reconciliation');
     assert.ok(dashboard.includes("logAiSessionRuntimeFailure('sync-focused-runtime', error)"));
     assert.ok(dashboard.includes('context.subscriptions.push(tmuxFocusedRuntimeMonitor);'));
-    assert.match(dashboard, /const acknowledgeAiSessionAttention = async[\s\S]*?await aiSessionAttentionBridgeClient\.acknowledge\(eventIds\);[\s\S]*?aiSessionAttentionController\.acknowledge\(eventIds\)/);
+    assert.match(dashboard, /const acknowledgeAiSessionAttentionEventIds = async[\s\S]*?aiSessionAttentionController\.acknowledge\(uniqueEventIds\);[\s\S]*?await aiSessionAttentionBridgeClient\.acknowledge\(uniqueEventIds\)/);
+    assert.match(dashboard, /const acknowledgeAiSessionAttention = async[\s\S]*?await acknowledgeAiSessionAttentionEventIds\(getAiSessionAttentionEventIds\(identity\)\)/);
+    const selectedProjectHandler = dashboard.slice(
+        dashboard.indexOf("'selected-project': async e =>"),
+        dashboard.indexOf("'add-project': async e =>")
+    );
+    assert.match(
+        selectedProjectHandler,
+        /withAttentionProject\([\s\S]*?await acknowledgeAiSessionAttentionEventIds\(attentionProject\.aiSessionAttentionEventIds\)/,
+        'clicking a project card must acknowledge all attention events represented by that card'
+    );
     const settlementCall = dashboard.match(/settleAiSessionRuntimeLifecycles\(\{[\s\S]*?\n\s*\}\);/)?.[0] || '';
     assert.ok(settlementCall.includes('attentionKey: candidate.key'));
     assert.ok(settlementCall.includes('release: async candidate =>'));
@@ -4857,6 +4894,10 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('AiSessionBatchArchiveCompletedMessage'));
     assert.ok(dashboard.includes("import { AiSessionArchiveController } from './aiSessions/archiveController';"));
     assert.ok(dashboard.includes('const aiSessionArchiveController = new AiSessionArchiveController<AiSessionRuntimeSnapshot<vscode.Terminal>>({'));
+    assert.ok(
+        dashboard.includes('refreshRuntimeGuard: () => aiSessionRuntimeCoordinator.refreshForHost(true),'),
+        'archive confirmation must rescan every runtime backend so a newly external tmux runtime cannot be missed'
+    );
     assert.ok(dashboard.includes('await aiSessionArchiveController.archiveSessions('));
     assert.ok(dashboard.includes('await aiSessionArchiveController.archiveSession('));
     assert.ok(!dashboard.includes('async function archiveAiSession('));

@@ -3201,6 +3201,57 @@ async function runTmuxStoreChecks() {
         assert.strictEqual(fs.lstatSync(sameLockPath).isDirectory(), true);
         assert.deepStrictEqual(fs.readdirSync(sameLockPath), []);
 
+        const heartbeatKey = 'heartbeat-renewal';
+        const heartbeatDigest = crypto.createHash('sha256').update(heartbeatKey, 'utf8').digest('hex');
+        const heartbeatHeldPath = path.join(lockDirectory, `${heartbeatDigest}.lock`, 'held');
+        const heartbeatEntered = deferred();
+        const releaseHeartbeat = deferred();
+        const originalSetInterval = global.setInterval;
+        const originalClearInterval = global.clearInterval;
+        let heartbeatCallback;
+        let heartbeatIntervalMs = 0;
+        let heartbeatTimerCleared = false;
+        const fakeHeartbeatTimer = { unref: () => undefined };
+        global.setInterval = (callback, intervalMs) => {
+            heartbeatCallback = callback;
+            heartbeatIntervalMs = intervalMs;
+            return fakeHeartbeatTimer;
+        };
+        global.clearInterval = timer => {
+            if (timer === fakeHeartbeatTimer) {
+                heartbeatTimerCleared = true;
+            }
+        };
+        let heartbeatLock;
+        try {
+            heartbeatLock = creationLock.withTmuxCreationLock(root, heartbeatKey, async () => {
+                heartbeatEntered.resolve();
+                await releaseHeartbeat.promise;
+            });
+            await heartbeatEntered.promise;
+            assert.strictEqual(typeof heartbeatCallback, 'function',
+                'a held tmux creation lock must schedule a renewal heartbeat');
+            assert.ok(heartbeatIntervalMs > 0 && heartbeatIntervalMs < 30000,
+                'the heartbeat interval must renew the claim before the stale lease expires');
+            const claimName = fs.readdirSync(heartbeatHeldPath).find(name => name.endsWith('.claim'));
+            assert.ok(claimName, 'the heartbeat test requires an active owner claim');
+            const claimPath = path.join(heartbeatHeldPath, claimName);
+            const expiredTime = new Date(Date.now() - 31000);
+            fs.utimesSync(claimPath, expiredTime, expiredTime);
+            await heartbeatCallback();
+            assert.ok(fs.lstatSync(claimPath).mtimeMs > expiredTime.getTime(),
+                'a heartbeat must renew the active owner claim timestamp');
+        } finally {
+            releaseHeartbeat.resolve();
+            if (heartbeatLock) {
+                await heartbeatLock;
+            }
+            global.setInterval = originalSetInterval;
+            global.clearInterval = originalClearInterval;
+        }
+        assert.strictEqual(heartbeatTimerCleared, true,
+            'releasing the lock must stop its heartbeat timer');
+
         const raceKey = 'owner-cleanup-race';
         const raceDigest = crypto.createHash('sha256').update(raceKey, 'utf8').digest('hex');
         const raceLockPath = path.join(lockDirectory, `${raceDigest}.lock`);

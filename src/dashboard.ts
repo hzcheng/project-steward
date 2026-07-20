@@ -32,7 +32,7 @@ import AiSessionPinController from './aiSessions/pinController';
 import AiSessionProjectStateStore from './aiSessions/projectStateStore';
 import ActiveAiSessionTerminalHighlighter from './aiSessions/activeTerminalHighlight';
 import AttentionBridgeClient from './aiSessions/attentionBridgeClient';
-import { getAttentionProjectKey } from './aiSessions/attentionProject';
+import { getAttentionProjectKey, withAttentionProject } from './aiSessions/attentionProject';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { getAiSessionKey } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_DEFINITIONS, createAiSessionProviderRegistry, getAiSessionProviderLabel } from './aiSessions/providers';
@@ -473,11 +473,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getOpenProjects,
         getProjectSessions: (project, providerId) => getProviderProjectAiSessions(project, providerId, aiSessionProviders),
         getRuntimeById: getAiSessionRuntimeById,
-        refreshRuntimeGuard: (providerId, sessionId) => providerId && sessionId
-            ? aiSessionRuntimeCoordinator.refreshForIdentity({
-                provider: providerId, sessionId, projectKey: '', cwd: '',
-            }, true)
-            : aiSessionRuntimeCoordinator.refreshForHost(true),
+        refreshRuntimeGuard: () => aiSessionRuntimeCoordinator.refreshForHost(true),
         isRuntimeComplete: runtime => runtime.state === 'completed',
         focusRuntime: runtime => aiSessionRuntimeCoordinator.focus({ ...runtime.identity }),
         deleteRuntimeMarker: runtime => aiSessionTerminalService.deleteMarker(runtime.markerPath),
@@ -604,12 +600,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return aiSessionAttentionController.getRecoverySessionEvents()
             .find(session => session.sessionKey === sessionKey)?.eventIds || [];
     };
+    const acknowledgeAiSessionAttentionEventIds = async (eventIds: string[]): Promise<void> => {
+        const uniqueEventIds = Array.from(new Set(eventIds.filter(eventId => Boolean(eventId))));
+        if (!uniqueEventIds.length) {
+            return;
+        }
+        aiSessionAttentionController.acknowledge(uniqueEventIds);
+        await aiSessionAttentionBridgeClient.acknowledge(uniqueEventIds);
+        refreshAiSessionViewsIncrementally();
+    };
     const acknowledgeAiSessionAttention = async (
         identity: ActiveAiSessionTerminalIdentity
     ): Promise<void> => {
-        const eventIds = getAiSessionAttentionEventIds(identity);
-        await aiSessionAttentionBridgeClient.acknowledge(eventIds);
-        aiSessionAttentionController.acknowledge(eventIds);
+        await acknowledgeAiSessionAttentionEventIds(getAiSessionAttentionEventIds(identity));
     };
     type RuntimeLifecycleCandidate = AiSessionRuntimeLifecycleCandidate & {
         runtime: AiSessionRuntimeSnapshot<vscode.Terminal>;
@@ -946,6 +949,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     return;
                 }
 
+                const attentionProject = withAttentionProject(
+                    project,
+                    aiSessionAttentionController.getEffectiveAggregate()
+                );
+                await acknowledgeAiSessionAttentionEventIds(attentionProject.aiSessionAttentionEventIds);
                 await projectOpenController.openProject(project, isProjectNavigation ? ProjectOpenType.Default : projectOpenType);
             },
             'add-project': async e => {
@@ -1022,9 +1030,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             },
             'acknowledge-ai-session-attention': async e => {
                 const attentionEventIds = Array.isArray(e.eventIds) ? e.eventIds.filter((id: unknown): id is string => typeof id === 'string') : [];
-                aiSessionAttentionController.acknowledge(attentionEventIds);
-                await aiSessionAttentionBridgeClient.acknowledge(attentionEventIds);
-                refreshAiSessionViewsIncrementally();
+                await acknowledgeAiSessionAttentionEventIds(attentionEventIds);
             },
             'rename-ai-session': async e => {
                 await aiSessionCommandController.renameSession(e.provider as string, e.sessionId as string);
