@@ -259,6 +259,27 @@ function runWorkspaceSessionScopeChecks() {
     assert.strictEqual(duplicatePathScope.primaryCwd, '/work/api');
     assert.deepStrictEqual(duplicatePathScope.additionalDirectories, ['/work/web']);
 
+    const uncDuplicatePathScope = workspaceSessionScope.buildAiSessionDirectoryScope({
+        ...workspace,
+        roots: [
+            {
+                id: 'root-unc-original', name: 'UNC original', uri: 'file://server/Share/App',
+                hostPath: '\\\\Server\\Share\\App', ordinal: 0,
+            },
+            {
+                id: 'root-unc-alias', name: 'UNC alias', uri: 'file://server/share/app',
+                hostPath: '\\\\server\\share\\app\\', ordinal: 1,
+            },
+        ],
+    }, {
+        explicitRootId: 'root-unc-alias',
+        isDirectory: () => true,
+    });
+    assert.deepStrictEqual(uncDuplicatePathScope.workspaceRootHostPaths, ['\\\\Server\\Share\\App']);
+    assert.strictEqual(uncDuplicatePathScope.primaryRootId, 'root-unc-alias');
+    assert.strictEqual(uncDuplicatePathScope.primaryCwd, '\\\\server\\share\\app');
+    assert.deepStrictEqual(uncDuplicatePathScope.additionalDirectories, []);
+
     const invalidWorkspace = {
         ...workspace,
         roots: workspace.roots.concat({
@@ -279,6 +300,38 @@ function runWorkspaceSessionScopeChecks() {
             return true;
         }
     );
+
+    const unreadableWorkspace = {
+        ...workspace,
+        roots: workspace.roots.concat({
+            id: 'root-unreadable', name: 'Unreadable root', uri: 'file:///work/unreadable',
+            hostPath: '/work/unreadable', ordinal: 2,
+        }),
+    };
+    let unreadableScope;
+    assert.throws(
+        () => {
+            unreadableScope = workspaceSessionScope.buildAiSessionDirectoryScope(unreadableWorkspace, {
+                isDirectory: value => {
+                    if (value === '/work/unreadable') {
+                        throw new Error('EACCES while preparing codex --add-dir /work/unreadable');
+                    }
+                    return true;
+                },
+            });
+        },
+        error => {
+            assert.ok(error instanceof workspaceSessionScope.WorkspaceDirectoryScopeError);
+            assert.deepStrictEqual(error.invalidRoots, [{ id: 'root-unreadable', name: 'Unreadable root' }]);
+            assert.ok(error.message.includes('root-unreadable'));
+            assert.ok(error.message.includes('Unreadable root'));
+            assert.strictEqual(error.message.includes('codex'), false);
+            assert.strictEqual(error.message.includes('--add-dir'), false);
+            assert.strictEqual(error.message.includes('/work/unreadable'), false);
+            return true;
+        }
+    );
+    assert.strictEqual(unreadableScope, undefined, 'unreadable roots must not return a partial scope');
 
     const values = new Map();
     const updates = [];

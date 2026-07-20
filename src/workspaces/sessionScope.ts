@@ -3,7 +3,11 @@
 import * as path from 'path';
 import { URL } from 'url';
 import type { AiSessionDirectoryScope } from '../aiSessions/types';
-import { assignPathToWorkspaceRoot, normalizeWorkspaceHostPath } from './sessionAssignment';
+import {
+    assignPathToWorkspaceRoot,
+    getWorkspaceHostPathComparisonKey,
+    normalizeWorkspaceHostPath,
+} from './sessionAssignment';
 import type { OpenWorkspace, WorkspaceRoot } from './types';
 
 export interface ActiveEditorUri {
@@ -123,21 +127,17 @@ export function buildAiSessionDirectoryScope(
     const primaryCwd = normalizedRoots.find(candidate => candidate.root.id === primaryRoot.id)?.hostPath || '';
     const seenPaths = new Set<string>();
     const workspaceRootHostPaths = normalizedRoots.reduce((result, candidate) => {
-        const comparablePath = /^[a-zA-Z]:[\\/]/.test(candidate.hostPath)
-            ? candidate.hostPath.toLowerCase()
-            : candidate.hostPath;
+        const comparablePath = getWorkspaceHostPathComparisonKey(candidate.hostPath);
         if (!seenPaths.has(comparablePath)) {
             seenPaths.add(comparablePath);
             result.push(candidate.hostPath);
         }
         return result;
     }, [] as string[]);
-    const additionalDirectories = workspaceRootHostPaths.filter(hostPath => {
-        if (/^[a-zA-Z]:[\\/]/.test(hostPath) && /^[a-zA-Z]:[\\/]/.test(primaryCwd)) {
-            return hostPath.toLowerCase() !== primaryCwd.toLowerCase();
-        }
-        return hostPath !== primaryCwd;
-    });
+    const primaryCwdComparisonKey = getWorkspaceHostPathComparisonKey(primaryCwd);
+    const additionalDirectories = workspaceRootHostPaths.filter(
+        hostPath => getWorkspaceHostPathComparisonKey(hostPath) !== primaryCwdComparisonKey
+    );
 
     return Object.freeze({
         workspaceNavigationIdentity: workspace.navigationIdentity,

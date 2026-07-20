@@ -39,6 +39,15 @@ function normalizeComparableHostPath(value: string): NormalizedHostPath | null {
     };
 }
 
+export function getWorkspaceHostPathComparisonKey(value: string): string {
+    const normalizedPath = normalizeComparableHostPath(value);
+    if (!normalizedPath) {
+        return '';
+    }
+
+    return `${normalizedPath.windows ? 'windows' : 'posix'}:${normalizedPath.comparable}`;
+}
+
 function containsPath(rootPath: NormalizedHostPath, candidatePath: NormalizedHostPath): boolean {
     if (rootPath.windows !== candidatePath.windows) {
         return false;
