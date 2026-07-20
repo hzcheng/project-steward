@@ -35,6 +35,10 @@ const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const AiSessionPinController = require('../out/aiSessions/pinController').default;
 const providers = require('../out/aiSessions/providers');
 const providerAvailability = require('../out/aiSessions/providerAvailability');
+const workspaceSessionScope = require('../out/workspaces/sessionScope');
+const workspaceSessionAssignment = require('../out/workspaces/sessionAssignment');
+const workspacePrimaryRootStore = require('../out/workspaces/primaryRootStore');
+const WorkspacePrimaryRootStore = workspacePrimaryRootStore.WorkspacePrimaryRootStore;
 const AiSessionTerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
 const CodexSessionService = require('../out/services/codexSessionService').default;
 const KimiSessionService = require('../out/services/kimiSessionService').default;
@@ -187,6 +191,150 @@ function runAssignmentChecks() {
 
     assert.deepStrictEqual((assignments.get('app') || []).map(session => session.id), ['s1']);
     assert.strictEqual(assignments.has('root'), false);
+}
+
+function runWorkspaceSessionScopeChecks() {
+    const workspace = {
+        navigationIdentity: 'workspace-navigation',
+        scopeIdentity: 'workspace-scope',
+        kind: 'savedMultiRoot',
+        displayName: 'Platform',
+        navigationUri: 'file:///work/platform.code-workspace',
+        environment: 'local',
+        roots: [
+            { id: 'root-api', name: 'API', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 0 },
+            { id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/web', ordinal: 1 },
+        ],
+    };
+
+    assert.strictEqual(workspaceSessionScope.selectPrimaryWorkspaceRoot(workspace, {
+        explicitRootId: 'root-web',
+        activeEditorUri: { fsPath: '/work/api/src/index.ts' },
+        lastUsedRootId: 'root-api',
+    }).id, 'root-web');
+    assert.strictEqual(workspaceSessionScope.selectPrimaryWorkspaceRoot(workspace, {
+        activeEditorUri: { fsPath: '/work/web/src/index.ts' },
+        lastUsedRootId: 'root-api',
+    }).id, 'root-web');
+    assert.strictEqual(workspaceSessionScope.selectPrimaryWorkspaceRoot(workspace, {
+        activeEditorUri: { fsPath: '/elsewhere/index.ts' },
+        lastUsedRootId: 'root-web',
+    }).id, 'root-web');
+    assert.strictEqual(workspaceSessionScope.selectPrimaryWorkspaceRoot({
+        ...workspace,
+        roots: [workspace.roots[1], workspace.roots[0]],
+    }, {
+        explicitRootId: 'removed-root',
+        lastUsedRootId: 'removed-root',
+    }).id, 'root-api');
+
+    const scope = workspaceSessionScope.buildAiSessionDirectoryScope(workspace, {
+        explicitRootId: 'root-web',
+        isDirectory: value => value !== '/work/missing',
+    });
+    assert.deepStrictEqual(scope, {
+        workspaceNavigationIdentity: workspace.navigationIdentity,
+        workspaceScopeIdentity: workspace.scopeIdentity,
+        workspaceRootHostPaths: ['/work/api', '/work/web'],
+        primaryRootId: 'root-web',
+        primaryCwd: '/work/web',
+        additionalDirectories: ['/work/api'],
+    });
+    assert.notStrictEqual(scope.workspaceRootHostPaths, workspace.roots);
+    assert.strictEqual(Object.isFrozen(scope), true);
+    assert.strictEqual(Object.isFrozen(scope.workspaceRootHostPaths), true);
+    assert.strictEqual(Object.isFrozen(scope.additionalDirectories), true);
+
+    const duplicatePathScope = workspaceSessionScope.buildAiSessionDirectoryScope({
+        ...workspace,
+        roots: workspace.roots.concat({
+            id: 'root-api-alias', name: 'API alias', uri: 'file:///work/api/', hostPath: '/work/api/', ordinal: 2,
+        }),
+    }, {
+        explicitRootId: 'root-api-alias',
+        isDirectory: () => true,
+    });
+    assert.deepStrictEqual(duplicatePathScope.workspaceRootHostPaths, ['/work/api', '/work/web']);
+    assert.strictEqual(duplicatePathScope.primaryRootId, 'root-api-alias');
+    assert.strictEqual(duplicatePathScope.primaryCwd, '/work/api');
+    assert.deepStrictEqual(duplicatePathScope.additionalDirectories, ['/work/web']);
+
+    const invalidWorkspace = {
+        ...workspace,
+        roots: workspace.roots.concat({
+            id: 'root-missing', name: 'Missing root', uri: 'file:///work/missing', hostPath: '/work/missing', ordinal: 2,
+        }),
+    };
+    assert.throws(
+        () => workspaceSessionScope.buildAiSessionDirectoryScope(invalidWorkspace, {
+            isDirectory: value => value !== '/work/missing',
+        }),
+        error => {
+            assert.ok(error instanceof workspaceSessionScope.WorkspaceDirectoryScopeError);
+            assert.deepStrictEqual(error.invalidRoots, [{ id: 'root-missing', name: 'Missing root' }]);
+            assert.ok(error.message.includes('root-missing'));
+            assert.ok(error.message.includes('Missing root'));
+            assert.strictEqual(error.message.includes('codex'), false);
+            assert.strictEqual(error.message.includes('--add-dir'), false);
+            return true;
+        }
+    );
+
+    const values = new Map();
+    const updates = [];
+    const store = new WorkspacePrimaryRootStore({
+        get: key => values.get(key),
+        update: async (key, value) => {
+            updates.push([key, value]);
+            values.set(key, value);
+        },
+    });
+    assert.strictEqual(store.getPrimaryRootId(workspace.scopeIdentity, workspace.roots), null);
+    return store.setPrimaryRootId(workspace.scopeIdentity, 'root-web').then(() => {
+        assert.strictEqual(store.getPrimaryRootId(workspace.scopeIdentity, workspace.roots), 'root-web');
+        assert.strictEqual(store.getPrimaryRootId(workspace.scopeIdentity, [workspace.roots[0]]), null);
+        assert.strictEqual(store.getPrimaryRootId('different-scope', workspace.roots), null);
+        assert.deepStrictEqual(updates, [[
+            workspacePrimaryRootStore.WORKSPACE_PRIMARY_ROOTS_STATE_KEY,
+            { [workspace.scopeIdentity]: 'root-web' },
+        ]]);
+    });
+}
+
+function runWorkspaceSessionAssignmentChecks() {
+    const roots = [
+        { id: 'root-api', name: 'API', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 0 },
+        { id: 'root-core', name: 'Core', uri: 'file:///work/api/packages/core', hostPath: '/work/api/packages/core', ordinal: 1 },
+    ];
+
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/api/packages/core/src/index.ts', roots).id,
+        'root-core'
+    );
+    assert.strictEqual(workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/api-old', roots), null);
+    assert.strictEqual(workspaceSessionAssignment.assignPathToWorkspaceRoot('', roots), null);
+    assert.strictEqual(workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/api', roots).id, 'root-api');
+
+    const windowsRoots = [
+        { id: 'root-windows', name: 'Windows', uri: 'file:///C:/Work/App', hostPath: 'C:\\Work\\App', ordinal: 0 },
+    ];
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('c:\\work\\APP\\src\\index.ts', windowsRoots).id,
+        'root-windows'
+    );
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('C:\\Work\\Application', windowsRoots),
+        null
+    );
+
+    const duplicateRoots = [
+        { id: 'root-later', name: 'Later', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 2 },
+        { id: 'root-first', name: 'First', uri: 'file:///work/api/', hostPath: '/work/api/', ordinal: 0 },
+    ];
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/api/src', duplicateRoots).id,
+        'root-first'
+    );
 }
 
 function runDashboardSearchCatalogChecks() {
@@ -9166,6 +9314,8 @@ function runVsixPackagingChecks() {
 async function main() {
     runPathChecks();
     runAssignmentChecks();
+    await runWorkspaceSessionScopeChecks();
+    runWorkspaceSessionAssignmentChecks();
     runDashboardSearchCatalogChecks();
     runDashboardDiagnosticsChecks();
     runAttentionProjectionChecks();

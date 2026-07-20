@@ -15,6 +15,15 @@ export interface AiSessionTerminalEntry<TTerminal = unknown> {
     released?: boolean;
 }
 
+export interface AiSessionDirectoryScope {
+    workspaceNavigationIdentity: string;
+    workspaceScopeIdentity: string;
+    workspaceRootHostPaths: string[];
+    primaryRootId: string;
+    primaryCwd: string;
+    additionalDirectories: string[];
+}
+
 export type AiSessionTabId = 'active' | 'sessions';
 export type ActiveAiSessionExecutionState = 'starting' | AiSessionExecutionState;
 export type ActiveAiSessionStatus = 'starting' | 'running' | 'focused' | 'needsAttention' | 'conflict';
