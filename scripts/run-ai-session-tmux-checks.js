@@ -47,6 +47,17 @@ function quotePowerShellLiteral(value) {
     return `'${String(value).replace(/'/g, `''`)}'`;
 }
 
+function createDirectoryScope(primaryCwd, additionalDirectories = []) {
+    return Object.freeze({
+        workspaceNavigationIdentity: `navigation:${primaryCwd}`,
+        workspaceScopeIdentity: `scope:${primaryCwd}`,
+        workspaceRootHostPaths: Object.freeze([primaryCwd, ...additionalDirectories]),
+        primaryRootId: `root:${primaryCwd}`,
+        primaryCwd,
+        additionalDirectories: Object.freeze([...additionalDirectories]),
+    });
+}
+
 function deferred() {
     let resolve;
     let reject;
@@ -546,7 +557,7 @@ function runRuntimeConfigurationChecks() {
 function runLaunchSpecChecks() {
     const spec = commandBuilders.buildCodexResumeLaunchSpec(
         `session'; touch /tmp/nope; '`,
-        `/work/it's app`,
+        createDirectoryScope(`/work/it's app`),
         `/tmp/done marker`
     );
     assert.strictEqual(spec.executable, 'codex');
@@ -562,23 +573,33 @@ function runLaunchSpecChecks() {
     assert.ok(tmuxCommand.includes('exit'));
 
     assert.deepStrictEqual(
-        commandBuilders.buildKimiResumeLaunchSpec('kimi; nope', '/work/Kimi App', '/tmp/kimi.done').args,
+        commandBuilders.buildKimiResumeLaunchSpec(
+            'kimi; nope', createDirectoryScope('/work/Kimi App'), '/tmp/kimi.done'
+        ).args,
         ['--work-dir', '/work/Kimi App', '--resume', 'kimi; nope']
     );
     assert.deepStrictEqual(
-        commandBuilders.buildKimiNewSessionLaunchSpec('/work/Kimi App', "owner's task", '/tmp/kimi-new.done').args,
+        commandBuilders.buildKimiNewSessionLaunchSpec(
+            createDirectoryScope('/work/Kimi App'), "owner's task", '/tmp/kimi-new.done'
+        ).args,
         ['--work-dir', '/work/Kimi App', '--prompt', "owner's task"]
     );
     assert.strictEqual(
-        commandBuilders.buildClaudeResumeLaunchSpec('claude-session', '/work/claude', '/tmp/claude.done').cwd,
+        commandBuilders.buildClaudeResumeLaunchSpec(
+            'claude-session', createDirectoryScope('/work/claude'), '/tmp/claude.done'
+        ).cwd,
         '/work/claude'
     );
     assert.strictEqual(
-        commandBuilders.buildClaudeNewSessionLaunchSpec('/work/app', 'Title', '/tmp/claude-new.done').cwd,
+        commandBuilders.buildClaudeNewSessionLaunchSpec(
+            createDirectoryScope('/work/app'), 'Title', '/tmp/claude-new.done'
+        ).cwd,
         '/work/app'
     );
     assert.deepStrictEqual(
-        commandBuilders.buildCodexNewSessionLaunchSpec('/work/app', 'Prompt', '/tmp/codex-new.done').args,
+        commandBuilders.buildCodexNewSessionLaunchSpec(
+            createDirectoryScope('/work/app'), 'Prompt', '/tmp/codex-new.done'
+        ).args,
         ['--cd', '/work/app', 'Prompt']
     );
 
@@ -595,10 +616,11 @@ function runLaunchSpecChecks() {
         cwd: `C:\\work\\O'Brien "quoted"; Set-Content C:\\tmp\\cwd-pwned 1; #`,
         marker: `C:\\tmp\\done "quoted"; Set-Content C:\\tmp\\marker-pwned 1; #`,
     };
+    const adversarialScope = createDirectoryScope(adversarialValues.cwd);
     const windowsSpecs = [
-        commandBuilders.buildCodexNewSessionLaunchSpec(adversarialValues.cwd, adversarialValues.prompt, adversarialValues.marker),
-        commandBuilders.buildClaudeNewSessionLaunchSpec(adversarialValues.cwd, adversarialValues.title, adversarialValues.marker),
-        commandBuilders.buildCodexResumeLaunchSpec(adversarialValues.session, adversarialValues.cwd, adversarialValues.marker),
+        commandBuilders.buildCodexNewSessionLaunchSpec(adversarialScope, adversarialValues.prompt, adversarialValues.marker),
+        commandBuilders.buildClaudeNewSessionLaunchSpec(adversarialScope, adversarialValues.title, adversarialValues.marker),
+        commandBuilders.buildCodexResumeLaunchSpec(adversarialValues.session, adversarialScope, adversarialValues.marker),
     ];
     for (const windowsSpec of windowsSpecs) {
         const command = launchSpec.serializeDirectLaunchCommand(windowsSpec, 'win32');
@@ -616,28 +638,40 @@ function runLaunchSpecChecks() {
     }
 
     assert.strictEqual(
-        commandBuilders.buildCodexResumeCommand('session-1', 'C:\\Repo App', null, 'win32'),
+        commandBuilders.buildCodexResumeCommand(
+            'session-1', createDirectoryScope('C:\\Repo App'), null, 'win32'
+        ),
         'codex resume --cd "C:\\Repo App" "session-1"'
     );
     assert.strictEqual(
-        commandBuilders.buildKimiResumeCommand('session-1', 'C:\\Repo App', null, 'win32'),
+        commandBuilders.buildKimiResumeCommand(
+            'session-1', createDirectoryScope('C:\\Repo App'), null, 'win32'
+        ),
         'kimi --work-dir "C:\\Repo App" --resume "session-1"'
     );
     assert.strictEqual(
-        commandBuilders.buildClaudeResumeCommand('session-1', 'C:\\Repo App', null, 'win32'),
+        commandBuilders.buildClaudeResumeCommand(
+            'session-1', createDirectoryScope('C:\\Repo App'), null, 'win32'
+        ),
         'cd "C:\\Repo App" && claude --resume "session-1"'
     );
 
     assert.strictEqual(
-        decodePowerShellPayload(commandBuilders.buildCodexNewSessionCommand('C:\\Repo App', 'Prompt', null, 'win32')),
+        decodePowerShellPayload(commandBuilders.buildCodexNewSessionCommand(
+            createDirectoryScope('C:\\Repo App'), 'Prompt', null, 'win32'
+        )),
         "codex --cd 'C:\\Repo App' 'Prompt'"
     );
     assert.strictEqual(
-        decodePowerShellPayload(commandBuilders.buildKimiNewSessionCommand('C:\\Repo App', 'Prompt', null, 'win32')),
+        decodePowerShellPayload(commandBuilders.buildKimiNewSessionCommand(
+            createDirectoryScope('C:\\Repo App'), 'Prompt', null, 'win32'
+        )),
         "kimi --work-dir 'C:\\Repo App' --prompt 'Prompt'"
     );
     assert.strictEqual(
-        decodePowerShellPayload(commandBuilders.buildClaudeNewSessionCommand('C:\\Repo App', 'Title', null, 'win32')),
+        decodePowerShellPayload(commandBuilders.buildClaudeNewSessionCommand(
+            createDirectoryScope('C:\\Repo App'), 'Title', null, 'win32'
+        )),
         "Set-Location -LiteralPath 'C:\\Repo App'; claude --name 'Title'"
     );
 
@@ -6974,13 +7008,13 @@ async function runRuntimeControllerChecks() {
         getProviderLabel: () => 'Codex',
         getProvider: () => ({
             label: 'Codex', terminalNamePrefix: 'Codex',
-            buildNewSessionLaunchSpec: (cwd, title, markerPath) => ({
-                executable: 'codex', args: ['new', title], cwd, markerPath,
+            buildNewSessionLaunchSpec: (scope, title, markerPath) => ({
+                executable: 'codex', args: ['new', title], cwd: scope.primaryCwd, markerPath,
             }),
         }),
         getProjectKey: () => 'pk',
         createPendingId: () => 'pending-controller',
-        getTerminalCwd: candidate => candidate.path,
+        resolveDirectoryScope: () => createDirectoryScope('/work'),
         getUsableTerminalCwd: cwd => cwd,
         showInputBox: async () => 'Title',
         showActiveTab: async () => undefined,
@@ -7023,15 +7057,15 @@ async function runRuntimeControllerChecks() {
         getOpenProjects: () => [project],
         getProvider: () => ({
             label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
-            buildResumeLaunchSpec: (sessionId, cwd, markerPath) => ({
-                executable: 'codex', args: ['resume', sessionId], cwd, markerPath,
+            buildResumeLaunchSpec: (sessionId, scope, markerPath) => ({
+                executable: 'codex', args: ['resume', sessionId], cwd: scope.primaryCwd, markerPath,
             }),
         }),
         getProjectSession: (_project, _provider, sessionId) => ({
             id: sessionId, name: 'Tmux session', cwd: '/work', updatedAt: createdAt,
         }),
         getProjectKey: () => 'pk',
-        getTerminalCwd: () => '/work',
+        resolveDirectoryScope: () => createDirectoryScope('/work'),
         getTerminalName: () => 'Codex: Tmux session',
         getComparableCwd: () => '/work',
         getUsableTerminalCwd: cwd => cwd,
@@ -7065,15 +7099,15 @@ async function runRuntimeControllerChecks() {
         getOpenProjects: () => [project],
         getProvider: () => ({
             label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
-            buildResumeLaunchSpec: (sessionId, cwd, markerPath) => ({
-                executable: 'codex', args: ['resume', sessionId], cwd, markerPath,
+            buildResumeLaunchSpec: (sessionId, scope, markerPath) => ({
+                executable: 'codex', args: ['resume', sessionId], cwd: scope.primaryCwd, markerPath,
             }),
         }),
         getProjectSession: (_project, _provider, sessionId) => ({
             id: sessionId, name: 'Collision', cwd: '/work', updatedAt: createdAt,
         }),
         getProjectKey: () => 'pk',
-        getTerminalCwd: () => '/work',
+        resolveDirectoryScope: () => createDirectoryScope('/work'),
         getTerminalName: () => 'Codex: Collision',
         getMarkerPath: () => '/tmp/collision.done',
         showWarningMessage: () => undefined,
@@ -7140,11 +7174,11 @@ async function runRuntimeControllerChecks() {
         pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
         getProvider: () => ({
             label: 'Codex', terminalNamePrefix: 'Codex',
-            buildNewSessionLaunchSpec: (cwd, title, markerPath) => ({
-                executable: 'codex', args: ['new', title], cwd, markerPath,
+            buildNewSessionLaunchSpec: (scope, title, markerPath) => ({
+                executable: 'codex', args: ['new', title], cwd: scope.primaryCwd, markerPath,
             }),
         }),
-        getTerminalCwd: candidate => candidate.path, getProjectKey: () => 'pk',
+        resolveDirectoryScope: () => createDirectoryScope('/work'), getProjectKey: () => 'pk',
         createPendingId: () => 'rejected-pending', showInputBox: async () => '',
         showActiveTab: async () => undefined, announceStatus: async () => undefined,
         showWarningMessage: async () => undefined,
@@ -7174,14 +7208,14 @@ async function runRuntimeControllerChecks() {
         getOpenProjects: () => [project],
         getProvider: () => ({
             label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
-            buildResumeLaunchSpec: (sessionId, cwd, markerPath) => ({
-                executable: 'codex', args: ['resume', sessionId], cwd, markerPath,
+            buildResumeLaunchSpec: (sessionId, scope, markerPath) => ({
+                executable: 'codex', args: ['resume', sessionId], cwd: scope.primaryCwd, markerPath,
             }),
         }),
         getProjectSession: (_project, _provider, sessionId) => ({
             id: sessionId, name: 'Rejected', cwd: '/work', updatedAt: createdAt,
         }),
-        getProjectKey: () => 'pk', getTerminalCwd: () => '/work',
+        getProjectKey: () => 'pk', resolveDirectoryScope: () => createDirectoryScope('/work'),
         getTerminalName: () => 'Codex: Rejected', getMarkerPath: () => '/tmp/rejected',
         showWarningMessage: () => undefined,
         showErrorMessage: async message => { resumeErrors.push(message); },
@@ -7209,11 +7243,11 @@ async function runRuntimeControllerChecks() {
         pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
         getProvider: () => ({
             label: 'Codex', terminalNamePrefix: 'Codex',
-            buildNewSessionLaunchSpec: (cwd, title, markerPath) => ({
-                executable: 'codex', args: ['new', title], cwd, markerPath,
+            buildNewSessionLaunchSpec: (scope, title, markerPath) => ({
+                executable: 'codex', args: ['new', title], cwd: scope.primaryCwd, markerPath,
             }),
         }),
-        getTerminalCwd: candidate => candidate.path, getProjectKey: () => 'pk',
+        resolveDirectoryScope: () => createDirectoryScope('/work'), getProjectKey: () => 'pk',
         createPendingId: () => 'timeout-pending', showInputBox: async () => '',
         showActiveTab: async () => undefined, announceStatus: async () => undefined,
         showWarningMessage: async (_message, ...items) => items.includes('Focus Terminal')
