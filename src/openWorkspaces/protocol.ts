@@ -34,6 +34,7 @@ export interface OpenWorkspaceRecord {
     displayName: string;
     navigationUri: string;
     environment: OpenWorkspaceEnvironment;
+    runningAiSessionCount: number;
     roots: OpenWorkspaceRootRecord[];
 }
 
@@ -205,6 +206,7 @@ export function validateOpenWorkspaceRecord(value: unknown): OpenWorkspaceRecord
         'displayName',
         'navigationUri',
         'environment',
+        'runningAiSessionCount',
         'roots',
     ]);
     const record = {
@@ -214,6 +216,10 @@ export function validateOpenWorkspaceRecord(value: unknown): OpenWorkspaceRecord
         displayName: requireBoundedString(workspace.displayName, 'displayName'),
         navigationUri: requireUri(workspace.navigationUri, 'navigationUri'),
         environment: requireEnvironment(workspace.environment),
+        runningAiSessionCount: requireSafeNonNegativeInteger(
+            workspace.runningAiSessionCount,
+            'runningAiSessionCount',
+        ),
         roots: validateRoots(workspace.roots),
     };
     if (record.kind === 'singleFolder' && record.roots.length !== 1) {
@@ -318,6 +324,7 @@ function createWorkspaceSemanticDescriptor(workspace: OpenWorkspaceRecord | null
         workspace.displayName,
         workspace.navigationUri,
         workspace.environment,
+        workspace.runningAiSessionCount,
         workspace.roots
             .map(root => [root.id, root.name, root.uri, root.ordinal])
             .sort(compareSemanticDescriptors),

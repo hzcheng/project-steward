@@ -285,7 +285,7 @@ export function getOpenWorkspacesGroupContent(
             ? `<div class="open-other-windows-state" role="status">
                 <p>OTHER WINDOWS is temporarily unavailable. Project Steward will retry automatically.</p>
             </div>`
-            : navigationCards.map(card => getWorkspaceCardDiv(card)).join('\n');
+            : navigationCards.map(card => getWorkspaceCardDiv(card, runningCardAnimation)).join('\n');
     const otherWindowsCollapsed = otherWindowsStatus === 'ready' && collapsed;
     return `${currentSection}
 <div class="group steward-section open-other-windows-group ${otherWindowsCollapsed ? 'collapsed' : ''}" data-group-id="${OPEN_WORKSPACES_GROUP_ID}" data-virtual-group data-system-group="${OPEN_WORKSPACES_GROUP_ID}" data-other-windows-status="${otherWindowsStatus}">
@@ -323,7 +323,7 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
     const aiSessions = isCurrent ? card.aiSessions : undefined;
     const runningSessionCount = isCurrent
         ? (aiSessions?.activeSessions || []).filter(session => session.executionState === 'running').length
-        : 0;
+        : card.runningSessionCount;
     const sessionFx = runningSessionCount > 0
         ? normalizeRunningCardAnimation(runningCardAnimation)
         : '';
@@ -350,7 +350,13 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
     const navigationAttentionBadge = !isCurrent && attentionCount
         ? `<span class="project-ai-attention-badge" title="${navigationAttentionLabel}" aria-label="${navigationAttentionLabel}">${attentionCount}</span>`
         : '';
-    const badge = currentSummaryBadge || navigationAttentionBadge;
+    const navigationRunningLabel = `${runningSessionCount} active AI session${runningSessionCount === 1 ? '' : 's'}`;
+    const navigationRunningBadge = !isCurrent && runningSessionCount
+        ? `<span class="project-codex-badge" data-ai-session-active-count="${runningSessionCount}" title="${navigationRunningLabel}" aria-label="${navigationRunningLabel}"><span class="ai-session-active-count" aria-label="${navigationRunningLabel}">●${runningSessionCount}</span></span>`
+        : '';
+    const badge = isCurrent
+        ? currentSummaryBadge
+        : `${navigationRunningBadge}${navigationAttentionBadge}`;
     const sessionSection = isCurrent
         ? getAiSessionsDiv(getWorkspaceAiSessionSurface(card), {
             workspaceRoots: roots,
@@ -359,7 +365,7 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
         : '';
 
     return `<div class="project-container" data-nodrag>
-    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''}${runningTitle ? ` title="${runningTitle}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'}${currentSummaryBadge ? ' data-has-ai-session-badge' : ''}${showSaveAction ? ' data-has-save-action' : ''} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
+    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''}${runningTitle ? ` title="${runningTitle}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'}${currentSummaryBadge || navigationRunningBadge ? ' data-has-ai-session-badge' : ''}${showSaveAction ? ' data-has-save-action' : ''} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
         <div class="project-aura"></div>
         <div class="project-border steward-item-accent"></div>
         ${sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : ''}

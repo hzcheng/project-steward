@@ -722,7 +722,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             })),
         getProviders: getRegisteredAiSessionProviders,
         getSessionKey: getAiSessionKey,
-        scheduleRefresh: reason => scheduleAiSessionRefresh(reason),
+        scheduleRefresh: reason => {
+            scheduleAiSessionRefresh(reason);
+            if (openWorkspaceController) {
+                openWorkspaceController.publish();
+            }
+        },
         nowMs: () => Date.now(),
     });
     const getAiSessionAttentionEventIds = (identity: ActiveAiSessionTerminalIdentity): string[] => {
@@ -1282,6 +1287,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     let openWorkspaceBridgeClient: OpenWorkspaceBridgeClient;
     openWorkspaceController = new OpenWorkspaceController({
         getWorkspace: resolveCurrentOpenWorkspace,
+        getRunningAiSessionCount: workspace => (
+            workspaceSessionHydrationController.hydrate(workspace)?.activeSessions || []
+        ).filter(session => session.executionState === 'running').length,
         publishWorkspace: (workspace, followsFocusEvent) =>
             openWorkspaceBridgeClient.publish(workspace, followsFocusEvent),
     });

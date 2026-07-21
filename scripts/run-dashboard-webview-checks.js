@@ -369,6 +369,7 @@ function makeWorkspaceCardFixture(rootCount) {
         kind: 'current',
         workspaceKind: 'savedMultiRoot',
         showSaveAction: false,
+        runningSessionCount: 0,
         navigationIdentity: 'navigation-dashboard',
         scopeIdentity: 'scope-dashboard',
         name: 'Dashboard',
@@ -596,15 +597,22 @@ function runWorkspaceCardRenderingChecks() {
         name: 'App [Dev Container: Existing Dockerfile]',
         environment: 'devContainer',
         environmentLabel: 'Dev Container',
+        runningSessionCount: 2,
         aiSessions: runningCard.aiSessions,
     };
     const workspaceHtml = webviewContent.getOpenWorkspacesGroupContent(
         [makeWorkspaceCardFixture(3), navigationCard],
         false,
+        'ready',
+        'halo',
     );
     const otherWindowsHtml = workspaceHtml.slice(workspaceHtml.indexOf('OTHER WINDOWS'));
     assert.strictEqual((otherWindowsHtml.match(/class="workspace-card/g) || []).length, 1);
     assert.ok(otherWindowsHtml.includes('data-other-workspace'));
+    assert.ok(otherWindowsHtml.includes('class="workspace-card project steward-item-card session-running"'));
+    assert.ok(otherWindowsHtml.includes('data-session-fx="halo"'));
+    assert.ok(otherWindowsHtml.includes('title="Workspace — 2 active sessions running"'));
+    assert.ok(otherWindowsHtml.includes('<span class="ai-session-active-count" aria-label="2 active AI sessions">●2</span>'));
     assert.ok(otherWindowsHtml.includes('<h2 class="project-header">App</h2>'));
     assert.ok(otherWindowsHtml.includes('<p class="project-description workspace-metadata">1 folder</p>'));
     assert.strictEqual(otherWindowsHtml.includes('[Dev Container:'), false,
@@ -614,8 +622,8 @@ function runWorkspaceCardRenderingChecks() {
     assert.ok(otherWindowsHtml.includes(
         '<span class="project-ai-attention-badge" title="1 item needs attention" aria-label="1 item needs attention">1</span>'
     ));
-    assert.strictEqual(otherWindowsHtml.includes('class="project-codex-badge"'), false,
-        'navigation attention must use the visible navigation-only badge primitive');
+    assert.strictEqual((otherWindowsHtml.match(/class="project-codex-badge"/g) || []).length, 1,
+        'a running navigation workspace must expose one compact active-session badge');
     const untitledNavigationHtml = webviewContent.getOpenWorkspacesGroupContent([{
         ...navigationCard,
         workspaceKind: 'untitledMultiRoot',
@@ -624,9 +632,7 @@ function runWorkspaceCardRenderingChecks() {
         'OTHER WINDOWS cards must never expose a save action');
     for (const privateDetail of [
         'data-ai-session-total-count',
-        'data-ai-session-active-count',
         'data-ai-session-attention-count',
-        'active AI session',
         'Codex',
         'Kimi',
         'Claude',
@@ -638,12 +644,8 @@ function runWorkspaceCardRenderingChecks() {
         'OTHER WINDOWS must never render session/provider controls');
     assert.strictEqual(otherWindowsHtml.includes('data-workspace-root-id'), false,
         'OTHER WINDOWS roots are aggregate metadata, not expandable rows');
-    for (const forbidden of [
-        'session-running', 'data-session-fx', 'project-session-fx', 'active session running',
-    ]) {
-        assert.strictEqual(otherWindowsHtml.includes(forbidden), false,
-            `OTHER WINDOWS must ignore malicious aiSessions data and omit ${forbidden}`);
-    }
+    assert.strictEqual((otherWindowsHtml.match(/active session/g) || []).length, 1,
+        'OTHER WINDOWS must render only its protocol count, not injected aiSessions details');
 
     const updateRequiredHtml = webviewContent.getOpenWorkspacesGroupContent(
         [makeWorkspaceCardFixture(3)],
@@ -4634,7 +4636,6 @@ function runSourceContractChecks(source) {
         workspaceProjectRule,
         '&[data-current-workspace][data-has-ai-session-badge]'
     );
-    const plainCurrentWorkspaceRule = extractCssRule(workspaceProjectRule, '&[data-current-workspace]');
     const sessionSurfaceRules = extractCssRules(workspaceProjectRule, '.codex-sessions');
     const collapsedSessionSurfaceRule = sessionSurfaceRules.find(rule =>
         cssRuleIncludesTopLevelDeclaration(rule, 'max-height: 0')
@@ -4673,9 +4674,7 @@ function runSourceContractChecks(source) {
             `expanded workspace sessions are missing ${declaration}`);
     }
     assert.ok(badgePresentWorkspaceRule.includes('width: calc(100% - 60px)'),
-        'only badge-present current workspace cards may reserve title and description width');
-    assert.strictEqual(plainCurrentWorkspaceRule.includes('width: calc(100% - 60px)'), false,
-        'plain current workspace cards must keep the full title and description width');
+        'badge-present workspace cards must reserve title and description width');
 
     const compiledBadgeSelector =
         'body.steward-sidebar .project[data-current-workspace][data-has-ai-session-badge]';

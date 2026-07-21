@@ -2422,6 +2422,35 @@ body.steward-sidebar {
             }
         }
 
+        &[data-workspace-navigation][data-has-ai-session-badge] {
+            .fitty-container,
+            .project-description {
+                width: calc(100% - 60px);
+            }
+
+            .project-codex-badge {
+                position: absolute;
+                right: 10px;
+                top: 8px;
+                z-index: 40;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 1px 6px;
+                border: 1px solid var(--vscode-panel-border);
+                border-radius: 999px;
+                color: var(--vscode-descriptionForeground);
+                background: var(--vscode-sideBar-background);
+                font-size: 9px;
+                font-weight: 650;
+                line-height: 1.35;
+
+                .ai-session-active-count {
+                    color: var(--vscode-focusBorder);
+                }
+            }
+        }
+
         .codex-sessions {
             display: block;
             width: 100%;

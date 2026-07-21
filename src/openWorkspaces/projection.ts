@@ -78,7 +78,10 @@ function getEnvironmentLabel(environment: OpenWorkspaceEnvironment): string {
     }
 }
 
-export function createOpenWorkspacePublication(workspace: OpenWorkspace | null): OpenWorkspaceRecord | null {
+export function createOpenWorkspacePublication(
+    workspace: OpenWorkspace | null,
+    runningAiSessionCount = 0,
+): OpenWorkspaceRecord | null {
     if (!workspace) {
         return null;
     }
@@ -89,6 +92,7 @@ export function createOpenWorkspacePublication(workspace: OpenWorkspace | null):
         displayName: workspace.displayName,
         navigationUri: workspace.navigationUri,
         environment: workspace.environment,
+        runningAiSessionCount,
         roots: (workspace.roots || []).map(root => ({
             id: root.id,
             name: root.name,
@@ -109,6 +113,7 @@ function createNavigationCard(
         kind: 'navigation',
         workspaceKind: workspace.kind,
         showSaveAction: false,
+        runningSessionCount: workspace.runningAiSessionCount,
         navigationIdentity: workspace.navigationIdentity,
         scopeIdentity: workspace.scopeIdentity,
         name: workspace.displayName,

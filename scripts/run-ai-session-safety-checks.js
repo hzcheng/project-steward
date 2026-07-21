@@ -2727,6 +2727,8 @@ async function runAiSessionExecutionControllerChecks() {
     activeSessions = [];
     await controller.evaluate();
     assert.deepStrictEqual(controller.getSnapshot(), {});
+    assert.deepStrictEqual(scheduled, ['execution', 'execution', 'execution'],
+        'removing a tracked session must publish the stopped cross-window state');
     assert.strictEqual(providerCalls.codex.length, 3, 'providers without active requests are not queried');
     assert.deepStrictEqual(providerCalls.kimi, []);
     assert.deepStrictEqual(providerCalls.claude, []);
@@ -7868,7 +7870,7 @@ function runAiSessionExecutionMonitorChecks() {
         token: 'stop-2', phase: 'needsAttention', reason: 'input-required', executionState: 'stopped', occurredAtMs: 1200,
     } }]), ['codex:s1']);
     assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'stopped');
-    monitor.evaluate([]);
+    assert.deepStrictEqual(monitor.evaluate([]), ['codex:s1']);
     assert.deepStrictEqual(monitor.getSnapshot(), {});
 }
 

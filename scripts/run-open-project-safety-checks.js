@@ -65,6 +65,7 @@ function makeWorkspaceRecord(index = 0, overrides = {}) {
         displayName: `Workspace ${index}`,
         navigationUri: `file:///work/root-${index}`,
         environment: 'local',
+        runningAiSessionCount: 0,
         roots: [makeWorkspaceRoot(index, { ordinal: 0 })],
         ...overrides,
     };
@@ -234,6 +235,13 @@ function runWorkspaceProtocolV2Checks() {
             workspace: { ...publication.workspace, unexpected: true },
         }),
         /unexpected fields/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({
+            ...publication,
+            workspace: { ...publication.workspace, runningAiSessionCount: -1 },
+        }),
+        /runningAiSessionCount/
     );
     assertRejectsValidation(
         () => workspaceProtocol.validateOpenWorkspacePublication({
@@ -430,6 +438,14 @@ function runWorkspaceProtocolV2Checks() {
         }]),
         baseRevision
     );
+    assert.notStrictEqual(
+        workspaceProtocol.createOpenWorkspaceSemanticRevision([{
+            ...registration,
+            workspace: { ...registration.workspace, runningAiSessionCount: 1 },
+        }]),
+        baseRevision,
+        'running session changes must propagate through the cross-window semantic revision'
+    );
     assert.strictEqual(
         workspaceProtocol.createOpenWorkspaceSemanticRevision([
             makeWorkspaceRegistration(OLDER, 2000, makeWorkspaceRecord(1)),
@@ -463,7 +479,7 @@ function runWorkspaceProjectionV2Checks() {
             ],
         }),
     };
-    const publicationRecord = workspaceProjection.createOpenWorkspacePublication(sourceWorkspace);
+    const publicationRecord = workspaceProjection.createOpenWorkspacePublication(sourceWorkspace, 2);
     assert.strictEqual(Array.isArray(publicationRecord), false, 'a workspace publication is one record, not one record per root');
     assert.deepStrictEqual(Object.keys(publicationRecord).sort(), [
         'displayName',
@@ -472,8 +488,10 @@ function runWorkspaceProjectionV2Checks() {
         'navigationIdentity',
         'navigationUri',
         'roots',
+        'runningAiSessionCount',
         'scopeIdentity',
     ]);
+    assert.strictEqual(publicationRecord.runningAiSessionCount, 2);
     assert.strictEqual(publicationRecord.roots.length, 3);
     assert.strictEqual(publicationRecord.roots.some(root => Object.hasOwnProperty.call(root, 'hostPath')), false);
     assert.strictEqual(workspaceProjection.createOpenWorkspacePublication(null), null);
@@ -492,6 +510,7 @@ function runWorkspaceProjectionV2Checks() {
         navigationIdentity: duplicateIdentity,
         displayName: 'Newest duplicate',
         environment: 'ssh',
+        runningAiSessionCount: 2,
         roots: [makeWorkspaceRoot(71), makeWorkspaceRoot(72)],
     });
     const tiedIdentity = workspaceIdentity(80);
@@ -553,6 +572,7 @@ function runWorkspaceProjectionV2Checks() {
     assert.strictEqual(duplicateCard.environmentLabel, 'SSH');
     assert.strictEqual(duplicateCard.roots.length, 2);
     assert.strictEqual(duplicateCard.attentionCount, 1);
+    assert.strictEqual(duplicateCard.runningSessionCount, 2);
     assert.deepStrictEqual(Object.keys(duplicateCard).sort(), [
         'attentionCount',
         'environment',
@@ -562,6 +582,7 @@ function runWorkspaceProjectionV2Checks() {
         'name',
         'navigationIdentity',
         'roots',
+        'runningSessionCount',
         'scopeIdentity',
         'showSaveAction',
         'workspaceKind',
@@ -1027,6 +1048,7 @@ async function runOpenWorkspaceClientAndControllerChecks() {
             workspaceResolutionCount += 1;
             return currentWorkspace;
         },
+        getRunningAiSessionCount: () => 2,
         publishWorkspace: (workspace, followsFocusEvent) => publications.push({ workspace, followsFocusEvent }),
     });
     workspaceController.publish();
@@ -1038,7 +1060,7 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     workspaceController.publish(true);
     assert.strictEqual(workspaceResolutionCount, 2);
     assert.deepStrictEqual(publications, [
-        { workspace: record, followsFocusEvent: false },
+        { workspace: { ...record, runningAiSessionCount: 2 }, followsFocusEvent: false },
         { workspace: null, followsFocusEvent: true },
     ]);
 

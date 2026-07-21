@@ -129,12 +129,15 @@ export class OpenWorkspaceDashboardController {
         attentionAggregate: AttentionAggregate | null,
     ): WorkspaceCardViewModel {
         const digest = crypto.createHash('sha256').update(workspace.scopeIdentity).digest('hex').slice(0, 24);
+        const aiSessions = this.options.getCurrentWorkspaceAiSessions(workspace) || undefined;
         return {
             id: `__currentWorkspace-${digest}`,
             kind: 'current',
             workspaceKind: workspace.kind,
             showSaveAction: workspace.kind === 'untitledMultiRoot'
                 || !this.options.isWorkspaceSavedAsProject(workspace),
+            runningSessionCount: (aiSessions?.activeSessions || [])
+                .filter(session => session.executionState === 'running').length,
             navigationIdentity: workspace.navigationIdentity,
             scopeIdentity: workspace.scopeIdentity,
             name: workspace.displayName,
@@ -144,7 +147,7 @@ export class OpenWorkspaceDashboardController {
                 .slice()
                 .sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id))
                 .map(root => ({ id: root.id, name: root.name, ordinal: root.ordinal })),
-            aiSessions: this.options.getCurrentWorkspaceAiSessions(workspace) || undefined,
+            aiSessions,
             attentionCount: getWorkspaceAttentionSummary(workspace, attentionAggregate).attentionCount,
         };
     }

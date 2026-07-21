@@ -85,6 +85,7 @@ export interface WorkspaceCardViewModel {
     kind: 'current' | 'navigation';
     workspaceKind: OpenWorkspaceKind;
     showSaveAction: boolean;
+    runningSessionCount: number;
     navigationIdentity: string;
     scopeIdentity: string;
     name: string;
