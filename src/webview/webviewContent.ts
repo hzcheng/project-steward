@@ -28,6 +28,7 @@ import {
 } from './dashboardViewModel';
 import * as Icons from './webviewIcons';
 import type { ActiveAiSessionViewModel, AiSessionTabId } from '../aiSessions/types';
+import type { OpenWorkspaceBridgeStatus } from '../openWorkspaces/bridgeClient';
 
 const FAVORITES_GROUP_NAME = 'FAVORITES';
 const OPEN_CURRENT_WORKSPACE_GROUP_NAME = 'CURRENT WORKSPACE';
@@ -77,6 +78,7 @@ export function getStewardContent(
     infos: StewardInfos,
     isSidebar: boolean = false,
     workspaceCards?: WorkspaceCardViewModel[],
+    otherWindowsStatus: OpenWorkspaceBridgeStatus = 'ready',
 ): string {
     var stylesPath = getMediaResource(context, webview, 'styles.css');
     var fittyPath = getMediaResource(context, webview, 'fitty.min.js');
@@ -111,7 +113,7 @@ export function getStewardContent(
         ? buildWorkspaceDashboardSearchCatalog(groups, workspaceCards, infos.todoSearchItems || [])
         : buildDashboardSearchCatalog(groups, openProjects, infos.todoSearchItems || []));
     var openProjectsContent = workspaceCards
-        ? getOpenWorkspacesGroupContent(workspaceCards, infos.openProjectsGroupCollapsed)
+        ? getOpenWorkspacesGroupContent(workspaceCards, infos.openProjectsGroupCollapsed, otherWindowsStatus)
         : getOpenProjectsGroupContent(openProjects, infos.openProjectsGroupCollapsed, infos);
 
     return `
@@ -300,25 +302,37 @@ export function getCurrentWorkspaceGroupContent(
 export function getOpenWorkspacesGroupContent(
     cards: WorkspaceCardViewModel[],
     collapsed: boolean,
+    otherWindowsStatus: OpenWorkspaceBridgeStatus = 'ready',
 ): string {
     const current = (cards || []).find(card => card.kind === 'current') || null;
     const navigationCards = (cards || []).filter(card => card.kind === 'navigation');
     const currentSection = getCurrentWorkspaceGroupContent(current, navigationCards.length > 0);
-    if (!navigationCards.length) {
+    if (!navigationCards.length && otherWindowsStatus === 'ready') {
         return currentSection;
     }
+    const statusContent = otherWindowsStatus === 'update-required'
+        ? `<div class="open-other-windows-state" role="status">
+            <p>Update the Project Steward UI Bridge extension to restore OTHER WINDOWS.</p>
+            <button type="button" class="project-action" data-action="open-bridge-extension">Show UI Bridge Extension</button>
+        </div>`
+        : otherWindowsStatus === 'unavailable'
+            ? `<div class="open-other-windows-state" role="status">
+                <p>OTHER WINDOWS is temporarily unavailable. Project Steward will retry automatically.</p>
+            </div>`
+            : navigationCards.map(getWorkspaceCardDiv).join('\n');
+    const otherWindowsCollapsed = otherWindowsStatus === 'ready' && collapsed;
     return `${currentSection}
-<div class="group steward-section open-other-windows-group ${collapsed ? 'collapsed' : ''}" data-group-id="${OPEN_PROJECTS_GROUP_ID}" data-virtual-group data-system-group="${OPEN_PROJECTS_GROUP_ID}">
+<div class="group steward-section open-other-windows-group ${otherWindowsCollapsed ? 'collapsed' : ''}" data-group-id="${OPEN_PROJECTS_GROUP_ID}" data-virtual-group data-system-group="${OPEN_PROJECTS_GROUP_ID}" data-other-windows-status="${otherWindowsStatus}">
     <div class="group-title steward-section-header steward-group-header">
         <span class="group-title-text" data-action="collapse">
             <span class="collapse-icon" title="Open/Collapse Group">${Icons.collapse}</span>
             ${OPEN_OTHER_WINDOWS_GROUP_NAME}
         </span>
-        <span class="group-title-badge">Live</span>
+        <span class="group-title-badge">${otherWindowsStatus === 'update-required' ? 'Update required' : otherWindowsStatus === 'unavailable' ? 'Unavailable' : 'Live'}</span>
     </div>
     <div class="group-list">
         <div class="drop-signal"></div>
-        ${navigationCards.map(getWorkspaceCardDiv).join('\n')}
+        ${statusContent}
     </div>
 </div>`;
 }

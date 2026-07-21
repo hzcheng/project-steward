@@ -18,6 +18,8 @@ export const OPEN_WORKSPACE_HANDSHAKE_COMMAND = '_projectStewardOpenWorkspaces.b
 export const OPEN_WORKSPACE_AGGREGATE_COMMAND = '_projectStewardOpenWorkspaces.workspace.aggregate';
 export const OPEN_WORKSPACE_DIAGNOSTIC_COMMAND = '_projectStewardOpenWorkspaces.workspace.diagnostic';
 
+export type OpenWorkspaceBridgeStatus = 'ready' | 'unavailable' | 'update-required';
+
 const RETRY_DELAYS_MS = [100, 500, 2_000, 10_000, 30_000];
 const MAX_FORWARDED_DIAGNOSTIC_BYTES = 64 * 1024;
 
@@ -37,6 +39,7 @@ export interface OpenWorkspaceBridgeClientDependencies {
     clearTimeout?: (handle: unknown) => void;
     reportDiagnostic?: (event: OpenWorkspaceClientDiagnosticEvent) => void;
     reportBridgeDiagnostic?: (event: unknown) => void;
+    onStatusChange?: (status: OpenWorkspaceBridgeStatus) => void;
 }
 
 export interface OpenWorkspaceClientDiagnosticEvent {
@@ -110,7 +113,9 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
     private retryAttempt = 0;
     private retryTimer: unknown = null;
     private handshakeFlight: Promise<boolean> | null = null;
+    private publishCommandFlight: Promise<void> | null = null;
     private publicationQueue: Promise<void> = Promise.resolve();
+    private status: OpenWorkspaceBridgeStatus | null = null;
     private readonly now: () => number;
     private readonly executeCommand: (command: string, argument: unknown) => PromiseLike<unknown>;
     private readonly clearInterval: (handle: unknown) => void;
@@ -119,6 +124,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
     private readonly mainExtensionVersion: string;
     private readonly reportDiagnostic: (event: OpenWorkspaceClientDiagnosticEvent) => void;
     private readonly reportBridgeDiagnostic: (event: unknown) => void;
+    private readonly onStatusChange: (status: OpenWorkspaceBridgeStatus) => void;
     private readonly aggregateRegistration: DisposableLike;
     private readonly diagnosticRegistration: DisposableLike;
     private readonly heartbeatHandle: unknown;
@@ -147,6 +153,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
             || (handle => clearTimeout(handle as NodeJS.Timeout));
         this.reportDiagnostic = dependencies.reportDiagnostic || (() => undefined);
         this.reportBridgeDiagnostic = dependencies.reportBridgeDiagnostic || (() => undefined);
+        this.onStatusChange = dependencies.onStatusChange || (() => undefined);
         this.aggregateRegistration = registerCommand(
             OPEN_WORKSPACE_AGGREGATE_COMMAND,
             raw => this.receiveAggregate(raw),
@@ -170,16 +177,17 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
     }
 
     receiveAggregate(raw: unknown): void {
+        if (this.disposed) { return; }
         try {
             const aggregate = validateOpenWorkspaceAggregate(raw);
             if (aggregate.semanticRevision === this.lastAggregateRevision) { return; }
-            this.lastAggregateRevision = aggregate.semanticRevision;
             this.emitDiagnostic({
                 event: 'aggregate',
                 registrationCount: aggregate.registrations.length,
                 semanticRevision: aggregate.semanticRevision,
             });
             this.onAggregate(aggregate);
+            this.lastAggregateRevision = aggregate.semanticRevision;
         } catch (error) {
             this.onError(error);
         }
@@ -194,12 +202,15 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
         if (this.retryTimer !== null) { this.cancelTimeout(this.retryTimer); }
         this.retryTimer = null;
         this.emitDiagnostic({ event: 'dispose', sequence: this.sequence });
-        const unregister = () => Promise.resolve(this.executeCommand(OPEN_WORKSPACE_UNREGISTER_COMMAND, {
-            protocolVersion: 2,
-            instanceId: this.instanceId,
-        })).then(() => undefined, error => { this.onError(error); });
-        const result = this.publicationQueue.then(unregister, unregister);
-        this.publicationQueue = result.then(() => undefined, () => undefined);
+        const unregister = () => Promise.resolve().then(() => this.executeCommand(
+            OPEN_WORKSPACE_UNREGISTER_COMMAND,
+            { protocolVersion: 2, instanceId: this.instanceId },
+        )).then(() => undefined, error => { this.onError(error); });
+        if (this.publishCommandFlight) {
+            void this.publishCommandFlight.then(unregister, unregister);
+        } else {
+            void unregister();
+        }
     }
 
     private enqueuePublication(
@@ -238,9 +249,14 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
             workspace,
         });
         const reason = forceHeartbeat ? 'heartbeat' : followsFocusEvent ? 'focus' : 'change';
+        const commandFlight = Promise.resolve()
+            .then(() => this.executeCommand(OPEN_WORKSPACE_PUBLISH_COMMAND, publication))
+            .then(() => undefined);
+        this.publishCommandFlight = commandFlight;
         try {
-            await this.executeCommand(OPEN_WORKSPACE_PUBLISH_COMMAND, publication);
+            await commandFlight;
             this.lastSemantic = semantic;
+            if (!this.disposed) { this.setStatus('ready'); }
             this.emitDiagnostic({
                 event: 'publish-success',
                 sequence: publication.sequence,
@@ -249,7 +265,9 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
             });
             return true;
         } catch (error) {
+            if (this.disposed) { return false; }
             this.connected = false;
+            this.setStatus('unavailable');
             this.emitDiagnostic({
                 event: 'publish-failure',
                 sequence: publication.sequence,
@@ -259,6 +277,10 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
             this.onError(error);
             this.scheduleRetry();
             return false;
+        } finally {
+            if (this.publishCommandFlight === commandFlight) {
+                this.publishCommandFlight = null;
+            }
         }
     }
 
@@ -266,6 +288,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
         if (this.disposed || this.incompatible) { return Promise.resolve(false); }
         if (this.connected) { return Promise.resolve(true); }
         if (this.handshakeFlight) { return this.handshakeFlight; }
+        if (this.retryTimer !== null) { return Promise.resolve(false); }
         this.handshakeFlight = this.handshake().then(result => {
             this.handshakeFlight = null;
             return result;
@@ -287,18 +310,23 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
                     capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
                 },
             ));
+            if (this.disposed) { return false; }
             this.connected = true;
             this.retryAttempt = 0;
             if (this.retryTimer !== null) { this.cancelTimeout(this.retryTimer); }
             this.retryTimer = null;
+            this.setStatus('ready');
             this.emitDiagnostic({ event: 'handshake', accepted: response.accepted });
             return true;
         } catch (error) {
+            if (this.disposed) { return false; }
             const message = error instanceof Error ? error.message : String(error);
             if (/update-required|protocol|capabilit/i.test(message)) {
                 this.incompatible = true;
+                this.setStatus('update-required');
                 this.emitDiagnostic({ event: 'handshake', accepted: false, errorCode: 'update-required' });
             } else {
+                this.setStatus('unavailable');
                 this.scheduleRetry();
             }
             this.onError(error);
@@ -316,6 +344,16 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
                 if (ready) { void this.enqueuePublication(this.latestWorkspace, false, true); }
             });
         }, delay);
+    }
+
+    private setStatus(status: OpenWorkspaceBridgeStatus): void {
+        if (this.disposed || this.status === status) { return; }
+        this.status = status;
+        try {
+            this.onStatusChange(status);
+        } catch (error) {
+            this.onError(error);
+        }
     }
 
     private receiveBridgeDiagnostic(raw: unknown): void {

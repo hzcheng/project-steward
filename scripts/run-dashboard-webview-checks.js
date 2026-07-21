@@ -299,6 +299,7 @@ function runDashboardUpdateMessageChecks() {
         cards: [workspaceCard, navigationCard],
         collapsed: false,
         semanticRevision: 'b'.repeat(64),
+        otherWindowsStatus: 'ready',
         todoSearchItems,
     });
     const workspaceSearchCatalog = buildWorkspaceDashboardSearchCatalog([], [workspaceCard], todoSearchItems);
@@ -328,6 +329,7 @@ function runDashboardUpdateMessageChecks() {
     assert.strictEqual(openWorkspacesMessage.currentWorkspaceCount, 1);
     assert.strictEqual(openWorkspacesMessage.navigationWorkspaceCount, 1);
     assert.strictEqual(openWorkspacesMessage.searchCatalog.version, 2);
+    assert.strictEqual(openWorkspacesMessage.otherWindowsStatus, 'ready');
     assert.deepStrictEqual(
         openWorkspacesMessage.searchCatalog.openWorkspaces.map(item => item.action),
         ['show-current-workspace', 'switch-open-workspace'],
@@ -445,6 +447,26 @@ function runWorkspaceCardRenderingChecks() {
         'OTHER WINDOWS must never render session/provider controls');
     assert.strictEqual(otherWindowsHtml.includes('data-workspace-root-id'), false,
         'OTHER WINDOWS roots are aggregate metadata, not expandable rows');
+
+    const updateRequiredHtml = webviewContent.getOpenWorkspacesGroupContent(
+        [makeWorkspaceCardFixture(3)],
+        true,
+        'update-required',
+    );
+    const updateRequiredGroupIndex = updateRequiredHtml.indexOf('<div class="group steward-section open-other-windows-group');
+    const updateRequiredCurrentHtml = updateRequiredHtml.slice(0, updateRequiredGroupIndex);
+    const updateRequiredOtherHtml = updateRequiredHtml.slice(updateRequiredGroupIndex);
+    assert.ok(updateRequiredOtherHtml.includes('data-other-windows-status="update-required"'));
+    assert.strictEqual(updateRequiredOtherHtml.includes('open-other-windows-group collapsed'), false,
+        'an actionable bridge upgrade state must not be hidden by the saved collapse state');
+    assert.ok(updateRequiredOtherHtml.includes('Update the Project Steward UI Bridge'));
+    assert.ok(updateRequiredOtherHtml.includes('data-action="open-bridge-extension"'),
+        'the bridge mismatch state must include an actionable upgrade control');
+    assert.strictEqual(updateRequiredOtherHtml.includes('class="codex-sessions"'), false,
+        'the bridge mismatch state must not create a session expander');
+    assert.ok(updateRequiredCurrentHtml.includes('data-current-workspace'));
+    assert.ok(updateRequiredCurrentHtml.includes('data-action="new-session-in"'),
+        'the local current workspace actions must remain enabled during bridge degradation');
 
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const consistencyBody = extractFunctionBody(projectSource, 'isWorkspaceUpdateDomConsistent');
@@ -4231,13 +4253,18 @@ function runSourceContractChecks(source) {
     assert.ok(openWorkspaceControllerSource.includes('buildOpenWorkspacesUpdatedMessage({'));
     assert.ok(openWorkspaceControllerSource.includes('groups: this.options.getGroups()'));
     assert.ok(openWorkspaceControllerSource.includes('cards: this.getCards()'));
-    assert.ok(openWorkspaceControllerSource.includes('semanticRevision: this.aggregate.semanticRevision'));
+    assert.ok(openWorkspaceControllerSource.includes('semanticRevision,'));
+    assert.ok(openWorkspaceControllerSource.includes('otherWindowsStatus: this.bridgeStatus'));
+    assert.ok(openWorkspaceControllerSource.includes('getViewSemanticRevision()'));
     assert.ok(aiSessionsMessageBody.includes('aiSessionDashboardController.getUpdatedMessage()'));
     assert.ok(aiSessionControllerSource.includes('buildAiSessionsUpdatedMessage({'));
     assert.ok(aiSessionControllerSource.includes('groups: this.options.getGroups()'));
     assert.ok(aiSessionControllerSource.includes('cards'));
     assert.ok(aiSessionControllerSource.includes('sequence: this.options.nextSequence()'));
     assert.ok(projectSource.includes('replaceSearchCatalog(message.searchCatalog)'));
+    assert.ok(projectSource.includes("type: 'open-bridge-extension'"));
+    assert.ok(extensionHostSource.includes("'workbench.extensions.action.showExtensionsWithIds'"));
+    assert.ok(extensionHostSource.includes("'hzcheng.project-steward-attention-ui-bridge'"));
     assert.strictEqual(projectSource.includes("sessionStorage.setItem('projectSteward.activeDashboardTab', 'open')"), false);
     for (const selector of [
         '.steward-section', '.steward-section-header', '.steward-card',

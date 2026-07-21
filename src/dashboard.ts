@@ -459,12 +459,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
     const workspaceContextResolver = new WorkspaceContextResolver();
     const workspacePrimaryRootStore = new WorkspacePrimaryRootStore(context.globalState);
-    const getCurrentOpenWorkspace = (): OpenWorkspace | null => workspaceContextResolver.resolve({
+    let openWorkspaceController: OpenWorkspaceController;
+    const resolveCurrentOpenWorkspace = (): OpenWorkspace | null => workspaceContextResolver.resolve({
         workspaceFile: vscode.workspace.workspaceFile,
         workspaceFolders: vscode.workspace.workspaceFolders,
         workspaceName: vscode.workspace.name,
         remoteName: vscode.env.remoteName,
     });
+    const getCurrentOpenWorkspace = (): OpenWorkspace | null => openWorkspaceController
+        ? openWorkspaceController.getCurrentWorkspace()
+        : resolveCurrentOpenWorkspace();
     const workspaceSessionHydrationController = new WorkspaceSessionHydrationController<vscode.Terminal>({
         providers: aiSessionProviders,
         readCoordinator: aiSessionReadCoordinator,
@@ -1115,10 +1119,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 let projectId = e.projectId as string;
                 let projectOpenType = e.projectOpenType as ProjectOpenType;
 
-                const navigationWorkspace = getOpenWorkspaceCards()
-                    .find(card => card.id === projectId && card.kind === 'navigation');
-                if (navigationWorkspace) {
-                    refreshStewardViews('open-workspace-navigation-pending-capability');
+                if (projectId.startsWith('__openWorkspaceNavigation-')) {
+                    const navigationWorkspace = openWorkspaceDashboardController
+                        .getNavigationWorkspace(projectId);
+                    refreshStewardViews(navigationWorkspace
+                        ? 'open-workspace-navigation-pending-capability'
+                        : 'open-workspace-navigation-stale');
                     return;
                 }
 
@@ -1235,6 +1241,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                         ? e.navigationWorkspaceCount as number
                         : -1,
                     hasOtherWindowsGroup: e.hasOtherWindowsGroup === true,
+                    otherWindowsStatus: e.otherWindowsStatus === 'ready'
+                        || e.otherWindowsStatus === 'unavailable'
+                        || e.otherWindowsStatus === 'update-required'
+                        ? e.otherWindowsStatus as string
+                        : 'invalid',
                 });
             },
             'request-active-ai-session-terminal': () => {
@@ -1249,6 +1260,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             },
             'open-settings': async () => {
                 await showProjectStewardSettings();
+            },
+            'open-bridge-extension': async () => {
+                await vscode.commands.executeCommand(
+                    'workbench.extensions.action.showExtensionsWithIds',
+                    ['hzcheng.project-steward-attention-ui-bridge'],
+                );
             },
             'archive-ai-sessions': async e => {
                 await aiSessionArchiveController.archiveSessions(
@@ -1303,6 +1320,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             stewardInfos,
             true,
             getOpenWorkspaceCards(),
+            openWorkspaceDashboardController.getState().otherWindows.status,
         ),
         renderError: getErrorContent,
         onMessage: dashboardMessageRouter,
@@ -1317,8 +1335,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         logError,
     });
     let openWorkspaceBridgeClient: OpenWorkspaceBridgeClient;
-    const openWorkspaceController = new OpenWorkspaceController({
-        getWorkspace: getCurrentOpenWorkspace,
+    openWorkspaceController = new OpenWorkspaceController({
+        getWorkspace: resolveCurrentOpenWorkspace,
         publishWorkspace: (workspace, followsFocusEvent) =>
             openWorkspaceBridgeClient.publish(workspace, followsFocusEvent),
     });
@@ -1353,7 +1371,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     openWorkspaceBridgeClient = new OpenWorkspaceBridgeClient(
         openWorkspaceController.getPublication(),
         aggregate => {
-            if (openWorkspaceDashboardController.setAggregate(aggregate)) {
+            const statusChanged = openWorkspaceDashboardController.setBridgeStatus('ready');
+            if (openWorkspaceDashboardController.setAggregate(aggregate) || statusChanged) {
                 postOpenWorkspacesUpdated();
             }
         },
@@ -1362,6 +1381,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             refreshProjects: () => openProjectWorkspaceController.getOpenProjectRecords(),
             reportDiagnostic: event => logOpenProjectDiagnostic('Workspace', event),
             reportBridgeDiagnostic: event => logOpenProjectDiagnostic('Bridge', event),
+            onStatusChange: status => {
+                if (openWorkspaceDashboardController.setBridgeStatus(status)) {
+                    postOpenWorkspacesUpdated();
+                }
+            },
         }
     );
     const activeAiSessionTerminalHighlighter = new ActiveAiSessionTerminalHighlighter<
@@ -1815,6 +1839,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function refreshStewardViews(reason = 'refresh') {
+        openWorkspaceController.refresh();
         dashboardRuntimeController.refresh(reason);
     }
 

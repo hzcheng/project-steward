@@ -10,18 +10,32 @@ export interface OpenWorkspaceControllerOptions {
 }
 
 export class OpenWorkspaceController {
+    private currentWorkspace: OpenWorkspace | null | undefined;
+
     constructor(private readonly options: OpenWorkspaceControllerOptions) {
     }
 
     getCurrentWorkspace(): OpenWorkspace | null {
-        return this.options.getWorkspace();
+        if (this.currentWorkspace === undefined) {
+            this.currentWorkspace = this.options.getWorkspace();
+        }
+        return this.currentWorkspace;
     }
 
     getPublication(): OpenWorkspaceRecord | null {
         return createOpenWorkspacePublication(this.getCurrentWorkspace());
     }
 
+    refresh(): OpenWorkspace | null {
+        this.currentWorkspace = this.options.getWorkspace();
+        return this.currentWorkspace;
+    }
+
     publish(followsFocusEvent = false): void {
-        void this.options.publishWorkspace(this.getPublication(), followsFocusEvent);
+        const workspace = this.refresh();
+        void this.options.publishWorkspace(
+            createOpenWorkspacePublication(workspace),
+            followsFocusEvent,
+        );
     }
 }

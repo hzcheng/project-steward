@@ -1041,6 +1041,10 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     assert.strictEqual(executions[0].command, '_projectStewardOpenWorkspaces.bridge.handshake');
     assert.strictEqual(executions[1].command, '_projectStewardOpenWorkspaces.bridge.publish');
     assert.strictEqual(executions[1].argument.workspace.navigationIdentity, record.navigationIdentity);
+    assert.deepStrictEqual(Object.keys(executions[1].argument.workspace.roots[0]).sort(),
+        ['id', 'name', 'ordinal', 'uri']);
+    assert.strictEqual(executions[1].argument.workspace.aiSessions, undefined);
+    assert.strictEqual(executions[1].argument.workspace.provider, undefined);
 
     await client.publish(record, true);
     const focusPublication = executions.filter(value => value.command.endsWith('.bridge.publish')).pop().argument;
@@ -1063,13 +1067,22 @@ async function runOpenWorkspaceClientAndControllerChecks() {
 
     const publications = [];
     let currentWorkspace = record;
+    let workspaceResolutionCount = 0;
     const workspaceController = new OpenWorkspaceController({
-        getWorkspace: () => currentWorkspace,
+        getWorkspace: () => {
+            workspaceResolutionCount += 1;
+            return currentWorkspace;
+        },
         publishWorkspace: (workspace, followsFocusEvent) => publications.push({ workspace, followsFocusEvent }),
     });
     workspaceController.publish();
+    workspaceController.getCurrentWorkspace();
+    workspaceController.getPublication();
+    assert.strictEqual(workspaceResolutionCount, 1,
+        'one publication cycle must resolve the current workspace only once');
     currentWorkspace = null;
     workspaceController.publish(true);
+    assert.strictEqual(workspaceResolutionCount, 2);
     assert.deepStrictEqual(publications, [
         { workspace: record, followsFocusEvent: false },
         { workspace: null, followsFocusEvent: true },
@@ -1118,6 +1131,276 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     assert.strictEqual(posted[0].currentWorkspaceCount, 1);
     assert.strictEqual(posted[0].navigationWorkspaceCount, 1);
     assert.strictEqual(posted[0].searchCatalog.version, 2);
+}
+
+async function runOpenWorkspaceHardeningChecks() {
+    const flush = () => new Promise(resolve => setImmediate(resolve));
+    const acceptedHandshake = {
+        accepted: true,
+        protocolVersion: 2,
+        bridgeExtensionVersion: '2.0.0',
+        capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
+    };
+
+    const mismatchExecutions = [];
+    const mismatchTimers = [];
+    const mismatchStatuses = [];
+    let mismatchHeartbeat;
+    const mismatchClient = new OpenWorkspaceBridgeClient(
+        makeWorkspaceRecord(40),
+        () => undefined,
+        () => undefined,
+        {
+            instanceId: SELF,
+            mainExtensionVersion: '2.0.0',
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: async (command, argument) => {
+                mismatchExecutions.push({ command, argument });
+                if (command.endsWith('.bridge.handshake')) {
+                    return {
+                        ...acceptedHandshake,
+                        accepted: false,
+                        errorCode: 'update-required',
+                    };
+                }
+                return undefined;
+            },
+            setInterval: callback => { mismatchHeartbeat = callback; return 'heartbeat'; },
+            clearInterval: () => undefined,
+            setTimeout: (callback, delayMs) => {
+                mismatchTimers.push({ callback, delayMs });
+                return mismatchTimers.length;
+            },
+            clearTimeout: () => undefined,
+            onStatusChange: status => mismatchStatuses.push(status),
+        }
+    );
+    await flush();
+    await mismatchClient.publish(makeWorkspaceRecord(41));
+    mismatchHeartbeat();
+    await flush();
+    assert.strictEqual(
+        mismatchExecutions.filter(value => value.command.endsWith('.bridge.handshake')).length,
+        1,
+        'an exact protocol mismatch must be terminal instead of creating a retry storm'
+    );
+    assert.strictEqual(mismatchTimers.length, 0, 'update-required mismatch must not schedule a retry');
+    assert.deepStrictEqual(mismatchStatuses, ['update-required']);
+    mismatchClient.dispose();
+
+    let transientHandshakeCount = 0;
+    const retryTimers = [];
+    const retryClient = new OpenWorkspaceBridgeClient(
+        makeWorkspaceRecord(42),
+        () => undefined,
+        () => undefined,
+        {
+            instanceId: OTHER,
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: async command => {
+                if (command.endsWith('.bridge.handshake')) {
+                    transientHandshakeCount += 1;
+                    throw new Error('bridge temporarily unavailable');
+                }
+                return undefined;
+            },
+            setInterval: () => 'heartbeat',
+            clearInterval: () => undefined,
+            setTimeout: (callback, delayMs) => {
+                retryTimers.push({ callback, delayMs });
+                return retryTimers.length;
+            },
+            clearTimeout: () => undefined,
+        }
+    );
+    const queuedRetryA = retryClient.publish(makeWorkspaceRecord(43));
+    const queuedRetryB = retryClient.publish(makeWorkspaceRecord(44));
+    await Promise.all([queuedRetryA, queuedRetryB]);
+    assert.strictEqual(transientHandshakeCount, 1,
+        'queued publications must wait for the one scheduled retry instead of retrying immediately');
+    assert.strictEqual(retryTimers.length, 1, 'transient failure must keep at most one retry timer');
+    retryClient.dispose();
+
+    let resolveHandshake;
+    const pendingHandshake = new Promise(resolve => { resolveHandshake = resolve; });
+    const handshakeDisposeExecutions = [];
+    const handshakeDisposeClient = new OpenWorkspaceBridgeClient(
+        makeWorkspaceRecord(45),
+        () => undefined,
+        () => undefined,
+        {
+            instanceId: NEWER,
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: (command, argument) => {
+                handshakeDisposeExecutions.push({ command, argument });
+                return command.endsWith('.bridge.handshake') ? pendingHandshake : Promise.resolve(undefined);
+            },
+            setInterval: () => 'heartbeat',
+            clearInterval: () => undefined,
+        }
+    );
+    await flush();
+    handshakeDisposeClient.dispose();
+    await flush();
+    assert.strictEqual(
+        handshakeDisposeExecutions.filter(value => value.command.endsWith('.bridge.unregister')).length,
+        1,
+        'dispose must not wait forever for an in-flight handshake before unregistering'
+    );
+    resolveHandshake(acceptedHandshake);
+    await flush();
+    assert.strictEqual(
+        handshakeDisposeExecutions.some(value => value.command.endsWith('.bridge.publish')),
+        false,
+        'a handshake completed after disposal must never publish'
+    );
+
+    let resolveInFlightPublish;
+    const inFlightPublish = new Promise(resolve => { resolveInFlightPublish = resolve; });
+    const publishDisposeExecutions = [];
+    const publishDisposeClient = new OpenWorkspaceBridgeClient(
+        makeWorkspaceRecord(47),
+        () => undefined,
+        () => undefined,
+        {
+            instanceId: '6'.repeat(32),
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: (command, argument) => {
+                publishDisposeExecutions.push({ command, argument });
+                if (command.endsWith('.bridge.handshake')) return Promise.resolve(acceptedHandshake);
+                if (command.endsWith('.bridge.publish')) return inFlightPublish;
+                return Promise.resolve(undefined);
+            },
+            setInterval: () => 'heartbeat',
+            clearInterval: () => undefined,
+        }
+    );
+    for (let attempt = 0; attempt < 50
+        && !publishDisposeExecutions.some(value => value.command.endsWith('.bridge.publish')); attempt += 1) {
+        await flush();
+    }
+    publishDisposeClient.dispose();
+    await flush();
+    assert.strictEqual(
+        publishDisposeExecutions.some(value => value.command.endsWith('.bridge.unregister')),
+        false,
+        'dispose must not unregister before an already-issued publication settles'
+    );
+    resolveInFlightPublish(undefined);
+    for (let attempt = 0; attempt < 50
+        && !publishDisposeExecutions.some(value => value.command.endsWith('.bridge.unregister')); attempt += 1) {
+        await flush();
+    }
+    assert.strictEqual(
+        publishDisposeExecutions.filter(value => value.command.endsWith('.bridge.unregister')).length,
+        1,
+        'dispose must unregister once after an in-flight publication settles'
+    );
+
+    let aggregateDeliveryAttempts = 0;
+    const aggregateDeliveryErrors = [];
+    const aggregateClient = new OpenWorkspaceBridgeClient(
+        null,
+        () => {
+            aggregateDeliveryAttempts += 1;
+            if (aggregateDeliveryAttempts === 1) throw new Error('consumer temporarily failed');
+        },
+        error => aggregateDeliveryErrors.push(error),
+        {
+            instanceId: '5'.repeat(32),
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: async command => command.endsWith('.bridge.handshake')
+                ? acceptedHandshake
+                : undefined,
+            setInterval: () => 'heartbeat',
+            clearInterval: () => undefined,
+        }
+    );
+    const repeatedAggregate = makeWorkspaceAggregate([
+        makeWorkspaceRegistration(OTHER, 1000, makeWorkspaceRecord(46)),
+    ], { semanticRevision: 'b'.repeat(64) });
+    aggregateClient.receiveAggregate(repeatedAggregate);
+    aggregateClient.receiveAggregate(repeatedAggregate);
+    assert.strictEqual(aggregateDeliveryAttempts, 2,
+        'a failed aggregate consumer must be able to receive the same semantic revision again');
+    assert.strictEqual(aggregateDeliveryErrors.length, 1);
+    aggregateClient.dispose();
+
+    const current = {
+        ...makeWorkspaceRecord(50),
+        roots: [{ ...makeWorkspaceRoot(50), hostPath: '/private/current' }],
+    };
+    const firstOther = makeWorkspaceRecord(51);
+    const secondOther = makeWorkspaceRecord(52);
+    const posted = [];
+    const refreshes = [];
+    let deliveryResult = true;
+    const dashboard = new OpenWorkspaceDashboardController({
+        getCurrentWorkspace: () => current,
+        getCurrentWorkspaceAiSessions: () => ({
+            workspaceScopeIdentity: current.scopeIdentity,
+            workspaceNavigationIdentity: current.navigationIdentity,
+            activeProvider: 'codex',
+            expanded: true,
+            providers: [],
+            sessionsByProvider: { codex: [], kimi: [], claude: [] },
+            unavailableProviders: [],
+            aiSessionCount: 0,
+            attentionCount: 0,
+            defaultTab: 'sessions',
+            activeSessionCount: 0,
+            activeSessions: [],
+            activeAttentionCount: 0,
+        }),
+        getGroups: () => [],
+        getTodoSearchItems: () => [],
+        getCollapsed: () => false,
+        getAttentionAggregate: () => null,
+        getBridgeInstanceId: () => SELF,
+        postMessage: async message => { posted.push(message); return deliveryResult; },
+        refresh: reason => refreshes.push(reason),
+        isVisible: () => true,
+        logDiagnostic: () => undefined,
+        logError: () => undefined,
+    });
+    dashboard.setAggregate(makeWorkspaceAggregate([
+        makeWorkspaceRegistration(OTHER, 1000, firstOther),
+        makeWorkspaceRegistration(NEWER, 2000, secondOther),
+    ], { semanticRevision: 'c'.repeat(64) }));
+    const cards = dashboard.getCards();
+    assert.strictEqual(cards.filter(card => card.kind === 'current').length, 1);
+    assert.strictEqual(cards.filter(card => card.kind === 'navigation').length, 2);
+    assert.strictEqual(cards.some(card => card.roots.some(root => root.hostPath)), false);
+    assert.strictEqual(cards.find(card => card.kind === 'navigation').aiSessions, undefined);
+    const staleCardId = cards.find(card => card.navigationIdentity === firstOther.navigationIdentity).id;
+    assert.strictEqual(dashboard.getNavigationWorkspace(staleCardId).navigationUri, firstOther.navigationUri);
+    dashboard.setAggregate(makeWorkspaceAggregate([], { semanticRevision: 'd'.repeat(64) }));
+    assert.strictEqual(dashboard.getNavigationWorkspace(staleCardId), null,
+        'an opaque navigation card ID must be invalidated as soon as its aggregate changes');
+
+    dashboard.setBridgeStatus('update-required');
+    const state = dashboard.getState();
+    assert.strictEqual(state.otherWindows.status, 'update-required');
+    assert.strictEqual(dashboard.getCards().filter(card => card.kind === 'current').length, 1,
+        'bridge degradation must not remove the locally resolved current card');
+    assert.ok(dashboard.getCards().find(card => card.kind === 'current').aiSessions,
+        'bridge degradation must not disable current-card actions');
+
+    dashboard.postUpdated();
+    dashboard.postUpdated();
+    await flush();
+    assert.strictEqual(posted.length, 1, 'identical semantic workspace updates must be suppressed');
+    assert.strictEqual(posted[0].otherWindowsStatus, 'update-required');
+    deliveryResult = false;
+    dashboard.setBridgeStatus('unavailable');
+    dashboard.postUpdated();
+    await flush();
+    deliveryResult = true;
+    dashboard.postUpdated();
+    await flush();
+    assert.strictEqual(posted.filter(message => message.otherWindowsStatus === 'unavailable').length, 2,
+        'an undelivered aggregate state must remain retryable');
+    assert.ok(refreshes.includes('open-workspace-update-not-delivered'));
 }
 
 function runOpenProjectPublicationChecks() {
@@ -1944,7 +2227,7 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('const projectPromptController = new ProjectPromptController({'));
     assert.ok(dashboard.includes('new DashboardCommandRegistration<vscode.Disposable>({'));
     assert.ok(dashboard.includes('const openWorkspaceDashboardController = new OpenWorkspaceDashboardController({'));
-    assert.ok(dashboard.includes('const openWorkspaceController = new OpenWorkspaceController({'));
+    assert.ok(dashboard.includes('openWorkspaceController = new OpenWorkspaceController({'));
     assert.ok(dashboard.includes('new OpenWorkspaceBridgeClient('));
     assert.ok(dashboard.includes("reportDiagnostic: event => logOpenProjectDiagnostic('Workspace', event)"));
     assert.ok(dashboard.includes("reportBridgeDiagnostic: event => logOpenProjectDiagnostic('Bridge', event)"));
@@ -1956,7 +2239,9 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('context.subscriptions.push(openWorkspaceBridgeClient);'));
     assert.ok(dashboard.includes('get openProjects() { return getOpenProjects() }'));
     assert.ok(projectedOpenWorkspaces.includes('openWorkspaceDashboardController.getCards()'));
-    assert.ok(selectedProjectHandler.includes('getOpenWorkspaceCards()'));
+    assert.ok(selectedProjectHandler.includes('getNavigationWorkspace(projectId)'));
+    assert.ok(selectedProjectHandler.includes("projectId.startsWith('__openWorkspaceNavigation-')"));
+    assert.ok(selectedProjectHandler.includes("'open-workspace-navigation-stale'"));
     assert.strictEqual(selectedProjectHandler.includes('openProjectDashboardController'), false);
     assert.ok(selectedProjectHandler.indexOf('projectService.getProject(projectId)') < selectedProjectHandler.indexOf('getOpenProjects().find'));
     assert.ok(selectedProjectHandler.includes('await projectOpenController.openProject(project, projectOpenType);'));
@@ -2462,7 +2747,14 @@ function runOpenProjectIncrementalRenderingChecks() {
     ].join('');
     const wrapper = { innerHTML: '<div>old</div>' };
     const documentStub = {
-        querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null,
+        querySelector: selector => {
+            if (selector === '.sticky-groups-wrapper') return wrapper;
+            if (selector.includes('[data-other-windows-status]')) {
+                const status = /data-other-windows-status="([^"]+)"/.exec(wrapper.innerHTML);
+                return status ? { getAttribute: () => status[1] } : null;
+            }
+            return null;
+        },
         querySelectorAll: selector => {
             if (selector.includes('[data-current-workspace]'))
                 return wrapper.innerHTML.includes('data-current-workspace') ? [{}] : [];
@@ -2481,6 +2773,7 @@ function runOpenProjectIncrementalRenderingChecks() {
         'window',
         'normalizeDashboardSearchCatalog',
         `
+        var lastAppliedOpenWorkspacesSemanticRevision = null;
         function getOpenWorkspacesUpdateDomState() {${extractFunctionBody(webviewScript, 'getOpenWorkspacesUpdateDomState')}}
         function isOpenWorkspacesUpdateDomConsistent(message) {${extractFunctionBody(webviewScript, 'isOpenWorkspacesUpdateDomConsistent')}}
         return function applyOpenWorkspacesUpdate(message) {${extractFunctionBody(webviewScript, 'applyOpenWorkspacesUpdate')}};
@@ -2509,6 +2802,7 @@ function runOpenProjectIncrementalRenderingChecks() {
         semanticRevision: 'a'.repeat(64),
         currentWorkspaceCount: 1,
         navigationWorkspaceCount: 1,
+        otherWindowsStatus: 'ready',
         html: validHtml,
         searchCatalog: catalog,
     }), true);
@@ -2517,12 +2811,43 @@ function runOpenProjectIncrementalRenderingChecks() {
     assert.deepStrictEqual(replacedSearchCatalog.todos, [{ todoId: 'preserved' }],
         'OPEN incremental rendering must preserve the non-empty TODO catalog replacement');
     assert.strictEqual(applyOpenWorkspacesUpdate({
+        type: 'open-workspaces-updated',
+        version: 2,
+        semanticRevision: 'a'.repeat(64),
+        currentWorkspaceCount: 1,
+        navigationWorkspaceCount: 1,
+        otherWindowsStatus: 'ready',
+        html: '<div>same semantic update must not replace the DOM</div>',
+        searchCatalog: catalog,
+    }), true);
+    assert.strictEqual(wrapper.innerHTML, validHtml,
+        'an already applied workspace semantic revision must not replace the DOM again');
+    assert.strictEqual(catalogReplacements, 1,
+        'an already applied workspace semantic revision must not replace the search catalog again');
+    assert.strictEqual(applyOpenWorkspacesUpdate({
         type: 'open-workspaces-updated', version: 2, semanticRevision: 'b'.repeat(64),
         currentWorkspaceCount: 1, navigationWorkspaceCount: 1,
+        otherWindowsStatus: 'ready',
         html: '<div class="open-current-workspace-group"><div class="workspace-card" data-current-workspace data-workspace-scope-identity="scope"></div></div>',
         searchCatalog: catalog,
     }), false, 'OPEN WORKSPACES update must reject DOM that loses OTHER WINDOWS cards');
     assert.strictEqual(wrapper.innerHTML, validHtml);
+    const updateRequiredCatalog = {
+        ...catalog,
+        openWorkspaces: [{ current: true }],
+    };
+    const updateRequiredHtml = [
+        '<div class="open-current-workspace-group"><div class="workspace-card" data-current-workspace data-workspace-scope-identity="scope"></div></div>',
+        '<div class="open-other-windows-group" data-other-windows-status="update-required"><button data-action="open-bridge-extension"></button></div>',
+    ].join('');
+    assert.strictEqual(applyOpenWorkspacesUpdate({
+        type: 'open-workspaces-updated', version: 2, semanticRevision: 'c'.repeat(64),
+        currentWorkspaceCount: 1, navigationWorkspaceCount: 0,
+        otherWindowsStatus: 'update-required',
+        html: updateRequiredHtml,
+        searchCatalog: updateRequiredCatalog,
+    }), true, 'an actionable update-required state must be accepted without navigation cards');
+    assert.strictEqual(wrapper.innerHTML, updateRequiredHtml);
     assert.ok(webviewScript.includes("type: 'open-workspaces-rendered'"));
 
     const postOpenWorkspacesUpdated = extractFunctionBody(dashboard, 'postOpenWorkspacesUpdated');
@@ -3359,6 +3684,7 @@ async function main() {
     await runOpenWorkspaceCoordinatorChecks();
     await runOpenWorkspaceCoordinatorBoundaryChecks();
     await runOpenWorkspaceClientAndControllerChecks();
+    await runOpenWorkspaceHardeningChecks();
     await runCurrentProjectDetailsResolverChecks();
     await runProjectOpenControllerChecks();
     runDashboardBridgeLifecycleChecks();

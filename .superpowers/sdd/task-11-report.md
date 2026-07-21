@@ -1,162 +1,123 @@
-# Task 11 Report: Host Runtime Composition and Lifecycle
+# Task 11 Report: Harden v2 Bridge Degradation and Incremental Updates
+
+## Status and commit
+
+Complete on `feat/workspace-support`.
+
+- Commit message: `feat: show one card per open workspace`
+- Nothing was pushed, merged, or cleaned up.
 
 ## Outcome
 
-- Composed Direct and tmux runtime backends, persistence, discovery, attach bindings, creation locking, and the runtime coordinator in the extension host.
-- Restored Direct terminal bindings, then forced tmux discovery and restored attach terminals, before constructing the hydration controller.
-- Converted attention, archive, create, resume, terminal commands, hydration, and active projection host wiring to runtime snapshots.
-- Added activation, attention, visible-view, terminal-close, and configuration refresh sequencing without runtime migration.
-- Added exact explicit Direct fallback, known-hint modal override, Open Settings, and redacted tmux diagnostics.
-- Completed and stopped tmux transitions now differ: current markers emit the existing completion signal; stopped runtimes do not.
-- Detached tmux runtimes block archive and can create/reuse a viewer without restarting the provider.
+- Exact v2 handshake mismatch is terminal for the client and emits
+  `update-required` without scheduling retries or allowing queued/heartbeat
+  publications to create a handshake storm.
+- Transient handshake or publication failure exposes `unavailable`, keeps at
+  most one bounded retry timer, and republishes only the latest workspace after
+  reconnection.
+- Disposal during handshake unregisters immediately and prevents a late
+  handshake from publishing. Disposal during an issued publication waits for
+  that command to settle, then unregisters exactly once so the late publication
+  cannot recreate stale bridge state.
+- Aggregate semantic revisions are committed only after consumer delivery
+  succeeds, allowing the same revision to recover from a failed callback.
+- Workspace resolution is cached for a refresh/publication cycle and closure
+  publishes `workspace: null`.
+- Dashboard projection pairs each opaque navigation card with the winning live
+  `OpenWorkspaceRecord`. The map is cleared immediately on semantic aggregate
+  change or degradation and rebuilt only from the latest aggregate.
+- Stale opaque-card clicks refresh safely and never fall through to saved
+  project lookup or an open action.
+- Bridge failures clear only the OTHER WINDOWS projection. The locally built
+  current card, session surface, and workspace-scoped actions remain usable.
+- OPEN incremental messages include a semantic OTHER WINDOWS status. Host and
+  Webview duplicate suppression avoid repeat DOM/search-catalog replacement,
+  while failed message delivery clears the suppression key for recovery.
+- OTHER WINDOWS renders lightweight navigation cards in `ready`, a retrying
+  unavailable state for transient failures, or an actionable UI Bridge upgrade
+  state for mismatch. The upgrade state is forced open even when the saved
+  group state is collapsed.
+- Bridge publications and navigation cards retain only workspace/root metadata;
+  no `hostPath`, provider history, session detail, prompt, or terminal state is
+  transported through the v2 bridge.
+- The production bridge path remains v2-only. The new actionable command opens
+  the installed UI Bridge extension entry and adds no legacy bridge command.
 
-## Authorized Plan Gap
+## TDD evidence
 
-`src/aiSessions/tmuxRuntimeBackend.ts` was added to the planned file set after reporting that `focus()` only selected an existing attach client. The approved fix routes detached focus through the existing attach-only path with a bounded stable `Project Steward:` title. Fake tests prove one viewer is created, repeated focus reuses it, provider creation counts do not increase, and attach failures leave the runtime live without resending the provider command.
+### RED
 
-`TmuxClient.setExecutablePath()` already clears its availability promise. Configuration changes reapply the executable to invalidate availability, invalidate discovery, and force refresh; no duplicate cache API was added.
-
-## TDD Evidence
-
-- RED: tmux checks failed because dashboard composition lacked `TmuxRuntimeBindingStore`; safety failed because attention still called `getTerminalById`.
-- Additional RED: stopped runtime initially retained the archive guard.
-- GREEN: runtime-neutral controller checks, host source contracts, detached focus/reattach checks, stopped archive behavior, fallback copy, restore ordering, and redacted logging checks pass.
-- No real tmux process was invoked.
-
-## Final Verification
-
-The final post-change command exited 0:
-
-```text
-npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run test:safety && npm run test:dashboard && npm run test:architecture-baseline && npm run test:tmux && npm run test:tmux && npm run lint && git diff --check
-```
-
-- Compile, tmux checks, safety/open-project checks, dashboard checks, and architecture baseline passed.
-- Tmux passed in the required direct run plus two consecutive npm-script runs.
-- Lint exited 0 with only the repository's pre-existing warnings.
-- `git diff --check` passed.
-- The worktree used an ignored `node_modules` symlink to the primary checkout's existing dependency installation so dashboard CSS verification could resolve dragula; no tracked dependency files changed.
-
-## Review Hardening Follow-up
-
-- Direct completion now remains tracked with its marker until the completed attention snapshot is accepted, its event is awaited through bridge acknowledgement, and the local event is acknowledged; only then is the Direct entry released. A failed publication leaves ownership intact for retry.
-- Tmux discovery retains completed and stopped inactive snapshots across refreshes and persisted known ownership until `acknowledgeInactive`. Completed snapshots publish the stable existing `terminal-exit:<runStartedAtMs>` event once before acknowledgement; stopped snapshots publish no completion event and are cleared only after an attention evaluation removes ownership.
-- Matching locator-collision diagnostics are converted to stable defensive `conflict` snapshots for host lookup and projection. Archive and resume dispatch are blocked, with zero destructive action.
-- Initial and subsequent visible dashboard transitions await forced runtime refresh before the single render. Hidden transitions do not render or force refresh; refresh rejection renders the error boundary instead of stale content, and message rejection is contained.
-- Marker proof now requires an existing regular file and a finite positive `runStartedAtMs` whose value is no newer than marker mtime. Missing, zero, `NaN`, and stale markers fail closed.
-- Detached tmux viewer titles come from the host project/session display data. Project-layout focus updates the attach binding to the selected managed window so the attach terminal projects the correct focused row.
-- Focus, detach, create, resume, archive-focus, and pending-timeout focus rejections are contained at controller boundaries. Users receive fixed generic messages, stale runtime state is refreshed, and host diagnostics contain only redacted operation/category/backend metadata. No plain or post-dispatch failure enters fallback.
-
-### Follow-up RED/GREEN Evidence
-
-- RED: the second forced tmux refresh changed a completed inactive snapshot to `stopped`; GREEN: completed/stopped remain stable through consecutive refreshes and disappear only after explicit acknowledgement.
-- RED: attention evaluation returned `undefined`, so release could not be gated on publication; GREEN: lifecycle behavior proves `publish → event lookup → bridge ack → local ack → release`, and rejected publication performs zero release.
-- RED: collision composition lacked `findTmuxCollisionRuntime`; GREEN: matching diagnostics yield defensive conflict snapshots and block resume/archive.
-- RED: first view ordering was `render → visible hook`; GREEN: initial and later ordering is `visible refresh → render`, with hidden/rejection behavior covered.
-- RED: runtime focus rejection escaped as `raw focus timeout`; GREEN: focus/detach/create/resume/pending-timeout failures produce only fixed user copy, refresh, and redacted callbacks.
-
-### Follow-up Verification
-
-The complete required matrix exited 0 after the review fixes:
+The Task 10 baseline first passed main compile, UI Bridge compile, open-project
+safety, and Dashboard Webview checks. After adding Task 11 tests, the focused
+command failed at the first missing degradation contract:
 
 ```text
-npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run test:safety && npm run test:dashboard && npm run test:architecture-baseline && npm run test:tmux && npm run test:tmux && npm run lint && git diff --check
+AssertionError: Expected values to be strictly deep-equal:
+actual: []
+expected: [ 'update-required' ]
 ```
 
-An additional fresh `npm run test:tmux && npm run lint && git diff --check` also exited 0. Lint reports only the repository's existing warnings. No real tmux command was invoked.
+The red suite also encoded terminal mismatch/no retry timer, queued transient
+retry gating, handshake and publication disposal ordering, aggregate
+re-delivery, stale opaque-ID invalidation, two navigation cards plus one current
+card, privacy-bounded root metadata, delivery recovery, semantic update
+suppression, and current-card isolation.
 
-## Round-2 Lifecycle Persistence and Race Hardening
+During self-review, an additional RED Webview case proved the actionable upgrade
+state was hidden when the saved OTHER WINDOWS group was collapsed. A final RED
+source contract proved stale opaque clicks were not yet routed to the dedicated
+refresh path.
 
-- Attention settlement now evaluates one structured batch per round. In-scope completed runtimes are retained until publication produces an event and both bridge/local acknowledgement succeed; disabled, out-of-scope, and stopped runtimes release safely. Evaluation, acknowledgement, and release rejection paths retain ownership and emit only fixed redacted diagnostics.
-- Completed/stopped tmux lifecycle state is persisted in the canonical final-runtime slot with full identity, locator, marker, start, and detection data. Legacy known records without a discriminator remain readable; inactive records survive restart, are excluded from known hints, share deterministic 512-record/30-day pruning, and are removed only after durable acknowledgement.
-- Known-to-inactive persistence uses a serialized last-seen compare-and-swap transition, so a stale disappearance cannot overwrite a concurrently refreshed known runtime. Cache generations prevent a stale refresh from resurrecting acknowledged inactive state.
-- Resume, create, promote, focus, detach, and archive paths force-refresh collision state before mutation. Backend-internal guards protect the final lock boundary, typed collision errors stay distinct from tmux-unavailable fallback, and ordinary conflict-shaped errors fail closed.
-- Visible dashboard failures log and render only a fixed sentinel. Raw exceptions and local paths are unavailable to both host diagnostics and generated error HTML.
+### GREEN
 
-### Round-2 RED/GREEN Evidence
+All new client, controller, projection, message, rendering, DOM consistency,
+source wiring, and lifecycle cases pass. The source and shipped Webview scripts
+are byte-identical.
 
-- RED: backend `ensureResume` reached runtime persistence after forced refresh exposed a locator collision; GREEN: the internal collision guard raises a defensive typed conflict before any tmux mutation or provider dispatch.
-- RED: stale known-to-inactive conversion had no atomic version check; GREEN: a last-seen CAS rejects the stale transition and preserves the newer known record.
-- RED: a legacy final record without `state` was ignored; GREEN: it is normalized to `known` while completed/stopped records retain their explicit discriminator.
-- GREEN boundary tests cover bridge/local/release rejection retention, typed collision non-fallback, plain named collision fail-closed behavior, restart recovery, acknowledgement persistence failure, cap/TTL priority, and stale refresh generations.
+## Self-review
 
-### Round-2 Final Verification
+- Critical findings: none.
+- Important fixed: an update-required control could be hidden by saved collapse
+  state; degraded states now render expanded.
+- Important fixed: an invalidated opaque navigation ID could fall through to
+  saved-project lookup and show a misleading warning; reserved navigation IDs
+  now refresh with `open-workspace-navigation-stale` and perform no open action.
+- Important fixed during impacted verification: the committed `media` Webview
+  script is an exact generated mirror of `src/webview`; it was synchronized and
+  parity-checked.
+- Reviewed retry-timer gating, late handshake completion, publication/unregister
+  ordering, aggregate callback failure, in-flight message delivery races, map
+  invalidation, current-card construction, and v2 command/privacy boundaries.
+- No Minor items are intentionally deferred from Task 11.
 
-The final required command exited 0:
+## Fresh verification
+
+The final pre-commit verification command exited `0`:
 
 ```text
-npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run test:safety && npm run test:dashboard && npm run test:architecture-baseline && npm run test:tmux && npm run test:tmux && npm run lint && git diff --check
+npm run test-compile
+npm run attention:bridge:compile
+node scripts/run-open-project-safety-checks.js
+node scripts/run-dashboard-webview-checks.js
+node scripts/run-ai-session-safety-checks.js
+node scripts/run-ai-session-tmux-checks.js
+cmp -s src/webview/webviewProjectScripts.js media/webviewProjectScripts.js
+git diff --check
 ```
 
-Lint emitted only the repository's existing warnings. The checks use fake tmux clients; no real tmux process was invoked.
-
-## Round-3 Direct Isolation and Cross-Host Serialization
-
-- Default Direct mode now uses a layered host refresh. A structured tmux-unavailable result is contained only when no cached or persisted live tmux known/pending/conflict ownership exists; ordinary errors and any unverifiable live ownership still fail closed. Persisted inactive records are deliberately not live blockers.
-- Focus and detach first inspect the cached identity. A unique Direct runtime refreshes and re-resolves only the Direct backend, while tmux, unknown, duplicate, and conflict identities use the guarded host/full refresh. Single-session archive passes the provider/session identity into the same guard; batch archive uses the ownership-aware host guard.
-- Persisted inactive records load independently from tmux availability during activation and attention evaluation. This permits restart recovery, publication, acknowledgement, and settlement while tmux itself is absent, without turning inactive records into duplicate-prevention hints.
-- The host injects a fixed cross-instance final-record lock backed by `withTmuxCreationLock`. All known/inactive writes, compare-and-swap transitions, acknowledgements, TTL deletion, cap pruning, removal, and reconciliation acquire the instance queue and then the global file lock, re-read under that lock, and mutate without recursively acquiring it.
-- Dashboard fire-and-forget attention evaluation, publication/acknowledgement settlement, and lifecycle drain entry points use one safe task boundary. Rejections are contained and reported with fixed operation/category fields; behavior tests observe no `unhandledRejection`.
-- Pending promotion now inspects both forced-refresh outcomes before resolving or mutating a pending runtime. Any backend refresh rejection fails closed; refreshed collisions return conflict snapshots without promotion.
-
-### Round-3 Race and Boundary Evidence
-
-- RED: cached Direct focus failed when an unavailable tmux backend was refreshed; GREEN: Direct focus/detach refresh only Direct and perform the requested action.
-- RED: host-visible Direct refresh propagated structured tmux unavailability without considering ownership; GREEN: Direct/no-live continues, while persisted known/pending ownership and plain failures remain blocking.
-- Cross-instance tests use two independent stores sharing the real file lock and cover transition/reconcile in both orders, a held acknowledgement followed by rewrite, and pruning concurrent with a refreshed known record. Newer known ownership is neither overwritten nor deleted.
-- A restart test restores completed inactive state through `loadPersistedInactive()` with a client that would throw if probed; the probe count remains zero.
-- A rejected fire-and-forget attention task is observed with a process-level `unhandledRejection` listener; the listener receives no event and diagnostics contain only fixed fields.
-
-### Round-3 Final Verification
-
-The final required matrix exited 0:
+Observed suite output:
 
 ```text
-npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run test:safety && npm run test:dashboard && npm run test:architecture-baseline && npm run test:tmux && npm run test:tmux && npm run lint && git diff --check
+Open project safety checks passed.
+Dashboard Webview checks passed.
+AI session safety checks passed.
+AI session tmux checks passed.
 ```
 
-Lint emitted only the repository's existing warnings. Tmux checks use fake clients and controlled file locks; no real tmux process was invoked.
+Both TypeScript compilers and all remaining hygiene commands exited `0`.
 
-## Round-4 Lifecycle Replay Blocking
+## Concerns and deferred scope
 
-- Resume now treats unacknowledged lifecycle state as ownership, not as a reusable terminal. Direct exposes unreleased completed tracked runtimes; tmux exposes persisted/discovered completed and stopped inactive runtimes. The coordinator returns a defensive `blocked` result after forced refresh and performs no ensure/fallback action.
-- Tmux resume repeats the lifecycle check inside its creation lock after the forced discovery refresh. The distinct typed lifecycle-blocked error cannot enter tmux-unavailable fallback. Direct resume also rejects replay of an unreleased completion.
-- Attention settlement enumerates every Direct completion and tmux inactive snapshot using a stable provider/session/run-start/backend key. Explicit attention overrides produce per-run terminal-exit events, so an old inactive run is settled even if a live runtime anomalously coexists, and multiple runs receive distinct event IDs.
-- Resume and creation controllers handle `blocked` explicitly with a generic lifecycle-pending announcement and refresh; they do not switch tabs or schedule creation work.
-- `setInactive` re-reads the canonical final slot under the cross-host lock. It never overwrites known ownership, never replaces a different run, never moves detection time backward, and never downgrades completed to stopped; the same run may be idempotently refreshed or promoted from stopped to completed.
-- The safe lifecycle task boundary now also contains synchronous throws and rejected thenables from its diagnostic reporter. Process-level tests observe zero unhandled rejections from both task and reporter failures.
-
-### Round-4 RED/GREEN Evidence
-
-- RED: a completed Direct entry resent the provider command; GREEN: replay is blocked until release, then the same session may resume.
-- RED: tmux resume reached ambiguity persistence while a stopped inactive runtime existed; GREEN: the lock-boundary blocker runs before every tmux mutation/provider dispatch.
-- RED: live-first attention lookup published the live signal instead of the old run event; GREEN: explicit per-run overrides publish stable distinct terminal-exit events.
-- RED: `setInactive` replaced a canonical known record; GREEN: lock-time re-read preserves known and enforces same-run monotonic inactive updates.
-- RED: throwing/rejecting failure reporters escaped the safe wrapper; GREEN: both reporter forms are contained with zero `unhandledRejection` events.
-
-### Round-4 Final Verification
-
-The final required matrix exited 0:
-
-```text
-npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run test:safety && npm run test:dashboard && npm run test:architecture-baseline && npm run test:tmux && npm run test:tmux && npm run lint && git diff --check
-```
-
-Lint emitted only the repository's existing warnings. All tmux checks used fake clients; no real tmux process was invoked.
-
-## Final Per-Run Lifecycle Acknowledgement CAS
-
-- Inactive acknowledgement now carries the complete expected run contract and compares it with the canonical record under the cross-host final-record lock. An exact match is deleted as `acknowledged`, an absent record is `missing`, and every different run, field, or locator is `stale` and remains persisted.
-- Discovery clears retained state only for an exact acknowledged/missing snapshot. A stale acknowledgement reloads and retains the current canonical inactive run, so resume remains blocked. Dashboard settlement passes the candidate runtime snapshot rather than identity alone.
-- Discovery normalizes and defensively clones that complete run snapshot before its first await. Caller mutation during durable acknowledgement cannot change the persisted CAS contract or post-await local blocker cleanup.
-- Two independent stores and discoveries prove that acknowledgement A may remove the old run, a new inactive run may then be written, and a late acknowledgement B cannot remove it. Tests also cover locator/field mismatch and idempotent same-run double acknowledgement.
-
-### Final Verification
-
-The complete required matrix exited 0:
-
-```text
-npm run test-compile && node scripts/run-ai-session-tmux-checks.js && npm run test:safety && npm run test:dashboard && npm run test:architecture-baseline && npm run test:tmux && npm run test:tmux && npm run lint && git diff --check
-```
-
-Lint emitted only the repository's existing warnings. All tmux checks used fake clients; no real tmux process was invoked.
+- No Task 11 correctness concern remains.
+- Actual cross-window navigation capability and opening behavior remain Task 12
+  scope; Task 11 continues to refresh safely instead of opening a workspace.

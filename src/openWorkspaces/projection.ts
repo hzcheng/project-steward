@@ -18,6 +18,11 @@ interface NavigationCandidate {
     workspace: OpenWorkspaceRecord;
 }
 
+export interface OpenWorkspaceNavigationCardProjection {
+    card: WorkspaceCardViewModel;
+    workspace: OpenWorkspaceRecord;
+}
+
 function compareText(left: string, right: string): number {
     return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -120,6 +125,20 @@ export function projectOpenWorkspaceCards(
     ownInstanceId: string,
     attentionAggregate: AttentionAggregate | null = null
 ): WorkspaceCardViewModel[] {
+    return projectOpenWorkspaceNavigationCards(
+        currentWorkspace,
+        aggregate,
+        ownInstanceId,
+        attentionAggregate,
+    ).map(projection => projection.card);
+}
+
+export function projectOpenWorkspaceNavigationCards(
+    currentWorkspace: Pick<OpenWorkspace, 'navigationIdentity'> | null,
+    aggregate: OpenWorkspaceAggregateV2 | null,
+    ownInstanceId: string,
+    attentionAggregate: AttentionAggregate | null = null
+): OpenWorkspaceNavigationCardProjection[] {
     if (!aggregate) {
         return [];
     }
@@ -145,5 +164,8 @@ export function projectOpenWorkspaceCards(
     }
     return Array.from(navigationByIdentity.values())
         .sort(compareCandidates)
-        .map(candidate => createNavigationCard(candidate, attentionAggregate));
+        .map(candidate => ({
+            card: createNavigationCard(candidate, attentionAggregate),
+            workspace: candidate.workspace,
+        }));
 }

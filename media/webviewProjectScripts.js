@@ -222,6 +222,8 @@ function applyOpenProjectsUpdate(message) {
     return true;
 }
 
+var lastAppliedOpenWorkspacesSemanticRevision = null;
+
 function applyOpenWorkspacesUpdate(message) {
     if (!message
         || message.type !== 'open-workspaces-updated'
@@ -231,11 +233,17 @@ function applyOpenWorkspacesUpdate(message) {
         || (message.currentWorkspaceCount !== 0 && message.currentWorkspaceCount !== 1)
         || !Number.isSafeInteger(message.navigationWorkspaceCount)
         || message.navigationWorkspaceCount < 0
+        || (message.otherWindowsStatus !== 'ready'
+            && message.otherWindowsStatus !== 'unavailable'
+            && message.otherWindowsStatus !== 'update-required')
         || typeof message.html !== 'string'
         || typeof normalizeDashboardSearchCatalog !== 'function'
         || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog
         || message.searchCatalog.version !== 2) {
         return false;
+    }
+    if (message.semanticRevision === lastAppliedOpenWorkspacesSemanticRevision) {
+        return true;
     }
     var wrapper = document.querySelector('.sticky-groups-wrapper');
     if (!wrapper) return false;
@@ -254,10 +262,14 @@ function applyOpenWorkspacesUpdate(message) {
     if (typeof window.__projectStewardSyncCollapseButton === 'function') {
         window.__projectStewardSyncCollapseButton();
     }
+    lastAppliedOpenWorkspacesSemanticRevision = message.semanticRevision;
     return true;
 }
 
 function getOpenWorkspacesUpdateDomState() {
+    var otherWindowsGroup = document.querySelector(
+        '.sticky-groups-wrapper .open-other-windows-group[data-other-windows-status]'
+    );
     return {
         currentWorkspaceCount: document.querySelectorAll(
             '.sticky-groups-wrapper .workspace-card[data-current-workspace][data-workspace-scope-identity]'
@@ -268,6 +280,9 @@ function getOpenWorkspacesUpdateDomState() {
         hasOtherWindowsGroup: document.querySelectorAll(
             '.sticky-groups-wrapper .open-other-windows-group'
         ).length > 0,
+        otherWindowsStatus: otherWindowsGroup
+            ? otherWindowsGroup.getAttribute('data-other-windows-status')
+            : 'ready',
     };
 }
 
@@ -275,7 +290,10 @@ function isOpenWorkspacesUpdateDomConsistent(message) {
     var rendered = getOpenWorkspacesUpdateDomState();
     return rendered.currentWorkspaceCount === message.currentWorkspaceCount
         && rendered.navigationWorkspaceCount === message.navigationWorkspaceCount
-        && (message.navigationWorkspaceCount === 0 || rendered.hasOtherWindowsGroup)
+        && rendered.otherWindowsStatus === message.otherWindowsStatus
+        && ((message.navigationWorkspaceCount === 0 && message.otherWindowsStatus === 'ready')
+            ? !rendered.hasOtherWindowsGroup
+            : rendered.hasOtherWindowsGroup)
         && message.searchCatalog.openWorkspaces.length
             === message.currentWorkspaceCount + message.navigationWorkspaceCount;
 }
@@ -1681,6 +1699,13 @@ function initProjects() {
             return;
         }
 
+        if (e.target.closest('[data-action="open-bridge-extension"]')) {
+            window.vscode.postMessage({
+                type: 'open-bridge-extension'
+            });
+            return;
+        }
+
         if (e.target.closest('[data-action="add-group"]')) {
             window.vscode.postMessage({
                 type: 'add-group'
@@ -1797,6 +1822,7 @@ function initProjects() {
                 currentWorkspaceCount: renderedOpenWorkspaceState.currentWorkspaceCount,
                 navigationWorkspaceCount: renderedOpenWorkspaceState.navigationWorkspaceCount,
                 hasOtherWindowsGroup: renderedOpenWorkspaceState.hasOtherWindowsGroup,
+                otherWindowsStatus: renderedOpenWorkspaceState.otherWindowsStatus,
             });
             return;
         }

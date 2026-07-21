@@ -9,8 +9,13 @@ import { buildOpenWorkspacesUpdatedMessage } from '../dashboard/webviewUpdateMes
 import type { TodoSearchCatalogItem } from '../todos/types';
 import { getWorkspaceAttentionSummary } from '../workspaces/attentionProjection';
 import type { OpenWorkspace } from '../workspaces/types';
-import { projectOpenWorkspaceCards } from './projection';
-import type { OpenWorkspaceAggregate } from './protocol';
+import type { OpenWorkspaceBridgeStatus } from './bridgeClient';
+import { projectOpenWorkspaceNavigationCards } from './projection';
+import type { OpenWorkspaceAggregate, OpenWorkspaceRecord } from './protocol';
+
+export interface OpenWorkspaceDashboardState {
+    otherWindows: { status: OpenWorkspaceBridgeStatus };
+}
 
 export interface OpenWorkspaceDashboardControllerOptions {
     getCurrentWorkspace: () => OpenWorkspace | null;
@@ -30,6 +35,8 @@ export interface OpenWorkspaceDashboardControllerOptions {
 
 export class OpenWorkspaceDashboardController {
     private aggregate: OpenWorkspaceAggregate | null = null;
+    private bridgeStatus: OpenWorkspaceBridgeStatus = 'ready';
+    private navigationWorkspacesById = new Map<string, OpenWorkspaceRecord>();
     private lastPostedSemanticRevision: string | null = null;
 
     constructor(private readonly options: OpenWorkspaceDashboardControllerOptions) {
@@ -38,7 +45,26 @@ export class OpenWorkspaceDashboardController {
     setAggregate(aggregate: OpenWorkspaceAggregate | null): boolean {
         if (aggregate?.semanticRevision === this.aggregate?.semanticRevision) { return false; }
         this.aggregate = aggregate;
+        this.navigationWorkspacesById.clear();
         return true;
+    }
+
+    setBridgeStatus(status: OpenWorkspaceBridgeStatus): boolean {
+        if (status === this.bridgeStatus) { return false; }
+        this.bridgeStatus = status;
+        if (status !== 'ready') {
+            this.aggregate = null;
+            this.navigationWorkspacesById.clear();
+        }
+        return true;
+    }
+
+    getState(): OpenWorkspaceDashboardState {
+        return { otherWindows: { status: this.bridgeStatus } };
+    }
+
+    getNavigationWorkspace(cardId: string): OpenWorkspaceRecord | null {
+        return this.navigationWorkspacesById.get(cardId) || null;
     }
 
     getCards(): WorkspaceCardViewModel[] {
@@ -48,12 +74,17 @@ export class OpenWorkspaceDashboardController {
         const currentCard = currentWorkspace
             ? this.createCurrentCard(currentWorkspace, attentionAggregate)
             : null;
-        const navigationCards = projectOpenWorkspaceCards(
+        const navigationProjections = projectOpenWorkspaceNavigationCards(
             currentWorkspace,
             this.aggregate,
             this.options.getBridgeInstanceId(),
             attentionAggregate,
         );
+        this.navigationWorkspacesById = new Map(navigationProjections.map(projection => [
+            projection.card.id,
+            projection.workspace,
+        ]));
+        const navigationCards = navigationProjections.map(projection => projection.card);
         const cards = currentCard ? [currentCard, ...navigationCards] : navigationCards;
         this.options.logDiagnostic('Renderer', {
             event: 'open-workspace-cards-build',
@@ -66,13 +97,15 @@ export class OpenWorkspaceDashboardController {
     }
 
     postUpdated(): void {
-        if (!this.options.isVisible() || !this.aggregate) { return; }
-        if (this.aggregate.semanticRevision === this.lastPostedSemanticRevision) { return; }
+        if (!this.options.isVisible()) { return; }
+        const semanticRevision = this.getViewSemanticRevision();
+        if (semanticRevision === this.lastPostedSemanticRevision) { return; }
         const message = buildOpenWorkspacesUpdatedMessage({
             groups: this.options.getGroups(),
             cards: this.getCards(),
             collapsed: this.options.getCollapsed(),
-            semanticRevision: this.aggregate.semanticRevision,
+            semanticRevision,
+            otherWindowsStatus: this.bridgeStatus,
             todoSearchItems: this.options.getTodoSearchItems(),
         });
         this.lastPostedSemanticRevision = message.semanticRevision;
@@ -124,6 +157,13 @@ export class OpenWorkspaceDashboardController {
         if (this.lastPostedSemanticRevision === semanticRevision) {
             this.lastPostedSemanticRevision = null;
         }
+    }
+
+    private getViewSemanticRevision(): string {
+        return crypto.createHash('sha256').update(JSON.stringify([
+            this.bridgeStatus,
+            this.aggregate?.semanticRevision || null,
+        ])).digest('hex');
     }
 
     private nowMs(): number {

@@ -2,6 +2,7 @@
 
 import { Group, Project, StewardInfos, WorkspaceCardViewModel } from '../models';
 import type { AiSessionsUpdatedMessage } from '../aiSessions/types';
+import type { OpenWorkspaceBridgeStatus } from '../openWorkspaces/bridgeClient';
 import type { TodoSearchCatalogItem } from '../todos/types';
 import {
     buildDashboardSearchCatalog,
@@ -50,6 +51,7 @@ export interface OpenWorkspacesUpdatedMessage {
     semanticRevision: string;
     currentWorkspaceCount: 0 | 1;
     navigationWorkspaceCount: number;
+    otherWindowsStatus: OpenWorkspaceBridgeStatus;
     searchCatalog: DashboardWorkspaceSearchCatalog;
     html: string;
 }
@@ -59,6 +61,7 @@ export interface BuildOpenWorkspacesUpdatedMessageInput {
     cards: WorkspaceCardViewModel[];
     collapsed: boolean;
     semanticRevision: string;
+    otherWindowsStatus: OpenWorkspaceBridgeStatus;
     todoSearchItems: TodoSearchCatalogItem[];
 }
 
@@ -96,12 +99,13 @@ export function buildOpenWorkspacesUpdatedMessage(
         semanticRevision: input.semanticRevision,
         currentWorkspaceCount,
         navigationWorkspaceCount,
+        otherWindowsStatus: input.otherWindowsStatus,
         searchCatalog: buildWorkspaceDashboardSearchCatalog(
             input.groups,
             input.cards,
             input.todoSearchItems,
         ),
-        html: getOpenWorkspacesGroupContent(input.cards, input.collapsed),
+        html: getOpenWorkspacesGroupContent(input.cards, input.collapsed, input.otherWindowsStatus),
     };
 }
 
