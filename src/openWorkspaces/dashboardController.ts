@@ -20,6 +20,7 @@ export interface OpenWorkspaceDashboardState {
 export interface OpenWorkspaceDashboardControllerOptions {
     getCurrentWorkspace: () => OpenWorkspace | null;
     isWorkspaceSavedAsProject: (workspace: OpenWorkspace) => boolean;
+    getWorkspaceProjectColor: (workspace: Pick<OpenWorkspace, 'kind' | 'navigationUri'>) => string;
     getCurrentWorkspaceAiSessions: (workspace: OpenWorkspace) => WorkspaceAiSessionViewModel | null;
     getGroups: () => Group[];
     getTodoSearchItems: () => TodoSearchCatalogItem[];
@@ -86,7 +87,10 @@ export class OpenWorkspaceDashboardController {
             projection.card.id,
             projection.workspace,
         ]));
-        const navigationCards = navigationProjections.map(projection => projection.card);
+        const navigationCards = navigationProjections.map(projection => ({
+            ...projection.card,
+            color: this.options.getWorkspaceProjectColor(projection.workspace),
+        }));
         const cards = currentCard ? [currentCard, ...navigationCards] : navigationCards;
         this.options.logDiagnostic('Renderer', {
             event: 'open-workspace-cards-build',
@@ -143,6 +147,7 @@ export class OpenWorkspaceDashboardController {
             name: workspace.displayName,
             environment: workspace.environment,
             environmentLabel: this.getEnvironmentLabel(workspace.environment),
+            color: this.options.getWorkspaceProjectColor(workspace),
             roots: workspace.roots
                 .slice()
                 .sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id))

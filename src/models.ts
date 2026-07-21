@@ -91,6 +91,7 @@ export interface WorkspaceCardViewModel {
     name: string;
     environment: OpenWorkspaceEnvironment;
     environmentLabel: string;
+    color?: string;
     roots: Array<{ id: string; name: string; ordinal: number }>;
     aiSessions?: WorkspaceAiSessionViewModel;
     attentionCount: number;

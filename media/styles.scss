@@ -2040,8 +2040,7 @@ body.steward-sidebar {
             }
         }
 
-        &.selected,
-        &[data-current-workspace] {
+        &.selected {
             background: var(
                 --vscode-list-inactiveSelectionBackground,
                 var(--vscode-sideBarSectionHeader-background, var(--vscode-sideBar-background))
@@ -2054,9 +2053,7 @@ body.steward-sidebar {
         }
 
         &.selected:hover,
-        &.selected:focus-within,
-        &[data-current-workspace]:hover,
-        &[data-current-workspace]:focus-within {
+        &.selected:focus-within {
             border-color: var(--vscode-focusBorder);
             box-shadow:
                 inset 0 1px 0 rgba(255, 255, 255, 0.08),
@@ -2073,9 +2070,10 @@ body.steward-sidebar {
         width: 4px;
         height: auto;
         border-radius: 999px;
+        background: var(--project-color, transparent);
         opacity: .9;
         pointer-events: none;
-        box-shadow: 0 0 12px var(--project-color, currentColor);
+        box-shadow: 0 0 12px var(--project-color, transparent);
         transition: top $defaultTransition, bottom $defaultTransition, opacity $defaultTransition;
     }
 

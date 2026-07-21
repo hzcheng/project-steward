@@ -444,6 +444,13 @@ function runWorkspaceCardRenderingChecks() {
         'the environment icon already identifies local workspaces');
     assert.strictEqual(singleHtml.includes('class="ai-session-root-chip"'), false,
         'single-root workspaces must not repeat the only root on every session row');
+    const coloredCurrentCard = makeWorkspaceCardFixture(1);
+    coloredCurrentCard.color = '#123456';
+    const coloredCurrentHtml = webviewContent.getCurrentWorkspaceGroupContent(coloredCurrentCard, false);
+    assert.ok(coloredCurrentHtml.includes('style="--project-color: #123456;"'));
+    assert.ok(coloredCurrentHtml.includes('class="project-border steward-item-accent" style="background: #123456;"'));
+    assert.strictEqual(singleHtml.includes('--project-color:'), false,
+        'an unmatched current workspace must not synthesize a foreground-colored accent');
     assert.ok(singleHtml.includes('data-has-ai-session-badge'),
         'current workspace cards must declare when their AI session summary badge is present');
     assert.strictEqual(singleHtml.includes('data-codex-expanded'), false,
@@ -600,6 +607,7 @@ function runWorkspaceCardRenderingChecks() {
         environment: 'devContainer',
         environmentLabel: 'Dev Container',
         runningSessionCount: 2,
+        color: '#abcdef',
         aiSessions: runningCard.aiSessions,
     };
     const workspaceHtml = webviewContent.getOpenWorkspacesGroupContent(
@@ -611,6 +619,8 @@ function runWorkspaceCardRenderingChecks() {
     const otherWindowsHtml = workspaceHtml.slice(workspaceHtml.indexOf('OTHER WINDOWS'));
     assert.strictEqual((otherWindowsHtml.match(/class="workspace-card/g) || []).length, 1);
     assert.ok(otherWindowsHtml.includes('data-other-workspace'));
+    assert.ok(otherWindowsHtml.includes('style="--project-color: #abcdef;"'));
+    assert.ok(otherWindowsHtml.includes('class="project-border steward-item-accent" style="background: #abcdef;"'));
     assert.ok(otherWindowsHtml.includes('class="workspace-card project steward-item-card session-running"'));
     assert.ok(otherWindowsHtml.includes('data-session-fx="halo"'));
     assert.ok(otherWindowsHtml.includes('title="Workspace — 2 active sessions running"'));
@@ -4730,9 +4740,15 @@ function runSourceContractChecks(source) {
     assert.ok(sharedAccentRule.includes('left: 7px'));
     assert.ok(sharedAccentRule.includes('width: 4px'));
     assert.ok(sharedAccentRule.includes('border-radius: 999px'));
+    assert.ok(sharedAccentRule.includes('background: var(--project-color, transparent)'));
+    assert.ok(sharedAccentRule.includes('box-shadow: 0 0 12px var(--project-color, transparent)'));
     assert.ok(sharedItemCardRule.includes('&.completed'));
     assert.ok(sharedItemCardRule.includes('&.selected'));
     assert.ok(sharedItemCardRule.includes('&[data-current-workspace]'));
+    assert.strictEqual(sharedItemCardRule.includes('&.selected,\n        &[data-current-workspace]'), false,
+        'CURRENT WINDOW location must replace the permanent selected shell treatment');
+    assert.strictEqual(sharedItemCardRule.includes('&.selected:focus-within,\n        &[data-current-workspace]:hover'), false,
+        'current workspace hover must use the same shared card shell as Projects');
     assert.ok(sharedItemCardRule.includes('&[data-codex-expanded]:hover'));
     const currentWorkspaceShellRule = extractCssRule(sharedItemCardRule, '&[data-current-workspace]');
     assert.ok(cssRuleIncludesTopLevelDeclaration(currentWorkspaceShellRule, 'height: auto'),

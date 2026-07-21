@@ -4391,14 +4391,14 @@ function runWebviewContentChecks() {
     const compiledSharedItemAccentHoverBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .steward-item-card:hover .steward-item-accent');
     const compiledExpandedProjectAccentBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .project[data-current-workspace][data-codex-expanded]:hover .steward-item-accent');
     const currentItemCardShellBlock = extractExactScssBlock(sidebarStyles, '&[data-current-workspace]');
-    const currentItemCardVisualBlock = extractScssBlock(sidebarStyles, '&.selected,');
+    const currentItemCardVisualBlock = extractExactScssBlock(sharedItemCardBlock, '&.selected');
     const compiledCurrentItemCardShellBlock = extractScssBlock(
         compiledStyles,
         'body.steward-sidebar .steward-item-card[data-current-workspace]',
     );
-    const compiledCurrentItemCardVisualBlock = extractScssBlock(
+    const compiledCurrentItemCardVisualBlock = extractExactCssBlock(
         compiledStyles,
-        'body.steward-sidebar .steward-item-card.selected,',
+        'body.steward-sidebar .steward-item-card.selected',
     );
     const sessionTabsHtml = webviewContentModule.getAiSessionsDiv({
         id: 'project-a',
@@ -4916,7 +4916,7 @@ function runWebviewContentChecks() {
     assert.ok(projectWindowColorService.includes("'activityBar.activeBackground': auraPalette.activityActive"));
     assert.ok(projectWindowColorService.includes("'commandCenter.activeBorder': auraPalette.commandBorder"));
     assert.ok(!extractMethodBody(projectWindowColorService, 'getWindowColorCustomizations').includes("'activityBar.background'"));
-    assert.ok(webviewContent.includes('style="${projectStyle}"'));
+    assert.ok(webviewContent.includes('style="${colorStyles.cardStyle}"'));
     assert.ok(webviewContent.includes("options.readOnlyProjects ? ' data-readonly-project' : ''"));
     assert.ok(styles.includes('--project-color'));
     assert.ok(styles.includes('.project-aura'));
@@ -4930,8 +4930,6 @@ function runWebviewContentChecks() {
     assert.ok(compiledCurrentItemCardShellBlock.includes('height:auto'));
     assert.ok(compiledCurrentItemCardShellBlock.includes('min-height:58px'));
     assert.ok(!currentItemCardShellBlock.includes('animation'));
-    assert.ok(styles.lastIndexOf('&[data-current-workspace]') > styles.indexOf('&[data-codex-expanded]:hover'));
-    assert.ok(compiledStyles.lastIndexOf('.steward-item-card[data-current-workspace]') > compiledStyles.indexOf('.steward-item-card[data-codex-expanded]:hover'));
     assert.ok(sharedItemAccentBlock.includes('top: 31%'));
     assert.ok(sharedItemAccentBlock.includes('bottom: 31%'));
     assert.ok(sharedItemAccentBlock.includes('height: auto'));

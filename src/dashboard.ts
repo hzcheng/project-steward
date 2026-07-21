@@ -1321,6 +1321,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const openWorkspaceDashboardController = new OpenWorkspaceDashboardController({
         getCurrentWorkspace: getCurrentOpenWorkspace,
         isWorkspaceSavedAsProject: workspace => Boolean(getSavedProjectForWorkspace(workspace)),
+        getWorkspaceProjectColor: workspace => getSavedProjectForWorkspace(workspace)?.color || '',
         getCurrentWorkspaceAiSessions: workspace => workspaceSessionHydrationController.hydrate(workspace),
         getGroups: () => projectService.getGroups(),
         getTodoSearchItems: () => todoService.getSearchItems(),
@@ -1928,7 +1929,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return getSavedProjectForWorkspace(getCurrentOpenWorkspace());
     }
 
-    function getSavedProjectForWorkspace(workspace: OpenWorkspace | null): Project | null {
+    function getSavedProjectForWorkspace(
+        workspace: Pick<OpenWorkspace, 'kind' | 'navigationUri'> | null
+    ): Project | null {
         if (!workspace || workspace.kind === 'untitledMultiRoot') {
             return null;
         }

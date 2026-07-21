@@ -1076,14 +1076,23 @@ async function runOpenWorkspaceClientAndControllerChecks() {
         navigationIdentity: duplicateIdentity,
         displayName: 'Newest registration wins',
     });
+    const unmatched = makeWorkspaceRecord(33, { displayName: 'Unmatched workspace' });
     const aggregate = makeWorkspaceAggregate([
         makeWorkspaceRegistration(OTHER, 1000, duplicate),
         makeWorkspaceRegistration(NEWER, 2000, duplicateNewer),
+        makeWorkspaceRegistration(OLDER, 1500, unmatched),
     ]);
     const posted = [];
+    const colorRequests = [];
     const dashboard = new OpenWorkspaceDashboardController({
         getCurrentWorkspace: () => current,
         isWorkspaceSavedAsProject: () => false,
+        getWorkspaceProjectColor: workspace => {
+            colorRequests.push(workspace.navigationUri);
+            if (workspace.navigationUri === current.navigationUri) return '#123456';
+            if (workspace.navigationUri === duplicateNewer.navigationUri) return '#abcdef';
+            return '';
+        },
         getCurrentWorkspaceAiSessions: () => null,
         getGroups: () => [],
         getTodoSearchItems: () => [],
@@ -1102,9 +1111,17 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     assert.strictEqual(cards.filter(card => card.kind === 'current').length, 1);
     assert.strictEqual(cards.find(card => card.kind === 'current').showSaveAction, true);
     assert.strictEqual(cards.find(card => card.kind === 'navigation').showSaveAction, false);
-    assert.strictEqual(cards.filter(card => card.kind === 'navigation').length, 1,
+    assert.strictEqual(cards.filter(card => card.kind === 'navigation').length, 2,
         'two owner registrations for one navigation identity must project to one card');
     assert.strictEqual(cards.find(card => card.kind === 'navigation').name, 'Newest registration wins');
+    assert.strictEqual(cards.find(card => card.kind === 'current').color, '#123456');
+    assert.strictEqual(cards.find(card => card.navigationIdentity === duplicateIdentity).color, '#abcdef');
+    assert.strictEqual(cards.find(card => card.navigationIdentity === unmatched.navigationIdentity).color, '');
+    assert.deepStrictEqual(colorRequests.sort(), [
+        current.navigationUri,
+        duplicateNewer.navigationUri,
+        unmatched.navigationUri,
+    ].sort());
     assert.strictEqual(cards.some(card => card.roots.some(root => Object.hasOwnProperty.call(root, 'hostPath'))), false);
     assert.strictEqual(cards.find(card => card.kind === 'navigation').aiSessions, undefined,
         'OTHER WINDOWS cards must stay lightweight');
@@ -1118,6 +1135,7 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     const identityDashboard = new OpenWorkspaceDashboardController({
         getCurrentWorkspace: () => identityWorkspace,
         isWorkspaceSavedAsProject: () => identitySavedAsProject,
+        getWorkspaceProjectColor: () => '',
         getCurrentWorkspaceAiSessions: () => null,
         getGroups: () => [],
         getTodoSearchItems: () => [],
@@ -1166,7 +1184,7 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     assert.strictEqual(posted[0].type, 'open-workspaces-updated');
     assert.strictEqual(posted[0].version, 2);
     assert.strictEqual(posted[0].currentWorkspaceCount, 1);
-    assert.strictEqual(posted[0].navigationWorkspaceCount, 1);
+    assert.strictEqual(posted[0].navigationWorkspaceCount, 2);
     assert.strictEqual(posted[0].searchCatalog.version, 2);
 }
 
@@ -1939,6 +1957,7 @@ async function runOpenWorkspaceHardeningChecks() {
     const dashboard = new OpenWorkspaceDashboardController({
         getCurrentWorkspace: () => current,
         isWorkspaceSavedAsProject: () => true,
+        getWorkspaceProjectColor: () => '',
         getCurrentWorkspaceAiSessions: () => ({
             workspaceScopeIdentity: current.scopeIdentity,
             workspaceNavigationIdentity: current.navigationIdentity,
@@ -2139,6 +2158,7 @@ async function runWorkspaceContextResolverChecks() {
             workspaceFolders: [],
         }),
         isWorkspaceSavedAsProject: () => true,
+        getWorkspaceProjectColor: () => '',
         getCurrentWorkspaceAiSessions: () => { throw new Error('zero-root must not hydrate sessions'); },
         getGroups: () => [],
         getTodoSearchItems: () => [],

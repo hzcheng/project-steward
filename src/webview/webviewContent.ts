@@ -361,11 +361,12 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
             showRootChips: rootCount > 1,
         })
         : '';
+    const colorStyles = getCardColorStyles(card.color);
 
     return `<div class="project-container" data-nodrag>
-    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''}${runningTitle ? ` title="${runningTitle}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'}${currentSummaryBadge || navigationRunningBadge ? ' data-has-ai-session-badge' : ''}${showSaveAction ? ' data-has-save-action' : ''} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
+    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" style="${colorStyles.cardStyle}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''}${runningTitle ? ` title="${runningTitle}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'}${currentSummaryBadge || navigationRunningBadge ? ' data-has-ai-session-badge' : ''}${showSaveAction ? ' data-has-save-action' : ''} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
         <div class="project-aura"></div>
-        <div class="project-border steward-item-accent"></div>
+        <div class="project-border steward-item-accent" style="${colorStyles.accentStyle}"></div>
         ${sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : ''}
         ${saveBadge}
         <div class="fitty-container project-title-row">
@@ -606,11 +607,7 @@ function getProjectDiv(
     project: Project,
     options: GroupSectionOptions
 ) {
-    var rawProjectColor = (project.color || '').trim();
-    var projectColor = escapeStyleValue(rawProjectColor);
-    projectColor = projectColor === rawProjectColor ? projectColor : '';
-    var borderStyle = projectColor ? `background: ${projectColor};` : '';
-    var projectStyle = projectColor ? `--project-color: ${projectColor};` : '';
+    var colorStyles = getCardColorStyles(project.color);
     var remoteType = getRemoteType(project);
     var description = sanitizeProjectName(project.description);
     var projectName = escapeAttribute(sanitizeProjectName(project.name));
@@ -645,7 +642,7 @@ function getProjectDiv(
 
     return `
 <div class="project-container"${options.virtual && !options.draggableVirtualProjects ? ' data-nodrag' : ''}>
-    <div class="project steward-item-card" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
+    <div class="project steward-item-card" style="${colorStyles.cardStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${options.virtual ? ' data-virtual-project' : ''
         }${options.readOnlyProjects ? ' data-readonly-project' : ''
         }${!options.readOnlyProjects ? ' data-has-favorite-toggle' : ''
@@ -653,7 +650,7 @@ function getProjectDiv(
         }${project.favorite ? ' data-favorite-project' : ''
         }>
         <div class="project-aura"></div>
-        <div class="project-border steward-item-accent" style="${borderStyle}"></div>
+        <div class="project-border steward-item-accent" style="${colorStyles.accentStyle}"></div>
         ${favoriteBadge}
         ${saveBadge}
         ${projectActionsWrapper}
@@ -670,6 +667,17 @@ function getProjectDiv(
         </p>
     </div>
 </div>`;
+}
+
+function getCardColorStyles(colorValue: string | undefined): { cardStyle: string; accentStyle: string } {
+    const rawColor = (colorValue || '').trim();
+    const escapedColor = escapeStyleValue(rawColor);
+    const color = escapedColor === rawColor ? escapedColor : '';
+
+    return {
+        cardStyle: color ? `--project-color: ${color};` : '',
+        accentStyle: color ? `background: ${color};` : '',
+    };
 }
 
 export function getProjectSearchText(project: Project): string {
