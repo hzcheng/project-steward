@@ -19,6 +19,7 @@ export interface OpenProjectRecord {
     uri: string;
     remoteType: OpenProjectRemoteType;
     color?: string;
+    activeSessionCount?: number;
 }
 
 export interface OpenProjectPublication {
@@ -113,9 +114,12 @@ function validateOpenProjectRecord(value: unknown): OpenProjectRecord {
         record,
         'open project record',
         ['localProjectId', 'ordinal', 'name', 'description', 'uri', 'remoteType'],
-        ['color']
+        ['color', 'activeSessionCount']
     );
     const color = record.color === undefined ? undefined : requireBoundedString(record.color, 'color');
+    const activeSessionCount = record.activeSessionCount === undefined
+        ? undefined
+        : requireSafeNonNegativeInteger(record.activeSessionCount, 'activeSessionCount');
     const validated: OpenProjectRecord = {
         localProjectId: requireBoundedString(record.localProjectId, 'localProjectId'),
         ordinal: requireSafeNonNegativeInteger(record.ordinal, 'ordinal'),
@@ -126,6 +130,9 @@ function validateOpenProjectRecord(value: unknown): OpenProjectRecord {
     };
     if (color !== undefined) {
         validated.color = color;
+    }
+    if (activeSessionCount !== undefined) {
+        validated.activeSessionCount = activeSessionCount;
     }
     return validated;
 }
@@ -223,6 +230,7 @@ export function createOpenProjectSemanticRevision(registrations: OpenProjectRegi
                     project.uri,
                     project.remoteType,
                     project.color || '',
+                    project.activeSessionCount || 0,
                 ])
                 .sort(compareSemanticDescriptors),
         ])

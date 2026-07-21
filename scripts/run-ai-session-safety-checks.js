@@ -4638,6 +4638,24 @@ function runWebviewContentChecks() {
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
     const sidebarStyles = extractExactScssBlock(styles, 'body.steward-sidebar');
+    const sessionFxKeyframes = {
+        current: 'flow',
+        sweep: 'sweep',
+        orbit: 'orbit',
+        ripple: 'ripple',
+        halo: 'halo',
+        breath: 'breath',
+    };
+    for (const sessionFx of Object.keys(sessionFxKeyframes)) {
+        assert.ok(styles.includes(`&[data-session-fx="${sessionFx}"]`),
+            `styles must define the ${sessionFx} session-running animation`);
+        const keyframes = `steward-session-running-${sessionFxKeyframes[sessionFx]}`;
+        assert.ok(styles.includes(`@keyframes ${keyframes}`),
+            `styles must define the ${keyframes} keyframes`);
+        assert.ok(compiledStyles.includes(keyframes),
+            `compiled styles must include the ${keyframes} keyframes`);
+    }
+    assert.ok(compiledStyles.includes('.project-session-fx'));
     assert.strictEqual(sidebarStyles.includes('.project[data-current-workspace]'), false,
         'current workspace shell state must be owned by the shared item card');
     assert.strictEqual(sidebarStyles.includes('.project-border'), false,
@@ -4989,6 +5007,11 @@ function runWebviewContentChecks() {
     assert.ok(styles.includes('.ai-session-execution-dot'));
     assert.ok(!extractScssBlock(styles, '.ai-session-execution-dot').includes('animation'));
     assert.ok(styles.includes('[data-execution-state="running"] .ai-session-execution-status'));
+    assert.ok(styles.includes('[data-execution-state="running"] .codex-session-icon'),
+        'styles must animate the terminal icon edge while a session executes');
+    assert.ok(styles.includes('@keyframes steward-session-icon-spin'));
+    assert.ok(compiledStyles.includes('[data-execution-state=running] .codex-session-icon'));
+    assert.ok(compiledStyles.includes('steward-session-icon-spin'));
     assert.ok(styles.includes('var(--vscode-terminal-ansiGreen, #89d185)'));
     assert.ok(styles.includes('[data-execution-state="stopped"] .ai-session-execution-status'));
     assert.ok(styles.includes('[data-execution-state="starting"] .ai-session-execution-status'));
@@ -5028,6 +5051,10 @@ function runWebviewContentChecks() {
     assert.deepStrictEqual(
         packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode'].enum,
         ['vscode', 'tmux']
+    );
+    assert.deepStrictEqual(
+        packageJson.contributes.configuration.properties['projectSteward.aiSessionRunningCardAnimation'].enum,
+        ['current', 'sweep', 'orbit', 'halo', 'ripple', 'breath', 'none']
     );
     assert.ok(projectHydrationControllerSource.includes('getAliases: () => Record<string, string>;'));
     assert.ok(hydrateOpenProjectsFunction.includes('aliases: this.options.getAliases()'));
@@ -5257,6 +5284,73 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.ok(hasProjectAccent(html, 'background: #00aacc;'));
     assert.ok(navigationHtml.includes('title="SSH Project"'));
     assert.match(navigationHtml, /class="project-description" title="Other workspace">\s*Other workspace\s*<\/p>/);
+
+    const runningNavigation = webviewContentModule.getOpenProjectsGroupContent([
+        {
+            id: 'other-running', name: 'Other Running', path: '/work/other-running',
+            remoteType: models.ProjectRemoteType.SSH,
+            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 2,
+        },
+    ], false, { config });
+    assert.ok(runningNavigation.includes('class="project steward-item-card session-running"'),
+        'navigation cards with running sessions must mark the card as session-running');
+    assert.ok(runningNavigation.includes('data-session-fx="current"'),
+        'navigation cards with running sessions must default to the current animation');
+    assert.ok(runningNavigation.includes('<div class="project-session-fx"></div>'),
+        'navigation cards with running sessions must render the session fx layer');
+    assert.ok(!runningNavigation.includes('project-kind-icon session-running'),
+        'the kind icon must not own the session-running animation');
+    assert.ok(runningNavigation.includes('title="SSH Project — 2 active sessions running"'));
+    const orbitNavigation = webviewContentModule.getOpenProjectsGroupContent([
+        {
+            id: 'other-orbit', name: 'Other Orbit', path: '/work/other-orbit',
+            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 1,
+        },
+    ], false, { config: { ...config, get: key => key === 'aiSessionRunningCardAnimation' ? 'orbit' : undefined } });
+    assert.ok(orbitNavigation.includes('data-session-fx="orbit"'),
+        'navigation cards must honor the configured animation');
+    const invalidFxNavigation = webviewContentModule.getOpenProjectsGroupContent([
+        {
+            id: 'other-invalid-fx', name: 'Other Invalid Fx', path: '/work/other-invalid-fx',
+            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 1,
+        },
+    ], false, { config: { ...config, get: key => key === 'aiSessionRunningCardAnimation' ? 'bogus' : undefined } });
+    assert.ok(invalidFxNavigation.includes('data-session-fx="current"'),
+        'unknown animation values must fall back to the current animation');
+    const noFxNavigation = webviewContentModule.getOpenProjectsGroupContent([
+        {
+            id: 'other-no-fx', name: 'Other No Fx', path: '/work/other-no-fx',
+            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 1,
+        },
+    ], false, { config: { ...config, get: key => key === 'aiSessionRunningCardAnimation' ? 'none' : undefined } });
+    assert.ok(noFxNavigation.includes('class="project steward-item-card session-running"'),
+        'the none animation must keep the static running border');
+    assert.ok(noFxNavigation.includes('data-session-fx="none"'));
+    assert.ok(!noFxNavigation.includes('project-session-fx'),
+        'the none animation must not render the session fx layer');
+    const idleNavigation = webviewContentModule.getOpenProjectsGroupContent([
+        {
+            id: 'other-idle', name: 'Other Idle', path: '/work/other-idle',
+            remoteType: models.ProjectRemoteType.SSH,
+            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 0,
+        },
+    ], false, { config });
+    assert.ok(idleNavigation.includes('class="project-kind-icon"'));
+    assert.ok(!idleNavigation.includes('session-running'),
+        'navigation cards without running sessions must not animate the card edge');
+    assert.ok(!idleNavigation.includes('project-session-fx'),
+        'navigation cards without running sessions must not render the session fx layer');
+    const currentWithSessions = webviewContentModule.getOpenProjectsGroupContent([
+        {
+            id: 'current-with-sessions', name: 'Current', path: '/work/current',
+            remoteType: models.ProjectRemoteType.SSH,
+            openProjectCardKind: 'current', openProjectActiveSessionCount: 2,
+        },
+    ], false, { config });
+    assert.ok(!currentWithSessions.includes('session-running'),
+        'current-workspace cards must not use the navigation session-running animation');
+    assert.ok(!currentWithSessions.includes('project-session-fx'),
+        'current-workspace cards must not render the session fx layer');
 
     assert.ok(html.includes('role="tablist"'));
     assert.ok(html.includes('data-dashboard-tab="open"'));

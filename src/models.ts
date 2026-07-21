@@ -47,6 +47,7 @@ export class Project {
     openProjectCardKind?: 'current' | 'projectNavigation';
     openProjectSourceInstanceId?: string;
     openProjectEnvironmentLabel?: string;
+    openProjectActiveSessionCount?: number;
     color: string;
     isGitRepo = false;
 

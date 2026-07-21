@@ -1137,6 +1137,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getSavedProjects: () => projectService.getProjectsFlat(),
         getCurrentRemoteName: () => vscode.env.remoteName,
         isFolderGitRepo,
+        getActiveSessionCounts: () => {
+            try {
+                const counts = new Map<string, number>();
+                for (const project of getOpenProjects()) {
+                    const runningSessionCount = (project.activeAiSessions || [])
+                        .filter(session => session.executionState === 'running').length;
+                    if (runningSessionCount > 0) {
+                        counts.set(project.id, runningSessionCount);
+                    }
+                }
+                return counts;
+            } catch (error) {
+                // Session runtime controllers may not be fully wired during initial publication;
+                // counts are refreshed on the next publish triggered by session changes.
+                logError('Failed to resolve open project active session counts.', error);
+                return new Map<string, number>();
+            }
+        },
         publishRecords: (records, followsFocusEvent) => openProjectBridgeClient.publish(records, followsFocusEvent),
     });
     const dashboardRuntimeController = new DashboardRuntimeController({
@@ -1167,7 +1185,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         logError,
     });
     openProjectBridgeClient = new OpenProjectBridgeClient(
-        openProjectWorkspaceController.getOpenProjectRecords(),
+        // Session runtime controllers are not fully wired yet; counts are added on
+        // the next publish triggered by session changes or the refresh heartbeat.
+        openProjectWorkspaceController.getOpenProjectRecords(false),
         aggregate => {
             if (openProjectDashboardController.setAggregate(aggregate)) {
                 postOpenProjectsUpdated();
@@ -1175,6 +1195,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         error => logError('Open project bridge unavailable; showing current-window projects only.', error),
         {
+            refreshProjects: () => openProjectWorkspaceController.getOpenProjectRecords(),
             reportDiagnostic: event => logOpenProjectDiagnostic('Workspace', event),
             reportBridgeDiagnostic: event => logOpenProjectDiagnostic('Bridge', event),
         }
@@ -1630,6 +1651,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     function scheduleAiSessionRefresh(reason = 'refresh') {
         aiSessionDashboardController.scheduleRefresh(reason);
+        if (reason === 'execution') {
+            publishOpenProjectRecordsSafely();
+        }
+    }
+
+    function publishOpenProjectRecordsSafely() {
+        try {
+            openProjectWorkspaceController.publish();
+        } catch (error) {
+            logError('Failed to publish open project records.', error);
+        }
     }
 
     function setAiSessionWatchersActive(active: boolean) {
@@ -1642,6 +1674,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     function refreshAiSessionViewsIncrementally() {
         void aiSessionDashboardController.refreshNow();
+        publishOpenProjectRecordsSafely();
     }
 
     function postBatchArchiveCompletion(message: AiSessionBatchArchiveCompletedMessage) {

@@ -39,6 +39,7 @@ interface GroupSectionOptions {
     className: string;
     systemBadge: string;
     projectAttentionMode: ProjectAttentionMode;
+    sessionFx?: string;
 }
 
 export function getStewardContent(
@@ -195,6 +196,15 @@ export function getStewardContent(
 </html>`;
 }
 
+const SESSION_FX_IDS = ['current', 'sweep', 'orbit', 'halo', 'ripple', 'breath', 'none'];
+
+function getSessionFx(infos: StewardInfos): string {
+    const configured = infos && infos.config && typeof infos.config.get === 'function'
+        ? infos.config.get('aiSessionRunningCardAnimation', 'current')
+        : 'current';
+    return SESSION_FX_IDS.indexOf(configured) !== -1 ? configured : 'current';
+}
+
 export function getOpenProjectsGroupContent(
     openProjects: Project[],
     collapsed: boolean,
@@ -232,6 +242,7 @@ export function getOpenProjectsGroupContent(
         className: 'open-other-windows-group',
         systemBadge: 'Live',
         projectAttentionMode: 'navigation',
+        sessionFx: getSessionFx(infos),
     })}`;
 }
 
@@ -445,6 +456,14 @@ function getProjectDiv(
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
+    var navigationActiveSessionCount = isProjectNavigation ? (project.openProjectActiveSessionCount || 0) : 0;
+    var sessionFx = navigationActiveSessionCount > 0 ? (options.sessionFx || 'current') : '';
+    var projectCardClassModifier = sessionFx ? ' session-running' : '';
+    var sessionFxAttribute = sessionFx ? ` data-session-fx="${sessionFx}"` : '';
+    var sessionFxLayer = sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : '';
+    if (navigationActiveSessionCount > 0) {
+        projectIconTitle = `${projectIconTitle} — ${navigationActiveSessionCount} active session${navigationActiveSessionCount === 1 ? '' : 's'} running`;
+    }
     var favoriteTitle = project.favorite ? 'Remove From Favorites' : 'Add To Favorites';
     var projectActions = options.readOnlyProjects || isProjectNavigation
         ? ''
@@ -496,12 +515,13 @@ function getProjectDiv(
 
     return `
 <div class="project-container"${options.virtual && !options.draggableVirtualProjects ? ' data-nodrag' : ''}>
-    <div class="project steward-item-card" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
+    <div class="project steward-item-card${projectCardClassModifier}" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${attentionProjectKey ? ` data-attention-project-key="${attentionProjectKey}"` : ''
         }${options.virtual ? ' data-virtual-project' : ''
         }${options.readOnlyProjects || isProjectNavigation ? ' data-readonly-project' : ''
         }${showCurrentAttention ? ' data-open-project' : ''
         }${isProjectNavigation ? ' data-project-navigation title="Switch to this project"' : ''
+        }${sessionFxAttribute
         }${!isProjectNavigation && project.codexSessionsExpanded ? ' data-codex-expanded' : ''
         }${!options.readOnlyProjects && !isProjectNavigation ? ' data-has-favorite-toggle' : ''
         }${!isProjectNavigation && project.showSaveAction ? ' data-has-save-action' : ''
@@ -510,6 +530,7 @@ function getProjectDiv(
         }>
         <div class="project-aura"></div>
         <div class="project-border steward-item-accent" style="${borderStyle}"></div>
+        ${sessionFxLayer}
         ${projectAttentionBadge}
         ${favoriteBadge}
         ${saveBadge}

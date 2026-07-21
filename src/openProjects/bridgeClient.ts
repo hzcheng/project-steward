@@ -27,6 +27,7 @@ interface OpenProjectBridgeClientDependencies {
     now?: () => number;
     registerCommand?: (command: string, callback: (raw: unknown) => void) => DisposableLike;
     executeCommand?: (command: string, argument: unknown) => PromiseLike<unknown>;
+    refreshProjects?: () => OpenProjectRecord[];
     setInterval?: (callback: () => void, intervalMs: number) => unknown;
     clearInterval?: (handle: unknown) => void;
     reportDiagnostic?: (event: OpenProjectClientDiagnosticEvent) => void;
@@ -63,6 +64,7 @@ export default class OpenProjectBridgeClient implements vscode.Disposable {
     private disposed = false;
     private readonly now: () => number;
     private readonly executeCommand: (command: string, argument: unknown) => PromiseLike<unknown>;
+    private readonly refreshProjects: (() => OpenProjectRecord[]) | undefined;
     private readonly clearInterval: (handle: unknown) => void;
     private readonly reportDiagnostic: (event: OpenProjectClientDiagnosticEvent) => void;
     private readonly reportBridgeDiagnostic: (event: unknown) => void;
@@ -80,6 +82,7 @@ export default class OpenProjectBridgeClient implements vscode.Disposable {
         this.now = dependencies.now || Date.now;
         this.executeCommand = dependencies.executeCommand
             || ((command, argument) => vscode.commands.executeCommand(command, argument));
+        this.refreshProjects = dependencies.refreshProjects;
         const registerCommand = dependencies.registerCommand
             || ((command, callback) => vscode.commands.registerCommand(command, callback));
         const setHeartbeat = dependencies.setInterval
@@ -92,7 +95,7 @@ export default class OpenProjectBridgeClient implements vscode.Disposable {
         this.aggregateRegistration = registerCommand(AGGREGATE_COMMAND, raw => this.receiveAggregate(raw));
         this.diagnosticRegistration = registerCommand(DIAGNOSTIC_COMMAND, raw => this.receiveBridgeDiagnostic(raw));
         this.heartbeatHandle = setHeartbeat(
-            () => { void this.publishInternal(this.projects, false, true); },
+            () => { void this.publishInternal(this.getHeartbeatProjects(), false, true); },
             OPEN_PROJECT_HEARTBEAT_MS
         );
         this.emitDiagnostic({
@@ -212,6 +215,18 @@ export default class OpenProjectBridgeClient implements vscode.Disposable {
             if (this.pendingSemantic === semantic) {
                 this.pendingSemantic = '';
             }
+        }
+    }
+
+    private getHeartbeatProjects(): OpenProjectRecord[] {
+        if (!this.refreshProjects) {
+            return this.projects;
+        }
+        try {
+            return this.refreshProjects();
+        } catch (error) {
+            this.reportError(error);
+            return this.projects;
         }
     }
 

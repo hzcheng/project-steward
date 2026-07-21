@@ -200,6 +200,27 @@ function runProtocolChecks() {
         }),
         /uri/
     );
+    const runningPublication = {
+        ...publication,
+        projects: [makeRecord({ activeSessionCount: 2 })],
+    };
+    assert.deepStrictEqual(protocol.validateOpenProjectPublication(runningPublication), runningPublication);
+    assert.strictEqual(
+        protocol.validateOpenProjectRegistration({
+            ...registration,
+            projects: [{ ...registration.projects[0], activeSessionCount: 3 }],
+        }).projects[0].activeSessionCount,
+        3
+    );
+    for (const activeSessionCount of [-1, 1.5, '2', NaN, Number.MAX_SAFE_INTEGER + 1]) {
+        assertRejectsValidation(
+            () => protocol.validateOpenProjectPublication({
+                ...publication,
+                projects: [makeRecord({ activeSessionCount })],
+            }),
+            /activeSessionCount/
+        );
+    }
     assertRejectsValidation(
         () => protocol.validateOpenProjectAggregate(null),
         /aggregate/
@@ -241,6 +262,22 @@ function runProtocolChecks() {
             projects: [{ ...registration.projects[0], name: 'Changed' }],
         }]),
         baseRevision
+    );
+    assert.notStrictEqual(
+        protocol.createOpenProjectSemanticRevision([{
+            ...registration,
+            projects: [{ ...registration.projects[0], activeSessionCount: 2 }],
+        }]),
+        baseRevision,
+        'running session counts must be part of the semantic revision'
+    );
+    assert.strictEqual(
+        protocol.createOpenProjectSemanticRevision([{
+            ...registration,
+            projects: [{ ...registration.projects[0], activeSessionCount: 0 }],
+        }]),
+        baseRevision,
+        'an explicit zero active session count must not change the semantic revision'
     );
     assert.strictEqual(
         protocol.createOpenProjectSemanticRevision([
@@ -375,6 +412,37 @@ function runRecordChecks() {
     assert.deepStrictEqual(records.map(record => record.ordinal), [0, 1, 2, 3, 4]);
     assert.strictEqual(records[0].color, '#111');
     assert.strictEqual(records[1].color, undefined);
+
+    const countedRecords = projection.createOpenProjectRecords([
+        { id: 'idle', name: 'Idle', description: '', path: '/idle', remoteType: models.ProjectRemoteType.None },
+        { id: 'running', name: 'Running', description: '', path: '/running', remoteType: models.ProjectRemoteType.SSH },
+        { id: 'untracked', name: 'Untracked', description: '', path: '/untracked', remoteType: models.ProjectRemoteType.None },
+    ], new Map([['idle', 0], ['running', 2]]));
+    assert.strictEqual(countedRecords[0].activeSessionCount, undefined, 'zero counts must be omitted');
+    assert.strictEqual(countedRecords[1].activeSessionCount, 2);
+    assert.strictEqual(countedRecords[2].activeSessionCount, undefined, 'projects without counts must be omitted');
+}
+
+function runWorkspaceControllerRecordChecks() {
+    const controller = new OpenProjectWorkspaceController({
+        getWorkspaceFile: () => null,
+        getWorkspaceFolders: () => [{ uri: { fsPath: '/work/app', path: '/work/app', scheme: 'file' }, name: 'app' }],
+        getSavedProjects: () => [],
+        getCurrentRemoteName: () => undefined,
+        isFolderGitRepo: () => false,
+        getActiveSessionCounts: () => new Map([['__openProjects-0', 2]]),
+        publishRecords: () => undefined,
+    });
+
+    const countedRecords = controller.getOpenProjectRecords();
+    assert.strictEqual(countedRecords.length, 1);
+    assert.strictEqual(countedRecords[0].activeSessionCount, 2,
+        'records must include running session counts by default');
+
+    const initialRecords = controller.getOpenProjectRecords(false);
+    assert.strictEqual(initialRecords.length, 1);
+    assert.strictEqual(initialRecords[0].activeSessionCount, undefined,
+        'initial publication must skip running session counts');
 }
 
 function runProjectionChecks() {
@@ -479,6 +547,19 @@ function runProjectionChecks() {
     );
     assert.deepStrictEqual(duplicateForward.map(card => card.name), ['Alpha']);
     assert.deepStrictEqual(duplicateReverse, duplicateForward);
+
+    const sessionCountCards = projection.projectOpenProjectCards([], makeAggregate([
+        makeRegistration(NEWER, 3000, '/work/running', {
+            projects: [makeRecord({ name: 'Running', uri: '/work/running', activeSessionCount: 3 })],
+        }),
+        makeRegistration(OLDER, 2000, '/work/idle', {
+            projects: [makeRecord({ name: 'Idle', uri: '/work/idle' })],
+        }),
+    ]), SELF);
+    assert.strictEqual(sessionCountCards[0].name, 'Running');
+    assert.strictEqual(sessionCountCards[0].openProjectActiveSessionCount, 3);
+    assert.strictEqual(sessionCountCards[1].name, 'Idle');
+    assert.strictEqual(sessionCountCards[1].openProjectActiveSessionCount, 0);
 }
 
 async function runBridgeClientChecks() {
@@ -706,6 +787,54 @@ async function runBridgeClientChecks() {
     await failingPublishClient.publish([makeRecord({ name: 'Third failure' })]);
     assert.deepStrictEqual(publishErrors, [publishFailure, publishFailure]);
     failingPublishClient.dispose();
+
+    const refreshExecutions = [];
+    const refreshErrors = [];
+    const refreshedRecords = [makeRecord({ name: 'Heartbeat Refreshed', activeSessionCount: 2 })];
+    let refreshCallback;
+    let refreshShouldThrow = false;
+    const refreshingClient = new OpenProjectBridgeClient(
+        records,
+        () => undefined,
+        error => refreshErrors.push(error),
+        {
+            instanceId: 'c'.repeat(32),
+            now: () => currentNow,
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: async (command, argument) => {
+                refreshExecutions.push({ command, argument });
+            },
+            setInterval: callback => {
+                refreshCallback = callback;
+                return 'refresh-heartbeat';
+            },
+            clearInterval: () => undefined,
+            refreshProjects: () => {
+                if (refreshShouldThrow) {
+                    throw new Error('forced refresh failure');
+                }
+                return refreshedRecords;
+            },
+        }
+    );
+
+    assert.strictEqual(refreshExecutions.length, 1, 'initial publication should use the constructor records');
+    assert.deepStrictEqual(refreshExecutions[0].argument.projects, records);
+
+    await refreshCallback();
+    assert.strictEqual(refreshExecutions.length, 2);
+    assert.deepStrictEqual(
+        refreshExecutions[1].argument.projects,
+        refreshedRecords,
+        'heartbeats must republish freshly refreshed project records'
+    );
+
+    refreshShouldThrow = true;
+    await refreshCallback();
+    assert.strictEqual(refreshExecutions.length, 3, 'heartbeats must still publish cached records when refresh fails');
+    assert.deepStrictEqual(refreshExecutions[2].argument.projects, refreshedRecords);
+    assert.strictEqual(refreshErrors.length, 1, 'refresh failures must be reported');
+    refreshingClient.dispose();
 }
 
 function runDashboardBridgeLifecycleChecks() {
@@ -774,6 +903,15 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('new DashboardDiagnostics({'));
     assert.ok(!dashboard.includes('function logOpenProjectDiagnostic('));
     assert.ok(dashboard.includes('openProjectWorkspaceController.publish('));
+    assert.ok(dashboard.includes('getActiveSessionCounts'));
+    assert.ok(dashboard.includes("session.executionState === 'running'"));
+    assert.ok(dashboard.includes('openProjectWorkspaceController.getOpenProjectRecords(false)'),
+        'initial bridge publication must skip session counts before runtime controllers are wired');
+    assert.ok(dashboard.includes('refreshProjects: () => openProjectWorkspaceController.getOpenProjectRecords()'));
+    assert.ok(workspaceControllerSource.includes('getActiveSessionCounts'));
+    const bridgeClientSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'openProjects', 'bridgeClient.ts'), 'utf8');
+    assert.ok(bridgeClientSource.includes('refreshProjects'));
+    assert.ok(bridgeClientSource.includes('getHeartbeatProjects'));
     assert.ok(dashboard.includes('context.subscriptions.push(openProjectBridgeClient);'));
     assert.ok(dashboard.includes('get openProjects() { return getOpenProjectCards() }'));
     assert.ok(projectedOpenProjects.includes('openProjectDashboardController.getCards()'));
@@ -1232,6 +1370,8 @@ function runOpenProjectIncrementalRenderingChecks() {
     assert.ok(content.includes('export function getOpenProjectsGroupContent('));
     assert.ok(content.includes('export function getProjectsPanelContent('));
     assert.ok(content.includes('<div class="sticky-groups-wrapper">'));
+    assert.ok(content.includes('session-running'));
+    assert.ok(content.includes('openProjectActiveSessionCount'));
 
     const webviewScript = fs.readFileSync(
         path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'),
@@ -2132,6 +2272,7 @@ async function main() {
     runRemoteAttentionIdentityChecks();
     runIdentityChecks();
     runRecordChecks();
+    runWorkspaceControllerRecordChecks();
     runProjectionChecks();
     await runBridgeClientChecks();
     await runOpenProjectWorkspaceControllerChecks();
