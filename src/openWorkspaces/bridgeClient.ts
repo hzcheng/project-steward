@@ -292,8 +292,8 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
         this.publishCommandFlight = commandFlight;
         try {
             await commandFlight;
-            this.lastSemantic = semantic;
             if (generation === this.latestGeneration) {
+                this.lastSemantic = semantic;
                 this.retryAttempt = 0;
                 if (!this.disposed) { this.setStatus('ready'); }
             }

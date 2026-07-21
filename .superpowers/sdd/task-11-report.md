@@ -231,3 +231,59 @@ completion until the current generation is acknowledged, same-generation retry
 heartbeats remain valid, normal ready-state sequencing is preserved, and no
 dispose/unregister path changed. No further Critical, Important, or Minor
 finding remains.
+
+---
+
+## Important review follow-up: stale identical acknowledgements
+
+Status: complete in a focused follow-up commit.
+
+### Finding resolved
+
+- A successful stale in-flight command no longer commits `lastSemantic`.
+  Semantic state, retry reset, and `ready` now share the same
+  current-generation acknowledgement guard.
+- Consequently, an identical latest workspace generation or repeated `null`
+  cannot be duplicate-suppressed by a stale acknowledgement. It issues and
+  receives its own command before recovery completes.
+- A generation arriving after the acknowledgement guard remains safe because
+  the guard, semantic commit, retry reset, and status transition are one
+  synchronous continuation with no awaited or re-entrant boundary before
+  `setStatus`; the prior generation has completed recovery atomically before a
+  status callback can enqueue newer work.
+
+### Follow-up TDD evidence
+
+RED held a recovery publication in flight, queued the same workspace as a new
+generation, then resolved the stale command. The new regression observed only
+one command:
+
+```text
+AssertionError: identical workspace generation stale acknowledgement must not suppress the latest identical command
+actual: [workspace]
+expected: [workspace, workspace]
+```
+
+GREEN coverage proves for both an identical workspace and repeated `null`:
+
+- the stale and latest generations issue exactly two commands;
+- the latest publication promise resolves `true` only after its own command;
+- status remains `unavailable` until that current acknowledgement emits
+  `ready`, with no active retry timer; and
+- a forced subsequent failure schedules `100` rather than continuing the old
+  backoff, then its single retry restores final `ready` with no timer stranded.
+
+Existing different-generation coalescing, healthy sequential publication,
+backoff, and disposal/unregister tests remain green.
+
+### Follow-up verification and self-review
+
+Fresh verification passed main compile, UI Bridge compile, open-workspace
+safety, Dashboard Webview, AI safety, and AI tmux. All three source/generated
+Webview parity checks and `git diff --check` also passed.
+
+Self-review confirmed stale success remains diagnostic-only, current success is
+the sole semantic/recovery commit path, the synchronous guard prevents an
+after-check generation from splitting the atomic recovery transition, and no
+dispose/unregister path changed. No further Critical, Important, or Minor
+finding remains.

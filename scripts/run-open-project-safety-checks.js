@@ -1370,6 +1370,94 @@ async function runOpenWorkspaceHardeningChecks() {
     assert.strictEqual(activeRecoveryTimers.size, 0);
     recoveryClient.dispose();
 
+    const runIdenticalGenerationRecoveryCase = async (workspace, instanceId, label) => {
+        const timers = [];
+        const activeTimers = new Set();
+        const statuses = [];
+        const publications = [];
+        let handshakeAttempts = 0;
+        let failNextPublication = false;
+        let resolveStalePublication;
+        const stalePublication = new Promise(resolve => { resolveStalePublication = resolve; });
+        const client = new OpenWorkspaceBridgeClient(
+            workspace,
+            () => undefined,
+            () => undefined,
+            {
+                instanceId,
+                registerCommand: () => ({ dispose: () => undefined }),
+                executeCommand: async (command, argument) => {
+                    if (command.endsWith('.bridge.handshake')) {
+                        handshakeAttempts += 1;
+                        if (handshakeAttempts === 1) throw new Error(`${label} initial handshake failure`);
+                        return acceptedHandshake;
+                    }
+                    if (command.endsWith('.bridge.publish')) {
+                        publications.push(argument.workspace);
+                        if (publications.length === 1) return stalePublication;
+                        if (failNextPublication) {
+                            failNextPublication = false;
+                            throw new Error(`${label} reset probe failure`);
+                        }
+                    }
+                    return undefined;
+                },
+                setInterval: () => 'heartbeat',
+                clearInterval: () => undefined,
+                setTimeout: (callback, delayMs) => {
+                    const timer = {
+                        delayMs,
+                        callback: () => {
+                            activeTimers.delete(timer);
+                            callback();
+                        },
+                    };
+                    timers.push(timer);
+                    activeTimers.add(timer);
+                    return timer;
+                },
+                clearTimeout: timer => activeTimers.delete(timer),
+                onStatusChange: status => statuses.push(status),
+            }
+        );
+        for (let attempt = 0; attempt < 50 && timers.length === 0; attempt += 1) await flush();
+        timers[0].callback();
+        for (let attempt = 0; attempt < 50 && publications.length === 0; attempt += 1) await flush();
+        const latestPublication = client.publish(workspace);
+        resolveStalePublication(undefined);
+        assert.strictEqual(await latestPublication, true,
+            `${label} latest identical generation must be acknowledged`);
+        assert.deepStrictEqual(publications, [workspace, workspace],
+            `${label} stale acknowledgement must not suppress the latest identical command`);
+        assert.deepStrictEqual(statuses, ['unavailable', 'ready'],
+            `${label} recovery must become ready only after the latest identical acknowledgement`);
+        assert.strictEqual(activeTimers.size, 0, `${label} recovery must not leave a retry timer active`);
+
+        failNextPublication = true;
+        assert.strictEqual(await client.publish(workspace, true), false);
+        assert.deepStrictEqual(timers.map(timer => timer.delayMs), [100, 100],
+            `${label} latest acknowledgement must reset the next retry delay`);
+        assert.strictEqual(activeTimers.size, 1, `${label} reset probe must retain exactly one timer`);
+        timers[1].callback();
+        for (let attempt = 0; attempt < 50 && statuses.at(-1) !== 'ready'; attempt += 1) await flush();
+        assert.deepStrictEqual(publications, [workspace, workspace, workspace, workspace],
+            `${label} must issue exactly two recovery commands and one failed/successful reset probe pair`);
+        assert.deepStrictEqual(statuses, ['unavailable', 'ready', 'unavailable', 'ready']);
+        assert.strictEqual(activeTimers.size, 0, `${label} final retry success must clear the timer`);
+        client.dispose();
+    };
+
+    await runIdenticalGenerationRecoveryCase(
+        makeWorkspaceRecord(88),
+        'f'.repeat(32),
+        'identical workspace generation'
+    );
+    await runIdenticalGenerationRecoveryCase(
+        null,
+        '1'.repeat(32),
+        'repeated null generation'
+    );
+
     const closureW1 = makeWorkspaceRecord(83);
     const closureW2 = makeWorkspaceRecord(84);
     const closureTimers = [];
