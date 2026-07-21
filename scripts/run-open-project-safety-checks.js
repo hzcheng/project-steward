@@ -19,7 +19,6 @@ const { default: OpenWorkspaceBridgeClient } = require('../out/openWorkspaces/br
 const { OpenWorkspaceDashboardController } = require('../out/openWorkspaces/dashboardController');
 const { OpenWorkspaceController } = require('../out/openWorkspaces/workspaceController');
 const { WorkspaceNavigationController } = require('../out/openWorkspaces/navigationController');
-const { isDirectWorkspaceNavigationSupported } = require('../out/openWorkspaces/navigationCapabilities');
 const attentionProject = require('../out/aiSessions/attentionProject');
 const { CurrentProjectDetailsResolver } = require('../out/projects/currentProjectDetails');
 const { ProjectManualEditController } = require('../out/projects/projectManualEditController');
@@ -987,19 +986,8 @@ async function runOpenWorkspaceClientAndControllerChecks() {
 }
 
 async function runWorkspaceNavigationControllerChecks() {
-    const environments = ['local', 'ssh', 'wsl', 'devContainer'];
-    const kinds = ['singleFolder', 'savedMultiRoot', 'untitledMultiRoot'];
-    for (const environment of environments) {
-        for (const kind of kinds) {
-            assert.strictEqual(
-                isDirectWorkspaceNavigationSupported(environment, kind),
-                false,
-                `${environment}/${kind} must fail closed without repeated empirical evidence`
-            );
-        }
-    }
-    assert.strictEqual(isDirectWorkspaceNavigationSupported('remote', 'singleFolder'), false);
-
+    const environments = ['local', 'ssh', 'wsl', 'devContainer', 'remote'];
+    const navigableKinds = ['singleFolder', 'savedMultiRoot'];
     let record = makeWorkspaceRecord(60, {
         kind: 'savedMultiRoot',
         environment: 'devContainer',
@@ -1008,9 +996,7 @@ async function runWorkspaceNavigationControllerChecks() {
             uri: 'vscode-remote://dev-container%2Btarget/work/member-root',
         })],
     });
-    let nativeSwitchAvailable = true;
-    let nativeSwitchQueryFails = false;
-    let nativeSwitchExecutionFails = false;
+    let directExecutionFails = false;
     const executions = [];
     const parsedUris = [];
     const informationMessages = [];
@@ -1018,13 +1004,9 @@ async function runWorkspaceNavigationControllerChecks() {
     const refreshes = [];
     const controller = new WorkspaceNavigationController({
         getRecord: cardId => cardId === 'live-card' ? record : null,
-        getAvailableCommands: async () => {
-            if (nativeSwitchQueryFails) { throw new Error('forced command query failure'); }
-            return nativeSwitchAvailable ? ['workbench.action.switchWindow'] : [];
-        },
         executeCommand: async (...args) => {
-            if (nativeSwitchExecutionFails) { throw new Error('forced native switch failure'); }
             executions.push(args);
+            if (directExecutionFails) { throw new Error('forced direct navigation failure'); }
         },
         parseUri: value => {
             const parsed = { parsed: value };
@@ -1043,76 +1025,52 @@ async function runWorkspaceNavigationControllerChecks() {
 
     let caseIndex = 0;
     for (const environment of environments) {
-        for (const kind of kinds) {
+        for (const kind of navigableKinds) {
             caseIndex += 1;
             executions.length = 0;
             parsedUris.length = 0;
             informationMessages.length = 0;
-            const rootUri = `file:///work/fallback-root-${caseIndex}`;
+            warningMessages.length = 0;
+            const rootUri = `file:///work/member-root-${caseIndex}`;
             record = makeWorkspaceRecord(60 + caseIndex, {
                 kind,
                 environment,
-                navigationUri: kind === 'untitledMultiRoot'
-                    ? `untitled:Untitled-${caseIndex}`
-                    : `file:///work/navigation-${caseIndex}`,
+                navigationUri: environment === 'local'
+                    ? `file:///work/navigation-${caseIndex}${kind === 'savedMultiRoot' ? '.code-workspace' : ''}`
+                    : `vscode-remote://${environment}%2Btarget/work/navigation-${caseIndex}${kind === 'savedMultiRoot' ? '.code-workspace' : ''}`,
                 roots: [makeWorkspaceRoot(60 + caseIndex, { uri: rootUri })],
             });
             await controller.open('live-card');
-            if (kind === 'untitledMultiRoot') {
-                assert.deepStrictEqual(
-                    informationMessages,
-                    ['Save this workspace before switching to it'],
-                    `${environment}/${kind} must ask the user to save`
-                );
-                assert.deepStrictEqual(executions, []);
-            } else {
-                assert.deepStrictEqual(
-                    executions,
-                    [['workbench.action.switchWindow']],
-                    `${environment}/${kind} must use native Switch Window`
-                );
-            }
-            assert.deepStrictEqual(parsedUris, [], `${environment}/${kind} fallback must not parse a URI`);
-            assert.strictEqual(executions.some(args => args[0] === 'vscode.openFolder'), false);
+            assert.deepStrictEqual(parsedUris, [{ parsed: record.navigationUri }]);
+            assert.deepStrictEqual(executions, [[
+                'vscode.openFolder',
+                parsedUris[0],
+                { forceNewWindow: true },
+            ]], `${environment}/${kind} must open the exact navigation URI in a new window`);
+            assert.deepStrictEqual(informationMessages, []);
+            assert.deepStrictEqual(warningMessages, []);
             assert.strictEqual(JSON.stringify(executions).includes(rootUri), false,
                 `${environment}/${kind} must never open a member root URI`);
         }
     }
 
-    record = makeWorkspaceRecord(62, {
-        kind: 'singleFolder',
-        environment: 'ssh',
-        navigationUri: 'vscode-remote://ssh-remote%2Btarget/work/saved-folder',
-        roots: [makeWorkspaceRoot(62, { uri: 'vscode-remote://ssh-remote%2Btarget/work/root' })],
+    executions.length = 0;
+    parsedUris.length = 0;
+    informationMessages.length = 0;
+    warningMessages.length = 0;
+    record = makeWorkspaceRecord(80, {
+        kind: 'untitledMultiRoot',
+        environment: 'local',
+        navigationUri: 'untitled:Untitled-1',
+        roots: [makeWorkspaceRoot(80, { uri: 'file:///work/untitled-member-root' })],
     });
-    nativeSwitchAvailable = false;
     await controller.open('live-card');
-    assert.deepStrictEqual(warningMessages, [
-        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
-    ]);
+    assert.deepStrictEqual(informationMessages, ['Save this workspace before switching to it']);
     assert.deepStrictEqual(executions, []);
     assert.deepStrictEqual(parsedUris, []);
+    assert.deepStrictEqual(warningMessages, []);
 
-    nativeSwitchQueryFails = true;
-    await controller.open('live-card');
-    assert.deepStrictEqual(warningMessages, [
-        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
-        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
-    ]);
-    assert.deepStrictEqual(executions, []);
-
-    nativeSwitchQueryFails = false;
-    nativeSwitchAvailable = true;
-    nativeSwitchExecutionFails = true;
-    await controller.open('live-card');
-    assert.deepStrictEqual(warningMessages, [
-        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
-        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
-        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
-    ]);
-    assert.deepStrictEqual(executions, []);
-
-    const directRecord = makeWorkspaceRecord(90, {
+    record = makeWorkspaceRecord(90, {
         kind: 'savedMultiRoot',
         environment: 'devContainer',
         navigationUri: 'vscode-remote://dev-container%2Btarget/work/direct.code-workspace',
@@ -1120,51 +1078,21 @@ async function runWorkspaceNavigationControllerChecks() {
             uri: 'vscode-remote://dev-container%2Btarget/work/member-root',
         })],
     });
-    const directParsedUris = [];
-    const directExecutions = [];
-    const directWarnings = [];
-    let directExecutionFails = false;
-    const directController = new WorkspaceNavigationController({
-        getRecord: () => directRecord,
-        canNavigateDirectly: () => true,
-        getAvailableCommands: async () => ['workbench.action.switchWindow'],
-        executeCommand: async (...args) => {
-            directExecutions.push(args);
-            if (directExecutionFails) { throw new Error('forced direct navigation failure'); }
-        },
-        parseUri: value => {
-            const parsed = { parsed: value };
-            directParsedUris.push(parsed);
-            return parsed;
-        },
-        showInformationMessage: () => undefined,
-        showWarningMessage: message => { directWarnings.push(message); },
-        refresh: () => undefined,
-    });
-    await directController.open('direct-card');
-    assert.deepStrictEqual(directParsedUris, [{ parsed: directRecord.navigationUri }]);
-    assert.deepStrictEqual(directExecutions, [[
-        'vscode.openFolder',
-        directParsedUris[0],
-        { forceNewWindow: true },
-    ]]);
-    assert.strictEqual(JSON.stringify(directParsedUris).includes(directRecord.roots[0].uri), false);
-    assert.strictEqual(JSON.stringify(directExecutions).includes(directRecord.roots[0].uri), false);
-
     directExecutionFails = true;
-    directParsedUris.length = 0;
-    directExecutions.length = 0;
-    await directController.open('direct-card');
-    assert.deepStrictEqual(directExecutions, [[
+    parsedUris.length = 0;
+    executions.length = 0;
+    warningMessages.length = 0;
+    await controller.open('live-card');
+    assert.deepStrictEqual(executions, [[
         'vscode.openFolder',
-        directParsedUris[0],
+        parsedUris[0],
         { forceNewWindow: true },
     ]]);
-    assert.deepStrictEqual(directWarnings, [
+    assert.deepStrictEqual(warningMessages, [
         'Unable to switch directly to this workspace. Use VS Code Switch Window instead.',
     ]);
-    assert.strictEqual(directExecutions.some(args => args[0] === 'workbench.action.switchWindow'), false);
-    assert.strictEqual(JSON.stringify(directExecutions).includes(directRecord.roots[0].uri), false);
+    assert.strictEqual(executions.some(args => args[0] === 'workbench.action.switchWindow'), false);
+    assert.strictEqual(JSON.stringify(executions).includes(record.roots[0].uri), false);
 }
 
 async function runOpenWorkspaceHardeningChecks() {

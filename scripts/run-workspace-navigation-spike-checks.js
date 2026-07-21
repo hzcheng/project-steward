@@ -21,7 +21,6 @@ const reportPath = path.join(
     'reports',
     '2026-07-20-workspace-navigation-feasibility.md'
 );
-const capabilityPath = path.join(repositoryRoot, 'src', 'openWorkspaces', 'navigationCapabilities.ts');
 const controllerPath = path.join(repositoryRoot, 'src', 'openWorkspaces', 'navigationController.ts');
 
 const ENVIRONMENTS = ['local', 'ssh', 'wsl', 'devContainer'];
@@ -339,24 +338,17 @@ function assertProbeSource(source, packageSource, tsconfigSource) {
         'probe source must not be able to self-classify focused-existing');
 }
 
-function assertProductionPolicy(matrixByCell, capabilitySource, controllerSource) {
+function assertProductionPolicy(controllerSource) {
     assert.strictEqual(/record\.roots\b/.test(controllerSource), false,
         'production navigation must never read record.roots');
     assert.ok(controllerSource.includes('record.navigationUri'),
         'production navigation must consume the latest record.navigationUri');
-    assert.ok(controllerSource.includes("'workbench.action.switchWindow'"),
-        'saved fallback must invoke native Switch Window');
+    assert.ok(controllerSource.includes("'vscode.openFolder'"),
+        'saved workspace navigation must invoke vscode.openFolder');
+    assert.strictEqual(controllerSource.includes('workbench.action.switchWindow'), false,
+        'production navigation must never invoke native Switch Window automatically');
     assert.ok(controllerSource.includes('Save this workspace before switching to it'),
         'untitled fallback must ask the user to save');
-    for (const [key, cell] of matrixByCell) {
-        const [environment, kind] = key.split('/');
-        const directLiteral = `'${environment}/${kind}': true`;
-        assert.strictEqual(
-            capabilitySource.includes(directLiteral),
-            cell.outcome === 'focused-existing',
-            `capability policy does not match evidence for ${key}`
-        );
-    }
 }
 
 function main() {
@@ -367,12 +359,11 @@ function main() {
     const tsconfigSource = readRequired(probeTsconfigPath);
     const report = readRequired(reportPath);
     assertProbeSource(probeSource, packageSource, tsconfigSource);
-    const matrixByCell = assertMatrix(parseMatrix(report));
+    assertMatrix(parseMatrix(report));
 
-    if (fs.existsSync(capabilityPath) || fs.existsSync(controllerPath)) {
-        const capabilitySource = readRequired(capabilityPath);
+    if (fs.existsSync(controllerPath)) {
         const controllerSource = readRequired(controllerPath);
-        assertProductionPolicy(matrixByCell, capabilitySource, controllerSource);
+        assertProductionPolicy(controllerSource);
     }
     console.log('Workspace navigation spike checks passed.');
 }

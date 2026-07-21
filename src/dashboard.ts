@@ -1317,7 +1317,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
     workspaceNavigationController = new WorkspaceNavigationController<vscode.Uri>({
         getRecord: cardId => openWorkspaceDashboardController.getNavigationWorkspace(cardId),
-        getAvailableCommands: () => vscode.commands.getCommands(true),
         executeCommand: (command, ...args) => vscode.commands.executeCommand(command, ...args),
         parseUri: value => vscode.Uri.parse(value),
         showInformationMessage: message => vscode.window.showInformationMessage(message),
