@@ -4539,6 +4539,9 @@ async function runDashboardMessageRouterChecks() {
         archiveAiSession: (message, providerId) => {
             calls.push(['archive-ai-session', providerId, message.sessionId]);
         },
+        saveCurrentWorkspace: message => {
+            calls.push(['save-current-workspace', message.type, message.requestId]);
+        },
     });
 
     await router(null);
@@ -4558,6 +4561,8 @@ async function runDashboardMessageRouterChecks() {
     await router({ type: 'resume-kimi-session', sessionId: 'k1' });
     await router({ type: 'archive-claude-session', sessionId: 'a1' });
     await router({ type: 'resume-unknown-session', sessionId: 'ignored' });
+    await router({ type: 'save-current-workspace', requestId: 9 });
+    await router({ type: 'save-project', projectId: '__currentWorkspace-transient-card-id' });
 
     assert.deepStrictEqual(calls, [
         ['request-projects-panel', 7],
@@ -4570,7 +4575,20 @@ async function runDashboardMessageRouterChecks() {
         ['resume-ai-session', null, 'invalid', null],
         ['resume-ai-session', 'kimi', 'k1', null],
         ['archive-ai-session', 'claude', 'a1'],
+        ['save-current-workspace', 'save-current-workspace', 9],
+        ['save-current-workspace', 'save-project', undefined],
     ]);
+
+    const genericSaveCalls = [];
+    const routerWithoutSaveHandler = routerModule.createDashboardMessageRouter({
+        handlers: {
+            'save-current-workspace': message => genericSaveCalls.push(message.requestId),
+        },
+    });
+    await routerWithoutSaveHandler({ type: 'save-current-workspace', requestId: 10 });
+    await routerWithoutSaveHandler({ type: 'save-project', projectId: '__currentWorkspace-stale' });
+    assert.deepStrictEqual(genericSaveCalls, [],
+        'save-current-workspace must remain a reserved route when its dedicated handler is unavailable');
 
     const genericNewSessionCalls = [];
     const routerWithoutNewSessionHandler = routerModule.createDashboardMessageRouter({

@@ -72,6 +72,10 @@ export class ProjectMutationController {
         await this.saveProject(null, false, await this.options.getProjectDetailsForSave(uri));
     }
 
+    async saveWorkspaceProject(projectDetails: ProjectDetailsForSave | null): Promise<void> {
+        await this.saveProject(null, false, projectDetails);
+    }
+
     async saveProject(groupId: string = null, groupWasNewlyCreated: boolean = false, projectDetails: ProjectDetailsForSave = null): Promise<void> {
         let selectedGroupId: string;
 

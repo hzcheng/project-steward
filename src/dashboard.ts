@@ -125,6 +125,8 @@ import { WorkspaceNavigationController } from './openWorkspaces/navigationContro
 import { OpenWorkspaceController } from './openWorkspaces/workspaceController';
 import { WorkspaceContextResolver } from './workspaces/contextResolver';
 import { WorkspacePrimaryRootStore } from './workspaces/primaryRootStore';
+import { PendingWorkspaceSaveStore } from './workspaces/pendingWorkspaceSaveStore';
+import { SavedWorkspaceProjectAdapter } from './workspaces/savedWorkspaceProjectAdapter';
 import { WorkspaceSessionHydrationController } from './workspaces/sessionHydrationController';
 import type { OpenWorkspace } from './workspaces/types';
 import { buildWorkspaceDashboardSearchCatalog } from './webview/dashboardViewModel';
@@ -471,6 +473,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const getCurrentOpenWorkspace = (): OpenWorkspace | null => openWorkspaceController
         ? openWorkspaceController.getCurrentWorkspace()
         : resolveCurrentOpenWorkspace();
+    const savedWorkspaceProjectAdapter = new SavedWorkspaceProjectAdapter({
+        getCurrentWorkspace: resolveCurrentOpenWorkspace,
+        pendingStore: new PendingWorkspaceSaveStore(context.globalState),
+        getProjectDetailsForSave: navigationUri =>
+            currentProjectDetailsResolver.getProjectDetailsForSave(vscode.Uri.parse(navigationUri)),
+        saveWorkspaceProject: details => projectMutationController.saveWorkspaceProject(details),
+        executeSaveWorkspaceAs: () => Promise.resolve(
+            vscode.commands.executeCommand('workbench.action.saveWorkspaceAs')
+        ),
+    });
     const workspaceSessionHydrationController = new WorkspaceSessionHydrationController<vscode.Terminal>({
         providers: aiSessionProviders,
         readCoordinator: aiSessionReadCoordinator,
@@ -953,6 +965,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const dashboardMessageRouter = createDashboardMessageRouter({
         getAiSessionProviderIds: () => getRegisteredAiSessionProviders().map(provider => provider.id),
+        saveCurrentWorkspace: () => savedWorkspaceProjectAdapter.saveCurrentWorkspace(),
         handlers: {
             'request-projects-panel': async e => {
                 if (e.version !== 1 || !Number.isSafeInteger(e.requestId) || e.requestId < 1) {
@@ -1163,9 +1176,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             },
             'favorite-project': async e => {
                 await favoriteProjectController.toggleProjectFavorite(e.projectId as string);
-            },
-            'save-project': async e => {
-                await projectMutationController.saveOpenProject(e.projectId as string);
             },
             'toggle-codex-sessions': async e => {
                 await aiSessionCommandController.toggleSessionsExpanded(e.projectId as string, Boolean(e.expanded));
@@ -1554,7 +1564,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         handlers: {
             open: () => showSteward(),
             addProject: () => projectMutationController.addProject(),
-            saveProject: () => projectMutationController.saveProject(),
+            saveProject: () => savedWorkspaceProjectAdapter.saveCurrentWorkspace(),
             removeProject: () => projectRemovalController.removeProjectPerCommand(),
             editProjects: () => projectManualEditController.editProjectsManually(),
             addGroup: () => groupCommandController.addGroup(),
@@ -1580,6 +1590,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(vscode.window.onDidChangeWindowState(windowState => {
         dashboardLifecycleController.handleWindowStateChanged(windowState);
     }));
+
+    try {
+        await savedWorkspaceProjectAdapter.completePendingWorkspaceSave();
+    } catch (error) {
+        logError('Could not complete the pending workspace save.', error);
+    }
 
     void dashboardStartupController.startUp();
 

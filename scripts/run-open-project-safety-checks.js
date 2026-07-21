@@ -30,6 +30,11 @@ const { ProjectMutationController } = require('../out/projects/projectMutationCo
 const { ProjectPromptController } = require('../out/projects/projectPromptController');
 const { DashboardStartupController } = require('../out/dashboard/startupController');
 const { WorkspaceContextResolver } = require('../out/workspaces/contextResolver');
+const {
+    PendingWorkspaceSaveStore,
+    PENDING_WORKSPACE_SAVE_TTL_MS,
+} = require('../out/workspaces/pendingWorkspaceSaveStore');
+const { SavedWorkspaceProjectAdapter } = require('../out/workspaces/savedWorkspaceProjectAdapter');
 const models = require('../out/models');
 const { OpenWorkspaceStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceStore');
 const { OpenWorkspaceCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceCoordinator');
@@ -2332,6 +2337,209 @@ function runWorkspaceContextResolverChecks() {
     }
 }
 
+function createMemoryMemento(initial = {}) {
+    const values = new Map(Object.entries(initial));
+    return {
+        get: key => values.get(key),
+        update: async (key, value) => {
+            if (value === undefined) {
+                values.delete(key);
+            } else {
+                values.set(key, value);
+            }
+        },
+        entries: () => Array.from(values.entries()),
+    };
+}
+
+function makeSaveWorkspace(kind, overrides = {}) {
+    return {
+        navigationIdentity: `${kind}-navigation`,
+        scopeIdentity: 'a'.repeat(64),
+        kind,
+        displayName: 'Team',
+        navigationUri: kind === 'singleFolder'
+            ? 'file:///work/app'
+            : kind === 'savedMultiRoot'
+                ? 'file:///work/team.code-workspace'
+                : 'untitled:Untitled-1',
+        environment: 'local',
+        roots: [{
+            id: 'b'.repeat(64),
+            name: 'app',
+            uri: 'file:///work/app',
+            hostPath: '/work/app',
+            ordinal: 0,
+        }],
+        ...overrides,
+    };
+}
+
+async function runSavedWorkspaceProjectAdapterChecks() {
+    const now = 10_000;
+    const pathByUri = {
+        'file:///work/app': '/work/app',
+        'file:///work/team.code-workspace': '/work/team.code-workspace',
+    };
+
+    async function saveImmediate(workspace) {
+        const state = createMemoryMemento();
+        const saved = [];
+        const adapter = new SavedWorkspaceProjectAdapter({
+            getCurrentWorkspace: () => workspace,
+            pendingStore: new PendingWorkspaceSaveStore(state),
+            getProjectDetailsForSave: async navigationUri => ({
+                path: pathByUri[navigationUri],
+                remoteType: models.ProjectRemoteType.None,
+            }),
+            saveWorkspaceProject: async details => saved.push({ ...details }),
+            executeSaveWorkspaceAs: async () => assert.fail('saved workspaces must not invoke Save Workspace As'),
+            nowMs: () => now,
+        });
+        await adapter.saveCurrentWorkspace();
+        return saved;
+    }
+
+    assert.deepStrictEqual(await saveImmediate(makeSaveWorkspace('singleFolder')), [{
+        path: '/work/app',
+        remoteType: models.ProjectRemoteType.None,
+    }], 'a single-folder live workspace must add exactly one folder project');
+    assert.deepStrictEqual(await saveImmediate(makeSaveWorkspace('savedMultiRoot')), [{
+        path: '/work/team.code-workspace',
+        remoteType: models.ProjectRemoteType.None,
+    }], 'a saved multi-root live workspace must add exactly one workspace-file project');
+
+    const untitled = makeSaveWorkspace('untitledMultiRoot');
+    const pendingState = createMemoryMemento();
+    const pendingStore = new PendingWorkspaceSaveStore(pendingState);
+    const ordering = [];
+    const pendingAdapter = new SavedWorkspaceProjectAdapter({
+        getCurrentWorkspace: () => untitled,
+        pendingStore,
+        getProjectDetailsForSave: async () => assert.fail('untitled cancellation must not resolve project details'),
+        saveWorkspaceProject: async () => assert.fail('untitled cancellation must not add a project'),
+        executeSaveWorkspaceAs: async () => {
+            const intent = pendingStore.read();
+            ordering.push('command');
+            assert.deepStrictEqual(Object.keys(intent).sort(), [
+                'createdAtMs', 'expiresAtMs', 'scopeIdentity', 'version',
+            ]);
+            assert.strictEqual(intent.version, 1);
+            assert.strictEqual(intent.scopeIdentity, untitled.scopeIdentity);
+            assert.strictEqual(intent.createdAtMs, now);
+            assert.strictEqual(intent.expiresAtMs, now + PENDING_WORKSPACE_SAVE_TTL_MS);
+            assert.deepStrictEqual(pendingState.entries(), [[
+                PendingWorkspaceSaveStore.storageKey,
+                intent,
+            ]], 'only the bounded four-field intent may be persisted before the command');
+        },
+        nowMs: () => now,
+    });
+    ordering.push('before');
+    await pendingAdapter.saveCurrentWorkspace();
+    ordering.push('after');
+    assert.deepStrictEqual(ordering, ['before', 'command', 'after']);
+    assert.strictEqual(pendingStore.read(), null, 'Save Workspace As cancellation/non-transition must clear intent');
+
+    const savedWorkspace = makeSaveWorkspace('savedMultiRoot', {
+        scopeIdentity: untitled.scopeIdentity,
+    });
+    const restartState = createMemoryMemento();
+    const restartStore = new PendingWorkspaceSaveStore(restartState);
+    await restartStore.write(untitled.scopeIdentity, now, now + PENDING_WORKSPACE_SAVE_TTL_MS);
+    const existingProjects = [
+        { id: 'member-app', name: 'App', path: '/work/app', favorite: true },
+        { id: 'member-lib', name: 'Lib', path: '/work/lib', description: 'Keep me' },
+    ];
+    const before = JSON.parse(JSON.stringify(existingProjects));
+    const restartAdapter = new SavedWorkspaceProjectAdapter({
+        getCurrentWorkspace: () => savedWorkspace,
+        pendingStore: restartStore,
+        getProjectDetailsForSave: async navigationUri => ({
+            path: pathByUri[navigationUri],
+            remoteType: models.ProjectRemoteType.None,
+        }),
+        saveWorkspaceProject: async details => existingProjects.push({
+            id: 'workspace-team',
+            name: 'Team',
+            path: details.path,
+        }),
+        executeSaveWorkspaceAs: async () => assert.fail('activation completion must not reopen Save Workspace As'),
+        nowMs: () => now + 1,
+    });
+    await Promise.all([
+        restartAdapter.completePendingWorkspaceSave(),
+        restartAdapter.completePendingWorkspaceSave(),
+    ]);
+    await restartAdapter.completePendingWorkspaceSave();
+    assert.deepStrictEqual(existingProjects.slice(0, before.length), before,
+        'saving an encompassing workspace must not merge, rewrite, or delete member projects');
+    assert.strictEqual(JSON.stringify(existingProjects.slice(0, before.length)), JSON.stringify(before),
+        'pre-existing saved-project serialization must remain byte-for-byte equivalent');
+    assert.deepStrictEqual(existingProjects.slice(before.length).map(project => project.path), [
+        '/work/team.code-workspace',
+    ], 'matching restart completion must add exactly one project and remain idempotent');
+    assert.strictEqual(restartStore.read(), null);
+
+    async function assertRejectedPending(currentWorkspace, rawIntent, currentTime, label) {
+        const state = createMemoryMemento({ [PendingWorkspaceSaveStore.storageKey]: rawIntent });
+        const store = new PendingWorkspaceSaveStore(state);
+        let mutations = 0;
+        const adapter = new SavedWorkspaceProjectAdapter({
+            getCurrentWorkspace: () => currentWorkspace,
+            pendingStore: store,
+            getProjectDetailsForSave: async () => {
+                mutations += 1;
+                return { path: '/unexpected', remoteType: models.ProjectRemoteType.None };
+            },
+            saveWorkspaceProject: async () => { mutations += 1; },
+            executeSaveWorkspaceAs: async () => undefined,
+            nowMs: () => currentTime,
+        });
+        await adapter.completePendingWorkspaceSave();
+        assert.strictEqual(mutations, 0, `${label} must not create a project`);
+        assert.strictEqual(store.read(), null, `${label} must clear pending state`);
+        assert.deepStrictEqual(state.entries(), [], `${label} must remove malformed/stale storage`);
+    }
+
+    const validIntent = {
+        version: 1,
+        scopeIdentity: untitled.scopeIdentity,
+        createdAtMs: now,
+        expiresAtMs: now + PENDING_WORKSPACE_SAVE_TTL_MS,
+    };
+    await assertRejectedPending(savedWorkspace, validIntent, validIntent.expiresAtMs, 'intent at expiry boundary');
+    await assertRejectedPending(savedWorkspace, { ...validIntent, version: 2 }, now + 1, 'malformed intent');
+    await assertRejectedPending(savedWorkspace, { ...validIntent, unexpected: true }, now + 1, 'intent with extra data');
+    await assertRejectedPending(savedWorkspace, { ...validIntent, createdAtMs: now + 2 }, now + 1, 'future intent');
+    await assertRejectedPending(makeSaveWorkspace('savedMultiRoot', {
+        scopeIdentity: 'c'.repeat(64),
+    }), validIntent, now + 1, 'changed root scope');
+    await assertRejectedPending(makeSaveWorkspace('singleFolder', {
+        scopeIdentity: untitled.scopeIdentity,
+    }), validIntent, now + 1, 'unrelated activation');
+    await assertRejectedPending(null, validIntent, now + 1, 'activation without a workspace');
+
+    const failureState = createMemoryMemento();
+    const failureStore = new PendingWorkspaceSaveStore(failureState);
+    await failureStore.write(untitled.scopeIdentity, now, now + PENDING_WORKSPACE_SAVE_TTL_MS);
+    const mutationFailure = new Error('forced workspace project mutation failure');
+    const failureAdapter = new SavedWorkspaceProjectAdapter({
+        getCurrentWorkspace: () => savedWorkspace,
+        pendingStore: failureStore,
+        getProjectDetailsForSave: async () => ({
+            path: '/work/team.code-workspace',
+            remoteType: models.ProjectRemoteType.None,
+        }),
+        saveWorkspaceProject: async () => { throw mutationFailure; },
+        executeSaveWorkspaceAs: async () => undefined,
+        nowMs: () => now + 1,
+    });
+    await assert.rejects(() => failureAdapter.completePendingWorkspaceSave(), error => error === mutationFailure);
+    assert.strictEqual(failureStore.read(), null, 'mutation failure must leave no retryable duplicate intent');
+    assert.deepStrictEqual(failureState.entries(), []);
+}
+
 function runIdentityChecks() {
     assert.strictEqual(projection.normalizeOpenProjectIdentity('/work/shared/'), '/work/shared');
     assert.strictEqual(projection.normalizeOpenProjectIdentity('C:\\work\\shared\\'), 'C:/work/shared');
@@ -2883,7 +3091,17 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(selectedProjectHandler.indexOf('projectService.getProject(projectId)') < selectedProjectHandler.indexOf('getOpenProjects().find'));
     assert.ok(selectedProjectHandler.includes('await projectOpenController.openProject(project, projectOpenType);'));
     assert.ok(dashboard.includes('await projectMutationController.addProject('));
-    assert.ok(dashboard.includes('await projectMutationController.saveOpenProject('));
+    assert.ok(dashboard.includes('saveCurrentWorkspace: () => savedWorkspaceProjectAdapter.saveCurrentWorkspace()'));
+    assert.strictEqual(dashboard.includes("'save-project': async"), false,
+        'legacy save-project messages must use the reserved snapshot-based workspace route');
+    assert.ok(dashboard.includes('saveProject: () => savedWorkspaceProjectAdapter.saveCurrentWorkspace()'));
+    assert.ok(dashboard.includes('await savedWorkspaceProjectAdapter.completePendingWorkspaceSave();'));
+    const saveAdapterWiring = dashboard.slice(
+        dashboard.indexOf('const savedWorkspaceProjectAdapter = new SavedWorkspaceProjectAdapter({'),
+        dashboard.indexOf('const workspaceSessionHydrationController = new WorkspaceSessionHydrationController')
+    );
+    assert.ok(saveAdapterWiring.includes('getCurrentWorkspace: resolveCurrentOpenWorkspace'),
+        'Save Workspace As must read a fresh resolved snapshot instead of a cached transient card/controller state');
     assert.ok(dashboard.includes('await projectMutationController.editProject('));
     assert.ok(dashboard.includes('await projectMutationController.editProjectColor('));
     assert.ok(dashboard.includes('editProjects: () => projectManualEditController.editProjectsManually()'));
@@ -2893,6 +3111,8 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryGroup('));
     assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryProjectDescription('));
     assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryProjectColor('));
+    assert.ok(projectMutationControllerSource.includes('async saveWorkspaceProject('));
+    assert.ok(projectMutationControllerSource.includes('await this.saveProject(null, false, projectDetails);'));
     assert.ok(!selectedProjectHandler.includes('e.uri'));
     assert.ok(!selectedProjectHandler.includes('projectUri'));
     assert.ok(dashboard.includes('vscode.window.onDidChangeWindowState(windowState =>'));
@@ -4311,6 +4531,7 @@ async function main() {
     runProtocolChecks();
     runWorkspaceProtocolV2Checks();
     runWorkspaceContextResolverChecks();
+    await runSavedWorkspaceProjectAdapterChecks();
     runIdentityChecks();
     runRecordChecks();
     runWorkspaceControllerRecordChecks();

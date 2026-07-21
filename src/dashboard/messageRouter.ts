@@ -21,6 +21,7 @@ export interface DashboardMessageHandlers {
     newSessionIn?: DashboardAiSessionCreateMessageHandler;
     resumeAiSession?: DashboardAiSessionLaunchMessageHandler;
     archiveAiSession?: DashboardAiSessionMessageHandler;
+    saveCurrentWorkspace?: DashboardMessageHandler;
 }
 
 export function createDashboardMessageRouter(handlers: DashboardMessageHandlers): (message: unknown) => Promise<void> {
@@ -43,6 +44,13 @@ export function createDashboardMessageRouter(handlers: DashboardMessageHandlers)
             const rootId = getWorkspaceRootIdFromMessage(message);
             if (rootId && handlers.newSessionIn) {
                 await handlers.newSessionIn(message, rootId);
+            }
+            return;
+        }
+
+        if (messageType === 'save-current-workspace' || messageType === 'save-project') {
+            if (handlers.saveCurrentWorkspace) {
+                await handlers.saveCurrentWorkspace(message);
             }
             return;
         }
