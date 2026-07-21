@@ -1,6 +1,7 @@
 'use strict';
 
 import type { AiSessionProviderId, CodexSession, Project } from '../models';
+import type { WorkspaceAiSessionActionTarget } from './types';
 import {
     archiveBatchAiSessionItem,
     executeBatchAiSessionArchiveRequest,
@@ -31,6 +32,7 @@ export interface AiSessionArchiveControllerOptions<TRuntime extends AiSessionArc
     getProvider: (providerId: AiSessionProviderId) => AiSessionArchiveProvider;
     getProviderLabel: (providerId: AiSessionProviderId) => string;
     getOpenProjects: () => Project[];
+    getWorkspaceTarget?: (cardId: string) => WorkspaceAiSessionActionTarget | null;
     getProjectSessions: (project: Project, providerId: AiSessionProviderId) => CodexSession[];
     getRuntimeById: (providerId: AiSessionProviderId, sessionId: string) => TRuntime | null;
     refreshRuntimeGuard?: (providerId?: AiSessionProviderId, sessionId?: string) => Promise<void>;
@@ -144,12 +146,34 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
         if (!await this.refreshRuntimeGuard()) {
             return;
         }
+        const getWorkspaceSessions = (): CodexSession[] | null => {
+            const target = this.options.getWorkspaceTarget?.(projectId);
+            if (!target || !validProviderId || target.sessions.activeProvider !== validProviderId) {
+                return null;
+            }
+            return (target.sessions.sessionsByProvider[validProviderId] || []).slice();
+        };
         await executeBatchAiSessionArchiveRequest({ projectId, provider: providerId, sessionIds }, {
-            resolveProject: requestedProjectId => validProviderId
-                ? this.options.getOpenProjects().find(candidate => candidate.id === requestedProjectId)
-                : null,
-            getProjectSessions: project => validProviderId ? this.options.getProjectSessions(project as Project, validProviderId) : [],
+            resolveProject: requestedProjectId => {
+                const workspaceSessions = getWorkspaceSessions();
+                if (workspaceSessions) {
+                    return { id: requestedProjectId, activeAiSessionProvider: validProviderId };
+                }
+                return validProviderId
+                    ? this.options.getOpenProjects().find(candidate => candidate.id === requestedProjectId)
+                    : null;
+            },
+            getProjectSessions: project => {
+                const workspaceSessions = getWorkspaceSessions();
+                return workspaceSessions || (validProviderId
+                    ? this.options.getProjectSessions(project as Project, validProviderId)
+                    : []);
+            },
             resolveCurrentSessions: () => {
+                const workspaceSessions = getWorkspaceSessions();
+                if (workspaceSessions) {
+                    return workspaceSessions;
+                }
                 const currentProject = this.options.getOpenProjects().find(candidate => candidate.id === projectId);
                 return currentProject && validProviderId && currentProject.activeAiSessionProvider === validProviderId
                     ? this.options.getProjectSessions(currentProject, validProviderId)

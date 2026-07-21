@@ -21,7 +21,11 @@ import {
     OPEN_PROJECTS_GROUP_ID,
 } from '../constants';
 import { getFavoriteProjectsInOrder } from '../projects/favoriteProjectOrder';
-import { buildDashboardSearchCatalog, serializeDashboardSearchCatalog } from './dashboardViewModel';
+import {
+    buildDashboardSearchCatalog,
+    buildWorkspaceDashboardSearchCatalog,
+    serializeDashboardSearchCatalog,
+} from './dashboardViewModel';
 import * as Icons from './webviewIcons';
 import type { ActiveAiSessionViewModel, AiSessionTabId } from '../aiSessions/types';
 
@@ -71,7 +75,8 @@ export function getStewardContent(
     webview: vscode.Webview,
     groups: Group[],
     infos: StewardInfos,
-    isSidebar: boolean = false
+    isSidebar: boolean = false,
+    workspaceCards?: WorkspaceCardViewModel[],
 ): string {
     var stylesPath = getMediaResource(context, webview, 'styles.css');
     var fittyPath = getMediaResource(context, webview, 'fitty.min.js');
@@ -99,11 +104,15 @@ export function getStewardContent(
         'webviewFilterScripts.js'
     );
 
-    var openProjects = infos.openProjects || [];
+    var openProjects = workspaceCards ? [] : infos.openProjects || [];
     var customCss = infos.config.get('customCss') || '';
     var allGroupsCollapsed = !!infos.openProjectsGroupCollapsed;
-    var searchCatalog = serializeDashboardSearchCatalog(buildDashboardSearchCatalog(groups, openProjects, infos.todoSearchItems || []));
-    var openProjectsContent = getOpenProjectsGroupContent(openProjects, infos.openProjectsGroupCollapsed, infos);
+    var searchCatalog = serializeDashboardSearchCatalog(workspaceCards
+        ? buildWorkspaceDashboardSearchCatalog(groups, workspaceCards, infos.todoSearchItems || [])
+        : buildDashboardSearchCatalog(groups, openProjects, infos.todoSearchItems || []));
+    var openProjectsContent = workspaceCards
+        ? getOpenWorkspacesGroupContent(workspaceCards, infos.openProjectsGroupCollapsed)
+        : getOpenProjectsGroupContent(openProjects, infos.openProjectsGroupCollapsed, infos);
 
     return `
 <!DOCTYPE html>
@@ -274,7 +283,7 @@ export function getCurrentWorkspaceGroupContent(
     card: WorkspaceCardViewModel | null,
     hasOtherWindows: boolean = false
 ): string {
-    const currentCard = card && card.kind === 'current' && card.roots.length ? card : null;
+    const currentCard = card && card.kind === 'current' ? card : null;
     return `
 <div class="group steward-section open-current-workspace-group ${currentCard ? '' : 'no-projects'}" data-group-id="${OPEN_CURRENT_WORKSPACE_GROUP_ID}" data-virtual-group data-system-group="${OPEN_CURRENT_WORKSPACE_GROUP_ID}">
     <div class="group-title steward-section-header steward-group-header">
@@ -288,13 +297,40 @@ export function getCurrentWorkspaceGroupContent(
 </div>`;
 }
 
+export function getOpenWorkspacesGroupContent(
+    cards: WorkspaceCardViewModel[],
+    collapsed: boolean,
+): string {
+    const current = (cards || []).find(card => card.kind === 'current') || null;
+    const navigationCards = (cards || []).filter(card => card.kind === 'navigation');
+    const currentSection = getCurrentWorkspaceGroupContent(current, navigationCards.length > 0);
+    if (!navigationCards.length) {
+        return currentSection;
+    }
+    return `${currentSection}
+<div class="group steward-section open-other-windows-group ${collapsed ? 'collapsed' : ''}" data-group-id="${OPEN_PROJECTS_GROUP_ID}" data-virtual-group data-system-group="${OPEN_PROJECTS_GROUP_ID}">
+    <div class="group-title steward-section-header steward-group-header">
+        <span class="group-title-text" data-action="collapse">
+            <span class="collapse-icon" title="Open/Collapse Group">${Icons.collapse}</span>
+            ${OPEN_OTHER_WINDOWS_GROUP_NAME}
+        </span>
+        <span class="group-title-badge">Live</span>
+    </div>
+    <div class="group-list">
+        <div class="drop-signal"></div>
+        ${navigationCards.map(getWorkspaceCardDiv).join('\n')}
+    </div>
+</div>`;
+}
+
 function getWorkspaceCardDiv(card: WorkspaceCardViewModel): string {
     const roots = card.roots.slice().sort((left, right) => left.ordinal - right.ordinal);
     const rootCount = roots.length;
     const workspaceName = escapeAttribute(sanitizeProjectName(card.name) || 'Workspace');
     const environmentLabel = escapeAttribute(sanitizeProjectName(card.environmentLabel) || 'Local');
     const folderLabel = `${rootCount} folder${rootCount === 1 ? '' : 's'}`;
-    const aiSessions = card.aiSessions;
+    const isCurrent = card.kind === 'current';
+    const aiSessions = isCurrent ? card.aiSessions : undefined;
     const aiSessionCount = aiSessions?.aiSessionCount || 0;
     const activeSessionCount = aiSessions?.activeSessionCount || 0;
     const attentionCount = card.attentionCount || 0;
@@ -311,16 +347,18 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel): string {
         }${attentionCount ? `<b class="ai-session-attention-count" aria-label="${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention">${attentionCount}</b>` : ''
         }</span>`
         : '';
-    const rootTags = roots.map(root =>
+    const rootTags = isCurrent ? roots.map(root =>
         `<span class="workspace-root-tag" data-workspace-root-id="${escapeAttribute(root.id)}">${escapeAttribute(sanitizeProjectName(root.name) || 'Folder')}</span>`
-    ).join('');
-    const sessionSection = getAiSessionsDiv(getWorkspaceAiSessionSurface(card), {
-        workspaceRoots: roots,
-        showRootChips: rootCount > 1,
-    });
+    ).join('') : '';
+    const sessionSection = isCurrent
+        ? getAiSessionsDiv(getWorkspaceAiSessionSurface(card), {
+            workspaceRoots: roots,
+            showRootChips: rootCount > 1,
+        })
+        : '';
 
     return `<div class="project-container" data-nodrag>
-    <div class="workspace-card project steward-item-card" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="current" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" data-open-project data-current-workspace data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
+    <div class="workspace-card project steward-item-card" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${isCurrent ? 'data-open-project data-current-workspace' : 'data-workspace-navigation data-other-workspace'} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
         <div class="project-aura"></div>
         <div class="project-border steward-item-accent"></div>
         <div class="fitty-container project-title-row">
@@ -328,7 +366,7 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel): string {
             <h2 class="project-header">${workspaceName}</h2>
         </div>
         <p class="project-description workspace-metadata">${environmentLabel} · ${folderLabel}</p>
-        <div class="workspace-root-tags" aria-label="Workspace folders">${rootTags}</div>
+        ${isCurrent ? `<div class="workspace-root-tags" aria-label="Workspace folders">${rootTags}</div>` : ''}
         ${badge}
         ${sessionSection}
     </div>

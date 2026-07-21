@@ -5,7 +5,7 @@ import { randomBytes } from 'crypto';
 import { existsSync, statSync } from 'fs';
 import * as path from 'path';
 import { Project, GroupOrder, ProjectRemoteType, StewardInfos, ProjectOpenType, ReopenStewardReason, AiSessionProviderId, isAiSessionProviderId } from './models';
-import { getAiSessionsDiv, getProjectSearchText, getProjectsPanelContent, getStewardContent } from './webview/webviewContent';
+import { getProjectsPanelContent, getStewardContent } from './webview/webviewContent';
 import { USER_CANCELED, RelevantExtensions, REOPEN_KEY, WSL_DEFAULT_REGEX, OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY } from './constants';
 
 import ColorService from './services/colorService';
@@ -49,7 +49,6 @@ import { getAiSessionComparableCwd as getProviderAiSessionComparableCwd, getAiSe
 import { getAiSessionIdsForCwd } from './aiSessions/pendingTerminals';
 import { getAiSessionTerminalCandidates } from './aiSessions/terminalCandidates';
 import { AiSessionReadCoordinator } from './aiSessions/readCoordinator';
-import { createOpenProjectAiSessionViewModelBuilder } from './aiSessions/viewModels';
 import AiSessionTerminalService from './aiSessions/terminalService';
 import AiSessionTerminalBindingStore from './aiSessions/terminalBindingStore';
 import { readAiSessionRuntimeConfiguration } from './aiSessions/runtimeConfiguration';
@@ -69,7 +68,7 @@ import {
 import { TmuxRuntimeBackend } from './aiSessions/tmuxRuntimeBackend';
 import { TmuxFocusedRuntimeMonitor } from './aiSessions/tmuxFocusedRuntimeMonitor';
 import { withTmuxCreationLock } from './aiSessions/tmuxCreationLock';
-import type { AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionService, AiSessionTerminalEntry, AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './aiSessions/types';
+import type { AiSessionBatchArchiveCompletedMessage, AiSessionProvider, AiSessionService, AiSessionTerminalEntry, AiSessionsUpdatedMessage, WorkspaceAiSessionActionTarget } from './aiSessions/types';
 import { AiSessionDashboardController } from './aiSessions/dashboardController';
 import { AiSessionCommandController } from './aiSessions/commandController';
 import { AiSessionCreationController } from './aiSessions/creationController';
@@ -87,7 +86,13 @@ import type {
     AiSessionRuntimeLifecycleCandidate,
 } from './aiSessions/attentionController';
 import { AiSessionProjectHydrationController } from './aiSessions/projectHydrationController';
-import { getLastPartOfPath, isUriString, parsePathAsUri } from './projects/openProjectService';
+import {
+    getLastPartOfPath,
+    getOpenProjectsFromWorkspace,
+    getOpenProjectUri as resolveOpenProjectUri,
+    isUriString,
+    parsePathAsUri,
+} from './projects/openProjectService';
 import { getWorkspacePath as resolveWorkspacePath } from './projects/workspaceHelpers';
 import RemoteProjectResolver from './projects/remoteProjectResolver';
 import GitRepositoryDetector from './projects/gitRepositoryDetector';
@@ -102,7 +107,6 @@ import { ProjectOpenController } from './projects/projectOpenController';
 import { ProjectOrderController } from './projects/projectOrderController';
 import { ProjectPromptController } from './projects/projectPromptController';
 import { ProjectRemovalController } from './projects/projectRemovalController';
-import OpenProjectBridgeClient from './openProjects/bridgeClient';
 import { SidebarStewardViewProvider } from './dashboard/viewProvider';
 import { getStewardConfiguration } from './dashboard/configuration';
 import { DashboardCommandRegistration } from './dashboard/commandRegistration';
@@ -115,12 +119,14 @@ import { createDashboardMessageRouter } from './dashboard/messageRouter';
 import { DashboardRuntimeController } from './dashboard/runtimeController';
 import { DashboardStartupController, settleMigration } from './dashboard/startupController';
 import { getDashboardWebviewOptions } from './dashboard/webviewOptions';
-import { OpenProjectDashboardController } from './openProjects/dashboardController';
-import { OpenProjectWorkspaceController } from './openProjects/workspaceController';
+import OpenWorkspaceBridgeClient from './openWorkspaces/bridgeClient';
+import { OpenWorkspaceDashboardController } from './openWorkspaces/dashboardController';
+import { OpenWorkspaceController } from './openWorkspaces/workspaceController';
 import { WorkspaceContextResolver } from './workspaces/contextResolver';
 import { WorkspacePrimaryRootStore } from './workspaces/primaryRootStore';
+import { WorkspaceSessionHydrationController } from './workspaces/sessionHydrationController';
 import type { OpenWorkspace } from './workspaces/types';
-import { buildDashboardSearchCatalog } from './webview/dashboardViewModel';
+import { buildWorkspaceDashboardSearchCatalog } from './webview/dashboardViewModel';
 
 const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
 const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
@@ -244,7 +250,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
     const projectMutationController = new ProjectMutationController({
         getCurrentWorkspacePath: () => resolveWorkspacePath(vscode.workspace.workspaceFile, vscode.workspace.workspaceFolders),
-        getOpenProjectUri: projectId => openProjectWorkspaceController.getOpenProjectUri(projectId),
+        getOpenProjectUri: projectId => resolveOpenProjectUri(
+            projectId,
+            vscode.workspace.workspaceFile,
+            vscode.workspace.workspaceFolders,
+        ),
         getCurrentProjectDetailsForSave: () => currentProjectDetailsResolver.getCurrentProjectDetailsForSave(),
         getProjectDetailsForSave: uri => currentProjectDetailsResolver.getProjectDetailsForSave(uri),
         getProjectsFlat: () => projectService.getProjectsFlat(),
@@ -455,12 +465,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         workspaceName: vscode.workspace.name,
         remoteName: vscode.env.remoteName,
     });
+    const workspaceSessionHydrationController = new WorkspaceSessionHydrationController<vscode.Terminal>({
+        providers: aiSessionProviders,
+        readCoordinator: aiSessionReadCoordinator,
+        incrementalScanMaxFiles: AI_SESSION_INCREMENTAL_SCAN_MAX_FILES,
+        getRefreshReason: () => currentAiSessionRefreshReason,
+        getSessionComparableCwd: (providerId, session) =>
+            getProviderAiSessionComparableCwd(providerId, session, aiSessionProviders),
+        getPinnedSessions: () => aiSessionPinController.getAll(),
+        getAliases: () => aiSessionAliasController.getAll(),
+        getActiveProvider: scopeIdentity => aiSessionProjectStateStore.getActiveProviders()[scopeIdentity],
+        getExpanded: scopeIdentity => aiSessionProjectStateStore.getExpandedProjects().has(scopeIdentity),
+        getActiveRuntimes: () => aiSessionRuntimeCoordinator.getActive(),
+        getPendingRuntimes: () => aiSessionRuntimeCoordinator.getPending(),
+        getExecutionSnapshot: () => aiSessionExecutionController.getSnapshot(),
+        getFocusedIdentity: () => getFocusedAiSessionRuntimeIdentity(),
+        logDiagnostic: logAiSessionDiagnostic,
+    });
     const providerDirectoryCapability = new ProviderDirectoryCapabilityProbe({
         resolveExecutable: commandName => resolveAiProviderExecutable(commandName),
         run: (executable, args, options) => runBoundedAiProviderHelp(executable, args, options),
     }, message => outputChannel.appendLine(message));
     const aiSessionCommandController = new AiSessionCommandController({
         getOpenProjects,
+        getWorkspaceTarget: getCurrentWorkspaceActionTarget,
         getProjectKey: getOpenProjectAiSessionKey,
         getOpenWorkspace: getCurrentOpenWorkspace,
         getActiveEditorUri: () => vscode.window.activeTextEditor?.document.uri,
@@ -550,12 +578,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const aiSessionCreationController = new AiSessionCreationController({
         isProviderId: isAiSessionProviderId,
         getOpenProjects,
+        getWorkspaceTarget: getCurrentWorkspaceActionTarget,
         pickProvider: pickAiSessionProvider,
         getProviderLabel: getAiSessionProviderLabel,
         getProvider: getRegisteredAiSessionProvider,
         resolveDirectoryScope: (project, providerId, explicitRootId) =>
             aiSessionCommandController.resolveDirectoryScope(
                 project, providerId, undefined, explicitRootId
+            ),
+        resolveWorkspaceDirectoryScope: (target, providerId, explicitRootId) =>
+            aiSessionCommandController.resolveWorkspaceDirectoryScope(
+                target.workspace, providerId, undefined, explicitRootId
             ),
         rememberDirectoryScope: async directoryScope => {
             try {
@@ -595,6 +628,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getProvider: getRegisteredAiSessionProvider,
         getProviderLabel: getAiSessionProviderLabel,
         getOpenProjects,
+        getWorkspaceTarget: getCurrentWorkspaceActionTarget,
         getProjectSessions: (project, providerId) => getProviderProjectAiSessions(project, providerId, aiSessionProviders),
         getRuntimeById: getAiSessionRuntimeById,
         refreshRuntimeGuard: () => aiSessionRuntimeCoordinator.refreshForHost(true),
@@ -625,6 +659,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const aiSessionTerminalCommandController = new AiSessionTerminalCommandController<vscode.Terminal>({
         isProviderId: isAiSessionProviderId,
         getOpenProjects,
+        getWorkspaceTarget: getCurrentWorkspaceActionTarget,
         getProjectSessions: (project, providerId) => getProviderProjectAiSessions(project, providerId, aiSessionProviders),
         runtimeCoordinator: aiSessionRuntimeCoordinator,
         getWorkspaceScopeIdentity: () => getCurrentOpenWorkspace()?.scopeIdentity || null,
@@ -668,11 +703,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
     const aiSessionResumeController = new AiSessionResumeController<vscode.Terminal>({
         getOpenProjects,
+        getWorkspaceTarget: getCurrentWorkspaceActionTarget,
         getProvider: getRegisteredAiSessionProvider,
         getProjectSession: (project, providerId, sessionId) => getProviderProjectAiSessions(project, providerId, aiSessionProviders).find(session => session.id === sessionId),
         resolveDirectoryScope: (project, session, providerId, explicitRootId) =>
             aiSessionCommandController.resolveDirectoryScope(
                 project, providerId, session, explicitRootId
+            ),
+        resolveWorkspaceDirectoryScope: (target, session, providerId, explicitRootId) =>
+            aiSessionCommandController.resolveWorkspaceDirectoryScope(
+                target.workspace, providerId, session, explicitRootId
             ),
         rememberDirectoryScope: async directoryScope => {
             try {
@@ -883,7 +923,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }, 0);
     const aiSessionExecutionInterval = setInterval(() => { aiSessionExecutionController.evaluate(); }, 1_000);
     setTimeout(() => { aiSessionExecutionController.evaluate(); }, 0);
-    const openProjectAiSessionViewModelBuilder = createOpenProjectAiSessionViewModelBuilder();
     const aiSessionDashboardController = new AiSessionDashboardController({
         providerIds: aiSessionProviders.map(provider => provider.id),
         isVisible: () => provider.visible,
@@ -891,8 +930,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         watchSessionChanges: (providerId, onDidChange) => getRegisteredAiSessionProvider(providerId).service.watchSessionChanges(onDidChange),
         getGroups: () => projectService.getGroups(),
         getTodoSearchItems: () => todoService.getSearchItems(),
-        getCards: getOpenProjectCards,
-        getOpenProjectAiSessionViewModel,
+        getCards: getOpenWorkspaceCards,
         nextSequence: () => ++aiSessionUpdateSequence,
         postMessage: message => provider.postMessage(message),
         refresh: refreshStewardViews,
@@ -1077,13 +1115,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 let projectId = e.projectId as string;
                 let projectOpenType = e.projectOpenType as ProjectOpenType;
 
-                let project = projectService.getProject(projectId) || getOpenProjects().find(p => p.id === projectId);
-                let isProjectNavigation = false;
-                if (project === null || project === undefined) {
-                    getOpenProjectCards();
-                    project = openProjectDashboardController.getNavigationCard(projectId);
-                    isProjectNavigation = project !== null && project !== undefined;
+                const navigationWorkspace = getOpenWorkspaceCards()
+                    .find(card => card.id === projectId && card.kind === 'navigation');
+                if (navigationWorkspace) {
+                    refreshStewardViews('open-workspace-navigation-pending-capability');
+                    return;
                 }
+
+                let project = projectService.getProject(projectId) || getOpenProjects().find(p => p.id === projectId);
                 if (project == null) {
                     vscode.window.showWarningMessage("Selected Project not found.");
                     return;
@@ -1094,7 +1133,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     aiSessionAttentionController.getEffectiveAggregate()
                 );
                 await acknowledgeAiSessionAttentionEventIds(attentionProject.aiSessionAttentionEventIds);
-                await projectOpenController.openProject(project, isProjectNavigation ? ProjectOpenType.Default : projectOpenType);
+                await projectOpenController.openProject(project, projectOpenType);
             },
             'add-project': async e => {
                 await projectMutationController.addProject(e.groupId as string);
@@ -1182,20 +1221,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 });
                 refreshStewardViews(typeof e.reason === 'string' ? e.reason.slice(0, 256) : 'webview-requested');
             },
-            'open-projects-rendered': e => {
+            'open-workspaces-rendered': e => {
                 logOpenProjectDiagnostic('Renderer', {
-                    event: 'rendered',
+                    event: 'open-workspaces-rendered',
                     semanticRevision: typeof e.semanticRevision === 'string'
                         ? e.semanticRevision.slice(0, 128)
                         : 'invalid',
-                    projectCount: Number.isSafeInteger(e.projectCount) && e.projectCount >= 0
-                        ? e.projectCount as number
+                    currentWorkspaceCount: (e.currentWorkspaceCount === 0 || e.currentWorkspaceCount === 1)
+                        ? e.currentWorkspaceCount as number
                         : -1,
-                    renderedProjectCount: Number.isSafeInteger(e.renderedProjectCount) && e.renderedProjectCount >= 0
-                        ? e.renderedProjectCount as number
-                        : -1,
-                    renderedNavigationProjectCount: Number.isSafeInteger(e.renderedNavigationProjectCount) && e.renderedNavigationProjectCount >= 0
-                        ? e.renderedNavigationProjectCount as number
+                    navigationWorkspaceCount: Number.isSafeInteger(e.navigationWorkspaceCount)
+                        && e.navigationWorkspaceCount >= 0
+                        ? e.navigationWorkspaceCount as number
                         : -1,
                     hasOtherWindowsGroup: e.hasOtherWindowsGroup === true,
                 });
@@ -1260,7 +1297,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             webview,
             projectService.getGroups(),
             stewardInfos,
-            true
+            true,
+            getOpenWorkspaceCards(),
         ),
         renderError: getErrorContent,
         onMessage: dashboardMessageRouter,
@@ -1274,32 +1312,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         logError,
     });
-    let openProjectBridgeClient: OpenProjectBridgeClient;
-    const openProjectWorkspaceController = new OpenProjectWorkspaceController({
-        getWorkspaceFile: () => vscode.workspace.workspaceFile,
-        getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
-        getSavedProjects: () => projectService.getProjectsFlat(),
-        getCurrentRemoteName: () => vscode.env.remoteName,
-        isFolderGitRepo,
-        getActiveSessionCounts: () => {
-            try {
-                const counts = new Map<string, number>();
-                for (const project of getOpenProjects()) {
-                    const runningSessionCount = (project.activeAiSessions || [])
-                        .filter(session => session.executionState === 'running').length;
-                    if (runningSessionCount > 0) {
-                        counts.set(project.id, runningSessionCount);
-                    }
-                }
-                return counts;
-            } catch (error) {
-                // Session runtime controllers may not be fully wired during initial publication;
-                // counts are refreshed on the next publish triggered by session changes.
-                logError('Failed to resolve open project active session counts.', error);
-                return new Map<string, number>();
-            }
-        },
-        publishRecords: (records, followsFocusEvent) => openProjectBridgeClient.publish(records, followsFocusEvent),
+    let openWorkspaceBridgeClient: OpenWorkspaceBridgeClient;
+    const openWorkspaceController = new OpenWorkspaceController({
+        getWorkspace: getCurrentOpenWorkspace,
+        publishWorkspace: (workspace, followsFocusEvent) =>
+            openWorkspaceBridgeClient.publish(workspace, followsFocusEvent),
     });
     const dashboardRuntimeController = new DashboardRuntimeController({
         isVisible: () => provider.visible,
@@ -1307,7 +1324,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         logDashboardDiagnostic,
         executeCommand: (command, ...args) => vscode.commands.executeCommand(command, ...args),
         viewType: SidebarStewardViewProvider.viewType,
-        publishOpenProjects: () => openProjectWorkspaceController.publish(),
+        publishOpenProjects: () => openWorkspaceController.publish(),
         getOpenProjects,
         syncProjectColorToCurrentWindow: project => projectWindowColorService.syncProjectColorToCurrentWindow(project),
         postMessage: message => provider.postMessage(message),
@@ -1315,29 +1332,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         refreshAiSessionRuntimes: (_reason, force) => aiSessionRuntimeCoordinator.refreshForHost(force),
         logAiSessionRuntimeFailure,
     });
-    const openProjectDashboardController = new OpenProjectDashboardController({
-        getOpenProjects,
+    const openWorkspaceDashboardController = new OpenWorkspaceDashboardController({
+        getCurrentWorkspace: getCurrentOpenWorkspace,
+        getCurrentWorkspaceAiSessions: workspace => workspaceSessionHydrationController.hydrate(workspace),
         getGroups: () => projectService.getGroups(),
         getTodoSearchItems: () => todoService.getSearchItems(),
-        getStewardInfos: () => stewardInfos,
+        getCollapsed: () => Boolean(groupCollapseController.getOpenProjectsCollapsed()),
         getAttentionAggregate: () => aiSessionAttentionController.getEffectiveAggregate(),
-        getBridgeInstanceId: () => openProjectBridgeClient.instanceId,
+        getBridgeInstanceId: () => openWorkspaceBridgeClient.instanceId,
         postMessage: message => provider.postMessage(message),
         refresh: refreshStewardViews,
         isVisible: () => provider.visible,
         logDiagnostic: logOpenProjectDiagnostic,
         logError,
     });
-    openProjectBridgeClient = new OpenProjectBridgeClient(
-        // Session runtime controllers are not fully wired yet; counts are added on
-        // the next publish triggered by session changes or the refresh heartbeat.
-        openProjectWorkspaceController.getOpenProjectRecords(false),
+    openWorkspaceBridgeClient = new OpenWorkspaceBridgeClient(
+        openWorkspaceController.getPublication(),
         aggregate => {
-            if (openProjectDashboardController.setAggregate(aggregate)) {
-                postOpenProjectsUpdated();
+            if (openWorkspaceDashboardController.setAggregate(aggregate)) {
+                postOpenWorkspacesUpdated();
             }
         },
-        error => logError('Open project bridge unavailable; showing current-window projects only.', error),
+        error => logError('Open workspace bridge unavailable; showing this window only.', error),
         {
             refreshProjects: () => openProjectWorkspaceController.getOpenProjectRecords(),
             reportDiagnostic: event => logOpenProjectDiagnostic('Workspace', event),
@@ -1434,7 +1450,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }));
     context.subscriptions.push(activeAiSessionTerminalHighlighter);
     context.subscriptions.push(tmuxFocusedRuntimeMonitor);
-    context.subscriptions.push(openProjectBridgeClient);
+    context.subscriptions.push(openWorkspaceBridgeClient);
     context.subscriptions.push(aiSessionAttentionBridgeClient);
     context.subscriptions.push({
         dispose: () => {
@@ -1453,7 +1469,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         get config() { return getStewardConfiguration() },
         get otherStorageHasData() { return projectService.otherStorageHasData() },
         get favoritesGroupCollapsed() { return groupCollapseController.getFavoritesCollapsed() },
-        get openProjects() { return getOpenProjectCards() },
+        get openProjects() { return getOpenProjects() },
         get openProjectsGroupCollapsed() { return groupCollapseController.getOpenProjectsCollapsed() },
         get todoSearchItems() { return todoService.getSearchItems() },
     };
@@ -1469,7 +1485,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return { projects, todos };
         },
         refreshDashboard: () => provider.refresh(),
-        publishOpenProjects: () => openProjectWorkspaceController.publish(),
+        publishOpenProjects: () => openWorkspaceController.publish(),
         showInformationMessage: message => vscode.window.showInformationMessage(message),
         showErrorMessage: message => vscode.window.showErrorMessage(message),
         logError,
@@ -1485,7 +1501,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         checkDataMigration: openStewardAfterMigrate => dashboardStartupController.checkDataMigration(openStewardAfterMigrate),
         applyProjectColorToCurrentWindow,
         refresh: refreshStewardViews,
-        publishOpenProjects: followsFocusEvent => openProjectWorkspaceController.publish(followsFocusEvent),
+        publishOpenProjects: followsFocusEvent => openWorkspaceController.publish(followsFocusEvent),
         evaluateAiSessionAttention: () => runSafeAiSessionRuntimeLifecycleTask(
             'evaluate-attention-window-state', evaluateAiSessionAttention
         ),
@@ -1798,8 +1814,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         dashboardRuntimeController.refresh(reason);
     }
 
-    function postOpenProjectsUpdated() {
-        openProjectDashboardController.postUpdated();
+    function postOpenWorkspacesUpdated() {
+        openWorkspaceDashboardController.postUpdated();
     }
 
     function postAiSessionAttentionProjectsUpdated(projects = aiSessionAttentionController.getProjectSummaries()) {
@@ -1873,7 +1889,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 type: 'todo-panel-updated',
                 version: 1,
                 html,
-                searchCatalog: buildDashboardSearchCatalog(projectService.getGroups(), getOpenProjectCards(), todoService.getSearchItems()),
+                searchCatalog: buildWorkspaceDashboardSearchCatalog(
+                    projectService.getGroups(),
+                    getOpenWorkspaceCards(),
+                    todoService.getSearchItems(),
+                ),
             });
     }
 
@@ -1913,7 +1933,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function getOpenProjects(): Project[] {
-        const hydrated = aiSessionProjectHydrationController.hydrate(openProjectWorkspaceController.getRawOpenProjects());
+        const rawOpenProjects = getOpenProjectsFromWorkspace(
+            vscode.workspace.workspaceFile,
+            vscode.workspace.workspaceFolders,
+            {
+                savedProjects: projectService.getProjectsFlat(),
+                currentRemoteName: vscode.env.remoteName,
+                isFolderGitRepo,
+            },
+        );
+        const hydrated = aiSessionProjectHydrationController.hydrate(rawOpenProjects);
         return applyAiSessionRuntimeProjection({
             projects: hydrated,
             providers: AI_SESSION_PROVIDER_DEFINITIONS,
@@ -1928,22 +1957,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         });
     }
 
-    function getOpenProjectCards(): Project[] {
-        return openProjectDashboardController.getCards();
+    function getOpenWorkspaceCards() {
+        return openWorkspaceDashboardController.getCards();
+    }
+
+    function getCurrentWorkspaceActionTarget(cardId: string): WorkspaceAiSessionActionTarget | null {
+        const workspace = getCurrentOpenWorkspace();
+        if (!workspace) {
+            return null;
+        }
+        const card = getOpenWorkspaceCards()
+            .find(candidate => candidate.kind === 'current' && candidate.id === cardId);
+        return card?.aiSessions
+            ? { cardId: card.id, workspace, sessions: card.aiSessions }
+            : null;
     }
 
     function getAiSessionsUpdatedMessage(): AiSessionsUpdatedMessage {
         return aiSessionDashboardController.getUpdatedMessage();
-    }
-
-    function getOpenProjectAiSessionViewModel(project: Project): OpenProjectAiSessionViewModel {
-        return openProjectAiSessionViewModelBuilder.build({
-            project,
-            providers: getRegisteredAiSessionProviders(),
-            getProjectKey: getOpenProjectAiSessionKey,
-            getSearchText: getProjectSearchText,
-            renderSessionSection: getAiSessionsDiv,
-        });
     }
 
     function getAiSessionPinKey(providerId: AiSessionProviderId, sessionId: string): string {

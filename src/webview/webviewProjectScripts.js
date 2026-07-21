@@ -222,6 +222,64 @@ function applyOpenProjectsUpdate(message) {
     return true;
 }
 
+function applyOpenWorkspacesUpdate(message) {
+    if (!message
+        || message.type !== 'open-workspaces-updated'
+        || message.version !== 2
+        || typeof message.semanticRevision !== 'string'
+        || !message.semanticRevision
+        || (message.currentWorkspaceCount !== 0 && message.currentWorkspaceCount !== 1)
+        || !Number.isSafeInteger(message.navigationWorkspaceCount)
+        || message.navigationWorkspaceCount < 0
+        || typeof message.html !== 'string'
+        || typeof normalizeDashboardSearchCatalog !== 'function'
+        || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog
+        || message.searchCatalog.version !== 2) {
+        return false;
+    }
+    var wrapper = document.querySelector('.sticky-groups-wrapper');
+    if (!wrapper) return false;
+    var previousHtml = wrapper.innerHTML;
+    wrapper.innerHTML = message.html;
+    if (!isOpenWorkspacesUpdateDomConsistent(message)) {
+        wrapper.innerHTML = previousHtml;
+        return false;
+    }
+    if (window.__projectStewardDashboard) {
+        window.__projectStewardDashboard.replaceSearchCatalog(message.searchCatalog);
+    }
+    if (typeof restoreAiSessionTabsFromState === 'function') {
+        restoreAiSessionTabsFromState(document, window.vscode);
+    }
+    if (typeof window.__projectStewardSyncCollapseButton === 'function') {
+        window.__projectStewardSyncCollapseButton();
+    }
+    return true;
+}
+
+function getOpenWorkspacesUpdateDomState() {
+    return {
+        currentWorkspaceCount: document.querySelectorAll(
+            '.sticky-groups-wrapper .workspace-card[data-current-workspace][data-workspace-scope-identity]'
+        ).length,
+        navigationWorkspaceCount: document.querySelectorAll(
+            '.sticky-groups-wrapper .workspace-card[data-other-workspace][data-workspace-navigation-identity]'
+        ).length,
+        hasOtherWindowsGroup: document.querySelectorAll(
+            '.sticky-groups-wrapper .open-other-windows-group'
+        ).length > 0,
+    };
+}
+
+function isOpenWorkspacesUpdateDomConsistent(message) {
+    var rendered = getOpenWorkspacesUpdateDomState();
+    return rendered.currentWorkspaceCount === message.currentWorkspaceCount
+        && rendered.navigationWorkspaceCount === message.navigationWorkspaceCount
+        && (message.navigationWorkspaceCount === 0 || rendered.hasOtherWindowsGroup)
+        && message.searchCatalog.openWorkspaces.length
+            === message.currentWorkspaceCount + message.navigationWorkspaceCount;
+}
+
 function getOpenProjectsUpdateCatalogCounts(searchCatalog) {
     var openProjects = searchCatalog && Array.isArray(searchCatalog.openProjects)
         ? searchCatalog.openProjects
@@ -562,6 +620,11 @@ function initProjects() {
         }
 
         if (projectDiv.hasAttribute("data-project-navigation")) {
+            openProject(dataId, ProjectOpenType.Default);
+            return;
+        }
+
+        if (projectDiv.hasAttribute("data-workspace-navigation")) {
             openProject(dataId, ProjectOpenType.Default);
             return;
         }
@@ -1718,6 +1781,24 @@ function initProjects() {
             });
             return;
         }
+        if (message && message.type === 'open-workspaces-updated') {
+            if (!applyOpenWorkspacesUpdate(message)) {
+                requestFullRefresh('invalid-open-workspaces-update');
+                return;
+            }
+            syncActiveAiSessionTerminalDom();
+            updateStickyGroupHeaderOffset();
+            var renderedOpenWorkspaceState = getOpenWorkspacesUpdateDomState();
+            window.vscode.postMessage({
+                type: 'open-workspaces-rendered',
+                version: 2,
+                semanticRevision: message.semanticRevision,
+                currentWorkspaceCount: renderedOpenWorkspaceState.currentWorkspaceCount,
+                navigationWorkspaceCount: renderedOpenWorkspaceState.navigationWorkspaceCount,
+                hasOtherWindowsGroup: renderedOpenWorkspaceState.hasOtherWindowsGroup,
+            });
+            return;
+        }
         if (message && message.type === 'open-projects-updated') {
             if (!applyOpenProjectsUpdate(message)) {
                 requestFullRefresh('invalid-open-projects-update');
@@ -1804,11 +1885,13 @@ function initProjects() {
     }
 
     function applyAiSessionsUpdate(message) {
-        if (message.version !== 1
+        if (message.version !== 2
             || typeof message.sequence !== 'number'
-            || !Array.isArray(message.openProjects)
+            || (message.currentWorkspaceCount !== 0 && message.currentWorkspaceCount !== 1)
+            || typeof message.html !== 'string'
             || typeof normalizeDashboardSearchCatalog !== 'function'
-            || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog) {
+            || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog
+            || message.searchCatalog.version !== 2) {
             requestFullRefresh('unsupported-ai-session-message');
             return;
         }
@@ -1817,27 +1900,26 @@ function initProjects() {
             return;
         }
 
+        if (!applyWorkspaceUpdate({
+            type: 'workspace-updated',
+            version: 2,
+            currentWorkspaceCount: message.currentWorkspaceCount,
+            html: message.html,
+        })) {
+            requestFullRefresh('invalid-ai-session-workspace-update');
+            return;
+        }
+
         latestAiSessionUpdateSequence = message.sequence;
-
-        if (batchAiSessionState.projectId && !findOpenProjectDiv(batchAiSessionState.projectId)) {
-            exitAiSessionBatchManagement();
-        }
-
-        for (var projectUpdate of message.openProjects) {
-            var projectDiv = findOpenProjectDiv(projectUpdate.projectId);
-            if (!projectDiv) {
-                if (projectUpdate.projectId === batchAiSessionState.projectId) {
-                    exitAiSessionBatchManagement();
-                }
-                requestFullRefresh('missing-open-project');
-                return;
-            }
-
-            if (!updateOpenProjectAiSessions(projectDiv, projectUpdate)) {
-                return;
+        if (batchAiSessionState.projectId) {
+            var projectDiv = findOpenProjectDiv(batchAiSessionState.projectId);
+            if (projectDiv) {
+                syncAiSessionBatchManagementDom(projectDiv);
+            } else {
+                exitAiSessionBatchManagement();
             }
         }
-
+        syncActiveAiSessionTerminalDom();
         updateStickyGroupHeaderOffset();
         if (window.__projectStewardDashboard) {
             window.__projectStewardDashboard.replaceSearchCatalog(message.searchCatalog);

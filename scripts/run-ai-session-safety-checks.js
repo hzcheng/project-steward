@@ -3821,6 +3821,145 @@ async function runAiSessionArchiveRuntimeChecks() {
     }, 'archive must revalidate after confirmation and perform no destructive action on a new collision');
 }
 
+async function runWorkspaceCardActionControllerIntegrationChecks() {
+    const workspace = {
+        navigationIdentity: 'navigation-workspace-card', scopeIdentity: 'scope-workspace-card',
+        kind: 'savedMultiRoot', displayName: 'Workspace Card',
+        navigationUri: 'file:///work/workspace.code-workspace', environment: 'local',
+        roots: [
+            { id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/web', ordinal: 0 },
+            { id: 'root-api', name: 'API', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 1 },
+        ],
+    };
+    const session = { id: 'session-card', name: 'Card Session', cwd: '/work/api' };
+    const target = {
+        cardId: '__currentWorkspace-card', workspace,
+        sessions: {
+            workspaceScopeIdentity: workspace.scopeIdentity,
+            workspaceNavigationIdentity: workspace.navigationIdentity,
+            activeProvider: 'codex', expanded: false,
+            providers: [{ id: 'codex', label: 'Codex', count: 1 }],
+            sessionsByProvider: { codex: [session] }, unavailableProviders: [],
+            aiSessionCount: 1, attentionCount: 0, defaultTab: 'sessions', activeSessions: [{
+                key: 'codex:active-card', provider: 'codex', sessionId: 'active-card', name: 'Active Card',
+                executionState: 'running', status: 'running', focused: false, needsAttention: false,
+                pending: false, backend: 'vscode', attached: true,
+            }],
+            activeSessionCount: 1, activeAttentionCount: 0,
+        },
+    };
+    let legacyProjectReads = 0;
+    const expandedWrites = [];
+    const providerWrites = [];
+    const commandController = new AiSessionCommandController({
+        getOpenProjects: () => { legacyProjectReads++; return []; },
+        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        getProjectKey: () => { throw new Error('must not select a root Project'); },
+        getOpenWorkspace: () => workspace,
+        getActiveEditorUri: () => ({ fsPath: '/work/web/file.ts' }),
+        isWorkspaceTrusted: () => true,
+        getProvider: () => ({ id: 'codex', label: 'Codex', commandName: 'codex' }),
+        getProviderDirectoryCapability: async () => ({ status: 'supported' }),
+        getPrimaryRootId: () => null,
+        pickWorkspaceRoot: async () => 'root-web',
+        isDirectory: () => true,
+        isProviderId: value => value === 'codex',
+        setExpanded: async (...args) => expandedWrites.push(args),
+        setActiveProvider: async (...args) => providerWrites.push(args),
+        togglePin: () => false, getAliases: () => ({}), saveAliases: () => undefined,
+        getOriginalName: () => null, getSessionKey: () => '', showInputBox: async () => undefined,
+        writeClipboard: async () => undefined, showInformationMessage: () => undefined,
+        showWarningMessage: () => undefined, refresh: () => undefined,
+    });
+    await commandController.toggleSessionsExpanded(target.cardId, true);
+    await commandController.selectProvider(target.cardId, 'codex');
+    assert.deepStrictEqual(expandedWrites, [[workspace.scopeIdentity, true]]);
+    assert.deepStrictEqual(providerWrites, [[workspace.scopeIdentity, 'codex']]);
+
+    const createRequests = [];
+    const creation = new AiSessionCreationController({
+        isProviderId: value => value === 'codex', getOpenProjects: () => { legacyProjectReads++; return []; },
+        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
+        getProvider: () => ({ label: 'Codex', terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: scope => ({ executable: 'codex', args: [], cwd: scope.primaryCwd }) }),
+        resolveDirectoryScope: () => { throw new Error('must not resolve a root Project'); },
+        resolveWorkspaceDirectoryScope: (resolved, providerId, rootId) =>
+            commandController.resolveWorkspaceDirectoryScope(resolved.workspace, providerId, undefined, rootId),
+        runtimeCoordinator: { create: async request => { createRequests.push(request); return { status: 'started', runtime: {} }; },
+            getActive: () => [], getPending: () => [] },
+        createPendingId: () => 'pending-workspace-card', showInputBox: async () => '',
+        showActiveTab: async () => undefined, announceStatus: async () => undefined,
+        showWarningMessage: async () => undefined, refresh: () => undefined,
+        getExistingSessionIdsForCwd: () => [], getPendingMarkerPath: () => '/tmp/card.marker',
+        scheduleNewSessionRefresh: () => undefined, nowMs: () => 1,
+    });
+    await creation.createSession(target.cardId, 'root-web');
+    assert.strictEqual(createRequests[0].identity.workspaceScopeIdentity, workspace.scopeIdentity);
+    assert.strictEqual(createRequests[0].projectName, workspace.displayName);
+
+    const resumeRequests = [];
+    const resume = new AiSessionResumeController({
+        getOpenProjects: () => { legacyProjectReads++; return []; },
+        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        getProvider: () => ({ label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: (_id, scope) => ({ executable: 'codex', args: [], cwd: scope.primaryCwd }) }),
+        getProjectSession: () => { throw new Error('must not select a root Project session'); },
+        resolveDirectoryScope: () => { throw new Error('must not resolve a root Project'); },
+        resolveWorkspaceDirectoryScope: (resolved, resolvedSession, providerId, rootId) =>
+            commandController.resolveWorkspaceDirectoryScope(resolved.workspace, providerId, resolvedSession, rootId),
+        runtimeCoordinator: { resume: async request => { resumeRequests.push(request); return { status: 'started', runtime: {} }; } },
+        getTerminalName: () => 'Codex: Card Session', getMarkerPath: () => '/tmp/card.marker',
+        showWarningMessage: () => undefined, refresh: () => undefined,
+        showActiveTab: async () => undefined, announceStatus: async () => undefined,
+    });
+    await resume.resumeProjectSession(target.cardId, 'codex', session.id);
+    assert.strictEqual(resumeRequests[0].identity.workspaceScopeIdentity, workspace.scopeIdentity);
+    assert.strictEqual(resumeRequests[0].projectName, workspace.displayName);
+
+    const focused = [];
+    const runtime = { identity: createTestAiSessionRuntimeIdentity('codex', '/work/api', {
+        sessionId: 'active-card', workspaceScopeIdentity: workspace.scopeIdentity,
+        workspaceNavigationIdentity: workspace.navigationIdentity,
+        workspaceRootHostPaths: ['/work/web', '/work/api'],
+    }), backend: 'vscode', state: 'active', markerPath: '/tmp/card.marker', runStartedAtMs: 1, attached: true,
+        terminal: { show() {}, dispose() {} } };
+    const terminalController = new AiSessionTerminalCommandController({
+        isProviderId: value => value === 'codex', getOpenProjects: () => { legacyProjectReads++; return []; },
+        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        getProjectSessions: () => { throw new Error('must not select root sessions'); },
+        getProjectCwd: () => { throw new Error('must not select a root cwd'); }, normalizePath: value => value,
+        runtimeCoordinator: { getById: () => runtime, getPending: () => [],
+            focus: async identity => focused.push(identity), detach: async () => undefined },
+        getWorkspaceScopeIdentity: () => workspace.scopeIdentity,
+        confirmRuntimeClose: async () => undefined, announceStatus: async () => undefined,
+        showErrorMessage: async () => undefined, getProviderLabel: () => 'Codex', refresh: () => undefined,
+    });
+    await terminalController.focusActive(target.cardId, 'codex', 'active-card');
+    assert.strictEqual(focused[0].workspaceScopeIdentity, workspace.scopeIdentity);
+
+    const archived = [];
+    const archive = new AiSessionArchiveController({
+        isProviderId: value => value === 'codex', getProvider: () => ({ label: 'Codex', service: {
+            archiveSession: id => { archived.push(id); return true; },
+        } }), getProviderLabel: () => 'Codex',
+        getOpenProjects: () => { legacyProjectReads++; return []; },
+        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        getProjectSessions: () => { throw new Error('must not select root sessions'); },
+        getRuntimeById: () => null, isRuntimeComplete: () => true, focusRuntime: () => undefined,
+        deleteRuntimeMarker: () => undefined, untrackRuntime: () => undefined,
+        deletePin: () => undefined, deleteAlias: () => undefined,
+        confirmSingleArchive: async () => 'Archive', confirmBatchArchive: async () => 'Archive',
+        showWarningMessage: () => undefined, showErrorMessage: () => undefined,
+        showInformationMessage: () => undefined, appendLine: () => undefined,
+        postCompletion: () => undefined, refresh: () => undefined,
+        syncActiveRuntime: () => undefined, logUnexpectedError: error => { throw error; },
+    });
+    await archive.archiveSessions(target.cardId, 'codex', [session.id]);
+    assert.deepStrictEqual(archived, [session.id]);
+    assert.strictEqual(legacyProjectReads, 0, 'v2 current-card actions must never select a member Project');
+}
+
 async function runAiSessionProjectHydrationControllerChecks() {
     let refreshReason = 'refresh';
     const codexSession = {
@@ -7150,9 +7289,10 @@ function runBatchAiSessionWebviewChecks() {
     const context = {
         normalizeDashboardSearchCatalog: value => value
             && Array.isArray(value.sessions)
-            && Array.isArray(value.openProjects)
             && Array.isArray(value.savedProjects)
             && Array.isArray(value.todos)
+            && ((value.version === 2 && Array.isArray(value.openWorkspaces))
+                || (value.version === undefined && Array.isArray(value.openProjects)))
             ? value
             : { sessions: [], openProjects: [], savedProjects: [], todos: [] },
         document: {
@@ -7604,28 +7744,24 @@ function runBatchAiSessionWebviewChecks() {
         provider: 'codex',
         sessionId: 'active-session',
     } });
-    const replacementActiveRow = createSessionRow('codex', 'active-session');
-    const replacementOtherRow = createSessionRow('codex', 'replacement-other');
-    projectA.replaceRowsOnNextUpdate([replacementActiveRow, replacementOtherRow]);
+    context.applyWorkspaceUpdate = message => message.type === 'workspace-updated'
+        && message.version === 2
+        && message.currentWorkspaceCount === 1
+        && typeof message.html === 'string';
     windowEventListeners.message({ data: {
         type: 'ai-sessions-updated',
-        version: 1,
+        version: 2,
         sequence: 1,
-        searchCatalog: { sessions: [], openProjects: [], savedProjects: [], todos: TODO_SEARCH_ITEMS },
-        openProjects: [{
-            projectId: 'project-a',
-            expanded: true,
-            aiSessionCount: 0,
-            sessionSectionHtml: '<div class="codex-sessions">replacement</div>',
-        }],
+        currentWorkspaceCount: 1,
+        html: '<div class="open-current-workspace-group"></div>',
+        searchCatalog: { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: TODO_SEARCH_ITEMS },
     } });
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(replacedSearchCatalog.todos)),
         TODO_SEARCH_ITEMS,
         'AI incremental rendering must preserve the non-empty TODO catalog replacement'
     );
-    assert.strictEqual(replacementActiveRow.hasAttribute('data-ai-session-active-terminal'), true);
-    assert.strictEqual(replacementOtherRow.hasAttribute('data-ai-session-active-terminal'), false);
+    assert.strictEqual(activeRow.hasAttribute('data-ai-session-active-terminal'), true);
 
     const manager = context.window.__projectStewardBatchAiSessions;
     manager.enter('project-a', 'codex');
@@ -7799,6 +7935,14 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(controllerSource.includes('scheduleRefresh('));
     assert.ok(controllerSource.includes('setWatchersActive('));
     assert.ok(controllerSource.includes('buildAiSessionsUpdatedMessage'));
+    assert.ok(!controllerSource.includes('openProjectCardKind'));
+    assert.ok(!controllerSource.includes('getOpenProjectAiSessionViewModel'));
+    const projectWebviewSource = fs.readFileSync(
+        path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'),
+        'utf8'
+    );
+    const aiSessionUpdateBody = extractFunctionBody(projectWebviewSource, 'applyAiSessionsUpdate');
+    assert.ok(aiSessionUpdateBody.includes('syncAiSessionBatchManagementDom(projectDiv)'));
     assert.ok(dashboard.includes('AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS'));
     assert.ok(dashboard.includes('watcherRefreshMinIntervalMs: AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS'));
     const refreshFunction = extractFunctionBody(dashboard, 'refreshAiSessionViewsIncrementally');
@@ -7826,8 +7970,11 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(projectHydrationSource.includes('getAttentionSessionLookupKey('));
     assert.ok(projectHydrationSource.includes('function getActiveAiSessionProvider('));
     assert.ok(!dashboard.includes('function getActiveAiSessionProvider('));
-    const openProjectViewModelBody = extractFunctionBody(dashboard, 'getOpenProjectAiSessionViewModel');
-    assert.ok(openProjectViewModelBody.includes('openProjectAiSessionViewModelBuilder.build({'));
+    assert.ok(!dashboard.includes('getOpenProjectAiSessionViewModel'));
+    assert.ok(dashboard.includes('function getCurrentWorkspaceActionTarget('));
+    assert.strictEqual((dashboard.match(/getWorkspaceTarget: getCurrentWorkspaceActionTarget/g) || []).length, 5,
+        'all live AI action controllers must resolve the v2 current-workspace card directly');
+    assert.strictEqual(dashboard.includes('as unknown as Project[]'), false);
     assert.ok(viewModelsSource.includes('export function buildOpenProjectAiSessionViewModel('));
     assert.ok(viewModelsSource.includes('export function createOpenProjectAiSessionViewModelBuilder('));
     assert.ok(viewModelsSource.includes('sessionsByProvider[providerId]'));
@@ -8280,7 +8427,6 @@ function runAiSessionDashboardControllerChecks() {
         getGroups: () => [],
         getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [],
-        getOpenProjectAiSessionViewModel: project => project,
         nextSequence: () => 1,
         postMessage: message => {
             messages.push(message);
@@ -8318,13 +8464,13 @@ function runAiSessionDashboardControllerChecks() {
         reason: 'new-session',
         durationMs: 5,
         cardCount: 0,
-        openProjectCount: 0,
+        currentWorkspaceCount: 0,
     }, {
         event: 'ai-session-message-build',
         reason: 'new-session',
         durationMs: 5,
         cardCount: 0,
-        openProjectCount: 0,
+        currentWorkspaceCount: 0,
     }]);
     assert.strictEqual(clearedTimeouts.length, 0);
 }
@@ -8343,7 +8489,6 @@ function runAiSessionDashboardWatcherCoalescingChecks() {
         getGroups: () => [],
         getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [],
-        getOpenProjectAiSessionViewModel: project => project,
         nextSequence: () => messages.length + 1,
         postMessage: message => {
             messages.push(message);
@@ -8391,13 +8536,33 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
     const messages = [];
     const diagnostics = [];
     let sessionName = 'Codex One';
-    const project = {
-        id: 'project-a',
-        path: '/work/app',
-        codexSessions: [{ id: 'session-a', name: sessionName }],
-        kimiSessions: [],
-        claudeSessions: [],
-    };
+    const workspace = () => ({
+        id: 'workspace-a',
+        kind: 'current',
+        navigationIdentity: 'navigation-a',
+        scopeIdentity: 'scope-a',
+        name: 'Workspace A',
+        environmentLabel: 'Local',
+        roots: [{ id: 'root-a', name: 'App', ordinal: 0 }],
+        attentionCount: 0,
+        aiSessions: {
+            workspaceScopeIdentity: 'scope-a',
+            workspaceNavigationIdentity: 'navigation-a',
+            activeProvider: 'codex',
+            expanded: true,
+            providers: [{ id: 'codex', label: 'Codex', count: 1 }],
+            sessionsByProvider: {
+                codex: [{ id: 'session-a', name: sessionName, provider: 'codex' }],
+            },
+            unavailableProviders: [],
+            aiSessionCount: 1,
+            attentionCount: 0,
+            defaultTab: 'sessions',
+            activeSessions: [],
+            activeSessionCount: 0,
+            activeAttentionCount: 0,
+        },
+    });
     const controller = new AiSessionDashboardController({
         providerIds: ['codex'],
         isVisible: () => true,
@@ -8405,17 +8570,7 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
         watchSessionChanges: () => ({ dispose() {} }),
         getGroups: () => [],
         getTodoSearchItems: () => TODO_SEARCH_ITEMS,
-        getCards: () => [project],
-        getOpenProjectAiSessionViewModel: item => ({
-            projectId: item.id,
-            projectKey: item.path,
-            activeProvider: 'codex',
-            expanded: true,
-            providers: [{ id: 'codex', label: 'Codex', count: 1 }],
-            sessionsByProvider: {
-                codex: [{ id: 'session-a', name: sessionName, provider: 'codex' }],
-            },
-        }),
+        getCards: () => [workspace()],
         nextSequence: () => messages.length + 1,
         postMessage: message => {
             messages.push(message);
@@ -8441,6 +8596,11 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
     sessionName = 'Codex Two';
     await controller.refreshNow('watcher');
     assert.strictEqual(messages.length, 2, 'changed watcher messages must still be posted');
+    assert.strictEqual(messages[1].version, 2);
+    assert.strictEqual(messages[1].currentWorkspaceCount, 1);
+    assert.strictEqual(messages[1].searchCatalog.version, 2);
+    assert.deepStrictEqual(messages[1].searchCatalog.openWorkspaces.map(item => item.current), [true]);
+    assert.ok(messages[1].html.includes('Codex Two'));
 
     await controller.refreshNow('refresh');
     assert.strictEqual(messages.length, 3, 'explicit refresh messages must not be suppressed by watcher dedupe');
@@ -10583,6 +10743,7 @@ async function main() {
     await runAiSessionExecutionControllerChecks();
     await runSidebarStewardViewProviderOrderingChecks();
     await runAiSessionArchiveRuntimeChecks();
+    await runWorkspaceCardActionControllerIntegrationChecks();
     await runAiSessionProjectHydrationControllerChecks();
     await runAiSessionProjectHydrationPromotionChecks();
     runKeyChecks();

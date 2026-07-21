@@ -17,10 +17,10 @@ const protocol = require('../out/openProjects/protocol');
 const projection = require('../out/openProjects/projection');
 const workspaceProtocol = require('../out/openWorkspaces/protocol');
 const workspaceProjection = require('../out/openWorkspaces/projection');
+const { default: OpenWorkspaceBridgeClient } = require('../out/openWorkspaces/bridgeClient');
+const { OpenWorkspaceDashboardController } = require('../out/openWorkspaces/dashboardController');
+const { OpenWorkspaceController } = require('../out/openWorkspaces/workspaceController');
 const attentionProject = require('../out/aiSessions/attentionProject');
-const { default: OpenProjectBridgeClient } = require('../out/openProjects/bridgeClient');
-const { OpenProjectDashboardController } = require('../out/openProjects/dashboardController');
-const { OpenProjectWorkspaceController } = require('../out/openProjects/workspaceController');
 const { CurrentProjectDetailsResolver } = require('../out/projects/currentProjectDetails');
 const { ProjectManualEditController } = require('../out/projects/projectManualEditController');
 const { ProjectOpenController } = require('../out/projects/projectOpenController');
@@ -29,9 +29,9 @@ const { ProjectPromptController } = require('../out/projects/projectPromptContro
 const { DashboardStartupController } = require('../out/dashboard/startupController');
 const { WorkspaceContextResolver } = require('../out/workspaces/contextResolver');
 const models = require('../out/models');
-const { OpenProjectStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectStore');
-const { OpenProjectCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectCoordinator');
-const { replaceOpenProjectPublicationUris } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectPublication');
+const { OpenWorkspaceStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceStore');
+const { OpenWorkspaceCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceCoordinator');
+const { replaceOpenWorkspacePublicationUris } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspacePublication');
 Module._load = originalModuleLoad;
 
 const SELF = '1'.repeat(32);
@@ -782,6 +782,342 @@ function runWorkspaceProjectionV2Checks() {
         'equal-focus duplicate publishers use lower instanceId, never aggregate input order'
     );
     assert.deepStrictEqual(workspaceProjection.projectOpenWorkspaceCards(currentWorkspace, null, SELF, attention), []);
+}
+
+function runOpenWorkspacePublicationChecks() {
+    const original = makeWorkspacePublication({
+        workspace: makeWorkspaceRecord(4, {
+            kind: 'savedMultiRoot',
+            navigationUri: 'vscode-remote://dev-container%2Bold/work/team.code-workspace',
+            roots: [
+                makeWorkspaceRoot(4, { ordinal: 0, uri: 'vscode-remote://dev-container%2Bold/work/app' }),
+                makeWorkspaceRoot(5, { ordinal: 1, uri: 'vscode-remote://dev-container%2Bold/work/api' }),
+            ],
+        }),
+    });
+    const replacement = replaceOpenWorkspacePublicationUris(
+        original,
+        'vscode-remote://dev-container%2Bcurrent/work/team.code-workspace',
+        [
+            'vscode-remote://dev-container%2Bcurrent/work/app',
+            'vscode-remote://dev-container%2Bcurrent/work/api',
+        ],
+    );
+    assert.strictEqual(replacement.workspace.navigationUri,
+        'vscode-remote://dev-container%2Bcurrent/work/team.code-workspace');
+    assert.deepStrictEqual(replacement.workspace.roots.map(root => root.uri), [
+        'vscode-remote://dev-container%2Bcurrent/work/app',
+        'vscode-remote://dev-container%2Bcurrent/work/api',
+    ]);
+    assert.strictEqual(replacement.workspace.navigationIdentity, original.workspace.navigationIdentity);
+    assert.strictEqual(replacement.workspace.scopeIdentity, original.workspace.scopeIdentity);
+    assert.deepStrictEqual(
+        replacement.workspace.roots.map(root => root.id),
+        original.workspace.roots.map(root => root.id),
+    );
+    assert.strictEqual(original.workspace.navigationUri,
+        'vscode-remote://dev-container%2Bold/work/team.code-workspace');
+
+    const empty = makeWorkspacePublication({ workspace: null });
+    assert.deepStrictEqual(
+        replaceOpenWorkspacePublicationUris(
+            empty,
+            'file:///must-not-be-synthesized.code-workspace',
+            ['file:///must-not-be-synthesized'],
+        ),
+        empty,
+        'Bridge URI normalization must never synthesize a workspace from a null publication',
+    );
+}
+
+async function runOpenWorkspaceStoreChecks() {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-workspace-store-'));
+    try {
+        const instancesDirectory = path.join(tempRoot, 'open-workspaces', 'v2', 'instances');
+        const v1Directory = path.join(tempRoot, 'open-projects', 'v1', 'instances');
+        const ownRegistration = makeWorkspaceRegistration(SELF, 1000, makeWorkspaceRecord(1), {
+            leaseUpdatedAtMs: 1000,
+        });
+        const legacyRegistration = makeRegistration(OTHER, 1000, '/legacy', { leaseUpdatedAtMs: 1000 });
+        await fs.promises.mkdir(v1Directory, { recursive: true });
+        await fs.promises.writeFile(
+            path.join(v1Directory, `${OTHER}.json`),
+            `${JSON.stringify(legacyRegistration)}\n`,
+        );
+        const store = new OpenWorkspaceStore(tempRoot, SELF);
+        await store.write(ownRegistration);
+        assert.deepStrictEqual((await store.scan(1000)).registrations, [ownRegistration]);
+        assert.strictEqual((await fs.promises.stat(instancesDirectory)).mode & 0o777, 0o700);
+        assert.strictEqual(
+            (await fs.promises.stat(path.join(instancesDirectory, `${SELF}.json`))).mode & 0o777,
+            0o600,
+        );
+        assert.strictEqual(
+            (await store.scan(1000)).registrations.some(registration => registration.instanceId === OTHER),
+            false,
+            'the v2 registry must never scan v1 owner files',
+        );
+        await fs.promises.writeFile(path.join(instancesDirectory, `${OTHER}.json`), '{malformed');
+        const malformed = await store.scan(1000);
+        assert.deepStrictEqual(malformed.registrations, [ownRegistration]);
+        assert.strictEqual(malformed.counters.parseErrors, 1);
+        const oversizedId = '5'.repeat(32);
+        const symlinkId = '6'.repeat(32);
+        const expiredId = '7'.repeat(32);
+        const mismatchId = '8'.repeat(32);
+        await fs.promises.writeFile(
+            path.join(instancesDirectory, `${oversizedId}.json`),
+            Buffer.alloc(256 * 1024 + 1),
+        );
+        const symlinkTarget = path.join(tempRoot, 'workspace-symlink-target.json');
+        await fs.promises.writeFile(symlinkTarget, `${JSON.stringify(makeWorkspaceRegistration(
+            symlinkId, 900, makeWorkspaceRecord(6), { leaseUpdatedAtMs: 1000 },
+        ))}\n`);
+        await fs.promises.symlink(symlinkTarget, path.join(instancesDirectory, `${symlinkId}.json`));
+        await fs.promises.writeFile(
+            path.join(instancesDirectory, `${expiredId}.json`),
+            `${JSON.stringify(makeWorkspaceRegistration(
+                expiredId, 900, makeWorkspaceRecord(7), { leaseUpdatedAtMs: 0 },
+            ))}\n`,
+        );
+        await fs.promises.writeFile(
+            path.join(instancesDirectory, `${mismatchId}.json`),
+            `${JSON.stringify(makeWorkspaceRegistration(
+                '9'.repeat(32), 900, makeWorkspaceRecord(8), { leaseUpdatedAtMs: 1000 },
+            ))}\n`,
+        );
+        const defensive = await store.scan(31_000);
+        assert.deepStrictEqual(defensive.registrations, [ownRegistration]);
+        assert.strictEqual(defensive.counters.parseErrors, 2);
+        assert.strictEqual(defensive.counters.oversizedFiles, 1);
+        assert.strictEqual(defensive.counters.symlinkFiles, 1);
+        assert.strictEqual(defensive.counters.expired, 1);
+        await assert.rejects(
+            store.write({ ...ownRegistration, sequence: 0 }),
+            /sequence/,
+        );
+        await assert.rejects(
+            store.write({ ...ownRegistration, instanceId: OTHER, sequence: 2 }),
+            /does not belong/,
+        );
+        await store.remove(SELF);
+        assert.deepStrictEqual((await store.scan(31_000)).registrations, []);
+    } finally {
+        await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+}
+
+async function runOpenWorkspaceCoordinatorChecks() {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-workspace-coordinator-'));
+    let now = 1000;
+    let intervalCallback;
+    const delivered = [];
+    const coordinator = new OpenWorkspaceCoordinator(tempRoot, {
+        now: () => now,
+        setInterval: callback => {
+            intervalCallback = callback;
+            return 'workspace-interval';
+        },
+        clearInterval: () => undefined,
+        createWatcher: directory => {
+            assert.strictEqual(directory, path.join(tempRoot, 'open-workspaces', 'v2', 'instances'));
+            return { close: () => undefined };
+        },
+        deliverAggregate: aggregate => delivered.push(aggregate),
+    });
+    const observer = new OpenWorkspaceStore(tempRoot, OTHER);
+    try {
+        await coordinator.publish(makeWorkspacePublication());
+        assert.strictEqual((await observer.scan(now)).registrations.length, 1,
+            'one workspace publication must write one owner record');
+        assert.strictEqual(delivered.length, 1);
+        const semanticRevision = delivered[0].semanticRevision;
+
+        now = 2000;
+        await coordinator.publish(makeWorkspacePublication({ sequence: 2, followsFocusEvent: true }));
+        assert.strictEqual((await observer.scan(now)).registrations[0].lastFocusedAtMs, 2000);
+        const deliveredAfterFocus = delivered.length;
+
+        now = 12_000;
+        intervalCallback();
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+            const current = (await observer.scan(now)).registrations[0];
+            if (current?.leaseUpdatedAtMs === now) break;
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.strictEqual(
+            delivered[delivered.length - 1].semanticRevision,
+            workspaceProtocol.createOpenWorkspaceSemanticRevision((await observer.scan(now)).registrations),
+        );
+        assert.strictEqual(delivered.length, deliveredAfterFocus,
+            'lease heartbeats must not change the semantic revision or redeliver the aggregate');
+
+        now = 13_000;
+        await coordinator.publish(makeWorkspacePublication({ sequence: 3, workspace: null }));
+        const emptyOwner = (await observer.scan(now)).registrations.find(value => value.instanceId === SELF);
+        assert.ok(emptyOwner, 'workspace:null keeps lease ownership until explicit unregister');
+        assert.strictEqual(emptyOwner.workspace, null);
+        assert.notStrictEqual(delivered[delivered.length - 1].semanticRevision, semanticRevision);
+
+        await coordinator.unregister({ protocolVersion: 2, instanceId: SELF });
+        assert.deepStrictEqual((await observer.scan(now)).registrations, []);
+    } finally {
+        coordinator.dispose();
+        await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+}
+
+async function runOpenWorkspaceCoordinatorBoundaryChecks() {
+    const registrations = Array.from({ length: 101 }, (_, index) => makeWorkspaceRegistration(
+        index.toString(16).padStart(32, '0'),
+        index,
+        makeWorkspaceRecord(index),
+        { sequence: index + 1, leaseUpdatedAtMs: 5000 },
+    ));
+    const deliver = async input => {
+        const deliveries = [];
+        const coordinator = new OpenWorkspaceCoordinator('/unused-open-workspace-boundary', {
+            now: () => 5000,
+            setInterval: () => 'boundary-interval',
+            clearInterval: () => undefined,
+            createWatcher: () => ({ close: () => undefined }),
+            deliverAggregate: aggregate => deliveries.push(aggregate),
+            createStore: () => ({
+                write: async () => undefined,
+                remove: async () => undefined,
+                scan: async () => ({ registrations: input, counters: {} }),
+            }),
+        });
+        try {
+            await coordinator.publish(makeWorkspacePublication());
+            return deliveries[0];
+        } finally {
+            coordinator.dispose();
+        }
+    };
+    const forward = await deliver(registrations);
+    const reverse = await deliver(registrations.slice().reverse());
+    assert.strictEqual(forward.registrations.length, 100);
+    assert.deepStrictEqual(workspaceProtocol.validateOpenWorkspaceAggregate(forward), forward);
+    assert.deepStrictEqual(reverse, forward, 'bounded aggregate order must not depend on scan order');
+    assert.strictEqual(forward.registrations[0].lastFocusedAtMs, 100);
+    assert.strictEqual(forward.registrations[99].lastFocusedAtMs, 1);
+}
+
+async function runOpenWorkspaceClientAndControllerChecks() {
+    const commands = new Map();
+    const executions = [];
+    let intervalCallback;
+    const record = makeWorkspaceRecord(12);
+    const client = new OpenWorkspaceBridgeClient(record, () => undefined, () => undefined, {
+        instanceId: SELF,
+        mainExtensionVersion: '2.0.0',
+        registerCommand: (command, callback) => {
+            commands.set(command, callback);
+            return { dispose: () => commands.delete(command) };
+        },
+        executeCommand: async (command, argument) => {
+            executions.push({ command, argument });
+            if (command === '_projectStewardOpenWorkspaces.bridge.handshake') {
+                return {
+                    accepted: true,
+                    protocolVersion: 2,
+                    bridgeExtensionVersion: '2.0.0',
+                    capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
+                };
+            }
+            return { accepted: true };
+        },
+        setInterval: callback => {
+            intervalCallback = callback;
+            return 'heartbeat';
+        },
+        clearInterval: () => undefined,
+    });
+    for (let attempt = 0; attempt < 50
+        && !executions.some(value => value.command === '_projectStewardOpenWorkspaces.bridge.publish'); attempt += 1) {
+        await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.strictEqual(executions[0].command, '_projectStewardOpenWorkspaces.bridge.handshake');
+    assert.strictEqual(executions[1].command, '_projectStewardOpenWorkspaces.bridge.publish');
+    assert.strictEqual(executions[1].argument.workspace.navigationIdentity, record.navigationIdentity);
+
+    await client.publish(record, true);
+    const focusPublication = executions.filter(value => value.command.endsWith('.bridge.publish')).pop().argument;
+    assert.strictEqual(focusPublication.followsFocusEvent, true);
+    intervalCallback();
+    for (let attempt = 0; attempt < 50
+        && executions.filter(value => value.command.endsWith('.bridge.publish')).length < 3; attempt += 1) {
+        await new Promise(resolve => setImmediate(resolve));
+    }
+    client.dispose();
+    for (let attempt = 0; attempt < 50
+        && !executions.some(value => value.command === '_projectStewardOpenWorkspaces.bridge.unregister'); attempt += 1) {
+        await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.ok(executions.some(value =>
+        value.command === '_projectStewardOpenWorkspaces.bridge.unregister'
+        && value.argument.protocolVersion === 2
+    ));
+    assert.strictEqual(commands.size, 0);
+
+    const publications = [];
+    let currentWorkspace = record;
+    const workspaceController = new OpenWorkspaceController({
+        getWorkspace: () => currentWorkspace,
+        publishWorkspace: (workspace, followsFocusEvent) => publications.push({ workspace, followsFocusEvent }),
+    });
+    workspaceController.publish();
+    currentWorkspace = null;
+    workspaceController.publish(true);
+    assert.deepStrictEqual(publications, [
+        { workspace: record, followsFocusEvent: false },
+        { workspace: null, followsFocusEvent: true },
+    ]);
+
+    const duplicateIdentity = workspaceIdentity(900);
+    const current = { ...makeWorkspaceRecord(30), roots: [{ ...makeWorkspaceRoot(30), hostPath: '/private/current' }] };
+    const duplicate = makeWorkspaceRecord(31, { navigationIdentity: duplicateIdentity });
+    const duplicateNewer = makeWorkspaceRecord(32, {
+        navigationIdentity: duplicateIdentity,
+        displayName: 'Newest registration wins',
+    });
+    const aggregate = makeWorkspaceAggregate([
+        makeWorkspaceRegistration(OTHER, 1000, duplicate),
+        makeWorkspaceRegistration(NEWER, 2000, duplicateNewer),
+    ]);
+    const posted = [];
+    const dashboard = new OpenWorkspaceDashboardController({
+        getCurrentWorkspace: () => current,
+        getCurrentWorkspaceAiSessions: () => null,
+        getGroups: () => [],
+        getTodoSearchItems: () => [],
+        getCollapsed: () => false,
+        getAttentionAggregate: () => null,
+        getBridgeInstanceId: () => SELF,
+        postMessage: async message => { posted.push(message); return true; },
+        refresh: () => undefined,
+        isVisible: () => true,
+        logDiagnostic: () => undefined,
+        logError: () => undefined,
+    });
+    dashboard.setAggregate(aggregate);
+    const cards = dashboard.getCards();
+    assert.strictEqual(cards.filter(card => card.kind === 'current').length, 1);
+    assert.strictEqual(cards.filter(card => card.kind === 'navigation').length, 1,
+        'two owner registrations for one navigation identity must project to one card');
+    assert.strictEqual(cards.find(card => card.kind === 'navigation').name, 'Newest registration wins');
+    assert.strictEqual(cards.some(card => card.roots.some(root => Object.hasOwnProperty.call(root, 'hostPath'))), false);
+    assert.strictEqual(cards.find(card => card.kind === 'navigation').aiSessions, undefined,
+        'OTHER WINDOWS cards must stay lightweight');
+    dashboard.postUpdated();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(posted.length, 1);
+    assert.strictEqual(posted[0].type, 'open-workspaces-updated');
+    assert.strictEqual(posted[0].version, 2);
+    assert.strictEqual(posted[0].currentWorkspaceCount, 1);
+    assert.strictEqual(posted[0].navigationWorkspaceCount, 1);
+    assert.strictEqual(posted[0].searchCatalog.version, 2);
 }
 
 function runOpenProjectPublicationChecks() {
@@ -1553,27 +1889,30 @@ function runDashboardBridgeLifecycleChecks() {
     const openProjects = extractFunctionBody(dashboard, 'getOpenProjects');
     const refreshAfterMutation = extractFunctionBody(dashboard, 'refreshAfterMutation');
     const showSteward = extractFunctionBody(dashboard, 'showSteward');
-    const projectedOpenProjects = extractFunctionBody(dashboard, 'getOpenProjectCards');
+    const projectedOpenWorkspaces = extractFunctionBody(dashboard, 'getOpenWorkspaceCards');
     const selectedProjectHandler = dashboard.slice(
         dashboard.indexOf("'selected-project': async e =>"),
         dashboard.indexOf("'add-project': async e =>")
     );
 
-    const workspaceControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'openProjects', 'workspaceController.ts'), 'utf8');
+    const workspaceControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'openWorkspaces', 'workspaceController.ts'), 'utf8');
     const projectMutationControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'projects', 'projectMutationController.ts'), 'utf8');
-    assert.ok(workspaceControllerSource.includes('export class OpenProjectWorkspaceController'));
-    assert.ok(workspaceControllerSource.includes('getRawOpenProjects('));
+    assert.ok(workspaceControllerSource.includes('export class OpenWorkspaceController'));
+    assert.ok(workspaceControllerSource.includes('getCurrentWorkspace('));
+    assert.ok(workspaceControllerSource.includes('getPublication('));
     assert.ok(workspaceControllerSource.includes('publish('));
-    assert.ok(workspaceControllerSource.includes('getOpenProjectUri('));
-    assert.ok(workspaceControllerSource.includes('getOpenProjectsFromWorkspace('));
-    assert.ok(workspaceControllerSource.includes('createOpenProjectRecords('));
+    assert.ok(workspaceControllerSource.includes('createOpenWorkspacePublication('));
     assert.ok(!dashboard.includes('function getRawOpenProjects('));
     assert.ok(!dashboard.includes('function publishOpenProjects('));
     assert.ok(!dashboard.includes('function getOpenProjectUri('));
-    assert.ok(openProjects.includes('aiSessionProjectHydrationController.hydrate(openProjectWorkspaceController.getRawOpenProjects())'));
-    assert.ok(dashboard.includes("import OpenProjectBridgeClient from './openProjects/bridgeClient';"));
-    assert.ok(dashboard.includes("import { OpenProjectDashboardController } from './openProjects/dashboardController';"));
-    assert.ok(dashboard.includes("import { OpenProjectWorkspaceController } from './openProjects/workspaceController';"));
+    assert.ok(openProjects.includes('getOpenProjectsFromWorkspace('));
+    assert.ok(openProjects.includes('aiSessionProjectHydrationController.hydrate(rawOpenProjects)'));
+    assert.ok(dashboard.includes("import OpenWorkspaceBridgeClient from './openWorkspaces/bridgeClient';"));
+    assert.ok(dashboard.includes("import { OpenWorkspaceDashboardController } from './openWorkspaces/dashboardController';"));
+    assert.ok(dashboard.includes("import { OpenWorkspaceController } from './openWorkspaces/workspaceController';"));
+    assert.strictEqual(dashboard.includes("from './openProjects/bridgeClient'"), false);
+    assert.strictEqual(dashboard.includes("from './openProjects/dashboardController'"), false);
+    assert.strictEqual(dashboard.includes("from './openProjects/workspaceController'"), false);
     assert.ok(dashboard.includes("import { CurrentProjectDetailsResolver } from './projects/currentProjectDetails';"));
     assert.ok(dashboard.includes("import { ProjectManualEditController } from './projects/projectManualEditController';"));
     assert.ok(dashboard.includes("import { ProjectOpenController } from './projects/projectOpenController';"));
@@ -1604,33 +1943,23 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('const projectMutationController = new ProjectMutationController({'));
     assert.ok(dashboard.includes('const projectPromptController = new ProjectPromptController({'));
     assert.ok(dashboard.includes('new DashboardCommandRegistration<vscode.Disposable>({'));
-    assert.ok(dashboard.includes('const openProjectDashboardController = new OpenProjectDashboardController({'));
-    assert.ok(dashboard.includes('const openProjectWorkspaceController = new OpenProjectWorkspaceController({'));
-    assert.ok(dashboard.includes('new OpenProjectBridgeClient('));
+    assert.ok(dashboard.includes('const openWorkspaceDashboardController = new OpenWorkspaceDashboardController({'));
+    assert.ok(dashboard.includes('const openWorkspaceController = new OpenWorkspaceController({'));
+    assert.ok(dashboard.includes('new OpenWorkspaceBridgeClient('));
     assert.ok(dashboard.includes("reportDiagnostic: event => logOpenProjectDiagnostic('Workspace', event)"));
     assert.ok(dashboard.includes("reportBridgeDiagnostic: event => logOpenProjectDiagnostic('Bridge', event)"));
     const diagnosticsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'diagnostics.ts'), 'utf8');
     assert.ok(diagnosticsSource.includes("'open-project-diagnostics.jsonl'"));
     assert.ok(dashboard.includes('new DashboardDiagnostics({'));
     assert.ok(!dashboard.includes('function logOpenProjectDiagnostic('));
-    assert.ok(dashboard.includes('openProjectWorkspaceController.publish('));
-    assert.ok(dashboard.includes('getActiveSessionCounts'));
-    assert.ok(dashboard.includes("session.executionState === 'running'"));
-    assert.ok(dashboard.includes('openProjectWorkspaceController.getOpenProjectRecords(false)'),
-        'initial bridge publication must skip session counts before runtime controllers are wired');
-    assert.ok(dashboard.includes('refreshProjects: () => openProjectWorkspaceController.getOpenProjectRecords()'));
-    assert.ok(workspaceControllerSource.includes('getActiveSessionCounts'));
-    const bridgeClientSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'openProjects', 'bridgeClient.ts'), 'utf8');
-    assert.ok(bridgeClientSource.includes('refreshProjects'));
-    assert.ok(bridgeClientSource.includes('getHeartbeatProjects'));
-    assert.ok(dashboard.includes('context.subscriptions.push(openProjectBridgeClient);'));
-    assert.ok(dashboard.includes('get openProjects() { return getOpenProjectCards() }'));
-    assert.ok(projectedOpenProjects.includes('openProjectDashboardController.getCards()'));
-    assert.ok(selectedProjectHandler.includes('getOpenProjectCards();'));
-    assert.ok(selectedProjectHandler.includes('openProjectDashboardController.getNavigationCard(projectId)'));
+    assert.ok(dashboard.includes('openWorkspaceController.publish('));
+    assert.ok(dashboard.includes('context.subscriptions.push(openWorkspaceBridgeClient);'));
+    assert.ok(dashboard.includes('get openProjects() { return getOpenProjects() }'));
+    assert.ok(projectedOpenWorkspaces.includes('openWorkspaceDashboardController.getCards()'));
+    assert.ok(selectedProjectHandler.includes('getOpenWorkspaceCards()'));
+    assert.strictEqual(selectedProjectHandler.includes('openProjectDashboardController'), false);
     assert.ok(selectedProjectHandler.indexOf('projectService.getProject(projectId)') < selectedProjectHandler.indexOf('getOpenProjects().find'));
-    assert.ok(selectedProjectHandler.indexOf('getOpenProjects().find') < selectedProjectHandler.indexOf('openProjectDashboardController.getNavigationCard(projectId)'));
-    assert.ok(selectedProjectHandler.includes('await projectOpenController.openProject(project, isProjectNavigation ? ProjectOpenType.Default : projectOpenType);'));
+    assert.ok(selectedProjectHandler.includes('await projectOpenController.openProject(project, projectOpenType);'));
     assert.ok(dashboard.includes('await projectMutationController.addProject('));
     assert.ok(dashboard.includes('await projectMutationController.saveOpenProject('));
     assert.ok(dashboard.includes('await projectMutationController.editProject('));
@@ -1660,6 +1989,45 @@ function runDashboardBridgeLifecycleChecks() {
     const dashboardRuntimeControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'runtimeController.ts'), 'utf8');
     assert.ok(dashboardRuntimeControllerSource.includes('refreshAfterMutation('));
     assert.ok(dashboardRuntimeControllerSource.includes('this.options.publishOpenProjects();'));
+}
+
+function runOpenWorkspaceProductionCutoverChecks() {
+    const root = path.join(__dirname, '..');
+    const productionFiles = [
+        'src/dashboard.ts',
+        'src/openWorkspaces/bridgeClient.ts',
+        'src/openWorkspaces/workspaceController.ts',
+        'src/openWorkspaces/dashboardController.ts',
+        'src/webview/dashboardViewModel.ts',
+        'src/dashboard/webviewUpdateMessages.ts',
+        'src/aiSessions/dashboardController.ts',
+        'extensions/attention-ui-bridge/src/extension.ts',
+        'extensions/attention-ui-bridge/src/openWorkspacePublication.ts',
+        'extensions/attention-ui-bridge/src/openWorkspaceStore.ts',
+        'extensions/attention-ui-bridge/src/openWorkspaceCoordinator.ts',
+        'extensions/attention-ui-bridge/tsconfig.json',
+    ];
+    const sources = productionFiles.map(file => [file, fs.readFileSync(path.join(root, file), 'utf8')]);
+    for (const [file, source] of sources) {
+        for (const forbidden of [
+            '_projectStewardOpenProjects',
+            "from './openProjects/bridgeClient'",
+            "from './openProjects/dashboardController'",
+            "from './openProjects/workspaceController'",
+            "from '../openProjects/",
+            "from '../../../src/openProjects/protocol'",
+            "'open-projects', 'v1'",
+            '"../../src/openProjects/protocol.ts"',
+        ]) {
+            assert.strictEqual(source.includes(forbidden), false, `${file} still loads or calls v1: ${forbidden}`);
+        }
+    }
+    const bridgeExtension = sources.find(([file]) => file.endsWith('src/extension.ts'))[1];
+    const dashboard = sources.find(([file]) => file === 'src/dashboard.ts')[1];
+    assert.ok(bridgeExtension.includes("'_projectStewardOpenWorkspaces.bridge.handshake'"));
+    assert.ok(bridgeExtension.includes("'_projectStewardOpenWorkspaces.bridge.publish'"));
+    assert.ok(bridgeExtension.includes("'_projectStewardOpenWorkspaces.bridge.unregister'"));
+    assert.ok(dashboard.includes("from './openWorkspaces/bridgeClient'"));
 }
 
 async function runOpenProjectWorkspaceControllerChecks() {
@@ -2064,21 +2432,21 @@ async function runOpenProjectDashboardControllerChecks() {
 
 function runOpenProjectIncrementalRenderingChecks() {
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
-    const controllerPath = path.join(__dirname, '..', 'src', 'openProjects', 'dashboardController.ts');
+    const controllerPath = path.join(__dirname, '..', 'src', 'openWorkspaces', 'dashboardController.ts');
     assert.ok(fs.existsSync(controllerPath));
     const controllerSource = fs.readFileSync(controllerPath, 'utf8');
-    assert.ok(controllerSource.includes('export class OpenProjectDashboardController'));
+    assert.ok(controllerSource.includes('export class OpenWorkspaceDashboardController'));
     assert.ok(controllerSource.includes('postUpdated('));
-    assert.ok(controllerSource.includes('buildOpenProjectsUpdatedMessage'));
+    assert.ok(controllerSource.includes('buildOpenWorkspacesUpdatedMessage'));
     const bridgeCallback = dashboard.slice(
-        dashboard.indexOf('openProjectBridgeClient = new OpenProjectBridgeClient('),
+        dashboard.indexOf('openWorkspaceBridgeClient = new OpenWorkspaceBridgeClient('),
         dashboard.indexOf('const activeAiSessionTerminalHighlighter')
     );
-    assert.ok(bridgeCallback.includes('postOpenProjectsUpdated();'));
+    assert.ok(bridgeCallback.includes('postOpenWorkspacesUpdated();'));
     assert.ok(!bridgeCallback.includes('refreshStewardViews();'));
 
     const content = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts'), 'utf8');
-    assert.ok(content.includes('export function getOpenProjectsGroupContent('));
+    assert.ok(content.includes('export function getOpenWorkspacesGroupContent('));
     assert.ok(content.includes('export function getProjectsPanelContent('));
     assert.ok(content.includes('<div class="sticky-groups-wrapper">'));
     assert.ok(content.includes('session-running'));
@@ -2088,20 +2456,18 @@ function runOpenProjectIncrementalRenderingChecks() {
         path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'),
         'utf8'
     );
+    const validHtml = [
+        '<div class="open-current-workspace-group"><div class="workspace-card" data-current-workspace data-workspace-scope-identity="scope"></div></div>',
+        '<div class="open-other-windows-group"><div class="workspace-card" data-other-workspace data-workspace-navigation-identity="other"></div></div>',
+    ].join('');
     const wrapper = { innerHTML: '<div>old</div>' };
     const documentStub = {
         querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null,
         querySelectorAll: selector => {
-            const projectTags = Array.from(wrapper.innerHTML.matchAll(/<div class="([^"]*)"[^>]*data-id=[^>]*>/g))
-                .filter(match => hasClassTokens(match[1], 'project', 'steward-item-card'))
-                .map(match => match[0]);
-            if (selector === '.sticky-groups-wrapper .project[data-id]') {
-                return Array.from({ length: projectTags.length }, () => ({}));
-            }
-            if (selector === '.sticky-groups-wrapper .project[data-project-navigation][data-id]') {
-                const matches = projectTags.filter(tag => tag.includes('data-project-navigation'));
-                return Array.from({ length: matches.length }, () => ({}));
-            }
+            if (selector.includes('[data-current-workspace]'))
+                return wrapper.innerHTML.includes('data-current-workspace') ? [{}] : [];
+            if (selector.includes('[data-other-workspace]'))
+                return wrapper.innerHTML.includes('data-other-workspace') ? [{}] : [];
             if (selector === '.sticky-groups-wrapper .open-other-windows-group') {
                 return wrapper.innerHTML.includes('open-other-windows-group') ? [{}] : [];
             }
@@ -2110,15 +2476,14 @@ function runOpenProjectIncrementalRenderingChecks() {
     };
     let catalogReplacements = 0;
     let replacedSearchCatalog = null;
-    const applyOpenProjectsUpdate = new Function(
+    const applyOpenWorkspacesUpdate = new Function(
         'document',
         'window',
         'normalizeDashboardSearchCatalog',
         `
-        function getOpenProjectsUpdateCatalogCounts(searchCatalog) {${extractFunctionBody(webviewScript, 'getOpenProjectsUpdateCatalogCounts')}}
-        function getOpenProjectsUpdateDomState() {${extractFunctionBody(webviewScript, 'getOpenProjectsUpdateDomState')}}
-        function isOpenProjectsUpdateDomConsistent(message) {${extractFunctionBody(webviewScript, 'isOpenProjectsUpdateDomConsistent')}}
-        return function applyOpenProjectsUpdate(message) {${extractFunctionBody(webviewScript, 'applyOpenProjectsUpdate')}};
+        function getOpenWorkspacesUpdateDomState() {${extractFunctionBody(webviewScript, 'getOpenWorkspacesUpdateDomState')}}
+        function isOpenWorkspacesUpdateDomConsistent(message) {${extractFunctionBody(webviewScript, 'isOpenWorkspacesUpdateDomConsistent')}}
+        return function applyOpenWorkspacesUpdate(message) {${extractFunctionBody(webviewScript, 'applyOpenWorkspacesUpdate')}};
         `
     )(
         documentStub,
@@ -2126,85 +2491,52 @@ function runOpenProjectIncrementalRenderingChecks() {
             catalogReplacements += 1;
             replacedSearchCatalog = catalog;
         } } },
-        value => value && Array.isArray(value.sessions) && Array.isArray(value.openProjects)
+        value => value && value.version === 2 && Array.isArray(value.sessions) && Array.isArray(value.openWorkspaces)
             && Array.isArray(value.savedProjects) && Array.isArray(value.todos)
             ? value
             : { sessions: [], openProjects: [], savedProjects: [], todos: [] }
     );
-    assert.strictEqual(applyOpenProjectsUpdate({
-        type: 'open-projects-updated',
-        version: 1,
-        semanticRevision: 'revision-2',
-        projectCount: 0,
-        html: '<div data-group-id="__openProjects">new</div>',
-        searchCatalog: { sessions: [], openProjects: [], savedProjects: [], todos: [{ todoId: 'preserved' }] },
+    const catalog = {
+        version: 2,
+        sessions: [],
+        openWorkspaces: [{ current: true }, { current: false }],
+        savedProjects: [],
+        todos: [{ todoId: 'preserved' }],
+    };
+    assert.strictEqual(applyOpenWorkspacesUpdate({
+        type: 'open-workspaces-updated',
+        version: 2,
+        semanticRevision: 'a'.repeat(64),
+        currentWorkspaceCount: 1,
+        navigationWorkspaceCount: 1,
+        html: validHtml,
+        searchCatalog: catalog,
     }), true);
-    assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
+    assert.strictEqual(wrapper.innerHTML, validHtml);
     assert.strictEqual(catalogReplacements, 1);
     assert.deepStrictEqual(replacedSearchCatalog.todos, [{ todoId: 'preserved' }],
         'OPEN incremental rendering must preserve the non-empty TODO catalog replacement');
-    assert.strictEqual(applyOpenProjectsUpdate({
-        type: 'open-projects-updated',
-        version: 1,
-        semanticRevision: 'revision-mismatched-count',
-        projectCount: 3,
-        html: '<div>bad count</div>',
-        searchCatalog: { sessions: [], openProjects: [], savedProjects: [], todos: [{ todoId: 'preserved' }] },
-    }), false, 'OPEN update must reject projectCount values that do not match the search catalog');
-    assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
-    assert.strictEqual(applyOpenProjectsUpdate({ version: 2, html: '<div>bad</div>' }), false);
-    assert.strictEqual(wrapper.innerHTML, '<div data-group-id="__openProjects">new</div>');
-    assert.ok(webviewScript.includes("type: 'open-projects-rendered'"));
-    const validNavigationHtml = [
-        '<div class="group open-current-workspace-group"><div class="project steward-item-card" data-id="current"></div></div>',
-        '<div class="group open-other-windows-group"><div class="project steward-item-card" data-project-navigation data-id="other"></div></div>',
-    ].join('');
-    assert.strictEqual(applyOpenProjectsUpdate({
-        type: 'open-projects-updated',
-        version: 1,
-        semanticRevision: 'revision-valid-navigation',
-        projectCount: 2,
-        html: validNavigationHtml,
-        searchCatalog: {
-            sessions: [],
-            openProjects: [
-                { projectId: 'current', action: 'open-current' },
-                { projectId: 'other', action: 'switch-open' },
-            ],
-            savedProjects: [],
-            todos: [{ todoId: 'preserved' }],
-        },
-    }), true, 'OPEN update must accept DOM that keeps OTHER WINDOWS navigation cards');
-    assert.strictEqual(applyOpenProjectsUpdate({
-        type: 'open-projects-updated',
-        version: 1,
-        semanticRevision: 'revision-3',
-        projectCount: 2,
-        html: '<div class="group open-current-workspace-group"><div class="project steward-item-card" data-id="current"></div></div>',
-        searchCatalog: {
-            sessions: [],
-            openProjects: [
-                { projectId: 'current', action: 'open-current' },
-                { projectId: 'other', action: 'switch-open' },
-            ],
-            savedProjects: [],
-            todos: [{ todoId: 'preserved' }],
-        },
-    }), false, 'OPEN update must reject DOM that loses OTHER WINDOWS navigation cards');
-    assert.strictEqual(wrapper.innerHTML, validNavigationHtml, 'OPEN update must restore previous DOM after rejecting an inconsistent update');
+    assert.strictEqual(applyOpenWorkspacesUpdate({
+        type: 'open-workspaces-updated', version: 2, semanticRevision: 'b'.repeat(64),
+        currentWorkspaceCount: 1, navigationWorkspaceCount: 1,
+        html: '<div class="open-current-workspace-group"><div class="workspace-card" data-current-workspace data-workspace-scope-identity="scope"></div></div>',
+        searchCatalog: catalog,
+    }), false, 'OPEN WORKSPACES update must reject DOM that loses OTHER WINDOWS cards');
+    assert.strictEqual(wrapper.innerHTML, validHtml);
+    assert.ok(webviewScript.includes("type: 'open-workspaces-rendered'"));
 
-    const postOpenProjectsUpdated = extractFunctionBody(dashboard, 'postOpenProjectsUpdated');
-    assert.ok(postOpenProjectsUpdated.includes('openProjectDashboardController.postUpdated()'));
+    const postOpenWorkspacesUpdated = extractFunctionBody(dashboard, 'postOpenWorkspacesUpdated');
+    assert.ok(postOpenWorkspacesUpdated.includes('openWorkspaceDashboardController.postUpdated()'));
     const postUpdatedIndex = controllerSource.indexOf('postUpdated()');
     assert.notStrictEqual(postUpdatedIndex, -1);
     const postUpdatedBody = controllerSource.slice(postUpdatedIndex, controllerSource.indexOf('\n    }\n}', postUpdatedIndex));
     assert.ok(postUpdatedBody.includes('this.options.postMessage(message).then('));
     assert.ok(postUpdatedBody.includes('if (!delivered)'));
     assert.ok(postUpdatedBody.includes('if (this.options.isVisible())'));
-    assert.ok(postUpdatedBody.includes("this.options.logError('Failed to post OPEN PROJECT update message.'"));
+    assert.ok(postUpdatedBody.includes("this.options.logError('Failed to post OPEN WORKSPACE update message.'"));
     assert.ok(controllerSource.includes('refresh: (reason: string) => void;'));
-    assert.ok(postUpdatedBody.includes("this.options.refresh('open-project-update-not-delivered');"));
-    assert.ok(postUpdatedBody.includes("this.options.refresh('open-project-update-post-error');"));
+    assert.ok(postUpdatedBody.includes("this.options.refresh('open-workspace-update-not-delivered');"));
+    assert.ok(postUpdatedBody.includes("this.options.refresh('open-workspace-update-post-error');"));
 }
 
 async function runDashboardMigrationPublicationChecks() {
@@ -2943,31 +3275,67 @@ async function runCoordinatorWiringChecks() {
     try {
         const extension = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/extension');
         await extension.activate(context);
-        const publish = registeredCommands.get('_projectStewardOpenProjects.bridge.publish');
-        const unregister = registeredCommands.get('_projectStewardOpenProjects.bridge.unregister');
+        const handshake = registeredCommands.get('_projectStewardOpenWorkspaces.bridge.handshake');
+        const publish = registeredCommands.get('_projectStewardOpenWorkspaces.bridge.publish');
+        const unregister = registeredCommands.get('_projectStewardOpenWorkspaces.bridge.unregister');
+        assert.strictEqual(typeof handshake, 'function');
         assert.strictEqual(typeof publish, 'function');
         assert.strictEqual(typeof unregister, 'function');
+        assert.strictEqual(registeredCommands.has('_projectStewardOpenProjects.bridge.publish'), false);
+        assert.deepStrictEqual(await handshake({
+            protocolVersion: 1,
+            mainExtensionVersion: '1.0.0',
+            instanceId: SELF,
+            capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
+        }), {
+            accepted: false,
+            protocolVersion: 2,
+            bridgeExtensionVersion: 'unknown',
+            capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
+            errorCode: 'update-required',
+        });
+        assert.strictEqual((await handshake({
+            protocolVersion: 2,
+            mainExtensionVersion: '2.0.0',
+            instanceId: SELF,
+            capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
+        })).accepted, true);
 
-        await publish(makePublication({ followsFocusEvent: true }));
+        const remoteWorkspace = makeWorkspaceRecord(42, {
+            navigationUri: 'vscode-remote://dev-container%2Bold/workspaces/AiToEarn',
+            roots: [makeWorkspaceRoot(42, {
+                ordinal: 0,
+                uri: 'vscode-remote://dev-container%2Bold/workspaces/AiToEarn',
+            })],
+        });
+        await publish(makeWorkspacePublication({ followsFocusEvent: true, workspace: remoteWorkspace }));
         const aggregateDelivery = executedCommands.filter(
-            value => value.command === '_projectStewardOpenProjects.workspace.aggregate'
+            value => value.command === '_projectStewardOpenWorkspaces.workspace.aggregate'
         ).pop();
-        assert.ok(aggregateDelivery, 'production wiring should deliver an open-project aggregate');
+        assert.ok(aggregateDelivery, 'production wiring should deliver an open-workspace aggregate');
         assert.strictEqual(aggregateDelivery.argument.registrations[0].instanceId, SELF);
         assert.strictEqual(
-            aggregateDelivery.argument.registrations[0].projects[0].uri,
+            aggregateDelivery.argument.registrations[0].workspace.navigationUri,
             'vscode-remote://dev-container%2Btarget%40ssh-remote%2Bhome-book/workspaces/AiToEarn'
         );
+        assert.strictEqual(
+            aggregateDelivery.argument.registrations[0].workspace.roots[0].uri,
+            'vscode-remote://dev-container%2Btarget%40ssh-remote%2Bhome-book/workspaces/AiToEarn'
+        );
+        assert.strictEqual(aggregateDelivery.argument.registrations[0].workspace.navigationIdentity,
+            remoteWorkspace.navigationIdentity);
+        assert.strictEqual(aggregateDelivery.argument.registrations[0].workspace.roots[0].id,
+            remoteWorkspace.roots[0].id);
         assert.ok(bridgeOutputLines.some(line =>
-            line.startsWith('[OpenProjects] ')
+            line.startsWith('[OpenWorkspaces] ')
             && line.includes('"event":"publish"')
             && line.includes(SELF)
         ));
         assert.ok(executedCommands.some(value =>
-            value.command === '_projectStewardOpenProjects.workspace.diagnostic'
+            value.command === '_projectStewardOpenWorkspaces.workspace.diagnostic'
             && value.argument.event === 'publish'
         ));
-        await unregister({ protocolVersion: 1, instanceId: SELF });
+        await unregister({ protocolVersion: 2, instanceId: SELF });
     } finally {
         Module._load = previousModuleLoad;
         for (const disposable of context.subscriptions.slice().reverse()) {
@@ -2980,26 +3348,24 @@ async function runCoordinatorWiringChecks() {
 async function main() {
     runProtocolChecks();
     runWorkspaceProtocolV2Checks();
-    runOpenProjectPublicationChecks();
-    runRemoteAttentionIdentityChecks();
     runWorkspaceContextResolverChecks();
     runIdentityChecks();
     runRecordChecks();
     runWorkspaceControllerRecordChecks();
     runProjectionChecks();
     runWorkspaceProjectionV2Checks();
-    await runBridgeClientChecks();
-    await runOpenProjectWorkspaceControllerChecks();
+    runOpenWorkspacePublicationChecks();
+    await runOpenWorkspaceStoreChecks();
+    await runOpenWorkspaceCoordinatorChecks();
+    await runOpenWorkspaceCoordinatorBoundaryChecks();
+    await runOpenWorkspaceClientAndControllerChecks();
     await runCurrentProjectDetailsResolverChecks();
     await runProjectOpenControllerChecks();
     runDashboardBridgeLifecycleChecks();
+    runOpenWorkspaceProductionCutoverChecks();
     runWebviewRefreshFocusChecks();
-    await runOpenProjectDashboardControllerChecks();
     runOpenProjectIncrementalRenderingChecks();
     await runDashboardMigrationPublicationChecks();
-    await runStoreChecks();
-    await runCoordinatorChecks();
-    await runCoordinatorAggregateBoundaryChecks();
     await runCoordinatorWiringChecks();
     console.log('Open project safety checks passed.');
 }

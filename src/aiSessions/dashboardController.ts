@@ -1,7 +1,7 @@
 'use strict';
 
-import type { AiSessionProviderId, Group, Project } from '../models';
-import type { AiSessionsUpdatedMessage, OpenProjectAiSessionViewModel } from './types';
+import type { AiSessionProviderId, Group, WorkspaceCardViewModel } from '../models';
+import type { AiSessionsUpdatedMessage } from './types';
 import { buildAiSessionsUpdatedMessage } from '../dashboard/webviewUpdateMessages';
 import type { TodoSearchCatalogItem } from '../todos/types';
 
@@ -16,8 +16,7 @@ export interface AiSessionDashboardControllerOptions {
     watchSessionChanges: (providerId: AiSessionProviderId, onDidChange: () => void) => DisposableLike;
     getGroups: () => Group[];
     getTodoSearchItems: () => TodoSearchCatalogItem[];
-    getCards: () => Project[];
-    getOpenProjectAiSessionViewModel: (project: Project) => OpenProjectAiSessionViewModel;
+    getCards: () => WorkspaceCardViewModel[];
     nextSequence: () => number;
     postMessage: (message: unknown) => Thenable<boolean>;
     refresh: (reason: string) => void;
@@ -102,8 +101,8 @@ export class AiSessionDashboardController {
                     event: 'ai-session-message-skip',
                     reason,
                     sequence: message.sequence,
-                    cardCount: message.searchCatalog.openProjects.length,
-                    openProjectCount: message.openProjects.length,
+                    cardCount: message.searchCatalog.openWorkspaces.length,
+                    currentWorkspaceCount: message.currentWorkspaceCount,
                 });
                 return;
             }
@@ -135,14 +134,11 @@ export class AiSessionDashboardController {
     getUpdatedMessage(reason = 'refresh'): AiSessionsUpdatedMessage {
         const startedAt = this.nowMs();
         const cards = this.options.getCards();
-        const openProjects = cards
-            .filter(project => project.openProjectCardKind !== 'projectNavigation');
         const message = buildAiSessionsUpdatedMessage({
             groups: this.options.getGroups(),
             cards,
             sequence: this.options.nextSequence(),
             generatedAt: new Date().toISOString(),
-            openProjects: openProjects.map(project => this.options.getOpenProjectAiSessionViewModel(project)),
             todoSearchItems: this.options.getTodoSearchItems(),
         });
         this.options.logDiagnostic?.({
@@ -150,7 +146,7 @@ export class AiSessionDashboardController {
             reason,
             durationMs: this.nowMs() - startedAt,
             cardCount: cards.length,
-            openProjectCount: openProjects.length,
+            currentWorkspaceCount: message.currentWorkspaceCount,
         });
         return message;
     }
@@ -204,7 +200,8 @@ export class AiSessionDashboardController {
 
     private getIncrementalMessageSignature(message: AiSessionsUpdatedMessage): string {
         return JSON.stringify({
-            openProjects: this.stableValue(message.openProjects),
+            currentWorkspaceCount: message.currentWorkspaceCount,
+            html: message.html,
             searchCatalog: this.stableValue(message.searchCatalog),
         });
     }

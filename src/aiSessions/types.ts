@@ -1,6 +1,7 @@
 'use strict';
 
 import type { AiSessionProviderId, CodexSession } from '../models';
+import type { OpenWorkspace } from '../workspaces/types';
 import type { BatchAiSessionArchiveResult } from './archiveBatch';
 import type {
     AiSessionAttentionReason,
@@ -8,7 +9,7 @@ import type {
     AiSessionLifecycleRequest,
     AiSessionLifecycleSignal,
 } from './lifecycle';
-import type { DashboardSearchCatalog } from '../webview/dashboardViewModel';
+import type { DashboardWorkspaceSearchCatalog } from '../webview/dashboardViewModel';
 import type { AiSessionLaunchSpec } from './launchSpec';
 import type { AiSessionRuntimeBackendId, AiSessionRuntimeIdentity, AiSessionTmuxLayout } from './runtimeTypes';
 
@@ -151,6 +152,12 @@ export interface WorkspaceAiSessionViewModel {
     activeAttentionCount: number;
 }
 
+export interface WorkspaceAiSessionActionTarget {
+    cardId: string;
+    workspace: OpenWorkspace;
+    sessions: WorkspaceAiSessionViewModel;
+}
+
 export interface OpenProjectAiSessionViewModel {
     projectId: string;
     projectKey: string;
@@ -171,11 +178,12 @@ export interface OpenProjectAiSessionViewModel {
 
 export interface AiSessionsUpdatedMessage {
     type: 'ai-sessions-updated';
-    version: 1;
+    version: 2;
     sequence: number;
     generatedAt: string;
-    openProjects: OpenProjectAiSessionViewModel[];
-    searchCatalog: DashboardSearchCatalog;
+    currentWorkspaceCount: 0 | 1;
+    html: string;
+    searchCatalog: DashboardWorkspaceSearchCatalog;
 }
 
 export interface AiSessionActiveTerminalChangedMessage {

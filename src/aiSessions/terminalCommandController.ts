@@ -6,6 +6,7 @@ import type {
     AiSessionRuntimeIdentity,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
+import type { WorkspaceAiSessionActionTarget } from './types';
 import { aiSessionRuntimeIdentitiesEqual, cloneAiSessionRuntimeIdentity } from './runtimeTypes';
 
 export interface AiSessionTerminalCommandRuntimeCoordinator<TTerminal> {
@@ -33,6 +34,7 @@ export interface AiSessionTerminalCommandRuntimeCoordinator<TTerminal> {
 export interface AiSessionTerminalCommandControllerCommonOptions {
     isProviderId(value: string): value is AiSessionProviderId;
     getOpenProjects(): Project[];
+    getWorkspaceTarget?: (cardId: string) => WorkspaceAiSessionActionTarget | null;
     getProjectSessions(project: Project, providerId: AiSessionProviderId): CodexSession[];
     getProjectCwd(project: Project): string;
     normalizePath(value: string): string;
@@ -428,6 +430,15 @@ export class AiSessionTerminalCommandController<
         projectId: string,
         options: AiSessionTerminalCommandRuntimeControllerOptions<TTerminal>
     ): RuntimeProjectOwnership | null {
+        const workspaceTarget = options.getWorkspaceTarget?.(projectId);
+        if (workspaceTarget) {
+            return {
+                workspaceTarget,
+                requested: null,
+                openProjects: [],
+                workspaceScopeIdentity: workspaceTarget.workspace.scopeIdentity,
+            };
+        }
         const openProjects = options.getOpenProjects().map(project => ({
             project,
             normalizedCwd: options.normalizePath(options.getProjectCwd(project)),
@@ -435,7 +446,7 @@ export class AiSessionTerminalCommandController<
         const requested = openProjects.find(candidate => candidate.project.id === projectId);
         const workspaceScopeIdentity = options.getWorkspaceScopeIdentity();
         return requested && workspaceScopeIdentity
-            ? { requested, openProjects, workspaceScopeIdentity }
+            ? { workspaceTarget: null, requested, openProjects, workspaceScopeIdentity }
             : null;
     }
 
@@ -448,6 +459,14 @@ export class AiSessionTerminalCommandController<
     ): boolean {
         if (runtime.identity.workspaceScopeIdentity !== ownership.workspaceScopeIdentity) {
             return false;
+        }
+        if (ownership.workspaceTarget) {
+            return !sessionId
+                || (ownership.workspaceTarget.sessions.sessionsByProvider[providerId] || [])
+                    .some(session => session.id === sessionId)
+                || ownership.workspaceTarget.sessions.activeSessions.some(session =>
+                    session.provider === providerId && session.sessionId === sessionId
+                );
         }
         const runtimeCwd = options.normalizePath(runtime.identity.cwd);
         if (runtimeCwd) {
@@ -530,7 +549,8 @@ interface RuntimeProjectDescriptor {
 }
 
 interface RuntimeProjectOwnership {
-    requested: RuntimeProjectDescriptor;
+    workspaceTarget: WorkspaceAiSessionActionTarget | null;
+    requested: RuntimeProjectDescriptor | null;
     openProjects: RuntimeProjectDescriptor[];
     workspaceScopeIdentity: string;
 }

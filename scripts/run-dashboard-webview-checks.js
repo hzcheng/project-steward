@@ -276,14 +276,30 @@ function runDashboardUpdateMessageChecks() {
     });
     const aiMessage = dashboardUpdateMessages.buildAiSessionsUpdatedMessage({
         groups: [],
-        cards: [],
+        cards: [workspaceCard],
         sequence: 7,
         generatedAt: '2026-07-17T00:00:00.000Z',
-        openProjects: [],
         todoSearchItems,
     });
     const workspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({
         card: workspaceCard,
+    });
+    const navigationCard = {
+        ...makeWorkspaceCardFixture(2),
+        id: 'workspace-other',
+        kind: 'navigation',
+        navigationIdentity: 'navigation-other',
+        scopeIdentity: 'scope-other',
+        name: 'Other Workspace',
+        environmentLabel: 'SSH',
+        aiSessions: undefined,
+    };
+    const openWorkspacesMessage = dashboardUpdateMessages.buildOpenWorkspacesUpdatedMessage({
+        groups: [],
+        cards: [workspaceCard, navigationCard],
+        collapsed: false,
+        semanticRevision: 'b'.repeat(64),
+        todoSearchItems,
     });
     const workspaceSearchCatalog = buildWorkspaceDashboardSearchCatalog([], [workspaceCard], todoSearchItems);
 
@@ -291,6 +307,11 @@ function runDashboardUpdateMessageChecks() {
         'OPEN incremental catalog rebuilds must preserve real TODO search items');
     assert.deepStrictEqual(aiMessage.searchCatalog.todos, todoSearchItems,
         'AI incremental catalog rebuilds must preserve real TODO search items');
+    assert.strictEqual(aiMessage.version, 2);
+    assert.strictEqual(aiMessage.currentWorkspaceCount, 1);
+    assert.strictEqual(aiMessage.searchCatalog.version, 2);
+    assert.deepStrictEqual(aiMessage.searchCatalog.openWorkspaces.map(item => item.current), [true]);
+    assert.ok(aiMessage.html.includes('data-current-workspace'));
     assert.strictEqual(workspaceMessage.type, 'workspace-updated');
     assert.strictEqual(workspaceMessage.version, 2);
     assert.strictEqual(workspaceSearchCatalog.version, 2);
@@ -302,6 +323,16 @@ function runDashboardUpdateMessageChecks() {
     const emptyWorkspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({ card: null });
     assert.strictEqual(emptyWorkspaceMessage.currentWorkspaceCount, 0);
     assert.strictEqual(emptyWorkspaceMessage.html.includes('class="workspace-card'), false);
+    assert.strictEqual(openWorkspacesMessage.type, 'open-workspaces-updated');
+    assert.strictEqual(openWorkspacesMessage.version, 2);
+    assert.strictEqual(openWorkspacesMessage.currentWorkspaceCount, 1);
+    assert.strictEqual(openWorkspacesMessage.navigationWorkspaceCount, 1);
+    assert.strictEqual(openWorkspacesMessage.searchCatalog.version, 2);
+    assert.deepStrictEqual(
+        openWorkspacesMessage.searchCatalog.openWorkspaces.map(item => item.action),
+        ['show-current-workspace', 'switch-open-workspace'],
+    );
+    assert.ok(openWorkspacesMessage.html.includes('OTHER WINDOWS'));
 }
 
 function makeWorkspaceCardFixture(rootCount) {
@@ -391,6 +422,29 @@ function runWorkspaceCardRenderingChecks() {
     assert.strictEqual(multiHtml.includes('data-action="selected-project"'), false);
     assert.strictEqual(multiHtml.includes('data-project-navigation'), false);
     assert.strictEqual(multiHtml.includes('data-has-save-action'), false);
+
+    const navigationCard = {
+        ...makeWorkspaceCardFixture(2),
+        id: 'workspace-other',
+        kind: 'navigation',
+        navigationIdentity: 'navigation-other',
+        scopeIdentity: 'scope-other',
+        name: 'Other Workspace',
+        environmentLabel: 'SSH',
+        aiSessions: undefined,
+    };
+    const workspaceHtml = webviewContent.getOpenWorkspacesGroupContent(
+        [makeWorkspaceCardFixture(3), navigationCard],
+        false,
+    );
+    const otherWindowsHtml = workspaceHtml.slice(workspaceHtml.indexOf('OTHER WINDOWS'));
+    assert.strictEqual((otherWindowsHtml.match(/class="workspace-card/g) || []).length, 1);
+    assert.ok(otherWindowsHtml.includes('data-other-workspace'));
+    assert.ok(otherWindowsHtml.includes('SSH · 2 folders'));
+    assert.strictEqual(otherWindowsHtml.includes('class="codex-sessions"'), false,
+        'OTHER WINDOWS must never render session/provider controls');
+    assert.strictEqual(otherWindowsHtml.includes('data-workspace-root-id'), false,
+        'OTHER WINDOWS roots are aggregate metadata, not expandable rows');
 
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const consistencyBody = extractFunctionBody(projectSource, 'isWorkspaceUpdateDomConsistent');
@@ -3902,8 +3956,10 @@ function runSourceContractChecks(source) {
     const updateMessagePath = path.join(root, 'src', 'dashboard', 'webviewUpdateMessages.ts');
     assert.ok(fs.existsSync(updateMessagePath));
     const updateMessages = fs.readFileSync(updateMessagePath, 'utf8');
+    assert.ok(updateMessages.includes('export function buildOpenWorkspacesUpdatedMessage('));
     assert.ok(updateMessages.includes('export function buildOpenProjectsUpdatedMessage('));
     assert.ok(updateMessages.includes('export function buildAiSessionsUpdatedMessage('));
+    assert.ok(updateMessages.includes("type: 'open-workspaces-updated'"));
     assert.ok(updateMessages.includes("type: 'open-projects-updated'"));
     assert.ok(updateMessages.includes("type: 'ai-sessions-updated'"));
     assert.ok(updateMessages.includes('version: 1'));
@@ -4097,8 +4153,8 @@ function runSourceContractChecks(source) {
     assert.ok(projectSource.includes('__projectStewardRevealWorkspaceSession'));
     const refreshStewardViewsBody = extractFunctionBody(extensionHostSource, 'refreshStewardViews');
     const aiSessionsMessageBody = extractFunctionBody(extensionHostSource, 'getAiSessionsUpdatedMessage');
-    const openProjectsMessageBody = extractFunctionBody(extensionHostSource, 'postOpenProjectsUpdated');
-    const openProjectControllerSource = fs.readFileSync(path.join(root, 'src', 'openProjects', 'dashboardController.ts'), 'utf8');
+    const openWorkspacesMessageBody = extractFunctionBody(extensionHostSource, 'postOpenWorkspacesUpdated');
+    const openWorkspaceControllerSource = fs.readFileSync(path.join(root, 'src', 'openWorkspaces', 'dashboardController.ts'), 'utf8');
     const aiSessionControllerSource = fs.readFileSync(path.join(root, 'src', 'aiSessions', 'dashboardController.ts'), 'utf8');
     const dashboardDiagnosticsSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'diagnostics.ts'), 'utf8');
     const dashboardErrorContentSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'errorContent.ts'), 'utf8');
@@ -4171,11 +4227,11 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("from './projects/projectRemovalController'"));
     assert.ok(!extensionHostSource.includes('async function removeProject('));
     assert.ok(projectRemovalControllerSource.includes('export class ProjectRemovalController'));
-    assert.ok(openProjectsMessageBody.includes('openProjectDashboardController.postUpdated()'));
-    assert.ok(openProjectControllerSource.includes('buildOpenProjectsUpdatedMessage({'));
-    assert.ok(openProjectControllerSource.includes('groups: this.options.getGroups()'));
-    assert.ok(openProjectControllerSource.includes('cards'));
-    assert.ok(openProjectControllerSource.includes('semanticRevision: this.aggregate.semanticRevision'));
+    assert.ok(openWorkspacesMessageBody.includes('openWorkspaceDashboardController.postUpdated()'));
+    assert.ok(openWorkspaceControllerSource.includes('buildOpenWorkspacesUpdatedMessage({'));
+    assert.ok(openWorkspaceControllerSource.includes('groups: this.options.getGroups()'));
+    assert.ok(openWorkspaceControllerSource.includes('cards: this.getCards()'));
+    assert.ok(openWorkspaceControllerSource.includes('semanticRevision: this.aggregate.semanticRevision'));
     assert.ok(aiSessionsMessageBody.includes('aiSessionDashboardController.getUpdatedMessage()'));
     assert.ok(aiSessionControllerSource.includes('buildAiSessionsUpdatedMessage({'));
     assert.ok(aiSessionControllerSource.includes('groups: this.options.getGroups()'));

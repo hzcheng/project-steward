@@ -1,10 +1,19 @@
 'use strict';
 
 import { Group, Project, StewardInfos, WorkspaceCardViewModel } from '../models';
-import type { OpenProjectAiSessionViewModel, AiSessionsUpdatedMessage } from '../aiSessions/types';
+import type { AiSessionsUpdatedMessage } from '../aiSessions/types';
 import type { TodoSearchCatalogItem } from '../todos/types';
-import { buildDashboardSearchCatalog, DashboardSearchCatalog } from '../webview/dashboardViewModel';
-import { getCurrentWorkspaceGroupContent, getOpenProjectsGroupContent } from '../webview/webviewContent';
+import {
+    buildDashboardSearchCatalog,
+    buildWorkspaceDashboardSearchCatalog,
+    DashboardSearchCatalog,
+    DashboardWorkspaceSearchCatalog,
+} from '../webview/dashboardViewModel';
+import {
+    getCurrentWorkspaceGroupContent,
+    getOpenProjectsGroupContent,
+    getOpenWorkspacesGroupContent,
+} from '../webview/webviewContent';
 
 export interface WorkspaceUpdatedMessage {
     type: 'workspace-updated';
@@ -35,12 +44,29 @@ export interface BuildOpenProjectsUpdatedMessageInput {
     todoSearchItems: TodoSearchCatalogItem[];
 }
 
+export interface OpenWorkspacesUpdatedMessage {
+    type: 'open-workspaces-updated';
+    version: 2;
+    semanticRevision: string;
+    currentWorkspaceCount: 0 | 1;
+    navigationWorkspaceCount: number;
+    searchCatalog: DashboardWorkspaceSearchCatalog;
+    html: string;
+}
+
+export interface BuildOpenWorkspacesUpdatedMessageInput {
+    groups: Group[];
+    cards: WorkspaceCardViewModel[];
+    collapsed: boolean;
+    semanticRevision: string;
+    todoSearchItems: TodoSearchCatalogItem[];
+}
+
 export interface BuildAiSessionsUpdatedMessageInput {
     groups: Group[];
-    cards: Project[];
+    cards: WorkspaceCardViewModel[];
     sequence: number;
     generatedAt: string;
-    openProjects: OpenProjectAiSessionViewModel[];
     todoSearchItems: TodoSearchCatalogItem[];
 }
 
@@ -59,8 +85,28 @@ export function buildOpenProjectsUpdatedMessage(input: BuildOpenProjectsUpdatedM
     };
 }
 
+export function buildOpenWorkspacesUpdatedMessage(
+    input: BuildOpenWorkspacesUpdatedMessageInput
+): OpenWorkspacesUpdatedMessage {
+    const currentWorkspaceCount = input.cards.some(card => card.kind === 'current') ? 1 : 0;
+    const navigationWorkspaceCount = input.cards.filter(card => card.kind === 'navigation').length;
+    return {
+        type: 'open-workspaces-updated',
+        version: 2,
+        semanticRevision: input.semanticRevision,
+        currentWorkspaceCount,
+        navigationWorkspaceCount,
+        searchCatalog: buildWorkspaceDashboardSearchCatalog(
+            input.groups,
+            input.cards,
+            input.todoSearchItems,
+        ),
+        html: getOpenWorkspacesGroupContent(input.cards, input.collapsed),
+    };
+}
+
 export function buildWorkspaceUpdatedMessage(input: BuildWorkspaceUpdatedMessageInput): WorkspaceUpdatedMessage {
-    const card = input.card && input.card.kind === 'current' && input.card.roots.length
+    const card = input.card && input.card.kind === 'current'
         ? input.card
         : null;
     return {
@@ -72,12 +118,21 @@ export function buildWorkspaceUpdatedMessage(input: BuildWorkspaceUpdatedMessage
 }
 
 export function buildAiSessionsUpdatedMessage(input: BuildAiSessionsUpdatedMessageInput): AiSessionsUpdatedMessage {
+    const current = input.cards.find(card => card.kind === 'current') || null;
     return {
         type: 'ai-sessions-updated',
-        version: 1,
+        version: 2,
         sequence: input.sequence,
         generatedAt: input.generatedAt,
-        openProjects: input.openProjects,
-        searchCatalog: buildDashboardSearchCatalog(input.groups, input.cards, input.todoSearchItems),
+        currentWorkspaceCount: current ? 1 : 0,
+        html: getCurrentWorkspaceGroupContent(
+            current,
+            input.cards.some(card => card.kind === 'navigation'),
+        ),
+        searchCatalog: buildWorkspaceDashboardSearchCatalog(
+            input.groups,
+            input.cards,
+            input.todoSearchItems,
+        ),
     };
 }

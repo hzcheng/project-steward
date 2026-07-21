@@ -13,7 +13,14 @@ import type {
     AiSessionRuntimeIdentity,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
-import type { AiSessionDirectoryScope } from './types';
+import type { AiSessionDirectoryScope, WorkspaceAiSessionActionTarget } from './types';
+
+interface AiSessionCreationTarget {
+    id: string;
+    name: string;
+    project?: Project;
+    workspace?: WorkspaceAiSessionActionTarget;
+}
 
 export interface NewAiSessionFields {
     title: string;
@@ -53,11 +60,17 @@ export interface AiSessionCreationRuntimeCoordinator {
 export interface AiSessionCreationControllerCommonOptions {
     isProviderId: (value: string) => value is AiSessionProviderId;
     getOpenProjects: () => Project[];
+    getWorkspaceTarget?: (cardId: string) => WorkspaceAiSessionActionTarget | null;
     pickProvider: () => Thenable<AiSessionProviderId | undefined>;
     getProviderLabel: (providerId: AiSessionProviderId) => string;
     getProvider: (providerId: AiSessionProviderId) => AiSessionCreationProvider;
     resolveDirectoryScope: (
         project: Project,
+        providerId: AiSessionProviderId,
+        explicitRootId?: string
+    ) => AiSessionDirectoryScope | null | Thenable<AiSessionDirectoryScope | null> | Promise<AiSessionDirectoryScope | null>;
+    resolveWorkspaceDirectoryScope?: (
+        target: WorkspaceAiSessionActionTarget,
         providerId: AiSessionProviderId,
         explicitRootId?: string
     ) => AiSessionDirectoryScope | null | Thenable<AiSessionDirectoryScope | null> | Promise<AiSessionDirectoryScope | null>;
@@ -121,8 +134,12 @@ export class AiSessionCreationController {
         if (this.creating) {
             return;
         }
-        const project = this.options.getOpenProjects().find(p => p.id === projectId);
-        if (!project) {
+        const workspace = this.options.getWorkspaceTarget?.(projectId) || null;
+        const project = workspace ? null : this.options.getOpenProjects().find(p => p.id === projectId);
+        const target: AiSessionCreationTarget | null = workspace
+            ? { id: workspace.cardId, name: workspace.workspace.displayName, workspace }
+            : project ? { id: project.id, name: project.name, project } : null;
+        if (!target) {
             await this.options.showWarningMessage('Open project not found.');
             return;
         }
@@ -136,7 +153,7 @@ export class AiSessionCreationController {
             if (!fields) {
                 return;
             }
-            await this.createProviderSession(providerId, project, fields, explicitRootId);
+            await this.createProviderSession(providerId, target, fields, explicitRootId);
         } finally {
             this.creating = false;
         }
@@ -160,23 +177,25 @@ export class AiSessionCreationController {
 
     private async createProviderSession(
         providerId: AiSessionProviderId,
-        project: Project,
+        target: AiSessionCreationTarget,
         fields: NewAiSessionFields,
         explicitRootId?: string
     ): Promise<void> {
-        const directoryScope = await this.options.resolveDirectoryScope(project, providerId, explicitRootId);
+        const directoryScope = target.workspace
+            ? await this.options.resolveWorkspaceDirectoryScope?.(target.workspace, providerId, explicitRootId)
+            : await this.options.resolveDirectoryScope(target.project, providerId, explicitRootId);
         if (!directoryScope) {
             return;
         }
         if (isRuntimeOptions(this.options)) {
-            await this.createRuntimeSession(providerId, project, fields, directoryScope, this.options);
+            await this.createRuntimeSession(providerId, target, fields, directoryScope, this.options);
             return;
         }
 
         const sessionProvider = this.options.getProvider(providerId);
         const cwd = this.options.getUsableTerminalCwd(directoryScope.primaryCwd);
         const pendingTerminalCwd = directoryScope.primaryCwd;
-        const terminalName = `${sessionProvider.terminalNamePrefix}: ${project.name || 'New Session'}`;
+        const terminalName = `${sessionProvider.terminalNamePrefix}: ${target.name || 'New Session'}`;
         const terminal = this.options.createTerminal({
             name: terminalName,
             cwd,
@@ -196,7 +215,7 @@ export class AiSessionCreationController {
             title: fields.title,
         });
 
-        await this.options.showActiveTab(project.id);
+        await this.options.showActiveTab(target.id);
         this.options.refresh();
         terminal.show();
         await this.options.sendNewSessionCommand(providerId, terminal, directoryScope, fields.title, markerPath);
@@ -206,7 +225,7 @@ export class AiSessionCreationController {
 
     private async createRuntimeSession(
         providerId: AiSessionProviderId,
-        project: Project,
+        target: AiSessionCreationTarget,
         fields: NewAiSessionFields,
         directoryScope: AiSessionDirectoryScope,
         options: AiSessionCreationRuntimeControllerOptions
@@ -231,7 +250,7 @@ export class AiSessionCreationController {
         const existingSessionIds = options.getExistingSessionIdsForCwd(providerId, cwd).slice();
         const createdAt = new Date(options.nowMs()).toISOString();
         const markerPath = options.getPendingMarkerPath(providerId);
-        const terminalName = `${sessionProvider.terminalNamePrefix}: ${project.name || 'New Session'}`;
+        const terminalName = `${sessionProvider.terminalNamePrefix}: ${target.name || 'New Session'}`;
         const launch = cloneLaunchSpec(
             sessionProvider.buildNewSessionLaunchSpec(directoryScope, fields.title, markerPath)
         );
@@ -244,7 +263,7 @@ export class AiSessionCreationController {
                 cwd,
                 pendingId,
             },
-            projectName: project.name || 'New Session',
+            projectName: target.name || 'New Session',
             terminalName,
             createdAt,
             excludedSessionIds: existingSessionIds,
@@ -270,13 +289,13 @@ export class AiSessionCreationController {
         }
         if (result.status === 'conflict') {
             options.refresh();
-            await options.announceStatus(project.id, 'Multiple live runtimes match this AI session.');
+            await options.announceStatus(target.id, 'Multiple live runtimes match this AI session.');
             return;
         }
         if (result.status === 'blocked') {
             options.refresh();
             await options.announceStatus(
-                project.id,
+                target.id,
                 'Runtime creation is still awaiting lifecycle acknowledgement.'
             );
             return;
@@ -284,7 +303,7 @@ export class AiSessionCreationController {
         if (result.status === 'started') {
             await options.rememberDirectoryScope?.(directoryScope);
         }
-        await options.showActiveTab(project.id);
+        await options.showActiveTab(target.id);
         options.refresh();
         options.scheduleNewSessionRefresh(providerId);
     }
@@ -304,6 +323,9 @@ function isRuntimeOptions(
 }
 
 function validateControllerOptions(options: AiSessionCreationControllerOptions): void {
+    if (options?.getWorkspaceTarget && typeof options.resolveWorkspaceDirectoryScope !== 'function') {
+        throw new Error('AI session workspace creation routing is incomplete.');
+    }
     if (options?.runtimeCoordinator === undefined) {
         return;
     }

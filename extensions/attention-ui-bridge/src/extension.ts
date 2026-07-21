@@ -5,8 +5,8 @@ import * as vscode from 'vscode';
 
 import { resolveBridgeStorageRoot } from './bridgeStorageRoot';
 import { LocalStore } from './localStore';
-import { OpenProjectCoordinator } from './openProjectCoordinator';
-import { replaceOpenProjectPublicationUris } from './openProjectPublication';
+import { OpenWorkspaceCoordinator } from './openWorkspaceCoordinator';
+import { replaceOpenWorkspacePublicationUris } from './openWorkspacePublication';
 import { ProductionAttentionStore } from './productionAttentionStore';
 import { aggregateAttentionSnapshots, validateAttentionAggregate } from '../../../src/aiSessions/attentionAggregate';
 import {
@@ -30,10 +30,12 @@ const PRODUCTION_WORKSPACE_AGGREGATE = '_projectStewardAttention.workspace.aggre
 const PRODUCTION_BRIDGE_ACKNOWLEDGE = '_projectStewardAttention.bridge.acknowledge';
 const PRODUCTION_BRIDGE_HANDSHAKE = '_projectStewardAttention.bridge.handshake';
 const PRODUCTION_BRIDGE_UNREGISTER = '_projectStewardAttention.bridge.unregister';
-const OPEN_PROJECT_BRIDGE_PUBLISH = '_projectStewardOpenProjects.bridge.publish';
-const OPEN_PROJECT_BRIDGE_UNREGISTER = '_projectStewardOpenProjects.bridge.unregister';
-const OPEN_PROJECT_WORKSPACE_AGGREGATE = '_projectStewardOpenProjects.workspace.aggregate';
-const OPEN_PROJECT_WORKSPACE_DIAGNOSTIC = '_projectStewardOpenProjects.workspace.diagnostic';
+const OPEN_WORKSPACE_BRIDGE_HANDSHAKE = '_projectStewardOpenWorkspaces.bridge.handshake';
+const OPEN_WORKSPACE_BRIDGE_PUBLISH = '_projectStewardOpenWorkspaces.bridge.publish';
+const OPEN_WORKSPACE_BRIDGE_UNREGISTER = '_projectStewardOpenWorkspaces.bridge.unregister';
+const OPEN_WORKSPACE_AGGREGATE = '_projectStewardOpenWorkspaces.workspace.aggregate';
+const OPEN_WORKSPACE_DIAGNOSTIC = '_projectStewardOpenWorkspaces.workspace.diagnostic';
+const OPEN_WORKSPACE_CAPABILITIES = { workspaces: true, atomicReplace: true, focusLeases: true } as const;
 
 interface AggregateState {
     bridgeProcessId: string;
@@ -61,7 +63,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     let lastProductionAggregate = '';
     let scanTimer: NodeJS.Timeout | null = null;
     const acknowledgedEventIds = await store.readAcknowledgements();
-    const openProjectCoordinator = new OpenProjectCoordinator(bridgeRoot, {
+    const openWorkspaceCoordinator = new OpenWorkspaceCoordinator(bridgeRoot, {
         now: () => Date.now(),
         setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
         clearInterval: handle => clearInterval(handle as NodeJS.Timeout),
@@ -70,12 +72,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return fs.watch(directory, onDidChange);
         },
         deliverAggregate: aggregate => vscode.commands.executeCommand(
-            OPEN_PROJECT_WORKSPACE_AGGREGATE,
+            OPEN_WORKSPACE_AGGREGATE,
             aggregate,
         ),
         reportDiagnostic: event => {
-            outputChannel.appendLine(`[OpenProjects] ${JSON.stringify(event)}`);
-            void vscode.commands.executeCommand(OPEN_PROJECT_WORKSPACE_DIAGNOSTIC, event).then(
+            outputChannel.appendLine(`[OpenWorkspaces] ${JSON.stringify(event)}`);
+            void vscode.commands.executeCommand(OPEN_WORKSPACE_DIAGNOSTIC, event).then(
                 () => undefined,
                 () => undefined,
             );
@@ -190,19 +192,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await scanProductionAndNotify(true);
         return { acknowledged: eventIds.length };
     });
-    const openProjectPublishDisposable = vscode.commands.registerCommand(
-        OPEN_PROJECT_BRIDGE_PUBLISH,
+    const openWorkspaceHandshakeDisposable = vscode.commands.registerCommand(
+        OPEN_WORKSPACE_BRIDGE_HANDSHAKE,
         (raw: unknown) => {
-            const workspaceFile = vscode.workspace.workspaceFile;
-            const workspaceUris = workspaceFile && workspaceFile.scheme !== 'untitled'
-                ? [workspaceFile.toString()]
-                : (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString());
-            return openProjectCoordinator.publish(replaceOpenProjectPublicationUris(raw, workspaceUris));
+            const compatible = isOpenWorkspaceHandshakeCompatible(raw);
+            return {
+                accepted: compatible,
+                protocolVersion: 2,
+                bridgeExtensionVersion,
+                capabilities: OPEN_WORKSPACE_CAPABILITIES,
+                ...(compatible ? {} : { errorCode: 'update-required' }),
+            };
         },
     );
-    const openProjectUnregisterDisposable = vscode.commands.registerCommand(
-        OPEN_PROJECT_BRIDGE_UNREGISTER,
-        (raw: unknown) => openProjectCoordinator.unregister(raw),
+    const openWorkspacePublishDisposable = vscode.commands.registerCommand(
+        OPEN_WORKSPACE_BRIDGE_PUBLISH,
+        (raw: unknown) => {
+            const workspaceFile = vscode.workspace.workspaceFile;
+            const workspaceUri = workspaceFile && workspaceFile.scheme !== 'untitled'
+                ? workspaceFile.toString()
+                : null;
+            const rootUris = (vscode.workspace.workspaceFolders || [])
+                .map(folder => folder.uri.toString());
+            return openWorkspaceCoordinator.publish(
+                replaceOpenWorkspacePublicationUris(raw, workspaceUri, rootUris),
+            );
+        },
+    );
+    const openWorkspaceUnregisterDisposable = vscode.commands.registerCommand(
+        OPEN_WORKSPACE_BRIDGE_UNREGISTER,
+        (raw: unknown) => openWorkspaceCoordinator.unregister(raw),
     );
     const statusDisposable = vscode.commands.registerCommand(BRIDGE_STATUS, async () => {
         const scan = await store.scan(Date.now());
@@ -256,13 +275,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         productionPublishDisposable,
         productionUnregisterDisposable,
         productionAcknowledgeDisposable,
-        openProjectPublishDisposable,
-        openProjectUnregisterDisposable,
+        openWorkspaceHandshakeDisposable,
+        openWorkspacePublishDisposable,
+        openWorkspaceUnregisterDisposable,
         statusDisposable,
         watcherDisposable,
         clearDisposable,
         scanRegistration,
-        openProjectCoordinator,
+        openWorkspaceCoordinator,
         {
             dispose: () => {
                 if (scanTimer !== null) {
@@ -277,6 +297,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             },
         },
     );
+}
+
+function isOpenWorkspaceHandshakeCompatible(raw: unknown): boolean {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const request = raw as Record<string, unknown>;
+    if (Object.keys(request).sort().join('\n')
+        !== ['protocolVersion', 'mainExtensionVersion', 'instanceId', 'capabilities'].sort().join('\n')) {
+        return false;
+    }
+    if (request.protocolVersion !== 2
+        || typeof request.mainExtensionVersion !== 'string'
+        || !request.mainExtensionVersion
+        || request.mainExtensionVersion.length > 64
+        || typeof request.instanceId !== 'string'
+        || !/^[a-f0-9]{32}$/.test(request.instanceId)) {
+        return false;
+    }
+    const capabilities = request.capabilities as Record<string, unknown>;
+    return !!capabilities
+        && typeof capabilities === 'object'
+        && !Array.isArray(capabilities)
+        && Object.keys(capabilities).sort().join('\n')
+            === Object.keys(OPEN_WORKSPACE_CAPABILITIES).sort().join('\n')
+        && capabilities.workspaces === true
+        && capabilities.atomicReplace === true
+        && capabilities.focusLeases === true;
 }
 
 function readBridgeExtensionVersion(context: vscode.ExtensionContext): string {

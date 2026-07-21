@@ -15,7 +15,7 @@ import {
 import type { ActiveEditorUri } from '../workspaces/sessionScope';
 import type { OpenWorkspace } from '../workspaces/types';
 import { sanitizeAiSessionAlias } from './aliasStore';
-import type { AiSessionDirectoryScope } from './types';
+import type { AiSessionDirectoryScope, WorkspaceAiSessionActionTarget } from './types';
 
 export type AiSessionWorkspaceLaunchAction = 'create' | 'resume';
 
@@ -128,6 +128,7 @@ export async function preflightAiSessionDirectoryScope(
 
 export interface AiSessionCommandControllerOptions {
     getOpenProjects: () => Project[];
+    getWorkspaceTarget?: (cardId: string) => WorkspaceAiSessionActionTarget | null;
     getProjectKey: (project: Project) => string;
     resolveDirectoryScope?: (
         project: Project,
@@ -200,6 +201,32 @@ export class AiSessionCommandController {
         return result.status === 'ready' ? result.directoryScope : null;
     }
 
+    async resolveWorkspaceDirectoryScope(
+        workspace: OpenWorkspace,
+        providerId: AiSessionProviderId,
+        session?: CodexSession,
+        explicitRootId?: string
+    ): Promise<AiSessionDirectoryScope | null> {
+        const result = await preflightAiSessionDirectoryScope({
+            workspace,
+            provider: this.options.getProvider?.(providerId) || null,
+            action: session ? 'resume' : 'create',
+            isWorkspaceTrusted: this.options.isWorkspaceTrusted?.() === true,
+            getProviderDirectoryCapability: this.options.getProviderDirectoryCapability,
+            isDirectory: this.options.isDirectory,
+            pickWorkspaceRoot: this.options.pickWorkspaceRoot,
+            activeEditorUri: this.options.getActiveEditorUri?.(),
+            explicitRootId,
+            historicalCwd: session?.cwd || session?.workDir,
+            lastUsedRootId: this.options.getPrimaryRootId?.(workspace),
+        });
+        if (result.status === 'blocked') {
+            this.options.showWarningMessage?.(result.message);
+            return null;
+        }
+        return result.status === 'ready' ? result.directoryScope : null;
+    }
+
     rememberDirectoryScope(directoryScope: AiSessionDirectoryScope): Thenable<void> | Promise<void> {
         if (!this.options.setPrimaryRootId) {
             return Promise.resolve();
@@ -211,6 +238,11 @@ export class AiSessionCommandController {
     }
 
     async toggleSessionsExpanded(projectId: string, expanded: boolean): Promise<void> {
+        const workspaceTarget = this.options.getWorkspaceTarget?.(projectId);
+        if (workspaceTarget) {
+            await this.options.setExpanded(workspaceTarget.workspace.scopeIdentity, expanded);
+            return;
+        }
         const project = this.options.getOpenProjects().find(p => p.id === projectId);
         if (!project) {
             return;
@@ -224,6 +256,12 @@ export class AiSessionCommandController {
             return;
         }
 
+        const workspaceTarget = this.options.getWorkspaceTarget?.(projectId);
+        if (workspaceTarget) {
+            await this.options.setActiveProvider(workspaceTarget.workspace.scopeIdentity, providerId);
+            this.options.refresh();
+            return;
+        }
         const project = this.options.getOpenProjects().find(p => p.id === projectId);
         if (!project) {
             return;

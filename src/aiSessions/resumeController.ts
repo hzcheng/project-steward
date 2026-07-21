@@ -7,7 +7,15 @@ import type {
     AiSessionRuntimeActionResult,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
-import type { AiSessionDirectoryScope } from './types';
+import type { AiSessionDirectoryScope, WorkspaceAiSessionActionTarget } from './types';
+
+interface AiSessionResumeTarget {
+    id: string;
+    name: string;
+    session: CodexSession;
+    project?: Project;
+    workspace?: WorkspaceAiSessionActionTarget;
+}
 
 export interface AiSessionResumeTerminal {
     show(): void;
@@ -60,10 +68,17 @@ export interface AiSessionResumeTrackEntry<TTerminal extends AiSessionResumeTerm
 
 export interface AiSessionResumeControllerCommonOptions {
     getOpenProjects: () => Project[];
+    getWorkspaceTarget?: (cardId: string) => WorkspaceAiSessionActionTarget | null;
     getProvider: (providerId: AiSessionProviderId) => AiSessionResumeProvider | null;
     getProjectSession: (project: Project, providerId: AiSessionProviderId, sessionId: string) => CodexSession | null | undefined;
     resolveDirectoryScope: (
         project: Project,
+        session: CodexSession,
+        providerId: AiSessionProviderId,
+        explicitRootId?: string
+    ) => AiSessionDirectoryScope | null | Thenable<AiSessionDirectoryScope | null> | Promise<AiSessionDirectoryScope | null>;
+    resolveWorkspaceDirectoryScope?: (
+        target: WorkspaceAiSessionActionTarget,
         session: CodexSession,
         providerId: AiSessionProviderId,
         explicitRootId?: string
@@ -162,24 +177,39 @@ export class AiSessionResumeController<
             return;
         }
 
-        const project = this.options.getOpenProjects().find(candidate => candidate.id === projectId);
-        const session = project ? this.options.getProjectSession(project, providerId, sessionId) : null;
+        const workspace = this.options.getWorkspaceTarget?.(projectId) || null;
+        const workspaceSession = workspace
+            ? (workspace.sessions.sessionsByProvider[providerId] || [])
+                .find(candidate => candidate.id === sessionId)
+            : null;
+        const project = workspace ? null : this.options.getOpenProjects().find(candidate => candidate.id === projectId);
+        const projectSession = project ? this.options.getProjectSession(project, providerId, sessionId) : null;
+        const target: AiSessionResumeTarget | null = workspace && workspaceSession
+            ? { id: workspace.cardId, name: workspace.workspace.displayName, session: workspaceSession, workspace }
+            : project && projectSession
+                ? { id: project.id, name: project.name, session: projectSession, project }
+                : null;
         const sessionProvider = this.options.getProvider(providerId);
-        if (!project || !session) {
+        if (!target) {
             this.options.showWarningMessage(`Selected ${sessionProvider?.label || 'AI'} session not found.`);
             return;
         }
 
-        const directoryScope = await this.options.resolveDirectoryScope(
-            project, session, providerId, explicitRootId
-        );
+        const session = target.session;
+        const directoryScope = target.workspace
+            ? await this.options.resolveWorkspaceDirectoryScope?.(
+                target.workspace, session, providerId, explicitRootId
+            )
+            : await this.options.resolveDirectoryScope(
+                target.project, session, providerId, explicitRootId
+            );
         if (!directoryScope || !sessionProvider) {
             return;
         }
 
         if (isRuntimeOptions(this.options)) {
             await this.resumeRuntime(
-                project, providerId, session, sessionProvider, directoryScope, this.options
+                target, providerId, sessionProvider, directoryScope, this.options
             );
             return;
         }
@@ -187,7 +217,7 @@ export class AiSessionResumeController<
         const existingTerminal = this.options.getExistingTerminal(providerId, session);
         if (existingTerminal && !this.options.isTerminalComplete(existingTerminal)) {
             existingTerminal.terminal.show();
-            await this.options.showActiveTab(projectId);
+            await this.options.showActiveTab(target.id);
             this.options.refresh();
             return;
         }
@@ -244,7 +274,7 @@ export class AiSessionResumeController<
                 ) || undefined,
             });
             this.options.syncActiveTerminal();
-            await this.options.showActiveTab(projectId);
+            await this.options.showActiveTab(target.id);
             this.options.refresh();
         } finally {
             this.options.finishResume(providerId, session.id);
@@ -252,19 +282,19 @@ export class AiSessionResumeController<
     }
 
     private async resumeRuntime(
-        project: Project,
+        target: AiSessionResumeTarget,
         providerId: AiSessionProviderId,
-        session: CodexSession,
         sessionProvider: AiSessionResumeProvider,
         directoryScope: AiSessionDirectoryScope,
         options: AiSessionResumeRuntimeControllerOptions<TTerminal>
     ): Promise<void> {
+        const session = target.session;
         if (options.getRuntimeConflict?.(
             providerId, session.id, directoryScope.workspaceScopeIdentity
         )) {
             options.refresh();
             await options.announceStatus(
-                project.id,
+                target.id,
                 'Multiple live runtimes match this AI session.'
             );
             return;
@@ -286,7 +316,7 @@ export class AiSessionResumeController<
                 workspaceRootHostPaths: [...directoryScope.workspaceRootHostPaths],
                 cwd,
             },
-            projectName: project.name || 'AI Session',
+            projectName: target.name || 'AI Session',
             terminalName: options.getTerminalName(providerId, session),
             launch,
             directoryScope,
@@ -310,7 +340,7 @@ export class AiSessionResumeController<
         if (result.status === 'conflict') {
             options.refresh();
             await options.announceStatus(
-                project.id,
+                target.id,
                 'Multiple live runtimes match this AI session.'
             );
             return;
@@ -318,7 +348,7 @@ export class AiSessionResumeController<
         if (result.status === 'blocked') {
             options.refresh();
             await options.announceStatus(
-                project.id,
+                target.id,
                 'The previous runtime is still awaiting lifecycle acknowledgement.'
             );
             return;
@@ -326,7 +356,7 @@ export class AiSessionResumeController<
         if (result.status === 'started') {
             await options.rememberDirectoryScope?.(directoryScope);
         }
-        await options.showActiveTab(project.id);
+        await options.showActiveTab(target.id);
         options.refresh();
     }
 }
@@ -350,6 +380,9 @@ function validateControllerOptions<
     TTerminal extends AiSessionResumeTerminal,
     TEntry extends AiSessionResumeTerminalEntry<TTerminal>
 >(options: AiSessionResumeControllerOptions<TTerminal, TEntry>): void {
+    if (options?.getWorkspaceTarget && typeof options.resolveWorkspaceDirectoryScope !== 'function') {
+        throw new Error('AI session workspace resume routing is incomplete.');
+    }
     if (options?.runtimeCoordinator === undefined) {
         return;
     }

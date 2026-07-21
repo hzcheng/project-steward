@@ -1,7 +1,6 @@
 'use strict';
 
 import type { AiSessionProviderId, Group, Project } from '../models';
-import { normalizeOpenProjectIdentity } from '../openProjects/projection';
 import type { TodoSearchCatalogItem } from '../todos/types';
 
 export type DashboardSearchProjectAction = 'open-current' | 'switch-open' | 'open-saved';
@@ -102,6 +101,30 @@ function searchable(...values: Array<string | undefined>): string {
     return values.filter(Boolean).join(' ').toLowerCase();
 }
 
+function removeTrailingIdentitySeparators(value: string): string {
+    if (value === '/' || /^[A-Za-z]:\/$/.test(value)) {
+        return value;
+    }
+    return value.replace(/\/+$/g, '');
+}
+
+function normalizeDashboardProjectIdentity(uri: string): string {
+    const value = uri || '';
+    const uriMatch = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/]*)(.*)$/.exec(value);
+    if (!uriMatch) {
+        if (/^[A-Za-z]:[\\/]/.test(value)) {
+            return removeTrailingIdentitySeparators(value.replace(/\\/g, '/'));
+        }
+        return removeTrailingIdentitySeparators(value);
+    }
+    const scheme = uriMatch[1].toLowerCase();
+    const authority = uriMatch[2]
+        .replace(/%[0-9a-fA-F]{2}/g, escape => escape.toUpperCase())
+        .replace(/%2B/g, '+');
+    const uriPath = removeTrailingIdentitySeparators(uriMatch[3]);
+    return `${scheme}://${authority}${uriPath}`;
+}
+
 export function buildDashboardSearchCatalog(
     groups: Group[],
     openProjects: Project[],
@@ -112,7 +135,7 @@ export function buildDashboardSearchCatalog(
     const savedByIdentity = new Map<string, DashboardSearchProjectItem>();
 
     (openProjects || []).forEach(project => {
-        const identity = normalizeOpenProjectIdentity(project.path) || project.id;
+        const identity = normalizeDashboardProjectIdentity(project.path) || project.id;
         const current = project.openProjectCardKind !== 'projectNavigation';
         openItems.push({
             key: `open:${identity}`,
@@ -142,7 +165,7 @@ export function buildDashboardSearchCatalog(
     });
 
     (groups || []).forEach(group => (group.projects || []).forEach(project => {
-        const identity = normalizeOpenProjectIdentity(project.path) || project.id;
+        const identity = normalizeDashboardProjectIdentity(project.path) || project.id;
         let item = savedByIdentity.get(identity);
         if (!item) {
             item = {
