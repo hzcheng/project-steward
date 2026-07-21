@@ -116,6 +116,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
 
     private sequence = 0;
     private latestWorkspace: OpenWorkspaceRecord | null;
+    private latestGeneration = 0;
     private lastSemantic = '';
     private lastAggregateRevision = '';
     private connected = false;
@@ -174,7 +175,15 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
             raw => this.receiveBridgeDiagnostic(raw),
         );
         this.heartbeatHandle = setHeartbeat(
-            () => { void this.enqueuePublication(this.latestWorkspace, false, true); },
+            () => {
+                void this.enqueuePublication(
+                    this.latestWorkspace,
+                    false,
+                    true,
+                    this.latestGeneration,
+                    this.isRecovering(),
+                );
+            },
             OPEN_WORKSPACE_HEARTBEAT_MS,
         );
         this.emitDiagnostic({ event: 'activate', workspaceCount: this.latestWorkspace ? 1 : 0 });
@@ -184,7 +193,14 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
     publish(workspace: OpenWorkspaceRecord | null, followsFocusEvent = false): Promise<boolean> {
         if (this.disposed) { return Promise.resolve(false); }
         this.latestWorkspace = workspace ? validateOpenWorkspaceRecord(workspace) : null;
-        return this.enqueuePublication(this.latestWorkspace, followsFocusEvent, false);
+        const generation = ++this.latestGeneration;
+        return this.enqueuePublication(
+            this.latestWorkspace,
+            followsFocusEvent,
+            false,
+            generation,
+            this.isRecovering(),
+        );
     }
 
     async receiveAggregate(raw: unknown): Promise<void> {
@@ -233,12 +249,16 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
         workspace: OpenWorkspaceRecord | null,
         followsFocusEvent: boolean,
         forceHeartbeat: boolean,
+        generation: number,
+        latestOnly: boolean,
     ): Promise<boolean> {
         if (this.disposed) { return Promise.resolve(false); }
         let accepted = false;
         const operation = async () => {
+            if (latestOnly && generation !== this.latestGeneration) { return; }
             if (this.disposed || !await this.ensureHandshake() || this.disposed) { return; }
-            accepted = await this.publishNow(workspace, followsFocusEvent, forceHeartbeat);
+            if (latestOnly && generation !== this.latestGeneration) { return; }
+            accepted = await this.publishNow(workspace, followsFocusEvent, forceHeartbeat, generation);
         };
         const result = this.publicationQueue.then(operation, operation);
         this.publicationQueue = result.then(() => undefined, () => undefined);
@@ -249,6 +269,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
         workspace: OpenWorkspaceRecord | null,
         followsFocusEvent: boolean,
         forceHeartbeat: boolean,
+        generation: number,
     ): Promise<boolean> {
         if (this.disposed) { return false; }
         if (this.sequence >= Number.MAX_SAFE_INTEGER) {
@@ -272,8 +293,10 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
         try {
             await commandFlight;
             this.lastSemantic = semantic;
-            this.retryAttempt = 0;
-            if (!this.disposed) { this.setStatus('ready'); }
+            if (generation === this.latestGeneration) {
+                this.retryAttempt = 0;
+                if (!this.disposed) { this.setStatus('ready'); }
+            }
             this.emitDiagnostic({
                 event: 'publish-success',
                 sequence: publication.sequence,
@@ -354,10 +377,22 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
         this.retryAttempt += 1;
         this.retryTimer = this.scheduleTimeout(() => {
             this.retryTimer = null;
-            void this.ensureHandshake().then(ready => {
-                if (ready) { void this.enqueuePublication(this.latestWorkspace, false, true); }
-            });
+            void this.enqueuePublication(
+                this.latestWorkspace,
+                false,
+                true,
+                this.latestGeneration,
+                true,
+            );
         }, delay);
+    }
+
+    private isRecovering(): boolean {
+        return !this.connected
+            || this.handshakeFlight !== null
+            || this.retryTimer !== null
+            || this.retryAttempt > 0
+            || this.status !== 'ready';
     }
 
     private setStatus(status: OpenWorkspaceBridgeStatus): void {

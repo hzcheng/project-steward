@@ -180,3 +180,54 @@ Self-review confirmed that no consumer detail crosses the command boundary,
 only response validation can construct the terminal error type, and no path
 other than publication success resets retry state or emits `ready`. No further
 Critical, Important, or Minor finding remains.
+
+---
+
+## Important review follow-up: coalesced recovery publications
+
+Status: complete in a focused follow-up commit.
+
+### Finding resolved
+
+- Publications captured while disconnected, handshaking, retrying, or awaiting
+  the first successful current-generation acknowledgement are generation-gated.
+  A newer workspace or `null` closure supersedes all older captured recovery
+  operations before either handshake or publication.
+- Retry recovery now enqueues the current desired generation directly. Only a
+  successful acknowledgement of that current generation resets `retryAttempt`
+  and emits `ready`; handshake success and stale acknowledgements cannot reset
+  the backoff or churn status.
+- Publications queued after the bridge is fully ready retain their existing
+  sequential semantics, and disposal/unregister ordering is unchanged.
+
+### Follow-up TDD evidence
+
+RED used a deferred retry handshake after W1 failed, then queued W2 and W3. The
+new regression initially observed both stale and current publications:
+
+```text
+AssertionError: recovery handshake completion must publish only the latest desired generation
+actual: [W2, W3]
+expected: [W3]
+```
+
+GREEN coverage proves:
+
+- deferred recovery publishes only W3, never the captured W1 or W2;
+- when the first W3 publication fails, the next delay is `500` rather than a
+  reset `100`, exactly one timer remains active, and status stays
+  `unavailable` until W3 is eventually acknowledged and emits `ready`;
+- a latest `null` closure supersedes queued workspace generations; and
+- a healthy connected client still publishes W1, W2, and W3 sequentially.
+
+### Follow-up verification and self-review
+
+Fresh verification passed main compile, UI Bridge compile, open-workspace
+safety, Dashboard Webview, AI safety, and AI tmux. Source/generated Webview
+parity and `git diff --check` also passed.
+
+Self-review confirmed the latest-only window remains active across handshake
+completion until the current generation is acknowledged, same-generation retry
+heartbeats remain valid, normal ready-state sequencing is preserved, and no
+dispose/unregister path changed. No further Critical, Important, or Minor
+finding remains.

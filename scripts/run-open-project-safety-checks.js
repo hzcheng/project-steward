@@ -1289,6 +1289,165 @@ async function runOpenWorkspaceHardeningChecks() {
         'ready must not churn between retry handshakes and failed required publications');
     backoffClient.dispose();
 
+    const staleW1 = makeWorkspaceRecord(80);
+    const staleW2 = makeWorkspaceRecord(81);
+    const latestW3 = makeWorkspaceRecord(82);
+    const recoveryTimers = [];
+    const activeRecoveryTimers = new Set();
+    const recoveryStatuses = [];
+    const recoveryPublications = [];
+    let recoveryHandshakeAttempts = 0;
+    let latestW3Attempts = 0;
+    let resolveRecoveryHandshake;
+    const pendingRecoveryHandshake = new Promise(resolve => { resolveRecoveryHandshake = resolve; });
+    const recoveryClient = new OpenWorkspaceBridgeClient(
+        staleW1,
+        () => undefined,
+        () => undefined,
+        {
+            instanceId: 'c'.repeat(32),
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: async (command, argument) => {
+                if (command.endsWith('.bridge.handshake')) {
+                    recoveryHandshakeAttempts += 1;
+                    if (recoveryHandshakeAttempts === 1) throw new Error('initial handshake failure');
+                    if (recoveryHandshakeAttempts === 2) return pendingRecoveryHandshake;
+                    return acceptedHandshake;
+                }
+                if (command.endsWith('.bridge.publish')) {
+                    recoveryPublications.push(argument.workspace);
+                    if (argument.workspace?.navigationIdentity === latestW3.navigationIdentity) {
+                        latestW3Attempts += 1;
+                        if (latestW3Attempts === 1) throw new Error('latest workspace publish failed');
+                    }
+                }
+                return undefined;
+            },
+            setInterval: () => 'heartbeat',
+            clearInterval: () => undefined,
+            setTimeout: (callback, delayMs) => {
+                const timer = {
+                    delayMs,
+                    callback: () => {
+                        activeRecoveryTimers.delete(timer);
+                        callback();
+                    },
+                };
+                recoveryTimers.push(timer);
+                activeRecoveryTimers.add(timer);
+                return timer;
+            },
+            clearTimeout: timer => activeRecoveryTimers.delete(timer),
+            onStatusChange: status => recoveryStatuses.push(status),
+        }
+    );
+    for (let attempt = 0; attempt < 50 && recoveryTimers.length === 0; attempt += 1) await flush();
+    assert.deepStrictEqual(recoveryTimers.map(timer => timer.delayMs), [100]);
+    recoveryTimers[0].callback();
+    for (let attempt = 0; attempt < 50 && recoveryHandshakeAttempts < 2; attempt += 1) await flush();
+    const staleW2Publication = recoveryClient.publish(staleW2);
+    const latestW3Publication = recoveryClient.publish(latestW3);
+    resolveRecoveryHandshake(acceptedHandshake);
+    await Promise.all([staleW2Publication, latestW3Publication]);
+    for (let attempt = 0; attempt < 50 && recoveryTimers.length < 2; attempt += 1) await flush();
+    assert.deepStrictEqual(
+        recoveryPublications.map(workspace => workspace?.navigationIdentity || null),
+        [latestW3.navigationIdentity],
+        'recovery handshake completion must publish only the latest desired generation'
+    );
+    assert.deepStrictEqual(recoveryTimers.map(timer => timer.delayMs), [100, 500],
+        'failure of the latest recovery publication must continue the prior backoff');
+    assert.deepStrictEqual(recoveryStatuses, ['unavailable'],
+        'stale acknowledgement and retry handshake success must not emit ready');
+    assert.strictEqual(activeRecoveryTimers.size, 1);
+    recoveryTimers[1].callback();
+    for (let attempt = 0; attempt < 50 && recoveryStatuses.at(-1) !== 'ready'; attempt += 1) await flush();
+    assert.deepStrictEqual(
+        recoveryPublications.map(workspace => workspace?.navigationIdentity || null),
+        [latestW3.navigationIdentity, latestW3.navigationIdentity]
+    );
+    assert.deepStrictEqual(recoveryStatuses, ['unavailable', 'ready']);
+    assert.strictEqual(activeRecoveryTimers.size, 0);
+    recoveryClient.dispose();
+
+    const closureW1 = makeWorkspaceRecord(83);
+    const closureW2 = makeWorkspaceRecord(84);
+    const closureTimers = [];
+    const closurePublications = [];
+    let closureHandshakeAttempts = 0;
+    let resolveClosureHandshake;
+    const pendingClosureHandshake = new Promise(resolve => { resolveClosureHandshake = resolve; });
+    const closureClient = new OpenWorkspaceBridgeClient(
+        closureW1,
+        () => undefined,
+        () => undefined,
+        {
+            instanceId: 'd'.repeat(32),
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: async (command, argument) => {
+                if (command.endsWith('.bridge.handshake')) {
+                    closureHandshakeAttempts += 1;
+                    if (closureHandshakeAttempts === 1) throw new Error('initial closure handshake failure');
+                    if (closureHandshakeAttempts === 2) return pendingClosureHandshake;
+                    return acceptedHandshake;
+                }
+                if (command.endsWith('.bridge.publish')) closurePublications.push(argument.workspace);
+                return undefined;
+            },
+            setInterval: () => 'heartbeat',
+            clearInterval: () => undefined,
+            setTimeout: (callback, delayMs) => {
+                const timer = { callback, delayMs };
+                closureTimers.push(timer);
+                return timer;
+            },
+            clearTimeout: () => undefined,
+        }
+    );
+    for (let attempt = 0; attempt < 50 && closureTimers.length === 0; attempt += 1) await flush();
+    closureTimers[0].callback();
+    for (let attempt = 0; attempt < 50 && closureHandshakeAttempts < 2; attempt += 1) await flush();
+    const staleClosurePublication = closureClient.publish(closureW2);
+    const latestClosurePublication = closureClient.publish(null);
+    resolveClosureHandshake(acceptedHandshake);
+    await Promise.all([staleClosurePublication, latestClosurePublication]);
+    for (let attempt = 0; attempt < 50 && closurePublications.length === 0; attempt += 1) await flush();
+    assert.deepStrictEqual(closurePublications, [null],
+        'a null closure generation must supersede every captured stale workspace during recovery');
+    closureClient.dispose();
+
+    const connectedW1 = makeWorkspaceRecord(85);
+    const connectedW2 = makeWorkspaceRecord(86);
+    const connectedW3 = makeWorkspaceRecord(87);
+    const connectedPublications = [];
+    const connectedClient = new OpenWorkspaceBridgeClient(
+        connectedW1,
+        () => undefined,
+        () => undefined,
+        {
+            instanceId: 'e'.repeat(32),
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: async (command, argument) => {
+                if (command.endsWith('.bridge.handshake')) return acceptedHandshake;
+                if (command.endsWith('.bridge.publish')) connectedPublications.push(argument.workspace);
+                return undefined;
+            },
+            setInterval: () => 'heartbeat',
+            clearInterval: () => undefined,
+        }
+    );
+    for (let attempt = 0; attempt < 50 && connectedPublications.length === 0; attempt += 1) await flush();
+    await Promise.all([
+        connectedClient.publish(connectedW2),
+        connectedClient.publish(connectedW3),
+    ]);
+    assert.deepStrictEqual(
+        connectedPublications.map(workspace => workspace.navigationIdentity),
+        [connectedW1.navigationIdentity, connectedW2.navigationIdentity, connectedW3.navigationIdentity],
+        'healthy connected publications must preserve their sequential order'
+    );
+    connectedClient.dispose();
+
     let resolveHandshake;
     const pendingHandshake = new Promise(resolve => { resolveHandshake = resolve; });
     const handshakeDisposeExecutions = [];
