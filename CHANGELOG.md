@@ -6,12 +6,18 @@ All notable changes to the "Project Steward" extension will be documented in thi
 
 ### Added
 
+-   Represent one card per non-empty VS Code workspace, with roots shown only as metadata and one flat AI-session surface for single-folder, saved multi-root, and untitled multi-root windows.
+-   Give new and resumed Codex, Kimi, and Claude sessions access to all workspace roots through provider-native `--add-dir`, with one primary cwd shared by Direct Terminal and both tmux layouts.
+-   Add trust and provider-capability preflight: Restricted Mode keeps cards and history readable while launch is blocked, and missing verified `--add-dir` capability creates no partial runtime.
 -   Add an opt-in persistent tmux runtime for new and resumed Codex, Kimi, and Claude sessions, with machine-scoped executable and layout settings.
 -   Add the default project layout (one tmux session per project and one window per AI session) and an isolated one-session-per-AI-session layout.
 -   Show tmux backend, detached, and runtime-conflict state in Active Sessions, with backend-specific Detach Terminal actions.
 
 ### Changed
 
+-   Use the UI Bridge v2 workspace registry and fail-closed other-window navigation. Unproven saved-workspace navigation uses VS Code's native `Switch Window` picker, while an untitled workspace asks the user to save it first; member roots are never opened as a fallback.
+-   Preserve saved projects unchanged, including groups, favorites, colors, descriptions, and member-folder entries. Saving a workspace adds one project without merging or deleting existing entries.
+-   Intentionally ignore transient v1 open-window state. Legacy terminal and tmux runtime bindings are not adopted or migrated; existing provider processes keep running and can be recreated or resumed under workspace-aware ownership.
 -   Discover and reuse live managed runtimes independently of the current runtime preference, while keeping Direct Terminal as the default and requiring explicit fallback when tmux is unavailable.
 -   Keep tmux-backed sessions active after their VS Code viewer is detached, as long as the execution host remains awake and running.
 

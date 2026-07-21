@@ -2213,11 +2213,25 @@ async function runSavedWorkspaceProjectAdapterChecks() {
     const restartState = createMemoryMemento();
     const restartStore = new PendingWorkspaceSaveStore(restartState);
     await restartStore.write(untitled.scopeIdentity, now, now + PENDING_WORKSPACE_SAVE_TTL_MS);
-    const existingProjects = [
-        { id: 'member-app', name: 'App', path: '/work/app', favorite: true },
-        { id: 'member-lib', name: 'Lib', path: '/work/lib', description: 'Keep me' },
-    ];
+    const savedProjectFixturePath = path.join(
+        __dirname,
+        'fixtures',
+        'workspace-first-saved-projects.json',
+    );
+    const existingProjects = JSON.parse(fs.readFileSync(savedProjectFixturePath, 'utf8'));
     const before = JSON.parse(JSON.stringify(existingProjects));
+    const beforeActivationBytes = JSON.stringify(existingProjects);
+    const ordinaryUseAdapter = new SavedWorkspaceProjectAdapter({
+        getCurrentWorkspace: () => savedWorkspace,
+        pendingStore: new PendingWorkspaceSaveStore(createMemoryMemento()),
+        getProjectDetailsForSave: async () => assert.fail('ordinary activation must not resolve save details'),
+        saveWorkspaceProject: async () => assert.fail('ordinary activation must not mutate projects'),
+        executeSaveWorkspaceAs: async () => assert.fail('ordinary activation must not invoke Save Workspace As'),
+        nowMs: () => now,
+    });
+    await ordinaryUseAdapter.completePendingWorkspaceSave();
+    assert.strictEqual(JSON.stringify(existingProjects), beforeActivationBytes,
+        'activation and ordinary workspace use must preserve the checked-in saved-project fixture bytes');
     const restartAdapter = new SavedWorkspaceProjectAdapter({
         getCurrentWorkspace: () => savedWorkspace,
         pendingStore: restartStore,

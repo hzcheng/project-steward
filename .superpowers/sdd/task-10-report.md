@@ -3,7 +3,8 @@
 ## Status and commit
 
 Complete. The implementation, verification updates, generated Webview asset,
-and this report are included in one atomic commit with message:
+and this report were delivered as the main cutover commit plus one focused
+archive-authorization fix commit. The main commit message was:
 
 `feat: publish workspaces through bridge protocol v2`
 

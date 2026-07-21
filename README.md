@@ -17,9 +17,9 @@ Project Steward turns those entries into a persistent project catalog.
 - Save local folders, files, workspaces, SSH projects, WSL projects, and Dev Container projects.
 - Keep projects organized with groups, descriptions, colors, and favorites.
 - Use the sidebar panel instead of taking over the editor area.
-- See the current workspace and projects open in other VS Code windows.
+- See one card per non-empty VS Code workspace and one lightweight card for each workspace open in another window.
 - Reopen a saved project in the current window or a new window.
-- Resume Codex, Kimi, and Claude sessions associated with the current open project.
+- Create and resume Codex, Kimi, and Claude sessions with access to every folder in the current workspace.
 - Sync saved project data through VS Code Settings Sync when desired.
 
 ## Highlights
@@ -44,14 +44,16 @@ You can choose a group while saving, then edit the name, description, and color 
 
 The sidebar has two focused views:
 
-- `OPEN` is the live workspace view. `CURRENT WORKSPACE` shows the active window and its Codex, Kimi, or Claude sessions, while `OTHER WINDOWS` provides navigation cards for projects open elsewhere on the machine.
+- `OPEN` is the live workspace view. `CURRENT WORKSPACE` shows exactly one card for the active non-empty window, whether it contains one folder or a multi-root workspace. Workspace folders appear as metadata chips, not as cards to switch between. `OTHER WINDOWS` provides at most one navigation card for each logical workspace open elsewhere on the machine.
 - `PROJECTS` is the static saved-project library for Favorites, groups, editing, and drag-and-drop organization. It is loaded only when first opened, keeping the initial sidebar render small.
 
-When an AI session in another window needs attention, its `OTHER WINDOWS` navigation card shows the unread session count. Runtime attention and current-workspace highlighting stay in `OPEN`; saved cards in `PROJECTS` remain static.
+When an AI session in another window needs attention, its `OTHER WINDOWS` navigation card shows the unread session count without exposing provider or session details. Runtime attention and current-workspace highlighting stay in `OPEN`; saved cards in `PROJECTS` remain static.
+
+Other-window navigation is fail-closed. Project Steward uses direct workspace navigation only for environment/workspace combinations backed by reviewed evidence. Otherwise, a saved workspace opens VS Code's native `Switch Window` picker, an untitled workspace asks you to save it first, and a missing native command produces a warning without opening anything. A member folder is never used as a navigation fallback.
 
 ### Global Search
 
-The search bar searches all three useful sources at once: AI sessions in the current workspace, currently open projects across windows, and saved projects. Search uses the lightweight initial catalog, so searching does not load the `PROJECTS` view. Results are grouped into `AI SESSIONS`, `OPEN PROJECTS`, and `SAVED PROJECTS`.
+The search bar searches all three useful sources at once: AI sessions in the current workspace, currently open workspaces across windows, and saved projects. Search uses the lightweight initial catalog, so searching does not load the `PROJECTS` view. Results are grouped into `AI SESSIONS`, `OPEN WORKSPACES`, and `SAVED PROJECTS`.
 
 ### Favorites
 
@@ -59,9 +61,11 @@ Use the star on each project card to pin or unpin a project. Favorites appear in
 
 ### AI Sessions
 
-Open a current-workspace project card to switch between `ACTIVE` and `SESSIONS`. `ACTIVE` collects every live Codex, Kimi, and Claude runtime, including detached managed tmux runtimes. `SESSIONS` keeps the complete history for the selected provider, including sessions that are already active. Clicking an active session focuses or attaches its terminal; clicking an inactive history entry resumes it.
+Open the current workspace card to switch between `ACTIVE` and `SESSIONS`. `ACTIVE` collects every live Codex, Kimi, and Claude runtime across all workspace roots, including detached managed tmux runtimes. `SESSIONS` keeps the complete history for the selected provider, including sessions that are already active. Clicking an active session focuses or attaches its terminal; clicking an inactive history entry resumes it. Multi-root rows show the selected primary-root chip while the list stays flat and workspace-level.
 
 Use `NEW` to choose Codex, Kimi, or Claude explicitly before Project Steward opens the terminal. Active sessions must be closed before they can be archived.
+
+For a multi-root workspace, Project Steward chooses one primary working directory and grants access to all roots with each provider's native `--add-dir` argument. Codex and Kimi receive repeated `--add-dir` flags; Claude receives its native multi-directory form. New and resumed sessions use the same immutable directory scope in Direct Terminal and both tmux layouts. Project Steward checks every root, workspace trust, provider availability, and verified `--add-dir` capability before it creates a marker, terminal, tmux target, or provider process. Restricted Mode keeps cards and history readable but blocks launching until the workspace is trusted; a missing capability blocks the multi-root action with an upgrade message.
 
 Direct Terminal remains the default. In this mode, selecting a session opens a VS Code terminal and runs the matching resume command for that provider. Project Steward avoids opening duplicate terminals for the same session. If a matching terminal is still running, it focuses that terminal; if the prior session terminal has completed, it reuses the terminal and runs the resume command again.
 
@@ -69,7 +73,7 @@ Direct Terminal remains the default. In this mode, selecting a session opens a V
 
 Set `projectSteward.aiSessionTerminalMode` to `tmux` to run new and resumed AI sessions in managed tmux targets. A quiet `tmux` badge identifies these runtimes in `ACTIVE`, even after the global mode or layout changes. Project Steward always reuses a live runtime before consulting the current creation preference.
 
-The default `project` layout creates one managed tmux session per project card and one window per AI session. It keeps one attach terminal per project in each VS Code extension instance. The optional `session` layout creates an independent tmux session and attach terminal for each AI session.
+The default `project` layout creates one managed tmux session per workspace scope and one window per AI session. It keeps one attach terminal per workspace in each VS Code extension instance. The optional `session` layout creates an independent tmux session and attach terminal for each AI session.
 
 `Detach Terminal…` closes only the VS Code viewer. The provider process and its `ACTIVE` row remain alive in tmux, and selecting the row attaches again without restarting the provider. Project Steward does not provide a force-kill action; attach and exit the provider normally when you want it to stop.
 
@@ -84,6 +88,12 @@ Project Steward never silently falls back to a Direct Terminal when tmux is unav
 In the `project` layout, tmux owns one shared current window. If multiple VS Code windows or other tmux clients attach to the same managed project session, selecting a window in one client changes the window shown by the others.
 
 You can also create, rename locally, pin, copy session IDs, and archive sessions from the session list to keep the panel manageable.
+
+### Saving Workspaces and Upgrade Boundary
+
+Saving a single-folder window adds its folder as one saved project. Saving a saved multi-root window adds its `.code-workspace` file as one project. For an untitled multi-root workspace, Project Steward records a short-lived save intent before opening `Save Workspace As…`, so the save can finish safely after an Extension Host restart. Existing saved projects are preserved unchanged: groups, favorites, colors, descriptions, and already-saved member folders are neither merged nor deleted.
+
+Workspace-first support requires the Project Steward UI Bridge v2. If the UI Bridge is missing or outdated, only `OTHER WINDOWS` degrades; the current workspace and saved projects remain available. This pre-release cutover intentionally ignores v1 open-window state. Legacy terminal and tmux runtime bindings are not adopted or migrated, and existing provider processes are not terminated. Recreate or resume those sessions to manage them with the workspace-aware runtime model.
 
 ## Quick Start
 

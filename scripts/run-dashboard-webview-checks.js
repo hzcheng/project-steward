@@ -394,6 +394,10 @@ function runWorkspaceCardRenderingChecks() {
     const emptyHtml = webviewContent.getCurrentWorkspaceGroupContent(null, false);
     assert.strictEqual((emptyHtml.match(/class="workspace-card/g) || []).length, 0);
 
+    const emptyRootsHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(0), false);
+    assert.strictEqual((emptyRootsHtml.match(/class="workspace-card/g) || []).length, 0,
+        'a non-null invalid zero-root snapshot must render the empty current-workspace state');
+
     const singleHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(1), false);
     assert.strictEqual((singleHtml.match(/class="workspace-card/g) || []).length, 1);
     assert.strictEqual((singleHtml.match(/class="codex-sessions"/g) || []).length, 1);
@@ -417,6 +421,15 @@ function runWorkspaceCardRenderingChecks() {
     assert.strictEqual(multiHtml.includes('data-action="selected-project"'), false);
     assert.strictEqual(multiHtml.includes('data-project-navigation'), false);
     assert.strictEqual(multiHtml.includes('data-has-save-action'), false);
+
+    const outsideWorkspaceCard = makeWorkspaceCardFixture(3);
+    outsideWorkspaceCard.aiSessions.sessionsByProvider.codex[0].primaryRootId = undefined;
+    outsideWorkspaceCard.aiSessions.sessionsByProvider.codex[0].primaryRootLabel = 'Outside workspace';
+    outsideWorkspaceCard.aiSessions.activeSessions[0].primaryRootId = undefined;
+    outsideWorkspaceCard.aiSessions.activeSessions[0].primaryRootLabel = 'Outside workspace';
+    const outsideWorkspaceHtml = webviewContent.getCurrentWorkspaceGroupContent(outsideWorkspaceCard, false);
+    assert.strictEqual((outsideWorkspaceHtml.match(/>Outside workspace<\/span>/g) || []).length, 2,
+        'history and active rows must render the removed-root continuity chip');
 
     const navigationCard = {
         ...makeWorkspaceCardFixture(2),
@@ -499,6 +512,47 @@ function runWorkspaceCardRenderingChecks() {
     }), false);
     assert.strictEqual(createdReplacementHolder, false,
         'the v2 handler must not mount another current card when one exists outside the owned group');
+
+    const preservedOtherWindowsGroup = { id: 'other-windows' };
+    const replacementCard = {};
+    const replacementGroup = {
+        matches: selector => selector === '.open-current-workspace-group',
+        querySelectorAll: selector => selector === '.workspace-card[data-workspace-scope-identity]'
+            ? [replacementCard]
+            : [],
+    };
+    let mountedCurrentGroup;
+    const replaceableCurrentGroup = {
+        contains: card => card === currentCard,
+        replaceWith: replacement => { mountedCurrentGroup = replacement; },
+    };
+    const successfulWrapper = {
+        querySelector: selector => selector === '.open-current-workspace-group' ? replaceableCurrentGroup : null,
+        querySelectorAll: selector => selector === '.workspace-card[data-current-workspace][data-workspace-scope-identity]'
+            ? [currentCard]
+            : [],
+        otherWindowsGroup: preservedOtherWindowsGroup,
+    };
+    const successfulContext = {
+        document: {
+            querySelector: selector => selector === '.sticky-groups-wrapper' ? successfulWrapper : null,
+            createElement: () => ({
+                children: [replacementGroup],
+                firstElementChild: replacementGroup,
+                set innerHTML(_value) {},
+            }),
+        },
+        window: {},
+    };
+    vm.runInNewContext(projectSource, successfulContext);
+    assert.strictEqual(successfulContext.applyWorkspaceUpdate({
+        type: 'workspace-updated', version: 2, currentWorkspaceCount: 1,
+        html: '<div class="open-current-workspace-group"></div>',
+    }), true);
+    assert.strictEqual(mountedCurrentGroup, replacementGroup,
+        'a valid current-group update must replace the current group');
+    assert.strictEqual(successfulWrapper.otherWindowsGroup, preservedOtherWindowsGroup,
+        'a current-group update must preserve the existing OTHER WINDOWS group');
 }
 
 function createSearchResultElement(tagName) {

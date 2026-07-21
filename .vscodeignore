@@ -1,7 +1,13 @@
 .vscode/**
 .vscode-test/**
+.github/**
 .superpowers/**
+docs/**
+docs/superpowers/**
 out/**
+!out/workspaces/*.js
+!out/openWorkspaces/*.js
+out/**/*.map
 dist/**/*.map
 src/**
 scripts/**
@@ -12,6 +18,8 @@ vsc-extension-quickstart.md
 tslint.json
 DemoProjects.json
 media/*.scss
+!media/webviewProjectScripts.js
+!media/styles.css
 webpack.config.json
 *.gif
 node_modules/**

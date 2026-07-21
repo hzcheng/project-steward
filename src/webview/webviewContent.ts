@@ -228,7 +228,7 @@ export function getCurrentWorkspaceGroupContent(
     card: WorkspaceCardViewModel | null,
     hasOtherWindows: boolean = false
 ): string {
-    const currentCard = card && card.kind === 'current' ? card : null;
+    const currentCard = card && card.kind === 'current' && card.roots.length > 0 ? card : null;
     return `
 <div class="group steward-section open-current-workspace-group ${currentCard ? '' : 'no-projects'}" data-group-id="${OPEN_CURRENT_WORKSPACE_GROUP_ID}" data-virtual-group data-system-group="${OPEN_CURRENT_WORKSPACE_GROUP_ID}">
     <div class="group-title steward-section-header steward-group-header">

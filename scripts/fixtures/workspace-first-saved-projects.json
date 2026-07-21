@@ -1,0 +1,21 @@
+[
+  {
+    "id": "member-app",
+    "name": "App",
+    "description": "Primary application",
+    "path": "/work/app",
+    "remoteType": "none",
+    "favorite": true,
+    "favoriteOrder": 2,
+    "color": "#336699"
+  },
+  {
+    "id": "member-lib",
+    "name": "Library",
+    "description": "Keep me unchanged",
+    "path": "/work/lib",
+    "remoteType": "none",
+    "favorite": false,
+    "color": "#993366"
+  }
+]
