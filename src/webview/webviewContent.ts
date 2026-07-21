@@ -316,6 +316,10 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
     const projectIconTitle = getProjectIconTitle(remoteType);
     const folderLabel = `${rootCount} folder${rootCount === 1 ? '' : 's'}`;
     const isCurrent = card.kind === 'current';
+    const showSaveAction = isCurrent && card.workspaceKind === 'untitledMultiRoot';
+    const saveBadge = showSaveAction
+        ? `<span data-action="save-untitled-workspace" class="project-save-badge" title="Save Workspace" aria-label="Save Workspace">${Icons.save}</span>`
+        : '';
     const aiSessions = isCurrent ? card.aiSessions : undefined;
     const runningSessionCount = isCurrent
         ? (aiSessions?.activeSessions || []).filter(session => session.executionState === 'running').length
@@ -355,10 +359,11 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
         : '';
 
     return `<div class="project-container" data-nodrag>
-    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''}${runningTitle ? ` title="${runningTitle}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'}${currentSummaryBadge ? ' data-has-ai-session-badge' : ''} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
+    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''}${runningTitle ? ` title="${runningTitle}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'}${currentSummaryBadge ? ' data-has-ai-session-badge' : ''}${showSaveAction ? ' data-has-save-action' : ''} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
         <div class="project-aura"></div>
         <div class="project-border steward-item-accent"></div>
         ${sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : ''}
+        ${saveBadge}
         <div class="fitty-container project-title-row">
             <span class="project-kind-icon" title="${projectIconTitle}">${projectIcon}</span>
             <h2 class="project-header">${workspaceName}</h2>

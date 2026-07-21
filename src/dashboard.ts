@@ -123,6 +123,7 @@ import { WorkspaceContextResolver } from './workspaces/contextResolver';
 import { WorkspacePrimaryRootStore } from './workspaces/primaryRootStore';
 import { PendingWorkspaceSaveStore } from './workspaces/pendingWorkspaceSaveStore';
 import { SavedWorkspaceProjectAdapter } from './workspaces/savedWorkspaceProjectAdapter';
+import { UntitledWorkspaceSaveController } from './workspaces/untitledWorkspaceSaveController';
 import { WorkspaceSessionHydrationController } from './workspaces/sessionHydrationController';
 import type { OpenWorkspace } from './workspaces/types';
 import { buildWorkspaceDashboardSearchCatalog } from './webview/dashboardViewModel';
@@ -440,6 +441,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         executeSaveWorkspaceAs: () => Promise.resolve(
             vscode.commands.executeCommand('workbench.action.saveWorkspaceAs')
         ),
+    });
+    const untitledWorkspaceSaveController = new UntitledWorkspaceSaveController({
+        getCurrentWorkspace: resolveCurrentOpenWorkspace,
+        executeSaveWorkspaceAs: () => Promise.resolve(
+            vscode.commands.executeCommand('workbench.action.saveWorkspaceAs')
+        ),
+        onSaved: () => {
+            openWorkspaceController.publish();
+            refreshStewardViews('workspace-saved');
+        },
     });
     const workspaceSessionHydrationController = new WorkspaceSessionHydrationController<vscode.Terminal>({
         providers: aiSessionProviders,
@@ -903,6 +914,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const dashboardMessageRouter = createDashboardMessageRouter({
         getAiSessionProviderIds: () => getRegisteredAiSessionProviders().map(provider => provider.id),
         saveCurrentWorkspace: () => savedWorkspaceProjectAdapter.saveCurrentWorkspace(),
+        saveUntitledWorkspace: () => untitledWorkspaceSaveController.save(),
         handlers: {
             'request-projects-panel': async e => {
                 if (e.version !== 1 || !Number.isSafeInteger(e.requestId) || e.requestId < 1) {

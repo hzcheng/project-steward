@@ -22,6 +22,7 @@ export interface DashboardMessageHandlers {
     resumeAiSession?: DashboardAiSessionLaunchMessageHandler;
     archiveAiSession?: DashboardAiSessionMessageHandler;
     saveCurrentWorkspace?: DashboardMessageHandler;
+    saveUntitledWorkspace?: DashboardMessageHandler;
 }
 
 export function createDashboardMessageRouter(handlers: DashboardMessageHandlers): (message: unknown) => Promise<void> {
@@ -51,6 +52,13 @@ export function createDashboardMessageRouter(handlers: DashboardMessageHandlers)
         if (messageType === 'save-current-workspace' || messageType === 'save-project') {
             if (handlers.saveCurrentWorkspace) {
                 await handlers.saveCurrentWorkspace(message);
+            }
+            return;
+        }
+
+        if (messageType === 'save-untitled-workspace') {
+            if (handlers.saveUntitledWorkspace) {
+                await handlers.saveUntitledWorkspace(message);
             }
             return;
         }

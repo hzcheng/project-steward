@@ -32,6 +32,7 @@ const {
     PENDING_WORKSPACE_SAVE_TTL_MS,
 } = require('../out/workspaces/pendingWorkspaceSaveStore');
 const { SavedWorkspaceProjectAdapter } = require('../out/workspaces/savedWorkspaceProjectAdapter');
+const { UntitledWorkspaceSaveController } = require('../out/workspaces/untitledWorkspaceSaveController');
 const models = require('../out/models');
 const { OpenWorkspaceStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceStore');
 const { OpenWorkspaceCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceCoordinator');
@@ -563,8 +564,10 @@ function runWorkspaceProjectionV2Checks() {
         'navigationIdentity',
         'roots',
         'scopeIdentity',
+        'workspaceKind',
     ]);
     assert.strictEqual(duplicateCard.kind, 'navigation');
+    assert.strictEqual(duplicateCard.workspaceKind, duplicateNewer.kind);
     assert.deepStrictEqual(Object.keys(duplicateCard.roots[0]).sort(), ['id', 'name', 'ordinal']);
     assert.strictEqual(duplicateCard.id.includes(duplicateCard.navigationIdentity), false);
     assert.strictEqual(duplicateCard.id.includes(duplicateNewer.navigationUri), false);
@@ -2654,6 +2657,68 @@ async function runSavedWorkspaceProjectAdapterChecks() {
     assert.deepStrictEqual(nullWarnings, ['No project is currently open.']);
 }
 
+async function runUntitledWorkspaceSaveControllerChecks() {
+    for (const workspace of [null, makeSaveWorkspace('singleFolder'), makeSaveWorkspace('savedMultiRoot')]) {
+        let commandCalls = 0;
+        let savedCalls = 0;
+        const controller = new UntitledWorkspaceSaveController({
+            getCurrentWorkspace: () => workspace,
+            executeSaveWorkspaceAs: async () => { commandCalls += 1; },
+            onSaved: () => { savedCalls += 1; },
+        });
+        await controller.save();
+        assert.strictEqual(commandCalls, 0, 'only an untitled multi-root workspace may invoke Save Workspace As');
+        assert.strictEqual(savedCalls, 0);
+    }
+
+    const untitled = makeSaveWorkspace('untitledMultiRoot');
+    let currentWorkspace = untitled;
+    let savedCalls = 0;
+    const controller = new UntitledWorkspaceSaveController({
+        getCurrentWorkspace: () => currentWorkspace,
+        executeSaveWorkspaceAs: async () => {
+            currentWorkspace = makeSaveWorkspace('savedMultiRoot', {
+                scopeIdentity: untitled.scopeIdentity,
+            });
+        },
+        onSaved: () => { savedCalls += 1; },
+    });
+    await controller.save();
+    assert.strictEqual(savedCalls, 1, 'a matching saved transition must refresh the workspace UI once');
+
+    currentWorkspace = untitled;
+    let cancelRefreshes = 0;
+    const canceledController = new UntitledWorkspaceSaveController({
+        getCurrentWorkspace: () => currentWorkspace,
+        executeSaveWorkspaceAs: async () => undefined,
+        onSaved: () => { cancelRefreshes += 1; },
+    });
+    await canceledController.save();
+    assert.strictEqual(cancelRefreshes, 0, 'canceling Save Workspace As must leave the save action visible');
+
+    let releaseSave;
+    let saveStarted;
+    const saveGate = new Promise(resolve => { releaseSave = resolve; });
+    const started = new Promise(resolve => { saveStarted = resolve; });
+    let commandCalls = 0;
+    const concurrentController = new UntitledWorkspaceSaveController({
+        getCurrentWorkspace: () => untitled,
+        executeSaveWorkspaceAs: async () => {
+            commandCalls += 1;
+            saveStarted();
+            await saveGate;
+        },
+        onSaved: () => undefined,
+    });
+    const first = concurrentController.save();
+    await started;
+    const second = concurrentController.save();
+    assert.strictEqual(second, first, 'concurrent save clicks must share one transaction');
+    releaseSave();
+    await Promise.all([first, second]);
+    assert.strictEqual(commandCalls, 1);
+}
+
 async function runProjectServiceWorkspaceSaveMigrationIntegrationChecks() {
     function clone(value) {
         return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -3550,6 +3615,7 @@ async function main() {
     runWorkspaceProtocolV2Checks();
     await runWorkspaceContextResolverChecks();
     await runSavedWorkspaceProjectAdapterChecks();
+    await runUntitledWorkspaceSaveControllerChecks();
     await runProjectServiceWorkspaceSaveMigrationIntegrationChecks();
     runWorkspaceProjectionV2Checks();
     runOpenWorkspacePublicationChecks();

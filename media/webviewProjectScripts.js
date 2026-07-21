@@ -1255,6 +1255,14 @@ function initProjects() {
         if (!action)
             return false;
 
+        if (action === 'save-untitled-workspace') {
+            window.vscode.postMessage({
+                type: 'save-untitled-workspace',
+                projectId,
+            });
+            return true;
+        }
+
         window.vscode.postMessage({
             type: action + '-project',
             projectId,

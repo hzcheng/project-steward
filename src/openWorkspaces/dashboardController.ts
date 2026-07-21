@@ -131,6 +131,7 @@ export class OpenWorkspaceDashboardController {
         return {
             id: `__currentWorkspace-${digest}`,
             kind: 'current',
+            workspaceKind: workspace.kind,
             navigationIdentity: workspace.navigationIdentity,
             scopeIdentity: workspace.scopeIdentity,
             name: workspace.displayName,

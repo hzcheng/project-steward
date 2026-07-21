@@ -367,6 +367,7 @@ function makeWorkspaceCardFixture(rootCount) {
     return {
         id: 'workspace-dashboard',
         kind: 'current',
+        workspaceKind: 'savedMultiRoot',
         navigationIdentity: 'navigation-dashboard',
         scopeIdentity: 'scope-dashboard',
         name: 'Dashboard',
@@ -526,6 +527,38 @@ function runWorkspaceCardRenderingChecks() {
     assert.strictEqual(multiHtml.includes('data-project-navigation'), false);
     assert.strictEqual(multiHtml.includes('data-has-save-action'), false);
 
+    const untitledWorkspaceCard = makeWorkspaceCardFixture(3);
+    untitledWorkspaceCard.workspaceKind = 'untitledMultiRoot';
+    const untitledWorkspaceHtml = webviewContent.getCurrentWorkspaceGroupContent(
+        untitledWorkspaceCard,
+        false,
+    );
+    assert.ok(untitledWorkspaceHtml.includes('data-has-save-action'));
+    assert.strictEqual(
+        (untitledWorkspaceHtml.match(/data-action="save-untitled-workspace"/g) || []).length,
+        1,
+        'an untitled current multi-root workspace must expose exactly one save action',
+    );
+    assert.ok(untitledWorkspaceHtml.includes('title="Save Workspace"'));
+    const projectActionMessages = [];
+    const triggerProjectAction = new Function(
+        'target',
+        'projectId',
+        'window',
+        extractFunctionBody(fs.readFileSync(projectScriptPath, 'utf8'), 'onTriggerProjectAction'),
+    );
+    assert.strictEqual(triggerProjectAction({
+        closest: selector => selector === '[data-action]'
+            ? { getAttribute: attribute => attribute === 'data-action' ? 'save-untitled-workspace' : null }
+            : null,
+    }, untitledWorkspaceCard.id, {
+        vscode: { postMessage: message => projectActionMessages.push(message) },
+    }), true);
+    assert.deepStrictEqual(projectActionMessages, [{
+        type: 'save-untitled-workspace',
+        projectId: untitledWorkspaceCard.id,
+    }], 'the save badge must use its dedicated workspace-only host route');
+
     const devContainerCard = makeWorkspaceCardFixture(1);
     devContainerCard.environment = 'devContainer';
     devContainerCard.environmentLabel = 'Dev Container';
@@ -573,6 +606,12 @@ function runWorkspaceCardRenderingChecks() {
     ));
     assert.strictEqual(otherWindowsHtml.includes('class="project-codex-badge"'), false,
         'navigation attention must use the visible navigation-only badge primitive');
+    const untitledNavigationHtml = webviewContent.getOpenWorkspacesGroupContent([{
+        ...navigationCard,
+        workspaceKind: 'untitledMultiRoot',
+    }], false);
+    assert.strictEqual(untitledNavigationHtml.includes('data-action="save-untitled-workspace"'), false,
+        'OTHER WINDOWS cards must never expose a save action');
     for (const privateDetail of [
         'data-ai-session-total-count',
         'data-ai-session-active-count',
@@ -4927,6 +4966,9 @@ async function runDashboardMessageRouterChecks() {
         saveCurrentWorkspace: message => {
             calls.push(['save-current-workspace', message.type, message.requestId]);
         },
+        saveUntitledWorkspace: message => {
+            calls.push(['save-untitled-workspace', message.projectId]);
+        },
     });
 
     await router(null);
@@ -4948,6 +4990,7 @@ async function runDashboardMessageRouterChecks() {
     await router({ type: 'resume-unknown-session', sessionId: 'ignored' });
     await router({ type: 'save-current-workspace', requestId: 9 });
     await router({ type: 'save-project', projectId: '__currentWorkspace-transient-card-id' });
+    await router({ type: 'save-untitled-workspace', projectId: 'workspace-a' });
 
     assert.deepStrictEqual(calls, [
         ['request-projects-panel', 7],
@@ -4962,18 +5005,21 @@ async function runDashboardMessageRouterChecks() {
         ['archive-ai-session', 'claude', 'a1'],
         ['save-current-workspace', 'save-current-workspace', 9],
         ['save-current-workspace', 'save-project', undefined],
+        ['save-untitled-workspace', 'workspace-a'],
     ]);
 
     const genericSaveCalls = [];
     const routerWithoutSaveHandler = routerModule.createDashboardMessageRouter({
         handlers: {
             'save-current-workspace': message => genericSaveCalls.push(message.requestId),
+            'save-untitled-workspace': message => genericSaveCalls.push(message.projectId),
         },
     });
     await routerWithoutSaveHandler({ type: 'save-current-workspace', requestId: 10 });
     await routerWithoutSaveHandler({ type: 'save-project', projectId: '__currentWorkspace-stale' });
+    await routerWithoutSaveHandler({ type: 'save-untitled-workspace', projectId: 'workspace-a' });
     assert.deepStrictEqual(genericSaveCalls, [],
-        'save-current-workspace must remain a reserved route when its dedicated handler is unavailable');
+        'workspace save messages must remain reserved routes when their dedicated handler is unavailable');
 
     const genericNewSessionCalls = [];
     const routerWithoutNewSessionHandler = routerModule.createDashboardMessageRouter({

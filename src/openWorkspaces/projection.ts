@@ -107,6 +107,7 @@ function createNavigationCard(
     return {
         id: `__openWorkspaceNavigation-${digest}`,
         kind: 'navigation',
+        workspaceKind: workspace.kind,
         navigationIdentity: workspace.navigationIdentity,
         scopeIdentity: workspace.scopeIdentity,
         name: workspace.displayName,
