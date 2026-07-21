@@ -190,6 +190,9 @@ function validateRoots(value: unknown): OpenWorkspaceRootRecord[] {
         rootUris.add(root.uri);
         ordinals.add(root.ordinal);
     }
+    if (roots.some((root, index) => root.ordinal !== index)) {
+        throw new Error('root ordinals must be contiguous and match root order');
+    }
     return roots;
 }
 
@@ -204,7 +207,7 @@ export function validateOpenWorkspaceRecord(value: unknown): OpenWorkspaceRecord
         'environment',
         'roots',
     ]);
-    return {
+    const record = {
         navigationIdentity: requireIdentity(workspace.navigationIdentity, 'navigationIdentity'),
         scopeIdentity: requireIdentity(workspace.scopeIdentity, 'scopeIdentity'),
         kind: requireKind(workspace.kind),
@@ -213,6 +216,13 @@ export function validateOpenWorkspaceRecord(value: unknown): OpenWorkspaceRecord
         environment: requireEnvironment(workspace.environment),
         roots: validateRoots(workspace.roots),
     };
+    if (record.kind === 'singleFolder' && record.roots.length !== 1) {
+        throw new Error('singleFolder must contain exactly one root');
+    }
+    if (record.kind === 'singleFolder' && record.navigationUri !== record.roots[0].uri) {
+        throw new Error('singleFolder navigationUri must match its root uri');
+    }
+    return record;
 }
 
 function validateOptionalWorkspace(value: unknown): OpenWorkspaceRecord | null {

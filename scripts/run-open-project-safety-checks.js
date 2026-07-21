@@ -63,9 +63,9 @@ function makeWorkspaceRecord(index = 0, overrides = {}) {
         scopeIdentity: workspaceIdentity(index + 10),
         kind: 'singleFolder',
         displayName: `Workspace ${index}`,
-        navigationUri: `file:///work/workspace-${index}`,
+        navigationUri: `file:///work/root-${index}`,
         environment: 'local',
-        roots: [makeWorkspaceRoot(index)],
+        roots: [makeWorkspaceRoot(index, { ordinal: 0 })],
         ...overrides,
     };
 }
@@ -152,6 +152,48 @@ function runWorkspaceProtocolV2Checks() {
         }),
         /roots/
     );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({
+            ...publication,
+            workspace: {
+                ...publication.workspace,
+                roots: [makeWorkspaceRoot(0), makeWorkspaceRoot(1)],
+            },
+        }),
+        /singleFolder/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({
+            ...publication,
+            workspace: {
+                ...publication.workspace,
+                navigationUri: 'file:///work/unrelated',
+            },
+        }),
+        /navigationUri/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({
+            ...publication,
+            workspace: {
+                ...publication.workspace,
+                kind: 'savedMultiRoot',
+                roots: [makeWorkspaceRoot(0), makeWorkspaceRoot(1, { ordinal: 2 })],
+            },
+        }),
+        /ordinal/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({
+            ...publication,
+            workspace: {
+                ...publication.workspace,
+                kind: 'savedMultiRoot',
+                roots: [makeWorkspaceRoot(1, { ordinal: 1 }), makeWorkspaceRoot(0, { ordinal: 0 })],
+            },
+        }),
+        /ordinal/
+    );
 
     assertRejectsValidation(
         () => workspaceProtocol.validateOpenWorkspacePublication({
@@ -234,6 +276,7 @@ function runWorkspaceProtocolV2Checks() {
     const maximumString = 'x'.repeat(8192);
     const maximumRoots = Array.from({ length: 100 }, (_, index) => makeWorkspaceRoot(index));
     const maximumWorkspace = makeWorkspaceRecord(0, {
+        kind: 'savedMultiRoot',
         displayName: maximumString,
         navigationUri: `file:///${'x'.repeat(8184)}`,
         roots: maximumRoots,
@@ -401,13 +444,11 @@ function runWorkspaceProtocolV2Checks() {
         kind: 'savedMultiRoot',
         roots: [makeWorkspaceRoot(0), makeWorkspaceRoot(1)],
     });
-    assert.strictEqual(
-        workspaceProtocol.createOpenWorkspaceSemanticRevision([
-            makeWorkspaceRegistration(SELF, 4000, multiRoot),
-        ]),
-        workspaceProtocol.createOpenWorkspaceSemanticRevision([
+    assert.throws(
+        () => workspaceProtocol.createOpenWorkspaceSemanticRevision([
             makeWorkspaceRegistration(SELF, 4000, { ...multiRoot, roots: multiRoot.roots.slice().reverse() }),
-        ])
+        ]),
+        /ordinal/,
     );
 }
 
@@ -580,6 +621,60 @@ function runOpenWorkspacePublicationChecks() {
     );
     assert.strictEqual(original.workspace.navigationUri,
         'vscode-remote://dev-container%2Bold/work/team.code-workspace');
+
+    const singleFolderOriginal = makeWorkspacePublication({
+        workspace: makeWorkspaceRecord(6, {
+            navigationUri: 'vscode-remote://dev-container%2Bold/work/app',
+            roots: [makeWorkspaceRoot(6, {
+                uri: 'vscode-remote://dev-container%2Bold/work/app',
+                ordinal: 0,
+            })],
+        }),
+    });
+    const singleFolderReplacement = replaceOpenWorkspacePublicationUris(
+        singleFolderOriginal,
+        null,
+        ['vscode-remote://dev-container%2Bcurrent/work/app'],
+    );
+    assert.strictEqual(
+        singleFolderReplacement.workspace.navigationUri,
+        'vscode-remote://dev-container%2Bcurrent/work/app',
+    );
+    assert.strictEqual(
+        singleFolderReplacement.workspace.navigationUri,
+        singleFolderReplacement.workspace.roots[0].uri,
+    );
+
+    for (const [rootUris, pattern] of [
+        [[], /root count/],
+        [[
+            'vscode-remote://dev-container%2Bcurrent/work/app',
+            'vscode-remote://dev-container%2Bcurrent/work/api',
+            'vscode-remote://dev-container%2Bcurrent/work/extra',
+        ], /root count/],
+    ]) {
+        assert.throws(
+            () => replaceOpenWorkspacePublicationUris(singleFolderOriginal, null, rootUris),
+            pattern,
+        );
+    }
+    assert.throws(
+        () => replaceOpenWorkspacePublicationUris(
+            {
+                ...original,
+                workspace: {
+                    ...original.workspace,
+                    roots: original.workspace.roots.slice().reverse(),
+                },
+            },
+            'vscode-remote://dev-container%2Bcurrent/work/team.code-workspace',
+            [
+                'vscode-remote://dev-container%2Bcurrent/work/app',
+                'vscode-remote://dev-container%2Bcurrent/work/api',
+            ],
+        ),
+        /ordinal|order/,
+    );
 
     const empty = makeWorkspacePublication({ workspace: null });
     assert.deepStrictEqual(

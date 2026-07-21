@@ -13,13 +13,16 @@ export function replaceOpenWorkspacePublicationUris(
         return publication;
     }
     const workspace = publication.workspace;
-    const roots = workspace.roots.map(root => ({
+    if (workspace.roots.length !== rootUris.length) {
+        throw new Error('authoritative root count must match the published workspace roots');
+    }
+    const roots = workspace.roots.map((root, index) => ({
         ...root,
-        uri: rootUris[root.ordinal] || root.uri,
+        uri: rootUris[index],
     }));
-    const navigationUri = workspaceUri
-        || (workspace.kind === 'singleFolder' ? roots[0]?.uri : undefined)
-        || workspace.navigationUri;
+    const navigationUri = workspace.kind === 'singleFolder'
+        ? roots[0].uri
+        : workspaceUri || workspace.navigationUri;
     return validateOpenWorkspacePublication({
         ...publication,
         workspace: {
