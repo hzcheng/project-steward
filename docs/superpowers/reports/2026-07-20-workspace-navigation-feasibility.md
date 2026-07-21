@@ -1,0 +1,101 @@
+# Workspace Navigation Feasibility
+
+Date: 2026-07-21
+
+Status: **FAIL CLOSED — no direct navigation cells enabled**
+
+The current execution host is a VS Code Dev Container (`REMOTE_CONTAINERS=true`).
+The running server and Extension Host use commit
+`4fe60c8b1cdac1c4c174f2fb180d0d758272d713`; its remote CLI reports VS Code
+`1.127.0`. An initial broad filesystem probe selected the separate stale
+`fcf604774b9f2674b473065736ee75077e256353` remote CLI, which reports
+`1.125.1`; process paths prove that it is not the running host. This explains
+the observed `1.127.0`/`1.125.1` discrepancy. `/usr/local/bin/code` is a wrapper
+that reports that a local `code` or `code-insiders` executable is not installed,
+so it is not a Local/UI-host install path.
+
+## Package and Dev Container Installation
+
+The probe was compiled and packaged from `spikes/workspace-navigation`, not
+from the repository root:
+
+| Field | Observed value |
+| --- | --- |
+| VSIX | `artifacts/project-steward-workspace-navigation-probe-0.0.2.vsix` |
+| Extension | `hzcheng.project-steward-workspace-navigation-probe@0.0.2` |
+| Size | 11,287 bytes |
+| SHA-256 | `6730f55d51c61f0ccbc7acafa91870a9a7041daf4f7ac6855c92fbd3708d5abc` |
+| Target host | Dev Container workspace Extension Host, server commit `4fe60c8b1cdac1c4c174f2fb180d0d758272d713` |
+
+The shell inherited a stale IPC socket, so its first install request failed
+with `ECONNREFUSED`. A live Dev Container Extension Host IPC was then selected
+from the running server. After correcting the probe's explicit `not-runnable`
+record, the final versioned install completed with:
+
+```text
+Installing extensions on Dev Container: DevBox @ reddev...
+Extension 'project-steward-workspace-navigation-probe-0.0.2.vsix' was successfully installed.
+```
+
+`--list-extensions --show-versions` reports
+`hzcheng.project-steward-workspace-navigation-probe@0.0.2`. The installed
+`dist/extension.js` SHA-256 is
+`9c2a3bbd9b1bd514982d96958309afe289b21bf93d07a367b4a5cdcca0098b7e`,
+identical to the file inside the VSIX. Packaging warned that this disposable
+probe has no repository field, bundled license, or package file allow-list;
+those warnings do not alter the compiled payload identity. No Local/UI, SSH,
+or WSL host was installed. Installation and activation do not constitute
+navigation evidence.
+
+The disposable workspace extension records source and target instance IDs,
+target focus events, and the live probe-registration count before and after
+calling only:
+
+```ts
+vscode.commands.executeCommand(
+    'vscode.openFolder',
+    vscode.Uri.parse(target.navigationUri),
+    { forceNewWindow: true }
+);
+```
+
+The remote CLI does not expose an authoritative desktop window count or focus
+state. Process counts are also insufficient because one window may create
+multiple remote processes and unrelated Dev Container windows share the same
+server. No controlled second VS Code target window is available to this
+execution, and no UI automation channel is available. Therefore even the
+current Dev Container cells are not empirically runnable here. This is a hard
+gate failure, not evidence that direct navigation is unsupported by VS Code.
+
+## Matrix
+
+Every `not-runnable` result selects the safe fallback. A direct cell would
+require at least two `focused-existing` observations with identical before and
+after window counts.
+
+<!-- workspace-navigation-matrix:start -->
+```json
+[
+  {"environment":"local","kind":"singleFolder","outcome":"not-runnable","observations":[],"reason":"This execution is inside a Dev Container; no Local/UI Extension Host or controlled Local target window is available."},
+  {"environment":"local","kind":"savedMultiRoot","outcome":"not-runnable","observations":[],"reason":"This execution is inside a Dev Container; no Local/UI Extension Host or controlled Local target window is available."},
+  {"environment":"local","kind":"untitledMultiRoot","outcome":"not-runnable","observations":[],"reason":"This execution is inside a Dev Container; no Local/UI Extension Host or controlled Local target window is available."},
+  {"environment":"ssh","kind":"singleFolder","outcome":"not-runnable","observations":[],"reason":"SSH_CONNECTION is unset and no SSH Remote Extension Host or controlled SSH target window is available."},
+  {"environment":"ssh","kind":"savedMultiRoot","outcome":"not-runnable","observations":[],"reason":"SSH_CONNECTION is unset and no SSH Remote Extension Host or controlled SSH target window is available."},
+  {"environment":"ssh","kind":"untitledMultiRoot","outcome":"not-runnable","observations":[],"reason":"SSH_CONNECTION is unset and no SSH Remote Extension Host or controlled SSH target window is available."},
+  {"environment":"wsl","kind":"singleFolder","outcome":"not-runnable","observations":[],"reason":"WSL_DISTRO_NAME is unset and no WSL Extension Host or controlled WSL target window is available."},
+  {"environment":"wsl","kind":"savedMultiRoot","outcome":"not-runnable","observations":[],"reason":"WSL_DISTRO_NAME is unset and no WSL Extension Host or controlled WSL target window is available."},
+  {"environment":"wsl","kind":"untitledMultiRoot","outcome":"not-runnable","observations":[],"reason":"WSL_DISTRO_NAME is unset and no WSL Extension Host or controlled WSL target window is available."},
+  {"environment":"devContainer","kind":"singleFolder","outcome":"not-runnable","observations":[],"reason":"The probe can run in this Dev Container workspace Extension Host, but no controlled second single-folder target and no authoritative UI window-count/focus automation channel are available."},
+  {"environment":"devContainer","kind":"savedMultiRoot","outcome":"not-runnable","observations":[],"reason":"The probe can run in this Dev Container workspace Extension Host, but no controlled second saved multi-root target and no authoritative UI window-count/focus automation channel are available."},
+  {"environment":"devContainer","kind":"untitledMultiRoot","outcome":"not-runnable","observations":[],"reason":"The probe can run in this Dev Container workspace Extension Host, but no controlled second untitled multi-root target and no authoritative UI window-count/focus automation channel are available."}
+]
+```
+<!-- workspace-navigation-matrix:end -->
+
+## Gate Decision
+
+All 12 cells use fallback. Production must not call `vscode.openFolder` for any
+workspace navigation card on the basis of this run. Saved workspaces use VS
+Code's native Switch Window picker when available. Untitled workspaces ask the
+user to save first. If native switching is unavailable, Project Steward warns
+and performs no open action. Member root URIs are never a fallback.

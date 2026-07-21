@@ -121,6 +121,7 @@ import { DashboardStartupController, settleMigration } from './dashboard/startup
 import { getDashboardWebviewOptions } from './dashboard/webviewOptions';
 import OpenWorkspaceBridgeClient from './openWorkspaces/bridgeClient';
 import { OpenWorkspaceDashboardController } from './openWorkspaces/dashboardController';
+import { WorkspaceNavigationController } from './openWorkspaces/navigationController';
 import { OpenWorkspaceController } from './openWorkspaces/workspaceController';
 import { WorkspaceContextResolver } from './workspaces/contextResolver';
 import { WorkspacePrimaryRootStore } from './workspaces/primaryRootStore';
@@ -460,6 +461,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const workspaceContextResolver = new WorkspaceContextResolver();
     const workspacePrimaryRootStore = new WorkspacePrimaryRootStore(context.globalState);
     let openWorkspaceController: OpenWorkspaceController;
+    let workspaceNavigationController: WorkspaceNavigationController<vscode.Uri>;
     const resolveCurrentOpenWorkspace = (): OpenWorkspace | null => workspaceContextResolver.resolve({
         workspaceFile: vscode.workspace.workspaceFile,
         workspaceFolders: vscode.workspace.workspaceFolders,
@@ -1120,11 +1122,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 let projectOpenType = e.projectOpenType as ProjectOpenType;
 
                 if (projectId.startsWith('__openWorkspaceNavigation-')) {
-                    const navigationWorkspace = openWorkspaceDashboardController
-                        .getNavigationWorkspace(projectId);
-                    refreshStewardViews(navigationWorkspace
-                        ? 'open-workspace-navigation-pending-capability'
-                        : 'open-workspace-navigation-stale');
+                    await workspaceNavigationController.open(projectId);
                     return;
                 }
 
@@ -1367,6 +1365,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         isVisible: () => provider.visible,
         logDiagnostic: logOpenProjectDiagnostic,
         logError,
+    });
+    workspaceNavigationController = new WorkspaceNavigationController<vscode.Uri>({
+        getRecord: cardId => openWorkspaceDashboardController.getNavigationWorkspace(cardId),
+        getAvailableCommands: () => vscode.commands.getCommands(true),
+        executeCommand: (command, ...args) => vscode.commands.executeCommand(command, ...args),
+        parseUri: value => vscode.Uri.parse(value),
+        showInformationMessage: message => vscode.window.showInformationMessage(message),
+        showWarningMessage: message => vscode.window.showWarningMessage(message),
+        refresh: refreshStewardViews,
     });
     openWorkspaceBridgeClient = new OpenWorkspaceBridgeClient(
         openWorkspaceController.getPublication(),

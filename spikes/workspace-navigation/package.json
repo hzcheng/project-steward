@@ -1,0 +1,33 @@
+{
+    "name": "project-steward-workspace-navigation-probe",
+    "displayName": "Project Steward Workspace Navigation Probe",
+    "description": "Disposable empirical probe for exact existing-window workspace navigation.",
+    "version": "0.0.2",
+    "publisher": "hzcheng",
+    "license": "MIT",
+    "engines": {
+        "vscode": "^1.51.0"
+    },
+    "extensionKind": [
+        "workspace"
+    ],
+    "activationEvents": [
+        "*"
+    ],
+    "main": "./dist/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "projectStewardWorkspaceNavigationProbe.run",
+                "title": "Project Steward Workspace Navigation Probe: Run Trial"
+            },
+            {
+                "command": "projectStewardWorkspaceNavigationProbe.showStatus",
+                "title": "Project Steward Workspace Navigation Probe: Show Status"
+            }
+        ]
+    },
+    "scripts": {
+        "compile": "tsc -p ."
+    }
+}

@@ -20,6 +20,8 @@ const workspaceProjection = require('../out/openWorkspaces/projection');
 const { default: OpenWorkspaceBridgeClient } = require('../out/openWorkspaces/bridgeClient');
 const { OpenWorkspaceDashboardController } = require('../out/openWorkspaces/dashboardController');
 const { OpenWorkspaceController } = require('../out/openWorkspaces/workspaceController');
+const { WorkspaceNavigationController } = require('../out/openWorkspaces/navigationController');
+const { isDirectWorkspaceNavigationSupported } = require('../out/openWorkspaces/navigationCapabilities');
 const attentionProject = require('../out/aiSessions/attentionProject');
 const { CurrentProjectDetailsResolver } = require('../out/projects/currentProjectDetails');
 const { ProjectManualEditController } = require('../out/projects/projectManualEditController');
@@ -1131,6 +1133,133 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     assert.strictEqual(posted[0].currentWorkspaceCount, 1);
     assert.strictEqual(posted[0].navigationWorkspaceCount, 1);
     assert.strictEqual(posted[0].searchCatalog.version, 2);
+}
+
+async function runWorkspaceNavigationControllerChecks() {
+    const environments = ['local', 'ssh', 'wsl', 'devContainer'];
+    const kinds = ['singleFolder', 'savedMultiRoot', 'untitledMultiRoot'];
+    for (const environment of environments) {
+        for (const kind of kinds) {
+            assert.strictEqual(
+                isDirectWorkspaceNavigationSupported(environment, kind),
+                false,
+                `${environment}/${kind} must fail closed without repeated empirical evidence`
+            );
+        }
+    }
+    assert.strictEqual(isDirectWorkspaceNavigationSupported('remote', 'singleFolder'), false);
+
+    let record = makeWorkspaceRecord(60, {
+        kind: 'savedMultiRoot',
+        environment: 'devContainer',
+        navigationUri: 'vscode-remote://dev-container%2Btarget/work/team.code-workspace',
+        roots: [makeWorkspaceRoot(60, {
+            uri: 'vscode-remote://dev-container%2Btarget/work/member-root',
+        })],
+    });
+    let nativeSwitchAvailable = true;
+    let nativeSwitchQueryFails = false;
+    let nativeSwitchExecutionFails = false;
+    const executions = [];
+    const parsedUris = [];
+    const informationMessages = [];
+    const warningMessages = [];
+    const refreshes = [];
+    const controller = new WorkspaceNavigationController({
+        getRecord: cardId => cardId === 'live-card' ? record : null,
+        getAvailableCommands: async () => {
+            if (nativeSwitchQueryFails) { throw new Error('forced command query failure'); }
+            return nativeSwitchAvailable ? ['workbench.action.switchWindow'] : [];
+        },
+        executeCommand: async (...args) => {
+            if (nativeSwitchExecutionFails) { throw new Error('forced native switch failure'); }
+            executions.push(args);
+        },
+        parseUri: value => {
+            const parsed = { parsed: value };
+            parsedUris.push(parsed);
+            return parsed;
+        },
+        showInformationMessage: message => { informationMessages.push(message); },
+        showWarningMessage: message => { warningMessages.push(message); },
+        refresh: reason => refreshes.push(reason),
+    });
+
+    await controller.open('missing-card');
+    assert.deepStrictEqual(refreshes, ['open-workspace-navigation-stale']);
+    assert.deepStrictEqual(executions, []);
+    assert.deepStrictEqual(parsedUris, []);
+
+    let caseIndex = 0;
+    for (const environment of environments) {
+        for (const kind of kinds) {
+            caseIndex += 1;
+            executions.length = 0;
+            parsedUris.length = 0;
+            informationMessages.length = 0;
+            const rootUri = `file:///work/fallback-root-${caseIndex}`;
+            record = makeWorkspaceRecord(60 + caseIndex, {
+                kind,
+                environment,
+                navigationUri: kind === 'untitledMultiRoot'
+                    ? `untitled:Untitled-${caseIndex}`
+                    : `file:///work/navigation-${caseIndex}`,
+                roots: [makeWorkspaceRoot(60 + caseIndex, { uri: rootUri })],
+            });
+            await controller.open('live-card');
+            if (kind === 'untitledMultiRoot') {
+                assert.deepStrictEqual(
+                    informationMessages,
+                    ['Save this workspace before switching to it'],
+                    `${environment}/${kind} must ask the user to save`
+                );
+                assert.deepStrictEqual(executions, []);
+            } else {
+                assert.deepStrictEqual(
+                    executions,
+                    [['workbench.action.switchWindow']],
+                    `${environment}/${kind} must use native Switch Window`
+                );
+            }
+            assert.deepStrictEqual(parsedUris, [], `${environment}/${kind} fallback must not parse a URI`);
+            assert.strictEqual(executions.some(args => args[0] === 'vscode.openFolder'), false);
+            assert.strictEqual(JSON.stringify(executions).includes(rootUri), false,
+                `${environment}/${kind} must never open a member root URI`);
+        }
+    }
+
+    record = makeWorkspaceRecord(62, {
+        kind: 'singleFolder',
+        environment: 'ssh',
+        navigationUri: 'vscode-remote://ssh-remote%2Btarget/work/saved-folder',
+        roots: [makeWorkspaceRoot(62, { uri: 'vscode-remote://ssh-remote%2Btarget/work/root' })],
+    });
+    nativeSwitchAvailable = false;
+    await controller.open('live-card');
+    assert.deepStrictEqual(warningMessages, [
+        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
+    ]);
+    assert.deepStrictEqual(executions, []);
+    assert.deepStrictEqual(parsedUris, []);
+
+    nativeSwitchQueryFails = true;
+    await controller.open('live-card');
+    assert.deepStrictEqual(warningMessages, [
+        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
+        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
+    ]);
+    assert.deepStrictEqual(executions, []);
+
+    nativeSwitchQueryFails = false;
+    nativeSwitchAvailable = true;
+    nativeSwitchExecutionFails = true;
+    await controller.open('live-card');
+    assert.deepStrictEqual(warningMessages, [
+        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
+        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
+        'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
+    ]);
+    assert.deepStrictEqual(executions, []);
 }
 
 async function runOpenWorkspaceHardeningChecks() {
@@ -2645,6 +2774,7 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(openProjects.includes('aiSessionProjectHydrationController.hydrate(rawOpenProjects)'));
     assert.ok(dashboard.includes("import OpenWorkspaceBridgeClient from './openWorkspaces/bridgeClient';"));
     assert.ok(dashboard.includes("import { OpenWorkspaceDashboardController } from './openWorkspaces/dashboardController';"));
+    assert.ok(dashboard.includes("import { WorkspaceNavigationController } from './openWorkspaces/navigationController';"));
     assert.ok(dashboard.includes("import { OpenWorkspaceController } from './openWorkspaces/workspaceController';"));
     assert.strictEqual(dashboard.includes("from './openProjects/bridgeClient'"), false);
     assert.strictEqual(dashboard.includes("from './openProjects/dashboardController'"), false);
@@ -2692,9 +2822,9 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('context.subscriptions.push(openWorkspaceBridgeClient);'));
     assert.ok(dashboard.includes('get openProjects() { return getOpenProjects() }'));
     assert.ok(projectedOpenWorkspaces.includes('openWorkspaceDashboardController.getCards()'));
-    assert.ok(selectedProjectHandler.includes('getNavigationWorkspace(projectId)'));
     assert.ok(selectedProjectHandler.includes("projectId.startsWith('__openWorkspaceNavigation-')"));
-    assert.ok(selectedProjectHandler.includes("'open-workspace-navigation-stale'"));
+    assert.ok(selectedProjectHandler.includes('await workspaceNavigationController.open(projectId);'));
+    assert.strictEqual(selectedProjectHandler.includes('getNavigationWorkspace(projectId)'), false);
     assert.strictEqual(selectedProjectHandler.includes('openProjectDashboardController'), false);
     assert.ok(selectedProjectHandler.indexOf('projectService.getProject(projectId)') < selectedProjectHandler.indexOf('getOpenProjects().find'));
     assert.ok(selectedProjectHandler.includes('await projectOpenController.openProject(project, projectOpenType);'));
@@ -4137,6 +4267,7 @@ async function main() {
     await runOpenWorkspaceCoordinatorChecks();
     await runOpenWorkspaceCoordinatorBoundaryChecks();
     await runOpenWorkspaceClientAndControllerChecks();
+    await runWorkspaceNavigationControllerChecks();
     await runOpenWorkspaceHardeningChecks();
     await runCurrentProjectDetailsResolverChecks();
     await runProjectOpenControllerChecks();
