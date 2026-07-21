@@ -21,7 +21,7 @@ support-matrix cell has been removed or approved for removal.
 | 6 | Primary-root ordering, longest nested match, and root chips are correct. | Session-scope, assignment, hydration, and Dashboard checks. | AUTOMATED PASS / MANUAL BLOCKED |
 | 7 | Invalid root, Restricted Mode, unavailable provider, or missing capability creates no partial launch. | Creation/resume preflight and side-effect ledger checks. | AUTOMATED PASS / MANUAL BLOCKED |
 | 8 | Runtime ownership is immutable and removed-root continuity alone yields Outside workspace. | Runtime v2/Tmux/Direct hydration and explicit Outside workspace rendering checks. | AUTOMATED PASS / MANUAL BLOCKED |
-| 9 | Strict v2 publication is zero-or-one per instance and bridge failure degrades only OTHER WINDOWS. | Bridge client/store/coordinator/degradation checks. | AUTOMATED PASS / MANUAL BLOCKED |
+| 9 | Strict v3 publication is zero-or-one per instance and bridge failure degrades only OTHER WINDOWS. | Bridge client/store/coordinator/degradation checks. | AUTOMATED PASS / MANUAL BLOCKED |
 | 10 | Workspace saving adds one project while preserving every existing saved-project field and member entry. | Checked-in Group[] fixture through real ProjectService startup migration, ordinary reads, ProjectMutationController, saved adapter, and serialized-prefix equivalence checks. | AUTOMATED PASS / MANUAL BLOCKED |
 | 11 | Attention de-duplicates workspace evidence and search headings/targets are workspace-native. | Attention projection and exact Dashboard search-catalog checks. | AUTOMATED PASS / MANUAL BLOCKED |
 | 12 | Production retains no v1 live-project/runtime compatibility path. | Architecture source gate and final forbidden-vocabulary scan. | AUTOMATED PASS / MANUAL BLOCKED |
@@ -31,7 +31,7 @@ support-matrix cell has been removed or approved for removal.
 | Command | Status | Observed evidence |
 | --- | --- | --- |
 | `npm run vscode:prepublish` | PASS | Production main bundle, Webview copy, and styles build completed; webpack emitted deprecation warnings only. |
-| `npm run attention:bridge:bundle` | PASS | Production UI Bridge v2 bundle completed; webpack emitted deprecation warnings only. |
+| `npm run attention:bridge:bundle` | PASS | Production UI Bridge v3 bundle completed; webpack emitted deprecation warnings only. |
 | `npm run lint` | PASS | Exited 0 with the repository established warning baseline and no errors. |
 | `npm run test:safety` | PASS | AI session, open workspace, bridge, save, and fake-tmux safety suites passed. |
 | `npm run test:dashboard` | PASS | Dashboard Webview checks passed. |
@@ -43,10 +43,10 @@ support-matrix cell has been removed or approved for removal.
 
 The production package command built
 `artifacts/project-steward-2.1.3.vsix` and
-`artifacts/project-steward-attention-ui-bridge-0.1.3.vsix`. The main archive
+`artifacts/project-steward-attention-ui-bridge-0.1.4.vsix`. The main archive
 contains `dist/dashboard.js`, generated Webview/style assets, and only the
 required JavaScript under `out/workspaces` and `out/openWorkspaces`; the
-bridge archive contains its v2 `dist/extension.js`. Archive listing checks
+bridge archive contains its v3 `dist/extension.js`. Archive listing checks
 found no spike, disposable probe, `.superpowers`, design/report, source, or
 test-only files.
 

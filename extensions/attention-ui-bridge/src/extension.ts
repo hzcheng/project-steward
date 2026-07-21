@@ -17,6 +17,7 @@ import {
 import { parseRoutingChallenge } from '../../../shared/attention-bridge/protocol';
 import { ProbeSnapshot } from '../../../shared/attention-bridge/storeProtocol';
 import { createWorkspaceIdentity } from '../../../shared/attention-bridge/workspaceIdentity';
+import { OPEN_WORKSPACE_PROTOCOL_VERSION } from '../../../src/openWorkspaces/protocol';
 
 const BRIDGE_CHALLENGE = '_projectStewardAttentionSpike.bridge.challenge';
 const WORKSPACE_CHALLENGE = '_projectStewardAttentionSpike.workspace.challenge';
@@ -198,7 +199,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const compatible = isOpenWorkspaceHandshakeCompatible(raw);
             return {
                 accepted: compatible,
-                protocolVersion: 2,
+                protocolVersion: OPEN_WORKSPACE_PROTOCOL_VERSION,
                 bridgeExtensionVersion,
                 capabilities: OPEN_WORKSPACE_CAPABILITIES,
                 ...(compatible ? {} : { errorCode: 'update-required' }),
@@ -306,7 +307,7 @@ function isOpenWorkspaceHandshakeCompatible(raw: unknown): boolean {
         !== ['protocolVersion', 'mainExtensionVersion', 'instanceId', 'capabilities'].sort().join('\n')) {
         return false;
     }
-    if (request.protocolVersion !== 2
+    if (request.protocolVersion !== OPEN_WORKSPACE_PROTOCOL_VERSION
         || typeof request.mainExtensionVersion !== 'string'
         || !request.mainExtensionVersion
         || request.mainExtensionVersion.length > 64

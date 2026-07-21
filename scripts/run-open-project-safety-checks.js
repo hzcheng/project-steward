@@ -73,7 +73,7 @@ function makeWorkspaceRecord(index = 0, overrides = {}) {
 
 function makeWorkspacePublication(overrides = {}) {
     return {
-        protocolVersion: 2,
+        protocolVersion: 3,
         instanceId: SELF,
         sequence: 1,
         followsFocusEvent: false,
@@ -84,7 +84,7 @@ function makeWorkspacePublication(overrides = {}) {
 
 function makeWorkspaceRegistration(instanceId = SELF, lastFocusedAtMs = 4000, workspace = makeWorkspaceRecord(), overrides = {}) {
     return {
-        protocolVersion: 2,
+        protocolVersion: 3,
         instanceId,
         sequence: 1,
         lastFocusedAtMs,
@@ -96,7 +96,7 @@ function makeWorkspaceRegistration(instanceId = SELF, lastFocusedAtMs = 4000, wo
 
 function makeWorkspaceAggregate(registrations, overrides = {}) {
     return {
-        protocolVersion: 2,
+        protocolVersion: 3,
         semanticRevision: 'a'.repeat(64),
         observedAtMs: 5000,
         registrations,
@@ -130,7 +130,9 @@ function hasClassTokens(classValue, ...tokens) {
     return tokens.every(token => classValue.split(/\s+/).includes(token));
 }
 
-function runWorkspaceProtocolV2Checks() {
+function runWorkspaceProtocolV3Checks() {
+    assert.strictEqual(workspaceProtocol.OPEN_WORKSPACE_PROTOCOL_VERSION, 3,
+        'running AI session counts require open-workspace protocol v3');
     const publication = makeWorkspacePublication();
     const registration = makeWorkspaceRegistration();
     const aggregate = makeWorkspaceAggregate([registration]);
@@ -468,7 +470,7 @@ function runWorkspaceProtocolV2Checks() {
     );
 }
 
-function runWorkspaceProjectionV2Checks() {
+function runWorkspaceProjectionV3Checks() {
     const sourceWorkspace = {
         ...makeWorkspaceRecord(0, {
             kind: 'savedMultiRoot',
@@ -764,22 +766,25 @@ function runOpenWorkspacePublicationChecks() {
 async function runOpenWorkspaceStoreChecks() {
     const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-workspace-store-'));
     try {
-        const instancesDirectory = path.join(tempRoot, 'open-workspaces', 'v2', 'instances');
-        const v1Directory = path.join(tempRoot, 'open-projects', 'v1', 'instances');
+        const instancesDirectory = path.join(tempRoot, 'open-workspaces', 'v3', 'instances');
+        const v2Directory = path.join(tempRoot, 'open-workspaces', 'v2', 'instances');
         const ownRegistration = makeWorkspaceRegistration(SELF, 1000, makeWorkspaceRecord(1), {
             leaseUpdatedAtMs: 1000,
         });
         const legacyRegistration = {
-            protocolVersion: 1,
+            protocolVersion: 2,
             instanceId: OTHER,
             sequence: 1,
             lastFocusedAtMs: 1000,
             leaseUpdatedAtMs: 1000,
-            projects: [],
+            workspace: {
+                ...makeWorkspaceRecord(2),
+            },
         };
-        await fs.promises.mkdir(v1Directory, { recursive: true });
+        delete legacyRegistration.workspace.runningAiSessionCount;
+        await fs.promises.mkdir(v2Directory, { recursive: true });
         await fs.promises.writeFile(
-            path.join(v1Directory, `${OTHER}.json`),
+            path.join(v2Directory, `${OTHER}.json`),
             `${JSON.stringify(legacyRegistration)}\n`,
         );
         const store = new OpenWorkspaceStore(tempRoot, SELF);
@@ -793,7 +798,7 @@ async function runOpenWorkspaceStoreChecks() {
         assert.strictEqual(
             (await store.scan(1000)).registrations.some(registration => registration.instanceId === OTHER),
             false,
-            'the v2 registry must never scan v1 owner files',
+            'the v3 registry must never scan v2 owner files',
         );
         await fs.promises.writeFile(path.join(instancesDirectory, `${OTHER}.json`), '{malformed');
         const malformed = await store.scan(1000);
@@ -858,7 +863,7 @@ async function runOpenWorkspaceCoordinatorChecks() {
         },
         clearInterval: () => undefined,
         createWatcher: directory => {
-            assert.strictEqual(directory, path.join(tempRoot, 'open-workspaces', 'v2', 'instances'));
+            assert.strictEqual(directory, path.join(tempRoot, 'open-workspaces', 'v3', 'instances'));
             return { close: () => undefined };
         },
         deliverAggregate: aggregate => delivered.push(aggregate),
@@ -897,7 +902,7 @@ async function runOpenWorkspaceCoordinatorChecks() {
         assert.strictEqual(emptyOwner.workspace, null);
         assert.notStrictEqual(delivered[delivered.length - 1].semanticRevision, semanticRevision);
 
-        await coordinator.unregister({ protocolVersion: 2, instanceId: SELF });
+        await coordinator.unregister({ protocolVersion: 3, instanceId: SELF });
         assert.deepStrictEqual((await observer.scan(now)).registrations, []);
     } finally {
         coordinator.dispose();
@@ -996,7 +1001,7 @@ async function runOpenWorkspaceClientAndControllerChecks() {
             if (command === '_projectStewardOpenWorkspaces.bridge.handshake') {
                 return {
                     accepted: true,
-                    protocolVersion: 2,
+                    protocolVersion: 3,
                     bridgeExtensionVersion: '2.0.0',
                     capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
                 };
@@ -1036,7 +1041,7 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     }
     assert.ok(executions.some(value =>
         value.command === '_projectStewardOpenWorkspaces.bridge.unregister'
-        && value.argument.protocolVersion === 2
+        && value.argument.protocolVersion === 3
     ));
     assert.strictEqual(commands.size, 0);
 
@@ -1279,15 +1284,15 @@ async function runOpenWorkspaceHardeningChecks() {
     const flush = () => new Promise(resolve => setImmediate(resolve));
     const acceptedHandshake = {
         accepted: true,
-        protocolVersion: 2,
+        protocolVersion: 3,
         bridgeExtensionVersion: '2.0.0',
         capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
     };
 
     const terminalHandshakeCases = [
         ['rejected response', { ...acceptedHandshake, accepted: false, errorCode: 'update-required' }],
-        ['protocol version mismatch', { ...acceptedHandshake, protocolVersion: 1 }],
-        ['malformed response', { accepted: true, protocolVersion: 2 }],
+        ['protocol version mismatch', { ...acceptedHandshake, protocolVersion: 2 }],
+        ['malformed response', { accepted: true, protocolVersion: 3 }],
         ['capability mismatch', {
             ...acceptedHandshake,
             capabilities: { ...acceptedHandshake.capabilities, focusLeases: false },
@@ -3506,19 +3511,19 @@ async function runCoordinatorWiringChecks() {
         assert.strictEqual(typeof unregister, 'function');
         assert.strictEqual(registeredCommands.has('_projectStewardOpenProjects.bridge.publish'), false);
         assert.deepStrictEqual(await handshake({
-            protocolVersion: 1,
+            protocolVersion: 2,
             mainExtensionVersion: '1.0.0',
             instanceId: SELF,
             capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
         }), {
             accepted: false,
-            protocolVersion: 2,
+            protocolVersion: 3,
             bridgeExtensionVersion: 'unknown',
             capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
             errorCode: 'update-required',
         });
         assert.strictEqual((await handshake({
-            protocolVersion: 2,
+            protocolVersion: 3,
             mainExtensionVersion: '2.0.0',
             instanceId: SELF,
             capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
@@ -3584,7 +3589,7 @@ async function runCoordinatorWiringChecks() {
         assert.strictEqual(bridgeOutputLines.join('\n').includes(diagnosticSentinel), false,
             'the bridge OutputChannel must not receive arbitrary exception text');
         aggregateDeliveryError = null;
-        await unregister({ protocolVersion: 2, instanceId: SELF });
+        await unregister({ protocolVersion: 3, instanceId: SELF });
     } finally {
         Module._load = previousModuleLoad;
         for (const disposable of context.subscriptions.slice().reverse()) {
@@ -3595,11 +3600,11 @@ async function runCoordinatorWiringChecks() {
 }
 
 async function main() {
-    runWorkspaceProtocolV2Checks();
+    runWorkspaceProtocolV3Checks();
     await runWorkspaceContextResolverChecks();
     await runSavedWorkspaceProjectAdapterChecks();
     await runProjectServiceWorkspaceSaveMigrationIntegrationChecks();
-    runWorkspaceProjectionV2Checks();
+    runWorkspaceProjectionV3Checks();
     runOpenWorkspacePublicationChecks();
     await runOpenWorkspaceStoreChecks();
     await runOpenWorkspaceCoordinatorChecks();

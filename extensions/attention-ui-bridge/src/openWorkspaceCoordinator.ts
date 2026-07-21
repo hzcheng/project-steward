@@ -112,7 +112,7 @@ export class OpenWorkspaceCoordinator {
         private readonly rootDirectory: string,
         private readonly dependencies: OpenWorkspaceCoordinatorDependencies,
     ) {
-        const instancesDirectory = path.join(rootDirectory, 'open-workspaces', 'v2', 'instances');
+        const instancesDirectory = path.join(rootDirectory, 'open-workspaces', 'v3', 'instances');
         this.watcher = dependencies.createWatcher(instancesDirectory, () => {
             void this.scanAndDeliver().catch(error => this.reportError('watcher', error));
         });

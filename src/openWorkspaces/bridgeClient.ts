@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 
 import {
+    OPEN_WORKSPACE_PROTOCOL_VERSION,
     OPEN_WORKSPACE_HEARTBEAT_MS,
     OpenWorkspaceAggregate,
     OpenWorkspaceRecord,
@@ -64,7 +65,7 @@ export interface OpenWorkspaceClientDiagnosticEvent {
 
 interface OpenWorkspaceHandshakeResponse {
     accepted: boolean;
-    protocolVersion: 2;
+    protocolVersion: 3;
     bridgeExtensionVersion: string;
     capabilities: { workspaces: true; atomicReplace: true; focusLeases: true };
     errorCode?: 'update-required';
@@ -87,7 +88,7 @@ function validateHandshakeResponse(raw: unknown): OpenWorkspaceHandshakeResponse
         ? ['accepted', 'protocolVersion', 'bridgeExtensionVersion', 'capabilities']
         : ['accepted', 'protocolVersion', 'bridgeExtensionVersion', 'capabilities', 'errorCode'];
     if (!exactKeys(response, expected)
-        || response.protocolVersion !== 2
+        || response.protocolVersion !== OPEN_WORKSPACE_PROTOCOL_VERSION
         || typeof response.accepted !== 'boolean'
         || typeof response.bridgeExtensionVersion !== 'string'
         || !response.bridgeExtensionVersion
@@ -238,7 +239,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
         this.emitDiagnostic({ event: 'dispose', sequence: this.sequence });
         const unregister = () => Promise.resolve().then(() => this.executeCommand(
             OPEN_WORKSPACE_UNREGISTER_COMMAND,
-            { protocolVersion: 2, instanceId: this.instanceId },
+            { protocolVersion: OPEN_WORKSPACE_PROTOCOL_VERSION, instanceId: this.instanceId },
         )).then(() => undefined, error => { this.onError(error); });
         if (this.publishCommandFlight) {
             void this.publishCommandFlight.then(unregister, unregister);
@@ -284,7 +285,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
             && !followsFocusEvent
             && semantic === this.lastSemantic) { return true; }
         const publication = validateOpenWorkspacePublication({
-            protocolVersion: 2,
+            protocolVersion: OPEN_WORKSPACE_PROTOCOL_VERSION,
             instanceId: this.instanceId,
             sequence: ++this.sequence,
             followsFocusEvent,
@@ -351,7 +352,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
             const response = validateHandshakeResponse(await this.executeCommand(
                 OPEN_WORKSPACE_HANDSHAKE_COMMAND,
                 {
-                    protocolVersion: 2,
+                    protocolVersion: OPEN_WORKSPACE_PROTOCOL_VERSION,
                     mainExtensionVersion: this.mainExtensionVersion,
                     instanceId: this.instanceId,
                     capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },

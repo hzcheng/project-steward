@@ -171,7 +171,7 @@ function runRealVsixArchiveChecks(mainPackage, bridgePackage) {
     assertIncludes(mainBundle, '_projectStewardOpenWorkspaces', 'packaged main bundle');
     assertNotIncludes(mainBundle, '_projectStewardOpenProjects', 'packaged main bundle');
     assertIncludes(bridgeBundle, '_projectStewardOpenWorkspaces', 'packaged UI Bridge bundle');
-    assert.match(bridgeBundle, /["']open-workspaces["'],["']v2["'],["']instances["']/,
+    assert.match(bridgeBundle, /["']open-workspaces["'],["']v3["'],["']instances["']/,
         'packaged UI Bridge bundle must retain the v2 registry path');
     assertNotIncludes(bridgeBundle, '_projectStewardOpenProjects', 'packaged UI Bridge bundle');
     for (const entries of [mainEntries, bridgeEntries]) {
@@ -433,8 +433,8 @@ function run() {
 
     const bridgeBundle = readText('extensions/attention-ui-bridge/dist/extension.js');
     assertIncludes(bridgeBundle, '_projectStewardOpenWorkspaces', 'UI Bridge bundle');
-    assert.match(bridgeBundle, /["']open-workspaces["'],["']v2["'],["']instances["']/,
-        'UI Bridge bundle must retain the open-workspaces/v2/instances registry path');
+    assert.match(bridgeBundle, /["']open-workspaces["'],["']v3["'],["']instances["']/,
+        'UI Bridge bundle must retain the open-workspaces/v3/instances registry path');
     assertNotIncludes(bridgeBundle, '_projectStewardOpenProjects', 'UI Bridge bundle');
 
     runRealVsixArchiveChecks(mainPackage, bridgePackage);

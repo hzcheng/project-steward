@@ -7,7 +7,7 @@ import type { WorkspaceCardViewModel } from '../models';
 import { getWorkspaceAttentionSummary } from '../workspaces/attentionProjection';
 import type { OpenWorkspace, OpenWorkspaceEnvironment } from '../workspaces/types';
 import {
-    OpenWorkspaceAggregateV2,
+    OpenWorkspaceAggregateV3,
     OpenWorkspaceRecord,
     validateOpenWorkspaceRecord,
 } from './protocol';
@@ -129,7 +129,7 @@ function createNavigationCard(
 
 export function projectOpenWorkspaceCards(
     currentWorkspace: Pick<OpenWorkspace, 'navigationIdentity'> | null,
-    aggregate: OpenWorkspaceAggregateV2 | null,
+    aggregate: OpenWorkspaceAggregateV3 | null,
     ownInstanceId: string,
     attentionAggregate: AttentionAggregate | null = null
 ): WorkspaceCardViewModel[] {
@@ -143,7 +143,7 @@ export function projectOpenWorkspaceCards(
 
 export function projectOpenWorkspaceNavigationCards(
     currentWorkspace: Pick<OpenWorkspace, 'navigationIdentity'> | null,
-    aggregate: OpenWorkspaceAggregateV2 | null,
+    aggregate: OpenWorkspaceAggregateV3 | null,
     ownInstanceId: string,
     attentionAggregate: AttentionAggregate | null = null
 ): OpenWorkspaceNavigationCardProjection[] {

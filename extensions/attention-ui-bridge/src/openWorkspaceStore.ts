@@ -46,7 +46,7 @@ export class OpenWorkspaceStore {
 
     public constructor(rootDirectory: string, private readonly ownInstanceId: string) {
         requireInstanceId(ownInstanceId);
-        this.instancesDirectory = path.join(rootDirectory, 'open-workspaces', 'v2', 'instances');
+        this.instancesDirectory = path.join(rootDirectory, 'open-workspaces', 'v3', 'instances');
     }
 
     public async write(registration: OpenWorkspaceRegistration): Promise<void> {

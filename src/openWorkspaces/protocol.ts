@@ -5,7 +5,7 @@ import { URL } from 'url';
 
 import type { OpenWorkspaceEnvironment, OpenWorkspaceKind } from '../workspaces/types';
 
-export const OPEN_WORKSPACE_PROTOCOL_VERSION = 2;
+export const OPEN_WORKSPACE_PROTOCOL_VERSION = 3;
 export const OPEN_WORKSPACE_HEARTBEAT_MS = 10_000;
 export const OPEN_WORKSPACE_LEASE_MS = 30_000;
 export const MAX_OPEN_WORKSPACE_ROOTS = 100;
@@ -38,16 +38,16 @@ export interface OpenWorkspaceRecord {
     roots: OpenWorkspaceRootRecord[];
 }
 
-export interface OpenWorkspacePublicationV2 {
-    protocolVersion: 2;
+export interface OpenWorkspacePublicationV3 {
+    protocolVersion: 3;
     instanceId: string;
     sequence: number;
     followsFocusEvent: boolean;
     workspace: OpenWorkspaceRecord | null;
 }
 
-export interface OpenWorkspaceRegistrationV2 {
-    protocolVersion: 2;
+export interface OpenWorkspaceRegistrationV3 {
+    protocolVersion: 3;
     instanceId: string;
     sequence: number;
     lastFocusedAtMs: number;
@@ -55,16 +55,16 @@ export interface OpenWorkspaceRegistrationV2 {
     workspace: OpenWorkspaceRecord | null;
 }
 
-export interface OpenWorkspaceAggregateV2 {
-    protocolVersion: 2;
+export interface OpenWorkspaceAggregateV3 {
+    protocolVersion: 3;
     semanticRevision: string;
     observedAtMs: number;
-    registrations: OpenWorkspaceRegistrationV2[];
+    registrations: OpenWorkspaceRegistrationV3[];
 }
 
-export type OpenWorkspacePublication = OpenWorkspacePublicationV2;
-export type OpenWorkspaceRegistration = OpenWorkspaceRegistrationV2;
-export type OpenWorkspaceAggregate = OpenWorkspaceAggregateV2;
+export type OpenWorkspacePublication = OpenWorkspacePublicationV3;
+export type OpenWorkspaceRegistration = OpenWorkspaceRegistrationV3;
+export type OpenWorkspaceAggregate = OpenWorkspaceAggregateV3;
 
 function requireObject(value: unknown, label: string): Record<string, unknown> {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -83,7 +83,7 @@ function requireExactKeys(value: Record<string, unknown>, label: string, require
     }
 }
 
-function requireProtocolVersion(value: unknown): 2 {
+function requireProtocolVersion(value: unknown): 3 {
     if (value !== OPEN_WORKSPACE_PROTOCOL_VERSION) {
         throw new Error(`protocolVersion must equal ${OPEN_WORKSPACE_PROTOCOL_VERSION}`);
     }
@@ -235,7 +235,7 @@ function validateOptionalWorkspace(value: unknown): OpenWorkspaceRecord | null {
     return value === null ? null : validateOpenWorkspaceRecord(value);
 }
 
-export function validateOpenWorkspacePublication(value: unknown): OpenWorkspacePublicationV2 {
+export function validateOpenWorkspacePublication(value: unknown): OpenWorkspacePublicationV3 {
     const publication = requireObject(value, 'open workspace publication');
     requireExactKeys(publication, 'open workspace publication', [
         'protocolVersion',
@@ -257,7 +257,7 @@ export function validateOpenWorkspacePublication(value: unknown): OpenWorkspaceP
     };
 }
 
-export function validateOpenWorkspaceRegistration(value: unknown): OpenWorkspaceRegistrationV2 {
+export function validateOpenWorkspaceRegistration(value: unknown): OpenWorkspaceRegistrationV3 {
     const registration = requireObject(value, 'open workspace registration');
     requireExactKeys(registration, 'open workspace registration', [
         'protocolVersion',
@@ -278,7 +278,7 @@ export function validateOpenWorkspaceRegistration(value: unknown): OpenWorkspace
     };
 }
 
-export function validateOpenWorkspaceAggregate(value: unknown): OpenWorkspaceAggregateV2 {
+export function validateOpenWorkspaceAggregate(value: unknown): OpenWorkspaceAggregateV3 {
     const aggregate = requireObject(value, 'open workspace aggregate');
     requireExactKeys(aggregate, 'open workspace aggregate', [
         'protocolVersion',
@@ -331,7 +331,7 @@ function createWorkspaceSemanticDescriptor(workspace: OpenWorkspaceRecord | null
     ];
 }
 
-export function createOpenWorkspaceSemanticRevision(registrations: OpenWorkspaceRegistrationV2[]): string {
+export function createOpenWorkspaceSemanticRevision(registrations: OpenWorkspaceRegistrationV3[]): string {
     const semanticRegistrations = (registrations || [])
         .map(validateOpenWorkspaceRegistration)
         .map(registration => [
