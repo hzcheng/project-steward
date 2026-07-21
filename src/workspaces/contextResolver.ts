@@ -61,6 +61,34 @@ function getWorkspaceFileBasename(workspaceFile: WorkspaceUri | null | undefined
     return uriPath.substring(uriPath.lastIndexOf('/') + 1);
 }
 
+function removeWorkspaceWindowDecorations(name: string | undefined): string {
+    return (name || '')
+        .replace(/\s+\[(?:Dev Container|SSH|WSL)(?::[^\]]*)?\]\s*$/i, '')
+        .replace(/\s+\(Workspace\)\s*$/i, '');
+}
+
+function getWorkspaceDisplayName(
+    kind: OpenWorkspaceKind,
+    context: WorkspaceContext,
+    workspaceFolders: readonly WorkspaceFolder[],
+): string {
+    if (kind === 'singleFolder') {
+        return workspaceFolders[0]?.name || context.workspaceName || 'Workspace';
+    }
+    if (kind === 'savedMultiRoot') {
+        const workspaceName = removeWorkspaceWindowDecorations(context.workspaceName);
+        const workspaceFileName = getWorkspaceFileBasename(context.workspaceFile)
+            .replace(/\.code-workspace$/i, '');
+        return workspaceName || workspaceFileName || workspaceFolders[0]?.name || 'Workspace';
+    }
+    const untitledName = removeWorkspaceWindowDecorations(
+        context.workspaceName || getWorkspaceFileBasename(context.workspaceFile)
+    );
+    return /^Untitled(?:-\d+)?$/i.test(untitledName)
+        ? 'Untitled'
+        : untitledName || workspaceFolders[0]?.name || 'Untitled';
+}
+
 export class WorkspaceContextResolver {
     resolve(context: WorkspaceContext): OpenWorkspace | null {
         const workspaceFolders = context.workspaceFolders || [];
@@ -84,10 +112,7 @@ export class WorkspaceContextResolver {
             navigationIdentity: createWorkspaceUriIdentity(navigationUri),
             scopeIdentity: createWorkspaceScopeIdentity(workspaceFolders.map(folder => folder.uri)),
             kind,
-            displayName: context.workspaceName
-                || getWorkspaceFileBasename(context.workspaceFile)
-                || workspaceFolders[0]?.name
-                || 'Workspace',
+            displayName: getWorkspaceDisplayName(kind, context, workspaceFolders),
             navigationUri: navigationUri.toString(),
             environment: resolveEnvironment(context.remoteName),
             roots,

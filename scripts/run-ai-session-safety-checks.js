@@ -4249,6 +4249,18 @@ function runWebviewContentChecks() {
         'current workspace shell state must be owned by the shared item card');
     assert.strictEqual(sidebarStyles.includes('.project-border'), false,
         'sidebar projects must use the shared accent selector instead of project-specific rail geometry');
+    const sidebarGroupStyleBlock = extractExactScssBlock(sidebarStyles, '.group');
+    assert.ok(sidebarGroupStyleBlock.includes('grid-template-columns: minmax(0, 1fr)'),
+        'sidebar groups must use a shrinkable grid track instead of their content min-width');
+    assert.ok(sidebarGroupStyleBlock.includes('min-width: 0'),
+        'sidebar groups must be allowed to shrink with the Webview');
+    assert.ok(sidebarGroupStyleBlock.includes('max-width: 100%'),
+        'sidebar groups must not exceed the visible Webview width');
+    const sidebarGroupListStyleBlock = extractExactScssBlock(sidebarGroupStyleBlock, '.group-list');
+    assert.ok(sidebarGroupListStyleBlock.includes('min-width: 0'),
+        'sidebar group lists must not propagate card content min-width into the grid track');
+    assert.ok(sidebarGroupListStyleBlock.includes('max-width: 100%'),
+        'sidebar group lists must not exceed the shrinkable grid track');
     const projectContainerStyleBlock = extractExactScssBlock(sidebarStyles, '.project-container');
     assert.ok(projectContainerStyleBlock.includes('box-sizing: border-box'),
         'sidebar project gutters must be included in the project container width');

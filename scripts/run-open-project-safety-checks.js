@@ -2017,12 +2017,12 @@ async function runWorkspaceContextResolverChecks() {
 
     const local = resolver.resolve({
         workspaceFile: null,
-        workspaceName: 'Local App',
+        workspaceName: 'app [Dev Container: Existing Dockerfile]',
         remoteName: undefined,
         workspaceFolders: [folder('app', uri('file:///work/app'))],
     });
     assert.strictEqual(local.kind, 'singleFolder');
-    assert.strictEqual(local.displayName, 'Local App');
+    assert.strictEqual(local.displayName, 'app');
     assert.strictEqual(local.navigationUri, 'file:///work/app');
     assert.strictEqual(local.environment, 'local');
     assert.strictEqual(local.roots.length, 1);
@@ -2034,7 +2034,7 @@ async function runWorkspaceContextResolverChecks() {
 
     const saved = resolver.resolve({
         workspaceFile: uri('file:///work/team.code-workspace'),
-        workspaceName: 'Team',
+        workspaceName: 'Team [Dev Container: Existing Dockerfile]',
         remoteName: undefined,
         workspaceFolders: [
             folder('app', uri('file:///work/app')),
@@ -2052,13 +2052,23 @@ async function runWorkspaceContextResolverChecks() {
         remoteName: undefined,
         workspaceFolders: [folder('saved root name', uri('file:///work/saved-root'))],
     });
-    assert.strictEqual(savedWithoutWorkspaceName.displayName, 'fallback.code-workspace');
+    assert.strictEqual(savedWithoutWorkspaceName.displayName, 'fallback');
     const untitledWithoutWorkspaceName = resolver.resolve({
         workspaceFile: uri('untitled:Untitled-3'),
         remoteName: undefined,
         workspaceFolders: [folder('untitled root name', uri('file:///work/untitled-root'))],
     });
-    assert.strictEqual(untitledWithoutWorkspaceName.displayName, 'Untitled-3');
+    assert.strictEqual(untitledWithoutWorkspaceName.displayName, 'Untitled');
+    const decoratedUntitledWorkspace = resolver.resolve({
+        workspaceFile: uri('untitled:Untitled-9'),
+        workspaceName: 'Untitled (Workspace)',
+        remoteName: 'dev-container',
+        workspaceFolders: [
+            folder('app', uri('file:///work/app')),
+            folder('lib', uri('file:///work/lib')),
+        ],
+    });
+    assert.strictEqual(decoratedUntitledWorkspace.displayName, 'Untitled');
     const singleFolderWithoutWorkspaceName = resolver.resolve({
         workspaceFile: null,
         remoteName: undefined,

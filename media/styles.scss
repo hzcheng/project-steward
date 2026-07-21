@@ -1873,6 +1873,11 @@ body.steward-sidebar {
     }
 
     .group {
+        box-sizing: border-box;
+        grid-template-columns: minmax(0, 1fr);
+        min-width: 0;
+        width: 100%;
+        max-width: 100%;
         overflow: visible;
         margin-right: 0;
         margin-top: 12px;
@@ -1921,6 +1926,10 @@ body.steward-sidebar {
 
         .group-list {
             display: block;
+            box-sizing: border-box;
+            min-width: 0;
+            width: 100%;
+            max-width: 100%;
             padding-top: 7px;
         }
 
