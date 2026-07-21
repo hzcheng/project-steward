@@ -404,6 +404,50 @@ function runWorkspaceCardRenderingChecks() {
     assert.ok(singleHtml.includes('Local · 1 folder'));
     assert.strictEqual(singleHtml.includes('class="ai-session-root-chip"'), false,
         'single-root workspaces must not repeat the only root on every session row');
+
+    const runningCard = makeWorkspaceCardFixture(1);
+    runningCard.aiSessions.activeSessions.push(
+        {
+            key: 'codex:session-starting', provider: 'codex', sessionId: 'session-starting', name: 'Starting',
+            executionState: 'starting', focused: false, needsAttention: false, pending: true,
+            backend: 'vscode', attached: true,
+        },
+        {
+            key: 'codex:session-stopped', provider: 'codex', sessionId: 'session-stopped', name: 'Stopped',
+            executionState: 'stopped', focused: false, needsAttention: false, pending: false,
+            backend: 'vscode', attached: true,
+        },
+    );
+    const orbitHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, 'orbit');
+    assert.ok(orbitHtml.includes('class="workspace-card project steward-item-card session-running"'));
+    assert.ok(orbitHtml.includes('data-session-fx="orbit"'));
+    assert.ok(orbitHtml.includes('<div class="project-session-fx"></div>'));
+    assert.ok(orbitHtml.includes('title="Workspace — 1 active session running"'));
+
+    for (const animation of ['current', 'sweep', 'orbit', 'halo', 'ripple', 'breath']) {
+        const animationHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, animation);
+        assert.ok(animationHtml.includes(`data-session-fx="${animation}"`),
+            `the current workspace card must accept the ${animation} running animation`);
+        assert.ok(animationHtml.includes('<div class="project-session-fx"></div>'));
+    }
+    const noneHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, 'none');
+    assert.ok(noneHtml.includes('class="workspace-card project steward-item-card session-running"'));
+    assert.ok(noneHtml.includes('data-session-fx="none"'));
+    assert.strictEqual(noneHtml.includes('project-session-fx'), false,
+        'none must retain static running state without an animation layer');
+    const invalidHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, 'invalid');
+    assert.ok(invalidHtml.includes('data-session-fx="current"'),
+        'an invalid animation value must fail safely to current');
+
+    const idleCard = makeWorkspaceCardFixture(1);
+    idleCard.aiSessions.activeSessions = runningCard.aiSessions.activeSessions.filter(
+        session => session.executionState !== 'running'
+    );
+    const idleHtml = webviewContent.getCurrentWorkspaceGroupContent(idleCard, false, 'halo');
+    assert.strictEqual(idleHtml.includes('session-running'), false,
+        'starting and stopped sessions must not activate the card running state');
+    assert.strictEqual(idleHtml.includes('data-session-fx'), false);
+    assert.strictEqual(idleHtml.includes('active session running'), false);
     const unhydratedCard = makeWorkspaceCardFixture(1);
     delete unhydratedCard.aiSessions;
     const unhydratedHtml = webviewContent.getCurrentWorkspaceGroupContent(unhydratedCard, false);
@@ -439,7 +483,7 @@ function runWorkspaceCardRenderingChecks() {
         scopeIdentity: 'scope-other',
         name: 'Other Workspace',
         environmentLabel: 'SSH',
-        aiSessions: undefined,
+        aiSessions: runningCard.aiSessions,
     };
     const workspaceHtml = webviewContent.getOpenWorkspacesGroupContent(
         [makeWorkspaceCardFixture(3), navigationCard],
@@ -453,6 +497,12 @@ function runWorkspaceCardRenderingChecks() {
         'OTHER WINDOWS must never render session/provider controls');
     assert.strictEqual(otherWindowsHtml.includes('data-workspace-root-id'), false,
         'OTHER WINDOWS roots are aggregate metadata, not expandable rows');
+    for (const forbidden of [
+        'session-running', 'data-session-fx', 'project-session-fx', 'active session running',
+    ]) {
+        assert.strictEqual(otherWindowsHtml.includes(forbidden), false,
+            `OTHER WINDOWS must ignore malicious aiSessions data and omit ${forbidden}`);
+    }
 
     const updateRequiredHtml = webviewContent.getOpenWorkspacesGroupContent(
         [makeWorkspaceCardFixture(3)],
@@ -4064,7 +4114,7 @@ function runSourceContractChecks(source) {
     assert.ok(source.includes("projectSteward.activeDashboardTab"));
     assert.ok(webviewContentSource.includes('class="group steward-section'));
     assert.ok(webviewContentSource.includes('class="group-title steward-section-header steward-group-header"'));
-    assert.ok(webviewContentSource.includes('class="project steward-item-card${projectCardClassModifier}"'));
+    assert.ok(webviewContentSource.includes('class="project steward-item-card"'));
     assert.ok(webviewContentSource.includes('class="project-border steward-item-accent"'));
     assert.ok(webviewContentSource.includes('onTodoMounted: () =>'));
     assert.ok(webviewContentSource.includes("window.__projectStewardSyncCollapseButton('todo')"));

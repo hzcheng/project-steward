@@ -4468,6 +4468,29 @@ function runWebviewContentChecks() {
     assert.ok(styles.includes('[data-session-pending]'));
     assert.ok(styles.includes('@media (max-width: 280px)'));
     assert.ok(styles.includes('@media (prefers-reduced-motion: reduce)'));
+    for (const keyframe of [
+        'steward-session-running-flow',
+        'steward-session-running-sweep',
+        'steward-session-running-orbit',
+        'steward-session-running-halo',
+        'steward-session-running-ripple',
+        'steward-session-running-breath',
+    ]) {
+        assert.ok(styles.includes(`@keyframes ${keyframe}`),
+            `workspace card styles must retain ${keyframe}`);
+        assert.ok(compiledStyles.includes(`@keyframes ${keyframe}`),
+            `generated workspace card styles must retain ${keyframe}`);
+    }
+    assert.ok(styles.includes('.project-session-fx'));
+    assert.ok(compiledStyles.includes('.project-session-fx'));
+    const reducedMotionStyles = styles.slice(styles.indexOf('@media (prefers-reduced-motion: reduce)'));
+    assert.ok(reducedMotionStyles.includes('.project-session-fx'));
+    assert.ok(reducedMotionStyles.includes('.project.session-running[data-session-fx="breath"]'));
+    assert.ok(reducedMotionStyles.includes('animation: none !important'));
+    assert.ok(styles.includes('[data-execution-state="running"] .codex-session-icon'));
+    assert.ok(styles.includes('@keyframes steward-session-icon-spin'));
+    assert.ok(compiledStyles.includes('[data-execution-state=running] .codex-session-icon::before'));
+    assert.ok(compiledStyles.includes('@keyframes steward-session-icon-spin'));
     assert.ok(styles.includes('[data-ai-session-managing]'));
     assert.ok(styles.includes('grid-template-columns: minmax(0, 1fr) 24px;'));
     assert.ok(styles.includes('.ai-session-manage-button[aria-pressed="true"]'));
@@ -4487,6 +4510,12 @@ function runWebviewContentChecks() {
     assert.deepStrictEqual(
         packageJson.contributes.configuration.properties['projectSteward.aiSessionTerminalMode'].enum,
         ['vscode', 'tmux']
+    );
+    assert.deepStrictEqual(
+        packageJson.contributes.configuration.properties[
+            'projectSteward.aiSessionRunningCardAnimation'
+        ].enum,
+        ['current', 'sweep', 'orbit', 'halo', 'ripple', 'breath', 'none']
     );
     assert.ok(!fs.existsSync(path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydrationController.ts')));
     assert.ok(!fs.existsSync(path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydration.ts')));
@@ -4665,8 +4694,24 @@ function runCurrentWorkspaceRenderingChecks() {
             aiSessionCount: 1,
             attentionCount: 0,
             defaultTab: 'sessions',
-            activeSessions: [],
-            activeSessionCount: 0,
+            activeSessions: [
+                {
+                    key: 'codex:running', provider: 'codex', sessionId: 'running', name: 'Running',
+                    executionState: 'running', focused: false, needsAttention: false, pending: false,
+                    backend: 'vscode', attached: true,
+                },
+                {
+                    key: 'codex:starting', provider: 'codex', sessionId: 'starting', name: 'Starting',
+                    executionState: 'starting', focused: false, needsAttention: false, pending: true,
+                    backend: 'vscode', attached: true,
+                },
+                {
+                    key: 'codex:stopped', provider: 'codex', sessionId: 'stopped', name: 'Stopped',
+                    executionState: 'stopped', focused: false, needsAttention: false, pending: false,
+                    backend: 'vscode', attached: true,
+                },
+            ],
+            activeSessionCount: 3,
             activeAttentionCount: 0,
         },
     };
@@ -4679,6 +4724,11 @@ function runCurrentWorkspaceRenderingChecks() {
         environmentLabel: 'SSH',
         attentionCount: 2,
         roots: [{ id: 'root-other', name: 'Other', ordinal: 0 }],
+        aiSessions: {
+            activeSessions: [{ executionState: 'running' }],
+            activeSessionCount: 99,
+            aiSessionCount: 99,
+        },
     };
     const html = webviewContentModule.getStewardContent(
         { extensionPath: '/extension' },
@@ -4713,11 +4763,19 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.strictEqual(currentTags.length, 1);
     assert.ok(currentTags[0].includes('data-current-workspace'));
     assert.ok(currentTags[0].includes('data-workspace-card-kind="current"'));
+    assert.ok(currentTags[0].includes('session-running'));
+    assert.ok(currentTags[0].includes('data-session-fx="current"'));
+    assert.ok(html.includes('title="Workspace — 1 active session running"'));
+    assert.strictEqual((html.match(/class="project-session-fx"/g) || []).length, 1);
     assert.strictEqual(navigationTags.length, 1);
     assert.ok(navigationTags[0].includes('data-workspace-navigation'));
     assert.ok(navigationTags[0].includes('data-other-workspace'));
     assert.ok(navigationTags[0].includes('data-readonly-project'));
     assert.ok(!navigationTags[0].includes('data-current-workspace'));
+    for (const forbidden of ['session-running', 'data-session-fx', 'active session running']) {
+        assert.strictEqual(navigationTags[0].includes(forbidden), false,
+            `navigation cards must structurally omit ${forbidden}`);
+    }
     assert.strictEqual((html.match(/class="workspace-card/g) || []).length, 2);
     assert.strictEqual((html.match(/class="codex-sessions"/g) || []).length, 1);
     assert.ok(html.includes('data-workspace-root-id="root-app"'));

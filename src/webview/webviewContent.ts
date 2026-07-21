@@ -32,6 +32,19 @@ const FAVORITES_GROUP_NAME = 'FAVORITES';
 const OPEN_CURRENT_WORKSPACE_GROUP_NAME = 'CURRENT WORKSPACE';
 const OPEN_OTHER_WINDOWS_GROUP_NAME = 'OTHER WINDOWS';
 const DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP = 5;
+const AI_SESSION_RUNNING_CARD_ANIMATIONS = new Set([
+    'current',
+    'sweep',
+    'orbit',
+    'halo',
+    'ripple',
+    'breath',
+    'none',
+]);
+
+function normalizeRunningCardAnimation(value: string | undefined): string {
+    return value && AI_SESSION_RUNNING_CARD_ANIMATIONS.has(value) ? value : 'current';
+}
 
 interface GroupSectionOptions {
     virtual: boolean;
@@ -226,7 +239,8 @@ export function getStewardContent(
 
 export function getCurrentWorkspaceGroupContent(
     card: WorkspaceCardViewModel | null,
-    hasOtherWindows: boolean = false
+    hasOtherWindows: boolean = false,
+    runningCardAnimation?: string,
 ): string {
     const currentCard = card && card.kind === 'current' && card.roots.length > 0 ? card : null;
     return `
@@ -237,7 +251,7 @@ export function getCurrentWorkspaceGroupContent(
     </div>
     <div class="group-list">
         <div class="drop-signal"></div>
-        ${currentCard ? getWorkspaceCardDiv(currentCard) : getOpenCurrentWorkspaceEmptyState(hasOtherWindows)}
+        ${currentCard ? getWorkspaceCardDiv(currentCard, runningCardAnimation) : getOpenCurrentWorkspaceEmptyState(hasOtherWindows)}
     </div>
 </div>`;
 }
@@ -246,10 +260,15 @@ export function getOpenWorkspacesGroupContent(
     cards: WorkspaceCardViewModel[],
     collapsed: boolean,
     otherWindowsStatus: OpenWorkspaceBridgeStatus = 'ready',
+    runningCardAnimation?: string,
 ): string {
     const current = (cards || []).find(card => card.kind === 'current') || null;
     const navigationCards = (cards || []).filter(card => card.kind === 'navigation');
-    const currentSection = getCurrentWorkspaceGroupContent(current, navigationCards.length > 0);
+    const currentSection = getCurrentWorkspaceGroupContent(
+        current,
+        navigationCards.length > 0,
+        runningCardAnimation,
+    );
     if (!navigationCards.length && otherWindowsStatus === 'ready') {
         return currentSection;
     }
@@ -262,7 +281,7 @@ export function getOpenWorkspacesGroupContent(
             ? `<div class="open-other-windows-state" role="status">
                 <p>OTHER WINDOWS is temporarily unavailable. Project Steward will retry automatically.</p>
             </div>`
-            : navigationCards.map(getWorkspaceCardDiv).join('\n');
+            : navigationCards.map(card => getWorkspaceCardDiv(card)).join('\n');
     const otherWindowsCollapsed = otherWindowsStatus === 'ready' && collapsed;
     return `${currentSection}
 <div class="group steward-section open-other-windows-group ${otherWindowsCollapsed ? 'collapsed' : ''}" data-group-id="${OPEN_WORKSPACES_GROUP_ID}" data-virtual-group data-system-group="${OPEN_WORKSPACES_GROUP_ID}" data-other-windows-status="${otherWindowsStatus}">
@@ -280,7 +299,7 @@ export function getOpenWorkspacesGroupContent(
 </div>`;
 }
 
-function getWorkspaceCardDiv(card: WorkspaceCardViewModel): string {
+function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?: string): string {
     const roots = card.roots.slice().sort((left, right) => left.ordinal - right.ordinal);
     const rootCount = roots.length;
     const workspaceName = escapeAttribute(sanitizeProjectName(card.name) || 'Workspace');
@@ -288,6 +307,15 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel): string {
     const folderLabel = `${rootCount} folder${rootCount === 1 ? '' : 's'}`;
     const isCurrent = card.kind === 'current';
     const aiSessions = isCurrent ? card.aiSessions : undefined;
+    const runningSessionCount = isCurrent
+        ? (aiSessions?.activeSessions || []).filter(session => session.executionState === 'running').length
+        : 0;
+    const sessionFx = runningSessionCount > 0
+        ? normalizeRunningCardAnimation(runningCardAnimation)
+        : '';
+    const workspaceIconTitle = runningSessionCount > 0
+        ? `Workspace — ${runningSessionCount} active session${runningSessionCount === 1 ? '' : 's'} running`
+        : 'Workspace';
     const aiSessionCount = aiSessions?.aiSessionCount || 0;
     const activeSessionCount = aiSessions?.activeSessionCount || 0;
     const attentionCount = card.attentionCount || 0;
@@ -315,11 +343,12 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel): string {
         : '';
 
     return `<div class="project-container" data-nodrag>
-    <div class="workspace-card project steward-item-card" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
+    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
+        ${sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : ''}
         <div class="project-aura"></div>
         <div class="project-border steward-item-accent"></div>
         <div class="fitty-container project-title-row">
-            <span class="project-kind-icon" title="Workspace">${Icons.folder}</span>
+            <span class="project-kind-icon" title="${workspaceIconTitle}">${Icons.folder}</span>
             <h2 class="project-header">${workspaceName}</h2>
         </div>
         <p class="project-description workspace-metadata">${environmentLabel} · ${folderLabel}</p>
