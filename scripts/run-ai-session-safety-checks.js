@@ -5007,6 +5007,11 @@ function runWebviewContentChecks() {
     assert.ok(styles.includes('.ai-session-execution-dot'));
     assert.ok(!extractScssBlock(styles, '.ai-session-execution-dot').includes('animation'));
     assert.ok(styles.includes('[data-execution-state="running"] .ai-session-execution-status'));
+    assert.ok(styles.includes('[data-execution-state="running"] .codex-session-icon'),
+        'styles must animate the terminal icon edge while a session executes');
+    assert.ok(styles.includes('@keyframes steward-session-icon-spin'));
+    assert.ok(compiledStyles.includes('[data-execution-state=running] .codex-session-icon'));
+    assert.ok(compiledStyles.includes('steward-session-icon-spin'));
     assert.ok(styles.includes('var(--vscode-terminal-ansiGreen, #89d185)'));
     assert.ok(styles.includes('[data-execution-state="stopped"] .ai-session-execution-status'));
     assert.ok(styles.includes('[data-execution-state="starting"] .ai-session-execution-status'));

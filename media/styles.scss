@@ -2927,6 +2927,37 @@ body.steward-sidebar {
             color: var(--steward-ai-accent);
         }
 
+        .codex-session-row[data-execution-state="running"] .codex-session-icon {
+            position: relative;
+
+            &::before {
+                content: "";
+                position: absolute;
+                inset: -1px;
+                border-radius: 7px;
+                padding: 2px;
+                background:
+                    conic-gradient(from var(--steward-spin-angle, 0deg),
+                        transparent 0deg 235deg,
+                        rgba(55, 148, 255, .15) 260deg,
+                        rgba(55, 148, 255, .4) 295deg,
+                        rgba(140, 195, 255, .75) 330deg,
+                        #ffffff 352deg,
+                        #ffffff 360deg),
+                    linear-gradient(135deg,
+                        rgba(55, 148, 255, .75),
+                        rgba(160, 205, 255, .75) 50%,
+                        rgba(55, 148, 255, .75));
+                -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+                -webkit-mask-composite: xor;
+                mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+                mask-composite: exclude;
+                filter: drop-shadow(0 0 2px rgba(120, 180, 255, .8));
+                animation: steward-session-icon-spin 2.6s linear infinite;
+                pointer-events: none;
+            }
+        }
+
         .codex-session-pin,
         .codex-session-archive,
         .ai-session-close-terminal {
@@ -3344,6 +3375,18 @@ body.steward-sidebar .project .project-codex-badge.attention-animate {
     }
 }
 
+@property --steward-spin-angle {
+    syntax: '<angle>';
+    initial-value: 0deg;
+    inherits: false;
+}
+
+@keyframes steward-session-icon-spin {
+    to {
+        --steward-spin-angle: 360deg;
+    }
+}
+
 @keyframes steward-ai-attention {
     0%,
     100% {
@@ -3428,7 +3471,8 @@ body.steward-sidebar .project .ai-session-attention-indicator {
     .project-session-fx::before,
     .project-session-fx::after,
     .project.session-running[data-session-fx="breath"],
-    .project.session-running[data-session-fx="halo"] .project-kind-icon::before {
+    .project.session-running[data-session-fx="halo"] .project-kind-icon::before,
+    .codex-session-row[data-execution-state="running"] .codex-session-icon::before {
         animation: none !important;
         transition: none !important;
     }
