@@ -709,6 +709,34 @@ function runDashboardDiagnosticsChecks() {
         assert.deepStrictEqual(persisted.map(item => item.component), ['Bridge']);
         assert.strictEqual(persisted[0].loggedAt, '2026-07-16T12:00:01.000Z');
 
+        const bridgeErrorSentinel = new Error(
+            '/private/main-workspace raw-command --session secret-session arbitrary message'
+        );
+        assert.strictEqual(typeof diagnostics.logOpenWorkspaceBridgeError, 'function',
+            'DashboardDiagnostics must expose a privacy-bounded bridge error entry');
+        diagnostics.logOpenWorkspaceBridgeError(bridgeErrorSentinel);
+        const privacyOutput = lines.join('\n');
+        const privacyFile = fs.readFileSync(diagnosticPath, 'utf8');
+        assert.strictEqual(privacyOutput.includes(bridgeErrorSentinel.message), false,
+            'the main OutputChannel must not contain raw open-workspace bridge errors');
+        assert.strictEqual(privacyFile.includes(bridgeErrorSentinel.message), false,
+            'the persisted open-workspace diagnostics must not contain raw bridge errors');
+        assert.ok(privacyOutput.includes(
+            '[OpenWorkspaces][Bridge] {"event":"error","errorCategory":"open-workspace-bridge","errorCode":"unavailable"}'
+        ));
+        assert.deepStrictEqual(
+            JSON.parse(privacyFile.trim().split(/\r?\n/).pop()),
+            {
+                loggedAt: '2026-07-16T12:00:01.000Z',
+                component: 'Bridge',
+                event: {
+                    event: 'error',
+                    errorCategory: 'open-workspace-bridge',
+                    errorCode: 'unavailable',
+                },
+            },
+        );
+
         const circular = {};
         circular.self = circular;
         diagnostics.logOpenWorkspaceDiagnostic('Renderer', circular);

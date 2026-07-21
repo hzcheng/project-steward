@@ -2953,6 +2953,14 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('new OpenWorkspaceBridgeClient('));
     assert.ok(dashboard.includes("reportDiagnostic: event => logOpenWorkspaceDiagnostic('Workspace', event)"));
     assert.ok(dashboard.includes("reportBridgeDiagnostic: event => logOpenWorkspaceDiagnostic('Bridge', event)"));
+    assert.ok(dashboard.includes('error => logOpenWorkspaceBridgeError(error)'),
+        'the OpenWorkspaceBridgeClient error callback must use the privacy-bounded diagnostics entry');
+    const openWorkspaceBridgeWiring = dashboard.slice(
+        dashboard.indexOf('openWorkspaceBridgeClient = new OpenWorkspaceBridgeClient('),
+        dashboard.indexOf('const activeAiSessionTerminalHighlighter')
+    );
+    assert.strictEqual(openWorkspaceBridgeWiring.includes("logError('Open workspace bridge unavailable"), false,
+        'open-workspace bridge errors must never reach generic raw error logging');
     const diagnosticsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'diagnostics.ts'), 'utf8');
     assert.ok(diagnosticsSource.includes("'open-workspace-diagnostics.jsonl'"));
     assert.ok(dashboard.includes('new DashboardDiagnostics({'));

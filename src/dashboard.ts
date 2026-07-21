@@ -195,6 +195,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const logAiSessionDiagnostic = (event: Record<string, unknown>) => dashboardDiagnostics.logAiSessionDiagnostic(event);
     const logDashboardDiagnostic = (event: Record<string, unknown>) => dashboardDiagnostics.logDashboardDiagnostic(event);
     const logOpenWorkspaceDiagnostic = (component: string, event: unknown) => dashboardDiagnostics.logOpenWorkspaceDiagnostic(component, event);
+    const logOpenWorkspaceBridgeError = (error: unknown) => dashboardDiagnostics.logOpenWorkspaceBridgeError(error);
 
     const colorService = new ColorService(context);
     const projectService = new ProjectService(context, colorService);
@@ -1331,7 +1332,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 postOpenWorkspacesUpdated();
             }
         },
-        error => logError('Open workspace bridge unavailable; showing this window only.', error),
+        error => logOpenWorkspaceBridgeError(error),
         {
             reportDiagnostic: event => logOpenWorkspaceDiagnostic('Workspace', event),
             reportBridgeDiagnostic: event => logOpenWorkspaceDiagnostic('Bridge', event),

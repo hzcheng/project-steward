@@ -30,6 +30,14 @@ export default class DashboardDiagnostics {
         this.options.outputChannel.appendLine(error instanceof Error ? `${error.stack || error.message}` : String(error));
     }
 
+    logOpenWorkspaceBridgeError(_error: unknown) {
+        this.logOpenWorkspaceDiagnostic('Bridge', {
+            event: 'error',
+            errorCategory: 'open-workspace-bridge',
+            errorCode: 'unavailable',
+        });
+    }
+
     logAiSessionDiagnostic(event: Record<string, unknown>) {
         this.options.outputChannel.appendLine(`[AiSessions] ${JSON.stringify(event)}`);
     }
