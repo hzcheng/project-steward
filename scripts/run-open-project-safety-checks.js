@@ -644,6 +644,55 @@ function runOpenWorkspacePublicationChecks() {
         singleFolderReplacement.workspace.navigationUri,
         singleFolderReplacement.workspace.roots[0].uri,
     );
+    const crossSchemeSingleFolder = makeWorkspacePublication({
+        workspace: makeWorkspaceRecord(7, {
+            navigationUri: 'file:///work/cross-scheme-app',
+            roots: [makeWorkspaceRoot(7, {
+                uri: 'file:///work/cross-scheme-app',
+                ordinal: 0,
+            })],
+        }),
+    });
+    assert.strictEqual(
+        replaceOpenWorkspacePublicationUris(
+            crossSchemeSingleFolder,
+            null,
+            ['vscode-remote://ssh-remote%2Bhost/work/cross-scheme-app'],
+        ).workspace.navigationUri,
+        'vscode-remote://ssh-remote%2Bhost/work/cross-scheme-app',
+        'authority and scheme changes with the same resource path must remain valid',
+    );
+
+    assert.throws(
+        () => replaceOpenWorkspacePublicationUris(
+            singleFolderOriginal,
+            null,
+            ['vscode-remote://dev-container%2Bcurrent/work/different-app'],
+        ),
+        /root resource path/,
+    );
+    assert.throws(
+        () => replaceOpenWorkspacePublicationUris(
+            original,
+            'vscode-remote://dev-container%2Bcurrent/work/team.code-workspace',
+            [
+                'vscode-remote://dev-container%2Bcurrent/work/app',
+                'vscode-remote://dev-container%2Bcurrent/work/different-api',
+            ],
+        ),
+        /root resource path/,
+    );
+    assert.throws(
+        () => replaceOpenWorkspacePublicationUris(
+            original,
+            'vscode-remote://dev-container%2Bcurrent/work/different-team.code-workspace',
+            [
+                'vscode-remote://dev-container%2Bcurrent/work/app',
+                'vscode-remote://dev-container%2Bcurrent/work/api',
+            ],
+        ),
+        /workspace resource path/,
+    );
 
     for (const [rootUris, pattern] of [
         [[], /root count/],
@@ -3453,8 +3502,15 @@ async function runCoordinatorWiringChecks() {
         ));
         const diagnosticSentinel = '/private/wiring raw-command --session secret-session';
         aggregateDeliveryError = new Error(diagnosticSentinel);
+        const nextRemoteWorkspace = makeWorkspaceRecord(43, {
+            navigationUri: remoteWorkspace.navigationUri,
+            roots: [makeWorkspaceRoot(43, {
+                ordinal: 0,
+                uri: remoteWorkspace.roots[0].uri,
+            })],
+        });
         await assert.rejects(
-            publish(makeWorkspacePublication({ sequence: 2, workspace: makeWorkspaceRecord(43) })),
+            publish(makeWorkspacePublication({ sequence: 2, workspace: nextRemoteWorkspace })),
             error => String(error).includes(diagnosticSentinel),
         );
         const crossExtensionDiagnostics = executedCommands.filter(
