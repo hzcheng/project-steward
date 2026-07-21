@@ -31,7 +31,7 @@
 - Consumes: delegated `onInsideProjectClick(e, projectDiv)` and the existing `.codex-sessions` root.
 - Produces: `data-ai-session-region` on the existing root and a current-workspace boundary check using `e.target.closest('[data-ai-session-region]')`.
 
-- [ ] **Step 1: Write failing markup and click-behavior tests**
+- [x] **Step 1: Write failing markup and click-behavior tests**
 
 Add a rendering assertion that the existing AI Sessions root contains the boundary without adding a summary wrapper:
 
@@ -42,7 +42,7 @@ assert.strictEqual(singleHtml.includes('workspace-card-summary'), false);
 
 Extend the webview runtime harness with three current-workspace targets. The summary target returns the current project for `.project` selectors and `null` for `[data-ai-session-region]`; the session and divider targets additionally return a shared region object for `[data-ai-session-region]`. Assert the summary emits one `toggle-codex-sessions` message while the session and divider clicks emit none.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run:
 
@@ -52,7 +52,7 @@ npm run test-compile && node scripts/run-dashboard-webview-checks.js && node scr
 
 Expected: FAIL because the markup lacks `data-ai-session-region` and current-workspace clicks inside the session area still reach `toggleCodexSessions`.
 
-- [ ] **Step 3: Add the non-visual DOM boundary and click guard**
+- [x] **Step 3: Add the non-visual DOM boundary and click guard**
 
 Change the existing AI Sessions root in `getAiSessionsDiv` without adding a wrapper:
 
@@ -72,7 +72,7 @@ if (projectDiv.hasAttribute("data-current-workspace")) {
 }
 ```
 
-- [ ] **Step 4: Copy webview assets and verify GREEN**
+- [x] **Step 4: Copy webview assets and verify GREEN**
 
 Run:
 
@@ -96,7 +96,7 @@ Expected: all checks PASS, generated project script matches its source, and both
 - Consumes: the verified non-toggle boundary from Task 1.
 - Produces: a packaged and installed `hzcheng.project-steward@2.1.3` main extension with the UI bridge untouched.
 
-- [ ] **Step 1: Run complete repository verification**
+- [x] **Step 1: Run complete repository verification**
 
 Run:
 
@@ -112,7 +112,7 @@ git diff --exit-code -- media/styles.scss media/styles.css
 
 Expected: every command exits 0; lint may print repository baseline warnings, and style files remain unchanged.
 
-- [ ] **Step 2: Package and validate release archives**
+- [x] **Step 2: Package and validate release archives**
 
 Run:
 
@@ -123,11 +123,11 @@ node scripts/run-release-packaging-checks.js
 
 Expected: `artifacts/project-steward-2.1.3.vsix` and bridge `0.1.4` package successfully and archive checks pass.
 
-- [ ] **Step 3: Install only the main extension and verify bytes**
+- [x] **Step 3: Install only the main extension and verify bytes**
 
 Run the pinned Dev Container `code-server --install-extension artifacts/project-steward-2.1.3.vsix --force`, verify `hzcheng.project-steward@2.1.3` is listed, and compare SHA-256 for packaged and installed `dist/dashboard.js`. Do not install the bridge VSIX.
 
-- [ ] **Step 4: Commit the tested change**
+- [x] **Step 4: Commit the tested change**
 
 ```bash
 git add docs/superpowers/specs/2026-07-21-current-workspace-summary-click-target-design.md \

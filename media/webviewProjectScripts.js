@@ -559,6 +559,9 @@ function initProjects() {
             return;
 
         if (projectDiv.hasAttribute("data-current-workspace")) {
+            if (e.target.closest('[data-ai-session-region]'))
+                return;
+
             toggleCodexSessions(projectDiv, dataId);
             return;
         }

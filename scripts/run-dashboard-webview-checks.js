@@ -444,6 +444,10 @@ function runWorkspaceCardRenderingChecks() {
         'the environment icon already identifies local workspaces');
     assert.strictEqual(singleHtml.includes('class="ai-session-root-chip"'), false,
         'single-root workspaces must not repeat the only root on every session row');
+    assert.ok(singleHtml.includes('class="codex-sessions" data-ai-session-region'),
+        'the existing AI Sessions root must define the non-toggle click boundary');
+    assert.strictEqual(singleHtml.includes('workspace-card-summary'), false,
+        'the click boundary must not add a summary wrapper that could alter card layout');
     const coloredCurrentCard = makeWorkspaceCardFixture(1);
     coloredCurrentCard.color = '#123456';
     const coloredCurrentHtml = webviewContent.getCurrentWorkspaceGroupContent(coloredCurrentCard, false);

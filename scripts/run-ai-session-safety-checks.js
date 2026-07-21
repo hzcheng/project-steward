@@ -5905,6 +5905,32 @@ function runBatchAiSessionWebviewChecks() {
     assert.ok(messages.every(message => !Object.prototype.hasOwnProperty.call(message, 'uri')));
     messages.length = 0;
 
+    const clickBoundaryProject = createProject('workspace-click-target', 'codex');
+    const aiSessionRegion = {};
+    const createWorkspaceClickTarget = insideAiSessionRegion => ({
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') return clickBoundaryProject;
+            if (selector === '[data-ai-session-region]' && insideAiSessionRegion) return aiSessionRegion;
+            return null;
+        },
+    });
+    const summaryTarget = createWorkspaceClickTarget(false);
+    const sessionPanelTarget = createWorkspaceClickTarget(true);
+    const sessionDividerTarget = createWorkspaceClickTarget(true);
+
+    eventListeners.click({ button: 0, target: summaryTarget });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [{
+        type: 'toggle-codex-sessions',
+        projectId: 'workspace-click-target',
+        expanded: true,
+    }], 'clicking the CURRENT WORKSPACE summary must still toggle AI Sessions');
+    messages.length = 0;
+
+    eventListeners.click({ button: 0, target: sessionPanelTarget });
+    eventListeners.click({ button: 0, target: sessionDividerTarget });
+    assert.deepStrictEqual(messages, [],
+        'clicking the AI Sessions panel or its divider must not collapse CURRENT WORKSPACE');
+
     activeRow.setAttribute('data-session-active', '');
     const pendingRow = createSessionRow('claude', '');
     pendingRow.project = projectA;

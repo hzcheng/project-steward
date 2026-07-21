@@ -708,7 +708,7 @@ export function getAiSessionsDiv(project: AiSessionSurfaceViewModel, options: Ai
     var totalSessionCount = codexSessions.length + kimiSessions.length + claudeSessions.length;
 
     return `
-<div class="codex-sessions" data-selected-ai-session-tab="${selectedTab}">
+<div class="codex-sessions" data-ai-session-region data-selected-ai-session-tab="${selectedTab}">
     <div class="ai-session-module-header">
         <span class="ai-session-module-title">AI SESSIONS</span>
         <span class="ai-session-create-actions">
