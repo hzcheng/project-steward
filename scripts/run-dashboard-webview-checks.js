@@ -410,7 +410,9 @@ function runWorkspaceCardRenderingChecks() {
     assert.strictEqual((emptyRootsHtml.match(/class="workspace-card/g) || []).length, 0,
         'a non-null invalid zero-root snapshot must render the empty current-workspace state');
 
-    const singleHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(1), false);
+    const collapsedSingleCard = makeWorkspaceCardFixture(1);
+    collapsedSingleCard.aiSessions.expanded = false;
+    const singleHtml = webviewContent.getCurrentWorkspaceGroupContent(collapsedSingleCard, false);
     assert.strictEqual((singleHtml.match(/class="workspace-card/g) || []).length, 1);
     assert.strictEqual((singleHtml.match(/class="codex-sessions"/g) || []).length, 1);
     assert.ok(singleHtml.includes(icons.folder));
@@ -418,6 +420,17 @@ function runWorkspaceCardRenderingChecks() {
     assert.ok(singleHtml.includes('Local · 1 folder'));
     assert.strictEqual(singleHtml.includes('class="ai-session-root-chip"'), false,
         'single-root workspaces must not repeat the only root on every session row');
+    assert.ok(singleHtml.includes('data-has-ai-session-badge'),
+        'current workspace cards must declare when their AI session summary badge is present');
+    assert.strictEqual(singleHtml.includes('data-codex-expanded'), false,
+        'the collapsed-card fixture must keep its AI session module hidden');
+    const collapsedSessionIndex = singleHtml.indexOf('<div class="codex-sessions"');
+    assert.ok(collapsedSessionIndex >= 0, 'collapsed current workspace cards must retain the hidden session module');
+    const collapsedCardSummary = singleHtml.slice(0, collapsedSessionIndex);
+    assert.strictEqual((collapsedCardSummary.match(/class="fitty-container project-title-row"/g) || []).length, 1);
+    assert.strictEqual((collapsedCardSummary.match(/class="project-description workspace-metadata"/g) || []).length, 1);
+    assert.strictEqual(collapsedCardSummary.includes('class="workspace-root-tags"'), false,
+        'collapsed current workspace cards must not add a third root metadata row');
 
     const runningCard = makeWorkspaceCardFixture(1);
     runningCard.aiSessions.activeSessions.push(
@@ -465,9 +478,12 @@ function runWorkspaceCardRenderingChecks() {
     assert.strictEqual(idleHtml.includes('active session running'), false);
     const unhydratedCard = makeWorkspaceCardFixture(1);
     delete unhydratedCard.aiSessions;
+    unhydratedCard.attentionCount = 0;
     const unhydratedHtml = webviewContent.getCurrentWorkspaceGroupContent(unhydratedCard, false);
     assert.strictEqual((unhydratedHtml.match(/class="codex-sessions"/g) || []).length, 1,
         'a current card must keep one AI module while hydration is temporarily unavailable');
+    assert.strictEqual(unhydratedHtml.includes('data-has-ai-session-badge'), false,
+        'badge-free current workspace cards must keep their full title and description width');
 
     const multiHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(3), false);
     assert.strictEqual((multiHtml.match(/class="workspace-card/g) || []).length, 1);
@@ -4151,6 +4167,12 @@ function runSourceContractChecks(source) {
     const stylesPath = path.join(root, 'media', 'styles.scss');
     const generatedStylesPath = path.join(root, 'media', 'styles.css');
     const styles = fs.readFileSync(stylesPath, 'utf8');
+    assert.strictEqual(styles.includes('.workspace-root-tags'), false);
+    assert.strictEqual(styles.includes('.workspace-root-tag'), false);
+    assert.ok(styles.includes('@media (max-width: 280px)'));
+    assert.ok(styles.includes('min-width: 0'));
+    assert.ok(styles.includes('text-overflow: ellipsis'));
+    assert.ok(styles.includes('overflow-x: hidden'));
     const compiledStyles = compileDashboardStyles(styles);
     const generatedStyles = fs.readFileSync(generatedStylesPath, 'utf8');
     const minifiedCompiledStyles = new CleanCSS({ rebaseTo: path.dirname(generatedStylesPath) }).minify({

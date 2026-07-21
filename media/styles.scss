@@ -1653,31 +1653,6 @@ body .project {
     .collapse-icon {
         display: none;
     }
-
-    .workspace-root-tags {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        flex-wrap: wrap;
-        margin-top: 6px;
-        pointer-events: none;
-    }
-
-    .workspace-root-tag {
-        display: inline-flex;
-        align-items: center;
-        max-width: 100%;
-        padding: 2px 6px;
-        border: 1px solid var(--vscode-panel-border);
-        border-radius: 999px;
-        color: var(--vscode-descriptionForeground);
-        background: var(--vscode-sideBar-background);
-        font-size: 9px;
-        line-height: 1.1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
 }
 
 .open-other-windows-group .project-ai-attention-badge.attention-animate {
@@ -2352,12 +2327,14 @@ body.steward-sidebar {
             -webkit-line-clamp: 1;
         }
 
-        &[data-current-workspace] {
+        &[data-current-workspace][data-has-ai-session-badge] {
             .fitty-container,
             .project-description {
                 width: calc(100% - 60px);
             }
+        }
 
+        &[data-current-workspace] {
             .project-codex-badge {
                 position: absolute;
                 right: 10px;
@@ -3524,49 +3501,83 @@ body.steward-sidebar .project .ai-session-attention-indicator {
 }
 
 @media (max-width: 280px) {
-    body.steward-sidebar .project {
-        .project-codex-badge {
-            right: 7px;
-            padding-right: 4px;
-            padding-left: 4px;
-        }
+    body.steward-sidebar {
+        overflow-x: hidden;
 
-        .ai-session-total-count {
-            font-size: 0;
+        .project {
+            min-width: 0;
+            max-width: 100%;
+            overflow-x: hidden;
 
-            &::before {
-                content: "AI";
-                font-size: 8px;
+            .project-codex-badge {
+                right: 7px;
+                padding-right: 4px;
+                padding-left: 4px;
             }
-        }
 
-        .ai-session-create-button {
-            min-width: 48px;
-            padding-right: 7px;
-            padding-left: 7px;
-        }
+            .ai-session-total-count {
+                font-size: 0;
 
-        .codex-session-row {
-            .ai-session-primary-action {
-                grid-template-columns: 22px minmax(0, 1fr);
-                gap: 5px;
-                padding-right: 36px;
-                padding-left: 6px;
+                &::before {
+                    content: "AI";
+                    font-size: 8px;
+                }
             }
-        }
 
-        .codex-session-icon {
-            width: 21px;
-            height: 21px;
-
-            svg {
-                width: 14px;
-                height: 14px;
+            .project-title-row,
+            .project-description,
+            .ai-session-module-header,
+            .ai-session-module-title,
+            .ai-session-create-actions,
+            .ai-session-batch-actions,
+            .ai-session-batch-selection-actions,
+            .ai-session-batch-submit-actions,
+            .ai-session-primary-action,
+            .codex-session-text,
+            .codex-session-name,
+            .codex-session-meta {
+                min-width: 0;
             }
-        }
 
-        .codex-session-meta {
-            max-width: calc(100vw - 112px);
+            .project-description,
+            .ai-session-module-title,
+            .codex-session-name,
+            .codex-session-meta {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .ai-session-create-button {
+                min-width: 48px;
+                padding-right: 7px;
+                padding-left: 7px;
+            }
+
+            .codex-session-row {
+                min-width: 0;
+
+                .ai-session-primary-action {
+                    grid-template-columns: 22px minmax(0, 1fr);
+                    gap: 5px;
+                    padding-right: 36px;
+                    padding-left: 6px;
+                }
+            }
+
+            .codex-session-icon {
+                width: 21px;
+                height: 21px;
+
+                svg {
+                    width: 14px;
+                    height: 14px;
+                }
+            }
+
+            .codex-session-meta {
+                max-width: calc(100vw - 112px);
+            }
         }
     }
 }

@@ -4112,6 +4112,12 @@ function runWebviewContentChecks() {
     const webviewIcons = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewIcons.ts'), 'utf8');
     const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
     const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
+    assert.strictEqual(styles.includes('.workspace-root-tags'), false);
+    assert.strictEqual(styles.includes('.workspace-root-tag'), false);
+    assert.ok(styles.includes('@media (max-width: 280px)'));
+    assert.ok(styles.includes('min-width: 0'));
+    assert.ok(styles.includes('text-overflow: ellipsis'));
+    assert.ok(styles.includes('overflow-x: hidden'));
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
     const insideProjectClick = extractFunctionBody(webviewProjectScripts, 'onInsideProjectClick');
     const attentionControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'attentionController.ts'), 'utf8');
