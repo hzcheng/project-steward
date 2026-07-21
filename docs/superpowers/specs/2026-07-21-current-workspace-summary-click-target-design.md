@@ -14,23 +14,23 @@ Restrict CURRENT WORKSPACE expand/collapse clicks to the card summary above the 
 
 ## DOM and Event Design
 
-Wrap the existing current workspace summary markup in a semantic event-boundary element identified by a dedicated data attribute. The wrapper is emitted only as an interaction boundary; it does not receive layout or visual styles.
+Mark the existing AI Sessions root with a dedicated data attribute. Do not insert a summary wrapper because an extra flex child could affect the current card layout. The data attribute is an event boundary only and has no style selector.
 
-The delegated project-card click handler toggles a current workspace only when the event target is inside that summary boundary. Clicks outside the boundary return without toggling. Existing action dispatch remains ahead of the summary check so save and other controls preserve their behavior.
+The delegated project-card click handler toggles a current workspace only when the event target is outside that AI Sessions boundary. Existing action dispatch remains ahead of the boundary check so save and other controls preserve their behavior.
 
-The divider and AI Sessions module remain outside the summary boundary. This makes the required hit area structural rather than dependent on CSS classes, coordinates, animation state, or exclusions that could become incomplete later.
+The divider is the AI Sessions root's existing top border, so it is inside the non-toggle boundary together with the header, tabs, lists, controls, and panel whitespace. This makes the hit area structural rather than dependent on coordinates or animation state.
 
 ## Visual Compatibility
 
 This change must not alter the current card appearance. It does not change SCSS/CSS, card dimensions, spacing, separator placement, color accents, hover/focus treatment, or expand/collapse animation.
 
-If the wrapper element would affect layout through browser defaults, render it with a neutral element whose default display does not introduce spacing and verify the generated DOM preserves the existing layout. No new visual selector is permitted for this fix.
+No new element, inline style, CSS declaration, or visual selector is permitted for this fix.
 
 ## Testing and Acceptance Criteria
 
 - A regression test proves a click inside the summary invokes the existing toggle path.
 - A regression test proves clicks in the AI Sessions module and on its divider do not invoke the toggle path.
 - Existing AI Session action, OTHER WINDOWS navigation, and card rendering tests continue to pass.
-- Generated card markup has the summary boundary above the AI Sessions module.
+- Generated card markup marks the existing AI Sessions root as the non-toggle boundary.
 - `media/styles.scss` and generated `media/styles.css` remain unchanged by the implementation.
 - The packaged main extension is installed into the Dev Container; the UI bridge is not installed or overwritten.
