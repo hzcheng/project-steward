@@ -31,12 +31,11 @@ export const LEGACY_DASHBOARD_CONFIG_SECTION = 'dashboard';
 export const REOPEN_KEY = 'reopenProjectStewardReason';
 export const FAVORITES_GROUP_ID = '__favorites';
 export const FAVORITES_GROUP_COLLAPSED_KEY = 'favoritesGroupCollapsed';
-export const OPEN_PROJECTS_GROUP_ID = '__openProjects';
+export const OPEN_WORKSPACES_GROUP_ID = '__openWorkspaces';
 export const OPEN_CURRENT_WORKSPACE_GROUP_ID = '__openCurrentWorkspace';
-export const OPEN_PROJECTS_GROUP_COLLAPSED_KEY = 'openProjectsGroupCollapsed';
-export const OPEN_PROJECTS_EXPANDED_CODEX_SESSIONS_KEY = 'openProjectsExpandedCodexSessions';
-export const OPEN_PROJECTS_ACTIVE_AI_SESSION_PROVIDER_KEY = 'openProjectsActiveAiSessionProvider';
-export const OPEN_PROJECTS_PINNED_AI_SESSIONS_KEY = 'openProjectsPinnedAiSessions';
+export const OPEN_WORKSPACES_GROUP_COLLAPSED_KEY = 'openWorkspacesGroupCollapsed.v2';
+export const WORKSPACE_EXPANDED_AI_SESSIONS_KEY = 'workspaceExpandedAiSessions.v2';
+export const WORKSPACE_ACTIVE_AI_SESSION_PROVIDER_KEY = 'workspaceActiveAiSessionProvider.v2';
 
 export enum StorageOption {
     GlobalState,

@@ -28,10 +28,7 @@ const { TodoService } = require('../out/todos/service');
 const { deleteTodoWithConfirmation, runTodoMutation } = require('../out/todos/hostMutation');
 const todoViewModel = require('../out/todos/viewModel');
 const todoWebviewContent = require('../out/todos/webviewContent');
-const {
-    buildDashboardSearchCatalog,
-    buildWorkspaceDashboardSearchCatalog,
-} = require('../out/webview/dashboardViewModel');
+const { buildWorkspaceDashboardSearchCatalog } = require('../out/webview/dashboardViewModel');
 const AsyncFunction = Object.getPrototypeOf(async function () { return undefined; }).constructor;
 
 const root = path.join(__dirname, '..');
@@ -193,14 +190,18 @@ function cssRuleIncludesTopLevelDeclaration(rule, declaration) {
 
 function makeDashboardCatalog() {
     return {
+        version: 2,
         sessions: [{
-            key: 'codex:c1', searchText: 'fix dashboard codex c1', projectId: 'current',
-            projectName: 'Dashboard', provider: 'codex', sessionId: 'c1', name: 'Fix dashboard', active: true,
+            key: 'codex:c1', searchText: 'fix dashboard codex c1', workspaceId: 'workspace-current',
+            workspaceNavigationIdentity: 'navigation-current', workspaceName: 'Dashboard Workspace',
+            provider: 'codex', sessionId: 'c1', name: 'Fix dashboard', active: true,
+            action: 'reveal-workspace-session',
         }],
-        openProjects: [{
-            key: 'open:/work/dashboard', identity: '/work/dashboard', searchText: 'dashboard current',
-            projectId: 'current', name: 'Dashboard', description: 'Current',
-            action: 'open-current', groupLabels: [],
+        openWorkspaces: [{
+            key: 'workspace:navigation-current', navigationIdentity: 'navigation-current',
+            searchText: 'dashboard workspace local app api', workspaceId: 'workspace-current',
+            name: 'Dashboard Workspace', description: '2 folders', environmentLabel: 'Local',
+            action: 'show-current-workspace', current: true,
         }],
         savedProjects: [{
             key: 'saved:/work/dashboard', identity: '/work/dashboard', searchText: 'dashboard tools',
@@ -219,8 +220,10 @@ function makeUpdatedDashboardCatalog() {
     return {
         ...catalog,
         sessions: catalog.sessions.concat({
-            key: 'kimi:k1', searchText: 'review dashboard kimi k1', projectId: 'current',
-            projectName: 'Dashboard', provider: 'kimi', sessionId: 'k1', name: 'Review dashboard',
+            key: 'kimi:k1', searchText: 'review dashboard kimi k1', workspaceId: 'workspace-current',
+            workspaceNavigationIdentity: 'navigation-current', workspaceName: 'Dashboard Workspace',
+            provider: 'kimi', sessionId: 'k1', name: 'Review dashboard',
+            action: 'reveal-workspace-session',
         }),
     };
 }
@@ -266,14 +269,6 @@ function runDashboardUpdateMessageChecks() {
     }
     const todoSearchItems = makeDashboardCatalog().todos;
     const workspaceCard = makeWorkspaceCardFixture(3);
-    const openMessage = dashboardUpdateMessages.buildOpenProjectsUpdatedMessage({
-        groups: [],
-        cards: [],
-        collapsed: false,
-        stewardInfos: { openProjectsGroupCollapsed: false, config: {} },
-        semanticRevision: 'todo-catalog-open',
-        todoSearchItems,
-    });
     const aiMessage = dashboardUpdateMessages.buildAiSessionsUpdatedMessage({
         groups: [],
         cards: [workspaceCard],
@@ -304,8 +299,6 @@ function runDashboardUpdateMessageChecks() {
     });
     const workspaceSearchCatalog = buildWorkspaceDashboardSearchCatalog([], [workspaceCard], todoSearchItems);
 
-    assert.deepStrictEqual(openMessage.searchCatalog.todos, todoSearchItems,
-        'OPEN incremental catalog rebuilds must preserve real TODO search items');
     assert.deepStrictEqual(aiMessage.searchCatalog.todos, todoSearchItems,
         'AI incremental catalog rebuilds must preserve real TODO search items');
     assert.strictEqual(aiMessage.version, 2);
@@ -547,45 +540,6 @@ function createSearchResultElement(tagName) {
     return element;
 }
 
-function runTodoSearchResultRenderingChecks(source) {
-    const context = {
-        document: { createElement: createSearchResultElement },
-    };
-    vm.runInNewContext(source, context);
-    const container = createSearchResultElement('div');
-    context.renderDashboardSearchResults(container, [{
-        id: 'todos',
-        title: 'TODO RESULTS',
-        type: 'todo',
-        items: [{
-            ...makeDashboardCatalog().todos[0],
-            completed: true,
-            notesSearchText: 'A concise release note summary',
-        }],
-    }]);
-
-    const section = container.children[0];
-    const button = section.children[1];
-    assert.strictEqual(button.dataset.todoId, 't1');
-    assert.strictEqual(button.dataset.groupId, 'todo-group-a');
-    assert.strictEqual(button.classList.contains('completed'), true,
-        'completed TODO search results need an explicit state class');
-    assert.ok(button.children.some(child =>
-        child.className === 'dashboard-search-result-notes'
-        && child.textContent === 'A concise release note summary'
-    ), 'TODO search results must render the notes search summary');
-    const metadata = button.children.find(child => child.className === 'dashboard-search-result-meta');
-    assert.ok(metadata.children.some(child =>
-        child.className.includes('dashboard-search-result-group') && child.textContent === 'Planning'
-    ), 'TODO search results must render the group badge');
-    assert.ok(metadata.children.some(child =>
-        child.className.includes('dashboard-search-result-priority') && child.textContent === 'HIGH'
-    ), 'TODO search results must render textual priority metadata');
-    assert.ok(metadata.children.some(child =>
-        child.className.includes('dashboard-search-result-status') && child.textContent === 'Completed'
-    ), 'completed TODO search results must expose completed metadata');
-}
-
 function runErrorContentChecks() {
     const html = dashboardErrorContent.getErrorContent(new Error('<script>alert("x")</script>'));
     assert.ok(html.includes('Project Steward could not render this view.'));
@@ -691,17 +645,17 @@ async function runGroupCollapseControllerChecks() {
     });
 
     assert.strictEqual(controller.getFavoritesCollapsed(), true);
-    assert.strictEqual(controller.getOpenProjectsCollapsed(), undefined);
+    assert.strictEqual(controller.getOpenWorkspacesCollapsed(), undefined);
 
     await controller.collapseGroup('__favorites', true);
-    await controller.collapseGroup('__openProjects', false);
+    await controller.collapseGroup('__openWorkspaces', false);
     await controller.collapseGroup('group-a');
     await controller.collapseGroup('group-b', false);
     await controller.collapseGroup('missing-group', true);
 
     assert.deepStrictEqual(updates, [
         ['favoritesGroupCollapsed', true],
-        ['openProjectsGroupCollapsed', false],
+        ['openWorkspacesGroupCollapsed.v2', false],
     ]);
     assert.deepStrictEqual(projectServiceUpdates, [
         ['group-a', { id: 'group-a', groupName: 'A', collapsed: true }],
@@ -1926,7 +1880,7 @@ async function runDashboardTodoMigrationSequencingChecks() {
                 gate
             ),
             refreshDashboard: async () => { refreshes.push('refreshed'); },
-            publishOpenProjects: () => publications.push('published'),
+            publishOpenWorkspace: () => publications.push('published'),
             showInformationMessage: () => undefined,
             showErrorMessage: message => errors.push(message),
             logError: (message, error) => logs.push([message, error]),
@@ -2511,7 +2465,9 @@ function runTodoViewModelChecks() {
     assert.strictEqual(emptyGroupHtml.includes('No todos yet'), false);
 
     const dashboardViewModel = require('../out/webview/dashboardViewModel');
-    const catalog = dashboardViewModel.buildDashboardSearchCatalog([], [], todoTypes.buildTodoSearchItems(makeTodoData()));
+    const catalog = dashboardViewModel.buildWorkspaceDashboardSearchCatalog(
+        [], [], todoTypes.buildTodoSearchItems(makeTodoData())
+    );
     assert.strictEqual(catalog.todos.length, 2);
     assert.ok(dashboardViewModel.serializeDashboardSearchCatalog(catalog).includes('Write TODO') === false);
 }
@@ -2822,8 +2778,8 @@ async function runDashboardRuntimeControllerChecks() {
             return Promise.resolve();
         },
         viewType: 'project-steward.views.sidebar',
-        publishOpenProjects: () => published.push('open-projects'),
-        getOpenProjects: () => projects,
+        publishOpenWorkspace: () => published.push('open-workspace'),
+        getCurrentSavedProject: () => projects[0],
         syncProjectColorToCurrentWindow: project => {
             colorSyncs.push(project);
             return Promise.resolve();
@@ -2846,7 +2802,7 @@ async function runDashboardRuntimeControllerChecks() {
 
     visible = true;
     await controller.showSteward();
-    assert.deepStrictEqual(published, ['open-projects']);
+    assert.deepStrictEqual(published, ['open-workspace']);
     assert.deepStrictEqual(commands, [
         ['workbench.view.extension.project-steward'],
         ['project-steward.views.sidebar.focus'],
@@ -2857,30 +2813,28 @@ async function runDashboardRuntimeControllerChecks() {
     await controller.openSettings();
     assert.deepStrictEqual(commands[commands.length - 1], ['workbench.action.openSettings', '@ext:hzcheng.project-steward']);
 
-    controller.postAttentionProjectsUpdated([{ projectKey: 'p', attentionCount: 1, eventIds: ['e'], sessions: [] }]);
     controller.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
     controller.postActiveAiSessionTerminalChanged({ provider: 'codex', sessionId: 's1' });
     controller.postActiveAiSessionTerminalChanged(null);
     await new Promise(resolve => setImmediate(resolve));
     assert.deepStrictEqual(posted.map(message => message.type), [
-        'ai-session-attention-projects-updated',
         'ai-session-batch-archive-completed',
         'active-ai-session-terminal-changed',
         'active-ai-session-terminal-changed',
     ]);
-    assert.deepStrictEqual(posted[2], { type: 'active-ai-session-terminal-changed', provider: 'codex', sessionId: 's1' });
-    assert.deepStrictEqual(posted[3], { type: 'active-ai-session-terminal-changed', provider: null, sessionId: null });
+    assert.deepStrictEqual(posted[1], { type: 'active-ai-session-terminal-changed', provider: 'codex', sessionId: 's1' });
+    assert.deepStrictEqual(posted[2], { type: 'active-ai-session-terminal-changed', provider: null, sessionId: null });
 
     controller.applyProjectColorToCurrentWindow();
     controller.applyProjectColorToCurrentWindow({ id: 'save', showSaveAction: true });
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepStrictEqual(colorSyncs, [projects[0], null]);
+    assert.deepStrictEqual(colorSyncs, [projects[0], { id: 'save', showSaveAction: true }]);
 
     controller.refreshAfterMutation();
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepStrictEqual(colorSyncs, [projects[0], null, projects[0]]);
+    assert.deepStrictEqual(colorSyncs, [projects[0], { id: 'save', showSaveAction: true }, projects[0]]);
     assert.deepStrictEqual(diagnostics.slice(-1), [{ event: 'full-refresh', reason: 'project-mutation' }]);
-    assert.deepStrictEqual(published, ['open-projects', 'open-projects']);
+    assert.deepStrictEqual(published, ['open-workspace', 'open-workspace']);
 
     const failingController = new DashboardRuntimeController({
         ...baseOptions,
@@ -2888,12 +2842,10 @@ async function runDashboardRuntimeControllerChecks() {
         postMessage: () => Promise.reject(new Error('post failed')),
     });
     failingController.applyProjectColorToCurrentWindow(projects[0]);
-    failingController.postAttentionProjectsUpdated([{ projectKey: 'p', attentionCount: 1, eventIds: ['e'], sessions: [] }]);
     failingController.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepStrictEqual(errors.slice(-3).map(item => item[0]), [
+    assert.deepStrictEqual(errors.slice(-2).map(item => item[0]), [
         'Failed to apply project color to current window.',
-        'Failed to post AI session attention projects.',
         'Failed to post batch AI session archive completion.',
     ]);
 
@@ -2907,12 +2859,10 @@ async function runDashboardRuntimeControllerChecks() {
     });
     await syncThrowController.revealSidebarSteward();
     syncThrowController.applyProjectColorToCurrentWindow(projects[0]);
-    syncThrowController.postAttentionProjectsUpdated([{ projectKey: 'p', attentionCount: 1, eventIds: ['e'], sessions: [] }]);
     syncThrowController.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
     await new Promise(resolve => setImmediate(resolve));
     assert.deepStrictEqual(syncThrowErrors, [
         ['Failed to apply project color to current window.', 'color threw'],
-        ['Failed to post AI session attention projects.', 'post threw'],
         ['Failed to post batch AI session archive completion.', 'post threw'],
     ]);
 }
@@ -2948,7 +2898,7 @@ async function runDashboardStartupControllerChecks() {
         },
         migrateDataIfNeeded: async () => migrationResult(migrated),
         refreshDashboard: () => undefined,
-        publishOpenProjects: () => publications.push('published'),
+        publishOpenWorkspace: () => publications.push('published'),
         showInformationMessage: message => informationMessages.push(message),
         showSteward: () => { showStewardCalls += 1; },
         applyProjectColorToCurrentWindow: () => colorApplications.push('applied'),
@@ -3007,7 +2957,7 @@ async function runDashboardStartupControllerChecks() {
             startupOrdering.push('pending-workspace-save');
         },
         refreshDashboard: () => startupOrdering.push('refresh'),
-        publishOpenProjects: () => startupOrdering.push('publish'),
+        publishOpenWorkspace: () => startupOrdering.push('publish'),
         showInformationMessage: () => undefined,
         showErrorMessage: () => undefined,
         logError: () => undefined,
@@ -3040,7 +2990,7 @@ async function runDashboardStartupControllerChecks() {
             failedProjectOrdering.push('pending-workspace-save');
         },
         refreshDashboard: () => undefined,
-        publishOpenProjects: () => undefined,
+        publishOpenWorkspace: () => undefined,
         showInformationMessage: () => undefined,
         showErrorMessage: () => undefined,
         logError: () => undefined,
@@ -3070,11 +3020,11 @@ async function runDashboardStartupControllerChecks() {
     const refreshGate = new Promise(resolve => { releaseRefresh = resolve; });
     const provider = {
         refresh: async () => {
-            rebuiltCatalogs.push(buildDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
+            rebuiltCatalogs.push(buildWorkspaceDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
             await refreshGate;
         },
     };
-    rebuiltCatalogs.push(buildDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
+    rebuiltCatalogs.push(buildWorkspaceDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
     assert.deepStrictEqual(rebuiltCatalogs[0].todos, [],
         'the provider may render its initial search catalog before TODO migration settles');
 
@@ -3089,7 +3039,7 @@ async function runDashboardStartupControllerChecks() {
         isExtensionInstalled: () => false,
         migrateDataIfNeeded: () => deferredMigration,
         refreshDashboard: () => provider.refresh(),
-        publishOpenProjects: () => undefined,
+        publishOpenWorkspace: () => undefined,
         showInformationMessage: () => undefined,
         showErrorMessage: () => undefined,
         logError: () => undefined,
@@ -3149,7 +3099,7 @@ async function runDashboardStartupControllerChecks() {
                 : Promise.resolve(migrationResult(false, true));
         },
         refreshDashboard: () => retryRefreshes.push('refreshed'),
-        publishOpenProjects: () => retryPublications.push('published'),
+        publishOpenWorkspace: () => retryPublications.push('published'),
         showInformationMessage: () => undefined,
         showErrorMessage: message => migrationErrors.push(message),
         logError: (message, error) => migrationLogs.push([message, error]),
@@ -3188,7 +3138,7 @@ async function runDashboardLifecycleControllerChecks() {
         checkDataMigration: async openStewardAfterMigrate => events.push(['migrate', openStewardAfterMigrate]),
         applyProjectColorToCurrentWindow: () => events.push(['color']),
         refresh: reason => events.push(['refresh', reason]),
-        publishOpenProjects: followsFocusEvent => events.push(['publish', followsFocusEvent]),
+        publishOpenWorkspace: followsFocusEvent => events.push(['publish', followsFocusEvent]),
         evaluateAiSessionAttention: () => events.push(['attention']),
     });
     const makeConfigurationEvent = affectedSections => ({
@@ -3484,11 +3434,6 @@ function runControllerChecks(source) {
     }), false);
     assert.strictEqual(context.globToDashboardRegex('dash*').test('dashboard'), true);
     assert.strictEqual(context.globToDashboardRegex('data?').test('data1'), true);
-    const sections = context.filterDashboardCatalog(makeDashboardCatalog(), 'dashboard');
-    assert.deepStrictEqual(
-        JSON.parse(JSON.stringify(sections.map(section => section.id))),
-        ['ai-sessions', 'open-projects', 'saved-projects']
-    );
     const workspaceSections = context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'dashboard');
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(workspaceSections.map(section => section.title))),
@@ -3498,21 +3443,16 @@ function runControllerChecks(source) {
         JSON.parse(JSON.stringify(workspaceSections.map(section => section.id))),
         ['ai-sessions', 'open-workspaces', 'saved-projects']
     );
-    const todoSections = context.filterDashboardCatalog(makeDashboardCatalog(), 'ship');
-    assert.deepStrictEqual(
-        JSON.parse(JSON.stringify(todoSections.map(section => section.id))),
-        ['todos']
-    );
     const workspaceTodoSections = context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'ship');
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(workspaceTodoSections.map(section => section.title))),
         [],
         'v2 search must expose exactly AI SESSIONS, OPEN WORKSPACES, and SAVED PROJECTS'
     );
-    assert.strictEqual(context.filterDashboardCatalog(makeDashboardCatalog(), 'missing').length, 0);
+    assert.strictEqual(context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'missing').length, 0);
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(context.normalizeDashboardSearchCatalog(null))),
-        { sessions: [], openProjects: [], savedProjects: [], todos: [] }
+        { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: [] }
     );
     assert.strictEqual(
         context.normalizeDashboardSearchCatalog(makeWorkspaceDashboardCatalog()).version,
@@ -3521,10 +3461,10 @@ function runControllerChecks(source) {
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(context.normalizeDashboardSearchCatalog({
             ...makeDashboardCatalog(),
-            version: 2,
+            openWorkspaces: null,
         }))),
-        { sessions: [], openProjects: [], savedProjects: [], todos: [] },
-        'a malformed v2 catalog must not downgrade into the legacy open-project boundary'
+        { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: [] },
+        'a malformed v2 catalog must fail closed'
     );
     const state = {
         activeTab: 'projects',
@@ -3708,31 +3648,6 @@ function runControllerChecks(source) {
 
     storage.set('projectSteward.activeDashboardTab', 'projects');
     const searchMessages = [];
-    const searchController = context.initDashboard({
-        initialSearchQuery: 'dashboard',
-        postMessage: message => searchMessages.push(message),
-    });
-    assert.strictEqual(searchController.getActiveTab(), 'projects');
-    assert.strictEqual(searchController.isSearchActive(), true);
-    assert.strictEqual(searchController.getProjectsState(), 'unloaded');
-    assert.strictEqual(searchController.getTodoState(), 'unloaded');
-    assert.strictEqual(searchMessages.length, 0, 'restored search must not load PROJECTS');
-    searchController.replaceSearchCatalog(makeDashboardCatalog());
-    const sessionSection = searchResults.children.find(section => section.dataset.sectionType === 'session');
-    const sessionResult = sessionSection.children[1];
-    const sessionMetadata = sessionResult.children.find(child => child.className === 'dashboard-search-result-meta');
-    assert.ok(sessionMetadata.children.some(child =>
-        child.className.includes('dashboard-search-result-status') && child.textContent === 'Active'
-    ), 'active AI Session search results must expose Active metadata');
-    sessionResult.closest = selector => selector === '.dashboard-search-result[data-search-action]'
-        ? sessionResult
-        : null;
-    searchResults.dispatch('click', { target: sessionResult });
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(searchMessages)), [{
-        type: 'resume-codex-session', provider: 'codex', projectId: 'current', sessionId: 'c1',
-    }]);
-    searchMessages.length = 0;
-
     const workspaceRevealCalls = [];
     context.window.__projectStewardRevealWorkspaceSession = (...args) => workspaceRevealCalls.push(args);
     const workspaceSearchController = context.initDashboard({
@@ -3754,17 +3669,6 @@ function runControllerChecks(source) {
     ]], 'workspace session search must reveal its workspace row instead of resuming a root-owned session');
     assert.deepStrictEqual(searchMessages, [], 'workspace session reveal must not post a resume action');
 
-    searchController.setSearchQuery('');
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(searchMessages)), [
-        { type: 'request-projects-panel', version: 1, requestId: 1 },
-    ]);
-    context.window.scrollY = 88;
-    searchController.setSearchQuery('dashboard');
-    context.window.scrollY = 15;
-    assert.strictEqual(searchController.applyProjectsPanelMessage({
-        type: 'projects-panel-content', version: 1, requestId: 1, html: '<div>projects while searching</div>',
-    }), true);
-    assert.strictEqual(context.window.scrollY, 15, 'background PROJECTS mount must not move search results');
 }
 
 function runTodoEditResetInteractionChecks() {
@@ -4043,12 +3947,12 @@ function runSourceContractChecks(source) {
     assert.ok(fs.existsSync(updateMessagePath));
     const updateMessages = fs.readFileSync(updateMessagePath, 'utf8');
     assert.ok(updateMessages.includes('export function buildOpenWorkspacesUpdatedMessage('));
-    assert.ok(updateMessages.includes('export function buildOpenProjectsUpdatedMessage('));
+    assert.ok(!updateMessages.includes('export function buildOpenProjectsUpdatedMessage('));
     assert.ok(updateMessages.includes('export function buildAiSessionsUpdatedMessage('));
     assert.ok(updateMessages.includes("type: 'open-workspaces-updated'"));
-    assert.ok(updateMessages.includes("type: 'open-projects-updated'"));
+    assert.ok(!updateMessages.includes("type: 'open-projects-updated'"));
     assert.ok(updateMessages.includes("type: 'ai-sessions-updated'"));
-    assert.ok(updateMessages.includes('version: 1'));
+    assert.ok(updateMessages.includes('version: 2'));
     const viewProviderPath = path.join(root, 'src', 'dashboard', 'viewProvider.ts');
     assert.ok(fs.existsSync(viewProviderPath));
     const viewProviderSource = fs.readFileSync(viewProviderPath, 'utf8');
@@ -4224,18 +4128,17 @@ function runSourceContractChecks(source) {
     assert.strictEqual(renderSearchBody.includes('innerHTML'), false);
     assert.strictEqual(renderSearchBody.includes('project-ai-attention-badge'), false);
     assert.strictEqual(renderSearchBody.includes('data-current-workspace'), false);
-    assert.ok(renderSearchBody.includes('dashboard-search-result-notes'));
-    assert.ok(renderSearchBody.includes("button.classList.toggle('completed'"));
+    assert.strictEqual(renderSearchBody.includes('dashboard-search-result-notes'), false);
     assert.ok(filterSource.includes('ctrlKey'));
     assert.ok(filterSource.includes('metaKey'));
     assert.ok(filterSource.includes('Escape'));
     assert.ok(source.includes('initialSearchQuery'));
     assert.ok(source.includes('replaceSearchCatalog'));
     assert.ok(source.includes('isSearchActive'));
-    assert.ok(source.includes("title: 'TODO RESULTS'"));
+    assert.strictEqual(source.includes("title: 'TODO RESULTS'"), false);
     assert.ok(source.includes("title: 'OPEN WORKSPACES'"));
     assert.ok(projectSource.includes('__projectStewardAcknowledgeSession'));
-    assert.ok(projectSource.includes('__projectStewardShowCurrentProject'));
+    assert.strictEqual(projectSource.includes('__projectStewardShowCurrentProject'), false);
     assert.ok(projectSource.includes('__projectStewardRevealWorkspaceSession'));
     const refreshStewardViewsBody = extractFunctionBody(extensionHostSource, 'refreshStewardViews');
     const aiSessionsMessageBody = extractFunctionBody(extensionHostSource, 'getAiSessionsUpdatedMessage');
@@ -4281,7 +4184,7 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("from './dashboard/groupCollapseController'"));
     assert.ok(!extensionHostSource.includes('async function collapseGroup('));
     assert.ok(!extensionHostSource.includes('context.globalState.update(FAVORITES_GROUP_COLLAPSED_KEY'));
-    assert.ok(!extensionHostSource.includes('context.globalState.update(OPEN_PROJECTS_GROUP_COLLAPSED_KEY'));
+    assert.ok(!extensionHostSource.includes('context.globalState.update(OPEN_WORKSPACES_GROUP_COLLAPSED_KEY'));
     assert.ok(groupCollapseControllerSource.includes('export class GroupCollapseController'));
     assert.ok(groupCollapseControllerSource.includes('collapseGroup('));
     const groupPromptsSource = fs.readFileSync(path.join(root, 'src', 'projects', 'groupPrompts.ts'), 'utf8');
@@ -4699,7 +4602,6 @@ async function main() {
     runWorkspaceCardRenderingChecks();
     runTodoViewModelChecks();
     runTodoOrderingInteractionChecks();
-    runTodoSearchResultRenderingChecks(source);
     runControllerChecks(source);
     runTodoEditResetInteractionChecks();
     runTodoComposePendingInteractionChecks();

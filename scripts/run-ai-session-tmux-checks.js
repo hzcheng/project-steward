@@ -19,7 +19,6 @@ const directBackendModule = require('../out/aiSessions/directTerminalRuntimeBack
 const coordinatorModule = require('../out/aiSessions/runtimeCoordinator');
 const runtimeTypesModule = require('../out/aiSessions/runtimeTypes');
 const tmuxBackendModule = require('../out/aiSessions/tmuxRuntimeBackend');
-const activeSessionProjection = require('../out/aiSessions/activeSessionProjection');
 const CreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
 const ResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const TerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
@@ -56,6 +55,26 @@ function createDirectoryScope(primaryCwd, additionalDirectories = []) {
         primaryCwd,
         additionalDirectories: Object.freeze([...additionalDirectories]),
     });
+}
+
+function createWorkspaceActionTarget(project, workspaceScopeIdentity) {
+    return {
+        cardId: project.id,
+        workspace: {
+            displayName: project.name,
+            navigationIdentity: `navigation:${workspaceScopeIdentity}`,
+            scopeIdentity: workspaceScopeIdentity,
+            roots: [],
+        },
+        sessions: {
+            sessionsByProvider: {
+                codex: project.codexSessions || [],
+                kimi: project.kimiSessions || [],
+                claude: project.claudeSessions || [],
+            },
+            activeSessions: [],
+        },
+    };
 }
 
 function deferred() {
@@ -5821,21 +5840,34 @@ async function runRuntimeCoordinatorChecks() {
         getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
         chooseTmuxFallback: async () => 'cancel',
     });
-    const scopedProject = {
-        id: 'scoped-project', name: 'Scoped Project', path: '/work/first',
-        codexSessions: [{ id: 'scoped-session', cwd: '/work/first' }],
+    const scopedWorkspaceTarget = {
+        cardId: 'scoped-workspace',
+        workspace: {
+            displayName: 'Scoped Workspace',
+            navigationIdentity: 'navigation:scoped-workspace',
+            scopeIdentity: 'scope:scoped-workspace',
+            roots: [],
+        },
+        sessions: {
+            sessionsByProvider: {
+                codex: [{ id: 'scoped-session', cwd: '/work/first' }],
+            },
+            activeSessions: [],
+        },
     };
     const firstScope = Object.freeze({
         ...createDirectoryScope('/work/first', ['/work/second']),
-        workspaceScopeIdentity: 'scope:scoped-project',
+        workspaceScopeIdentity: 'scope:scoped-workspace',
     });
     const secondScope = Object.freeze({
         ...createDirectoryScope('/work/second', ['/work/first']),
-        workspaceScopeIdentity: 'scope:scoped-project',
+        workspaceScopeIdentity: 'scope:scoped-workspace',
     });
     const rememberedScopes = [];
     const createScopedResumeController = directoryScope => new ResumeController({
-        getOpenProjects: () => [scopedProject],
+        getWorkspaceTarget: cardId => cardId === scopedWorkspaceTarget.cardId
+            ? scopedWorkspaceTarget
+            : null,
         getProvider: () => ({
             label: 'Codex',
             terminalEnvKey: 'CODEX_SESSION_ID',
@@ -5843,14 +5875,9 @@ async function runRuntimeCoordinatorChecks() {
                 executable: 'codex', args: ['resume', sessionId], cwd: directoryScope.primaryCwd,
             }),
         }),
-        getProjectSession: (candidate, providerId, sessionId) =>
-            candidate === scopedProject && providerId === 'codex'
-                ? candidate.codexSessions.find(session => session.id === sessionId)
-                : null,
-        resolveDirectoryScope: async () => directoryScope,
+        resolveWorkspaceDirectoryScope: async () => directoryScope,
         rememberDirectoryScope: scope => { rememberedScopes.push(scope); },
         runtimeCoordinator: scopedCoordinator,
-        getProjectKey: () => 'scoped-project-key',
         getTerminalName: () => 'Codex: Scoped Session',
         getMarkerPath: () => '/tmp/scoped.marker',
         showWarningMessage: () => undefined,
@@ -5859,9 +5886,9 @@ async function runRuntimeCoordinatorChecks() {
         showActiveTab: async () => undefined,
     });
     const firstScopedResume = createScopedResumeController(firstScope)
-        .resumeProjectSession(scopedProject.id, 'codex', 'scoped-session');
+        .resumeProjectSession(scopedWorkspaceTarget.cardId, 'codex', 'scoped-session');
     const secondScopedResume = createScopedResumeController(secondScope)
-        .resumeProjectSession(scopedProject.id, 'codex', 'scoped-session');
+        .resumeProjectSession(scopedWorkspaceTarget.cardId, 'codex', 'scoped-session');
     await new Promise(resolve => setImmediate(resolve));
     assert.strictEqual(scopedDirect.ensureResumeCalls, 1,
         'concurrent resume requests for one session must launch exactly once');
@@ -6400,278 +6427,6 @@ async function runRuntimeCoordinatorChecks() {
     assert.strictEqual(verifiedWithCollisionTmux.focusCalls.length, 0);
 }
 
-async function runRuntimeProjectionChecks() {
-    const providerFixtures = {
-        codex: { id: 'codex', label: 'Codex', projectSessionsKey: 'codexSessions' },
-        kimi: { id: 'kimi', label: 'Kimi', projectSessionsKey: 'kimiSessions' },
-        claude: { id: 'claude', label: 'Claude', projectSessionsKey: 'claudeSessions' },
-    };
-    const activeRuntimes = [{
-        identity: { provider: 'codex', sessionId: 's1', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
-        markerPath: '/tmp/m',
-        state: 'active',
-        runStartedAtMs: 1,
-        backend: 'tmux',
-        tmux: {
-            layout: 'project',
-            sessionName: 'project-steward-p-a',
-            windowName: 'ai-codex-b',
-        },
-        attached: false,
-    }];
-    const projected = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{
-            id: 'p', path: '/work',
-            codexSessions: [{ id: 's1', name: 'One' }],
-            kimiSessions: [], claudeSessions: [],
-        }],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeRuntimes: [activeRuntimes[0], {
-            ...activeRuntimes[0],
-            identity: {
-                ...activeRuntimes[0].identity,
-                workspaceScopeIdentity: 'other-scope',
-            },
-        }],
-        pendingRuntimes: [],
-        workspaceScopeIdentity: 'pk',
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    const model = projected[0].activeAiSessions[0];
-    assert.strictEqual(projected[0].activeAiSessions.length, 1,
-        'runtime projection must not cross workspaceScopeIdentity for identical cwd and session ID');
-    assert.strictEqual(model.backend, 'tmux');
-    assert.strictEqual(model.tmuxLayout, 'project');
-    assert.strictEqual(model.attached, false);
-    assert.strictEqual(model.status, 'running');
-
-    const staleProjected = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{
-            id: 'p', path: '/work',
-            codexSessions: [{ id: 's1', name: 'One' }],
-            kimiSessions: [], claudeSessions: [],
-        }],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeRuntimes: [{ ...activeRuntimes[0], stale: true }],
-        pendingRuntimes: [],
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.strictEqual(staleProjected[0].activeAiSessions[0].stale, true);
-
-    const focused = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{
-            id: 'p', path: '/work',
-            codexSessions: [{ id: 's1', name: 'One' }],
-            kimiSessions: [], claudeSessions: [],
-        }],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeRuntimes,
-        pendingRuntimes: [],
-        focusedIdentity: { provider: 'codex', sessionId: 's1', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work' ], cwd: '/work' },
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.strictEqual(focused[0].activeAiSessions[0].status, 'focused');
-    assert.strictEqual(focused[0].codexSessions[0].focused, true);
-
-    const conflicted = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{
-            id: 'p', path: '/work',
-            codexSessions: [{ id: 's1', name: 'One' }],
-            kimiSessions: [], claudeSessions: [],
-        }],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeRuntimes: [{ ...activeRuntimes[0], state: 'conflict', attached: true }],
-        pendingRuntimes: [],
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.strictEqual(conflicted[0].activeAiSessions[0].status, 'conflict');
-    assert.strictEqual(conflicted[0].activeAiSessions[0].conflict, true);
-
-    const duplicateConflict = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{
-            id: 'p', path: '/work',
-            codexSessions: [{ id: 's1', name: 'One' }],
-            kimiSessions: [], claudeSessions: [],
-        }],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeRuntimes: [
-            activeRuntimes[0],
-            {
-                ...activeRuntimes[0],
-                identity: { ...activeRuntimes[0].identity },
-                backend: 'vscode', attached: true, tmux: undefined, stale: true,
-            },
-        ],
-        pendingRuntimes: [],
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.strictEqual(duplicateConflict[0].activeAiSessions.length, 1);
-    assert.strictEqual(duplicateConflict[0].activeAiSessions[0].status, 'conflict');
-    assert.strictEqual(duplicateConflict[0].activeAiSessions[0].stale, true,
-        'a combined runtime conflict is stale when any representative is stale');
-
-    const cwdFirst = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [
-            { id: 'cwd', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] },
-            { id: 'history', path: '/history', codexSessions: [{ id: 's1', name: 'One' }], kimiSessions: [], claudeSessions: [] },
-        ],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeRuntimes,
-        pendingRuntimes: [],
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.strictEqual(cwdFirst[0].activeAiSessions.length, 1);
-    assert.strictEqual(cwdFirst[1].activeAiSessions.length, 0);
-
-    const historyFallbackRuntime = {
-        ...activeRuntimes[0],
-        identity: { ...activeRuntimes[0].identity, cwd: '/unknown' },
-    };
-    const historyFallback = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [
-            { id: 'cwd', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] },
-            { id: 'history', path: '/history', codexSessions: [{ id: 's1', name: 'One' }], kimiSessions: [], claudeSessions: [] },
-        ],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeRuntimes: [historyFallbackRuntime],
-        pendingRuntimes: [],
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.strictEqual(historyFallback[0].activeAiSessions.length, 0);
-    assert.strictEqual(historyFallback[1].activeAiSessions.length, 1);
-
-    const tmuxPending = {
-        identity: { provider: 'codex', pendingId: 'pending-focus', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
-        backend: 'tmux', state: 'pending', markerPath: '/tmp/pending-focus.done',
-        runStartedAtMs: Date.parse('2026-07-18T10:00:00Z'), attached: false,
-        tmux: { layout: 'session', sessionName: 'project-steward-pending-codex-a' },
-        createdAt: '2026-07-18T10:00:00Z', excludedSessionIds: [], title: 'Pending Focus',
-    };
-    const focusedPending = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeRuntimes: [],
-        pendingRuntimes: [tmuxPending],
-        focusedIdentity: { provider: 'codex', pendingId: 'pending-focus', workspaceScopeIdentity: 'other', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/other' ], cwd: '/other' },
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.strictEqual(focusedPending[0].activeAiSessions[0].focused, true);
-    assert.strictEqual(focusedPending[0].activeAiSessions[0].status, 'focused');
-    assert.strictEqual(focusedPending[0].activeAiSessions[0].backend, 'tmux');
-    assert.strictEqual(focusedPending[0].activeAiSessions[0].tmuxLayout, 'session');
-    assert.strictEqual(focusedPending[0].activeAiSessions[0].attached, false);
-
-    const duplicatePending = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeRuntimes: [],
-        pendingRuntimes: [{
-            ...tmuxPending,
-            identity: { ...tmuxPending.identity },
-            backend: 'vscode', attached: true, tmux: undefined, stale: true,
-        }, tmuxPending],
-        focusedIdentity: { provider: 'codex', pendingId: 'pending-focus', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work' ], cwd: '/work' },
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.strictEqual(duplicatePending[0].activeAiSessions.length, 1);
-    assert.strictEqual(duplicatePending[0].activeAiSessions[0].status, 'conflict');
-    assert.strictEqual(duplicatePending[0].activeAiSessions[0].conflict, true);
-    assert.strictEqual(duplicatePending[0].activeAiSessions[0].backend, 'tmux');
-    assert.strictEqual(duplicatePending[0].activeAiSessions[0].tmuxLayout, 'session');
-    assert.strictEqual(duplicatePending[0].activeAiSessions[0].attached, false);
-    assert.strictEqual(duplicatePending[0].activeAiSessions[0].stale, true,
-        'a combined pending conflict is stale when any representative is stale');
-
-    const tiedPendingLeft = {
-        ...tmuxPending,
-        identity: { ...tmuxPending.identity },
-        title: 'Alpha title',
-        createdAt: '2026-07-18T11:00:00Z',
-        runStartedAtMs: 11,
-        markerPath: '/tmp/alpha.done',
-        excludedSessionIds: ['alpha'],
-    };
-    const tiedPendingRight = {
-        ...tmuxPending,
-        identity: { ...tmuxPending.identity },
-        title: 'Zulu title',
-        createdAt: '2026-07-18T09:00:00Z',
-        runStartedAtMs: 99,
-        markerPath: '/tmp/zulu.done',
-        excludedSessionIds: ['zulu'],
-    };
-    const projectPendingDuplicates = pendingRuntimes => activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeRuntimes: [],
-        pendingRuntimes,
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.deepStrictEqual(
-        projectPendingDuplicates([tiedPendingLeft, tiedPendingRight]),
-        projectPendingDuplicates([tiedPendingRight, tiedPendingLeft]),
-        'pending conflict projection must be identical when the input order is reversed'
-    );
-
-    const legacyOnly = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeTerminals: [{ provider: 'codex', sessionId: 'legacy', cwd: '/work', runStartedAtMs: 1 }],
-        pendingTerminals: [{ provider: 'kimi', cwd: '/work', createdAt: '2026-07-18T10:00:00Z' }],
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.deepStrictEqual(legacyOnly[0].activeAiSessions, [],
-        'legacy terminal projections are ignored without v2 runtime snapshots');
-
-    const noLegacyFallback = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{ id: 'p', path: '/work', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
-        providers: providerFixtures,
-        executionSnapshot: {},
-        activeRuntimes: [],
-        pendingRuntimes: [],
-        activeTerminals: [{ provider: 'codex', sessionId: 'legacy', cwd: '/work', runStartedAtMs: 1 }],
-        pendingTerminals: [{ provider: 'kimi', cwd: '/work', createdAt: '2026-07-18T10:00:00Z' }],
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.deepStrictEqual(noLegacyFallback[0].activeAiSessions, []);
-
-    activeRuntimes[0].identity.cwd = '/mutated';
-    assert.strictEqual(model.name, 'One', 'projected models must not retain runtime identity references');
-
-}
-
 async function runRuntimeControllerChecks() {
     const project = {
         id: 'project', name: 'Project', path: '/work',
@@ -6714,12 +6469,9 @@ async function runRuntimeControllerChecks() {
     const confirmations = [];
     const controller = new TerminalCommandController({
         isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
-        getOpenProjects: () => [project, otherProject],
-        getProjectSessions: (candidate, provider) => candidate[`${provider}Sessions`] || [],
-        getProjectKey: candidate => candidate.id === 'project' ? 'pk' : 'other-pk',
-        getWorkspaceScopeIdentity: () => 'pk',
-        getProjectCwd: candidate => candidate.path,
-        normalizePath: value => value,
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk')
+            : cardId === otherProject.id ? createWorkspaceActionTarget(otherProject, 'other-pk') : null,
         runtimeCoordinator: coordinator,
         confirmRuntimeClose: async (message, action) => {
             confirmations.push([message, action]);
@@ -6814,12 +6566,8 @@ async function runRuntimeControllerChecks() {
     const conflictErrors = [];
     const conflictController = new TerminalCommandController({
         isProviderId: value => value === 'codex',
-        getOpenProjects: () => [project],
-        getProjectSessions: candidate => candidate.codexSessions,
-        getProjectKey: () => 'pk',
-        getWorkspaceScopeIdentity: () => 'pk',
-        getProjectCwd: () => '/work',
-        normalizePath: value => value,
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
         runtimeCoordinator: conflictCoordinator,
         chooseRuntimeConflict: async candidates => {
             assert.strictEqual(candidates.length, 2);
@@ -6861,12 +6609,8 @@ async function runRuntimeControllerChecks() {
     const collisionOnlyAnnouncements = [];
     const collisionOnlyController = new TerminalCommandController({
         isProviderId: value => value === 'codex',
-        getOpenProjects: () => [project],
-        getProjectSessions: candidate => candidate.codexSessions,
-        getProjectKey: () => 'pk',
-        getWorkspaceScopeIdentity: () => 'pk',
-        getProjectCwd: () => '/work',
-        normalizePath: value => value,
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
         runtimeCoordinator: {
             getById: () => null,
             getActiveCandidates: () => [],
@@ -6904,12 +6648,9 @@ async function runRuntimeControllerChecks() {
     const crossProjectAnnouncements = [];
     const crossProjectCollisionController = new TerminalCommandController({
         isProviderId: value => value === 'codex',
-        getOpenProjects: () => [project, otherProject],
-        getProjectSessions: candidate => candidate.codexSessions,
-        getProjectKey: candidate => candidate.id === 'project' ? 'pk' : 'other-pk',
-        getWorkspaceScopeIdentity: () => 'pk',
-        getProjectCwd: candidate => candidate.path,
-        normalizePath: value => value,
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk')
+            : cardId === otherProject.id ? createWorkspaceActionTarget(otherProject, 'other-pk') : null,
         runtimeCoordinator: {
             getById: () => direct,
             getActiveCandidates: () => [direct],
@@ -6941,12 +6682,8 @@ async function runRuntimeControllerChecks() {
     const verifiedCollisionFocuses = [];
     const verifiedCollisionController = new TerminalCommandController({
         isProviderId: value => value === 'codex',
-        getOpenProjects: () => [project],
-        getProjectSessions: candidate => candidate.codexSessions,
-        getProjectKey: () => 'pk',
-        getWorkspaceScopeIdentity: () => 'pk',
-        getProjectCwd: () => '/work',
-        normalizePath: value => value,
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
         runtimeCoordinator: {
             getById: () => null,
             getActiveCandidates: () => [verifiedControllerRuntime],
@@ -7023,12 +6760,11 @@ async function runRuntimeControllerChecks() {
     };
     const fallbackController = new TerminalCommandController({
         isProviderId: value => value === 'codex',
-        getOpenProjects: () => [requestedFallbackProject, explicitOtherProject],
-        getProjectSessions: (candidate, provider) => candidate[`${provider}Sessions`] || [],
-        getProjectKey: candidate => `canonical:${normalizeCanonicalPath(candidate.path)}`,
-        getWorkspaceScopeIdentity: () => 'scope-current',
-        getProjectCwd: candidate => candidate.path,
-        normalizePath: normalizeCanonicalPath,
+        getWorkspaceTarget: cardId => cardId === requestedFallbackProject.id
+            ? createWorkspaceActionTarget(requestedFallbackProject, 'scope-current')
+            : cardId === explicitOtherProject.id
+                ? createWorkspaceActionTarget(explicitOtherProject, 'scope-other')
+                : null,
         runtimeCoordinator: fallbackCoordinator,
         confirmRuntimeClose: async (_message, action) => {
             fallbackConfirmations.push(action);
@@ -7042,12 +6778,12 @@ async function runRuntimeControllerChecks() {
 
     await fallbackController.focusActive('repo-project', 'codex', 'legacy-inferred-session');
     assert.deepStrictEqual(fallbackFocused, [{ ...inferredRuntime.identity }],
-        'v2 runtime lookup accepts the current scope and normalized project cwd');
+        'v2 runtime lookup accepts an exact workspace scope and session assignment');
     await fallbackController.closeTerminal({
         projectId: 'repo-project', providerId: 'codex', sessionId: 'legacy-inferred-session',
     });
     assert.deepStrictEqual(fallbackDetached, [{ ...inferredRuntime.identity }],
-        'v2 runtime detach accepts the current scope and normalized project cwd');
+        'v2 runtime detach accepts an exact workspace scope and session assignment');
     assert.deepStrictEqual(fallbackConfirmations, ['Close Terminal']);
 
     await fallbackController.focusActive('repo-project', 'codex', 'key-owned-by-other-session');
@@ -7062,13 +6798,12 @@ async function runRuntimeControllerChecks() {
         'wrong-project runtime must be rejected before confirmation');
 
     await fallbackController.focusActive('repo-project', 'codex', 'cwd-owned-by-other-session');
-    assert.strictEqual(fallbackFocused.length, 1,
-        'history must not override a normalized cwd owned by another open project');
+    assert.strictEqual(fallbackFocused.length, 2,
+        'immutable workspace scope ownership must not be reclassified from the current cwd');
     await fallbackController.focusActive('other-repo-project', 'codex', 'key-owned-by-other-session');
     await fallbackController.focusActive('other-repo-project', 'codex', 'cwd-owned-by-other-session');
-    assert.deepStrictEqual(fallbackFocused.slice(1), [
-        { ...cwdOwnedByOtherRuntime.identity },
-    ], 'workspace scope and normalized cwd must both match across all open projects');
+    assert.deepStrictEqual(fallbackFocused.slice(2), [],
+        'runtime ownership must never fall back to cwd or another workspace history');
 
     const directRaceRuntime = terminal => ({
         identity: { provider: 'codex', sessionId: 'race-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
@@ -7113,13 +6848,11 @@ async function runRuntimeControllerChecks() {
         };
         const raceController = new TerminalCommandController({
             isProviderId: value => value === 'codex',
-            getOpenProjects: () => [project],
-            getProjectSessions: () => [{ id: 'race-session' }],
+            getWorkspaceTarget: cardId => cardId === project.id
+                ? createWorkspaceActionTarget({
+                    ...project, codexSessions: [{ id: 'race-session' }],
+                }, 'pk') : null,
             runtimeCoordinator: raceCoordinator,
-            getProjectKey: () => 'pk',
-            getWorkspaceScopeIdentity: () => 'pk',
-            getProjectCwd: () => '/work',
-            normalizePath: value => value,
             confirmRuntimeClose: async (_message, action) => {
                 if (options.confirmError) {
                     throw new Error('confirm failed');
@@ -7192,7 +6925,8 @@ async function runRuntimeControllerChecks() {
     const createdAt = '2026-07-19T04:00:00.000Z';
     const creation = new CreationController({
         isProviderId: value => value === 'codex',
-        getOpenProjects: () => [project],
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
         pickProvider: async () => 'codex',
         getProviderLabel: () => 'Codex',
         getProvider: () => ({
@@ -7201,9 +6935,8 @@ async function runRuntimeControllerChecks() {
                 executable: 'codex', args: ['new', title], cwd: scope.primaryCwd, markerPath,
             }),
         }),
-        getProjectKey: () => 'pk',
         createPendingId: () => 'pending-controller',
-        resolveDirectoryScope: () => createDirectoryScope('/work'),
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
         getUsableTerminalCwd: cwd => cwd,
         showInputBox: async () => 'Title',
         showActiveTab: async () => undefined,
@@ -7243,18 +6976,15 @@ async function runRuntimeControllerChecks() {
 
     const resumeRequests = [];
     const resume = new ResumeController({
-        getOpenProjects: () => [project],
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
         getProvider: () => ({
             label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
             buildResumeLaunchSpec: (sessionId, scope, markerPath) => ({
                 executable: 'codex', args: ['resume', sessionId], cwd: scope.primaryCwd, markerPath,
             }),
         }),
-        getProjectSession: (_project, _provider, sessionId) => ({
-            id: sessionId, name: 'Tmux session', cwd: '/work', updatedAt: createdAt,
-        }),
-        getProjectKey: () => 'pk',
-        resolveDirectoryScope: () => createDirectoryScope('/work'),
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
         getTerminalName: () => 'Codex: Tmux session',
         getComparableCwd: () => '/work',
         getUsableTerminalCwd: cwd => cwd,
@@ -7286,18 +7016,15 @@ async function runRuntimeControllerChecks() {
         attached: false, tmux: { layout: 'session', sessionName: 'collision' },
     };
     const collisionResume = new ResumeController({
-        getOpenProjects: () => [project],
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
         getProvider: () => ({
             label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
             buildResumeLaunchSpec: (sessionId, scope, markerPath) => ({
                 executable: 'codex', args: ['resume', sessionId], cwd: scope.primaryCwd, markerPath,
             }),
         }),
-        getProjectSession: (_project, _provider, sessionId) => ({
-            id: sessionId, name: 'Collision', cwd: '/work', updatedAt: createdAt,
-        }),
-        getProjectKey: () => 'pk',
-        resolveDirectoryScope: () => createDirectoryScope('/work'),
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
         getTerminalName: () => 'Codex: Collision',
         getMarkerPath: () => '/tmp/collision.done',
         showWarningMessage: () => undefined,
@@ -7328,12 +7055,8 @@ async function runRuntimeControllerChecks() {
     const actionFailures = [];
     const failingActionController = new TerminalCommandController({
         isProviderId: value => value === 'codex',
-        getOpenProjects: () => [project],
-        getProjectSessions: candidate => candidate.codexSessions,
-        getProjectKey: () => 'pk',
-        getWorkspaceScopeIdentity: () => 'pk',
-        getProjectCwd: candidate => candidate.path,
-        normalizePath: value => value,
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
         runtimeCoordinator: {
             getById: () => tmux,
             getPending: () => [],
@@ -7367,7 +7090,9 @@ async function runRuntimeControllerChecks() {
     const createFailures = [];
     const createRefreshes = [];
     const rejectedCreation = new CreationController({
-        isProviderId: value => value === 'codex', getOpenProjects: () => [project],
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
         pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
         getProvider: () => ({
             label: 'Codex', terminalNamePrefix: 'Codex',
@@ -7375,7 +7100,7 @@ async function runRuntimeControllerChecks() {
                 executable: 'codex', args: ['new', title], cwd: scope.primaryCwd, markerPath,
             }),
         }),
-        resolveDirectoryScope: () => createDirectoryScope('/work'), getProjectKey: () => 'pk',
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
         createPendingId: () => 'rejected-pending', showInputBox: async () => '',
         showActiveTab: async () => undefined, announceStatus: async () => undefined,
         showWarningMessage: async () => undefined,
@@ -7402,17 +7127,20 @@ async function runRuntimeControllerChecks() {
     const resumeFailures = [];
     const resumeRefreshes = [];
     const rejectedResume = new ResumeController({
-        getOpenProjects: () => [project],
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget({
+                ...project,
+                codexSessions: project.codexSessions.concat({
+                    id: 'rejected', name: 'Rejected', cwd: '/work', updatedAt: createdAt,
+                }),
+            }, 'pk') : null,
         getProvider: () => ({
             label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
             buildResumeLaunchSpec: (sessionId, scope, markerPath) => ({
                 executable: 'codex', args: ['resume', sessionId], cwd: scope.primaryCwd, markerPath,
             }),
         }),
-        getProjectSession: (_project, _provider, sessionId) => ({
-            id: sessionId, name: 'Rejected', cwd: '/work', updatedAt: createdAt,
-        }),
-        getProjectKey: () => 'pk', resolveDirectoryScope: () => createDirectoryScope('/work'),
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
         getTerminalName: () => 'Codex: Rejected', getMarkerPath: () => '/tmp/rejected',
         showWarningMessage: () => undefined,
         showErrorMessage: async message => { resumeErrors.push(message); },
@@ -7436,7 +7164,9 @@ async function runRuntimeControllerChecks() {
     const pendingRefreshes = [];
     let retainedPending;
     const pendingFocusCreation = new CreationController({
-        isProviderId: value => value === 'codex', getOpenProjects: () => [project],
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
         pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
         getProvider: () => ({
             label: 'Codex', terminalNamePrefix: 'Codex',
@@ -7444,7 +7174,7 @@ async function runRuntimeControllerChecks() {
                 executable: 'codex', args: ['new', title], cwd: scope.primaryCwd, markerPath,
             }),
         }),
-        resolveDirectoryScope: () => createDirectoryScope('/work'), getProjectKey: () => 'pk',
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
         createPendingId: () => 'timeout-pending', showInputBox: async () => '',
         showActiveTab: async () => undefined, announceStatus: async () => undefined,
         showWarningMessage: async (_message, ...items) => items.includes('Focus Terminal')
@@ -7498,10 +7228,9 @@ function runHostRuntimeCompositionChecks() {
     assert.ok(dashboardSource.includes("path.join(context.globalStoragePath, 'ai-session-tmux-runtimes')"));
     assert.ok(dashboardSource.includes("'runtime-binding-final-records'"));
     assert.ok(dashboardSource.includes('runtimeCoordinator: aiSessionRuntimeCoordinator'));
-    assert.ok(dashboardSource.includes('activeRuntimes: getProjectedAiSessionActiveRuntimes()'));
-    assert.ok(dashboardSource.includes('pendingRuntimes: aiSessionRuntimeCoordinator.getPending()'));
+    assert.ok(dashboardSource.includes('getActiveRuntimes: () => aiSessionRuntimeCoordinator.getActive()'));
+    assert.ok(dashboardSource.includes('getPendingRuntimes: () => aiSessionRuntimeCoordinator.getPending()'));
     assert.ok(dashboardSource.includes('findTmuxCollisionRuntime('));
-    assert.ok(dashboardSource.includes('getProjectedAiSessionActiveRuntimes()'));
     assert.ok(dashboardSource.includes('getRuntimeConflict: getAiSessionRuntimeCollision'));
     assert.ok(dashboardSource.includes('getFocusedAiSessionRuntimeIdentity()'));
     assert.ok(dashboardSource.includes('tmuxRuntimeBackend.getFocusedRuntime(activeTerminal)'));
@@ -7543,7 +7272,7 @@ function runHostRuntimeCompositionChecks() {
         'await tmuxRuntimeBackend.restoreAttachTerminals(vscode.window.terminals)'
     );
     const hydrationConstruction = dashboardSource.indexOf(
-        'const aiSessionProjectHydrationController = new AiSessionProjectHydrationController'
+        'const workspaceSessionHydrationController = new WorkspaceSessionHydrationController'
     );
     assert.ok(directRestore >= 0 && tmuxRestore > directRestore && hydrationConstruction > tmuxRestore,
         'Direct and tmux attachment restoration must finish before first hydration is possible');
@@ -7969,7 +7698,6 @@ async function main() {
     await runTmuxBackendChecks();
     await runDirectBackendChecks();
     await runRuntimeCoordinatorChecks();
-    await runRuntimeProjectionChecks();
     await runRuntimeControllerChecks();
     runHostRuntimeCompositionChecks();
     runTmuxWebviewExperienceChecks();

@@ -3,20 +3,6 @@
 import type { AiSessionProviderId, Group, Project } from '../models';
 import type { TodoSearchCatalogItem } from '../todos/types';
 
-export type DashboardSearchProjectAction = 'open-current' | 'switch-open' | 'open-saved';
-
-export interface DashboardSearchSessionItem {
-    key: string;
-    searchText: string;
-    projectId: string;
-    projectName: string;
-    provider: AiSessionProviderId;
-    sessionId: string;
-    name: string;
-    updatedAt?: string;
-    active?: boolean;
-}
-
 export interface DashboardWorkspaceSearchSessionItem {
     key: string;
     searchText: string;
@@ -38,16 +24,9 @@ export interface DashboardSearchProjectItem {
     projectId: string;
     name: string;
     description: string;
-    action: DashboardSearchProjectAction;
+    action: 'open-saved';
     environmentLabel?: string;
     groupLabels: string[];
-}
-
-export interface DashboardSearchCatalog {
-    sessions: DashboardSearchSessionItem[];
-    openProjects: DashboardSearchProjectItem[];
-    savedProjects: DashboardSearchProjectItem[];
-    todos: TodoSearchCatalogItem[];
 }
 
 export interface DashboardSearchWorkspaceItem {
@@ -125,44 +104,8 @@ function normalizeDashboardProjectIdentity(uri: string): string {
     return `${scheme}://${authority}${uriPath}`;
 }
 
-export function buildDashboardSearchCatalog(
-    groups: Group[],
-    openProjects: Project[],
-    todos: TodoSearchCatalogItem[] = []
-): DashboardSearchCatalog {
-    const sessions: DashboardSearchSessionItem[] = [];
-    const openItems: DashboardSearchProjectItem[] = [];
+function buildSavedProjectSearchItems(groups: Group[]): DashboardSearchProjectItem[] {
     const savedByIdentity = new Map<string, DashboardSearchProjectItem>();
-
-    (openProjects || []).forEach(project => {
-        const identity = normalizeDashboardProjectIdentity(project.path) || project.id;
-        const current = project.openProjectCardKind !== 'projectNavigation';
-        openItems.push({
-            key: `open:${identity}`,
-            identity,
-            searchText: searchable(project.name, project.description, project.openProjectEnvironmentLabel),
-            projectId: project.id,
-            name: project.name || '',
-            description: project.description || '',
-            action: current ? 'open-current' : 'switch-open',
-            environmentLabel: project.openProjectEnvironmentLabel,
-            groupLabels: [],
-        });
-        if (!current) {
-            return;
-        }
-        PROVIDERS.forEach(provider => (project[provider.key] || []).forEach(session => sessions.push({
-            key: `${provider.id}:${session.id}`,
-            searchText: searchable(session.name, project.name, provider.id, session.id),
-            projectId: project.id,
-            projectName: project.name || '',
-            provider: provider.id,
-            sessionId: session.id,
-            name: session.name || session.id,
-            updatedAt: session.updatedAt,
-            active: session.active === true,
-        })));
-    });
 
     (groups || []).forEach(group => (group.projects || []).forEach(project => {
         const identity = normalizeDashboardProjectIdentity(project.path) || project.id;
@@ -189,12 +132,7 @@ export function buildDashboardSearchCatalog(
         item.searchText = searchable(item.searchText, project.name, project.description, group.groupName);
     }));
 
-    return {
-        sessions,
-        openProjects: openItems,
-        savedProjects: Array.from(savedByIdentity.values()),
-        todos,
-    };
+    return Array.from(savedByIdentity.values());
 }
 
 export function buildWorkspaceDashboardSearchCatalog(
@@ -269,7 +207,7 @@ export function buildWorkspaceDashboardSearchCatalog(
             })));
     }
 
-    const savedProjects = buildDashboardSearchCatalog(groups, [], todos).savedProjects;
+    const savedProjects = buildSavedProjectSearchItems(groups);
     return {
         version: 2,
         sessions,
@@ -280,7 +218,7 @@ export function buildWorkspaceDashboardSearchCatalog(
 }
 
 export function serializeDashboardSearchCatalog(
-    catalog: DashboardSearchCatalog | DashboardWorkspaceSearchCatalog
+    catalog: DashboardWorkspaceSearchCatalog
 ): string {
     return JSON.stringify(catalog)
         .replace(/</g, '\\u003c')

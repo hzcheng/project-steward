@@ -50,14 +50,7 @@ function normalizeDashboardSearchCatalog(value) {
         && Array.isArray(value.todos)) {
         return value;
     }
-    return value
-        && value.version === undefined
-        && Array.isArray(value.sessions)
-        && Array.isArray(value.openProjects)
-        && Array.isArray(value.savedProjects)
-        && Array.isArray(value.todos)
-        ? value
-        : { sessions: [], openProjects: [], savedProjects: [], todos: [] };
+    return { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: [] };
 }
 
 function replaceDashboardSearchCatalogState(state, catalog) {
@@ -86,17 +79,11 @@ function globToDashboardRegex(value) {
 function filterDashboardCatalog(catalog, query) {
     catalog = normalizeDashboardSearchCatalog(catalog);
     var regex = globToDashboardRegex(query);
-    var workspaceCatalog = catalog.version === 2;
     var sections = [
         { id: 'ai-sessions', title: 'AI SESSIONS', type: 'session', items: catalog.sessions },
-        workspaceCatalog
-            ? { id: 'open-workspaces', title: 'OPEN WORKSPACES', type: 'open-workspace', items: catalog.openWorkspaces }
-            : { id: 'open-projects', title: 'OPEN PROJECTS', type: 'open-project', items: catalog.openProjects },
+        { id: 'open-workspaces', title: 'OPEN WORKSPACES', type: 'open-workspace', items: catalog.openWorkspaces },
         { id: 'saved-projects', title: 'SAVED PROJECTS', type: 'saved-project', items: catalog.savedProjects },
     ];
-    if (!workspaceCatalog) {
-        sections.push({ id: 'todos', title: 'TODO RESULTS', type: 'todo', items: catalog.todos });
-    }
     return sections
         .map(section => ({
             id: section.id,
@@ -148,15 +135,10 @@ function renderDashboardSearchResults(container, sections) {
             if (section.type === 'session') {
                 button.dataset.provider = String(item.provider || '');
                 button.dataset.sessionId = String(item.sessionId || '');
-                if (item.action === 'reveal-workspace-session') {
-                    button.dataset.searchAction = 'reveal-workspace-session';
-                    button.dataset.workspaceId = String(item.workspaceId || '');
-                    button.dataset.workspaceNavigationIdentity = String(item.workspaceNavigationIdentity || '');
-                    metadata.textContent = [item.workspaceName, item.provider].filter(Boolean).join(' · ');
-                } else {
-                    button.dataset.searchAction = 'resume-session';
-                    metadata.textContent = [item.projectName, item.provider].filter(Boolean).join(' · ');
-                }
+                button.dataset.searchAction = 'reveal-workspace-session';
+                button.dataset.workspaceId = String(item.workspaceId || '');
+                button.dataset.workspaceNavigationIdentity = String(item.workspaceNavigationIdentity || '');
+                metadata.textContent = [item.workspaceName, item.provider].filter(Boolean).join(' · ');
                 if (item.active === true) {
                     var activeBadge = document.createElement('span');
                     activeBadge.className = 'dashboard-search-result-status active';
@@ -170,41 +152,11 @@ function renderDashboardSearchResults(container, sections) {
                     ? 'show-current-workspace'
                     : 'switch-open-workspace';
                 metadata.textContent = [item.description, item.environmentLabel].filter(Boolean).join(' · ');
-            } else if (section.type === 'open-project') {
-                button.dataset.searchAction = item.action === 'open-current'
-                    ? 'show-current-project'
-                    : 'switch-open-project';
-                metadata.textContent = [item.description, item.environmentLabel].filter(Boolean).join(' · ');
-            } else if (section.type === 'todo') {
-                button.dataset.searchAction = 'show-todo';
-                button.dataset.todoId = String(item.todoId || '');
-                button.dataset.groupId = String(item.groupId || '');
-                button.classList.toggle('completed', item.completed === true);
-                var groupBadge = document.createElement('span');
-                groupBadge.className = 'dashboard-search-result-group steward-badge';
-                groupBadge.textContent = String(item.groupTitle || '');
-                metadata.appendChild(groupBadge);
-                var priority = document.createElement('span');
-                priority.className = 'dashboard-search-result-priority';
-                priority.textContent = String(item.priority || '').toUpperCase();
-                metadata.appendChild(priority);
-                if (item.completed === true) {
-                    var status = document.createElement('span');
-                    status.className = 'dashboard-search-result-status';
-                    status.textContent = 'Completed';
-                    metadata.appendChild(status);
-                }
             } else {
                 button.dataset.searchAction = 'open-saved-project';
                 metadata.textContent = [item.description].concat(item.groupLabels || []).filter(Boolean).join(' · ');
             }
             button.appendChild(metadata);
-            if (section.type === 'todo' && item.notesSearchText) {
-                var notes = document.createElement('span');
-                notes.className = 'dashboard-search-result-notes';
-                notes.textContent = String(item.notesSearchText);
-                button.appendChild(notes);
-            }
             sectionElement.appendChild(button);
         });
         container.appendChild(sectionElement);
@@ -454,19 +406,7 @@ function initDashboard(options) {
             });
             return;
         }
-        if (action === 'show-current-project') {
-            if (typeof options.clearSearch === 'function') {
-                options.clearSearch();
-            } else {
-                setSearchQuery('');
-            }
-            activateTab('open', false);
-            if (typeof window.__projectStewardShowCurrentProject === 'function') {
-                window.__projectStewardShowCurrentProject(button.dataset.projectId);
-            }
-            return;
-        }
-        if (action === 'switch-open-project' || action === 'open-saved-project') {
+        if (action === 'open-saved-project') {
             options.postMessage({
                 type: 'selected-project',
                 projectId: button.dataset.projectId,

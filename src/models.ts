@@ -44,10 +44,6 @@ export class Project {
     aiSessionAttentionEventIds?: string[];
     activeAiSessions?: ActiveAiSessionViewModel[];
     activeAiSessionTab?: AiSessionTabId;
-    openProjectCardKind?: 'current' | 'projectNavigation';
-    openProjectSourceInstanceId?: string;
-    openProjectEnvironmentLabel?: string;
-    openProjectActiveSessionCount?: number;
     color: string;
     isGitRepo = false;
 
@@ -192,8 +188,7 @@ export interface StewardInfos {
     config: vscode.WorkspaceConfiguration;
     otherStorageHasData: boolean;
     favoritesGroupCollapsed?: boolean;
-    openProjects?: Project[];
-    openProjectsGroupCollapsed?: boolean;
+    openWorkspacesGroupCollapsed?: boolean;
     todoSearchItems?: TodoSearchCatalogItem[];
 }
 

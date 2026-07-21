@@ -11,18 +11,18 @@ export interface DashboardDiagnosticsOptions {
     outputChannel: DashboardDiagnosticsOutputChannel;
     globalStoragePath: string;
     now?: () => Date;
-    maxOpenProjectDiagnosticBytes?: number;
+    maxOpenWorkspaceDiagnosticBytes?: number;
 }
 
 export default class DashboardDiagnostics {
     private readonly now: () => Date;
-    private readonly maxOpenProjectDiagnosticBytes: number;
-    private readonly openProjectDiagnosticPath: string;
+    private readonly maxOpenWorkspaceDiagnosticBytes: number;
+    private readonly openWorkspaceDiagnosticPath: string;
 
     constructor(private readonly options: DashboardDiagnosticsOptions) {
         this.now = options.now || (() => new Date());
-        this.maxOpenProjectDiagnosticBytes = options.maxOpenProjectDiagnosticBytes || 2 * 1024 * 1024;
-        this.openProjectDiagnosticPath = path.join(options.globalStoragePath, 'open-project-diagnostics.jsonl');
+        this.maxOpenWorkspaceDiagnosticBytes = options.maxOpenWorkspaceDiagnosticBytes || 2 * 1024 * 1024;
+        this.openWorkspaceDiagnosticPath = path.join(options.globalStoragePath, 'open-workspace-diagnostics.jsonl');
     }
 
     logError(message: string, error: unknown) {
@@ -41,7 +41,7 @@ export default class DashboardDiagnostics {
         })}`);
     }
 
-    logOpenProjectDiagnostic(component: string, event: unknown) {
+    logOpenWorkspaceDiagnostic(component: string, event: unknown) {
         let line: string;
         try {
             line = `${JSON.stringify({
@@ -50,23 +50,23 @@ export default class DashboardDiagnostics {
                 event,
             })}\n`;
         } catch (error) {
-            this.options.outputChannel.appendLine(`[OpenProjects][${component}] Failed to serialize diagnostic: ${String(error)}`);
+            this.options.outputChannel.appendLine(`[OpenWorkspaces][${component}] Failed to serialize diagnostic: ${String(error)}`);
             return;
         }
 
-        this.options.outputChannel.appendLine(`[OpenProjects][${component}] ${JSON.stringify(event)}`);
+        this.options.outputChannel.appendLine(`[OpenWorkspaces][${component}] ${JSON.stringify(event)}`);
         try {
             mkdirSync(this.options.globalStoragePath, { recursive: true });
-            const existingBytes = existsSync(this.openProjectDiagnosticPath)
-                ? statSync(this.openProjectDiagnosticPath).size
+            const existingBytes = existsSync(this.openWorkspaceDiagnosticPath)
+                ? statSync(this.openWorkspaceDiagnosticPath).size
                 : 0;
-            if (existingBytes + Buffer.byteLength(line, 'utf8') > this.maxOpenProjectDiagnosticBytes) {
-                writeFileSync(this.openProjectDiagnosticPath, line, 'utf8');
+            if (existingBytes + Buffer.byteLength(line, 'utf8') > this.maxOpenWorkspaceDiagnosticBytes) {
+                writeFileSync(this.openWorkspaceDiagnosticPath, line, 'utf8');
             } else {
-                appendFileSync(this.openProjectDiagnosticPath, line, 'utf8');
+                appendFileSync(this.openWorkspaceDiagnosticPath, line, 'utf8');
             }
         } catch (error) {
-            this.options.outputChannel.appendLine(`[OpenProjects][${component}] Failed to persist diagnostic: ${String(error)}`);
+            this.options.outputChannel.appendLine(`[OpenWorkspaces][${component}] Failed to persist diagnostic: ${String(error)}`);
         }
     }
 }

@@ -158,24 +158,6 @@ export interface WorkspaceAiSessionActionTarget {
     sessions: WorkspaceAiSessionViewModel;
 }
 
-export interface OpenProjectAiSessionViewModel {
-    projectId: string;
-    projectKey: string;
-    activeProvider: AiSessionProviderId;
-    expanded: boolean;
-    providers: AiSessionProviderSummary[];
-    sessionsByProvider: Partial<Record<AiSessionProviderId, AiSessionViewModel[]>>;
-    unavailableProviders: AiSessionProviderId[];
-    searchText?: string;
-    aiSessionCount?: number;
-    attentionCount?: number;
-    defaultTab: AiSessionTabId;
-    activeSessions: ActiveAiSessionViewModel[];
-    activeSessionCount: number;
-    activeAttentionCount: number;
-    sessionSectionHtml?: string;
-}
-
 export interface AiSessionsUpdatedMessage {
     type: 'ai-sessions-updated';
     version: 2;

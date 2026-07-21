@@ -1,18 +1,15 @@
 'use strict';
 
-import { Group, Project, StewardInfos, WorkspaceCardViewModel } from '../models';
+import { Group, WorkspaceCardViewModel } from '../models';
 import type { AiSessionsUpdatedMessage } from '../aiSessions/types';
 import type { OpenWorkspaceBridgeStatus } from '../openWorkspaces/bridgeClient';
 import type { TodoSearchCatalogItem } from '../todos/types';
 import {
-    buildDashboardSearchCatalog,
     buildWorkspaceDashboardSearchCatalog,
-    DashboardSearchCatalog,
     DashboardWorkspaceSearchCatalog,
 } from '../webview/dashboardViewModel';
 import {
     getCurrentWorkspaceGroupContent,
-    getOpenProjectsGroupContent,
     getOpenWorkspacesGroupContent,
 } from '../webview/webviewContent';
 
@@ -25,24 +22,6 @@ export interface WorkspaceUpdatedMessage {
 
 export interface BuildWorkspaceUpdatedMessageInput {
     card: WorkspaceCardViewModel | null;
-}
-
-export interface OpenProjectsUpdatedMessage {
-    type: 'open-projects-updated';
-    version: 1;
-    semanticRevision: string;
-    projectCount: number;
-    searchCatalog: DashboardSearchCatalog;
-    html: string;
-}
-
-export interface BuildOpenProjectsUpdatedMessageInput {
-    groups: Group[];
-    cards: Project[];
-    collapsed: boolean;
-    stewardInfos: StewardInfos;
-    semanticRevision: string;
-    todoSearchItems: TodoSearchCatalogItem[];
 }
 
 export interface OpenWorkspacesUpdatedMessage {
@@ -71,21 +50,6 @@ export interface BuildAiSessionsUpdatedMessageInput {
     sequence: number;
     generatedAt: string;
     todoSearchItems: TodoSearchCatalogItem[];
-}
-
-export function buildOpenProjectsUpdatedMessage(input: BuildOpenProjectsUpdatedMessageInput): OpenProjectsUpdatedMessage {
-    return {
-        type: 'open-projects-updated',
-        version: 1,
-        semanticRevision: input.semanticRevision,
-        projectCount: input.cards.length,
-        searchCatalog: buildDashboardSearchCatalog(input.groups, input.cards, input.todoSearchItems),
-        html: getOpenProjectsGroupContent(
-            input.cards,
-            input.collapsed,
-            input.stewardInfos,
-        ),
-    };
 }
 
 export function buildOpenWorkspacesUpdatedMessage(

@@ -12,7 +12,7 @@ export interface DashboardLifecycleControllerOptions {
     checkDataMigration: (openStewardAfterMigrate: boolean) => Promise<void>;
     applyProjectColorToCurrentWindow: () => void;
     refresh: (reason: string) => void;
-    publishOpenProjects: (followsFocusEvent?: boolean) => void;
+    publishOpenWorkspace: (followsFocusEvent?: boolean) => void;
     evaluateAiSessionAttention: () => unknown;
 }
 
@@ -30,19 +30,19 @@ export class DashboardLifecycleController {
             || event.affectsConfiguration('dashboard')) {
             this.options.applyProjectColorToCurrentWindow();
             this.options.refresh('configuration-changed');
-            this.options.publishOpenProjects();
+            this.options.publishOpenWorkspace();
         }
     }
 
     handleWorkspaceFoldersChanged(): void {
         this.options.applyProjectColorToCurrentWindow();
         this.options.refresh('workspace-folders-changed');
-        this.options.publishOpenProjects();
+        this.options.publishOpenWorkspace();
     }
 
     handleWindowStateChanged(windowState: WindowStateLike): void {
         if (windowState.focused) {
-            this.options.publishOpenProjects(true);
+            this.options.publishOpenWorkspace(true);
         }
         this.options.evaluateAiSessionAttention();
     }

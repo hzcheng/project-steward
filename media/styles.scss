@@ -2130,7 +2130,7 @@ body.steward-sidebar {
             }
         }
 
-        &[data-open-project][data-has-save-action] .project-save-badge {
+        &[data-current-workspace][data-has-save-action] .project-save-badge {
             top: 34px;
             right: 10px;
             bottom: auto;
@@ -2352,7 +2352,7 @@ body.steward-sidebar {
             -webkit-line-clamp: 1;
         }
 
-        &[data-open-project] {
+        &[data-current-workspace] {
             .fitty-container,
             .project-description {
                 width: calc(100% - 60px);

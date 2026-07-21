@@ -247,17 +247,17 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
         sessionTwo: providerFixture(root, 'session-two', `${payload}:four`, fixtureRegistry),
         pending: providerFixture(root, 'pending', `${payload}:pending`, fixtureRegistry),
     };
-    const projectKey = "project:key with spaces ' ; $";
+    const workspaceScopeIdentity = "workspace:scope with spaces ' ; $";
     const terminals = [];
     const contextA = buildRuntimeContext(client, root, terminals);
     const contextB = buildRuntimeContext(client, root, terminals);
 
     const projectOneRequest = resumeRequest(
-        'codex', projectKey, cwd, "session one:';$", fixtures.projectOne,
+        'codex', workspaceScopeIdentity, cwd, 'session.one-special', fixtures.projectOne,
         'Project Steward: Smoke Project [tmux]'
     );
     const projectTwoRequest = resumeRequest(
-        'claude', projectKey, cwd, 'session-two.special:$', fixtures.projectTwo,
+        'claude', workspaceScopeIdentity, cwd, 'session-two.special', fixtures.projectTwo,
         'Project Steward: Smoke Project [tmux]'
     );
     const [projectOne, concurrentProjectOne] = await Promise.all([
@@ -286,7 +286,7 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
     const projectManagedSessions = new Set(rows.filter(row =>
         row.sessionMetadata.managed === '1'
         && row.sessionMetadata.layout === 'project'
-        && row.sessionMetadata.workspaceScopeIdentity === projectKey
+        && row.sessionMetadata.workspaceScopeIdentity === workspaceScopeIdentity
     ).map(row => row.sessionName));
     assert.strictEqual(projectManagedSessions.size, 1,
         'project layout must have exactly one managed project session');
@@ -311,7 +311,7 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
     await freshProjectContext.discovery.refresh(true);
     assert.deepStrictEqual(
         freshProjectContext.discovery.getActive()
-            .filter(runtime => runtime.identity.workspaceScopeIdentity === projectKey)
+            .filter(runtime => runtime.identity.workspaceScopeIdentity === workspaceScopeIdentity)
             .map(runtime => runtime.identity.sessionId).sort(),
         [projectOneRequest.identity.sessionId, projectTwoRequest.identity.sessionId].sort(),
         'a new production discovery instance must recover metadata-backed runtimes'
@@ -344,13 +344,13 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
     await contextA.backend.detach(sessionOne);
     await assertPaneAlive(runner, sessionOne.tmux);
 
-    const pendingId = "pending:create ' ;$";
+    const pendingId = 'pending:create.special';
     const pendingCreatedAt = new Date().toISOString();
     const pending = await contextA.backend.ensurePending({
         identity: {
             provider: 'claude',
-            workspaceScopeIdentity: projectKey,
-            workspaceNavigationIdentity: projectKey,
+            workspaceScopeIdentity,
+            workspaceNavigationIdentity: workspaceScopeIdentity,
             workspaceRootHostPaths: [cwd],
             cwd,
             pendingId,
@@ -376,7 +376,7 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
         assert.strictEqual(records[0].payload, fixture.payload);
     }
     const pendingLocator = { ...pending.tmux };
-    const finalSessionId = "promoted:session ' ;$";
+    const finalSessionId = 'promoted:session.special';
     const promoted = await contextA.backend.promotePending(pending.identity, finalSessionId);
     assert.strictEqual(promoted.length, 1);
     assert.strictEqual(promoted[0].identity.sessionId, finalSessionId);

@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { resolveAttentionProjectKey } from '../aiSessions/attentionProject';
 import * as path from 'path';
 
 import {
@@ -18,11 +17,10 @@ import {
     FITTY_OPTIONS,
     INBUILT_COLOR_DEFAULTS,
     OPEN_CURRENT_WORKSPACE_GROUP_ID,
-    OPEN_PROJECTS_GROUP_ID,
+    OPEN_WORKSPACES_GROUP_ID,
 } from '../constants';
 import { getFavoriteProjectsInOrder } from '../projects/favoriteProjectOrder';
 import {
-    buildDashboardSearchCatalog,
     buildWorkspaceDashboardSearchCatalog,
     serializeDashboardSearchCatalog,
 } from './dashboardViewModel';
@@ -35,8 +33,6 @@ const OPEN_CURRENT_WORKSPACE_GROUP_NAME = 'CURRENT WORKSPACE';
 const OPEN_OTHER_WINDOWS_GROUP_NAME = 'OTHER WINDOWS';
 const DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP = 5;
 
-type ProjectAttentionMode = 'current' | 'navigation' | 'none';
-
 interface GroupSectionOptions {
     virtual: boolean;
     readOnlyProjects: boolean;
@@ -44,8 +40,6 @@ interface GroupSectionOptions {
     collapsible: boolean;
     className: string;
     systemBadge: string;
-    projectAttentionMode: ProjectAttentionMode;
-    sessionFx?: string;
 }
 
 interface AiSessionRenderOptions {
@@ -77,7 +71,7 @@ export function getStewardContent(
     groups: Group[],
     infos: StewardInfos,
     isSidebar: boolean = false,
-    workspaceCards?: WorkspaceCardViewModel[],
+    workspaceCards: WorkspaceCardViewModel[] = [],
     otherWindowsStatus: OpenWorkspaceBridgeStatus = 'ready',
 ): string {
     var stylesPath = getMediaResource(context, webview, 'styles.css');
@@ -106,15 +100,14 @@ export function getStewardContent(
         'webviewFilterScripts.js'
     );
 
-    var openProjects = workspaceCards ? [] : infos.openProjects || [];
     var customCss = infos.config.get('customCss') || '';
-    var allGroupsCollapsed = !!infos.openProjectsGroupCollapsed;
-    var searchCatalog = serializeDashboardSearchCatalog(workspaceCards
-        ? buildWorkspaceDashboardSearchCatalog(groups, workspaceCards, infos.todoSearchItems || [])
-        : buildDashboardSearchCatalog(groups, openProjects, infos.todoSearchItems || []));
-    var openProjectsContent = workspaceCards
-        ? getOpenWorkspacesGroupContent(workspaceCards, infos.openProjectsGroupCollapsed, otherWindowsStatus)
-        : getOpenProjectsGroupContent(openProjects, infos.openProjectsGroupCollapsed, infos);
+    var allGroupsCollapsed = !!infos.openWorkspacesGroupCollapsed;
+    var searchCatalog = serializeDashboardSearchCatalog(
+        buildWorkspaceDashboardSearchCatalog(groups, workspaceCards, infos.todoSearchItems || [])
+    );
+    var openWorkspacesContent = getOpenWorkspacesGroupContent(
+        workspaceCards, infos.openWorkspacesGroupCollapsed, otherWindowsStatus
+    );
 
     return `
 <!DOCTYPE html>
@@ -162,7 +155,7 @@ export function getStewardContent(
         <main class="dashboard-content">
             <section id="dashboard-tab-open" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-open-button">
                 <div class="sticky-groups-wrapper">
-                    ${openProjectsContent}
+                    ${openWorkspacesContent}
                 </div>
             </section>
             <section id="dashboard-tab-projects" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-projects-button" hidden>
@@ -231,56 +224,6 @@ export function getStewardContent(
 </html>`;
 }
 
-const SESSION_FX_IDS = ['current', 'sweep', 'orbit', 'halo', 'ripple', 'breath', 'none'];
-
-function getSessionFx(infos: StewardInfos): string {
-    const configured = infos && infos.config && typeof infos.config.get === 'function'
-        ? infos.config.get('aiSessionRunningCardAnimation', 'current')
-        : 'current';
-    return SESSION_FX_IDS.indexOf(configured) !== -1 ? configured : 'current';
-}
-
-export function getOpenProjectsGroupContent(
-    openProjects: Project[],
-    collapsed: boolean,
-    infos: StewardInfos,
-): string {
-    var currentProjects = (openProjects || []).filter(project => project.openProjectCardKind !== 'projectNavigation');
-    var navigationProjects = (openProjects || []).filter(project => project.openProjectCardKind === 'projectNavigation');
-    var currentGroup = new Group(OPEN_CURRENT_WORKSPACE_GROUP_NAME, currentProjects);
-    currentGroup.id = OPEN_CURRENT_WORKSPACE_GROUP_ID;
-    currentGroup.collapsed = false;
-    var currentSection = getGroupSection(currentGroup, {
-        virtual: true,
-        readOnlyProjects: true,
-        draggableVirtualProjects: false,
-        collapsible: false,
-        className: 'open-current-workspace-group',
-        systemBadge: 'Live',
-        projectAttentionMode: 'current',
-    }, currentProjects.length
-        ? ''
-        : getOpenCurrentWorkspaceEmptyState(navigationProjects.length > 0));
-
-    if (!navigationProjects.length) {
-        return currentSection;
-    }
-
-    var navigationGroup = new Group(OPEN_OTHER_WINDOWS_GROUP_NAME, navigationProjects);
-    navigationGroup.id = OPEN_PROJECTS_GROUP_ID;
-    navigationGroup.collapsed = collapsed;
-    return `${currentSection}\n${getGroupSection(navigationGroup, {
-        virtual: true,
-        readOnlyProjects: true,
-        draggableVirtualProjects: false,
-        collapsible: true,
-        className: 'open-other-windows-group',
-        systemBadge: 'Live',
-        projectAttentionMode: 'navigation',
-        sessionFx: getSessionFx(infos),
-    })}`;
-}
-
 export function getCurrentWorkspaceGroupContent(
     card: WorkspaceCardViewModel | null,
     hasOtherWindows: boolean = false
@@ -322,7 +265,7 @@ export function getOpenWorkspacesGroupContent(
             : navigationCards.map(getWorkspaceCardDiv).join('\n');
     const otherWindowsCollapsed = otherWindowsStatus === 'ready' && collapsed;
     return `${currentSection}
-<div class="group steward-section open-other-windows-group ${otherWindowsCollapsed ? 'collapsed' : ''}" data-group-id="${OPEN_PROJECTS_GROUP_ID}" data-virtual-group data-system-group="${OPEN_PROJECTS_GROUP_ID}" data-other-windows-status="${otherWindowsStatus}">
+<div class="group steward-section open-other-windows-group ${otherWindowsCollapsed ? 'collapsed' : ''}" data-group-id="${OPEN_WORKSPACES_GROUP_ID}" data-virtual-group data-system-group="${OPEN_WORKSPACES_GROUP_ID}" data-other-windows-status="${otherWindowsStatus}">
     <div class="group-title steward-section-header steward-group-header">
         <span class="group-title-text" data-action="collapse">
             <span class="collapse-icon" title="Open/Collapse Group">${Icons.collapse}</span>
@@ -372,7 +315,7 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel): string {
         : '';
 
     return `<div class="project-container" data-nodrag>
-    <div class="workspace-card project steward-item-card" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${isCurrent ? 'data-open-project data-current-workspace' : 'data-workspace-navigation data-other-workspace'} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
+    <div class="workspace-card project steward-item-card" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
         <div class="project-aura"></div>
         <div class="project-border steward-item-accent"></div>
         <div class="fitty-container project-title-row">
@@ -442,7 +385,6 @@ export function getProjectsPanelContent(groups: Group[], infos: StewardInfos): s
         collapsible: true,
         className: 'favorites-group',
         systemBadge: 'Pinned',
-        projectAttentionMode: 'none',
     };
     var projectOptions: GroupSectionOptions = {
         virtual: false,
@@ -451,7 +393,6 @@ export function getProjectsPanelContent(groups: Group[], infos: StewardInfos): s
         collapsible: true,
         className: 'saved-project-group',
         systemBadge: '',
-        projectAttentionMode: 'none',
     };
 
     return `<div class="groups-wrapper ${!infos.config.displayProjectPath ? 'hide-project-path' : ''}" style="--steward-max-visible-projects-per-group: ${maxVisibleProjectsPerGroup};">
@@ -605,9 +546,6 @@ function getProjectDiv(
     project: Project,
     options: GroupSectionOptions
 ) {
-    var isProjectNavigation = project.openProjectCardKind === 'projectNavigation';
-    var showCurrentAttention = options.projectAttentionMode === 'current';
-    var showNavigationAttention = options.projectAttentionMode === 'navigation';
     var rawProjectColor = (project.color || '').trim();
     var projectColor = escapeStyleValue(rawProjectColor);
     projectColor = projectColor === rawProjectColor ? projectColor : '';
@@ -616,25 +554,12 @@ function getProjectDiv(
     var remoteType = getRemoteType(project);
     var description = sanitizeProjectName(project.description);
     var projectName = escapeAttribute(sanitizeProjectName(project.name));
-    var codexSessions = project.codexSessions || [];
-    var kimiSessions = project.kimiSessions || [];
-    var claudeSessions = project.claudeSessions || [];
-    var searchText = escapeAttribute(isProjectNavigation
-        ? `${project.name || ''} ${description}`.toLowerCase()
-        : getProjectSearchText(project));
+    var searchText = escapeAttribute(getProjectSearchText(project));
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
-    var navigationActiveSessionCount = isProjectNavigation ? (project.openProjectActiveSessionCount || 0) : 0;
-    var sessionFx = navigationActiveSessionCount > 0 ? (options.sessionFx || 'current') : '';
-    var projectCardClassModifier = sessionFx ? ' session-running' : '';
-    var sessionFxAttribute = sessionFx ? ` data-session-fx="${sessionFx}"` : '';
-    var sessionFxLayer = sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : '';
-    if (navigationActiveSessionCount > 0) {
-        projectIconTitle = `${projectIconTitle} — ${navigationActiveSessionCount} active session${navigationActiveSessionCount === 1 ? '' : 's'} running`;
-    }
     var favoriteTitle = project.favorite ? 'Remove From Favorites' : 'Add To Favorites';
-    var projectActions = options.readOnlyProjects || isProjectNavigation
+    var projectActions = options.readOnlyProjects
         ? ''
         : `<span data-action="color" title="Edit Color">${Icons.palette
         }</span>
@@ -650,57 +575,25 @@ function getProjectDiv(
         </div>`
         : '';
     var favoriteBadgeIcon = project.favorite ? Icons.starFilled : Icons.star;
-    var favoriteBadge = options.readOnlyProjects || isProjectNavigation
+    var favoriteBadge = options.readOnlyProjects
         ? ''
         : `<span data-action="favorite" class="project-favorite-badge ${project.favorite ? 'active' : ''}" title="${favoriteTitle}">${favoriteBadgeIcon}</span>`;
-    var saveBadge = !isProjectNavigation && project.showSaveAction
+    var saveBadge = project.showSaveAction
         ? `<span data-action="save" class="project-save-badge" title="Save Current Project">${Icons.save}</span>`
         : '';
-    var aiSessionCount = codexSessions.length + kimiSessions.length + claudeSessions.length;
-    var attentionCount = codexSessions.concat(kimiSessions).concat(claudeSessions).filter(session => session.attention?.unread).length;
-    var activeAiSessionCount = (project.activeAiSessions || []).length;
-    var projectAttentionCount = project.aiSessionAttentionCount ?? attentionCount;
-    var attentionProjectKey = options.projectAttentionMode === 'none'
-        ? ''
-        : resolveAttentionProjectKey(project);
-    var projectAttentionBadge = showNavigationAttention && projectAttentionCount
-        ? `<span class="project-ai-attention-badge" title="${projectAttentionCount} AI session${projectAttentionCount === 1 ? ' needs' : 's need'} attention">${projectAttentionCount}</span>`
-        : '';
-    var aiSessionSummaryLabel = [
-        aiSessionCount ? `${aiSessionCount} AI session${aiSessionCount === 1 ? '' : 's'}` : '',
-        activeAiSessionCount ? `${activeAiSessionCount} active AI session${activeAiSessionCount === 1 ? '' : 's'}` : '',
-        attentionCount ? `${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention` : '',
-    ].filter(Boolean).join(', ');
-    var aiSessionBadge = showCurrentAttention && (aiSessionCount || activeAiSessionCount || attentionCount)
-        ? `<span class="project-codex-badge" data-ai-session-total-count="${aiSessionCount}" data-ai-session-active-count="${activeAiSessionCount}" data-ai-session-attention-count="${attentionCount}" title="${escapeAttribute(aiSessionSummaryLabel)}" aria-label="${escapeAttribute(aiSessionSummaryLabel)}">${
-            aiSessionCount ? `<span class="ai-session-total-count">AI ${aiSessionCount}</span>` : ''
-        }${activeAiSessionCount ? `<span class="ai-session-active-count" aria-label="${activeAiSessionCount} active AI session${activeAiSessionCount === 1 ? '' : 's'}">●${activeAiSessionCount}</span>` : ''
-        }${attentionCount ? `<b class="ai-session-attention-count" aria-label="${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention">${attentionCount}</b>` : ''
-        }</span>`
-        : '';
-    var codexSessionSection = showCurrentAttention ? getAiSessionsDiv(project) : '';
-
     var isRemote = remoteType !== ProjectRemoteType.None;
 
     return `
 <div class="project-container"${options.virtual && !options.draggableVirtualProjects ? ' data-nodrag' : ''}>
-    <div class="project steward-item-card${projectCardClassModifier}" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
-        }${attentionProjectKey ? ` data-attention-project-key="${attentionProjectKey}"` : ''
+    <div class="project steward-item-card" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${options.virtual ? ' data-virtual-project' : ''
-        }${options.readOnlyProjects || isProjectNavigation ? ' data-readonly-project' : ''
-        }${showCurrentAttention ? ' data-open-project' : ''
-        }${isProjectNavigation ? ' data-project-navigation title="Switch to this project"' : ''
-        }${sessionFxAttribute
-        }${!isProjectNavigation && project.codexSessionsExpanded ? ' data-codex-expanded' : ''
-        }${!options.readOnlyProjects && !isProjectNavigation ? ' data-has-favorite-toggle' : ''
-        }${!isProjectNavigation && project.showSaveAction ? ' data-has-save-action' : ''
-        }${!isProjectNavigation && project.favorite ? ' data-favorite-project' : ''
-        }${showCurrentAttention ? ' data-current-workspace' : ''
+        }${options.readOnlyProjects ? ' data-readonly-project' : ''
+        }${!options.readOnlyProjects ? ' data-has-favorite-toggle' : ''
+        }${project.showSaveAction ? ' data-has-save-action' : ''
+        }${project.favorite ? ' data-favorite-project' : ''
         }>
         <div class="project-aura"></div>
         <div class="project-border steward-item-accent" style="${borderStyle}"></div>
-        ${sessionFxLayer}
-        ${projectAttentionBadge}
         ${favoriteBadge}
         ${saveBadge}
         ${projectActionsWrapper}
@@ -715,8 +608,6 @@ function getProjectDiv(
         <p class="project-description" title="${escapedDescription}">
             ${escapedDescription}
         </p>
-        ${aiSessionBadge}
-        ${codexSessionSection}
     </div>
 </div>`;
 }

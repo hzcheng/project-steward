@@ -1,6 +1,6 @@
 'use strict';
 
-import type { AiSessionProviderId, CodexSession, Project } from '../models';
+import type { AiSessionProviderId, CodexSession } from '../models';
 import type { AiSessionLaunchSpec } from './launchSpec';
 import type {
     AiSessionResumeRuntimeRequest,
@@ -13,17 +13,11 @@ interface AiSessionResumeTarget {
     id: string;
     name: string;
     session: CodexSession;
-    project?: Project;
-    workspace?: WorkspaceAiSessionActionTarget;
+    workspace: WorkspaceAiSessionActionTarget;
 }
 
 export interface AiSessionResumeTerminal {
     show(): void;
-}
-
-export interface AiSessionResumeTerminalEntry<TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal> {
-    terminal: TTerminal;
-    markerPath: string;
 }
 
 export interface AiSessionResumeProvider {
@@ -40,44 +34,10 @@ export interface AiSessionResumeRuntimeCoordinator<TTerminal> {
     resume(request: AiSessionResumeRuntimeRequest): Promise<AiSessionRuntimeActionResult<TTerminal>>;
 }
 
-export interface AiSessionResumeCreateTerminalOptions {
-    name: string;
-    cwd: string | null;
-    env: Record<string, string>;
-    cwdFailureMessage: string;
-    cwdWarningMessage: string;
-    logError: (message: string, error: unknown) => void;
-}
-
-export interface AiSessionResumeCreateTerminalResult<TTerminal extends AiSessionResumeTerminal> {
-    terminal: TTerminal;
-    cwdAccepted: boolean;
-}
-
-export interface AiSessionResumePendingTerminal<TTerminal extends AiSessionResumeTerminal> {
-    terminal: TTerminal;
-    markerPath: string;
-}
-
-export interface AiSessionResumeTrackEntry<TTerminal extends AiSessionResumeTerminal> {
-    terminal: TTerminal;
-    markerPath: string;
-    runStartedAtMs: number;
-    cwd?: string;
-}
-
 export interface AiSessionResumeControllerCommonOptions {
-    getOpenProjects: () => Project[];
-    getWorkspaceTarget?: (cardId: string) => WorkspaceAiSessionActionTarget | null;
+    getWorkspaceTarget: (cardId: string) => WorkspaceAiSessionActionTarget | null;
     getProvider: (providerId: AiSessionProviderId) => AiSessionResumeProvider | null;
-    getProjectSession: (project: Project, providerId: AiSessionProviderId, sessionId: string) => CodexSession | null | undefined;
-    resolveDirectoryScope: (
-        project: Project,
-        session: CodexSession,
-        providerId: AiSessionProviderId,
-        explicitRootId?: string
-    ) => AiSessionDirectoryScope | null | Thenable<AiSessionDirectoryScope | null> | Promise<AiSessionDirectoryScope | null>;
-    resolveWorkspaceDirectoryScope?: (
+    resolveWorkspaceDirectoryScope: (
         target: WorkspaceAiSessionActionTarget,
         session: CodexSession,
         providerId: AiSessionProviderId,
@@ -111,58 +71,16 @@ export interface AiSessionResumeRuntimeControllerOptions<
     ) => AiSessionRuntimeSnapshot<TTerminal> | null;
 }
 
-export interface AiSessionResumeLegacyControllerOptions<
-    TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal,
-    TEntry extends AiSessionResumeTerminalEntry<TTerminal> = AiSessionResumeTerminalEntry<TTerminal>
-> extends AiSessionResumeControllerCommonOptions {
-    runtimeCoordinator?: undefined;
-    getComparableCwd: (providerId: AiSessionProviderId, session: CodexSession) => string;
-    getUsableTerminalCwd: (cwd: string) => string | null;
-    normalizeProjectPath: (cwd: string) => string | null;
-    getExistingTerminal: (providerId: AiSessionProviderId, session: CodexSession) => TEntry | null;
-    isTerminalComplete: (entry: TEntry) => boolean;
-    beginResume: (providerId: AiSessionProviderId, sessionId: string) => boolean;
-    finishResume: (providerId: AiSessionProviderId, sessionId: string) => void;
-    findPendingTerminalForSession: (
-        providerId: AiSessionProviderId,
-        sessionId: string,
-        cwd: string,
-        updatedAt: string
-    ) => AiSessionResumePendingTerminal<TTerminal> | null;
-    createTerminal: (
-        options: AiSessionResumeCreateTerminalOptions
-    ) => AiSessionResumeCreateTerminalResult<TTerminal>;
-    track: (
-        providerId: AiSessionProviderId,
-        sessionId: string,
-        entry: AiSessionResumeTrackEntry<TTerminal>
-    ) => void;
-    claimPendingTerminal: (terminal: TTerminal) => void;
-    sendResumeCommand: (
-        providerId: AiSessionProviderId,
-        terminal: TTerminal,
-        sessionId: string,
-        scope: AiSessionDirectoryScope,
-        markerPath: string
-    ) => Thenable<void> | Promise<void>;
-    syncActiveTerminal: () => void;
-    logError: (message: string, error: unknown) => void;
-    nowMs: () => number;
-}
-
 export type AiSessionResumeControllerOptions<
-    TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal,
-    TEntry extends AiSessionResumeTerminalEntry<TTerminal> = AiSessionResumeTerminalEntry<TTerminal>
-> = AiSessionResumeRuntimeControllerOptions<TTerminal>
-    | AiSessionResumeLegacyControllerOptions<TTerminal, TEntry>;
+    TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal
+> = AiSessionResumeRuntimeControllerOptions<TTerminal>;
 
 export class AiSessionResumeController<
-    TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal,
-    TEntry extends AiSessionResumeTerminalEntry<TTerminal> = AiSessionResumeTerminalEntry<TTerminal>
+    TTerminal extends AiSessionResumeTerminal = AiSessionResumeTerminal
 > {
-    private readonly options: AiSessionResumeControllerOptions<TTerminal, TEntry>;
+    private readonly options: AiSessionResumeControllerOptions<TTerminal>;
 
-    constructor(options: AiSessionResumeControllerOptions<TTerminal, TEntry>) {
+    constructor(options: AiSessionResumeControllerOptions<TTerminal>) {
         validateControllerOptions(options);
         this.options = options;
     }
@@ -177,18 +95,13 @@ export class AiSessionResumeController<
             return;
         }
 
-        const workspace = this.options.getWorkspaceTarget?.(projectId) || null;
+        const workspace = this.options.getWorkspaceTarget(projectId);
         const workspaceSession = workspace
-            ? (workspace.sessions.sessionsByProvider[providerId] || [])
-                .find(candidate => candidate.id === sessionId)
+            ? (workspace.sessions.sessionsByProvider[providerId] || []).find(candidate => candidate.id === sessionId)
             : null;
-        const project = workspace ? null : this.options.getOpenProjects().find(candidate => candidate.id === projectId);
-        const projectSession = project ? this.options.getProjectSession(project, providerId, sessionId) : null;
         const target: AiSessionResumeTarget | null = workspace && workspaceSession
             ? { id: workspace.cardId, name: workspace.workspace.displayName, session: workspaceSession, workspace }
-            : project && projectSession
-                ? { id: project.id, name: project.name, session: projectSession, project }
-                : null;
+            : null;
         const sessionProvider = this.options.getProvider(providerId);
         if (!target) {
             this.options.showWarningMessage(`Selected ${sessionProvider?.label || 'AI'} session not found.`);
@@ -196,89 +109,14 @@ export class AiSessionResumeController<
         }
 
         const session = target.session;
-        const directoryScope = target.workspace
-            ? await this.options.resolveWorkspaceDirectoryScope?.(
-                target.workspace, session, providerId, explicitRootId
-            )
-            : await this.options.resolveDirectoryScope(
-                target.project, session, providerId, explicitRootId
-            );
+        const directoryScope = await this.options.resolveWorkspaceDirectoryScope(
+            target.workspace, session, providerId, explicitRootId
+        );
         if (!directoryScope || !sessionProvider) {
             return;
         }
 
-        if (isRuntimeOptions(this.options)) {
-            await this.resumeRuntime(
-                target, providerId, sessionProvider, directoryScope, this.options
-            );
-            return;
-        }
-
-        const existingTerminal = this.options.getExistingTerminal(providerId, session);
-        if (existingTerminal && !this.options.isTerminalComplete(existingTerminal)) {
-            existingTerminal.terminal.show();
-            await this.options.showActiveTab(target.id);
-            this.options.refresh();
-            return;
-        }
-
-        if (!this.options.beginResume(providerId, session.id)) {
-            return;
-        }
-        let cwd = this.options.getUsableTerminalCwd(directoryScope.primaryCwd);
-
-        const terminalName = this.options.getTerminalName(providerId, session);
-        let terminal = existingTerminal?.terminal;
-        let usedPendingTerminal = false;
-        const terminalEnv = { [sessionProvider.terminalEnvKey]: session.id };
-        let markerPath = existingTerminal?.markerPath || this.options.getMarkerPath(providerId, session.id);
-
-        try {
-            if (!terminal) {
-                const sessionCwd = this.options.normalizeProjectPath(this.options.getComparableCwd(providerId, session));
-                const pendingTerminal = sessionCwd
-                    ? this.options.findPendingTerminalForSession(providerId, session.id, sessionCwd, session.updatedAt)
-                    : null;
-                if (pendingTerminal) {
-                    terminal = pendingTerminal.terminal;
-                    markerPath = pendingTerminal.markerPath;
-                    usedPendingTerminal = true;
-                } else {
-                    const createResult = this.options.createTerminal({
-                        name: terminalName,
-                        cwd,
-                        env: terminalEnv,
-                        cwdFailureMessage: `Failed to create ${sessionProvider.label} terminal with cwd.`,
-                        cwdWarningMessage: `Could not open the ${sessionProvider.label} terminal at the session directory. Resuming without a working directory.`,
-                        logError: this.options.logError,
-                    });
-                    terminal = createResult.terminal;
-                    if (!createResult.cwdAccepted) {
-                        cwd = null;
-                    }
-                }
-            }
-
-            terminal.show();
-            await this.options.sendResumeCommand(providerId, terminal, session.id, directoryScope, markerPath);
-            await this.options.rememberDirectoryScope?.(directoryScope);
-            if (usedPendingTerminal) {
-                this.options.claimPendingTerminal(terminal);
-            }
-            this.options.track(providerId, session.id, {
-                terminal,
-                markerPath,
-                runStartedAtMs: this.options.nowMs(),
-                cwd: this.options.normalizeProjectPath(
-                    this.options.getComparableCwd(providerId, session)
-                ) || undefined,
-            });
-            this.options.syncActiveTerminal();
-            await this.options.showActiveTab(target.id);
-            this.options.refresh();
-        } finally {
-            this.options.finishResume(providerId, session.id);
-        }
+        await this.resumeRuntime(target, providerId, sessionProvider, directoryScope, this.options);
     }
 
     private async resumeRuntime(
@@ -368,27 +206,13 @@ function cloneLaunchSpec(launch: AiSessionLaunchSpec): AiSessionLaunchSpec {
     };
 }
 
-function isRuntimeOptions<
-    TTerminal extends AiSessionResumeTerminal,
-    TEntry extends AiSessionResumeTerminalEntry<TTerminal>
->(options: AiSessionResumeControllerOptions<TTerminal, TEntry>):
-options is AiSessionResumeRuntimeControllerOptions<TTerminal> {
-    return options.runtimeCoordinator !== undefined;
-}
-
-function validateControllerOptions<
-    TTerminal extends AiSessionResumeTerminal,
-    TEntry extends AiSessionResumeTerminalEntry<TTerminal>
->(options: AiSessionResumeControllerOptions<TTerminal, TEntry>): void {
-    if (options?.getWorkspaceTarget && typeof options.resolveWorkspaceDirectoryScope !== 'function') {
-        throw new Error('AI session workspace resume routing is incomplete.');
-    }
-    if (options?.runtimeCoordinator === undefined) {
-        return;
-    }
-    if (typeof options.runtimeCoordinator.resume !== 'function'
-        || typeof options.resolveDirectoryScope !== 'function'
-        || typeof (options as AiSessionResumeRuntimeControllerOptions<TTerminal>).announceStatus !== 'function') {
+function validateControllerOptions<TTerminal extends AiSessionResumeTerminal>(
+    options: AiSessionResumeControllerOptions<TTerminal>
+): void {
+    if (typeof options?.runtimeCoordinator?.resume !== 'function'
+        || typeof options.getWorkspaceTarget !== 'function'
+        || typeof options.resolveWorkspaceDirectoryScope !== 'function'
+        || typeof options.announceStatus !== 'function') {
         throw new Error('AI session resume runtime controller options are invalid.');
     }
 }

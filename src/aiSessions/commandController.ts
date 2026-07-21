@@ -2,7 +2,7 @@
 
 import type * as vscode from 'vscode';
 
-import type { AiSessionProviderId, CodexSession, Project } from '../models';
+import type { AiSessionProviderId, CodexSession } from '../models';
 import type {
     ProviderDirectoryCapabilityProvider,
     ProviderDirectoryCapabilityResult,
@@ -127,15 +127,7 @@ export async function preflightAiSessionDirectoryScope(
 }
 
 export interface AiSessionCommandControllerOptions {
-    getOpenProjects: () => Project[];
-    getWorkspaceTarget?: (cardId: string) => WorkspaceAiSessionActionTarget | null;
-    getProjectKey: (project: Project) => string;
-    resolveDirectoryScope?: (
-        project: Project,
-        providerId: AiSessionProviderId,
-        session?: CodexSession,
-        explicitRootId?: string
-    ) => AiSessionDirectoryScope | null | Thenable<AiSessionDirectoryScope | null> | Promise<AiSessionDirectoryScope | null>;
+    getWorkspaceTarget: (cardId: string) => WorkspaceAiSessionActionTarget | null;
     getOpenWorkspace?: () => OpenWorkspace | null;
     getActiveEditorUri?: () => ActiveEditorUri | string | null;
     isWorkspaceTrusted?: () => boolean;
@@ -154,8 +146,8 @@ export interface AiSessionCommandControllerOptions {
     isDirectory?: (hostPath: string) => boolean;
     showWarningMessage?: (message: string) => unknown;
     isProviderId: (value: string) => value is AiSessionProviderId;
-    setExpanded: (projectKey: string, expanded: boolean) => Thenable<unknown>;
-    setActiveProvider: (projectKey: string, providerId: AiSessionProviderId) => Thenable<unknown>;
+    setExpanded: (workspaceScopeIdentity: string, expanded: boolean) => Thenable<unknown>;
+    setActiveProvider: (workspaceScopeIdentity: string, providerId: AiSessionProviderId) => Thenable<unknown>;
     togglePin: (providerId: AiSessionProviderId, sessionId: string) => boolean;
     getAliases: () => Record<string, string>;
     saveAliases: (aliases: Record<string, string>) => unknown;
@@ -169,36 +161,6 @@ export interface AiSessionCommandControllerOptions {
 
 export class AiSessionCommandController {
     constructor(private readonly options: AiSessionCommandControllerOptions) {
-    }
-
-    async resolveDirectoryScope(
-        project: Project,
-        providerId: AiSessionProviderId,
-        session?: CodexSession,
-        explicitRootId?: string
-    ): Promise<AiSessionDirectoryScope | null> {
-        if (this.options.resolveDirectoryScope) {
-            return this.options.resolveDirectoryScope(project, providerId, session, explicitRootId);
-        }
-        const workspace = this.options.getOpenWorkspace?.() || null;
-        const result = await preflightAiSessionDirectoryScope({
-            workspace,
-            provider: this.options.getProvider?.(providerId) || null,
-            action: session ? 'resume' : 'create',
-            isWorkspaceTrusted: this.options.isWorkspaceTrusted?.() === true,
-            getProviderDirectoryCapability: this.options.getProviderDirectoryCapability,
-            isDirectory: this.options.isDirectory,
-            pickWorkspaceRoot: this.options.pickWorkspaceRoot,
-            activeEditorUri: this.options.getActiveEditorUri?.(),
-            explicitRootId,
-            historicalCwd: session?.cwd || session?.workDir,
-            lastUsedRootId: workspace ? this.options.getPrimaryRootId?.(workspace) : null,
-        });
-        if (result.status === 'blocked') {
-            this.options.showWarningMessage?.(result.message);
-            return null;
-        }
-        return result.status === 'ready' ? result.directoryScope : null;
     }
 
     async resolveWorkspaceDirectoryScope(
@@ -238,17 +200,11 @@ export class AiSessionCommandController {
     }
 
     async toggleSessionsExpanded(projectId: string, expanded: boolean): Promise<void> {
-        const workspaceTarget = this.options.getWorkspaceTarget?.(projectId);
-        if (workspaceTarget) {
-            await this.options.setExpanded(workspaceTarget.workspace.scopeIdentity, expanded);
+        const workspaceTarget = this.options.getWorkspaceTarget(projectId);
+        if (!workspaceTarget) {
             return;
         }
-        const project = this.options.getOpenProjects().find(p => p.id === projectId);
-        if (!project) {
-            return;
-        }
-
-        await this.options.setExpanded(this.options.getProjectKey(project), expanded);
+        await this.options.setExpanded(workspaceTarget.workspace.scopeIdentity, expanded);
     }
 
     async selectProvider(projectId: string, providerId: string): Promise<void> {
@@ -256,18 +212,11 @@ export class AiSessionCommandController {
             return;
         }
 
-        const workspaceTarget = this.options.getWorkspaceTarget?.(projectId);
-        if (workspaceTarget) {
-            await this.options.setActiveProvider(workspaceTarget.workspace.scopeIdentity, providerId);
-            this.options.refresh();
+        const workspaceTarget = this.options.getWorkspaceTarget(projectId);
+        if (!workspaceTarget) {
             return;
         }
-        const project = this.options.getOpenProjects().find(p => p.id === projectId);
-        if (!project) {
-            return;
-        }
-
-        await this.options.setActiveProvider(this.options.getProjectKey(project), providerId);
+        await this.options.setActiveProvider(workspaceTarget.workspace.scopeIdentity, providerId);
         this.options.refresh();
     }
 

@@ -1,6 +1,6 @@
 'use strict';
 
-import type { AiSessionProviderId, CodexSession, Project } from '../models';
+import type { AiSessionProviderId, CodexSession } from '../models';
 import type { WorkspaceAiSessionActionTarget } from './types';
 import {
     archiveBatchAiSessionItem,
@@ -31,10 +31,7 @@ export interface AiSessionArchiveControllerOptions<TRuntime extends AiSessionArc
     isProviderId: (value: string) => value is AiSessionProviderId;
     getProvider: (providerId: AiSessionProviderId) => AiSessionArchiveProvider;
     getProviderLabel: (providerId: AiSessionProviderId) => string;
-    getOpenProjects: () => Project[];
-    getWorkspaceTarget?: (cardId: string) => WorkspaceAiSessionActionTarget | null;
-    getLegacyArchiveProject?: (projectId: string) => Project | null;
-    getProjectSessions: (project: Project, providerId: AiSessionProviderId) => CodexSession[];
+    getWorkspaceTarget: (cardId: string) => WorkspaceAiSessionActionTarget | null;
     getRuntimeById: (providerId: AiSessionProviderId, sessionId: string) => TRuntime | null;
     refreshRuntimeGuard?: (providerId?: AiSessionProviderId, sessionId?: string) => Promise<void>;
     isRuntimeComplete: (runtime: TRuntime) => boolean;
@@ -137,30 +134,20 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
         providerId: AiSessionProviderId,
         sessionId: string
     ): SingleArchiveAuthorization | null {
-        if (this.options.getWorkspaceTarget) {
-            const target = this.options.getWorkspaceTarget(projectId);
-            if (!target
-                || target.cardId !== projectId
-                || target.sessions.workspaceScopeIdentity !== target.workspace.scopeIdentity
-                || target.sessions.workspaceNavigationIdentity !== target.workspace.navigationIdentity
-                || !(target.sessions.sessionsByProvider[providerId] || [])
-                    .some(session => session.id === sessionId)) {
-                return null;
-            }
-            return {
-                kind: 'workspace',
-                projectId,
-                workspaceScopeIdentity: target.workspace.scopeIdentity,
-                workspaceNavigationIdentity: target.workspace.navigationIdentity,
-            };
-        }
-
-        const project = this.options.getLegacyArchiveProject?.(projectId) || null;
-        if (!project || !(this.options.getProjectSessions(project, providerId) || [])
-            .some(session => session.id === sessionId)) {
+        const target = this.options.getWorkspaceTarget(projectId);
+        if (!target
+            || target.cardId !== projectId
+            || target.sessions.workspaceScopeIdentity !== target.workspace.scopeIdentity
+            || target.sessions.workspaceNavigationIdentity !== target.workspace.navigationIdentity
+            || !(target.sessions.sessionsByProvider[providerId] || [])
+                .some(session => session.id === sessionId)) {
             return null;
         }
-        return { kind: 'legacy', projectId };
+        return {
+            projectId,
+            workspaceScopeIdentity: target.workspace.scopeIdentity,
+            workspaceNavigationIdentity: target.workspace.navigationIdentity,
+        };
     }
 
     private isSingleArchiveAuthorizationCurrent(
@@ -171,7 +158,6 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
     ): boolean {
         const current = this.resolveSingleArchiveAuthorization(projectId, providerId, sessionId);
         return !!current
-            && current.kind === authorization.kind
             && current.projectId === authorization.projectId
             && current.workspaceScopeIdentity === authorization.workspaceScopeIdentity
             && current.workspaceNavigationIdentity === authorization.workspaceNavigationIdentity;
@@ -222,25 +208,18 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
                 if (workspaceSessions) {
                     return { id: requestedProjectId, activeAiSessionProvider: validProviderId };
                 }
-                return validProviderId
-                    ? this.options.getOpenProjects().find(candidate => candidate.id === requestedProjectId)
-                    : null;
+                return null;
             },
             getProjectSessions: project => {
                 const workspaceSessions = getWorkspaceSessions();
-                return workspaceSessions || (validProviderId
-                    ? this.options.getProjectSessions(project as Project, validProviderId)
-                    : []);
+                return workspaceSessions || [];
             },
             resolveCurrentSessions: () => {
                 const workspaceSessions = getWorkspaceSessions();
                 if (workspaceSessions) {
                     return workspaceSessions;
                 }
-                const currentProject = this.options.getOpenProjects().find(candidate => candidate.id === projectId);
-                return currentProject && validProviderId && currentProject.activeAiSessionProvider === validProviderId
-                    ? this.options.getProjectSessions(currentProject, validProviderId)
-                    : [];
+                return [];
             },
             archiveSession: sessionId => validProviderId ? this.archiveSessionItem(validProviderId, sessionId) : 'failed',
             confirm: async confirmation => {
@@ -363,8 +342,7 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
 }
 
 interface SingleArchiveAuthorization {
-    kind: 'workspace' | 'legacy';
     projectId: string;
-    workspaceScopeIdentity?: string;
-    workspaceNavigationIdentity?: string;
+    workspaceScopeIdentity: string;
+    workspaceNavigationIdentity: string;
 }

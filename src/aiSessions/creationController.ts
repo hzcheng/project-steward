@@ -2,7 +2,7 @@
 
 import type * as vscode from 'vscode';
 
-import type { AiSessionProviderId, Project } from '../models';
+import type { AiSessionProviderId } from '../models';
 import { sanitizeAiSessionAlias } from './aliasStore';
 import type { AiSessionLaunchSpec } from './launchSpec';
 import { isValidAiSessionRuntimeIdentityId } from './runtimeTypes';
@@ -10,7 +10,6 @@ import type {
     AiSessionCreateRuntimeRequest,
     AiSessionPendingRuntimeSnapshot,
     AiSessionRuntimeActionResult,
-    AiSessionRuntimeIdentity,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
 import type { AiSessionDirectoryScope, WorkspaceAiSessionActionTarget } from './types';
@@ -18,8 +17,7 @@ import type { AiSessionDirectoryScope, WorkspaceAiSessionActionTarget } from './
 interface AiSessionCreationTarget {
     id: string;
     name: string;
-    project?: Project;
-    workspace?: WorkspaceAiSessionActionTarget;
+    workspace: WorkspaceAiSessionActionTarget;
 }
 
 export interface NewAiSessionFields {
@@ -36,21 +34,6 @@ export interface AiSessionCreationProvider {
     ) => AiSessionLaunchSpec;
 }
 
-export interface CreatedAiSessionTerminal {
-    terminal: vscode.Terminal;
-}
-
-export interface PendingAiSessionTerminal {
-    provider: AiSessionProviderId;
-    terminal: vscode.Terminal;
-    markerPath: string;
-    cwd: string;
-    createdAt: string;
-    excludedSessionIds: string[];
-    title?: string;
-    runtimeIdentity?: AiSessionRuntimeIdentity;
-}
-
 export interface AiSessionCreationRuntimeCoordinator {
     create(request: AiSessionCreateRuntimeRequest): Promise<AiSessionRuntimeActionResult<vscode.Terminal>>;
     getActive(): AiSessionRuntimeSnapshot<vscode.Terminal>[];
@@ -59,17 +42,11 @@ export interface AiSessionCreationRuntimeCoordinator {
 
 export interface AiSessionCreationControllerCommonOptions {
     isProviderId: (value: string) => value is AiSessionProviderId;
-    getOpenProjects: () => Project[];
-    getWorkspaceTarget?: (cardId: string) => WorkspaceAiSessionActionTarget | null;
+    getWorkspaceTarget: (cardId: string) => WorkspaceAiSessionActionTarget | null;
     pickProvider: () => Thenable<AiSessionProviderId | undefined>;
     getProviderLabel: (providerId: AiSessionProviderId) => string;
     getProvider: (providerId: AiSessionProviderId) => AiSessionCreationProvider;
-    resolveDirectoryScope: (
-        project: Project,
-        providerId: AiSessionProviderId,
-        explicitRootId?: string
-    ) => AiSessionDirectoryScope | null | Thenable<AiSessionDirectoryScope | null> | Promise<AiSessionDirectoryScope | null>;
-    resolveWorkspaceDirectoryScope?: (
+    resolveWorkspaceDirectoryScope: (
         target: WorkspaceAiSessionActionTarget,
         providerId: AiSessionProviderId,
         explicitRootId?: string
@@ -99,27 +76,7 @@ export interface AiSessionCreationRuntimeControllerOptions extends AiSessionCrea
     announceStatus: (projectId: string, message: string) => Thenable<unknown> | Promise<unknown>;
 }
 
-export interface AiSessionCreationLegacyControllerOptions extends AiSessionCreationControllerCommonOptions {
-    runtimeCoordinator?: undefined;
-    getUsableTerminalCwd: (cwd: string) => string | null;
-    createTerminal: (options: {
-        name: string;
-        cwd: string | null;
-        cwdFailureMessage: string;
-        cwdWarningMessage: string;
-    }) => CreatedAiSessionTerminal;
-    trackPendingTerminal: (pending: PendingAiSessionTerminal) => void;
-    sendNewSessionCommand: (
-        providerId: AiSessionProviderId,
-        terminal: vscode.Terminal,
-        scope: AiSessionDirectoryScope,
-        title: string,
-        markerPath: string
-    ) => Thenable<unknown>;
-}
-
-export type AiSessionCreationControllerOptions = AiSessionCreationRuntimeControllerOptions
-    | AiSessionCreationLegacyControllerOptions;
+export type AiSessionCreationControllerOptions = AiSessionCreationRuntimeControllerOptions;
 
 export class AiSessionCreationController {
     private creating = false;
@@ -134,13 +91,12 @@ export class AiSessionCreationController {
         if (this.creating) {
             return;
         }
-        const workspace = this.options.getWorkspaceTarget?.(projectId) || null;
-        const project = workspace ? null : this.options.getOpenProjects().find(p => p.id === projectId);
+        const workspace = this.options.getWorkspaceTarget(projectId);
         const target: AiSessionCreationTarget | null = workspace
             ? { id: workspace.cardId, name: workspace.workspace.displayName, workspace }
-            : project ? { id: project.id, name: project.name, project } : null;
+            : null;
         if (!target) {
-            await this.options.showWarningMessage('Open project not found.');
+            await this.options.showWarningMessage('Open workspace not found.');
             return;
         }
         this.creating = true;
@@ -181,46 +137,13 @@ export class AiSessionCreationController {
         fields: NewAiSessionFields,
         explicitRootId?: string
     ): Promise<void> {
-        const directoryScope = target.workspace
-            ? await this.options.resolveWorkspaceDirectoryScope?.(target.workspace, providerId, explicitRootId)
-            : await this.options.resolveDirectoryScope(target.project, providerId, explicitRootId);
+        const directoryScope = await this.options.resolveWorkspaceDirectoryScope(
+            target.workspace, providerId, explicitRootId
+        );
         if (!directoryScope) {
             return;
         }
-        if (isRuntimeOptions(this.options)) {
-            await this.createRuntimeSession(providerId, target, fields, directoryScope, this.options);
-            return;
-        }
-
-        const sessionProvider = this.options.getProvider(providerId);
-        const cwd = this.options.getUsableTerminalCwd(directoryScope.primaryCwd);
-        const pendingTerminalCwd = directoryScope.primaryCwd;
-        const terminalName = `${sessionProvider.terminalNamePrefix}: ${target.name || 'New Session'}`;
-        const terminal = this.options.createTerminal({
-            name: terminalName,
-            cwd,
-            cwdFailureMessage: `Failed to create ${sessionProvider.label} terminal with cwd.`,
-            cwdWarningMessage: `Could not open the ${sessionProvider.label} terminal at the project directory. Starting without a working directory.`,
-        }).terminal;
-        const existingSessionIds = this.options.getExistingSessionIdsForCwd(providerId, pendingTerminalCwd);
-        const createdAt = new Date(this.options.nowMs()).toISOString();
-        const markerPath = this.options.getPendingMarkerPath(providerId);
-        this.options.trackPendingTerminal({
-            provider: providerId,
-            terminal,
-            markerPath,
-            cwd: pendingTerminalCwd,
-            createdAt,
-            excludedSessionIds: existingSessionIds,
-            title: fields.title,
-        });
-
-        await this.options.showActiveTab(target.id);
-        this.options.refresh();
-        terminal.show();
-        await this.options.sendNewSessionCommand(providerId, terminal, directoryScope, fields.title, markerPath);
-        await this.options.rememberDirectoryScope?.(directoryScope);
-        this.options.scheduleNewSessionRefresh(providerId);
+        await this.createRuntimeSession(providerId, target, fields, directoryScope, this.options);
     }
 
     private async createRuntimeSession(
@@ -316,27 +239,15 @@ function cloneLaunchSpec(launch: AiSessionLaunchSpec): AiSessionLaunchSpec {
     };
 }
 
-function isRuntimeOptions(
-    options: AiSessionCreationControllerOptions
-): options is AiSessionCreationRuntimeControllerOptions {
-    return options.runtimeCoordinator !== undefined;
-}
-
 function validateControllerOptions(options: AiSessionCreationControllerOptions): void {
-    if (options?.getWorkspaceTarget && typeof options.resolveWorkspaceDirectoryScope !== 'function') {
-        throw new Error('AI session workspace creation routing is incomplete.');
-    }
-    if (options?.runtimeCoordinator === undefined) {
-        return;
-    }
-    const runtimeOptions = options as AiSessionCreationRuntimeControllerOptions;
-    const coordinator = runtimeOptions.runtimeCoordinator;
+    const coordinator = options?.runtimeCoordinator;
     if (typeof coordinator.create !== 'function'
         || typeof coordinator.getActive !== 'function'
         || typeof coordinator.getPending !== 'function'
-        || typeof runtimeOptions.resolveDirectoryScope !== 'function'
-        || typeof runtimeOptions.createPendingId !== 'function'
-        || typeof runtimeOptions.announceStatus !== 'function') {
+        || typeof options.getWorkspaceTarget !== 'function'
+        || typeof options.resolveWorkspaceDirectoryScope !== 'function'
+        || typeof options.createPendingId !== 'function'
+        || typeof options.announceStatus !== 'function') {
         throw new Error('AI session creation runtime controller options are invalid.');
     }
 }

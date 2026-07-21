@@ -14,7 +14,6 @@ export interface ProjectDetailsForSave {
 
 export interface ProjectMutationControllerOptions {
     getCurrentWorkspacePath: () => string;
-    getOpenProjectUri: (projectId: string) => vscode.Uri | null;
     getCurrentProjectDetailsForSave: () => Promise<ProjectDetailsForSave | null>;
     getProjectDetailsForSave: (uri: vscode.Uri) => Promise<ProjectDetailsForSave | null>;
     getProjectsFlat: () => Project[];
@@ -60,16 +59,6 @@ export class ProjectMutationController {
         }
 
         this.options.refreshAfterMutation();
-    }
-
-    async saveOpenProject(projectId: string): Promise<void> {
-        const uri = this.options.getOpenProjectUri(projectId);
-        if (uri === null) {
-            this.options.showWarningMessage('Selected Project not found.');
-            return;
-        }
-
-        await this.saveProject(null, false, await this.options.getProjectDetailsForSave(uri));
     }
 
     async saveWorkspaceProject(projectDetails: ProjectDetailsForSave | null): Promise<void> {

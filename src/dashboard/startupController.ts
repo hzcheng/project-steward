@@ -33,7 +33,7 @@ export interface DashboardStartupControllerOptions {
     isExtensionInstalled: (extensionId: string) => boolean;
     migrateDataIfNeeded: () => Promise<DashboardMigrationResult>;
     refreshDashboard: () => unknown;
-    publishOpenProjects: () => void;
+    publishOpenWorkspace: () => void;
     showInformationMessage: (message: string) => unknown;
     showErrorMessage: (message: string) => unknown;
     logError: (message: string, error: unknown) => unknown;
@@ -69,7 +69,7 @@ export class DashboardStartupController {
         }
 
         await this.options.refreshDashboard();
-        this.options.publishOpenProjects();
+        this.options.publishOpenWorkspace();
         this.options.showInformationMessage('Migrated Project Steward projects after changing settings.');
 
         if (openStewardAfterMigrate) {
