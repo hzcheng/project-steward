@@ -10,15 +10,13 @@ export type DashboardAiSessionLaunchMessageHandler = (
     rootId: string | null
 ) => DashboardMessageHandlerResult;
 export type DashboardAiSessionCreateMessageHandler = (
-    message: DashboardMessage,
-    rootId: string | null
+    message: DashboardMessage
 ) => DashboardMessageHandlerResult;
 
 export interface DashboardMessageHandlers {
     handlers: Record<string, DashboardMessageHandler>;
     getAiSessionProviderIds?: () => readonly string[];
     createAiSession?: DashboardAiSessionCreateMessageHandler;
-    newSessionIn?: DashboardAiSessionCreateMessageHandler;
     resumeAiSession?: DashboardAiSessionLaunchMessageHandler;
     archiveAiSession?: DashboardAiSessionMessageHandler;
     saveCurrentWorkspace?: DashboardMessageHandler;
@@ -36,15 +34,7 @@ export function createDashboardMessageRouter(handlers: DashboardMessageHandlers)
         }
 
         if (messageType === 'create-ai-session' && handlers.createAiSession) {
-            await handlers.createAiSession(message, null);
-            return;
-        }
-
-        if (messageType === 'new-session-in') {
-            const rootId = getWorkspaceRootIdFromMessage(message);
-            if (rootId && handlers.newSessionIn) {
-                await handlers.newSessionIn(message, rootId);
-            }
+            await handlers.createAiSession(message);
             return;
         }
 

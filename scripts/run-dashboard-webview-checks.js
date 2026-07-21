@@ -524,7 +524,9 @@ function runWorkspaceCardRenderingChecks() {
     assert.strictEqual(multiHtml.includes('class="workspace-root-tag"'), false);
     assert.ok(multiHtml.includes('data-primary-root-id="root-api"'));
     assert.ok(multiHtml.includes('class="ai-session-root-chip"'));
-    assert.ok(multiHtml.includes('data-action="new-session-in"'));
+    assert.ok(multiHtml.includes('data-action="create-ai-session"'));
+    assert.strictEqual(multiHtml.includes('data-action="open-new-session-in"'), false);
+    assert.strictEqual(multiHtml.includes('data-action="new-session-in"'), false);
     assert.strictEqual(multiHtml.includes('data-action="selected-project"'), false);
     assert.strictEqual(multiHtml.includes('data-project-navigation'), false);
     assert.strictEqual(multiHtml.includes('data-has-save-action'), false);
@@ -664,8 +666,9 @@ function runWorkspaceCardRenderingChecks() {
     assert.strictEqual(updateRequiredOtherHtml.includes('class="codex-sessions"'), false,
         'the bridge mismatch state must not create a session expander');
     assert.ok(updateRequiredCurrentHtml.includes('data-current-workspace'));
-    assert.ok(updateRequiredCurrentHtml.includes('data-action="new-session-in"'),
-        'the local current workspace actions must remain enabled during bridge degradation');
+    assert.ok(updateRequiredCurrentHtml.includes('data-action="create-ai-session"'),
+        'the local current workspace NEW action must remain enabled during bridge degradation');
+    assert.strictEqual(updateRequiredCurrentHtml.includes('data-action="new-session-in"'), false);
 
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const consistencyBody = extractFunctionBody(projectSource, 'isWorkspaceUpdateDomConsistent');
@@ -4960,11 +4963,8 @@ async function runDashboardMessageRouterChecks() {
                 calls.push(['selected-project', message.projectId]);
             },
         },
-        createAiSession: (message, rootId) => {
-            calls.push(['create-ai-session', message.projectId, rootId]);
-        },
-        newSessionIn: (message, rootId) => {
-            calls.push(['new-session-in', message.projectId, rootId]);
+        createAiSession: message => {
+            calls.push(['create-ai-session', message.projectId]);
         },
         resumeAiSession: (message, providerId, rootId) => {
             calls.push(['resume-ai-session', providerId, message.sessionId, rootId]);
@@ -5001,8 +5001,7 @@ async function runDashboardMessageRouterChecks() {
         ['request-projects-panel', 7],
         ['request-todo-panel', 8],
         ['selected-project', 'project-a'],
-        ['create-ai-session', 'workspace-a', null],
-        ['new-session-in', 'workspace-a', 'root-api'],
+        ['create-ai-session', 'workspace-a'],
         ['resume-ai-session', 'codex', 'c1', null],
         ['resume-ai-session', 'codex', 'c2', 'root-web'],
         ['resume-ai-session', null, 'invalid', null],
@@ -5023,16 +5022,6 @@ async function runDashboardMessageRouterChecks() {
     assert.deepStrictEqual(genericSaveCalls, [],
         'workspace save messages must remain reserved routes when their dedicated handler is unavailable');
 
-    const genericNewSessionCalls = [];
-    const routerWithoutNewSessionHandler = routerModule.createDashboardMessageRouter({
-        handlers: {
-            'new-session-in': message => genericNewSessionCalls.push(message.rootId),
-        },
-    });
-    await routerWithoutNewSessionHandler({ type: 'new-session-in', projectId: 'workspace-a' });
-    await routerWithoutNewSessionHandler({ type: 'new-session-in', projectId: 'workspace-a', rootId: 'root-api' });
-    assert.deepStrictEqual(genericNewSessionCalls, [],
-        'new-session-in must remain a validated reserved route when its dedicated handler is unavailable');
 }
 
 async function main() {

@@ -43,6 +43,9 @@ export interface AiSessionCreationRuntimeCoordinator {
 export interface AiSessionCreationControllerCommonOptions {
     isProviderId: (value: string) => value is AiSessionProviderId;
     getWorkspaceTarget: (cardId: string) => WorkspaceAiSessionActionTarget | null;
+    pickWorkspaceRoot: (
+        workspace: WorkspaceAiSessionActionTarget['workspace']
+    ) => Thenable<string | undefined> | Promise<string | undefined>;
     pickProvider: () => Thenable<AiSessionProviderId | undefined>;
     getProviderLabel: (providerId: AiSessionProviderId) => string;
     getProvider: (providerId: AiSessionProviderId) => AiSessionCreationProvider;
@@ -87,7 +90,7 @@ export class AiSessionCreationController {
         this.options = options;
     }
 
-    async createSession(projectId: string, explicitRootId?: string): Promise<void> {
+    async createSession(projectId: string): Promise<void> {
         if (this.creating) {
             return;
         }
@@ -101,6 +104,13 @@ export class AiSessionCreationController {
         }
         this.creating = true;
         try {
+            let explicitRootId: string | undefined;
+            if (target.workspace.workspace.roots.length > 1) {
+                explicitRootId = await this.options.pickWorkspaceRoot(target.workspace.workspace);
+                if (!explicitRootId) {
+                    return;
+                }
+            }
             const providerId = await this.options.pickProvider();
             if (!providerId || !this.options.isProviderId(providerId)) {
                 return;
@@ -245,6 +255,7 @@ function validateControllerOptions(options: AiSessionCreationControllerOptions):
         || typeof coordinator.getActive !== 'function'
         || typeof coordinator.getPending !== 'function'
         || typeof options.getWorkspaceTarget !== 'function'
+        || typeof options.pickWorkspaceRoot !== 'function'
         || typeof options.resolveWorkspaceDirectoryScope !== 'function'
         || typeof options.createPendingId !== 'function'
         || typeof options.announceStatus !== 'function') {

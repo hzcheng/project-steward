@@ -462,6 +462,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         resolveExecutable: commandName => resolveAiProviderExecutable(commandName),
         run: (executable, args, options) => runBoundedAiProviderHelp(executable, args, options),
     }, message => outputChannel.appendLine(message));
+    const pickAiSessionWorkspaceRoot = async (
+        workspace: OpenWorkspace,
+        action: 'create' | 'resume'
+    ): Promise<string | undefined> => {
+        const selected = await vscode.window.showQuickPick(
+            workspace.roots.map(root => ({
+                label: root.name,
+                description: root.hostPath,
+                rootId: root.id,
+            })),
+            {
+                placeHolder: 'Select a workspace root',
+                ignoreFocusOut: true,
+                title: action === 'resume'
+                    ? 'Resume AI Session in Workspace Root'
+                    : 'New AI Session Working Directory',
+            } as vscode.QuickPickOptions & { title: string }
+        );
+        return selected?.rootId;
+    };
     const aiSessionCommandController = new AiSessionCommandController({
         getWorkspaceTarget: getCurrentWorkspaceActionTarget,
         getOpenWorkspace: getCurrentOpenWorkspace,
@@ -478,23 +498,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ),
         setPrimaryRootId: (scopeIdentity, rootId) =>
             workspacePrimaryRootStore.setPrimaryRootId(scopeIdentity, rootId),
-        pickWorkspaceRoot: async (workspace, action) => {
-            const selected = await vscode.window.showQuickPick(
-                workspace.roots.map(root => ({
-                    label: root.name,
-                    description: root.hostPath,
-                    rootId: root.id,
-                })),
-                {
-                    placeHolder: 'Select a workspace root',
-                    ignoreFocusOut: true,
-                    title: action === 'resume'
-                        ? 'Resume AI Session in Workspace Root'
-                        : 'New AI Session in Workspace Root',
-                } as vscode.QuickPickOptions & { title: string }
-            );
-            return selected?.rootId;
-        },
+        pickWorkspaceRoot: pickAiSessionWorkspaceRoot,
         isDirectory: hostPath => {
             try {
                 return statSync(hostPath).isDirectory();
@@ -552,6 +556,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const aiSessionCreationController = new AiSessionCreationController({
         isProviderId: isAiSessionProviderId,
         getWorkspaceTarget: getCurrentWorkspaceActionTarget,
+        pickWorkspaceRoot: workspace => pickAiSessionWorkspaceRoot(workspace, 'create'),
         pickProvider: pickAiSessionProvider,
         getProviderLabel: getAiSessionProviderLabel,
         getProvider: getRegisteredAiSessionProvider,
@@ -1239,11 +1244,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             // Collapse-all is a per-webview convenience action.
             'toggle-all-groups': () => undefined,
         },
-        createAiSession: async (e, rootId) => {
-            await aiSessionCreationController.createSession(
-                e.projectId as string,
-                rootId || undefined
-            );
+        createAiSession: async e => {
+            await aiSessionCreationController.createSession(e.projectId as string);
         },
         resumeAiSession: async (e, providerId, rootId) => {
             await aiSessionResumeController.resumeProjectSession(

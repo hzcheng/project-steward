@@ -1708,6 +1708,100 @@ function runAiSessionProviderAvailabilityChecks() {
     ), true);
 }
 
+async function runWorkspaceCreationDirectoryFirstChecks() {
+    const workspace = {
+        displayName: 'Workspace A',
+        navigationIdentity: 'navigation-a',
+        scopeIdentity: 'scope-a',
+        roots: [
+            { id: 'root-web', name: 'Web', hostPath: '/work/web', ordinal: 0 },
+            { id: 'root-api', name: 'API', hostPath: '/work/api', ordinal: 1 },
+        ],
+    };
+    const target = {
+        cardId: 'workspace-a',
+        workspace,
+        sessions: { sessionsByProvider: {} },
+    };
+    const events = [];
+    const requests = [];
+    let pickerResult = 'root-api';
+    const creation = new AiSessionCreationController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        pickWorkspaceRoot: async selectedWorkspace => {
+            assert.strictEqual(selectedWorkspace, workspace);
+            events.push('root');
+            return pickerResult;
+        },
+        pickProvider: async () => {
+            events.push('provider');
+            return 'codex';
+        },
+        getProviderLabel: () => 'Codex',
+        getProvider: () => ({
+            label: 'Codex',
+            terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: scope => ({
+                executable: 'codex', args: [], cwd: scope.primaryCwd,
+            }),
+        }),
+        resolveWorkspaceDirectoryScope: async (_resolved, _providerId, rootId) => {
+            events.push(`scope:${rootId || 'implicit'}`);
+            const selectedRoot = workspace.roots.find(root => root.id === rootId) || workspace.roots[0];
+            return {
+                workspaceNavigationIdentity: workspace.navigationIdentity,
+                workspaceScopeIdentity: workspace.scopeIdentity,
+                workspaceRootHostPaths: workspace.roots.map(root => root.hostPath),
+                primaryRootId: selectedRoot.id,
+                primaryCwd: selectedRoot.hostPath,
+                additionalDirectories: workspace.roots
+                    .filter(root => root.id !== selectedRoot.id)
+                    .map(root => root.hostPath),
+            };
+        },
+        runtimeCoordinator: {
+            create: async request => {
+                requests.push(request);
+                return { status: 'started', runtime: {} };
+            },
+            getActive: () => [],
+            getPending: () => [],
+        },
+        createPendingId: () => `pending-directory-first-${requests.length}`,
+        showInputBox: async () => {
+            events.push('title');
+            return '';
+        },
+        showActiveTab: async () => undefined,
+        announceStatus: async () => undefined,
+        showWarningMessage: async () => undefined,
+        refresh: () => undefined,
+        getExistingSessionIdsForCwd: () => [],
+        getPendingMarkerPath: () => '/tmp/directory-first.marker',
+        scheduleNewSessionRefresh: () => undefined,
+        nowMs: () => 1,
+    });
+
+    await creation.createSession(target.cardId);
+    assert.deepStrictEqual(events, ['root', 'provider', 'title', 'scope:root-api']);
+    assert.strictEqual(requests[0].directoryScope.primaryRootId, 'root-api');
+
+    events.length = 0;
+    pickerResult = undefined;
+    await creation.createSession(target.cardId);
+    assert.deepStrictEqual(events, ['root'],
+        'cancelling the workspace root picker must stop before provider and title prompts');
+    assert.strictEqual(requests.length, 1);
+
+    events.length = 0;
+    workspace.roots = [workspace.roots[0]];
+    await creation.createSession(target.cardId);
+    assert.deepStrictEqual(events, ['provider', 'title', 'scope:implicit'],
+        'single-folder creation must skip the workspace root picker');
+    assert.strictEqual(requests[1].directoryScope.primaryRootId, 'root-web');
+}
+
 async function runWorkspaceScopeControllerLaunchChecks() {
     const workspaceTarget = {
         cardId: 'workspace-a',
@@ -1739,6 +1833,7 @@ async function runWorkspaceScopeControllerLaunchChecks() {
         const creation = new AiSessionCreationController({
             isProviderId: value => value === providerId,
             getWorkspaceTarget: cardId => cardId === workspaceTarget.cardId ? workspaceTarget : null,
+            pickWorkspaceRoot: async () => undefined,
             pickProvider: async () => providerId,
             getProviderLabel: () => providerId,
             getProvider: () => ({
@@ -1929,9 +2024,11 @@ async function runWorkspaceLaunchPreflightControllerChecks() {
     const markerRequests = [];
     let createResult = { status: 'started', runtime: {} };
     let createError = null;
+    let creationRootId = 'root-api';
     const creation = new AiSessionCreationController({
         isProviderId: value => value === 'codex',
         getWorkspaceTarget: cardId => cardId === workspaceTarget.cardId ? workspaceTarget : null,
+        pickWorkspaceRoot: async () => creationRootId,
         pickProvider: async () => 'codex',
         getProviderLabel: () => 'Codex',
         getProvider: () => ({
@@ -1984,18 +2081,20 @@ async function runWorkspaceLaunchPreflightControllerChecks() {
     assert.strictEqual(createScopes[0], createRequests[0].directoryScope);
     assert.deepStrictEqual(primaryRootWrites, [[workspace.scopeIdentity, activeEditorScope.primaryRootId]]);
 
-    await creation.createSession(workspaceTarget.cardId, 'root-web');
+    creationRootId = 'root-web';
+    await creation.createSession(workspaceTarget.cardId);
     assert.strictEqual(createRequests[1].directoryScope.primaryRootId, 'root-web');
     assert.deepStrictEqual(primaryRootWrites[1], [workspace.scopeIdentity, 'root-web']);
 
     createResult = { status: 'focused', runtime: {} };
-    await creation.createSession(workspaceTarget.cardId, 'root-api');
+    creationRootId = 'root-api';
+    await creation.createSession(workspaceTarget.cardId);
     assert.strictEqual(primaryRootWrites.length, 2,
         'focusing an existing runtime must not persist a scope that was not launched');
     createResult = { status: 'started', runtime: {} };
 
     createError = new Error('launch failed');
-    await creation.createSession(workspaceTarget.cardId, 'root-api');
+    await creation.createSession(workspaceTarget.cardId);
     assert.strictEqual(primaryRootWrites.length, 2,
         'a failed launch must not persist the selected root');
 
@@ -3019,6 +3118,7 @@ async function runWorkspaceCardActionControllerIntegrationChecks() {
     const creation = new AiSessionCreationController({
         isProviderId: value => value === 'codex', getOpenProjects: () => { legacyProjectReads++; return []; },
         getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        pickWorkspaceRoot: async () => 'root-web',
         pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
         getProvider: () => ({ label: 'Codex', terminalNamePrefix: 'Codex',
             buildNewSessionLaunchSpec: scope => ({ executable: 'codex', args: [], cwd: scope.primaryCwd }) }),
@@ -3033,7 +3133,7 @@ async function runWorkspaceCardActionControllerIntegrationChecks() {
         getExistingSessionIdsForCwd: () => [], getPendingMarkerPath: () => '/tmp/card.marker',
         scheduleNewSessionRefresh: () => undefined, nowMs: () => 1,
     });
-    await creation.createSession(target.cardId, 'root-web');
+    await creation.createSession(target.cardId);
     assert.strictEqual(createRequests[0].identity.workspaceScopeIdentity, workspace.scopeIdentity);
     assert.strictEqual(createRequests[0].projectName, workspace.displayName);
 
@@ -4357,7 +4457,8 @@ function runWebviewContentChecks() {
     assert.strictEqual((workspaceHtml.match(/class="codex-sessions"/g) || []).length, 1);
     assert.ok(workspaceHtml.includes('data-primary-root-id="root-api"'));
     assert.ok(workspaceHtml.includes('class="ai-session-root-chip"'));
-    assert.ok(workspaceHtml.includes('data-action="new-session-in" data-root-id="root-api"'));
+    assert.strictEqual(workspaceHtml.includes('data-action="open-new-session-in"'), false);
+    assert.strictEqual(workspaceHtml.includes('data-action="new-session-in"'), false);
     assert.ok(sessionTabsHtml.includes('role="tablist" aria-label="AI Session views"'));
     assert.ok(sessionTabsHtml.includes('data-ai-session-tab="active"'));
     assert.ok(sessionTabsHtml.includes('data-ai-session-tab="sessions"'));
@@ -5832,16 +5933,6 @@ function runBatchAiSessionWebviewChecks() {
     };
     eventListeners.click({ button: 0, target: newSessionTarget });
 
-    const newSessionInTarget = {
-        getAttribute: attribute => attribute === 'data-root-id' ? 'root-api' : null,
-        closest: selector => {
-            if (selector === '.project' || selector === '.project[data-id]') return projectA;
-            if (selector === '[data-action="new-session-in"][data-root-id]') return newSessionInTarget;
-            return null;
-        },
-    };
-    eventListeners.click({ button: 0, target: newSessionInTarget });
-
     const closeActiveTarget = {
         getAttribute: attribute => attribute === 'data-action' ? 'close-ai-session-terminal' : null,
         closest: selector => {
@@ -5884,8 +5975,6 @@ function runBatchAiSessionWebviewChecks() {
         createdAt: '2026-07-18T08:00:00Z',
     }, {
         type: 'create-ai-session', projectId: 'project-a',
-    }, {
-        type: 'new-session-in', projectId: 'project-a', rootId: 'root-api',
     }, {
         type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'codex', sessionId: 'active-session',
     }, {
@@ -8696,6 +8785,7 @@ async function main() {
     runAliasControllerChecks();
     await runWorkspaceStateStoreChecks();
     runAiSessionProviderAvailabilityChecks();
+    await runWorkspaceCreationDirectoryFirstChecks();
     await runAiSessionCommandControllerChecks();
     await runWorkspaceScopeControllerLaunchChecks();
     await runWorkspaceLaunchPreflightControllerChecks();

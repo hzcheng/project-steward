@@ -576,9 +576,6 @@ function initProjects() {
 
     function onTriggerAiSessionAction(target, projectId) {
         var projectDiv = target.closest('.project[data-id]');
-        if (target.closest('[data-action="open-new-session-in"]')) {
-            return true;
-        }
         var tabAction = target.closest('[data-action="select-ai-session-tab"][data-tab]');
         if (tabAction) {
             var selectedTab = normalizeAiSessionTab(tabAction.getAttribute('data-tab'));
@@ -603,20 +600,6 @@ function initProjects() {
                 projectId,
             });
 
-            return true;
-        }
-
-        var newSessionInAction = target.closest('[data-action="new-session-in"][data-root-id]');
-        if (newSessionInAction) {
-            var rootId = newSessionInAction.getAttribute('data-root-id');
-            if (rootId) {
-                window.vscode.postMessage({
-                    type: 'new-session-in',
-                    projectId,
-                    rootId,
-                });
-                newSessionInAction.closest('details')?.removeAttribute('open');
-            }
             return true;
         }
 

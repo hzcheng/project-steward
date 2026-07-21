@@ -57,7 +57,6 @@ interface GroupSectionOptions {
 }
 
 interface AiSessionRenderOptions {
-    workspaceRoots?: Array<{ id: string; name: string; ordinal: number }>;
     showRootChips?: boolean;
 }
 
@@ -359,7 +358,6 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
         : `${navigationRunningBadge}${navigationAttentionBadge}`;
     const sessionSection = isCurrent
         ? getAiSessionsDiv(getWorkspaceAiSessionSurface(card), {
-            workspaceRoots: roots,
             showRootChips: rootCount > 1,
         })
         : '';
@@ -707,7 +705,6 @@ export function getAiSessionsDiv(project: AiSessionSurfaceViewModel, options: Ai
         <span class="ai-session-module-title">AI SESSIONS</span>
         <span class="ai-session-create-actions">
             <button type="button" class="ai-session-create-button" data-action="create-ai-session" aria-label="New AI Session" title="New AI Session"><span aria-hidden="true">+</span><span>NEW</span></button>
-            ${getNewSessionInMenu(options.workspaceRoots || [])}
         </span>
     </div>
     <div class="ai-session-tabs" role="tablist" aria-label="AI Session views">
@@ -718,21 +715,6 @@ export function getAiSessionsDiv(project: AiSessionSurfaceViewModel, options: Ai
     ${getAiSessionHistoryPanel(project, activeProvider, historySessionsForProvider, options)}
     <div class="ai-session-live-region" data-ai-session-live-region aria-live="polite" aria-atomic="true"></div>
 </div>`;
-}
-
-function getNewSessionInMenu(roots: Array<{ id: string; name: string; ordinal: number }>): string {
-    if (roots.length < 2) {
-        return '';
-    }
-    const rootActions = roots.map(root => {
-        const rootId = escapeAttribute(root.id);
-        const rootName = escapeAttribute(sanitizeProjectName(root.name) || 'Folder');
-        return `<button type="button" role="menuitem" data-action="new-session-in" data-root-id="${rootId}">${rootName}</button>`;
-    }).join('');
-    return `<details class="ai-session-create-in-menu">
-        <summary data-action="open-new-session-in" title="New Session in…" aria-label="New Session in…">IN…</summary>
-        <span class="ai-session-create-in-options" role="menu" aria-label="Choose primary workspace folder">${rootActions}</span>
-    </details>`;
 }
 
 function getAiSessionTabButton(project: AiSessionSurfaceViewModel, tab: AiSessionTabId, count: number): string {

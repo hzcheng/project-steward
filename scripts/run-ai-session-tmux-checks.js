@@ -6976,6 +6976,7 @@ async function runRuntimeControllerChecks() {
         isProviderId: value => value === 'codex',
         getWorkspaceTarget: cardId => cardId === project.id
             ? createWorkspaceActionTarget(project, 'pk') : null,
+        pickWorkspaceRoot: async () => undefined,
         pickProvider: async () => 'codex',
         getProviderLabel: () => 'Codex',
         getProvider: () => ({
@@ -7142,6 +7143,7 @@ async function runRuntimeControllerChecks() {
         isProviderId: value => value === 'codex',
         getWorkspaceTarget: cardId => cardId === project.id
             ? createWorkspaceActionTarget(project, 'pk') : null,
+        pickWorkspaceRoot: async () => undefined,
         pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
         getProvider: () => ({
             label: 'Codex', terminalNamePrefix: 'Codex',
@@ -7216,6 +7218,7 @@ async function runRuntimeControllerChecks() {
         isProviderId: value => value === 'codex',
         getWorkspaceTarget: cardId => cardId === project.id
             ? createWorkspaceActionTarget(project, 'pk') : null,
+        pickWorkspaceRoot: async () => undefined,
         pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
         getProvider: () => ({
             label: 'Codex', terminalNamePrefix: 'Codex',
