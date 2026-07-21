@@ -13,7 +13,8 @@
 - CURRENT WORKSPACE renders at most one card; roots never become sibling cards.
 - Collapsed cards contain two text rows and no permanent workspace-root tag row.
 - Running effects are current-window-only and require `executionState === 'running'`.
-- OTHER WINDOWS carries no session/provider/running details.
+- OTHER WINDOWS carries no per-session/provider/running details; its existing
+  anonymous aggregate unread-attention count remains allowed.
 - Navigation uses the exact folder or `.code-workspace` URI and never a member-root fallback.
 - Untitled multi-root navigation asks the user to save first.
 - Saved PROJECTS data and behavior remain unchanged.

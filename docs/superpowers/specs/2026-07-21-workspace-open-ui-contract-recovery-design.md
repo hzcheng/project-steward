@@ -52,8 +52,9 @@ evidence that the user-facing behavior is correct.
    card, including its dimensions, spacing, transitions, and environment icon.
 3. Workspace roots never add a permanent third line to the collapsed card.
 4. Expanding and collapsing the AI-session surface remains animated.
-5. Only a CURRENT WORKSPACE card may expose session counts, running state,
-   provider details, or session controls.
+5. Only a CURRENT WORKSPACE card may expose total/active session counts,
+   running state, provider details, or session controls. OTHER WINDOWS may
+   retain its anonymous aggregate unread-attention count.
 6. An OTHER WINDOWS card has one primary action: navigate directly to that
    exact logical workspace.
 7. Navigation never substitutes a member folder for a multi-root workspace.
@@ -106,8 +107,9 @@ permanent collapsed-card decoration.
 
 Navigation cards use the same visual shell and environment icon but remain
 read-only and compact. They do not render AI-session panels, provider details,
-running-state animation, or root chips. Their title and one-line description
-identify the workspace and environment/root count.
+running-state animation, or root chips. They may retain the existing anonymous
+aggregate unread-attention badge. Their title and one-line description identify
+the workspace and environment/root count.
 
 ### Environment icons
 
@@ -242,7 +244,7 @@ Automated and installed-build acceptance must establish all of the following:
 - Collapsing removes the entire session surface from the card's visible height;
   expanding and collapsing visibly transitions.
 - OTHER WINDOWS cards use the same compact shell and contain no session
-  details.
+  details beyond the existing anonymous aggregate unread-attention count.
 
 ### Animation
 
