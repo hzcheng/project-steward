@@ -19,6 +19,7 @@ export interface OpenWorkspaceDashboardState {
 
 export interface OpenWorkspaceDashboardControllerOptions {
     getCurrentWorkspace: () => OpenWorkspace | null;
+    isWorkspaceSavedAsProject: (workspace: OpenWorkspace) => boolean;
     getCurrentWorkspaceAiSessions: (workspace: OpenWorkspace) => WorkspaceAiSessionViewModel | null;
     getGroups: () => Group[];
     getTodoSearchItems: () => TodoSearchCatalogItem[];
@@ -132,6 +133,8 @@ export class OpenWorkspaceDashboardController {
             id: `__currentWorkspace-${digest}`,
             kind: 'current',
             workspaceKind: workspace.kind,
+            showSaveAction: workspace.kind === 'untitledMultiRoot'
+                || !this.options.isWorkspaceSavedAsProject(workspace),
             navigationIdentity: workspace.navigationIdentity,
             scopeIdentity: workspace.scopeIdentity,
             name: workspace.displayName,

@@ -316,9 +316,9 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
     const projectIconTitle = getProjectIconTitle(remoteType);
     const folderLabel = `${rootCount} folder${rootCount === 1 ? '' : 's'}`;
     const isCurrent = card.kind === 'current';
-    const showSaveAction = isCurrent && card.workspaceKind === 'untitledMultiRoot';
+    const showSaveAction = isCurrent && card.showSaveAction;
     const saveBadge = showSaveAction
-        ? `<span data-action="save-untitled-workspace" class="project-save-badge" title="Save Workspace" aria-label="Save Workspace">${Icons.save}</span>`
+        ? `<span data-action="save-current-workspace" class="project-save-badge" title="Save Workspace" aria-label="Save Workspace">${Icons.save}</span>`
         : '';
     const aiSessions = isCurrent ? card.aiSessions : undefined;
     const runningSessionCount = isCurrent

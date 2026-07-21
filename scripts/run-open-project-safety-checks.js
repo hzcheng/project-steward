@@ -32,7 +32,6 @@ const {
     PENDING_WORKSPACE_SAVE_TTL_MS,
 } = require('../out/workspaces/pendingWorkspaceSaveStore');
 const { SavedWorkspaceProjectAdapter } = require('../out/workspaces/savedWorkspaceProjectAdapter');
-const { UntitledWorkspaceSaveController } = require('../out/workspaces/untitledWorkspaceSaveController');
 const models = require('../out/models');
 const { OpenWorkspaceStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceStore');
 const { OpenWorkspaceCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceCoordinator');
@@ -564,6 +563,7 @@ function runWorkspaceProjectionV2Checks() {
         'navigationIdentity',
         'roots',
         'scopeIdentity',
+        'showSaveAction',
         'workspaceKind',
     ]);
     assert.strictEqual(duplicateCard.kind, 'navigation');
@@ -1056,6 +1056,7 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     const posted = [];
     const dashboard = new OpenWorkspaceDashboardController({
         getCurrentWorkspace: () => current,
+        isWorkspaceSavedAsProject: () => false,
         getCurrentWorkspaceAiSessions: () => null,
         getGroups: () => [],
         getTodoSearchItems: () => [],
@@ -1072,6 +1073,8 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     dashboard.setAggregate(aggregate);
     const cards = dashboard.getCards();
     assert.strictEqual(cards.filter(card => card.kind === 'current').length, 1);
+    assert.strictEqual(cards.find(card => card.kind === 'current').showSaveAction, true);
+    assert.strictEqual(cards.find(card => card.kind === 'navigation').showSaveAction, false);
     assert.strictEqual(cards.filter(card => card.kind === 'navigation').length, 1,
         'two owner registrations for one navigation identity must project to one card');
     assert.strictEqual(cards.find(card => card.kind === 'navigation').name, 'Newest registration wins');
@@ -1084,8 +1087,10 @@ async function runOpenWorkspaceClientAndControllerChecks() {
         navigationIdentity: workspaceIdentity(930),
         navigationUri: 'untitled:Untitled-9',
     };
+    let identitySavedAsProject = false;
     const identityDashboard = new OpenWorkspaceDashboardController({
         getCurrentWorkspace: () => identityWorkspace,
+        isWorkspaceSavedAsProject: () => identitySavedAsProject,
         getCurrentWorkspaceAiSessions: () => null,
         getGroups: () => [],
         getTodoSearchItems: () => [],
@@ -1100,6 +1105,7 @@ async function runOpenWorkspaceClientAndControllerChecks() {
         logError: () => undefined,
     });
     const untitledCardId = identityDashboard.getCards()[0].id;
+    assert.strictEqual(identityDashboard.getCards()[0].showSaveAction, true);
     identityDashboard.setAggregate(aggregate);
     const navigationCardIdsBeforeSave = identityDashboard.getCards()
         .filter(card => card.kind === 'navigation').map(card => card.id).sort();
@@ -1110,6 +1116,11 @@ async function runOpenWorkspaceClientAndControllerChecks() {
         navigationUri: 'file:///work/saved.code-workspace',
     };
     const savedCardId = identityDashboard.getCards()[0].id;
+    assert.strictEqual(identityDashboard.getCards()[0].showSaveAction, true,
+        'saving the workspace file must keep the action until it is registered in Saved Projects');
+    identitySavedAsProject = true;
+    assert.strictEqual(identityDashboard.getCards()[0].showSaveAction, false,
+        'the save action must disappear after the workspace is registered in Saved Projects');
     assert.strictEqual(savedCardId, untitledCardId,
         'saving an untitled workspace must preserve the scope-owned current card ID');
     assert.deepStrictEqual(identityDashboard.getCards()
@@ -1900,6 +1911,7 @@ async function runOpenWorkspaceHardeningChecks() {
     let runningCardAnimation = 'halo';
     const dashboard = new OpenWorkspaceDashboardController({
         getCurrentWorkspace: () => current,
+        isWorkspaceSavedAsProject: () => true,
         getCurrentWorkspaceAiSessions: () => ({
             workspaceScopeIdentity: current.scopeIdentity,
             workspaceNavigationIdentity: current.navigationIdentity,
@@ -2099,6 +2111,7 @@ async function runWorkspaceContextResolverChecks() {
             workspaceFile: uri('file:///work/no-roots.code-workspace'),
             workspaceFolders: [],
         }),
+        isWorkspaceSavedAsProject: () => true,
         getCurrentWorkspaceAiSessions: () => { throw new Error('zero-root must not hydrate sessions'); },
         getGroups: () => [],
         getTodoSearchItems: () => [],
@@ -2657,68 +2670,6 @@ async function runSavedWorkspaceProjectAdapterChecks() {
     assert.deepStrictEqual(nullWarnings, ['No project is currently open.']);
 }
 
-async function runUntitledWorkspaceSaveControllerChecks() {
-    for (const workspace of [null, makeSaveWorkspace('singleFolder'), makeSaveWorkspace('savedMultiRoot')]) {
-        let commandCalls = 0;
-        let savedCalls = 0;
-        const controller = new UntitledWorkspaceSaveController({
-            getCurrentWorkspace: () => workspace,
-            executeSaveWorkspaceAs: async () => { commandCalls += 1; },
-            onSaved: () => { savedCalls += 1; },
-        });
-        await controller.save();
-        assert.strictEqual(commandCalls, 0, 'only an untitled multi-root workspace may invoke Save Workspace As');
-        assert.strictEqual(savedCalls, 0);
-    }
-
-    const untitled = makeSaveWorkspace('untitledMultiRoot');
-    let currentWorkspace = untitled;
-    let savedCalls = 0;
-    const controller = new UntitledWorkspaceSaveController({
-        getCurrentWorkspace: () => currentWorkspace,
-        executeSaveWorkspaceAs: async () => {
-            currentWorkspace = makeSaveWorkspace('savedMultiRoot', {
-                scopeIdentity: untitled.scopeIdentity,
-            });
-        },
-        onSaved: () => { savedCalls += 1; },
-    });
-    await controller.save();
-    assert.strictEqual(savedCalls, 1, 'a matching saved transition must refresh the workspace UI once');
-
-    currentWorkspace = untitled;
-    let cancelRefreshes = 0;
-    const canceledController = new UntitledWorkspaceSaveController({
-        getCurrentWorkspace: () => currentWorkspace,
-        executeSaveWorkspaceAs: async () => undefined,
-        onSaved: () => { cancelRefreshes += 1; },
-    });
-    await canceledController.save();
-    assert.strictEqual(cancelRefreshes, 0, 'canceling Save Workspace As must leave the save action visible');
-
-    let releaseSave;
-    let saveStarted;
-    const saveGate = new Promise(resolve => { releaseSave = resolve; });
-    const started = new Promise(resolve => { saveStarted = resolve; });
-    let commandCalls = 0;
-    const concurrentController = new UntitledWorkspaceSaveController({
-        getCurrentWorkspace: () => untitled,
-        executeSaveWorkspaceAs: async () => {
-            commandCalls += 1;
-            saveStarted();
-            await saveGate;
-        },
-        onSaved: () => undefined,
-    });
-    const first = concurrentController.save();
-    await started;
-    const second = concurrentController.save();
-    assert.strictEqual(second, first, 'concurrent save clicks must share one transaction');
-    releaseSave();
-    await Promise.all([first, second]);
-    assert.strictEqual(commandCalls, 1);
-}
-
 async function runProjectServiceWorkspaceSaveMigrationIntegrationChecks() {
     function clone(value) {
         return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -3127,6 +3078,8 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(selectedProjectHandler.includes('await projectOpenController.openProject(project, projectOpenType);'));
     assert.ok(dashboard.includes('await projectMutationController.addProject('));
     assert.ok(dashboard.includes('saveCurrentWorkspace: () => savedWorkspaceProjectAdapter.saveCurrentWorkspace()'));
+    assert.strictEqual(dashboard.includes('saveUntitledWorkspace:'), false,
+        'workspace card saves must reuse the complete SavedWorkspaceProjectAdapter flow');
     assert.strictEqual(dashboard.includes("'save-project': async"), false,
         'legacy save-project messages must use the reserved snapshot-based workspace route');
     assert.ok(dashboard.includes('saveProject: () => savedWorkspaceProjectAdapter.saveCurrentWorkspace()'));
@@ -3615,7 +3568,6 @@ async function main() {
     runWorkspaceProtocolV2Checks();
     await runWorkspaceContextResolverChecks();
     await runSavedWorkspaceProjectAdapterChecks();
-    await runUntitledWorkspaceSaveControllerChecks();
     await runProjectServiceWorkspaceSaveMigrationIntegrationChecks();
     runWorkspaceProjectionV2Checks();
     runOpenWorkspacePublicationChecks();

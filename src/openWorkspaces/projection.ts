@@ -108,6 +108,7 @@ function createNavigationCard(
         id: `__openWorkspaceNavigation-${digest}`,
         kind: 'navigation',
         workspaceKind: workspace.kind,
+        showSaveAction: false,
         navigationIdentity: workspace.navigationIdentity,
         scopeIdentity: workspace.scopeIdentity,
         name: workspace.displayName,
