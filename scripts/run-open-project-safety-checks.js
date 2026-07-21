@@ -15,6 +15,8 @@ Module._load = function (request, parent, isMain) {
 };
 const protocol = require('../out/openProjects/protocol');
 const projection = require('../out/openProjects/projection');
+const workspaceProtocol = require('../out/openWorkspaces/protocol');
+const workspaceProjection = require('../out/openWorkspaces/projection');
 const attentionProject = require('../out/aiSessions/attentionProject');
 const { default: OpenProjectBridgeClient } = require('../out/openProjects/bridgeClient');
 const { OpenProjectDashboardController } = require('../out/openProjects/dashboardController');
@@ -77,6 +79,66 @@ function makeAggregate(registrations, overrides = {}) {
     return {
         protocolVersion: 1,
         semanticRevision: 'revision',
+        observedAtMs: 5000,
+        registrations,
+        ...overrides,
+    };
+}
+
+function workspaceIdentity(index) {
+    return Number(index).toString(16).padStart(64, '0');
+}
+
+function makeWorkspaceRoot(index = 0, overrides = {}) {
+    return {
+        id: workspaceIdentity(index + 100),
+        name: `Root ${index}`,
+        uri: `file:///work/root-${index}`,
+        ordinal: index,
+        ...overrides,
+    };
+}
+
+function makeWorkspaceRecord(index = 0, overrides = {}) {
+    return {
+        navigationIdentity: workspaceIdentity(index + 1),
+        scopeIdentity: workspaceIdentity(index + 10),
+        kind: 'singleFolder',
+        displayName: `Workspace ${index}`,
+        navigationUri: `file:///work/workspace-${index}`,
+        environment: 'local',
+        roots: [makeWorkspaceRoot(index)],
+        ...overrides,
+    };
+}
+
+function makeWorkspacePublication(overrides = {}) {
+    return {
+        protocolVersion: 2,
+        instanceId: SELF,
+        sequence: 1,
+        followsFocusEvent: false,
+        workspace: makeWorkspaceRecord(),
+        ...overrides,
+    };
+}
+
+function makeWorkspaceRegistration(instanceId = SELF, lastFocusedAtMs = 4000, workspace = makeWorkspaceRecord(), overrides = {}) {
+    return {
+        protocolVersion: 2,
+        instanceId,
+        sequence: 1,
+        lastFocusedAtMs,
+        leaseUpdatedAtMs: 4500,
+        workspace,
+        ...overrides,
+    };
+}
+
+function makeWorkspaceAggregate(registrations, overrides = {}) {
+    return {
+        protocolVersion: 2,
+        semanticRevision: 'a'.repeat(64),
         observedAtMs: 5000,
         registrations,
         ...overrides,
@@ -310,6 +372,416 @@ function runProtocolChecks() {
             projects: [tiedProjectBeta, tiedProjectAlpha],
         })])
     );
+}
+
+function runWorkspaceProtocolV2Checks() {
+    const publication = makeWorkspacePublication();
+    const registration = makeWorkspaceRegistration();
+    const aggregate = makeWorkspaceAggregate([registration]);
+
+    assert.deepStrictEqual(workspaceProtocol.validateOpenWorkspacePublication(publication), publication);
+    assert.deepStrictEqual(workspaceProtocol.validateOpenWorkspaceRegistration(registration), registration);
+    assert.deepStrictEqual(workspaceProtocol.validateOpenWorkspaceAggregate(aggregate), aggregate);
+    assert.deepStrictEqual(
+        workspaceProtocol.validateOpenWorkspacePublication({ ...publication, workspace: null }),
+        { ...publication, workspace: null }
+    );
+    assert.deepStrictEqual(
+        workspaceProtocol.validateOpenWorkspaceRegistration({ ...registration, workspace: null }),
+        { ...registration, workspace: null }
+    );
+    assert.deepStrictEqual(
+        workspaceProtocol.validateOpenWorkspacePublication({
+            ...publication,
+            workspace: { ...publication.workspace, roots: [] },
+        }).workspace.roots,
+        []
+    );
+
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication(makePublication()),
+        /protocolVersion|unexpected fields/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspaceRegistration({ ...registration, protocolVersion: 1 }),
+        /protocolVersion/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspaceAggregate({ ...aggregate, protocolVersion: 1 }),
+        /protocolVersion/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({ ...publication, followsFocusEvent: 1 }),
+        /followsFocusEvent/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({ ...publication, workspace: undefined }),
+        /open workspace record/
+    );
+    for (const [validate, value] of [
+        [workspaceProtocol.validateOpenWorkspacePublication, publication],
+        [workspaceProtocol.validateOpenWorkspaceRegistration, registration],
+        [workspaceProtocol.validateOpenWorkspaceAggregate, aggregate],
+    ]) {
+        assertRejectsValidation(() => validate({ ...value, unexpected: true }), /unexpected fields/);
+    }
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({
+            ...publication,
+            workspace: { ...publication.workspace, unexpected: true },
+        }),
+        /unexpected fields/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({
+            ...publication,
+            workspace: {
+                ...publication.workspace,
+                roots: [{ ...publication.workspace.roots[0], hostPath: '/private/root' }],
+            },
+        }),
+        /unexpected fields/
+    );
+
+    for (const instanceId of ['short', 'A'.repeat(32), 'g'.repeat(32), `${SELF}0`]) {
+        assertRejectsValidation(
+            () => workspaceProtocol.validateOpenWorkspacePublication({ ...publication, instanceId }),
+            /instanceId/
+        );
+    }
+    for (const sequence of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+        assertRejectsValidation(
+            () => workspaceProtocol.validateOpenWorkspacePublication({ ...publication, sequence }),
+            /sequence/
+        );
+    }
+    for (const timestamp of [NaN, Infinity, -Infinity, -1]) {
+        assertRejectsValidation(
+            () => workspaceProtocol.validateOpenWorkspaceRegistration({ ...registration, lastFocusedAtMs: timestamp }),
+            /lastFocusedAtMs/
+        );
+        assertRejectsValidation(
+            () => workspaceProtocol.validateOpenWorkspaceAggregate({ ...aggregate, observedAtMs: timestamp }),
+            /observedAtMs/
+        );
+        assertRejectsValidation(
+            () => workspaceProtocol.validateOpenWorkspaceRegistration({ ...registration, leaseUpdatedAtMs: timestamp }),
+            /leaseUpdatedAtMs/
+        );
+    }
+
+    const maximumString = 'x'.repeat(8192);
+    const maximumRoots = Array.from({ length: 100 }, (_, index) => makeWorkspaceRoot(index));
+    const maximumWorkspace = makeWorkspaceRecord(0, {
+        displayName: maximumString,
+        navigationUri: `file:///${'x'.repeat(8184)}`,
+        roots: maximumRoots,
+    });
+    assert.strictEqual(
+        workspaceProtocol.validateOpenWorkspacePublication({ ...publication, workspace: maximumWorkspace })
+            .workspace.roots.length,
+        100
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({
+            ...publication,
+            workspace: { ...publication.workspace, displayName: 'x'.repeat(8193) },
+        }),
+        /displayName/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({
+            ...publication,
+            workspace: { ...publication.workspace, roots: Array.from({ length: 101 }, (_, index) => makeWorkspaceRoot(index)) },
+        }),
+        /roots/
+    );
+    assert.strictEqual(
+        workspaceProtocol.validateOpenWorkspaceAggregate(makeWorkspaceAggregate(
+            Array.from({ length: 100 }, (_, index) => makeWorkspaceRegistration(
+                index.toString(16).padStart(32, '0'),
+                index,
+                makeWorkspaceRecord(index)
+            ))
+        )).registrations.length,
+        100
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspaceAggregate(makeWorkspaceAggregate(
+            Array.from({ length: 101 }, (_, index) => makeWorkspaceRegistration(
+                index.toString(16).padStart(32, '0'),
+                index,
+                makeWorkspaceRecord(index)
+            ))
+        )),
+        /registrations/
+    );
+
+    for (const [field, value, pattern] of [
+        ['navigationIdentity', 'not-a-hash', /navigationIdentity/],
+        ['navigationIdentity', 'A'.repeat(64), /navigationIdentity/],
+        ['scopeIdentity', 'not-a-hash', /scopeIdentity/],
+        ['kind', 'folder', /kind/],
+        ['displayName', '', /displayName/],
+        ['displayName', 'unsafe\nname', /displayName/],
+        ['displayName', 'unsafe\u0085name', /displayName/],
+        ['navigationUri', '/not/a/uri', /navigationUri/],
+        ['navigationUri', 'file:///bad%escape', /navigationUri/],
+        ['navigationUri', 'file:///bad path', /navigationUri/],
+        ['navigationUri', 'vscode-remote://[bad/workspace', /navigationUri/],
+        ['environment', 'codespaces', /environment/],
+    ]) {
+        assertRejectsValidation(
+            () => workspaceProtocol.validateOpenWorkspacePublication({
+                ...publication,
+                workspace: { ...publication.workspace, [field]: value },
+            }),
+            pattern
+        );
+    }
+    for (const [field, value, pattern] of [
+        ['id', 'not-a-hash', /root id/],
+        ['name', '', /root name/],
+        ['name', 'unsafe\u0000name', /root name/],
+        ['uri', 'relative/root', /root uri/],
+        ['uri', 'file:///bad%escape', /root uri/],
+        ['ordinal', -1, /ordinal/],
+        ['ordinal', 0.5, /ordinal/],
+        ['ordinal', Number.MAX_SAFE_INTEGER + 1, /ordinal/],
+    ]) {
+        assertRejectsValidation(
+            () => workspaceProtocol.validateOpenWorkspacePublication({
+                ...publication,
+                workspace: {
+                    ...publication.workspace,
+                    roots: [{ ...publication.workspace.roots[0], [field]: value }],
+                },
+            }),
+            pattern
+        );
+    }
+    const firstRoot = makeWorkspaceRoot(0);
+    for (const duplicate of [
+        makeWorkspaceRoot(1, { id: firstRoot.id }),
+        makeWorkspaceRoot(1, { uri: firstRoot.uri }),
+        makeWorkspaceRoot(1, { ordinal: firstRoot.ordinal }),
+    ]) {
+        assertRejectsValidation(
+            () => workspaceProtocol.validateOpenWorkspacePublication({
+                ...publication,
+                workspace: { ...publication.workspace, roots: [firstRoot, duplicate] },
+            }),
+            /duplicate/
+        );
+    }
+    const sparseRoots = [firstRoot];
+    sparseRoots.length = 2;
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({
+            ...publication,
+            workspace: { ...publication.workspace, roots: sparseRoots },
+        }),
+        /open workspace root/
+    );
+    const sparseRegistrations = [registration];
+    sparseRegistrations.length = 2;
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspaceAggregate(makeWorkspaceAggregate(sparseRegistrations)),
+        /open workspace registration/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspaceAggregate(makeWorkspaceAggregate([
+            registration,
+            { ...registration, sequence: 2 },
+        ])),
+        /duplicate instanceId/
+    );
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspaceAggregate({ ...aggregate, semanticRevision: 'revision' }),
+        /semanticRevision/
+    );
+
+    const baseRevision = workspaceProtocol.createOpenWorkspaceSemanticRevision([registration]);
+    assert.match(baseRevision, /^[a-f0-9]{64}$/);
+    assert.strictEqual(
+        workspaceProtocol.createOpenWorkspaceSemanticRevision([{
+            ...registration,
+            sequence: 99,
+            leaseUpdatedAtMs: 9999,
+        }]),
+        baseRevision,
+        'sequence and lease heartbeat time are not semantic workspace state'
+    );
+    assert.notStrictEqual(
+        workspaceProtocol.createOpenWorkspaceSemanticRevision([{
+            ...registration,
+            lastFocusedAtMs: registration.lastFocusedAtMs + 1,
+        }]),
+        baseRevision
+    );
+    assert.notStrictEqual(
+        workspaceProtocol.createOpenWorkspaceSemanticRevision([{
+            ...registration,
+            workspace: { ...registration.workspace, displayName: 'Changed' },
+        }]),
+        baseRevision
+    );
+    assert.strictEqual(
+        workspaceProtocol.createOpenWorkspaceSemanticRevision([
+            makeWorkspaceRegistration(OLDER, 2000, makeWorkspaceRecord(1)),
+            makeWorkspaceRegistration(NEWER, 3000, makeWorkspaceRecord(2)),
+        ]),
+        workspaceProtocol.createOpenWorkspaceSemanticRevision([
+            makeWorkspaceRegistration(NEWER, 3000, makeWorkspaceRecord(2)),
+            makeWorkspaceRegistration(OLDER, 2000, makeWorkspaceRecord(1)),
+        ])
+    );
+    const multiRoot = makeWorkspaceRecord(0, {
+        kind: 'savedMultiRoot',
+        roots: [makeWorkspaceRoot(0), makeWorkspaceRoot(1)],
+    });
+    assert.strictEqual(
+        workspaceProtocol.createOpenWorkspaceSemanticRevision([
+            makeWorkspaceRegistration(SELF, 4000, multiRoot),
+        ]),
+        workspaceProtocol.createOpenWorkspaceSemanticRevision([
+            makeWorkspaceRegistration(SELF, 4000, { ...multiRoot, roots: multiRoot.roots.slice().reverse() }),
+        ])
+    );
+}
+
+function runWorkspaceProjectionV2Checks() {
+    const sourceWorkspace = {
+        ...makeWorkspaceRecord(0, {
+            kind: 'savedMultiRoot',
+            roots: [
+                { ...makeWorkspaceRoot(0), hostPath: '/private/root-0' },
+                { ...makeWorkspaceRoot(1), hostPath: '/private/root-1' },
+                { ...makeWorkspaceRoot(2), hostPath: '/private/root-2' },
+            ],
+        }),
+    };
+    const publicationRecord = workspaceProjection.createOpenWorkspacePublication(sourceWorkspace);
+    assert.strictEqual(Array.isArray(publicationRecord), false, 'a workspace publication is one record, not one record per root');
+    assert.deepStrictEqual(Object.keys(publicationRecord).sort(), [
+        'displayName',
+        'environment',
+        'kind',
+        'navigationIdentity',
+        'navigationUri',
+        'roots',
+        'scopeIdentity',
+    ]);
+    assert.strictEqual(publicationRecord.roots.length, 3);
+    assert.strictEqual(publicationRecord.roots.some(root => Object.hasOwnProperty.call(root, 'hostPath')), false);
+    assert.strictEqual(workspaceProjection.createOpenWorkspacePublication(null), null);
+
+    const currentWorkspace = {
+        ...makeWorkspaceRecord(50),
+        roots: [{ ...makeWorkspaceRoot(50), hostPath: '/private/current' }],
+    };
+    const duplicateIdentity = workspaceIdentity(70);
+    const duplicateOlder = makeWorkspaceRecord(70, {
+        navigationIdentity: duplicateIdentity,
+        displayName: 'Older duplicate',
+        environment: 'local',
+    });
+    const duplicateNewer = makeWorkspaceRecord(71, {
+        navigationIdentity: duplicateIdentity,
+        displayName: 'Newest duplicate',
+        environment: 'ssh',
+        roots: [makeWorkspaceRoot(71), makeWorkspaceRoot(72)],
+    });
+    const tiedIdentity = workspaceIdentity(80);
+    const tiedWinner = makeWorkspaceRecord(80, {
+        navigationIdentity: tiedIdentity,
+        displayName: 'Lower instance wins exact focus tie',
+        environment: 'wsl',
+    });
+    const tiedLoser = makeWorkspaceRecord(81, {
+        navigationIdentity: tiedIdentity,
+        displayName: 'Higher instance loses exact focus tie',
+        environment: 'remote',
+    });
+    const stableIdentity = workspaceIdentity(60);
+    const stableWorkspace = makeWorkspaceRecord(60, {
+        navigationIdentity: stableIdentity,
+        displayName: 'Stable identity sort',
+        environment: 'devContainer',
+    });
+    const ignoredOwnWorkspace = makeWorkspaceRecord(90, { displayName: 'Own instance ignored' });
+    const reservedCurrentWorkspace = makeWorkspaceRecord(91, {
+        navigationIdentity: currentWorkspace.navigationIdentity,
+        displayName: 'Current identity reserved',
+    });
+    const registrations = [
+        makeWorkspaceRegistration(SELF, 9999, ignoredOwnWorkspace),
+        makeWorkspaceRegistration('9'.repeat(32), 9998, reservedCurrentWorkspace),
+        makeWorkspaceRegistration('8'.repeat(32), 1000, duplicateOlder),
+        makeWorkspaceRegistration('7'.repeat(32), 7000, duplicateNewer),
+        makeWorkspaceRegistration('1'.repeat(31) + '0', 6000, tiedWinner),
+        makeWorkspaceRegistration('2'.repeat(31) + '0', 6000, tiedLoser),
+        makeWorkspaceRegistration('6'.repeat(32), 6000, stableWorkspace),
+        makeWorkspaceRegistration('5'.repeat(32), 5000, null),
+    ];
+    const attentionRootUri = duplicateNewer.roots[0].uri;
+    const attention = {
+        protocolVersion: 1,
+        aggregateRevision: 'b'.repeat(64),
+        generatedAtMs: 10,
+        sessions: [{
+            projectId: attentionProject.getAttentionProjectKey(attentionProject.getAttentionProjectPath(attentionRootUri)),
+            sessionKey: 'codex:workspace-attention',
+            reasons: ['completed'],
+            eventIds: ['event-workspace-attention'],
+            observedAtMs: 9,
+        }],
+    };
+    const aggregate = makeWorkspaceAggregate(registrations);
+    const cards = workspaceProjection.projectOpenWorkspaceCards(currentWorkspace, aggregate, SELF, attention);
+    assert.strictEqual(cards.length, 3);
+    assert.deepStrictEqual(
+        cards.map(card => card.navigationIdentity),
+        [duplicateIdentity, stableIdentity, tiedIdentity],
+        'cards sort by descending focus time, then stable navigation identity'
+    );
+    const duplicateCard = cards.find(card => card.navigationIdentity === duplicateIdentity);
+    assert.strictEqual(duplicateCard.name, 'Newest duplicate');
+    assert.strictEqual(duplicateCard.environmentLabel, 'SSH');
+    assert.strictEqual(duplicateCard.roots.length, 2);
+    assert.strictEqual(duplicateCard.attentionCount, 1);
+    assert.deepStrictEqual(Object.keys(duplicateCard).sort(), [
+        'attentionCount',
+        'environmentLabel',
+        'id',
+        'kind',
+        'name',
+        'navigationIdentity',
+        'roots',
+        'scopeIdentity',
+    ]);
+    assert.strictEqual(duplicateCard.kind, 'navigation');
+    assert.deepStrictEqual(Object.keys(duplicateCard.roots[0]).sort(), ['id', 'name', 'ordinal']);
+    assert.strictEqual(duplicateCard.id.includes(duplicateCard.navigationIdentity), false);
+    assert.strictEqual(duplicateCard.id.includes(duplicateNewer.navigationUri), false);
+    assert.match(duplicateCard.id, /^__openWorkspaceNavigation-[a-f0-9]{24}$/);
+    assert.strictEqual(cards.some(card => card.navigationIdentity === ignoredOwnWorkspace.navigationIdentity), false);
+    assert.strictEqual(cards.some(card => card.navigationIdentity === currentWorkspace.navigationIdentity), false);
+
+    const tiedCard = cards.find(card => card.navigationIdentity === tiedIdentity);
+    assert.strictEqual(tiedCard.name, 'Lower instance wins exact focus tie');
+    assert.strictEqual(tiedCard.environmentLabel, 'WSL');
+    assert.deepStrictEqual(
+        workspaceProjection.projectOpenWorkspaceCards(
+            currentWorkspace,
+            makeWorkspaceAggregate(registrations.slice().reverse()),
+            SELF,
+            attention
+        ),
+        cards,
+        'equal-focus duplicate publishers use lower instanceId, never aggregate input order'
+    );
+    assert.deepStrictEqual(workspaceProjection.projectOpenWorkspaceCards(currentWorkspace, null, SELF, attention), []);
 }
 
 function runOpenProjectPublicationChecks() {
@@ -2507,6 +2979,7 @@ async function runCoordinatorWiringChecks() {
 
 async function main() {
     runProtocolChecks();
+    runWorkspaceProtocolV2Checks();
     runOpenProjectPublicationChecks();
     runRemoteAttentionIdentityChecks();
     runWorkspaceContextResolverChecks();
@@ -2514,6 +2987,7 @@ async function main() {
     runRecordChecks();
     runWorkspaceControllerRecordChecks();
     runProjectionChecks();
+    runWorkspaceProjectionV2Checks();
     await runBridgeClientChecks();
     await runOpenProjectWorkspaceControllerChecks();
     await runCurrentProjectDetailsResolverChecks();
