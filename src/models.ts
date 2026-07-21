@@ -5,6 +5,7 @@ import type { TodoSearchCatalogItem } from './todos/types';
 import { StorageOption, VSCODE_REMOTE_PREFIX, WSL_DEFAULT_REGEX } from "./constants";
 import type { AiSessionAttentionReason } from './aiSessions/lifecycle';
 import type { ActiveAiSessionViewModel, AiSessionTabId, WorkspaceAiSessionViewModel } from './aiSessions/types';
+import type { OpenWorkspaceEnvironment } from './workspaces/types';
 
 export class Group {
     id: string;
@@ -85,6 +86,7 @@ export interface WorkspaceCardViewModel {
     navigationIdentity: string;
     scopeIdentity: string;
     name: string;
+    environment: OpenWorkspaceEnvironment;
     environmentLabel: string;
     roots: Array<{ id: string; name: string; ordinal: number }>;
     aiSessions?: WorkspaceAiSessionViewModel;

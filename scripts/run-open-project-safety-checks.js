@@ -509,11 +509,13 @@ function runWorkspaceProjectionV2Checks() {
     );
     const duplicateCard = cards.find(card => card.navigationIdentity === duplicateIdentity);
     assert.strictEqual(duplicateCard.name, 'Newest duplicate');
+    assert.strictEqual(duplicateCard.environment, 'ssh');
     assert.strictEqual(duplicateCard.environmentLabel, 'SSH');
     assert.strictEqual(duplicateCard.roots.length, 2);
     assert.strictEqual(duplicateCard.attentionCount, 1);
     assert.deepStrictEqual(Object.keys(duplicateCard).sort(), [
         'attentionCount',
+        'environment',
         'environmentLabel',
         'id',
         'kind',

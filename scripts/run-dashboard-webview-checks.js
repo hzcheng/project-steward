@@ -288,6 +288,7 @@ function runDashboardUpdateMessageChecks() {
         navigationIdentity: 'navigation-other',
         scopeIdentity: 'scope-other',
         name: 'Other Workspace',
+        environment: 'ssh',
         environmentLabel: 'SSH',
         aiSessions: undefined,
     };
@@ -351,6 +352,7 @@ function makeWorkspaceCardFixture(rootCount) {
         navigationIdentity: 'navigation-dashboard',
         scopeIdentity: 'scope-dashboard',
         name: 'Dashboard',
+        environment: 'local',
         environmentLabel: 'Local',
         roots,
         attentionCount: 1,
@@ -399,6 +401,7 @@ function runWorkspaceCardRenderingChecks() {
     } finally {
         Module._load = previousModuleLoad;
     }
+    const icons = require('../out/webview/webviewIcons');
 
     const emptyHtml = webviewContent.getCurrentWorkspaceGroupContent(null, false);
     assert.strictEqual((emptyHtml.match(/class="workspace-card/g) || []).length, 0);
@@ -431,6 +434,7 @@ function runWorkspaceCardRenderingChecks() {
     assert.ok(orbitHtml.includes('class="workspace-card project steward-item-card session-running"'));
     assert.ok(orbitHtml.includes('data-session-fx="orbit"'));
     assert.ok(orbitHtml.includes('<div class="project-session-fx"></div>'));
+    assert.ok(orbitHtml.indexOf('project-session-fx') > orbitHtml.indexOf('steward-item-accent'));
     assert.ok(orbitHtml.includes('title="Workspace — 1 active session running"'));
 
     for (const animation of ['current', 'sweep', 'orbit', 'halo', 'ripple', 'breath']) {
@@ -467,13 +471,22 @@ function runWorkspaceCardRenderingChecks() {
     assert.strictEqual((multiHtml.match(/class="workspace-card/g) || []).length, 1);
     assert.strictEqual((multiHtml.match(/class="codex-sessions"/g) || []).length, 1);
     assert.ok(multiHtml.includes('Local · 3 folders'));
-    assert.strictEqual((multiHtml.match(/class="workspace-root-tag"/g) || []).length, 3);
+    assert.strictEqual(multiHtml.includes('class="workspace-root-tags"'), false);
+    assert.strictEqual(multiHtml.includes('class="workspace-root-tag"'), false);
     assert.ok(multiHtml.includes('data-primary-root-id="root-api"'));
     assert.ok(multiHtml.includes('class="ai-session-root-chip"'));
     assert.ok(multiHtml.includes('data-action="new-session-in"'));
     assert.strictEqual(multiHtml.includes('data-action="selected-project"'), false);
     assert.strictEqual(multiHtml.includes('data-project-navigation'), false);
     assert.strictEqual(multiHtml.includes('data-has-save-action'), false);
+
+    const devContainerCard = makeWorkspaceCardFixture(1);
+    devContainerCard.environment = 'devContainer';
+    devContainerCard.environmentLabel = 'Dev Container';
+    const devContainerHtml = webviewContent.getCurrentWorkspaceGroupContent(devContainerCard, false);
+    assert.ok(devContainerHtml.includes(icons.container));
+    assert.strictEqual(devContainerHtml.includes('class="workspace-root-tags"'), false);
+    assert.strictEqual(devContainerHtml.includes('class="workspace-root-tag"'), false);
 
     const outsideWorkspaceCard = makeWorkspaceCardFixture(3);
     outsideWorkspaceCard.aiSessions.sessionsByProvider.codex[0].primaryRootId = undefined;
@@ -491,6 +504,7 @@ function runWorkspaceCardRenderingChecks() {
         navigationIdentity: 'navigation-other',
         scopeIdentity: 'scope-other',
         name: 'Other Workspace',
+        environment: 'ssh',
         environmentLabel: 'SSH',
         aiSessions: runningCard.aiSessions,
     };

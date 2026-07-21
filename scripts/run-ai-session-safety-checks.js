@@ -604,7 +604,7 @@ function runDashboardSearchCatalogChecks() {
     }];
     const currentWorkspace = {
         id: 'workspace-current', kind: 'current', navigationIdentity: 'navigation-current',
-        scopeIdentity: 'scope-current', name: 'Dashboard Workspace', environmentLabel: 'Local',
+        scopeIdentity: 'scope-current', name: 'Dashboard Workspace', environment: 'local', environmentLabel: 'Local',
         roots: [
             { id: 'root-app', name: 'App', ordinal: 0 },
             { id: 'root-api', name: 'API', ordinal: 1 },
@@ -623,7 +623,7 @@ function runDashboardSearchCatalogChecks() {
     };
     const otherWorkspace = {
         id: 'workspace-other', kind: 'navigation', navigationIdentity: 'navigation-other',
-        scopeIdentity: 'scope-other', name: 'Other Workspace', environmentLabel: 'SSH',
+        scopeIdentity: 'scope-other', name: 'Other Workspace', environment: 'ssh', environmentLabel: 'SSH',
         roots: [{ id: 'root-other', name: 'Other', ordinal: 0 }], attentionCount: 0,
     };
     const workspaceCatalog = dashboardViewModel.buildWorkspaceDashboardSearchCatalog(
@@ -4183,7 +4183,7 @@ function runWebviewContentChecks() {
     assert.ok(!sessionTabsHtml.includes('data-action="create-ai-session" data-provider='));
     const workspaceHtml = webviewContentModule.getCurrentWorkspaceGroupContent({
         id: 'workspace-a', kind: 'current', navigationIdentity: 'navigation-a', scopeIdentity: 'scope-a',
-        name: 'Workspace A', environmentLabel: 'Local', attentionCount: 0,
+        name: 'Workspace A', environment: 'local', environmentLabel: 'Local', attentionCount: 0,
         roots: [
             { id: 'root-app', name: 'App', ordinal: 0 },
             { id: 'root-api', name: 'API', ordinal: 1 },
@@ -4731,6 +4731,7 @@ function runCurrentWorkspaceRenderingChecks() {
         navigationIdentity: 'navigation-current',
         scopeIdentity: 'scope-current',
         name: 'Workspace A',
+        environment: 'local',
         environmentLabel: 'Local',
         attentionCount: 0,
         roots: [
@@ -4783,6 +4784,7 @@ function runCurrentWorkspaceRenderingChecks() {
         navigationIdentity: 'navigation-other',
         scopeIdentity: 'scope-other',
         name: 'Other Window',
+        environment: 'ssh',
         environmentLabel: 'SSH',
         attentionCount: 2,
         roots: [{ id: 'root-other', name: 'Other', ordinal: 0 }],
@@ -4841,8 +4843,9 @@ function runCurrentWorkspaceRenderingChecks() {
     }
     assert.strictEqual((html.match(/class="workspace-card/g) || []).length, 2);
     assert.strictEqual((html.match(/class="codex-sessions"/g) || []).length, 1);
-    assert.ok(html.includes('data-workspace-root-id="root-app"'));
-    assert.ok(html.includes('data-workspace-root-id="root-api"'));
+    assert.strictEqual(html.includes('class="workspace-root-tags"'), false);
+    assert.strictEqual(html.includes('class="workspace-root-tag"'), false);
+    assert.strictEqual(html.includes('data-workspace-root-id'), false);
     assert.ok(html.includes('data-primary-root-id="root-api"'));
     assert.ok(html.includes('AI 1'));
     assert.ok(html.includes('2 AI sessions need attention'));
@@ -4975,7 +4978,7 @@ function runAttentionProjectRenderingChecks() {
         true,
         [{
             id: 'open-workspace', kind: 'current', navigationIdentity: 'navigation-open',
-            scopeIdentity: 'scope-open', name: 'Open Repo', environmentLabel: 'Local',
+            scopeIdentity: 'scope-open', name: 'Open Repo', environment: 'local', environmentLabel: 'Local',
             roots: [{ id: 'root-open', name: 'Open Repo', ordinal: 0 }], attentionCount: 1,
             aiSessions: {
                 workspaceScopeIdentity: 'scope-open', workspaceNavigationIdentity: 'navigation-open',
@@ -5014,7 +5017,7 @@ function runAttentionProjectRenderingChecks() {
         true,
         [{
             id: 'quiet-workspace', kind: 'current', navigationIdentity: 'navigation-quiet',
-            scopeIdentity: 'scope-quiet', name: 'Quiet', environmentLabel: 'Local',
+            scopeIdentity: 'scope-quiet', name: 'Quiet', environment: 'local', environmentLabel: 'Local',
             roots: [{ id: 'root-quiet', name: 'Quiet', ordinal: 0 }], attentionCount: 0,
             aiSessions: {
                 workspaceScopeIdentity: 'scope-quiet', workspaceNavigationIdentity: 'navigation-quiet',
@@ -6283,6 +6286,7 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
         navigationIdentity: 'navigation-a',
         scopeIdentity: 'scope-a',
         name: 'Workspace A',
+        environment: 'local',
         environmentLabel: 'Local',
         roots: [{ id: 'root-a', name: 'App', ordinal: 0 }],
         attentionCount: 0,

@@ -134,6 +134,7 @@ export class OpenWorkspaceDashboardController {
             navigationIdentity: workspace.navigationIdentity,
             scopeIdentity: workspace.scopeIdentity,
             name: workspace.displayName,
+            environment: workspace.environment,
             environmentLabel: this.getEnvironmentLabel(workspace.environment),
             roots: workspace.roots
                 .slice()

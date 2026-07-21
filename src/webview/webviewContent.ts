@@ -307,6 +307,9 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
     const rootCount = roots.length;
     const workspaceName = escapeAttribute(sanitizeProjectName(card.name) || 'Workspace');
     const environmentLabel = escapeAttribute(sanitizeProjectName(card.environmentLabel) || 'Local');
+    const remoteType = getWorkspaceRemoteType(card.environment);
+    const projectIcon = getProjectIcon(remoteType);
+    const projectIconTitle = getProjectIconTitle(remoteType);
     const folderLabel = `${rootCount} folder${rootCount === 1 ? '' : 's'}`;
     const isCurrent = card.kind === 'current';
     const aiSessions = isCurrent ? card.aiSessions : undefined;
@@ -316,9 +319,9 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
     const sessionFx = runningSessionCount > 0
         ? normalizeRunningCardAnimation(runningCardAnimation)
         : '';
-    const workspaceIconTitle = runningSessionCount > 0
+    const runningTitle = runningSessionCount > 0
         ? `Workspace — ${runningSessionCount} active session${runningSessionCount === 1 ? '' : 's'} running`
-        : 'Workspace';
+        : '';
     const aiSessionCount = aiSessions?.aiSessionCount || 0;
     const activeSessionCount = aiSessions?.activeSessionCount || 0;
     const attentionCount = card.attentionCount || 0;
@@ -335,9 +338,6 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
         }${attentionCount ? `<b class="ai-session-attention-count" aria-label="${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention">${attentionCount}</b>` : ''
         }</span>`
         : '';
-    const rootTags = isCurrent ? roots.map(root =>
-        `<span class="workspace-root-tag" data-workspace-root-id="${escapeAttribute(root.id)}">${escapeAttribute(sanitizeProjectName(root.name) || 'Folder')}</span>`
-    ).join('') : '';
     const sessionSection = isCurrent
         ? getAiSessionsDiv(getWorkspaceAiSessionSurface(card), {
             workspaceRoots: roots,
@@ -346,20 +346,30 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
         : '';
 
     return `<div class="project-container" data-nodrag>
-    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
-        ${sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : ''}
+    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''}${runningTitle ? ` title="${runningTitle}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
         <div class="project-aura"></div>
         <div class="project-border steward-item-accent"></div>
+        ${sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : ''}
         <div class="fitty-container project-title-row">
-            <span class="project-kind-icon" title="${workspaceIconTitle}">${Icons.folder}</span>
+            <span class="project-kind-icon" title="${projectIconTitle}">${projectIcon}</span>
             <h2 class="project-header">${workspaceName}</h2>
         </div>
         <p class="project-description workspace-metadata">${environmentLabel} · ${folderLabel}</p>
-        ${isCurrent ? `<div class="workspace-root-tags" aria-label="Workspace folders">${rootTags}</div>` : ''}
         ${badge}
         ${sessionSection}
     </div>
 </div>`;
+}
+
+function getWorkspaceRemoteType(environment: WorkspaceCardViewModel['environment']): ProjectRemoteType {
+    switch (environment) {
+        case 'ssh': return ProjectRemoteType.SSH;
+        case 'wsl': return ProjectRemoteType.WSL;
+        case 'devContainer': return ProjectRemoteType.DevContainer;
+        case 'remote': return ProjectRemoteType.Remote;
+        case 'local':
+        default: return ProjectRemoteType.None;
+    }
 }
 
 function getWorkspaceAiSessionSurface(card: WorkspaceCardViewModel): AiSessionSurfaceViewModel {

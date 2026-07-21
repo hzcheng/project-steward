@@ -110,6 +110,7 @@ function createNavigationCard(
         navigationIdentity: workspace.navigationIdentity,
         scopeIdentity: workspace.scopeIdentity,
         name: workspace.displayName,
+        environment: workspace.environment,
         environmentLabel: getEnvironmentLabel(workspace.environment),
         roots: workspace.roots
             .slice()
