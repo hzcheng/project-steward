@@ -11,6 +11,7 @@ import type { AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './life
 import { getAttentionProjectKey } from './attentionProject';
 import { getAiSessionKey } from './sessionHelpers';
 import type { WorkspaceAiSessionActionTarget, WorkspaceAiSessionViewModel } from './types';
+import { getLogicalAttentionSessionKey } from '../workspaces/sessionAttention';
 
 export interface AiSessionAttentionRuntimeEntry {
     runStartedAtMs: number;
@@ -355,11 +356,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                 return sessionKey;
             }
         }
-        const runKey = /^(codex|kimi|claude):(.+):\d+:(?:vscode|tmux)$/.exec(attentionKey);
-        if (runKey) {
-            return `${runKey[1]}:${runKey[2]}`;
-        }
-        return attentionKey;
+        return getLogicalAttentionSessionKey(attentionKey);
     }
 
     private getSessionKey(providerId: AiSessionProviderId, sessionId: string): string {

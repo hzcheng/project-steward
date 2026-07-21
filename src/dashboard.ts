@@ -456,6 +456,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getPendingRuntimes: () => aiSessionRuntimeCoordinator.getPending(),
         getExecutionSnapshot: () => aiSessionExecutionController.getSnapshot(),
         getFocusedIdentity: () => getFocusedAiSessionRuntimeIdentity(),
+        getAttentionAggregate: () => aiSessionAttentionController.getEffectiveAggregate(),
         logDiagnostic: logAiSessionDiagnostic,
     });
     const providerDirectoryCapability = new ProviderDirectoryCapabilityProbe({

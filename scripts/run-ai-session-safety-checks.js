@@ -594,6 +594,28 @@ function runWorkspaceSessionHydrationChecks() {
         runtime('claude', 'tmux', '/work/app/api', { pendingId: 'pending-tmux' }),
         runtime('codex', 'vscode', '/work/removed-pending', { pendingId: 'pending-outside' }),
     ];
+    const workspaceAttention = {
+        protocolVersion: 1,
+        aggregateRevision: 'a'.repeat(64),
+        generatedAtMs: 200,
+        sessions: [{
+            projectId: attentionProject.getAttentionProjectKey('file:///work/app/api'),
+            sessionKey: 'codex:api-history',
+            eventIds: ['event-api'], reasons: ['completed'], observedAtMs: 100,
+        }, {
+            projectId: attentionProject.getAttentionProjectKey('file:///work/web'),
+            sessionKey: 'codex:web-history:30:tmux',
+            eventIds: ['event-web-old'], reasons: ['completed'], observedAtMs: 110,
+        }, {
+            projectId: attentionProject.getAttentionProjectKey('file:///work/web'),
+            sessionKey: 'codex:web-history:40:tmux',
+            eventIds: ['event-web-new'], reasons: ['input-required'], observedAtMs: 120,
+        }, {
+            projectId: attentionProject.getAttentionProjectKey('file:///work/app'),
+            sessionKey: 'codex:web-history',
+            eventIds: ['event-wrong-root'], reasons: ['failed'], observedAtMs: 130,
+        }],
+    };
     const controller = new WorkspaceSessionHydrationController({
         providers: providersForHydration,
         readCoordinator,
@@ -608,6 +630,7 @@ function runWorkspaceSessionHydrationChecks() {
         getPendingRuntimes: () => pendingRuntimes,
         getExecutionSnapshot: () => ({}),
         getFocusedIdentity: () => outsideNavigationRuntime.identity,
+        getAttentionAggregate: () => workspaceAttention,
     });
 
     const result = controller.hydrate(workspace);
@@ -619,19 +642,31 @@ function runWorkspaceSessionHydrationChecks() {
         ['web-history', 'root-web'],
     ]);
     assert.strictEqual(result.sessionsByProvider.codex[0].name, 'API history');
+    assert.deepStrictEqual(result.sessionsByProvider.codex[0].attention, {
+        eventId: 'event-api', reason: 'completed', unread: true,
+    });
+    assert.deepStrictEqual(result.sessionsByProvider.codex[1].attention, {
+        eventId: 'event-web-new', reason: 'input-required', unread: true,
+    });
     assert.deepStrictEqual(result.sessionsByProvider.claude.map(value => [value.id, value.primaryRootId]), [
         ['app-history', 'root-app'],
     ]);
     assert.deepStrictEqual(result.unavailableProviders, ['kimi']);
     assert.strictEqual(result.providers.find(provider => provider.id === 'kimi').unavailable, true);
-    assert.strictEqual(result.activeSessions[0].sessionId, 'removed-active');
-    assert.strictEqual(result.activeSessions[0].primaryRootLabel, 'Outside workspace');
-    assert.strictEqual(result.activeSessions[0].outsideWorkspace, true);
+    const removedActive = result.activeSessions.find(session => session.sessionId === 'removed-active');
+    assert.strictEqual(removedActive.primaryRootLabel, 'Outside workspace');
+    assert.strictEqual(removedActive.outsideWorkspace, true);
     assert.ok(result.activeSessions.some(session => session.sessionId === 'overlap-active'
         && session.outsideWorkspace === true));
     assert.ok(!result.activeSessions.some(session => session.sessionId === 'unmanaged-active'));
     assert.ok(result.activeSessions.some(session => session.sessionId === 'web-history'
         && session.backend === 'tmux' && session.primaryRootId === 'root-web'));
+    const activeWeb = result.activeSessions.find(session => session.sessionId === 'web-history');
+    assert.strictEqual(activeWeb.needsAttention, true);
+    assert.strictEqual(activeWeb.status, 'needsAttention');
+    assert.strictEqual(activeWeb.attentionEventId, 'event-web-new');
+    assert.strictEqual(result.attentionCount, 2);
+    assert.strictEqual(result.activeAttentionCount, 1);
     assert.ok(result.activeSessions.some(session => session.pending && session.backend === 'vscode'
         && session.primaryRootId === 'root-app'));
     assert.ok(result.activeSessions.some(session => session.pending && session.backend === 'tmux'

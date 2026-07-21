@@ -2,6 +2,7 @@
 
 import type { AiSessionProviderId, CodexSession } from '../models';
 import type { ActiveAiSessionTerminalIdentity } from '../aiSessions/activeTerminalHighlight';
+import type { AttentionAggregate } from '../aiSessions/attentionAggregate';
 import type { AiSessionExecutionSnapshot } from '../aiSessions/executionMonitor';
 import type {
     AiSessionPendingRuntimeSnapshot,
@@ -23,6 +24,10 @@ import {
     normalizeWorkspaceHostPath,
 } from './sessionAssignment';
 import type { OpenWorkspace, WorkspaceRoot } from './types';
+import {
+    buildWorkspaceSessionAttentionIndex,
+    getWorkspaceSessionAttention,
+} from './sessionAttention';
 import { buildWorkspaceAiSessionViewModel } from './viewModels';
 
 type HydrationProvider = Pick<AiSessionProviderDefinition, 'id' | 'label'>;
@@ -38,6 +43,7 @@ export interface HydrateWorkspaceAiSessionsInput<TTerminal = unknown> {
     pendingRuntimes?: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[];
     executionSnapshot?: Readonly<Record<string, AiSessionExecutionSnapshot>>;
     focusedIdentity?: AiSessionRuntimeIdentity | ActiveAiSessionTerminalIdentity | null;
+    attentionAggregate?: AttentionAggregate | null;
     activeProvider?: AiSessionProviderId;
     expanded?: boolean;
 }
@@ -75,6 +81,9 @@ interface ProjectablePendingRuntime<TTerminal> extends AiSessionPendingRuntimeSn
 export function hydrateWorkspaceAiSessions<TTerminal = unknown>(
     input: HydrateWorkspaceAiSessionsInput<TTerminal>
 ): WorkspaceAiSessionViewModel {
+    const attentionByRootAndSession = buildWorkspaceSessionAttentionIndex(
+        input.attentionAggregate || null
+    );
     const activeRuntimes = deduplicateActiveRuntimes((input.activeRuntimes || [])
         .filter(runtime => hasWorkspaceRuntimeContinuity(input.workspace, runtime)));
     const pendingRuntimes = deduplicatePendingRuntimes((input.pendingRuntimes || [])
@@ -110,11 +119,18 @@ export function hydrateWorkspaceAiSessions<TTerminal = unknown>(
         ).map(session => {
             const root = rootBySessionId.get(session.id);
             const key = getAiSessionKey(provider.id, session.id);
+            const attention = root && getWorkspaceSessionAttention(
+                attentionByRootAndSession,
+                root.uri,
+                provider.id,
+                session.id
+            );
             return {
                 ...session,
                 provider: provider.id,
                 active: activeSessionKeys.has(key),
                 focused: focusedSessionKey === key,
+                ...(attention ? { attention } : {}),
                 primaryRootId: root.id,
                 primaryRootLabel: root.name,
             };

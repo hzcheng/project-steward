@@ -2,6 +2,7 @@
 
 import type { AiSessionProviderId, CodexSession } from '../models';
 import type { ActiveAiSessionTerminalIdentity } from '../aiSessions/activeTerminalHighlight';
+import type { AttentionAggregate } from '../aiSessions/attentionAggregate';
 import type { AiSessionExecutionSnapshot } from '../aiSessions/executionMonitor';
 import { getAiSessionScanMaxFiles } from '../aiSessions/scanOptions';
 import type {
@@ -41,6 +42,7 @@ export interface WorkspaceSessionHydrationControllerOptions<TTerminal = unknown>
     getPendingRuntimes: () => readonly AiSessionPendingRuntimeSnapshot<TTerminal>[];
     getExecutionSnapshot: () => Readonly<Record<string, AiSessionExecutionSnapshot>>;
     getFocusedIdentity: () => AiSessionRuntimeIdentity | ActiveAiSessionTerminalIdentity | null;
+    getAttentionAggregate: () => AttentionAggregate | null;
     nowMs?: () => number;
     logDiagnostic?: (event: Record<string, unknown>) => void;
 }
@@ -79,6 +81,7 @@ export class WorkspaceSessionHydrationController<TTerminal = unknown> {
             pendingRuntimes: this.options.getPendingRuntimes(),
             executionSnapshot: this.options.getExecutionSnapshot(),
             focusedIdentity: this.options.getFocusedIdentity(),
+            attentionAggregate: this.options.getAttentionAggregate(),
             activeProvider: this.options.getActiveProvider(workspace.scopeIdentity),
             expanded: this.options.getExpanded(workspace.scopeIdentity),
         });
