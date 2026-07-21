@@ -38,6 +38,8 @@ const workspaceSessionAssignment = require('../out/workspaces/sessionAssignment'
 const workspaceSessionHydration = require('../out/workspaces/sessionHydration');
 const WorkspaceSessionHydrationController = require('../out/workspaces/sessionHydrationController')
     .WorkspaceSessionHydrationController;
+const WorkspacePendingSessionPromotionController = require('../out/workspaces/pendingSessionPromotionController')
+    .WorkspacePendingSessionPromotionController;
 const workspacePrimaryRootStore = require('../out/workspaces/primaryRootStore');
 const WorkspacePrimaryRootStore = workspacePrimaryRootStore.WorkspacePrimaryRootStore;
 const AiSessionTerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
@@ -616,6 +618,7 @@ function runWorkspaceSessionHydrationChecks() {
             eventIds: ['event-wrong-root'], reasons: ['failed'], observedAtMs: 130,
         }],
     };
+    const readNotifications = [];
     const controller = new WorkspaceSessionHydrationController({
         providers: providersForHydration,
         readCoordinator,
@@ -631,10 +634,17 @@ function runWorkspaceSessionHydrationChecks() {
         getExecutionSnapshot: () => ({}),
         getFocusedIdentity: () => outsideNavigationRuntime.identity,
         getAttentionAggregate: () => workspaceAttention,
+        onDidReadSessions: (notifiedWorkspace, sessionResults, reason) => {
+            readNotifications.push({ notifiedWorkspace, sessionResults, reason });
+        },
     });
 
     const result = controller.hydrate(workspace);
 
+    assert.strictEqual(readNotifications.length, 1);
+    assert.strictEqual(readNotifications[0].notifiedWorkspace, workspace);
+    assert.strictEqual(readNotifications[0].reason, 'workspace-test');
+    assert.strictEqual(readNotifications[0].sessionResults.codex.sessions[0].id, 'api-history');
     assert.strictEqual(result.workspaceScopeIdentity, workspace.scopeIdentity);
     assert.strictEqual(result.workspaceNavigationIdentity, workspace.navigationIdentity);
     assert.deepStrictEqual(result.sessionsByProvider.codex.map(value => [value.id, value.primaryRootId]), [
@@ -1383,6 +1393,172 @@ async function runPendingTerminalResolverChecks() {
     });
     assert.deepStrictEqual(partialAliases, [['codex', 'session-0', 'First Alias']]);
     assert.strictEqual(partialSyncs, 1, 'partial success must synchronize exactly once');
+}
+
+async function runWorkspacePendingSessionPromotionChecks() {
+    const workspace = {
+        navigationIdentity: 'workspace-navigation',
+        scopeIdentity: 'workspace-scope',
+        kind: 'savedMultiRoot',
+        displayName: 'Workspace',
+        navigationUri: 'file:///work/workspace.code-workspace',
+        environment: 'local',
+        roots: [{
+            id: 'root-app', name: 'App', uri: 'file:///work/app',
+            hostPath: '/work/app', ordinal: 0,
+        }],
+    };
+    const providersForPromotion = [{
+        id: 'codex', terminalNamePrefix: 'Codex',
+        projectSessionsKey: 'codexSessions', terminalCwdFields: ['cwd'],
+    }];
+    const sessionResults = {
+        codex: {
+            available: true, scannedFiles: 1, parsedFiles: 1,
+            sessions: [{
+                id: 'session-final', cwd: '/work/app',
+                updatedAt: '2026-07-22T10:00:01.000Z',
+            }],
+        },
+    };
+    const makePending = (scopeIdentity = workspace.scopeIdentity) => ({
+        identity: createTestAiSessionRuntimeIdentity(
+            'codex', '/work/app', { pendingId: 'pending-workspace' }, {
+                workspaceScopeIdentity: scopeIdentity,
+                workspaceNavigationIdentity: scopeIdentity === workspace.scopeIdentity
+                    ? workspace.navigationIdentity : 'other-navigation',
+                workspaceRootHostPaths: ['/work/app'],
+            }
+        ),
+        backend: 'vscode', state: 'pending', markerPath: '/tmp/pending-workspace.done',
+        runStartedAtMs: Date.parse('2026-07-22T10:00:00.000Z'), attached: true,
+        createdAt: '2026-07-22T10:00:00.000Z', excludedSessionIds: [],
+        title: 'New Codex session',
+    });
+    const makeFinal = pending => ({
+        ...pending,
+        identity: {
+            ...pending.identity,
+            pendingId: undefined,
+            sessionId: 'session-final',
+        },
+        state: 'active',
+    });
+
+    async function runSuccessCase() {
+        const inScope = makePending();
+        const outOfScope = makePending('other-scope');
+        let pending = [inScope, outOfScope];
+        let active = [];
+        const promotions = [];
+        const aliases = [];
+        const refreshReasons = [];
+        let syncCount = 0;
+        let evaluationCount = 0;
+        const controller = new WorkspacePendingSessionPromotionController({
+            providers: providersForPromotion,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            runtimeCoordinator: {
+                getPending: () => pending,
+                getActive: () => active,
+                promotePending: async (identity, sessionId) => {
+                    promotions.push([identity.pendingId, sessionId]);
+                    const final = makeFinal(inScope);
+                    pending = [outOfScope];
+                    active = [final];
+                    return [final];
+                },
+            },
+            setAlias: (providerId, sessionId, alias) => aliases.push([providerId, sessionId, alias]),
+            syncActiveRuntime: () => { syncCount++; },
+            evaluateExecution: () => { evaluationCount++; },
+            scheduleRefresh: reason => refreshReasons.push(reason),
+        });
+
+        await controller.promote(workspace, sessionResults, 'watcher');
+        assert.deepStrictEqual(promotions, [['pending-workspace', 'session-final']]);
+        assert.deepStrictEqual(aliases, [['codex', 'session-final', 'New Codex session']]);
+        assert.strictEqual(syncCount, 1);
+        assert.strictEqual(evaluationCount, 1);
+        assert.deepStrictEqual(refreshReasons, ['pending-promotion']);
+    }
+
+    async function runRetryCase() {
+        const pendingRuntime = makePending();
+        let pending = [pendingRuntime];
+        let active = [];
+        let attempts = 0;
+        let syncCount = 0;
+        let evaluationCount = 0;
+        const aliases = [];
+        const controller = new WorkspacePendingSessionPromotionController({
+            providers: providersForPromotion,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            runtimeCoordinator: {
+                getPending: () => pending,
+                getActive: () => active,
+                promotePending: async () => {
+                    attempts++;
+                    if (attempts === 1) return [];
+                    const final = makeFinal(pendingRuntime);
+                    pending = [];
+                    active = [final];
+                    return [final];
+                },
+            },
+            setAlias: (providerId, sessionId, alias) => aliases.push([providerId, sessionId, alias]),
+            syncActiveRuntime: () => { syncCount++; },
+            evaluateExecution: () => { evaluationCount++; },
+            scheduleRefresh: () => undefined,
+        });
+
+        await controller.promote(workspace, sessionResults, 'first-scan');
+        await controller.promote(workspace, sessionResults, 'retry-scan');
+        assert.strictEqual(attempts, 2);
+        assert.strictEqual(syncCount, 1);
+        assert.strictEqual(evaluationCount, 1);
+        assert.strictEqual(aliases.length, 1);
+    }
+
+    async function runConcurrentCase() {
+        const pendingRuntime = makePending();
+        let pending = [pendingRuntime];
+        let active = [];
+        let releasePromotion;
+        const promotionGate = new Promise(resolve => { releasePromotion = resolve; });
+        let attempts = 0;
+        const controller = new WorkspacePendingSessionPromotionController({
+            providers: providersForPromotion,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            runtimeCoordinator: {
+                getPending: () => pending,
+                getActive: () => active,
+                promotePending: async () => {
+                    attempts++;
+                    await promotionGate;
+                    const final = makeFinal(pendingRuntime);
+                    pending = [];
+                    active = [final];
+                    return [final];
+                },
+            },
+            setAlias: () => undefined,
+            syncActiveRuntime: () => undefined,
+            evaluateExecution: () => undefined,
+            scheduleRefresh: () => undefined,
+        });
+
+        const first = controller.promote(workspace, sessionResults, 'first');
+        const second = controller.promote(workspace, sessionResults, 'second');
+        releasePromotion();
+        await Promise.all([first, second]);
+        assert.strictEqual(attempts, 1,
+            'concurrent hydration must not promote one pending identity twice');
+    }
+
+    await runSuccessCase();
+    await runRetryCase();
+    await runConcurrentCase();
 }
 
 function runScanOptionChecks() {
@@ -4878,7 +5054,8 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('new AiSessionAliasController({'));
     assert.ok(dashboard.includes('aiSessionAliasController.getAll()'));
     assert.ok(dashboard.includes('aiSessionAliasController.saveAll(aliases)'));
-    assert.ok(!dashboard.includes('aiSessionAliasController.set('));
+    assert.strictEqual((dashboard.match(/aiSessionAliasController\.set\(/g) || []).length, 1,
+        'workspace pending promotion must persist the resolved Session alias once');
     assert.ok(dashboard.includes('aiSessionAliasController.remove('));
     assert.ok(dashboard.includes('aiSessionAliasController.getOriginalName('));
     assert.ok(!dashboard.includes('function getAiSessionAliases('));
@@ -8835,6 +9012,7 @@ async function main() {
     runPendingTerminalMatcherChecks();
     runTerminalCandidateChecks();
     await runPendingTerminalResolverChecks();
+    await runWorkspacePendingSessionPromotionChecks();
     runScanOptionChecks();
     runTerminalCwdChecks();
     runDisplayChecks();

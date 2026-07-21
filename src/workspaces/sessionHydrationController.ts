@@ -43,6 +43,11 @@ export interface WorkspaceSessionHydrationControllerOptions<TTerminal = unknown>
     getExecutionSnapshot: () => Readonly<Record<string, AiSessionExecutionSnapshot>>;
     getFocusedIdentity: () => AiSessionRuntimeIdentity | ActiveAiSessionTerminalIdentity | null;
     getAttentionAggregate: () => AttentionAggregate | null;
+    onDidReadSessions?: (
+        workspace: OpenWorkspace,
+        sessionResults: Record<AiSessionProviderId, AiSessionReadResult>,
+        reason: string
+    ) => void;
     nowMs?: () => number;
     logDiagnostic?: (event: Record<string, unknown>) => void;
 }
@@ -70,6 +75,7 @@ export class WorkspaceSessionHydrationController<TTerminal = unknown> {
         const candidatePaths = getWorkspaceAiSessionCandidatePaths(workspace);
         const maxFiles = getAiSessionScanMaxFiles(reason, this.options.incrementalScanMaxFiles);
         const sessionResults = this.options.readCoordinator.getResults({ candidatePaths, reason, maxFiles });
+        this.options.onDidReadSessions?.(workspace, sessionResults, reason);
         const result = hydrateWorkspaceAiSessions({
             workspace,
             providers: this.options.providers,

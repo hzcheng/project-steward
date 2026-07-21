@@ -123,6 +123,7 @@ import { WorkspaceContextResolver } from './workspaces/contextResolver';
 import { WorkspacePrimaryRootStore } from './workspaces/primaryRootStore';
 import { PendingWorkspaceSaveStore } from './workspaces/pendingWorkspaceSaveStore';
 import { SavedWorkspaceProjectAdapter } from './workspaces/savedWorkspaceProjectAdapter';
+import { WorkspacePendingSessionPromotionController } from './workspaces/pendingSessionPromotionController';
 import { WorkspaceSessionHydrationController } from './workspaces/sessionHydrationController';
 import type { OpenWorkspace } from './workspaces/types';
 import { buildWorkspaceDashboardSearchCatalog } from './webview/dashboardViewModel';
@@ -442,6 +443,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             vscode.commands.executeCommand('workbench.action.saveWorkspaceAs')
         ),
     });
+    const workspacePendingSessionPromotionController =
+        new WorkspacePendingSessionPromotionController<vscode.Terminal>({
+            providers: aiSessionProviders,
+            getSessionKey: getAiSessionKey,
+            runtimeCoordinator: aiSessionRuntimeCoordinator,
+            setAlias: (providerId, sessionId, alias) =>
+                aiSessionAliasController.set(providerId, sessionId, alias),
+            syncActiveRuntime: () => activeAiSessionTerminalHighlighter.sync(),
+            evaluateExecution: () => aiSessionExecutionController.evaluate(),
+            scheduleRefresh: () => refreshAiSessionViewsIncrementally(),
+            logDiagnostic: logAiSessionDiagnostic,
+        });
     const workspaceSessionHydrationController = new WorkspaceSessionHydrationController<vscode.Terminal>({
         providers: aiSessionProviders,
         readCoordinator: aiSessionReadCoordinator,
@@ -458,6 +471,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getExecutionSnapshot: () => aiSessionExecutionController.getSnapshot(),
         getFocusedIdentity: () => getFocusedAiSessionRuntimeIdentity(),
         getAttentionAggregate: () => aiSessionAttentionController.getEffectiveAggregate(),
+        onDidReadSessions: (workspace, sessionResults, reason) => {
+            void workspacePendingSessionPromotionController.promote(
+                workspace,
+                sessionResults,
+                reason
+            );
+        },
         logDiagnostic: logAiSessionDiagnostic,
     });
     const providerDirectoryCapability = new ProviderDirectoryCapabilityProbe({
