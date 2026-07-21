@@ -5,6 +5,7 @@ import type { OpenWorkspaceRecord } from './protocol';
 
 export interface WorkspaceNavigationControllerOptions<TUri = unknown> {
     getRecord: (cardId: string) => OpenWorkspaceRecord | null;
+    canNavigateDirectly?: (record: OpenWorkspaceRecord) => boolean;
     getAvailableCommands: () => Thenable<string[]> | Promise<string[]>;
     executeCommand: (command: string, ...args: unknown[]) => Thenable<unknown> | Promise<unknown>;
     parseUri: (value: string) => TUri;
@@ -24,12 +25,20 @@ export class WorkspaceNavigationController<TUri = unknown> {
             return;
         }
 
-        if (isDirectWorkspaceNavigationSupported(record.environment, record.kind)) {
-            await this.options.executeCommand(
-                'vscode.openFolder',
-                this.options.parseUri(record.navigationUri),
-                { forceNewWindow: true },
-            );
+        const canNavigateDirectly = this.options.canNavigateDirectly
+            || (candidate => isDirectWorkspaceNavigationSupported(candidate.environment, candidate.kind));
+        if (canNavigateDirectly(record)) {
+            try {
+                await this.options.executeCommand(
+                    'vscode.openFolder',
+                    this.options.parseUri(record.navigationUri),
+                    { forceNewWindow: true },
+                );
+            } catch (_error) {
+                this.options.showWarningMessage(
+                    'Unable to switch directly to this workspace. Use VS Code Switch Window instead.',
+                );
+            }
             return;
         }
 

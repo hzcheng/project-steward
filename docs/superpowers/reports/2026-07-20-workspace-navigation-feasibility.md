@@ -14,7 +14,7 @@ the observed `1.127.0`/`1.125.1` discrepancy. `/usr/local/bin/code` is a wrapper
 that reports that a local `code` or `code-insiders` executable is not installed,
 so it is not a Local/UI-host install path.
 
-## Package and Dev Container Installation
+## Package, Dev Container Installation, and Cleanup
 
 The probe was compiled and packaged from `spikes/workspace-navigation`, not
 from the repository root:
@@ -47,8 +47,31 @@ those warnings do not alter the compiled payload identity. No Local/UI, SSH,
 or WSL host was installed. Installation and activation do not constitute
 navigation evidence.
 
-The disposable workspace extension records source and target instance IDs,
-target focus events, and the live probe-registration count before and after
+Review cleanup removed the disposable extension from the confirmed Dev
+Container host. A newly confirmed live Dev Container IPC reported no matching
+entry in a successful `--list-extensions --show-versions` call. The hardened
+probe source is version `0.0.3` and was compiled but not installed.
+VS Code-managed `0.0.1`/`0.0.2` extension directories remain on disk, but the
+authoritative extension list has no installed probe entry; those directories
+were not manually deleted.
+
+Exactly five files under the probe-owned
+`.../globalStorage/hzcheng.project-steward-workspace-navigation-probe/workspace-navigation-probe/v1`
+directory were moved, not deleted, to the recoverable backup
+`/tmp/project-steward-workspace-navigation-probe-v1-backup-task12-review` and
+checksummed. No other extension data was touched. Five already-running
+Extension Hosts from the old `activationEvents: ["*"]` build recreated
+registration files within three seconds. Uninstall does not stop an already
+activated Extension Host; those windows require reload before writes cease,
+after which the five-second registration TTL makes the recreated records
+ineligible as live evidence. This report does not claim that the recreated
+directory is clean.
+
+The hardened disposable workspace extension activates only for explicit
+commands. `start` opens a bounded ten-minute trial lifecycle; `stop` removes
+its registration and heartbeat. It records source and target instance IDs,
+target focus events, source heartbeat timestamps, and explicitly diagnostic
+`registrationCountBefore`/`registrationCountAfter` values before and after
 calling only:
 
 ```ts
@@ -59,8 +82,9 @@ vscode.commands.executeCommand(
 );
 ```
 
-The remote CLI does not expose an authoritative desktop window count or focus
-state. Process counts are also insufficient because one window may create
+Registration counts are never named or treated as window counts. The remote
+CLI does not expose an authoritative desktop window count or focus state.
+Process counts are also insufficient because one window may create
 multiple remote processes and unrelated Dev Container windows share the same
 server. No controlled second VS Code target window is available to this
 execution, and no UI automation channel is available. Therefore even the
@@ -69,9 +93,15 @@ gate failure, not evidence that direct navigation is unsupported by VS Code.
 
 ## Matrix
 
-Every `not-runnable` result selects the safe fallback. A direct cell would
-require at least two `focused-existing` observations with identical before and
-after window counts.
+Every `not-runnable` result selects the safe fallback. A direct cell requires
+at least two matching `focused-existing` observations. Each observation must
+have non-null equal `authoritativeWindowCountBefore`/`After` values from an
+auditable `vscode-ui-automation:*` or `os-window-enumerator:*` source, distinct
+source/target instance IDs, matching cell environment/kind, an increased
+target focus sequence, and a new source heartbeat after the action started.
+The current probe has no authoritative count channel, so it writes
+`not-runnable` rather than inferring direct support from registration/process
+counts.
 
 <!-- workspace-navigation-matrix:start -->
 ```json

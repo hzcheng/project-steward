@@ -1260,6 +1260,60 @@ async function runWorkspaceNavigationControllerChecks() {
         'VS Code Switch Window is unavailable. Use File > Open Recent to switch to this workspace.',
     ]);
     assert.deepStrictEqual(executions, []);
+
+    const directRecord = makeWorkspaceRecord(90, {
+        kind: 'savedMultiRoot',
+        environment: 'devContainer',
+        navigationUri: 'vscode-remote://dev-container%2Btarget/work/direct.code-workspace',
+        roots: [makeWorkspaceRoot(90, {
+            uri: 'vscode-remote://dev-container%2Btarget/work/member-root',
+        })],
+    });
+    const directParsedUris = [];
+    const directExecutions = [];
+    const directWarnings = [];
+    let directExecutionFails = false;
+    const directController = new WorkspaceNavigationController({
+        getRecord: () => directRecord,
+        canNavigateDirectly: () => true,
+        getAvailableCommands: async () => ['workbench.action.switchWindow'],
+        executeCommand: async (...args) => {
+            directExecutions.push(args);
+            if (directExecutionFails) { throw new Error('forced direct navigation failure'); }
+        },
+        parseUri: value => {
+            const parsed = { parsed: value };
+            directParsedUris.push(parsed);
+            return parsed;
+        },
+        showInformationMessage: () => undefined,
+        showWarningMessage: message => { directWarnings.push(message); },
+        refresh: () => undefined,
+    });
+    await directController.open('direct-card');
+    assert.deepStrictEqual(directParsedUris, [{ parsed: directRecord.navigationUri }]);
+    assert.deepStrictEqual(directExecutions, [[
+        'vscode.openFolder',
+        directParsedUris[0],
+        { forceNewWindow: true },
+    ]]);
+    assert.strictEqual(JSON.stringify(directParsedUris).includes(directRecord.roots[0].uri), false);
+    assert.strictEqual(JSON.stringify(directExecutions).includes(directRecord.roots[0].uri), false);
+
+    directExecutionFails = true;
+    directParsedUris.length = 0;
+    directExecutions.length = 0;
+    await directController.open('direct-card');
+    assert.deepStrictEqual(directExecutions, [[
+        'vscode.openFolder',
+        directParsedUris[0],
+        { forceNewWindow: true },
+    ]]);
+    assert.deepStrictEqual(directWarnings, [
+        'Unable to switch directly to this workspace. Use VS Code Switch Window instead.',
+    ]);
+    assert.strictEqual(directExecutions.some(args => args[0] === 'workbench.action.switchWindow'), false);
+    assert.strictEqual(JSON.stringify(directExecutions).includes(directRecord.roots[0].uri), false);
 }
 
 async function runOpenWorkspaceHardeningChecks() {

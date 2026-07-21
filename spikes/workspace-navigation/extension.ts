@@ -23,19 +23,26 @@ interface ProbeRegistration {
     focused: boolean;
     focusSequence: number;
     focusedAtMs: number;
+    heartbeatAtMs: number;
     updatedAtMs: number;
 }
 
 interface ProbeObservation {
     version: 1;
     recordedAt: string;
+    startedAtMs: number;
     environment: ProbeEnvironment;
     kind: WorkspaceKind;
     sourceInstanceId: string;
     targetInstanceId: string | null;
     navigationUri: string | null;
-    windowCountBefore: number;
-    windowCountAfter: number;
+    registrationCountBefore: number;
+    registrationCountAfter: number;
+    authoritativeWindowCountBefore: number | null;
+    authoritativeWindowCountAfter: number | null;
+    authoritativeWindowCountSource: string | null;
+    sourceHeartbeatBeforeMs: number;
+    sourceHeartbeatAfterMs: number | null;
     targetFocusSequenceBefore: number;
     targetFocusSequenceAfter: number | null;
     outcome: ProbeOutcome;
@@ -44,6 +51,7 @@ interface ProbeObservation {
 
 const REGISTRATION_TTL_MS = 5_000;
 const OBSERVATION_DELAY_MS = 1_500;
+const LIFECYCLE_MAX_MS = 10 * 60 * 1_000;
 const INSTANCE_ID_PATTERN = /^[a-f0-9]{32}$/;
 
 function delay(ms: number): Promise<void> {
@@ -74,9 +82,7 @@ function resolveWorkspace(): Pick<ProbeRegistration, 'kind' | 'displayName' | 'n
             navigationUri: folders[0].uri.toString(),
         };
     }
-    if (!workspaceFile || folders.length < 1) {
-        return null;
-    }
+    if (!workspaceFile || folders.length < 1) { return null; }
     return {
         kind: workspaceFile.scheme === 'untitled' ? 'untitledMultiRoot' : 'savedMultiRoot',
         displayName: vscode.workspace.name || workspaceFile.path.split('/').pop() || workspaceFile.toString(),
@@ -104,6 +110,7 @@ function parseRegistration(raw: string, nowMs: number): ProbeRegistration | null
             || nowMs - value.updatedAtMs > REGISTRATION_TTL_MS
             || typeof value.focusSequence !== 'number'
             || typeof value.focusedAtMs !== 'number'
+            || typeof value.heartbeatAtMs !== 'number'
             || typeof value.focused !== 'boolean'
             || typeof value.displayName !== 'string'
             || !['local', 'ssh', 'wsl', 'devContainer', 'remote'].includes(value.environment as string)
@@ -147,13 +154,19 @@ export function activate(context: vscode.ExtensionContext): void {
     const registrationsDirectory = path.join(probeRoot, 'registrations');
     const resultsDirectory = path.join(probeRoot, 'results');
     const registrationPath = path.join(registrationsDirectory, `${instanceId}.json`);
-    let focused = true;
+    let focused = false;
     let focusSequence = 0;
-    let focusedAtMs = Date.now();
+    let focusedAtMs = 0;
+    let heartbeatAtMs = 0;
+    let heartbeat: NodeJS.Timeout | null = null;
+    let lifecycleTimeout: NodeJS.Timeout | null = null;
+    let focusDisposable: vscode.Disposable | null = null;
 
-    async function publishRegistration(): Promise<void> {
-        if (!workspace) { return; }
-        const registration: ProbeRegistration = {
+    async function publishRegistration(heartbeatTick = false): Promise<void> {
+        if (!workspace || heartbeat === null) { return; }
+        const nowMs = Date.now();
+        if (heartbeatTick) { heartbeatAtMs = nowMs; }
+        await writeJsonAtomically(registrationPath, {
             version: 1,
             instanceId,
             processId: process.pid,
@@ -164,56 +177,102 @@ export function activate(context: vscode.ExtensionContext): void {
             focused,
             focusSequence,
             focusedAtMs,
-            updatedAtMs: Date.now(),
-        };
-        await writeJsonAtomically(registrationPath, registration);
+            heartbeatAtMs,
+            updatedAtMs: nowMs,
+        } as ProbeRegistration);
     }
 
-    const heartbeat = setInterval(() => {
-        publishRegistration().catch(error => output.appendLine(`registration error: ${errorMessage(error)}`));
-    }, 1_000);
-    void publishRegistration();
-
-    const focusDisposable = vscode.window.onDidChangeWindowState(state => {
-        focused = state.focused;
-        if (focused) {
-            focusSequence += 1;
-            focusedAtMs = Date.now();
+    async function stopLifecycle(): Promise<void> {
+        if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
+        if (lifecycleTimeout !== null) { clearTimeout(lifecycleTimeout); lifecycleTimeout = null; }
+        if (focusDisposable) { focusDisposable.dispose(); focusDisposable = null; }
+        try {
+            await fs.promises.unlink(registrationPath);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
         }
-        void publishRegistration();
-    });
+    }
 
+    async function startLifecycle(): Promise<boolean> {
+        if (!workspace) {
+            vscode.window.showWarningMessage('Workspace navigation probe requires a folder or multi-root workspace.');
+            return false;
+        }
+        if (heartbeat !== null) { return true; }
+        focusDisposable = vscode.window.onDidChangeWindowState(state => {
+            focused = state.focused;
+            if (focused) { focusSequence += 1; focusedAtMs = Date.now(); }
+            void publishRegistration();
+        });
+        heartbeat = setInterval(() => {
+            publishRegistration(true).catch(error => output.appendLine(`registration error: ${errorMessage(error)}`));
+        }, 1_000);
+        lifecycleTimeout = setTimeout(() => {
+            void stopLifecycle().then(() => {
+                output.appendLine('WORKSPACE_NAVIGATION_PROBE lifecycle stopped after 10 minutes.');
+            });
+        }, LIFECYCLE_MAX_MS);
+        await publishRegistration(true);
+        return true;
+    }
+
+    async function recordObservation(observation: ProbeObservation, suffix: string): Promise<void> {
+        await writeJsonAtomically(path.join(resultsDirectory, `${Date.now()}-${instanceId}-${suffix}.json`), observation);
+        output.appendLine(`WORKSPACE_NAVIGATION_PROBE ${JSON.stringify(observation)}`);
+        output.show(true);
+    }
+
+    const startDisposable = vscode.commands.registerCommand(
+        'projectStewardWorkspaceNavigationProbe.start',
+        async () => {
+            if (await startLifecycle()) {
+                vscode.window.showInformationMessage('Workspace navigation probe trial lifecycle started for 10 minutes.');
+            }
+        }
+    );
+    const stopDisposable = vscode.commands.registerCommand(
+        'projectStewardWorkspaceNavigationProbe.stop',
+        async () => {
+            await stopLifecycle();
+            vscode.window.showInformationMessage('Workspace navigation probe trial lifecycle stopped.');
+        }
+    );
     const runDisposable = vscode.commands.registerCommand(
         'projectStewardWorkspaceNavigationProbe.run',
         async () => {
-            if (!workspace) {
-                vscode.window.showWarningMessage('Workspace navigation probe requires a folder or multi-root workspace.');
+            if (!workspace || heartbeat === null) {
+                vscode.window.showWarningMessage(
+                    'Start the workspace navigation probe trial lifecycle in both source and target windows first.'
+                );
                 return;
             }
             await publishRegistration();
             const before = await scanRegistrations(registrationsDirectory);
+            const sourceBefore = before.find(registration => registration.instanceId === instanceId);
             const candidates = before.filter(registration => registration.instanceId !== instanceId);
-            if (candidates.length === 0) {
-                const observation: ProbeObservation = {
+            if (!sourceBefore || candidates.length === 0) {
+                const startedAtMs = Date.now();
+                await recordObservation({
                     version: 1,
                     recordedAt: new Date().toISOString(),
+                    startedAtMs,
                     environment: resolveEnvironment(),
                     kind: workspace.kind,
                     sourceInstanceId: instanceId,
                     targetInstanceId: null,
                     navigationUri: null,
-                    windowCountBefore: before.length,
-                    windowCountAfter: before.length,
+                    registrationCountBefore: before.length,
+                    registrationCountAfter: before.length,
+                    authoritativeWindowCountBefore: null,
+                    authoritativeWindowCountAfter: null,
+                    authoritativeWindowCountSource: null,
+                    sourceHeartbeatBeforeMs: sourceBefore ? sourceBefore.heartbeatAtMs : 0,
+                    sourceHeartbeatAfterMs: null,
                     targetFocusSequenceBefore: 0,
                     targetFocusSequenceAfter: null,
                     outcome: 'not-runnable',
-                    reason: 'No other live probe registration is available as a controlled target.',
-                };
-                const resultPath = path.join(resultsDirectory, `${Date.now()}-${instanceId}-none.json`);
-                await writeJsonAtomically(resultPath, observation);
-                output.appendLine(`WORKSPACE_NAVIGATION_PROBE ${JSON.stringify(observation)}`);
-                output.show(true);
-                vscode.window.showWarningMessage(`Workspace navigation probe: ${observation.reason}`);
+                    reason: 'No other live, explicitly started probe registration is available as a target.',
+                }, 'none');
                 return;
             }
             const selected = await vscode.window.showQuickPick(
@@ -229,7 +288,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
             const target = selected.target;
             const startedAtMs = Date.now();
-            let reason: string | null = null;
+            let commandError: string | null = null;
             try {
                 await vscode.commands.executeCommand(
                     'vscode.openFolder',
@@ -237,66 +296,49 @@ export function activate(context: vscode.ExtensionContext): void {
                     { forceNewWindow: true }
                 );
             } catch (error) {
-                reason = `vscode.openFolder failed: ${errorMessage(error)}`;
+                commandError = `vscode.openFolder failed: ${errorMessage(error)}`;
             }
             await delay(OBSERVATION_DELAY_MS);
             const after = await scanRegistrations(registrationsDirectory);
             const sourceAfter = after.find(registration => registration.instanceId === instanceId);
             const targetAfter = after.find(registration => registration.instanceId === target.instanceId);
-            let outcome: ProbeOutcome;
-            if (reason) {
-                outcome = 'unsupported';
-            } else if (after.length > before.length) {
-                outcome = 'opened-duplicate';
-                reason = 'Live workspace-extension instance count increased after vscode.openFolder.';
-            } else if (!sourceAfter) {
-                outcome = 'replaced-source';
-                reason = 'The source workspace-extension instance disappeared after vscode.openFolder.';
-            } else if (targetAfter
-                && targetAfter.focusSequence > target.focusSequence
-                && targetAfter.focusedAtMs >= startedAtMs
-                && after.length === before.length) {
-                outcome = 'focused-existing';
-            } else {
-                outcome = 'unsupported';
-                reason = 'The target focus event was not observed with an unchanged live instance count.';
-            }
-
-            const observation: ProbeObservation = {
+            const reason = commandError || [
+                'No authoritative VS Code UI window-count channel is available.',
+                `Registration count ${before.length} -> ${after.length} is diagnostic only.`,
+                'Probe registrations and process counts cannot prove an unchanged desktop window count.',
+            ].join(' ');
+            await recordObservation({
                 version: 1,
                 recordedAt: new Date().toISOString(),
+                startedAtMs,
                 environment: target.environment,
                 kind: target.kind,
                 sourceInstanceId: instanceId,
                 targetInstanceId: target.instanceId,
                 navigationUri: target.navigationUri,
-                windowCountBefore: before.length,
-                windowCountAfter: after.length,
+                registrationCountBefore: before.length,
+                registrationCountAfter: after.length,
+                authoritativeWindowCountBefore: null,
+                authoritativeWindowCountAfter: null,
+                authoritativeWindowCountSource: null,
+                sourceHeartbeatBeforeMs: sourceBefore.heartbeatAtMs,
+                sourceHeartbeatAfterMs: sourceAfter ? sourceAfter.heartbeatAtMs : null,
                 targetFocusSequenceBefore: target.focusSequence,
                 targetFocusSequenceAfter: targetAfter ? targetAfter.focusSequence : null,
-                outcome,
+                outcome: commandError ? 'unsupported' : 'not-runnable',
                 reason,
-            };
-            const resultPath = path.join(
-                resultsDirectory,
-                `${Date.now()}-${instanceId}-${target.instanceId}.json`
-            );
-            await writeJsonAtomically(resultPath, observation);
-            output.appendLine(`WORKSPACE_NAVIGATION_PROBE ${JSON.stringify(observation)}`);
-            output.show(true);
-            vscode.window.showInformationMessage(`Workspace navigation probe: ${outcome}`);
+            }, target.instanceId);
         }
     );
-
     const statusDisposable = vscode.commands.registerCommand(
         'projectStewardWorkspaceNavigationProbe.showStatus',
         async () => {
-            const registrations = await scanRegistrations(registrationsDirectory);
             output.appendLine(`WORKSPACE_NAVIGATION_PROBE_STATUS ${JSON.stringify({
                 instanceId,
                 workspace,
                 environment: resolveEnvironment(),
-                liveRegistrations: registrations,
+                lifecycleStarted: heartbeat !== null,
+                liveRegistrations: await scanRegistrations(registrationsDirectory),
             })}`);
             output.show(true);
         }
@@ -304,18 +346,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         output,
-        focusDisposable,
+        startDisposable,
+        stopDisposable,
         runDisposable,
         statusDisposable,
-        {
-            dispose: () => {
-                clearInterval(heartbeat);
-                fs.promises.unlink(registrationPath).catch(error => {
-                    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-                        output.appendLine(`registration cleanup error: ${errorMessage(error)}`);
-                    }
-                });
-            },
-        }
+        { dispose: () => { void stopLifecycle(); } }
     );
 }
