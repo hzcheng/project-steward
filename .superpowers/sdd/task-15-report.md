@@ -14,22 +14,23 @@ support matrix. This task does not claim release acceptance.
   trust/capability preflight, fail-closed navigation fallback, saved-project
   preservation, UI Bridge v2 requirement, and intentional non-adoption of
   legacy runtime bindings.
-- Made `package:release` run the production main build before bundling and
-  packaging both extensions.
+- Made `package:release` clean only four explicit generated output directories,
+  compile both TypeScript projects, build both production bundles/assets, and
+  then package both extensions.
 - Tightened the main VSIX allow-list. It retains only production bundle/media
   files plus JavaScript from `out/workspaces` and `out/openWorkspaces`; it
   excludes sourcemaps, repository workflows, all docs/design/reports,
   `.superpowers`, sources, scripts, spikes, disposable probes, and test data.
-- Added release-note, production-artifact, v2 bridge-bundle, ignore-rule, and
-  acceptance-matrix assertions.
+- Added release-note, real VSIX ZIP-entry/manifest/bundle, v2 bridge, exact
+  archive allow-list, seeded-stale-output, and acceptance-matrix assertions.
 - Generated the complete acceptance report with machine-checked marker blocks:
   12 unique navigation cells, 108 unique launch cells, and 12 unique
   environment/workspace-kind lifecycle cells. Every manual cell is explicitly
   `BLOCKED` with a concrete environment reason.
-- Added a checked-in saved-project fixture with member paths, descriptions,
-  colors, favorite state, and favorite order. The safety suite proves identical
-  serialization before activation, after ordinary use, and after appending one
-  encompassing workspace project.
+- Added a checked-in real serialized `Group[]` saved-project fixture. The
+  safety suite seeds a real ProjectService store and proves serialized equality
+  through production startup migration, ordinary reads, and a save routed
+  through the production adapter, mutation controller, and service.
 - Closed the Task 7 review minors: a non-null zero-root card renders the empty
   state, a successful current-group update preserves OTHER WINDOWS, and both
   history and active rows render the `Outside workspace` chip.
@@ -66,16 +67,18 @@ AssertionError: a non-null invalid zero-root snapshot must render the empty curr
 1 !== 0
 ```
 
-The renderer now rejects that invalid snapshot. The checked-in preservation
-fixture initially failed with `ENOENT`; after adding the fixture, the open
-workspace safety suite passed its before/ordinary-use/after-save byte checks.
+The renderer now rejects that invalid snapshot. The original checked-in
+preservation fixture then failed the new real-store assertion because it was a
+flat project list rather than serialized `Group[]`; after correcting the
+fixture, the production startup/read/save integration path passed.
 
 ### Acceptance and archive RED
 
 The acceptance report assertion first failed because the report did not exist.
 The generated report now has the exact required columns and unique Cartesian
-keys. The checker rejects missing, extra, duplicated, or non-BLOCKED manual
-cells.
+keys. The checker rejects missing, extra, duplicated, out-of-domain, or invalid
+status cells and derives overall PASS/BLOCKED from those statuses. The current
+generated rows all remain BLOCKED because none has been manually run.
 
 The first real VSIX listing exposed 19 `.map` files under the newly included
 workspace output. A packaging assertion first failed on the missing map ignore;
@@ -86,7 +89,7 @@ package audit passed.
 
 ## Fresh automated verification
 
-The final combined verification chain exited 0:
+The final verification commands exited 0:
 
 ```text
 npm run lint
@@ -129,8 +132,8 @@ runtime.identity.projectKey
 
 | Artifact | Extension | SHA-256 | Archive result |
 | --- | --- | --- | --- |
-| `artifacts/project-steward-2.1.3.vsix` | `hzcheng.project-steward@2.1.3` | `1d3e7f674f3444f8d6fadf7b03219c7a394693715673fc733c223f7053b1e273` | 36 files; 217.12 KB |
-| `artifacts/project-steward-attention-ui-bridge-0.1.3.vsix` | `hzcheng.project-steward-attention-ui-bridge@0.1.3` | `207f8f7a83a5239f8e6b5cb09511c94605e40587dd2629e999061777a35d8830` | 6 files; 14.38 KB |
+| `artifacts/project-steward-2.1.3.vsix` | `hzcheng.project-steward@2.1.3` | `c05969e541e0e2e830da7d36d5a4939b2bc6d45b3e79ec40962facd91419cbd3` | 36 files; 217.15 KB; exact entries checked |
+| `artifacts/project-steward-attention-ui-bridge-0.1.3.vsix` | `hzcheng.project-steward-attention-ui-bridge@0.1.3` | `07ffbf7746c7cebcd83aca85b0a8424354158fa55527db0257d9abc0bfbe820b` | 6 files; 14.38 KB; exact entries checked |
 
 The final main archive contains exactly seven `out/openWorkspaces/*.js` files,
 twelve `out/workspaces/*.js` files, `dist/dashboard.js`, and the generated
@@ -179,7 +182,47 @@ support matrix is explicitly narrowed and approved.
   minified, copied, or compiled asset was edited by hand.
 - Verified packaging after each allow-list correction by reading the real VSIX
   archive, not by inferring behavior from `.vscodeignore`.
-- Verified the save fixture covers unchanged member entries and the existing
-  real ProjectService migration coverage separately preserves group storage.
+- Verified the checked fixture itself passes through real ProjectService
+  storage/migration/read/write and the real ProjectMutationController save path.
 - Verified the manual blocker is visible in the heading, summary, every cell,
   and release decision; there is no overall-complete claim.
+
+## Independent-review follow-up
+
+The first independent review requested four evidence corrections. All are
+implemented without changing the BLOCKED manual decision.
+
+1. `test:release-packaging` now seeds stale generated files, calls the
+   non-recursive clean production package pipeline, and parses the two actual
+   VSIX ZIP central directories. It compares exact entries against current
+   source-derived workspace outputs, checks embedded publisher/name/version and
+   dependency metadata, inspects packaged main/bridge v2 tokens, compares
+   generated Webview/style bytes, and rejects maps, docs, sources, tests,
+   scripts, workflows, spikes, probes, `.superpowers`, duplicate ZIP entries,
+   or the stale sentinel. The GitHub workflow performs this package-and-verify
+   gate only after compile/lint.
+2. The fixture now uses the actual `Group[]` persisted shape. A real
+   ProjectService is seeded in global state, production startup migrates it to
+   settings, ordinary service reads leave its serialized JSON unchanged, and a
+   second startup saves through SavedWorkspaceProjectAdapter,
+   ProjectMutationController, and ProjectService. Byte equivalence is claimed
+   only for the controlled serialized JSON group/member prefix and source
+   store, not for VS Code's underlying storage file format.
+3. The matrix checker constructs the explicit 4×3 and 4×3×3×3 expected key
+   sets, validates every domain value and exact set equality, allows only
+   PASS/FAIL/BLOCKED, and derives overall BLOCKED from any FAIL/BLOCKED (PASS
+   only when every cell is PASS). It no longer hard-codes every future row to
+   BLOCKED; the current generated evidence remains all BLOCKED.
+4. The current-group replacement test now mounts fake current and OTHER WINDOWS
+   siblings in a real children array. `replaceWith` mutates that array, and the
+   assertions re-query the same other group and navigation-card node and verify
+   its content survived.
+
+Review RED evidence included the old package check lacking any build, the
+checked fixture failing because it was not a real Group store, the missing
+exact-domain validator, the old workflow assertions, and the former OTHER
+WINDOWS fake lacking children. Each focused gate passed after its correction.
+One full safety run hit the existing attention-unregister timing assertion;
+the isolated attention suite and the immediately repeated full safety gate both
+passed without a code change, so this is recorded as a timing flake rather than
+misrepresented as a workspace regression or silently fixed out of scope.

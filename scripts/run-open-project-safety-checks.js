@@ -2213,25 +2213,11 @@ async function runSavedWorkspaceProjectAdapterChecks() {
     const restartState = createMemoryMemento();
     const restartStore = new PendingWorkspaceSaveStore(restartState);
     await restartStore.write(untitled.scopeIdentity, now, now + PENDING_WORKSPACE_SAVE_TTL_MS);
-    const savedProjectFixturePath = path.join(
-        __dirname,
-        'fixtures',
-        'workspace-first-saved-projects.json',
-    );
-    const existingProjects = JSON.parse(fs.readFileSync(savedProjectFixturePath, 'utf8'));
+    const existingProjects = [
+        { id: 'member-app', name: 'App', path: '/work/app', favorite: true },
+        { id: 'member-lib', name: 'Lib', path: '/work/lib', description: 'Keep me' },
+    ];
     const before = JSON.parse(JSON.stringify(existingProjects));
-    const beforeActivationBytes = JSON.stringify(existingProjects);
-    const ordinaryUseAdapter = new SavedWorkspaceProjectAdapter({
-        getCurrentWorkspace: () => savedWorkspace,
-        pendingStore: new PendingWorkspaceSaveStore(createMemoryMemento()),
-        getProjectDetailsForSave: async () => assert.fail('ordinary activation must not resolve save details'),
-        saveWorkspaceProject: async () => assert.fail('ordinary activation must not mutate projects'),
-        executeSaveWorkspaceAs: async () => assert.fail('ordinary activation must not invoke Save Workspace As'),
-        nowMs: () => now,
-    });
-    await ordinaryUseAdapter.completePendingWorkspaceSave();
-    assert.strictEqual(JSON.stringify(existingProjects), beforeActivationBytes,
-        'activation and ordinary workspace use must preserve the checked-in saved-project fixture bytes');
     const restartAdapter = new SavedWorkspaceProjectAdapter({
         getCurrentWorkspace: () => savedWorkspace,
         pendingStore: restartStore,
@@ -2525,6 +2511,118 @@ async function runProjectServiceWorkspaceSaveMigrationIntegrationChecks() {
             },
         };
     }
+
+    function createStartup(service, adapter) {
+        return new DashboardStartupController({
+            stewardInfos: {
+                relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+                config: { openOnStartup: 'never' },
+            },
+            isExtensionInstalled: () => false,
+            migrateDataIfNeeded: async () => ({
+                projects: await settleMigration(() => service.migrateDataIfNeeded()),
+                todos: { migrated: false },
+            }),
+            afterProjectMigrationSucceeded: () => adapter.completePendingWorkspaceSave(),
+            refreshDashboard: () => undefined,
+            publishOpenWorkspace: () => undefined,
+            showInformationMessage: () => undefined,
+            showErrorMessage: () => undefined,
+            logError: () => undefined,
+            showSteward: () => undefined,
+            applyProjectColorToCurrentWindow: () => undefined,
+            getReopenReason: () => 0,
+            updateReopenReason: () => undefined,
+            reopenNoneValue: 0,
+            getWorkspaceName: () => 'workspace',
+            getVisibleEditorLanguageIds: () => [],
+        });
+    }
+
+    const fixturePath = path.join(__dirname, 'fixtures', 'workspace-first-saved-projects.json');
+    const fixtureGroups = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+    assert.ok(fixtureGroups.every(group => Array.isArray(group.projects)),
+        'the checked-in preservation fixture must use the real serialized Group[] store shape');
+    const fixtureBytes = JSON.stringify(fixtureGroups);
+    const fixtureState = createSerializedMemento({ projects: fixtureGroups });
+    const fixtureConfigurationValues = { storeProjectsInSettings: true };
+    primaryConfiguration = createConfiguration(fixtureConfigurationValues);
+    const fixtureService = new ProjectService(
+        { globalState: fixtureState },
+        { addRecentColor: async () => undefined },
+    );
+    const fixturePendingStore = new PendingWorkspaceSaveStore(fixtureState);
+    const fixtureWorkspace = makeSaveWorkspace('savedMultiRoot');
+    const fixtureMutationController = new ProjectMutationController({
+        getCurrentWorkspacePath: () => null,
+        getOpenProjectUri: () => null,
+        getCurrentProjectDetailsForSave: async () => null,
+        getProjectDetailsForSave: async () => null,
+        getProjectsFlat: () => fixtureService.getProjectsFlat(),
+        getProjectAndGroup: projectId => fixtureService.getProjectAndGroup(projectId),
+        addProjectToGroup: (project, groupId) => fixtureService.addProject(project, groupId),
+        updateProject: (projectId, project) => fixtureService.updateProject(projectId, project),
+        removeGroup: (groupId, skipConfirmation) => fixtureService.removeGroup(groupId, skipConfirmation),
+        getRandomColor: () => '#445566',
+        isFolderGitRepo: () => false,
+        prompt: {
+            queryProjectFields: async () => assert.fail('workspace save must not use add/edit project fields'),
+            queryGroup: async () => ['existing-group', false],
+            queryProjectDescription: async () => 'Encompassing workspace',
+            queryProjectColor: async () => '#445566',
+        },
+        showInputBox: async () => 'Team Workspace',
+        showWarningMessage: message => assert.fail(`unexpected fixture warning: ${message}`),
+        showInformationMessage: message => assert.fail(`unexpected fixture information: ${message}`),
+        showErrorMessage: message => assert.fail(`unexpected fixture error: ${message}`),
+        refreshAfterMutation: () => undefined,
+    });
+    const fixtureAdapter = new SavedWorkspaceProjectAdapter({
+        getCurrentWorkspace: () => fixtureWorkspace,
+        pendingStore: fixturePendingStore,
+        getProjectDetailsForSave: async () => ({
+            path: '/work/team.code-workspace',
+            remoteType: models.ProjectRemoteType.None,
+        }),
+        saveWorkspaceProject: details => fixtureMutationController.saveWorkspaceProject(details),
+        executeSaveWorkspaceAs: async () => undefined,
+        nowMs: () => 40_001,
+    });
+
+    await createStartup(fixtureService, fixtureAdapter).startUp();
+    assert.strictEqual(JSON.stringify(fixtureConfigurationValues.projectData), fixtureBytes,
+        'production startup migration must preserve the fixture serialized JSON exactly');
+    assert.strictEqual(JSON.stringify(fixtureState.get('projects')), fixtureBytes,
+        'production startup migration must leave the source fixture bytes unchanged');
+    fixtureService.getGroups(true);
+    fixtureService.getProjectsFlat();
+    fixtureService.getProjectAndGroup('member-app');
+    assert.strictEqual(JSON.stringify(fixtureConfigurationValues.projectData), fixtureBytes,
+        'ordinary production ProjectService reads must not rewrite persisted fixture bytes');
+
+    await fixturePendingStore.write(
+        fixtureWorkspace.scopeIdentity,
+        40_000,
+        40_000 + PENDING_WORKSPACE_SAVE_TTL_MS,
+    );
+    await createStartup(fixtureService, fixtureAdapter).startUp();
+    const fixtureAfterSave = fixtureConfigurationValues.projectData;
+    const preservedFixturePrefix = fixtureAfterSave.map((group, groupIndex) => ({
+        ...group,
+        projects: group.projects.slice(0, fixtureGroups[groupIndex].projects.length),
+    }));
+    assert.strictEqual(JSON.stringify(preservedFixturePrefix), fixtureBytes,
+        'production workspace save must preserve every original group/member field and serialized order');
+    assert.strictEqual(
+        fixtureAfterSave.reduce((count, group) => count + group.projects.length, 0),
+        fixtureGroups.reduce((count, group) => count + group.projects.length, 0) + 1,
+        'production workspace save must append exactly one record',
+    );
+    assert.deepStrictEqual(
+        fixtureAfterSave[0].projects.slice(fixtureGroups[0].projects.length).map(project => project.path),
+        ['/work/team.code-workspace'],
+    );
+    assert.strictEqual(fixturePendingStore.read(), null);
 
     const oldGroup = () => ({
         id: 'existing-group',

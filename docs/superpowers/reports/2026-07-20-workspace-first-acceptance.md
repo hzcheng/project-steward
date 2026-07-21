@@ -22,7 +22,7 @@ support-matrix cell has been removed or approved for removal.
 | 7 | Invalid root, Restricted Mode, unavailable provider, or missing capability creates no partial launch. | Creation/resume preflight and side-effect ledger checks. | AUTOMATED PASS / MANUAL BLOCKED |
 | 8 | Runtime ownership is immutable and removed-root continuity alone yields Outside workspace. | Runtime v2/Tmux/Direct hydration and explicit Outside workspace rendering checks. | AUTOMATED PASS / MANUAL BLOCKED |
 | 9 | Strict v2 publication is zero-or-one per instance and bridge failure degrades only OTHER WINDOWS. | Bridge client/store/coordinator/degradation checks. | AUTOMATED PASS / MANUAL BLOCKED |
-| 10 | Workspace saving adds one project while preserving every existing saved-project field and member entry. | Saved adapter, restart, migration, concurrency, and checked-in byte-equivalence fixture checks. | AUTOMATED PASS / MANUAL BLOCKED |
+| 10 | Workspace saving adds one project while preserving every existing saved-project field and member entry. | Checked-in Group[] fixture through real ProjectService startup migration, ordinary reads, ProjectMutationController, saved adapter, and serialized-prefix equivalence checks. | AUTOMATED PASS / MANUAL BLOCKED |
 | 11 | Attention de-duplicates workspace evidence and search headings/targets are workspace-native. | Attention projection and exact Dashboard search-catalog checks. | AUTOMATED PASS / MANUAL BLOCKED |
 | 12 | Production retains no v1 live-project/runtime compatibility path. | Architecture source gate and final forbidden-vocabulary scan. | AUTOMATED PASS / MANUAL BLOCKED |
 
@@ -38,7 +38,7 @@ support-matrix cell has been removed or approved for removal.
 | `npm run test:tmux:smoke` | PASS | Real isolated tmux smoke checks passed in the Dev Container POSIX host. |
 | `npm run test:architecture-baseline` | PASS | Performance and architecture baseline checks passed. |
 | `npm run test:release-notes` | PASS | Release notes and workspace-first documentation checks passed. |
-| `npm run test:release-packaging` | PASS | Release packaging, artifact-source, and 12/108 matrix completeness checks passed. |
+| `npm run test:release-packaging` | PASS | Seeded stale outputs were cleaned; both extensions rebuilt; real VSIX entries/manifests/bundles and exact matrix domains passed inspection. |
 | `git diff --check` | PASS | No whitespace errors. |
 
 The production package command built
@@ -218,14 +218,19 @@ are automated, but no automated result is promoted to manual PASS.
 ## Saved-project preservation evidence
 
 The checked-in representative fixture is
-`scripts/fixtures/workspace-first-saved-projects.json`. It includes member
-folder paths, descriptions, colors, favorite state, and favorite order. The
-open-workspace safety suite serializes it before activation, verifies identical
-bytes after ordinary activation/use with no save intent, then saves an
-encompassing workspace and verifies the original member-entry prefix remains
-byte-for-byte identical while exactly one workspace project is appended.
-Real `ProjectService` migration fixtures separately preserve groups and the
-source storage during settings/global-state migration.
+`scripts/fixtures/workspace-first-saved-projects.json`. It uses the real
+serialized `Group[]` store shape and includes group name/collapse state plus
+member paths, remote types, descriptions, colors, favorite state, favorite
+order, and Git metadata. The open-workspace safety suite seeds that JSON into a
+real `ProjectService` global-state store. Production startup migrates it to
+settings, ordinary production reads leave the persisted serialization
+unchanged, and a second startup consumes the pending save through
+`SavedWorkspaceProjectAdapter`, `ProjectMutationController`, and
+`ProjectService.addProject`. The test proves byte-for-byte equality at the
+serialized JSON boundary for every original group/member prefix and source
+store, while exactly one workspace record is appended. It does not claim raw
+VS Code storage-file byte identity outside that controlled serialization
+boundary.
 
 ## Release decision
 

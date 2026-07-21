@@ -513,7 +513,17 @@ function runWorkspaceCardRenderingChecks() {
     assert.strictEqual(createdReplacementHolder, false,
         'the v2 handler must not mount another current card when one exists outside the owned group');
 
-    const preservedOtherWindowsGroup = { id: 'other-windows' };
+    const preservedOtherNavigationCard = {
+        matches: selector => selector === '.workspace-card[data-other-workspace]',
+        textContent: 'Other Workspace · SSH · 2 folders',
+    };
+    const preservedOtherWindowsGroup = {
+        matches: selector => selector === '.open-other-windows-group',
+        children: [preservedOtherNavigationCard],
+        querySelector: selector => selector === '.workspace-card[data-other-workspace]'
+            ? preservedOtherNavigationCard
+            : null,
+    };
     const replacementCard = {};
     const replacementGroup = {
         matches: selector => selector === '.open-current-workspace-group',
@@ -522,16 +532,34 @@ function runWorkspaceCardRenderingChecks() {
             : [],
     };
     let mountedCurrentGroup;
+    let successfulWrapper;
     const replaceableCurrentGroup = {
+        matches: selector => selector === '.open-current-workspace-group',
         contains: card => card === currentCard,
-        replaceWith: replacement => { mountedCurrentGroup = replacement; },
+        replaceWith: replacement => {
+            const currentIndex = successfulWrapper.children.indexOf(replaceableCurrentGroup);
+            assert.notStrictEqual(currentIndex, -1, 'the fake current group must be mounted before replacement');
+            successfulWrapper.children.splice(currentIndex, 1, replacement);
+            mountedCurrentGroup = replacement;
+        },
     };
-    const successfulWrapper = {
-        querySelector: selector => selector === '.open-current-workspace-group' ? replaceableCurrentGroup : null,
+    successfulWrapper = {
+        children: [replaceableCurrentGroup, preservedOtherWindowsGroup],
+        querySelector(selector) {
+            if (selector === '.open-current-workspace-group') {
+                return this.children.find(node => node.matches?.(selector)) || null;
+            }
+            if (selector === '.open-other-windows-group') {
+                return this.children.find(node => node.matches?.(selector)) || null;
+            }
+            if (selector === '.workspace-card[data-other-workspace]') {
+                return this.querySelector('.open-other-windows-group')?.querySelector(selector) || null;
+            }
+            return null;
+        },
         querySelectorAll: selector => selector === '.workspace-card[data-current-workspace][data-workspace-scope-identity]'
             ? [currentCard]
             : [],
-        otherWindowsGroup: preservedOtherWindowsGroup,
     };
     const successfulContext = {
         document: {
@@ -551,8 +579,17 @@ function runWorkspaceCardRenderingChecks() {
     }), true);
     assert.strictEqual(mountedCurrentGroup, replacementGroup,
         'a valid current-group update must replace the current group');
-    assert.strictEqual(successfulWrapper.otherWindowsGroup, preservedOtherWindowsGroup,
-        'a current-group update must preserve the existing OTHER WINDOWS group');
+    assert.deepStrictEqual(successfulWrapper.children, [replacementGroup, preservedOtherWindowsGroup],
+        'a current-group update must replace one child while preserving the real OTHER WINDOWS sibling');
+    assert.strictEqual(successfulWrapper.querySelector('.open-other-windows-group'), preservedOtherWindowsGroup,
+        'the same OTHER WINDOWS node must remain mounted');
+    assert.strictEqual(
+        successfulWrapper.querySelector('.workspace-card[data-other-workspace]'),
+        preservedOtherNavigationCard,
+        'the same other-window navigation card must survive current-group replacement',
+    );
+    assert.ok(preservedOtherNavigationCard.textContent.includes('Other Workspace · SSH · 2 folders'),
+        'the surviving navigation card must retain its content');
 }
 
 function createSearchResultElement(tagName) {

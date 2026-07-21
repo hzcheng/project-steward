@@ -1,21 +1,48 @@
 [
   {
-    "id": "member-app",
-    "name": "App",
-    "description": "Primary application",
-    "path": "/work/app",
-    "remoteType": "none",
-    "favorite": true,
-    "favoriteOrder": 2,
-    "color": "#336699"
+    "id": "existing-group",
+    "groupName": "Applications",
+    "collapsed": false,
+    "projects": [
+      {
+        "id": "member-app",
+        "name": "App",
+        "description": "Primary application",
+        "path": "/work/app",
+        "remoteType": 0,
+        "favorite": true,
+        "favoriteOrder": 2,
+        "color": "#336699",
+        "isGitRepo": true
+      },
+      {
+        "id": "member-lib",
+        "name": "Library",
+        "description": "Keep me unchanged",
+        "path": "/work/lib",
+        "remoteType": 0,
+        "favorite": false,
+        "color": "#993366",
+        "isGitRepo": false
+      }
+    ]
   },
   {
-    "id": "member-lib",
-    "name": "Library",
-    "description": "Keep me unchanged",
-    "path": "/work/lib",
-    "remoteType": "none",
-    "favorite": false,
-    "color": "#993366"
+    "id": "secondary-group",
+    "groupName": "Remote references",
+    "collapsed": true,
+    "projects": [
+      {
+        "id": "member-remote",
+        "name": "Remote API",
+        "description": "Preserve remote metadata",
+        "path": "vscode-remote://ssh-remote+example/work/api",
+        "remoteType": 1,
+        "favorite": true,
+        "favoriteOrder": 7,
+        "color": "#224466",
+        "isGitRepo": true
+      }
+    ]
   }
 ]

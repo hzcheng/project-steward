@@ -105,8 +105,8 @@ function runWorkflowChecks() {
     assert.match(workflow, /--notes-file release-notes\.md/);
     assert.strictEqual(workflow.includes('--notes "VSIX package for'), false);
     assert.match(workflow, /- name: Verify release notes\n\s+run: npm run test:release-notes/);
-    assert.match(workflow, /- name: Verify release packaging\n\s+run: npm run test:release-packaging/);
-    assert.match(workflow, /run: npm run package:release/);
+    assert.match(workflow, /- name: Package and verify release VSIX files\n\s+run: npm run test:release-packaging/);
+    assert.strictEqual(workflow.includes('run: npm run package:release'), false);
     assert.match(workflow, /bridge_vsix_file=/);
     assert.match(workflow, /gh release create "\$TAG" "\$BRIDGE_VSIX_FILE" "\$MAIN_VSIX_FILE"/);
     assert.strictEqual(
