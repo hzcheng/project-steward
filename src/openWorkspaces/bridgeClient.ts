@@ -122,6 +122,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
     private connected = false;
     private incompatible = false;
     private disposed = false;
+    private recoveryAcknowledgementRequired = true;
     private retryAttempt = 0;
     private retryTimer: unknown = null;
     private handshakeFlight: Promise<boolean> | null = null;
@@ -228,6 +229,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
     dispose(): void {
         if (this.disposed) { return; }
         this.disposed = true;
+        this.recoveryAcknowledgementRequired = false;
         this.aggregateRegistration.dispose();
         this.diagnosticRegistration.dispose();
         this.clearInterval(this.heartbeatHandle);
@@ -277,7 +279,10 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
             return false;
         }
         const semantic = JSON.stringify(workspace);
-        if (!forceHeartbeat && !followsFocusEvent && semantic === this.lastSemantic) { return true; }
+        if (!this.recoveryAcknowledgementRequired
+            && !forceHeartbeat
+            && !followsFocusEvent
+            && semantic === this.lastSemantic) { return true; }
         const publication = validateOpenWorkspacePublication({
             protocolVersion: 2,
             instanceId: this.instanceId,
@@ -295,6 +300,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
             if (generation === this.latestGeneration) {
                 this.lastSemantic = semantic;
                 this.retryAttempt = 0;
+                this.recoveryAcknowledgementRequired = false;
                 if (!this.disposed) { this.setStatus('ready'); }
             }
             this.emitDiagnostic({
@@ -306,6 +312,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
             return true;
         } catch (error) {
             if (this.disposed) { return false; }
+            this.recoveryAcknowledgementRequired = true;
             this.connected = false;
             this.setStatus('unavailable');
             this.emitDiagnostic({
@@ -363,6 +370,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
                 this.setStatus('update-required');
                 this.emitDiagnostic({ event: 'handshake', accepted: false, errorCode: 'update-required' });
             } else {
+                this.recoveryAcknowledgementRequired = true;
                 this.setStatus('unavailable');
                 this.scheduleRetry();
             }

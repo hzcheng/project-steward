@@ -287,3 +287,59 @@ the sole semantic/recovery commit path, the synchronous guard prevents an
 after-check generation from splitting the atomic recovery transition, and no
 dispose/unregister path changed. No further Critical, Important, or Minor
 finding remains.
+
+---
+
+## Important review follow-up: prior-semantic recovery health
+
+Status: complete in a focused follow-up commit.
+
+### Finding resolved
+
+- A private `recoveryAcknowledgementRequired` state now separates bridge health
+  from `lastSemantic`. It starts set, is set synchronously on transient
+  handshake or publication failure, and is cleared only by current-generation
+  acknowledgement or disposal.
+- Semantic duplicate suppression requires that recovery state to be clear.
+  The prior acknowledged semantic therefore remains available for healthy
+  suppression without allowing an identical recovery generation to skip its
+  required command.
+- Handshake success and stale publication success do not clear recovery state,
+  reset backoff, or emit `ready`.
+
+### Follow-up TDD evidence
+
+RED first committed a workspace semantic successfully, verified its healthy
+duplicate was suppressed, failed a heartbeat, and resolved a stale retry after
+queuing the identical latest generation. Only three commands were observed:
+
+```text
+AssertionError: prior workspace semantic recovery prior semantic must not suppress the latest recovery command
+actual: [prior success, failed heartbeat, stale retry]
+expected: [prior success, failed heartbeat, stale retry, latest success]
+```
+
+GREEN coverage proves for both a workspace and repeated `null`:
+
+- healthy identical publication remains accepted without an extra command;
+- the exact sequence is four commands: prior success, failed heartbeat, stale
+  retry success, and latest success;
+- after stale retry success, the latest command exists but its promise remains
+  pending and status remains `unavailable`;
+- only latest acknowledgement resolves the promise `true`, emits `ready`, and
+  leaves no active timer.
+
+Existing different-generation coalescing, healthy sequential publication,
+backoff, heartbeat, and disposal/unregister tests remain green.
+
+### Follow-up verification and self-review
+
+Fresh verification passed main compile, UI Bridge compile, open-workspace
+safety, Dashboard Webview, AI safety, and AI tmux. All three source/generated
+Webview parity checks and `git diff --check` also passed.
+
+Self-review confirmed every transient failure sets recovery state before any
+status callback can re-enter publication, current acknowledgement clears it
+before the `ready` callback, disposal clears it beside `disposed`, terminal
+incompatibility remains non-retrying, and `lastSemantic` is never erased. No
+further Critical, Important, or Minor finding remains.

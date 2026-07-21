@@ -1458,6 +1458,104 @@ async function runOpenWorkspaceHardeningChecks() {
         'repeated null generation'
     );
 
+    const runPriorSemanticRecoveryCase = async (workspace, instanceId, label) => {
+        const timers = [];
+        const activeTimers = new Set();
+        const statuses = [];
+        const publications = [];
+        let heartbeatCallback;
+        let latestSettled = false;
+        let resolveStaleRetry;
+        let resolveLatestPublication;
+        const staleRetry = new Promise(resolve => { resolveStaleRetry = resolve; });
+        const latestPublicationCommand = new Promise(resolve => { resolveLatestPublication = resolve; });
+        const client = new OpenWorkspaceBridgeClient(
+            workspace,
+            () => undefined,
+            () => undefined,
+            {
+                instanceId,
+                registerCommand: () => ({ dispose: () => undefined }),
+                executeCommand: async (command, argument) => {
+                    if (command.endsWith('.bridge.handshake')) return acceptedHandshake;
+                    if (command.endsWith('.bridge.publish')) {
+                        publications.push(argument.workspace);
+                        if (publications.length === 2) throw new Error(`${label} heartbeat failure`);
+                        if (publications.length === 3) return staleRetry;
+                        if (publications.length === 4) return latestPublicationCommand;
+                    }
+                    return undefined;
+                },
+                setInterval: callback => {
+                    heartbeatCallback = callback;
+                    return 'heartbeat';
+                },
+                clearInterval: () => undefined,
+                setTimeout: (callback, delayMs) => {
+                    const timer = {
+                        delayMs,
+                        callback: () => {
+                            activeTimers.delete(timer);
+                            callback();
+                        },
+                    };
+                    timers.push(timer);
+                    activeTimers.add(timer);
+                    return timer;
+                },
+                clearTimeout: timer => activeTimers.delete(timer),
+                onStatusChange: status => statuses.push(status),
+            }
+        );
+        for (let attempt = 0; attempt < 50 && publications.length < 1; attempt += 1) await flush();
+        assert.strictEqual(await client.publish(workspace), true,
+            `${label} healthy identical publication must remain accepted`);
+        assert.deepStrictEqual(publications, [workspace],
+            `${label} healthy identical semantic must remain suppressed`);
+
+        heartbeatCallback();
+        for (let attempt = 0; attempt < 50 && timers.length < 1; attempt += 1) await flush();
+        assert.deepStrictEqual(publications, [workspace, workspace]);
+        assert.deepStrictEqual(statuses, ['ready', 'unavailable']);
+        assert.deepStrictEqual(timers.map(timer => timer.delayMs), [100]);
+        assert.strictEqual(activeTimers.size, 1);
+
+        timers[0].callback();
+        for (let attempt = 0; attempt < 50 && publications.length < 3; attempt += 1) await flush();
+        const latestPublication = client.publish(workspace).then(result => {
+            latestSettled = true;
+            return result;
+        });
+        resolveStaleRetry(undefined);
+        for (let attempt = 0;
+            attempt < 50 && publications.length < 4 && !latestSettled;
+            attempt += 1) await flush();
+        assert.deepStrictEqual(publications, [workspace, workspace, workspace, workspace],
+            `${label} prior semantic must not suppress the latest recovery command`);
+        assert.strictEqual(latestSettled, false,
+            `${label} latest promise must wait for its own acknowledgement`);
+        assert.deepStrictEqual(statuses, ['ready', 'unavailable'],
+            `${label} stale retry success must not restore ready`);
+        assert.strictEqual(activeTimers.size, 0);
+
+        resolveLatestPublication(undefined);
+        assert.strictEqual(await latestPublication, true);
+        assert.deepStrictEqual(statuses, ['ready', 'unavailable', 'ready']);
+        assert.strictEqual(activeTimers.size, 0, `${label} latest success must leave no retry timer`);
+        client.dispose();
+    };
+
+    await runPriorSemanticRecoveryCase(
+        makeWorkspaceRecord(89),
+        '2'.repeat(32),
+        'prior workspace semantic recovery'
+    );
+    await runPriorSemanticRecoveryCase(
+        null,
+        '3'.repeat(32),
+        'prior null semantic recovery'
+    );
+
     const closureW1 = makeWorkspaceRecord(83);
     const closureW2 = makeWorkspaceRecord(84);
     const closureTimers = [];
