@@ -93,6 +93,24 @@ function extractHtmlElementBody(source, openingTag) {
     throw new Error(`Unterminated HTML element ${openingTag}`);
 }
 
+function extractDirectHtmlChildOpeningTags(source) {
+    const children = [];
+    const tagPattern = /<\/?([a-z][\w-]*)\b[^>]*>/gi;
+    let depth = 0;
+    let match;
+    while ((match = tagPattern.exec(source))) {
+        const tag = match[0];
+        if (tag.startsWith('</')) {
+            depth -= 1;
+        } else {
+            if (depth === 0) children.push(tag);
+            if (!tag.endsWith('/>')) depth += 1;
+        }
+    }
+    assert.strictEqual(depth, 0, 'HTML fragment must contain balanced child elements');
+    return children;
+}
+
 function extractCssRule(source, selector) {
     const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const match = source.match(new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{`, 'm'));
@@ -424,13 +442,20 @@ function runWorkspaceCardRenderingChecks() {
         'current workspace cards must declare when their AI session summary badge is present');
     assert.strictEqual(singleHtml.includes('data-codex-expanded'), false,
         'the collapsed-card fixture must keep its AI session module hidden');
-    const collapsedSessionIndex = singleHtml.indexOf('<div class="codex-sessions"');
+    const collapsedCardStart = singleHtml.indexOf('<div class="workspace-card');
+    const collapsedCardOpeningEnd = singleHtml.indexOf('>', collapsedCardStart);
+    const collapsedCardOpeningTag = singleHtml.slice(collapsedCardStart, collapsedCardOpeningEnd + 1);
+    const collapsedCardBody = extractHtmlElementBody(singleHtml, collapsedCardOpeningTag);
+    const collapsedSessionIndex = collapsedCardBody.indexOf('<div class="codex-sessions"');
     assert.ok(collapsedSessionIndex >= 0, 'collapsed current workspace cards must retain the hidden session module');
-    const collapsedCardSummary = singleHtml.slice(0, collapsedSessionIndex);
-    assert.strictEqual((collapsedCardSummary.match(/class="fitty-container project-title-row"/g) || []).length, 1);
-    assert.strictEqual((collapsedCardSummary.match(/class="project-description workspace-metadata"/g) || []).length, 1);
-    assert.strictEqual(collapsedCardSummary.includes('class="workspace-root-tags"'), false,
-        'collapsed current workspace cards must not add a third root metadata row');
+    const collapsedCardSummary = collapsedCardBody.slice(0, collapsedSessionIndex);
+    const collapsedContentChildren = extractDirectHtmlChildOpeningTags(collapsedCardSummary).filter(tag =>
+        !/class="[^"]*\b(?:project-aura|steward-item-accent|project-session-fx|project-codex-badge)\b/.test(tag)
+    );
+    assert.deepStrictEqual(collapsedContentChildren, [
+        '<div class="fitty-container project-title-row">',
+        '<p class="project-description workspace-metadata">',
+    ], 'collapsed current workspace cards must have only title and description rows before the session module');
 
     const runningCard = makeWorkspaceCardFixture(1);
     runningCard.aiSessions.activeSessions.push(
@@ -4514,6 +4539,41 @@ function runSourceContractChecks(source) {
     }
 
     const sidebarProjectRules = extractCssRules(sidebarStyles, '.project');
+    const workspaceProjectRule = sidebarProjectRules.find(rule =>
+        rule.includes('&[data-current-workspace][data-has-ai-session-badge]')
+    );
+    assert.ok(workspaceProjectRule, 'workspace project styles must define the badge-present state');
+    const badgePresentWorkspaceRule = extractCssRule(
+        workspaceProjectRule,
+        '&[data-current-workspace][data-has-ai-session-badge]'
+    );
+    const plainCurrentWorkspaceRule = extractCssRule(workspaceProjectRule, '&[data-current-workspace]');
+    assert.ok(badgePresentWorkspaceRule.includes('width: calc(100% - 60px)'),
+        'only badge-present current workspace cards may reserve title and description width');
+    assert.strictEqual(plainCurrentWorkspaceRule.includes('width: calc(100% - 60px)'), false,
+        'plain current workspace cards must keep the full title and description width');
+
+    const compiledBadgeSelector =
+        'body.steward-sidebar .project[data-current-workspace][data-has-ai-session-badge]';
+    const compiledBadgeRules = extractCompiledCssRulesContainingSelector(compiledStyles, compiledBadgeSelector);
+    for (const suffix of ['.fitty-container', '.project-description']) {
+        const exactSelector = `${compiledBadgeSelector} ${suffix}`;
+        assert.ok(compiledBadgeRules.some(rule =>
+            rule.selectors.includes(exactSelector)
+            && rule.body.includes('width: calc(100% - 60px)')
+        ), `compiled badge-present workspace styles must reserve width for ${suffix}`);
+    }
+    const compiledPlainSelector = 'body.steward-sidebar .project[data-current-workspace]';
+    const compiledCurrentWorkspaceRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledPlainSelector
+    );
+    assert.strictEqual(compiledCurrentWorkspaceRules.some(rule =>
+        ['.fitty-container', '.project-description'].some(suffix =>
+            rule.selectors.includes(`${compiledPlainSelector} ${suffix}`)
+        ) && rule.body.includes('width: calc(100% - 60px)')
+    ), false, 'compiled plain current-workspace styles must not reserve badge width');
+
     for (const forbidden of ['height: 58px', 'border-radius: 18px', 'background: var(', 'box-shadow:']) {
         assert.strictEqual(sidebarProjectRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, forbidden)), false,
             `project domain rule must not duplicate ${forbidden}`);
