@@ -3019,6 +3019,14 @@ function runDashboardBridgeLifecycleChecks() {
         dashboard.indexOf("'selected-project': async e =>"),
         dashboard.indexOf("'add-project': async e =>")
     );
+    const openWorkspaceControllerWiring = dashboard.slice(
+        dashboard.indexOf('openWorkspaceController = new OpenWorkspaceController({'),
+        dashboard.indexOf('const dashboardRuntimeController = new DashboardRuntimeController({')
+    );
+    assert.strictEqual(openWorkspaceControllerWiring.includes('workspaceSessionHydrationController.hydrate'), false,
+        'startup workspace publication must not enter UI hydration before focus dependencies initialize');
+    assert.ok(openWorkspaceControllerWiring.includes('aiSessionExecutionController.getSnapshot()'),
+        'startup workspace publication must derive running state from the initialized execution snapshot');
 
     const workspaceControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'openWorkspaces', 'workspaceController.ts'), 'utf8');
     const projectMutationControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'projects', 'projectMutationController.ts'), 'utf8');
