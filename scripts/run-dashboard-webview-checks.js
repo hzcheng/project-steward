@@ -413,6 +413,8 @@ function runWorkspaceCardRenderingChecks() {
     const singleHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(1), false);
     assert.strictEqual((singleHtml.match(/class="workspace-card/g) || []).length, 1);
     assert.strictEqual((singleHtml.match(/class="codex-sessions"/g) || []).length, 1);
+    assert.ok(singleHtml.includes(icons.folder));
+    assert.ok(singleHtml.includes('title="Local Project"'));
     assert.ok(singleHtml.includes('Local · 1 folder'));
     assert.strictEqual(singleHtml.includes('class="ai-session-root-chip"'), false,
         'single-root workspaces must not repeat the only root on every session row');
@@ -485,6 +487,7 @@ function runWorkspaceCardRenderingChecks() {
     devContainerCard.environmentLabel = 'Dev Container';
     const devContainerHtml = webviewContent.getCurrentWorkspaceGroupContent(devContainerCard, false);
     assert.ok(devContainerHtml.includes(icons.container));
+    assert.ok(devContainerHtml.includes('title="Dev Container Project"'));
     assert.strictEqual(devContainerHtml.includes('class="workspace-root-tags"'), false);
     assert.strictEqual(devContainerHtml.includes('class="workspace-root-tag"'), false);
 
