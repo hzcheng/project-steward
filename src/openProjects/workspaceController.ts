@@ -33,10 +33,12 @@ export class OpenProjectWorkspaceController {
         );
     }
 
-    getOpenProjectRecords(): OpenProjectRecord[] {
+    getOpenProjectRecords(includeActiveSessionCounts = true): OpenProjectRecord[] {
         return createOpenProjectRecords(
             this.getRawOpenProjects(),
-            this.options.getActiveSessionCounts ? this.options.getActiveSessionCounts() : undefined
+            includeActiveSessionCounts && this.options.getActiveSessionCounts
+                ? this.options.getActiveSessionCounts()
+                : undefined
         );
     }
 

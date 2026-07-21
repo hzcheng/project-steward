@@ -209,7 +209,8 @@ export function getOpenProjectsGroupContent(
     openProjects: Project[],
     collapsed: boolean,
     infos: StewardInfos,
-): string {    var currentProjects = (openProjects || []).filter(project => project.openProjectCardKind !== 'projectNavigation');
+): string {
+    var currentProjects = (openProjects || []).filter(project => project.openProjectCardKind !== 'projectNavigation');
     var navigationProjects = (openProjects || []).filter(project => project.openProjectCardKind === 'projectNavigation');
     var currentGroup = new Group(OPEN_CURRENT_WORKSPACE_GROUP_NAME, currentProjects);
     currentGroup.id = OPEN_CURRENT_WORKSPACE_GROUP_ID;
@@ -459,7 +460,7 @@ function getProjectDiv(
     var sessionFx = navigationActiveSessionCount > 0 ? (options.sessionFx || 'current') : '';
     var projectCardClassModifier = sessionFx ? ' session-running' : '';
     var sessionFxAttribute = sessionFx ? ` data-session-fx="${sessionFx}"` : '';
-    var sessionFxLayer = sessionFx ? '<div class="project-session-fx"></div>' : '';
+    var sessionFxLayer = sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : '';
     if (navigationActiveSessionCount > 0) {
         projectIconTitle = `${projectIconTitle} — ${navigationActiveSessionCount} active session${navigationActiveSessionCount === 1 ? '' : 's'} running`;
     }

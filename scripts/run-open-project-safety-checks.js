@@ -423,6 +423,28 @@ function runRecordChecks() {
     assert.strictEqual(countedRecords[2].activeSessionCount, undefined, 'projects without counts must be omitted');
 }
 
+function runWorkspaceControllerRecordChecks() {
+    const controller = new OpenProjectWorkspaceController({
+        getWorkspaceFile: () => null,
+        getWorkspaceFolders: () => [{ uri: { fsPath: '/work/app', path: '/work/app', scheme: 'file' }, name: 'app' }],
+        getSavedProjects: () => [],
+        getCurrentRemoteName: () => undefined,
+        isFolderGitRepo: () => false,
+        getActiveSessionCounts: () => new Map([['__openProjects-0', 2]]),
+        publishRecords: () => undefined,
+    });
+
+    const countedRecords = controller.getOpenProjectRecords();
+    assert.strictEqual(countedRecords.length, 1);
+    assert.strictEqual(countedRecords[0].activeSessionCount, 2,
+        'records must include running session counts by default');
+
+    const initialRecords = controller.getOpenProjectRecords(false);
+    assert.strictEqual(initialRecords.length, 1);
+    assert.strictEqual(initialRecords[0].activeSessionCount, undefined,
+        'initial publication must skip running session counts');
+}
+
 function runProjectionChecks() {
     const current = [{
         id: '__openProjects-0', name: 'Current', description: 'Workspace folder',
@@ -883,6 +905,8 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('openProjectWorkspaceController.publish('));
     assert.ok(dashboard.includes('getActiveSessionCounts'));
     assert.ok(dashboard.includes("session.executionState === 'running'"));
+    assert.ok(dashboard.includes('openProjectWorkspaceController.getOpenProjectRecords(false)'),
+        'initial bridge publication must skip session counts before runtime controllers are wired');
     assert.ok(dashboard.includes('refreshProjects: () => openProjectWorkspaceController.getOpenProjectRecords()'));
     assert.ok(workspaceControllerSource.includes('getActiveSessionCounts'));
     const bridgeClientSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'openProjects', 'bridgeClient.ts'), 'utf8');
@@ -2248,6 +2272,7 @@ async function main() {
     runRemoteAttentionIdentityChecks();
     runIdentityChecks();
     runRecordChecks();
+    runWorkspaceControllerRecordChecks();
     runProjectionChecks();
     await runBridgeClientChecks();
     await runOpenProjectWorkspaceControllerChecks();

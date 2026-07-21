@@ -5317,6 +5317,17 @@ function runCurrentWorkspaceRenderingChecks() {
     ], false, { config: { ...config, get: key => key === 'aiSessionRunningCardAnimation' ? 'bogus' : undefined } });
     assert.ok(invalidFxNavigation.includes('data-session-fx="current"'),
         'unknown animation values must fall back to the current animation');
+    const noFxNavigation = webviewContentModule.getOpenProjectsGroupContent([
+        {
+            id: 'other-no-fx', name: 'Other No Fx', path: '/work/other-no-fx',
+            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 1,
+        },
+    ], false, { config: { ...config, get: key => key === 'aiSessionRunningCardAnimation' ? 'none' : undefined } });
+    assert.ok(noFxNavigation.includes('class="project steward-item-card session-running"'),
+        'the none animation must keep the static running border');
+    assert.ok(noFxNavigation.includes('data-session-fx="none"'));
+    assert.ok(!noFxNavigation.includes('project-session-fx'),
+        'the none animation must not render the session fx layer');
     const idleNavigation = webviewContentModule.getOpenProjectsGroupContent([
         {
             id: 'other-idle', name: 'Other Idle', path: '/work/other-idle',

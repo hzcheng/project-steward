@@ -1185,7 +1185,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         logError,
     });
     openProjectBridgeClient = new OpenProjectBridgeClient(
-        openProjectWorkspaceController.getOpenProjectRecords(),
+        // Session runtime controllers are not fully wired yet; counts are added on
+        // the next publish triggered by session changes or the refresh heartbeat.
+        openProjectWorkspaceController.getOpenProjectRecords(false),
         aggregate => {
             if (openProjectDashboardController.setAggregate(aggregate)) {
                 postOpenProjectsUpdated();
