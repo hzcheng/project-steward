@@ -151,3 +151,71 @@ update-message, and search TypeScript file emitted no warnings.
 - Task 12 owns the navigation feasibility gate and actual opaque-card switching;
   current navigation clicks refresh safely and never open a root URI.
 - Task 14 owns deletion of retained v1 source and legacy controller branches.
+
+---
+
+## Review follow-up: scope single-session archive to the current workspace
+
+Status: complete in a focused follow-up commit.
+
+### Critical finding resolved
+
+Single-session archive discarded the Webview card ID at the dashboard boundary
+and authorized only by provider/session ID. The context-menu route also omitted
+the card ID entirely. A forged or stale message could therefore reach the
+provider archive service without proving that the session still belonged to
+the hydrated current workspace surface.
+
+The single-archive controller now requires `(projectId, providerId, sessionId)`.
+For the production v2 route it:
+
+1. resolves the opaque card ID to the current `WorkspaceAiSessionActionTarget`;
+2. verifies card identity, workspace/surface scope and navigation identities,
+   and provider/session membership before runtime refresh, focus, or confirmation;
+3. re-resolves the authorization after the initial runtime refresh;
+4. re-resolves it again after confirmation and forced runtime refresh;
+5. performs a final synchronous revalidation after runtime blocking, at the
+   literal last point before the provider archive call; and
+6. performs no member-`Project` lookup when the v2 card/session is unknown or
+   stale.
+
+Legacy single-archive authorization is available only through the explicit
+optional `getLegacyArchiveProject` dependency when no workspace resolver is
+configured. The production workspace controller does not configure that path.
+
+The Webview inline and context-menu routes now both carry `projectId`, and the
+dashboard forwards it without substitution.
+
+### TDD evidence
+
+The focused tests were changed first. The RED run exited `1` because the old
+two-argument controller interpreted the card ID as the provider and entered
+confirmation instead of blocking/focusing the active runtime:
+
+```text
+AssertionError: an active detached tmux runtime blocks archive before confirmation
+1 !== 0
+```
+
+GREEN coverage proves:
+
+- a valid v2 current-card single archive reaches the provider;
+- unknown session and unknown opaque card IDs perform no archive;
+- v2 single/batch actions perform zero legacy project reads;
+- a changed workspace scope during confirmation performs no archive;
+- a session disappearing from the hydrated surface during confirmation
+  performs no archive;
+- active, conflict, stopped, pre-confirm-refresh, and post-confirm-refresh
+  runtime focus/block semantics remain intact; and
+- context-menu archive preserves the owning card ID.
+
+### Verification
+
+Fresh follow-up verification passed main compile, UI Bridge compile, AI safety,
+Dashboard Webview, open-workspace safety, and the tmux suite. Source/generated
+Webview scripts remain byte-identical and `git diff --check` is clean.
+
+The first tmux invocation was run concurrently with the other suites and hit
+the suite's cross-host ordering race at `runTmuxStoreChecks` line 2591. An
+immediate standalone rerun exited `0` with `AI session tmux checks passed.` No
+tmux source or test was changed by this follow-up.

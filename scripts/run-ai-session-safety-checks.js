@@ -3708,6 +3708,20 @@ async function runSidebarStewardViewProviderOrderingChecks() {
 }
 
 async function runAiSessionArchiveRuntimeChecks() {
+    const archiveCardId = '__currentWorkspace-archive';
+    const archiveWorkspaceTarget = {
+        cardId: archiveCardId,
+        workspace: {
+            scopeIdentity: 'scope:/work/a',
+            navigationIdentity: 'navigation:/work/a',
+        },
+        sessions: {
+            activeProvider: 'codex',
+            workspaceScopeIdentity: 'scope:/work/a',
+            workspaceNavigationIdentity: 'navigation:/work/a',
+            sessionsByProvider: { codex: [{ id: 'session-a', name: 'Session A' }] },
+        },
+    };
     const runtime = {
         identity: createTestAiSessionRuntimeIdentity(
             'codex', '/work/a', { sessionId: 'session-a' }
@@ -3728,6 +3742,7 @@ async function runAiSessionArchiveRuntimeChecks() {
         }),
         getProviderLabel: () => 'Codex',
         getOpenProjects: () => [],
+        getWorkspaceTarget: cardId => cardId === archiveCardId ? archiveWorkspaceTarget : null,
         getProjectSessions: () => [],
         getRuntimeById: (providerId, sessionId) => providerId === 'codex' && sessionId === 'session-a'
             ? runtime : null,
@@ -3749,7 +3764,7 @@ async function runAiSessionArchiveRuntimeChecks() {
         logUnexpectedError: () => undefined,
     });
 
-    await controller.archiveSession('codex', 'session-a');
+    await controller.archiveSession(archiveCardId, 'codex', 'session-a');
     assert.strictEqual(confirmCount, 0, 'an active detached tmux runtime blocks archive before confirmation');
     assert.strictEqual(archiveCount, 0, 'an active detached tmux runtime is never archived');
     assert.strictEqual(warnings.length, 1);
@@ -3758,12 +3773,12 @@ async function runAiSessionArchiveRuntimeChecks() {
     )]);
 
     runtime.state = 'conflict';
-    await controller.archiveSession('codex', 'session-a');
+    await controller.archiveSession(archiveCardId, 'codex', 'session-a');
     assert.strictEqual(confirmCount, 0, 'a discovery collision blocks archive before confirmation');
     assert.strictEqual(archiveCount, 0, 'a discovery collision performs zero destructive archive actions');
 
     runtime.state = 'stopped';
-    await controller.archiveSession('codex', 'session-a');
+    await controller.archiveSession(archiveCardId, 'codex', 'session-a');
     assert.strictEqual(confirmCount, 1, 'a stopped runtime no longer owns the archive guard');
     assert.strictEqual(archiveCount, 1, 'a stopped runtime can be archived');
 
@@ -3780,6 +3795,7 @@ async function runAiSessionArchiveRuntimeChecks() {
                 service: { archiveSession: () => { freshArchiveCount++; return true; } },
             }),
             getProviderLabel: () => 'Codex', getOpenProjects: () => [], getProjectSessions: () => [],
+            getWorkspaceTarget: cardId => cardId === archiveCardId ? archiveWorkspaceTarget : null,
             getRuntimeById: () => currentRuntime,
             refreshRuntimeGuard: async (providerId, sessionId) => {
                 refreshCount++;
@@ -3805,7 +3821,7 @@ async function runAiSessionArchiveRuntimeChecks() {
     const beforeConfirmation = createFreshArchiveController({
         runtimeAfterRefresh: () => conflictRuntime,
     });
-    await beforeConfirmation.controller.archiveSession('codex', 'session-a');
+    await beforeConfirmation.controller.archiveSession(archiveCardId, 'codex', 'session-a');
     assert.deepStrictEqual(beforeConfirmation.state(), {
         refreshCount: 1, freshConfirmCount: 0, freshArchiveCount: 0,
         refreshIdentities: [['codex', 'session-a']],
@@ -3814,7 +3830,7 @@ async function runAiSessionArchiveRuntimeChecks() {
     const afterConfirmation = createFreshArchiveController({
         runtimeAfterRefresh: count => count === 1 ? null : conflictRuntime,
     });
-    await afterConfirmation.controller.archiveSession('codex', 'session-a');
+    await afterConfirmation.controller.archiveSession(archiveCardId, 'codex', 'session-a');
     assert.deepStrictEqual(afterConfirmation.state(), {
         refreshCount: 2, freshConfirmCount: 1, freshArchiveCount: 0,
         refreshIdentities: [['codex', 'session-a'], ['codex', 'session-a']],
@@ -3939,17 +3955,20 @@ async function runWorkspaceCardActionControllerIntegrationChecks() {
     assert.strictEqual(focused[0].workspaceScopeIdentity, workspace.scopeIdentity);
 
     const archived = [];
+    let currentArchiveTarget = target;
+    let onSingleArchiveConfirmation = () => undefined;
     const archive = new AiSessionArchiveController({
         isProviderId: value => value === 'codex', getProvider: () => ({ label: 'Codex', service: {
             archiveSession: id => { archived.push(id); return true; },
         } }), getProviderLabel: () => 'Codex',
         getOpenProjects: () => { legacyProjectReads++; return []; },
-        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        getWorkspaceTarget: cardId => cardId === currentArchiveTarget?.cardId ? currentArchiveTarget : null,
         getProjectSessions: () => { throw new Error('must not select root sessions'); },
         getRuntimeById: () => null, isRuntimeComplete: () => true, focusRuntime: () => undefined,
         deleteRuntimeMarker: () => undefined, untrackRuntime: () => undefined,
         deletePin: () => undefined, deleteAlias: () => undefined,
-        confirmSingleArchive: async () => 'Archive', confirmBatchArchive: async () => 'Archive',
+        confirmSingleArchive: async () => { onSingleArchiveConfirmation(); return 'Archive'; },
+        confirmBatchArchive: async () => 'Archive',
         showWarningMessage: () => undefined, showErrorMessage: () => undefined,
         showInformationMessage: () => undefined, appendLine: () => undefined,
         postCompletion: () => undefined, refresh: () => undefined,
@@ -3957,6 +3976,35 @@ async function runWorkspaceCardActionControllerIntegrationChecks() {
     });
     await archive.archiveSessions(target.cardId, 'codex', [session.id]);
     assert.deepStrictEqual(archived, [session.id]);
+    archived.length = 0;
+
+    await archive.archiveSession(target.cardId, 'codex', session.id);
+    assert.deepStrictEqual(archived, [session.id], 'a valid v2 single archive must reach the provider');
+    archived.length = 0;
+
+    await archive.archiveSession(target.cardId, 'codex', 'forged-session');
+    await archive.archiveSession('__currentWorkspace-forged', 'codex', session.id);
+    assert.deepStrictEqual(archived, [], 'unknown v2 sessions and cards must not reach the provider');
+
+    onSingleArchiveConfirmation = () => {
+        currentArchiveTarget = {
+            ...target,
+            workspace: { ...workspace, scopeIdentity: 'scope-replaced-during-confirmation' },
+            sessions: { ...target.sessions, workspaceScopeIdentity: 'scope-replaced-during-confirmation' },
+        };
+    };
+    await archive.archiveSession(target.cardId, 'codex', session.id);
+    assert.deepStrictEqual(archived, [], 'a workspace change during confirmation must cancel archive');
+
+    currentArchiveTarget = target;
+    onSingleArchiveConfirmation = () => {
+        currentArchiveTarget = {
+            ...target,
+            sessions: { ...target.sessions, sessionsByProvider: { codex: [] } },
+        };
+    };
+    await archive.archiveSession(target.cardId, 'codex', session.id);
+    assert.deepStrictEqual(archived, [], 'a session disappearing during confirmation must cancel archive');
     assert.strictEqual(legacyProjectReads, 0, 'v2 current-card actions must never select a member Project');
 }
 
@@ -6298,6 +6346,7 @@ function runWebviewContentChecks() {
     );
     assert.ok(dashboard.includes('await aiSessionArchiveController.archiveSessions('));
     assert.ok(dashboard.includes('await aiSessionArchiveController.archiveSession('));
+    assert.match(dashboard, /archiveSession\(\s*e\.projectId as string,\s*providerId as AiSessionProviderId \| null,\s*e\.sessionId as string\s*\)/);
     assert.ok(!dashboard.includes('async function archiveAiSession('));
     assert.ok(!dashboard.includes('function archiveAiSessionItem('));
     assert.ok(!dashboard.includes('async function archiveAiSessions('));
@@ -7617,6 +7666,20 @@ function runBatchAiSessionWebviewChecks() {
         type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'codex',
         sessionId: 'active-session',
     }, 'pointer context-menu activation must preserve the Direct close route');
+    messages.length = 0;
+
+    eventListeners.contextmenu({
+        target: otherCodexRow.primaryAction,
+        preventDefault: () => {},
+        clientX: 20,
+        clientY: 20,
+        keyboardTrigger: false,
+    });
+    eventListeners.click({ button: 0, target: archiveMenuItem });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.pop())), {
+        type: 'archive-codex-session', projectId: 'project-a', provider: 'codex',
+        sessionId: 'other-session',
+    }, 'context-menu archive must preserve the owning workspace card ID');
     messages.length = 0;
 
     attentionRow.setAttribute('data-ai-session-attention', '');

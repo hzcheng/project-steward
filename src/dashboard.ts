@@ -1287,7 +1287,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             );
         },
         archiveAiSession: async (e, providerId) => {
-            await aiSessionArchiveController.archiveSession(providerId as AiSessionProviderId | null, e.sessionId as string);
+            await aiSessionArchiveController.archiveSession(
+                e.projectId as string,
+                providerId as AiSessionProviderId | null,
+                e.sessionId as string
+            );
         },
     });
     const provider = new SidebarStewardViewProvider({

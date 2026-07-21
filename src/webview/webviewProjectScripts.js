@@ -1538,6 +1538,7 @@ function initProjects() {
                 if (contextMenuAiSessionActive) break;
                 window.vscode.postMessage({
                     type: getArchiveAiSessionMessageType(contextMenuAiSessionProvider),
+                    projectId: contextMenuAiSessionProjectId,
                     provider: contextMenuAiSessionProvider,
                     sessionId: contextMenuAiSessionId,
                 });
