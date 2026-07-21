@@ -175,8 +175,8 @@ export function validateOpenWorkspaceRootRecord(value: unknown): OpenWorkspaceRo
 }
 
 function validateRoots(value: unknown): OpenWorkspaceRootRecord[] {
-    if (!Array.isArray(value) || value.length > MAX_OPEN_WORKSPACE_ROOTS) {
-        throw new Error(`roots must be an array containing at most ${MAX_OPEN_WORKSPACE_ROOTS} records`);
+    if (!Array.isArray(value) || value.length === 0 || value.length > MAX_OPEN_WORKSPACE_ROOTS) {
+        throw new Error(`roots must be a non-empty array containing at most ${MAX_OPEN_WORKSPACE_ROOTS} records`);
     }
     const roots = Array.from(value, validateOpenWorkspaceRootRecord);
     const rootIds = new Set<string>();

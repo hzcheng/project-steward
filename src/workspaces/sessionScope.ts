@@ -22,6 +22,7 @@ export interface PrimaryWorkspaceRootSelectionOptions {
 
 export interface AiSessionDirectoryScopeOptions extends PrimaryWorkspaceRootSelectionOptions {
     isDirectory: (hostPath: string) => boolean;
+    primaryCwd?: string;
 }
 
 export interface InvalidWorkspaceRoot {
@@ -119,12 +120,18 @@ export function buildAiSessionDirectoryScope(
         throw new WorkspaceDirectoryScopeError(invalidRoots);
     }
 
-    const primaryRoot = selectPrimaryWorkspaceRoot(workspace, options);
+    const normalizedPrimaryCwd = normalizeWorkspaceHostPath(options.primaryCwd || '');
+    const historicalRoot = normalizedPrimaryCwd
+        ? assignPathToWorkspaceRoot(normalizedPrimaryCwd, roots)
+        : null;
+    const primaryRoot = historicalRoot || selectPrimaryWorkspaceRoot(workspace, options);
     if (!primaryRoot) {
         throw new WorkspaceDirectoryScopeError([]);
     }
 
-    const primaryCwd = normalizedRoots.find(candidate => candidate.root.id === primaryRoot.id)?.hostPath || '';
+    const primaryRootHostPath = normalizedRoots
+        .find(candidate => candidate.root.id === primaryRoot.id)?.hostPath || '';
+    const primaryCwd = historicalRoot ? normalizedPrimaryCwd : primaryRootHostPath;
     const seenPaths = new Set<string>();
     const workspaceRootHostPaths = normalizedRoots.reduce((result, candidate) => {
         const comparablePath = getWorkspaceHostPathComparisonKey(candidate.hostPath);
@@ -134,9 +141,9 @@ export function buildAiSessionDirectoryScope(
         }
         return result;
     }, [] as string[]);
-    const primaryCwdComparisonKey = getWorkspaceHostPathComparisonKey(primaryCwd);
+    const primaryRootComparisonKey = getWorkspaceHostPathComparisonKey(primaryRootHostPath);
     const additionalDirectories = workspaceRootHostPaths.filter(
-        hostPath => getWorkspaceHostPathComparisonKey(hostPath) !== primaryCwdComparisonKey
+        hostPath => getWorkspaceHostPathComparisonKey(hostPath) !== primaryRootComparisonKey
     );
 
     return Object.freeze({

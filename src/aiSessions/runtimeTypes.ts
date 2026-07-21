@@ -5,6 +5,7 @@ import type { AiSessionLaunchSpec } from './launchSpec';
 import type { AiSessionDirectoryScope } from './types';
 import {
     getWorkspaceHostPathComparisonKey,
+    isWorkspaceHostPathContained,
     normalizeWorkspaceHostPath,
 } from '../workspaces/sessionAssignment';
 
@@ -109,7 +110,7 @@ export function isValidAiSessionRuntimeIdentity(value: unknown): value is AiSess
     }
     const normalizedRootKeys = roots.map(root => getWorkspaceHostPathComparisonKey(root as string));
     return new Set(normalizedRootKeys).size === normalizedRootKeys.length
-        && normalizedRootKeys.includes(getWorkspaceHostPathComparisonKey(identity.cwd as string));
+        && roots.some(root => isWorkspaceHostPathContained(root as string, identity.cwd as string));
 }
 
 function getNormalizedRuntimeRoots(value: unknown): string[] {

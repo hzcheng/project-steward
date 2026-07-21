@@ -649,6 +649,60 @@ function runWorkspaceCardRenderingChecks() {
     );
     assert.ok(preservedOtherNavigationCard.textContent.includes('Other Workspace · SSH · 2 folders'),
         'the surviving navigation card must retain its content');
+
+    const stableCardId = '__currentWorkspace-stable-scope';
+    let persistedState = {};
+    const vscodeApi = {
+        getState: () => persistedState,
+        setState: state => { persistedState = state; },
+    };
+    function makeTabSurface(cardId) {
+        const attributes = {};
+        const sessionSection = { setAttribute: (name, value) => { attributes[name] = value; } };
+        const tabs = ['active', 'sessions'].map(tab => {
+            const values = { 'data-ai-session-tab': tab };
+            return {
+                getAttribute: name => values[name] || null,
+                setAttribute: (name, value) => { values[name] = value; },
+            };
+        });
+        const panels = ['active', 'sessions'].map(tab => ({
+            getAttribute: name => name === 'data-ai-session-panel' ? tab : null,
+            toggleAttribute: (name, enabled) => { attributes[`${tab}:${name}`] = enabled; },
+        }));
+        return {
+            attributes,
+            getAttribute: name => name === 'data-id' ? cardId : null,
+            querySelector: selector => selector === '.codex-sessions' ? sessionSection : null,
+            querySelectorAll: selector => selector === '[data-ai-session-tab]'
+                ? tabs
+                : selector === '[data-ai-session-panel]' ? panels : [],
+        };
+    }
+    const untitledSurface = makeTabSurface(stableCardId);
+    const savedSurface = makeTabSurface(stableCardId);
+    const stateContext = { document: {}, window: {} };
+    vm.runInNewContext(projectSource, stateContext);
+    const zeroRootCurrentGroup = {
+        matches: selector => selector === '.open-current-workspace-group',
+        querySelectorAll: selector => selector === '.workspace-card[data-workspace-scope-identity]' ? [] : [],
+    };
+    assert.strictEqual(stateContext.isWorkspaceUpdateDomConsistent({ currentWorkspaceCount: 0 }, zeroRootCurrentGroup), true,
+        'a zero-root resolver message must be DOM-consistent with an empty current group');
+    assert.strictEqual(stateContext.isWorkspaceUpdateDomConsistent({ currentWorkspaceCount: 1 }, zeroRootCurrentGroup), false,
+        'the incremental consistency guard must reject a declared 1/rendered 0 split');
+    stateContext.writeAiSessionTabState(vscodeApi, stableCardId, 'active');
+    stateContext.restoreAiSessionTabsFromState({
+        querySelectorAll: () => [savedSurface],
+    }, vscodeApi);
+    assert.strictEqual(savedSurface.attributes['data-selected-ai-session-tab'], 'active',
+        'ACTIVE tab state must survive untitled-to-saved navigation identity changes');
+    stateContext.writeAiSessionTabState(vscodeApi, stableCardId, 'sessions');
+    stateContext.restoreAiSessionTabsFromState({
+        querySelectorAll: () => [untitledSurface],
+    }, vscodeApi);
+    assert.strictEqual(untitledSurface.attributes['data-selected-ai-session-tab'], 'sessions',
+        'SESSIONS tab state must remain keyed by the stable scope-owned card ID');
 }
 
 function createSearchResultElement(tagName) {

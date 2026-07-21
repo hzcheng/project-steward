@@ -64,7 +64,7 @@ function getWorkspaceFileBasename(workspaceFile: WorkspaceUri | null | undefined
 export class WorkspaceContextResolver {
     resolve(context: WorkspaceContext): OpenWorkspace | null {
         const workspaceFolders = context.workspaceFolders || [];
-        if (!context.workspaceFile && workspaceFolders.length === 0) {
+        if (workspaceFolders.length === 0) {
             return null;
         }
 

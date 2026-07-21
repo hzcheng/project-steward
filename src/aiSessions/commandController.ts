@@ -90,8 +90,9 @@ export async function preflightAiSessionDirectoryScope(
     }
 
     let explicitRootId = options.explicitRootId;
+    let historicalRoot = null as ReturnType<typeof assignPathToWorkspaceRoot>;
     if (options.action === 'resume') {
-        const historicalRoot = assignPathToWorkspaceRoot(options.historicalCwd || '', workspace.roots);
+        historicalRoot = assignPathToWorkspaceRoot(options.historicalCwd || '', workspace.roots);
         explicitRootId = historicalRoot?.id || explicitRootId;
         if (!explicitRootId) {
             explicitRootId = await options.pickWorkspaceRoot(workspace, 'resume');
@@ -109,6 +110,9 @@ export async function preflightAiSessionDirectoryScope(
             explicitRootId,
             activeEditorUri: options.action === 'create' ? options.activeEditorUri : null,
             lastUsedRootId: options.action === 'create' ? options.lastUsedRootId : null,
+            primaryCwd: options.action === 'resume' && historicalRoot
+                ? options.historicalCwd
+                : undefined,
             isDirectory: options.isDirectory,
         });
         return { status: 'ready', directoryScope };

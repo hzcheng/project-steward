@@ -62,6 +62,12 @@ function containsPath(rootPath: NormalizedHostPath, candidatePath: NormalizedHos
     );
 }
 
+export function isWorkspaceHostPathContained(rootPath: string, candidatePath: string): boolean {
+    const normalizedRoot = normalizeComparableHostPath(rootPath);
+    const normalizedCandidate = normalizeComparableHostPath(candidatePath);
+    return !!normalizedRoot && !!normalizedCandidate && containsPath(normalizedRoot, normalizedCandidate);
+}
+
 export function assignPathToWorkspaceRoot(
     candidatePath: string,
     roots: readonly WorkspaceRoot[],

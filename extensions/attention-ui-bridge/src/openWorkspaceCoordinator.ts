@@ -43,8 +43,9 @@ export interface OpenWorkspaceDiagnosticEvent {
     workspaceCount?: number;
     registrationCount?: number;
     semanticRevision?: string;
-    operation?: string;
-    error?: string;
+    operation?: OpenWorkspaceDiagnosticOperation;
+    errorCategory?: 'open-workspace-operation';
+    errorCode?: 'failed';
     registrations?: Array<{
         instanceId: string;
         sequence: number;
@@ -54,6 +55,8 @@ export interface OpenWorkspaceDiagnosticEvent {
     }>;
     counters?: OpenWorkspaceStoreScan['counters'];
 }
+
+type OpenWorkspaceDiagnosticOperation = 'watcher' | 'interval' | 'publish' | 'unregister';
 
 function validateTimestamp(timestamp: number): number {
     if (!Number.isFinite(timestamp) || timestamp < 0) {
@@ -300,11 +303,12 @@ export class OpenWorkspaceCoordinator {
         if (this.disposed) throw new Error('open workspace coordinator is disposed');
     }
 
-    private reportError(operation: string, error: unknown): void {
+    private reportError(operation: OpenWorkspaceDiagnosticOperation, _error: unknown): void {
         this.reportDiagnostic({
             event: 'error',
             operation,
-            error: (error instanceof Error ? error.stack || error.message : String(error)).slice(0, 4096),
+            errorCategory: 'open-workspace-operation',
+            errorCode: 'failed',
         });
     }
 

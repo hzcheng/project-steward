@@ -695,6 +695,21 @@ function runTmuxLayoutChecks() {
     for (const invalidId of ['', '   ', 'pending id', 'pending\ncontrol', '../unsafe', 'x'.repeat(513)]) {
         assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentityId(invalidId), false);
     }
+    const nestedRuntimeIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'nested-scope', workspaceNavigationIdentity: 'nested-nav',
+        workspaceRootHostPaths: ['/work', '/work/api'], cwd: '/work/api/packages/service', sessionId: 'nested-session',
+    };
+    assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentity(nestedRuntimeIdentity), true,
+        'runtime identity must accept a normalized cwd contained by a current workspace root');
+    assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentity({
+        ...nestedRuntimeIdentity, cwd: '/work/api/../outside',
+    }), false, 'runtime identity must reject a non-normalized cwd');
+    assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentity({
+        ...nestedRuntimeIdentity, cwd: '/workspace-other',
+    }), false, 'runtime identity must reject a boundary-adjacent workspace-external cwd');
+    assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentity({
+        ...nestedRuntimeIdentity, workspaceRootHostPaths: ['/work/api', '/work/api/'],
+    }), false, 'runtime identity must reject duplicate normalized roots');
     const identity = { provider: 'codex', workspaceScopeIdentity: 'project-key', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work/app'], cwd: '/work/app', sessionId: 'session-1' };
     const project = new tmuxLayout.ProjectTmuxLayout().getLocator(identity);
     const session = new tmuxLayout.SessionTmuxLayout().getLocator(identity);
@@ -5293,6 +5308,7 @@ function createFakeRuntimeBackend(backend, options = {}) {
         refreshCalls: [],
         ensureResumeCalls: 0,
         ensureResumeRequests: [],
+        ensureResumeLayouts: [],
         ensurePendingCalls: 0,
         focusCalls: [],
         detachCalls: [],
@@ -5333,6 +5349,7 @@ function createFakeRuntimeBackend(backend, options = {}) {
     fake.ensureResume = async (request, layout) => {
         fake.ensureResumeCalls++;
         fake.ensureResumeRequests.push(request);
+        fake.ensureResumeLayouts.push(layout);
         if (options.resumeGate) await options.resumeGate.promise;
         if (remainingEnsureErrors > 0) {
             remainingEnsureErrors--;
@@ -5540,6 +5557,38 @@ async function runRuntimeCoordinatorChecks() {
         },
         chooseTmuxFallback: async () => 'cancel',
     });
+
+    const nestedCwd = '/work/api/packages/service';
+    for (const expected of [
+        { mode: 'vscode', tmuxLayout: 'project', backend: 'vscode', layout: undefined },
+        { mode: 'tmux', tmuxLayout: 'project', backend: 'tmux', layout: 'project' },
+        { mode: 'tmux', tmuxLayout: 'session', backend: 'tmux', layout: 'session' },
+    ]) {
+        const modeDirect = createFakeRuntimeBackend('vscode');
+        const modeTmux = createFakeRuntimeBackend('tmux');
+        const modeCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+            direct: modeDirect,
+            tmux: modeTmux,
+            getConfiguration: () => ({ ...expected, tmuxPath: 'tmux' }),
+            chooseTmuxFallback: async () => 'cancel',
+        });
+        const request = fakeResumeRequest(`nested-${expected.mode}-${expected.tmuxLayout}`);
+        request.identity.workspaceRootHostPaths = ['/work/api', '/work/web'];
+        request.identity.cwd = nestedCwd;
+        request.launch.cwd = nestedCwd;
+        request.directoryScope = {
+            ...createDirectoryScope(nestedCwd, ['/work/web']),
+            workspaceRootHostPaths: ['/work/api', '/work/web'],
+            primaryRootId: 'root-api',
+        };
+        await modeCoordinator.resume(request);
+        const selectedBackend = expected.backend === 'vscode' ? modeDirect : modeTmux;
+        assert.strictEqual(selectedBackend.ensureResumeRequests[0].identity.cwd, nestedCwd);
+        assert.strictEqual(selectedBackend.ensureResumeRequests[0].launch.cwd, nestedCwd);
+        assert.strictEqual(selectedBackend.ensureResumeRequests[0].directoryScope.primaryCwd, nestedCwd);
+        assert.strictEqual(selectedBackend.ensureResumeLayouts[0], expected.layout,
+            `${expected.mode}/${expected.tmuxLayout} must consume the exact nested launch scope`);
+    }
 
     for (const operation of ['focus', 'detach']) {
         const isolatedDirect = createFakeRuntimeBackend('vscode');

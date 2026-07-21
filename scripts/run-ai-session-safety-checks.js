@@ -276,6 +276,28 @@ function runWorkspaceSessionScopeChecks() {
     assert.strictEqual(Object.isFrozen(scope.workspaceRootHostPaths), true);
     assert.strictEqual(Object.isFrozen(scope.additionalDirectories), true);
 
+    const nestedWorkspace = {
+        ...workspace,
+        roots: [
+            { id: 'root-platform', name: 'Platform', uri: 'file:///work', hostPath: '/work', ordinal: 0 },
+            { id: 'root-api', name: 'API', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 1 },
+            { id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/web', ordinal: 2 },
+        ],
+    };
+    const nestedHistoricalScope = workspaceSessionScope.buildAiSessionDirectoryScope(nestedWorkspace, {
+        explicitRootId: 'root-api',
+        primaryCwd: '/work/api/packages/service/../service',
+        isDirectory: () => true,
+    });
+    assert.deepStrictEqual(nestedHistoricalScope, {
+        workspaceNavigationIdentity: workspace.navigationIdentity,
+        workspaceScopeIdentity: workspace.scopeIdentity,
+        workspaceRootHostPaths: ['/work', '/work/api', '/work/web'],
+        primaryRootId: 'root-api',
+        primaryCwd: '/work/api/packages/service',
+        additionalDirectories: ['/work', '/work/web'],
+    }, 'a nested historical cwd must stay exact while add-dir excludes its owning root');
+
     const duplicatePathScope = workspaceSessionScope.buildAiSessionDirectoryScope({
         ...workspace,
         roots: workspace.roots.concat({
@@ -1768,6 +1790,12 @@ async function runWorkspaceLaunchPreflightControllerChecks() {
     );
     assert.strictEqual(explicitScope.primaryRootId, 'root-web',
         'New Session in… must use the explicit root');
+    const workDirScope = await commandController.resolveWorkspaceDirectoryScope(workspace, 'codex', {
+        id: 'work-dir-session', name: 'Work-dir session', workDir: '/work/api/packages/from-work-dir',
+    });
+    assert.strictEqual(workDirScope.primaryRootId, 'root-api');
+    assert.strictEqual(workDirScope.primaryCwd, '/work/api/packages/from-work-dir',
+        'provider histories that expose workDir must preserve the exact nested cwd too');
 
     const createRequests = [];
     const createScopes = [];
@@ -1899,8 +1927,14 @@ async function runWorkspaceLaunchPreflightControllerChecks() {
     await resume.resumeProjectSession(workspaceTarget.cardId, 'codex', session.id, 'root-web');
     assert.strictEqual(resumeRequests[0].directoryScope.primaryRootId, 'root-api',
         'a current historical cwd must win over an explicit resume fallback');
+    assert.strictEqual(resumeRequests[0].directoryScope.primaryCwd, '/work/api/packages/service',
+        'resume preflight must preserve the normalized historical cwd inside the longest matching root');
     assert.deepStrictEqual(resumeRequests[0].directoryScope.workspaceRootHostPaths,
         ['/work/web', '/work/api', '/work/docs'], 'resume must recalculate all current roots');
+    assert.deepStrictEqual(resumeRequests[0].directoryScope.additionalDirectories,
+        ['/work/web', '/work/docs'], 'the owning root must not be repeated as an additional directory');
+    assert.strictEqual(resumeRequests[0].launch.cwd, '/work/api/packages/service',
+        'the provider launch spec must consume the same exact historical cwd');
     assert.strictEqual(resumeRequests[0].identity.cwd, resumeRequests[0].directoryScope.primaryCwd);
     assert.strictEqual(resumeScopes[0], resumeRequests[0].directoryScope);
     assert.deepStrictEqual(primaryRootWrites[2], [workspace.scopeIdentity, 'root-api']);

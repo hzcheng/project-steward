@@ -146,12 +146,12 @@ function runWorkspaceProtocolV2Checks() {
         workspaceProtocol.validateOpenWorkspaceRegistration({ ...registration, workspace: null }),
         { ...registration, workspace: null }
     );
-    assert.deepStrictEqual(
-        workspaceProtocol.validateOpenWorkspacePublication({
+    assertRejectsValidation(
+        () => workspaceProtocol.validateOpenWorkspacePublication({
             ...publication,
             workspace: { ...publication.workspace, roots: [] },
-        }).workspace.roots,
-        []
+        }),
+        /roots/
     );
 
     assertRejectsValidation(
@@ -773,6 +773,43 @@ async function runOpenWorkspaceCoordinatorBoundaryChecks() {
     assert.strictEqual(forward.registrations[99].lastFocusedAtMs, 1);
 }
 
+async function runOpenWorkspaceCoordinatorDiagnosticPrivacyChecks() {
+    const sentinel = '/private/workspace raw-command --session secret-session';
+    const diagnostics = [];
+    const coordinator = new OpenWorkspaceCoordinator('/unused-open-workspace-diagnostic', {
+        now: () => 5000,
+        setInterval: () => 'diagnostic-interval',
+        clearInterval: () => undefined,
+        createWatcher: () => ({ close: () => undefined }),
+        deliverAggregate: () => undefined,
+        reportDiagnostic: event => diagnostics.push(event),
+        createStore: () => ({
+            write: async () => { throw new Error(sentinel); },
+            remove: async () => undefined,
+            scan: async () => ({ registrations: [], counters: {} }),
+        }),
+    });
+    try {
+        await assert.rejects(coordinator.publish(makeWorkspacePublication()), error => {
+            assert.ok(String(error).includes(sentinel),
+                'the direct caller may receive its own operation error');
+            return true;
+        });
+        const diagnostic = diagnostics.find(event => event.event === 'error');
+        assert.deepStrictEqual(diagnostic, {
+            event: 'error',
+            operation: 'publish',
+            errorCategory: 'open-workspace-operation',
+            errorCode: 'failed',
+            atMs: 5000,
+        });
+        assert.strictEqual(JSON.stringify(diagnostics).includes(sentinel), false,
+            'cross-extension diagnostics must not contain arbitrary exception text');
+    } finally {
+        coordinator.dispose();
+    }
+}
+
 async function runOpenWorkspaceClientAndControllerChecks() {
     const commands = new Map();
     const executions = [];
@@ -893,6 +930,50 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     assert.strictEqual(cards.some(card => card.roots.some(root => Object.hasOwnProperty.call(root, 'hostPath'))), false);
     assert.strictEqual(cards.find(card => card.kind === 'navigation').aiSessions, undefined,
         'OTHER WINDOWS cards must stay lightweight');
+    let identityWorkspace = {
+        ...current,
+        kind: 'untitledMultiRoot',
+        navigationIdentity: workspaceIdentity(930),
+        navigationUri: 'untitled:Untitled-9',
+    };
+    const identityDashboard = new OpenWorkspaceDashboardController({
+        getCurrentWorkspace: () => identityWorkspace,
+        getCurrentWorkspaceAiSessions: () => null,
+        getGroups: () => [],
+        getTodoSearchItems: () => [],
+        getCollapsed: () => false,
+        getRunningCardAnimation: () => 'current',
+        getAttentionAggregate: () => null,
+        getBridgeInstanceId: () => SELF,
+        postMessage: async () => true,
+        refresh: () => undefined,
+        isVisible: () => true,
+        logDiagnostic: () => undefined,
+        logError: () => undefined,
+    });
+    const untitledCardId = identityDashboard.getCards()[0].id;
+    identityDashboard.setAggregate(aggregate);
+    const navigationCardIdsBeforeSave = identityDashboard.getCards()
+        .filter(card => card.kind === 'navigation').map(card => card.id).sort();
+    identityWorkspace = {
+        ...identityWorkspace,
+        kind: 'savedMultiRoot',
+        navigationIdentity: workspaceIdentity(931),
+        navigationUri: 'file:///work/saved.code-workspace',
+    };
+    const savedCardId = identityDashboard.getCards()[0].id;
+    assert.strictEqual(savedCardId, untitledCardId,
+        'saving an untitled workspace must preserve the scope-owned current card ID');
+    assert.deepStrictEqual(identityDashboard.getCards()
+        .filter(card => card.kind === 'navigation').map(card => card.id).sort(), navigationCardIdsBeforeSave,
+        'OTHER WINDOWS card IDs must remain navigation-owned across the current workspace save transition');
+    identityWorkspace = {
+        ...identityWorkspace,
+        scopeIdentity: workspaceIdentity(932),
+        roots: identityWorkspace.roots.concat(makeWorkspaceRoot(932)),
+    };
+    assert.notStrictEqual(identityDashboard.getCards()[0].id, savedCardId,
+        'changing the root set must change the scope-owned current card ID');
     dashboard.postUpdated();
     await new Promise(resolve => setImmediate(resolve));
     assert.strictEqual(posted.length, 1);
@@ -1821,7 +1902,7 @@ async function runOpenWorkspaceHardeningChecks() {
     assert.ok(refreshes.includes('open-workspace-update-not-delivered'));
 }
 
-function runWorkspaceContextResolverChecks() {
+async function runWorkspaceContextResolverChecks() {
     function uri(value, overrides = {}) {
         const match = /^([A-Za-z][A-Za-z0-9+.-]*):(?:\/\/([^/]*))?(.*)$/.exec(value);
         assert.ok(match, `invalid URI fixture: ${value}`);
@@ -1915,15 +1996,44 @@ function runWorkspaceContextResolverChecks() {
         remoteName: undefined,
         workspaceFolders: [],
     });
-    assert.strictEqual(noRootSavedWorkspace.displayName, 'no-roots.code-workspace');
-    assert.deepStrictEqual(noRootSavedWorkspace.roots, []);
+    assert.strictEqual(noRootSavedWorkspace, null,
+        'a saved workspace file without folders is not a current workspace snapshot');
     const noRootUntitledWorkspace = resolver.resolve({
         workspaceFile: uri('untitled:'),
         remoteName: undefined,
         workspaceFolders: [],
     });
-    assert.strictEqual(noRootUntitledWorkspace.displayName, 'Workspace');
-    assert.deepStrictEqual(noRootUntitledWorkspace.roots, []);
+    assert.strictEqual(noRootUntitledWorkspace, null,
+        'an untitled workspace file without folders is not a current workspace snapshot');
+
+    const zeroRootMessages = [];
+    const zeroRootDashboard = new OpenWorkspaceDashboardController({
+        getCurrentWorkspace: () => resolver.resolve({
+            workspaceFile: uri('file:///work/no-roots.code-workspace'),
+            workspaceFolders: [],
+        }),
+        getCurrentWorkspaceAiSessions: () => { throw new Error('zero-root must not hydrate sessions'); },
+        getGroups: () => [],
+        getTodoSearchItems: () => [],
+        getCollapsed: () => false,
+        getRunningCardAnimation: () => 'current',
+        getAttentionAggregate: () => null,
+        getBridgeInstanceId: () => SELF,
+        postMessage: async message => { zeroRootMessages.push(message); return true; },
+        refresh: () => undefined,
+        isVisible: () => true,
+        logDiagnostic: () => undefined,
+        logError: () => undefined,
+    });
+    assert.deepStrictEqual(zeroRootDashboard.getCards(), []);
+    zeroRootDashboard.postUpdated();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(zeroRootMessages.length, 1);
+    assert.strictEqual(zeroRootMessages[0].currentWorkspaceCount, 0);
+    assert.strictEqual(zeroRootMessages[0].navigationWorkspaceCount, 0);
+    assert.strictEqual(zeroRootMessages[0].searchCatalog.openWorkspaces.length, 0);
+    assert.strictEqual((zeroRootMessages[0].html.match(/class="workspace-card/g) || []).length, 0,
+        'declared and rendered current workspace counts must both be zero');
 
     const first = resolver.resolve({
         workspaceFile: uri('untitled:Untitled-1'),
@@ -3199,6 +3309,7 @@ async function runCoordinatorWiringChecks() {
     const registeredCommands = new Map();
     const executedCommands = [];
     const bridgeOutputLines = [];
+    let aggregateDeliveryError = null;
     const vscode = {
         window: {
             createOutputChannel: name => {
@@ -3223,6 +3334,10 @@ async function runCoordinatorWiringChecks() {
             },
             executeCommand: async (command, argument) => {
                 executedCommands.push({ command, argument });
+                if (command === '_projectStewardOpenWorkspaces.workspace.aggregate'
+                    && aggregateDeliveryError) {
+                    throw aggregateDeliveryError;
+                }
                 return undefined;
             },
         },
@@ -3303,6 +3418,25 @@ async function runCoordinatorWiringChecks() {
             value.command === '_projectStewardOpenWorkspaces.workspace.diagnostic'
             && value.argument.event === 'publish'
         ));
+        const diagnosticSentinel = '/private/wiring raw-command --session secret-session';
+        aggregateDeliveryError = new Error(diagnosticSentinel);
+        await assert.rejects(
+            publish(makeWorkspacePublication({ sequence: 2, workspace: makeWorkspaceRecord(43) })),
+            error => String(error).includes(diagnosticSentinel),
+        );
+        const crossExtensionDiagnostics = executedCommands.filter(
+            value => value.command === '_projectStewardOpenWorkspaces.workspace.diagnostic'
+        ).map(value => value.argument);
+        assert.ok(crossExtensionDiagnostics.some(event =>
+            event.event === 'error'
+            && event.operation === 'publish'
+            && event.errorCategory === 'open-workspace-operation'
+            && event.errorCode === 'failed'
+        ));
+        assert.strictEqual(JSON.stringify(crossExtensionDiagnostics).includes(diagnosticSentinel), false);
+        assert.strictEqual(bridgeOutputLines.join('\n').includes(diagnosticSentinel), false,
+            'the bridge OutputChannel must not receive arbitrary exception text');
+        aggregateDeliveryError = null;
         await unregister({ protocolVersion: 2, instanceId: SELF });
     } finally {
         Module._load = previousModuleLoad;
@@ -3315,7 +3449,7 @@ async function runCoordinatorWiringChecks() {
 
 async function main() {
     runWorkspaceProtocolV2Checks();
-    runWorkspaceContextResolverChecks();
+    await runWorkspaceContextResolverChecks();
     await runSavedWorkspaceProjectAdapterChecks();
     await runProjectServiceWorkspaceSaveMigrationIntegrationChecks();
     runWorkspaceProjectionV2Checks();
@@ -3323,6 +3457,7 @@ async function main() {
     await runOpenWorkspaceStoreChecks();
     await runOpenWorkspaceCoordinatorChecks();
     await runOpenWorkspaceCoordinatorBoundaryChecks();
+    await runOpenWorkspaceCoordinatorDiagnosticPrivacyChecks();
     await runOpenWorkspaceClientAndControllerChecks();
     await runWorkspaceNavigationControllerChecks();
     await runOpenWorkspaceHardeningChecks();

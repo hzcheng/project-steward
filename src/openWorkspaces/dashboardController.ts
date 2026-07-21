@@ -127,7 +127,7 @@ export class OpenWorkspaceDashboardController {
         workspace: OpenWorkspace,
         attentionAggregate: AttentionAggregate | null,
     ): WorkspaceCardViewModel {
-        const digest = crypto.createHash('sha256').update(workspace.navigationIdentity).digest('hex').slice(0, 24);
+        const digest = crypto.createHash('sha256').update(workspace.scopeIdentity).digest('hex').slice(0, 24);
         return {
             id: `__currentWorkspace-${digest}`,
             kind: 'current',

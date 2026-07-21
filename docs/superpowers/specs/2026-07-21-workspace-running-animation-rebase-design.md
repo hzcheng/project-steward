@@ -54,4 +54,3 @@ Behavior tests must first fail against the rebased code, then prove:
 - full render, open-workspace incremental updates, and AI-session incremental updates use the configured value;
 - the main configuration enum, card keyframes, reduced-motion behavior, and terminal-icon animation remain present;
 - the workspace-first privacy/source gates and complete automated suite remain green.
-
