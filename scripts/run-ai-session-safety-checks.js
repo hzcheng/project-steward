@@ -599,19 +599,19 @@ function runWorkspaceSessionHydrationChecks() {
         aggregateRevision: 'a'.repeat(64),
         generatedAtMs: 200,
         sessions: [{
-            projectId: attentionProject.getAttentionProjectKey('file:///work/app/api'),
+            projectId: attentionProject.getAttentionProjectKeys(['file:///work/app/api'])[0],
             sessionKey: 'codex:api-history',
             eventIds: ['event-api'], reasons: ['completed'], observedAtMs: 100,
         }, {
-            projectId: attentionProject.getAttentionProjectKey('file:///work/web'),
+            projectId: attentionProject.getAttentionProjectKeys(['file:///work/web'])[0],
             sessionKey: 'codex:web-history:30:tmux',
             eventIds: ['event-web-old'], reasons: ['completed'], observedAtMs: 110,
         }, {
-            projectId: attentionProject.getAttentionProjectKey('file:///work/web'),
+            projectId: attentionProject.getAttentionProjectKeys(['file:///work/web'])[0],
             sessionKey: 'codex:web-history:40:tmux',
             eventIds: ['event-web-new'], reasons: ['input-required'], observedAtMs: 120,
         }, {
-            projectId: attentionProject.getAttentionProjectKey('file:///work/app'),
+            projectId: attentionProject.getAttentionProjectKeys(['file:///work/app'])[0],
             sessionKey: 'codex:web-history',
             eventIds: ['event-wrong-root'], reasons: ['failed'], observedAtMs: 130,
         }],
@@ -2381,7 +2381,7 @@ async function runAiSessionAttentionControllerChecks() {
     assert.strictEqual(published[0].items.length, 1);
     assert.strictEqual(
         published[0].items[0].projectId,
-        attentionProject.getAttentionProjectKey(workspaceTarget.workspace.roots[0].uri),
+        attentionProject.getAttentionProjectKeys([workspaceTarget.workspace.roots[0].uri])[0],
     );
     assert.strictEqual(published[0].items[0].sessionKey, 'codex:session-a');
     assert.strictEqual(published[0].items[0].state, 'needsAttention');
@@ -4579,7 +4579,7 @@ function runWebviewContentChecks() {
     assert.ok(styles.includes('.ai-session-attention-indicator'));
     assert.ok(dashboard.includes('getWorkspaceTarget: getCurrentWorkspaceActionTargetWithoutCardId'));
     assert.ok(attentionControllerSource.includes('getWorkspaceTarget: () => WorkspaceAiSessionActionTarget | null;'));
-    assert.ok(attentionControllerSource.includes('getAttentionProjectKey(root.uri)'));
+    assert.ok(attentionControllerSource.includes('getAttentionProjectKeys([root.uri])[0]'));
     assert.ok(attentionControllerSource.includes('observedAtMs: attention.stateChangedAt'));
     assert.ok(attentionControllerSource.includes("if (!runtime || runtime.state === 'stopped'"));
     assert.ok(attentionControllerSource.includes('provider.service.getLifecycleSignals(requests)'));

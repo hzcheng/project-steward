@@ -421,6 +421,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const workspaceContextResolver = new WorkspaceContextResolver();
     const workspacePrimaryRootStore = new WorkspacePrimaryRootStore(context.globalState);
     let openWorkspaceController: OpenWorkspaceController;
+    let openWorkspaceDashboardController: OpenWorkspaceDashboardController;
     let workspaceNavigationController: WorkspaceNavigationController<vscode.Uri>;
     const resolveCurrentOpenWorkspace = (): OpenWorkspace | null => workspaceContextResolver.resolve({
         workspaceFile: vscode.workspace.workspaceFile,
@@ -870,7 +871,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     aiSessionAttentionBridgeClient = new AttentionBridgeClient(
         aggregate => {
             if (aiSessionAttentionController.setRemoteAggregate(aggregate)) {
-                scheduleAiSessionRefresh('attention');
+                scheduleAttentionViewsRefresh();
             }
         },
         error => logError('AI session attention bridge unavailable; using local-window monitoring.', error)
@@ -1319,7 +1320,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         refreshAiSessionRuntimes: (_reason, force) => aiSessionRuntimeCoordinator.refreshForHost(force),
         logAiSessionRuntimeFailure,
     });
-    const openWorkspaceDashboardController = new OpenWorkspaceDashboardController({
+    openWorkspaceDashboardController = new OpenWorkspaceDashboardController({
         getCurrentWorkspace: getCurrentOpenWorkspace,
         isWorkspaceSavedAsProject: workspace => Boolean(getSavedProjectForWorkspace(workspace)),
         getWorkspaceProjectColor: workspace => getSavedProjectForWorkspace(workspace)?.color || '',
@@ -1826,6 +1827,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     function scheduleAiSessionRefresh(reason = 'refresh') {
         aiSessionDashboardController.scheduleRefresh(reason);
+    }
+
+    function scheduleAttentionViewsRefresh() {
+        scheduleAiSessionRefresh('attention');
+        openWorkspaceDashboardController?.postUpdated();
     }
 
     function setAiSessionWatchersActive(active: boolean) {

@@ -2,7 +2,7 @@
 
 import type { AttentionAggregate } from '../aiSessions/attentionAggregate';
 import {
-    getAttentionProjectKey,
+    getAttentionProjectKeys,
     getAttentionSessionLookupKey,
 } from '../aiSessions/attentionProject';
 import { getAiSessionKey } from '../aiSessions/sessionHelpers';
@@ -60,7 +60,7 @@ export function getWorkspaceSessionAttention(
     sessionId: string
 ): AiSessionViewModel['attention'] | undefined {
     const indexed = index.get(getAttentionSessionLookupKey(
-        getAttentionProjectKey(rootUri),
+        getAttentionProjectKeys([rootUri])[0] || '',
         getAiSessionKey(providerId, sessionId)
     ));
     return indexed ? {
@@ -69,4 +69,3 @@ export function getWorkspaceSessionAttention(
         unread: indexed.unread,
     } : undefined;
 }
-

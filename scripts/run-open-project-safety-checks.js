@@ -1084,6 +1084,7 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     ]);
     const posted = [];
     const colorRequests = [];
+    let dashboardAttention = null;
     const dashboard = new OpenWorkspaceDashboardController({
         getCurrentWorkspace: () => current,
         isWorkspaceSavedAsProject: () => false,
@@ -1098,7 +1099,7 @@ async function runOpenWorkspaceClientAndControllerChecks() {
         getTodoSearchItems: () => [],
         getCollapsed: () => false,
         getRunningCardAnimation: () => 'orbit',
-        getAttentionAggregate: () => null,
+        getAttentionAggregate: () => dashboardAttention,
         getBridgeInstanceId: () => SELF,
         postMessage: async message => { posted.push(message); return true; },
         refresh: () => undefined,
@@ -1186,6 +1187,24 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     assert.strictEqual(posted[0].currentWorkspaceCount, 1);
     assert.strictEqual(posted[0].navigationWorkspaceCount, 2);
     assert.strictEqual(posted[0].searchCatalog.version, 2);
+    dashboardAttention = {
+        protocolVersion: 1,
+        aggregateRevision: 'b'.repeat(64),
+        generatedAtMs: 6000,
+        sessions: [{
+            projectId: attentionProject.getAttentionProjectKeys([current.roots[0].uri])[0],
+            sessionKey: 'codex:done',
+            eventIds: ['event-done'],
+            reasons: ['completed'],
+            observedAtMs: 5900,
+        }],
+    };
+    dashboard.postUpdated();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(posted.length, 2,
+        'an attention-only aggregate revision must invalidate OTHER WINDOWS');
+    assert.notStrictEqual(posted[0].semanticRevision, posted[1].semanticRevision);
+    assert.strictEqual(dashboard.getCards()[0].attentionCount, 1);
 }
 
 async function runWorkspaceNavigationControllerChecks() {
@@ -3103,7 +3122,7 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('const projectMutationController = new ProjectMutationController({'));
     assert.ok(dashboard.includes('const projectPromptController = new ProjectPromptController({'));
     assert.ok(dashboard.includes('new DashboardCommandRegistration<vscode.Disposable>({'));
-    assert.ok(dashboard.includes('const openWorkspaceDashboardController = new OpenWorkspaceDashboardController({'));
+    assert.ok(dashboard.includes('openWorkspaceDashboardController = new OpenWorkspaceDashboardController({'));
     assert.ok(dashboard.includes('openWorkspaceController = new OpenWorkspaceController({'));
     assert.ok(dashboard.includes('new OpenWorkspaceBridgeClient('));
     assert.ok(dashboard.includes("reportDiagnostic: event => logOpenWorkspaceDiagnostic('Workspace', event)"));

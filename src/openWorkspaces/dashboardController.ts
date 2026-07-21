@@ -178,6 +178,7 @@ export class OpenWorkspaceDashboardController {
         return crypto.createHash('sha256').update(JSON.stringify([
             this.bridgeStatus,
             this.aggregate?.semanticRevision || null,
+            this.options.getAttentionAggregate()?.aggregateRevision || null,
             this.options.getRunningCardAnimation(),
         ])).digest('hex');
     }

@@ -4578,6 +4578,12 @@ function runSourceContractChecks(source) {
     assert.ok(!extensionHostSource.includes('async function removeProject('));
     assert.ok(projectRemovalControllerSource.includes('export class ProjectRemovalController'));
     assert.ok(openWorkspacesMessageBody.includes('openWorkspaceDashboardController.postUpdated()'));
+    assert.ok(extensionHostSource.includes('function scheduleAttentionViewsRefresh()'));
+    const attentionBridgeWiring = extensionHostSource.slice(
+        extensionHostSource.indexOf('new AttentionBridgeClient('),
+        extensionHostSource.indexOf('const aiSessionAttentionInterval')
+    );
+    assert.ok(attentionBridgeWiring.includes('scheduleAttentionViewsRefresh()'));
     assert.ok(openWorkspaceControllerSource.includes('buildOpenWorkspacesUpdatedMessage({'));
     assert.ok(openWorkspaceControllerSource.includes('groups: this.options.getGroups()'));
     assert.ok(openWorkspaceControllerSource.includes('cards: this.getCards()'));

@@ -8,7 +8,7 @@ import type { AttentionPayloadItem } from './attentionPayload';
 import AiSessionAttentionMonitor from './attentionMonitor';
 import type { AiSessionAttentionSnapshot } from './attentionMonitor';
 import type { AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
-import { getAttentionProjectKey } from './attentionProject';
+import { getAttentionProjectKeys } from './attentionProject';
 import { getAiSessionKey } from './sessionHelpers';
 import type { WorkspaceAiSessionActionTarget, WorkspaceAiSessionViewModel } from './types';
 import { getLogicalAttentionSessionKey } from '../workspaces/sessionAttention';
@@ -304,7 +304,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                     const root = workspaceTarget.workspace.roots.find(candidate =>
                         candidate.id === session.primaryRootId
                     );
-                    const attentionRootKey = root ? getAttentionProjectKey(root.uri) : '';
+                    const attentionRootKey = root ? getAttentionProjectKeys([root.uri])[0] || '' : '';
                     if (!attentionRootKey) {
                         continue;
                     }
