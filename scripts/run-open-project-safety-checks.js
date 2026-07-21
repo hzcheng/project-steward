@@ -1142,54 +1142,60 @@ async function runOpenWorkspaceHardeningChecks() {
         capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
     };
 
-    const mismatchExecutions = [];
-    const mismatchTimers = [];
-    const mismatchStatuses = [];
-    let mismatchHeartbeat;
-    const mismatchClient = new OpenWorkspaceBridgeClient(
-        makeWorkspaceRecord(40),
-        () => undefined,
-        () => undefined,
-        {
-            instanceId: SELF,
-            mainExtensionVersion: '2.0.0',
-            registerCommand: () => ({ dispose: () => undefined }),
-            executeCommand: async (command, argument) => {
-                mismatchExecutions.push({ command, argument });
-                if (command.endsWith('.bridge.handshake')) {
-                    return {
-                        ...acceptedHandshake,
-                        accepted: false,
-                        errorCode: 'update-required',
-                    };
-                }
-                return undefined;
-            },
-            setInterval: callback => { mismatchHeartbeat = callback; return 'heartbeat'; },
-            clearInterval: () => undefined,
-            setTimeout: (callback, delayMs) => {
-                mismatchTimers.push({ callback, delayMs });
-                return mismatchTimers.length;
-            },
-            clearTimeout: () => undefined,
-            onStatusChange: status => mismatchStatuses.push(status),
-        }
-    );
-    await flush();
-    await mismatchClient.publish(makeWorkspaceRecord(41));
-    mismatchHeartbeat();
-    await flush();
-    assert.strictEqual(
-        mismatchExecutions.filter(value => value.command.endsWith('.bridge.handshake')).length,
-        1,
-        'an exact protocol mismatch must be terminal instead of creating a retry storm'
-    );
-    assert.strictEqual(mismatchTimers.length, 0, 'update-required mismatch must not schedule a retry');
-    assert.deepStrictEqual(mismatchStatuses, ['update-required']);
-    mismatchClient.dispose();
+    const terminalHandshakeCases = [
+        ['rejected response', { ...acceptedHandshake, accepted: false, errorCode: 'update-required' }],
+        ['protocol version mismatch', { ...acceptedHandshake, protocolVersion: 1 }],
+        ['malformed response', { accepted: true, protocolVersion: 2 }],
+        ['capability mismatch', {
+            ...acceptedHandshake,
+            capabilities: { ...acceptedHandshake.capabilities, focusLeases: false },
+        }],
+    ];
+    for (let caseIndex = 0; caseIndex < terminalHandshakeCases.length; caseIndex += 1) {
+        const [label, response] = terminalHandshakeCases[caseIndex];
+        const mismatchExecutions = [];
+        const mismatchTimers = [];
+        const mismatchStatuses = [];
+        let mismatchHeartbeat;
+        const mismatchClient = new OpenWorkspaceBridgeClient(
+            makeWorkspaceRecord(40 + caseIndex),
+            () => undefined,
+            () => undefined,
+            {
+                instanceId: (caseIndex + 7).toString(16).repeat(32),
+                mainExtensionVersion: '2.0.0',
+                registerCommand: () => ({ dispose: () => undefined }),
+                executeCommand: async (command, argument) => {
+                    mismatchExecutions.push({ command, argument });
+                    return command.endsWith('.bridge.handshake') ? response : undefined;
+                },
+                setInterval: callback => { mismatchHeartbeat = callback; return 'heartbeat'; },
+                clearInterval: () => undefined,
+                setTimeout: (callback, delayMs) => {
+                    mismatchTimers.push({ callback, delayMs });
+                    return mismatchTimers.length;
+                },
+                clearTimeout: () => undefined,
+                onStatusChange: status => mismatchStatuses.push(status),
+            }
+        );
+        await flush();
+        await mismatchClient.publish(makeWorkspaceRecord(60 + caseIndex));
+        mismatchHeartbeat();
+        await flush();
+        assert.strictEqual(
+            mismatchExecutions.filter(value => value.command.endsWith('.bridge.handshake')).length,
+            1,
+            `${label} must be terminal instead of creating a retry storm`
+        );
+        assert.strictEqual(mismatchTimers.length, 0, `${label} must not schedule a retry`);
+        assert.deepStrictEqual(mismatchStatuses, ['update-required'], label);
+        mismatchClient.dispose();
+    }
 
     let transientHandshakeCount = 0;
     const retryTimers = [];
+    const retryStatuses = [];
     const retryClient = new OpenWorkspaceBridgeClient(
         makeWorkspaceRecord(42),
         () => undefined,
@@ -1200,7 +1206,7 @@ async function runOpenWorkspaceHardeningChecks() {
             executeCommand: async command => {
                 if (command.endsWith('.bridge.handshake')) {
                     transientHandshakeCount += 1;
-                    throw new Error('bridge temporarily unavailable');
+                    throw new Error('protocol transport temporarily unavailable');
                 }
                 return undefined;
             },
@@ -1211,6 +1217,7 @@ async function runOpenWorkspaceHardeningChecks() {
                 return retryTimers.length;
             },
             clearTimeout: () => undefined,
+            onStatusChange: status => retryStatuses.push(status),
         }
     );
     const queuedRetryA = retryClient.publish(makeWorkspaceRecord(43));
@@ -1219,7 +1226,68 @@ async function runOpenWorkspaceHardeningChecks() {
     assert.strictEqual(transientHandshakeCount, 1,
         'queued publications must wait for the one scheduled retry instead of retrying immediately');
     assert.strictEqual(retryTimers.length, 1, 'transient failure must keep at most one retry timer');
+    assert.deepStrictEqual(retryStatuses, ['unavailable'],
+        'transport rejection text must never be classified as a protocol incompatibility');
     retryClient.dispose();
+
+    const backoffTimers = [];
+    const activeBackoffTimers = new Set();
+    const backoffStatuses = [];
+    let maximumActiveBackoffTimers = 0;
+    let backoffPublishAttempts = 0;
+    const backoffClient = new OpenWorkspaceBridgeClient(
+        makeWorkspaceRecord(70),
+        () => undefined,
+        () => undefined,
+        {
+            instanceId: 'b'.repeat(32),
+            registerCommand: () => ({ dispose: () => undefined }),
+            executeCommand: async command => {
+                if (command.endsWith('.bridge.handshake')) return acceptedHandshake;
+                if (command.endsWith('.bridge.publish')) {
+                    backoffPublishAttempts += 1;
+                    if (backoffPublishAttempts <= 6) throw new Error('publish transport failure');
+                }
+                return undefined;
+            },
+            setInterval: () => 'heartbeat',
+            clearInterval: () => undefined,
+            setTimeout: (callback, delayMs) => {
+                const timer = {
+                    delayMs,
+                    callback: () => {
+                        activeBackoffTimers.delete(timer);
+                        callback();
+                    },
+                };
+                backoffTimers.push(timer);
+                activeBackoffTimers.add(timer);
+                maximumActiveBackoffTimers = Math.max(maximumActiveBackoffTimers, activeBackoffTimers.size);
+                return timer;
+            },
+            clearTimeout: timer => activeBackoffTimers.delete(timer),
+            onStatusChange: status => backoffStatuses.push(status),
+        }
+    );
+    for (let timerIndex = 0; timerIndex < 6; timerIndex += 1) {
+        for (let attempt = 0; attempt < 50 && backoffTimers.length <= timerIndex; attempt += 1) {
+            await flush();
+        }
+        assert.strictEqual(backoffTimers.length, timerIndex + 1,
+            'each failed retry cycle must schedule exactly one next timer');
+        backoffTimers[timerIndex].callback();
+    }
+    for (let attempt = 0; attempt < 50 && backoffStatuses.at(-1) !== 'ready'; attempt += 1) {
+        await flush();
+    }
+    assert.deepStrictEqual(backoffTimers.map(timer => timer.delayMs),
+        [100, 500, 2_000, 10_000, 30_000, 30_000],
+        'publish retry delays must increase and cap across successful handshakes');
+    assert.strictEqual(maximumActiveBackoffTimers, 1, 'a retry cycle must keep at most one active timer');
+    assert.strictEqual(backoffPublishAttempts, 7);
+    assert.deepStrictEqual(backoffStatuses, ['unavailable', 'ready'],
+        'ready must not churn between retry handshakes and failed required publications');
+    backoffClient.dispose();
 
     let resolveHandshake;
     const pendingHandshake = new Promise(resolve => { resolveHandshake = resolve; });
@@ -1297,18 +1365,27 @@ async function runOpenWorkspaceHardeningChecks() {
         'dispose must unregister once after an in-flight publication settles'
     );
 
+    const aggregateCommands = new Map();
     let aggregateDeliveryAttempts = 0;
     const aggregateDeliveryErrors = [];
     const aggregateClient = new OpenWorkspaceBridgeClient(
         null,
         () => {
             aggregateDeliveryAttempts += 1;
-            if (aggregateDeliveryAttempts === 1) throw new Error('consumer temporarily failed');
+            if (aggregateDeliveryAttempts === 1) {
+                const rejected = Promise.reject(new Error('consumer path contains /private/workspace'));
+                void rejected.catch(() => undefined);
+                return rejected;
+            }
+            return Promise.resolve();
         },
         error => aggregateDeliveryErrors.push(error),
         {
             instanceId: '5'.repeat(32),
-            registerCommand: () => ({ dispose: () => undefined }),
+            registerCommand: (command, callback) => {
+                aggregateCommands.set(command, callback);
+                return { dispose: () => aggregateCommands.delete(command) };
+            },
             executeCommand: async command => command.endsWith('.bridge.handshake')
                 ? acceptedHandshake
                 : undefined,
@@ -1316,14 +1393,45 @@ async function runOpenWorkspaceHardeningChecks() {
             clearInterval: () => undefined,
         }
     );
-    const repeatedAggregate = makeWorkspaceAggregate([
-        makeWorkspaceRegistration(OTHER, 1000, makeWorkspaceRecord(46)),
-    ], { semanticRevision: 'b'.repeat(64) });
-    aggregateClient.receiveAggregate(repeatedAggregate);
-    aggregateClient.receiveAggregate(repeatedAggregate);
+    await flush();
+    let acknowledgedRegistration;
+    const acknowledgementCoordinator = new OpenWorkspaceCoordinator('/unused-acknowledgement-root', {
+        now: () => 5000,
+        setInterval: () => 'acknowledgement-interval',
+        clearInterval: () => undefined,
+        createWatcher: () => ({ close: () => undefined }),
+        deliverAggregate: aggregate => aggregateCommands.get(
+            '_projectStewardOpenWorkspaces.workspace.aggregate'
+        )(aggregate),
+        createStore: () => ({
+            write: async registration => { acknowledgedRegistration = registration; },
+            remove: async () => undefined,
+            scan: async () => ({
+                registrations: acknowledgedRegistration ? [acknowledgedRegistration] : [],
+                counters: {},
+            }),
+        }),
+    });
+    await assert.rejects(
+        acknowledgementCoordinator.publish(makeWorkspacePublication()),
+        error => {
+            assert.strictEqual(error.message, 'open workspace aggregate delivery failed');
+            assert.strictEqual(String(error).includes('/private/workspace'), false,
+                'consumer details must be sanitized at the bridge acknowledgement boundary');
+            return true;
+        },
+        'consumer rejection must reach the coordinator acknowledgement boundary'
+    );
+    await acknowledgementCoordinator.scanAndDeliver();
     assert.strictEqual(aggregateDeliveryAttempts, 2,
-        'a failed aggregate consumer must be able to receive the same semantic revision again');
+        'coordinator must retry the same semantic revision after consumer rejection');
+    await acknowledgementCoordinator.scanAndDeliver();
+    assert.strictEqual(aggregateDeliveryAttempts, 2,
+        'coordinator may commit the semantic revision only after consumer acknowledgement');
     assert.strictEqual(aggregateDeliveryErrors.length, 1);
+    assert.strictEqual(String(aggregateDeliveryErrors[0]).includes('/private/workspace'), true,
+        'the local error sink receives the original diagnostic');
+    acknowledgementCoordinator.dispose();
     aggregateClient.dispose();
 
     const current = {

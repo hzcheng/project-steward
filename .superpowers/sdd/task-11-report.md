@@ -121,3 +121,62 @@ Both TypeScript compilers and all remaining hygiene commands exited `0`.
 - No Task 11 correctness concern remains.
 - Actual cross-window navigation capability and opening behavior remain Task 12
   scope; Task 11 continues to refresh safely instead of opening a workspace.
+
+---
+
+## Important review follow-up: acknowledgement, mismatch, and retry state
+
+Status: complete in a focused follow-up commit.
+
+### Findings resolved
+
+- Aggregate delivery now preserves the complete coordinator acknowledgement
+  chain. The registered aggregate command returns the client's asynchronous
+  consumer promise; a rejected consumer is logged locally with the original
+  diagnostic but rejects the command boundary with fixed sanitized text. The
+  client and coordinator commit their semantic revision only after the consumer
+  resolves, so the same revision remains retryable.
+- Handshake incompatibility no longer depends on exception message text. A
+  private `OpenWorkspaceHandshakeIncompatibilityError` is created only when an
+  actual response fails exact object keys, protocol version, capability values,
+  accepted state, version bounds, or error-code validation. Rejected transport
+  promises remain transient even when their messages contain words such as
+  `protocol` or `capability`.
+- Retry state now covers the full handshake-plus-publication recovery cycle.
+  Successful handshakes retain `retryAttempt`; only successful required
+  publication resets it. Likewise, `ready` is emitted only after publication
+  success, preventing `ready`/`unavailable` churn between failed retries.
+
+### Follow-up TDD evidence
+
+RED failed on the newly added literal response mismatch case because
+`protocolVersion: 1` scheduled a transient retry instead of entering terminal
+update-required degradation:
+
+```text
+AssertionError: protocol version mismatch must not schedule a retry
+1 !== 0
+```
+
+GREEN coverage proves:
+
+- rejected, malformed, protocol-version-mismatched, and capability-mismatched
+  responses are terminal, emit only `update-required`, and schedule no timer;
+- a transport rejection whose text contains `protocol` remains transient;
+- coordinator delivery through the actual registered client command rejects
+  with sanitized text, retries the same semantic revision, and suppresses only
+  after successful consumer acknowledgement; and
+- six failed publications across successful retry handshakes use delays
+  `100, 500, 2000, 10000, 30000, 30000`, keep one active timer, and emit exactly
+  `unavailable` followed by `ready` after the seventh publication succeeds.
+
+### Follow-up verification and self-review
+
+Fresh verification passed main compile, UI Bridge compile, open-workspace
+safety, Dashboard Webview, AI safety, and AI tmux. Source/generated Webview
+parity and `git diff --check` also passed.
+
+Self-review confirmed that no consumer detail crosses the command boundary,
+only response validation can construct the terminal error type, and no path
+other than publication success resets retry state or emits `ready`. No further
+Critical, Important, or Minor finding remains.

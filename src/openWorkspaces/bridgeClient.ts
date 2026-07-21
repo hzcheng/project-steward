@@ -27,11 +27,18 @@ interface DisposableLike {
     dispose(): void;
 }
 
+class OpenWorkspaceHandshakeIncompatibilityError extends Error {
+    constructor() {
+        super('open workspace handshake response is incompatible');
+        this.name = 'OpenWorkspaceHandshakeIncompatibilityError';
+    }
+}
+
 export interface OpenWorkspaceBridgeClientDependencies {
     instanceId?: string;
     now?: () => number;
     mainExtensionVersion?: string;
-    registerCommand?: (command: string, callback: (raw: unknown) => void) => DisposableLike;
+    registerCommand?: (command: string, callback: (raw: unknown) => unknown) => DisposableLike;
     executeCommand?: (command: string, argument: unknown) => PromiseLike<unknown>;
     setInterval?: (callback: () => void, intervalMs: number) => unknown;
     clearInterval?: (handle: unknown) => void;
@@ -67,9 +74,13 @@ function exactKeys(value: Record<string, unknown>, expected: string[]): boolean 
     return Object.keys(value).sort().join('\n') === expected.slice().sort().join('\n');
 }
 
+function incompatibleHandshake(): never {
+    throw new OpenWorkspaceHandshakeIncompatibilityError();
+}
+
 function validateHandshakeResponse(raw: unknown): OpenWorkspaceHandshakeResponse {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-        throw new Error('open workspace handshake response must be an object');
+        return incompatibleHandshake();
     }
     const response = raw as Record<string, unknown>;
     const expected = response.errorCode === undefined
@@ -81,7 +92,7 @@ function validateHandshakeResponse(raw: unknown): OpenWorkspaceHandshakeResponse
         || typeof response.bridgeExtensionVersion !== 'string'
         || !response.bridgeExtensionVersion
         || response.bridgeExtensionVersion.length > 64) {
-        throw new Error('open workspace handshake response is incompatible');
+        return incompatibleHandshake();
     }
     const capabilities = response.capabilities as Record<string, unknown>;
     if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)
@@ -89,13 +100,13 @@ function validateHandshakeResponse(raw: unknown): OpenWorkspaceHandshakeResponse
         || capabilities.workspaces !== true
         || capabilities.atomicReplace !== true
         || capabilities.focusLeases !== true) {
-        throw new Error('open workspace handshake capabilities are incompatible');
+        return incompatibleHandshake();
     }
     if (response.errorCode !== undefined && response.errorCode !== 'update-required') {
-        throw new Error('open workspace handshake error code is invalid');
+        return incompatibleHandshake();
     }
     if (response.accepted !== true) {
-        throw new Error(`open workspace handshake rejected: ${String(response.errorCode || 'update-required')}`);
+        return incompatibleHandshake();
     }
     return response as unknown as OpenWorkspaceHandshakeResponse;
 }
@@ -131,7 +142,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
 
     constructor(
         initialWorkspace: OpenWorkspaceRecord | null,
-        private readonly onAggregate: (aggregate: OpenWorkspaceAggregate) => void,
+        private readonly onAggregate: (aggregate: OpenWorkspaceAggregate) => unknown,
         private readonly onError: (error: unknown) => void,
         dependencies: OpenWorkspaceBridgeClientDependencies = {},
     ) {
@@ -176,7 +187,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
         return this.enqueuePublication(this.latestWorkspace, followsFocusEvent, false);
     }
 
-    receiveAggregate(raw: unknown): void {
+    async receiveAggregate(raw: unknown): Promise<void> {
         if (this.disposed) { return; }
         try {
             const aggregate = validateOpenWorkspaceAggregate(raw);
@@ -186,10 +197,15 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
                 registrationCount: aggregate.registrations.length,
                 semanticRevision: aggregate.semanticRevision,
             });
-            this.onAggregate(aggregate);
+            await this.onAggregate(aggregate);
             this.lastAggregateRevision = aggregate.semanticRevision;
         } catch (error) {
-            this.onError(error);
+            try {
+                this.onError(error);
+            } catch (_reportError) {
+                // Aggregate acknowledgement must reflect delivery, not local logging.
+            }
+            throw new Error('open workspace aggregate delivery failed');
         }
     }
 
@@ -256,6 +272,7 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
         try {
             await commandFlight;
             this.lastSemantic = semantic;
+            this.retryAttempt = 0;
             if (!this.disposed) { this.setStatus('ready'); }
             this.emitDiagnostic({
                 event: 'publish-success',
@@ -312,16 +329,13 @@ export default class OpenWorkspaceBridgeClient implements vscode.Disposable {
             ));
             if (this.disposed) { return false; }
             this.connected = true;
-            this.retryAttempt = 0;
             if (this.retryTimer !== null) { this.cancelTimeout(this.retryTimer); }
             this.retryTimer = null;
-            this.setStatus('ready');
             this.emitDiagnostic({ event: 'handshake', accepted: response.accepted });
             return true;
         } catch (error) {
             if (this.disposed) { return false; }
-            const message = error instanceof Error ? error.message : String(error);
-            if (/update-required|protocol|capabilit/i.test(message)) {
+            if (error instanceof OpenWorkspaceHandshakeIncompatibilityError) {
                 this.incompatible = true;
                 this.setStatus('update-required');
                 this.emitDiagnostic({ event: 'handshake', accepted: false, errorCode: 'update-required' });
