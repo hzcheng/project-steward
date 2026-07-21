@@ -1999,6 +1999,11 @@ body.steward-sidebar {
             opacity: .75;
         }
 
+        &[data-current-workspace] {
+            height: auto;
+            min-height: 58px;
+        }
+
         &.expanded:hover,
         &.expanded:focus-within,
         &.editing:hover,

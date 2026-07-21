@@ -4258,8 +4258,16 @@ function runWebviewContentChecks() {
     const compiledSharedItemAccentBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .steward-item-accent');
     const compiledSharedItemAccentHoverBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .steward-item-card:hover .steward-item-accent');
     const compiledExpandedProjectAccentBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .project[data-current-workspace][data-codex-expanded]:hover .steward-item-accent');
-    const currentItemCardStyleBlock = extractExactScssBlock(sidebarStyles, '&[data-current-workspace]');
-    const compiledCurrentItemCardStyleBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .steward-item-card[data-current-workspace]');
+    const currentItemCardShellBlock = extractExactScssBlock(sidebarStyles, '&[data-current-workspace]');
+    const currentItemCardVisualBlock = extractScssBlock(sidebarStyles, '&.selected,');
+    const compiledCurrentItemCardShellBlock = extractScssBlock(
+        compiledStyles,
+        'body.steward-sidebar .steward-item-card[data-current-workspace]',
+    );
+    const compiledCurrentItemCardVisualBlock = extractScssBlock(
+        compiledStyles,
+        'body.steward-sidebar .steward-item-card.selected,',
+    );
     const sessionTabsHtml = webviewContentModule.getAiSessionsDiv({
         id: 'project-a',
         activeAiSessionProvider: 'codex',
@@ -4779,13 +4787,18 @@ function runWebviewContentChecks() {
     assert.ok(webviewContent.includes("options.readOnlyProjects ? ' data-readonly-project' : ''"));
     assert.ok(styles.includes('--project-color'));
     assert.ok(styles.includes('.project-aura'));
-    assert.ok(currentItemCardStyleBlock.includes('--vscode-list-inactiveSelectionBackground'));
-    assert.ok(currentItemCardStyleBlock.includes('var(--vscode-focusBorder)'));
-    assert.ok(currentItemCardStyleBlock.includes('box-shadow'));
-    assert.ok(compiledCurrentItemCardStyleBlock.includes('var(--vscode-focusBorder)'));
-    assert.ok(!currentItemCardStyleBlock.includes('animation'));
-    assert.ok(styles.indexOf('&[data-current-workspace]') > styles.indexOf('&[data-codex-expanded]:hover'));
-    assert.ok(compiledStyles.indexOf('.steward-item-card[data-current-workspace]') > compiledStyles.indexOf('.steward-item-card[data-codex-expanded]:hover'));
+    assert.ok(currentItemCardVisualBlock.includes('--vscode-list-inactiveSelectionBackground'));
+    assert.ok(currentItemCardVisualBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(currentItemCardVisualBlock.includes('box-shadow'));
+    assert.ok(currentItemCardShellBlock.includes('height: auto'));
+    assert.ok(currentItemCardShellBlock.includes('min-height: 58px'));
+    assert.strictEqual(/(^|\n)\s*height\s*:\s*58px/.test(currentItemCardShellBlock), false);
+    assert.ok(compiledCurrentItemCardVisualBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(compiledCurrentItemCardShellBlock.includes('height:auto'));
+    assert.ok(compiledCurrentItemCardShellBlock.includes('min-height:58px'));
+    assert.ok(!currentItemCardShellBlock.includes('animation'));
+    assert.ok(styles.lastIndexOf('&[data-current-workspace]') > styles.indexOf('&[data-codex-expanded]:hover'));
+    assert.ok(compiledStyles.lastIndexOf('.steward-item-card[data-current-workspace]') > compiledStyles.indexOf('.steward-item-card[data-codex-expanded]:hover'));
     assert.ok(sharedItemAccentBlock.includes('top: 31%'));
     assert.ok(sharedItemAccentBlock.includes('bottom: 31%'));
     assert.ok(sharedItemAccentBlock.includes('height: auto'));

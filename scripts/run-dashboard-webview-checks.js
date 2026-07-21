@@ -4662,6 +4662,24 @@ function runSourceContractChecks(source) {
     assert.ok(sharedItemCardRule.includes('&.selected'));
     assert.ok(sharedItemCardRule.includes('&[data-current-workspace]'));
     assert.ok(sharedItemCardRule.includes('&[data-codex-expanded]:hover'));
+    const currentWorkspaceShellRule = extractCssRule(sharedItemCardRule, '&[data-current-workspace]');
+    assert.ok(cssRuleIncludesTopLevelDeclaration(currentWorkspaceShellRule, 'height: auto'),
+        'CURRENT WORKSPACE must remain intrinsically sized while its child collapses');
+    assert.ok(cssRuleIncludesTopLevelDeclaration(currentWorkspaceShellRule, 'min-height: 58px'));
+    assert.strictEqual(
+        cssRuleIncludesTopLevelDeclaration(currentWorkspaceShellRule, 'height: 58px'),
+        false,
+        'CURRENT WORKSPACE must not switch to the fixed collapsed shell height',
+    );
+    const compiledCurrentWorkspaceShellSelector =
+        'body.steward-sidebar .steward-item-card[data-current-workspace]';
+    const compiledCurrentWorkspaceShellRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledCurrentWorkspaceShellSelector,
+    ).filter(rule => rule.selectors.includes(compiledCurrentWorkspaceShellSelector));
+    assert.ok(compiledCurrentWorkspaceShellRules.some(rule =>
+        rule.body.includes('height: auto') && rule.body.includes('min-height: 58px')
+    ), 'compiled CURRENT WORKSPACE shell must remain intrinsic in collapsed and expanded states');
     assert.strictEqual(styles.includes('.steward-card-compact'), false);
 
     const reducedMotionRule = extractCssRule(styles, '@media (prefers-reduced-motion: reduce)');
