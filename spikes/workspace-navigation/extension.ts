@@ -2,16 +2,11 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { classifyProbeOutcome } from './outcomeClassifier';
 
 type WorkspaceKind = 'singleFolder' | 'savedMultiRoot' | 'untitledMultiRoot';
 type ProbeEnvironment = 'local' | 'ssh' | 'wsl' | 'devContainer' | 'remote';
-type ProbeOutcome =
-    | 'focused-existing'
-    | 'opened-duplicate'
-    | 'replaced-source'
-    | 'unsupported'
-    | 'not-runnable';
-
+type ProbeOutcome = ReturnType<typeof classifyProbeOutcome>['outcome'];
 interface ProbeRegistration {
     version: 1;
     instanceId: string;
@@ -29,6 +24,7 @@ interface ProbeRegistration {
 
 interface ProbeObservation {
     version: 1;
+    trialId: string;
     recordedAt: string;
     startedAtMs: number;
     environment: ProbeEnvironment;
@@ -41,10 +37,14 @@ interface ProbeObservation {
     authoritativeWindowCountBefore: number | null;
     authoritativeWindowCountAfter: number | null;
     authoritativeWindowCountSource: string | null;
+    evidenceSourceId: string | null;
+    evidenceArtifactRef: string | null;
+    evidenceSha256: string | null;
     sourceHeartbeatBeforeMs: number;
     sourceHeartbeatAfterMs: number | null;
     targetFocusSequenceBefore: number;
     targetFocusSequenceAfter: number | null;
+    targetFocusedAtMs: number | null;
     outcome: ProbeOutcome;
     reason: string | null;
 }
@@ -216,8 +216,8 @@ export function activate(context: vscode.ExtensionContext): void {
         return true;
     }
 
-    async function recordObservation(observation: ProbeObservation, suffix: string): Promise<void> {
-        await writeJsonAtomically(path.join(resultsDirectory, `${Date.now()}-${instanceId}-${suffix}.json`), observation);
+    async function recordObservation(observation: ProbeObservation): Promise<void> {
+        await writeJsonAtomically(path.join(resultsDirectory, `${observation.trialId}.json`), observation);
         output.appendLine(`WORKSPACE_NAVIGATION_PROBE ${JSON.stringify(observation)}`);
         output.show(true);
     }
@@ -252,8 +252,10 @@ export function activate(context: vscode.ExtensionContext): void {
             const candidates = before.filter(registration => registration.instanceId !== instanceId);
             if (!sourceBefore || candidates.length === 0) {
                 const startedAtMs = Date.now();
+                const trialId = crypto.randomBytes(16).toString('hex');
                 await recordObservation({
                     version: 1,
+                    trialId,
                     recordedAt: new Date().toISOString(),
                     startedAtMs,
                     environment: resolveEnvironment(),
@@ -266,13 +268,17 @@ export function activate(context: vscode.ExtensionContext): void {
                     authoritativeWindowCountBefore: null,
                     authoritativeWindowCountAfter: null,
                     authoritativeWindowCountSource: null,
+                    evidenceSourceId: null,
+                    evidenceArtifactRef: null,
+                    evidenceSha256: null,
                     sourceHeartbeatBeforeMs: sourceBefore ? sourceBefore.heartbeatAtMs : 0,
                     sourceHeartbeatAfterMs: null,
                     targetFocusSequenceBefore: 0,
                     targetFocusSequenceAfter: null,
+                    targetFocusedAtMs: null,
                     outcome: 'not-runnable',
                     reason: 'No other live, explicitly started probe registration is available as a target.',
-                }, 'none');
+                });
                 return;
             }
             const selected = await vscode.window.showQuickPick(
@@ -288,6 +294,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
             const target = selected.target;
             const startedAtMs = Date.now();
+            const trialId = crypto.randomBytes(16).toString('hex');
             let commandError: string | null = null;
             try {
                 await vscode.commands.executeCommand(
@@ -302,13 +309,17 @@ export function activate(context: vscode.ExtensionContext): void {
             const after = await scanRegistrations(registrationsDirectory);
             const sourceAfter = after.find(registration => registration.instanceId === instanceId);
             const targetAfter = after.find(registration => registration.instanceId === target.instanceId);
-            const reason = commandError || [
-                'No authoritative VS Code UI window-count channel is available.',
-                `Registration count ${before.length} -> ${after.length} is diagnostic only.`,
-                'Probe registrations and process counts cannot prove an unchanged desktop window count.',
-            ].join(' ');
+            const classification = classifyProbeOutcome({
+                commandError,
+                registrationCountBefore: before.length,
+                registrationCountAfter: after.length,
+                startedAtMs,
+                sourceHeartbeatBeforeMs: sourceBefore.heartbeatAtMs,
+                sourceHeartbeatAfterMs: sourceAfter ? sourceAfter.heartbeatAtMs : null,
+            });
             await recordObservation({
                 version: 1,
+                trialId,
                 recordedAt: new Date().toISOString(),
                 startedAtMs,
                 environment: target.environment,
@@ -321,13 +332,17 @@ export function activate(context: vscode.ExtensionContext): void {
                 authoritativeWindowCountBefore: null,
                 authoritativeWindowCountAfter: null,
                 authoritativeWindowCountSource: null,
+                evidenceSourceId: null,
+                evidenceArtifactRef: null,
+                evidenceSha256: null,
                 sourceHeartbeatBeforeMs: sourceBefore.heartbeatAtMs,
                 sourceHeartbeatAfterMs: sourceAfter ? sourceAfter.heartbeatAtMs : null,
                 targetFocusSequenceBefore: target.focusSequence,
                 targetFocusSequenceAfter: targetAfter ? targetAfter.focusSequence : null,
-                outcome: commandError ? 'unsupported' : 'not-runnable',
-                reason,
-            }, target.instanceId);
+                targetFocusedAtMs: targetAfter ? targetAfter.focusedAtMs : null,
+                outcome: classification.outcome,
+                reason: classification.reason,
+            });
         }
     );
     const statusDisposable = vscode.commands.registerCommand(

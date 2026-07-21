@@ -91,17 +91,26 @@ execution, and no UI automation channel is available. Therefore even the
 current Dev Container cells are not empirically runnable here. This is a hard
 gate failure, not evidence that direct navigation is unsupported by VS Code.
 
+The installed probe and the hardened source have different evidence roles.
+The probe can produce four conservative runtime outcomes in this order:
+`unsupported` when the command fails, `opened-duplicate` when the registration
+count increases, `replaced-source` when the source heartbeat is missing or
+does not advance after the action, and otherwise `not-runnable` because no
+authoritative window count exists. It cannot produce `focused-existing`.
+That fifth outcome is reserved for a future evidence importer backed by an
+independently reviewed adapter.
+
 ## Matrix
 
-Every `not-runnable` result selects the safe fallback. A direct cell requires
-at least two matching `focused-existing` observations. Each observation must
-have non-null equal `authoritativeWindowCountBefore`/`After` values from an
-auditable `vscode-ui-automation:*` or `os-window-enumerator:*` source, distinct
-source/target instance IDs, matching cell environment/kind, an increased
-target focus sequence, and a new source heartbeat after the action started.
-The current probe has no authoritative count channel, so it writes
-`not-runnable` rather than inferring direct support from registration/process
-counts.
+Every `not-runnable` result selects the safe fallback. The trusted evidence
+adapter registry is intentionally empty, so every `focused-existing` matrix
+cell fails closed with `no trusted adapter configured`; source-name prefixes
+or regular expressions do not establish trust. The future importer schema
+requires unique `trialId` values, rejects duplicate observations, and requires
+`startedAtMs`, `targetFocusedAtMs > startedAtMs`, an exact `evidenceSourceId`,
+`evidenceArtifactRef`, and lowercase `evidenceSha256`. It also retains the
+identity, cell, authoritative-count, focus-sequence, and source-heartbeat
+invariants. Consequently all capability entries remain `false`.
 
 <!-- workspace-navigation-matrix:start -->
 ```json

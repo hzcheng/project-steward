@@ -9,9 +9,12 @@
         ],
         "sourceMap": true,
         "strict": true,
-        "esModuleInterop": true
+        "esModuleInterop": true,
+        "allowJs": true,
+        "checkJs": true
     },
     "include": [
-        "extension.ts"
+        "extension.ts",
+        "outcomeClassifier.js"
     ]
 }

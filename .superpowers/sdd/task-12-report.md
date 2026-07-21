@@ -8,7 +8,9 @@ Status: complete, fail-closed. No direct navigation capability is enabled.
 
 - Disposable workspace-host probe with source/target instance IDs, focus-event
   sequencing, diagnostic registration counts, authoritative count placeholders,
-  source heartbeat evidence, and all five required outcomes.
+  source heartbeat evidence, and a pure classifier for the four outcomes the
+  probe can observe. `focused-existing` is importer-only and unreachable from
+  the probe.
 - Command-only activation with explicit start/stop and a bounded ten-minute
   trial lifecycle; activation alone performs no storage writes.
 - Machine-checked 12-cell Local/SSH/WSL/Dev Container matrix.
@@ -28,6 +30,9 @@ Status: complete, fail-closed. No direct navigation capability is enabled.
   parsed/executed.
 - Review RED: continuous `*` activation and the old window-count field contract
   failed the hardened probe source checks.
+- Review RED: a syntactically valid `focused-existing` fixture was accepted
+  solely from a source-name pattern; the empty-adapter test expected a clear
+  rejection and failed.
 - Each RED was followed by the minimal implementation and a GREEN targeted
   run.
 
@@ -38,6 +43,18 @@ are absent. The Dev Container has no controlled second target plus
 authoritative UI window-count/focus automation channel. Registration/process
 counts are diagnostic only and can never select direct behavior. Installation
 success is not navigation evidence.
+
+The probe-produced classifier reports `unsupported` on command failure,
+`opened-duplicate` on a registration-count increase, `replaced-source` when
+the source heartbeat is missing or stale after the action, and otherwise
+`not-runnable` because no authoritative count is available. Checker fixtures
+exercise those four outcomes. A separate valid future-importer fixture
+exercises the `focused-existing` schema, then fails with
+`no trusted adapter configured`. The trust registry is explicitly empty and
+does not accept evidence-source names by regex. Its future schema requires
+unique `trialId` and observation values, `startedAtMs`, a later
+`targetFocusedAtMs`, exact `evidenceSourceId`, `evidenceArtifactRef`, and
+`evidenceSha256`. All production capability entries therefore remain false.
 
 The host-version discrepancy is recorded explicitly: the running server path
 and commit `4fe60c8b1cdac1c4c174f2fb180d0d758272d713` report VS Code `1.127.0`;
@@ -80,13 +97,18 @@ git diff --check
 All commands exited zero. The open-workspace safety checks exercise every
 fallback matrix cell, stale IDs, missing/query-failing/execution-failing native
 switching, injected direct success/failure using only `record.navigationUri`,
-the untitled save prompt, and root-URI exclusion.
+the untitled save prompt, and root-URI exclusion. The spike gate behaviorally
+tests all four probe-produced classifier outcomes plus the importer-only fifth
+schema path, duplicate trial/observation rejection, and the empty trust
+registry.
 
 ## Residual Risk
 
 Direct switching remains unproven everywhere. It must stay disabled until a
-controlled run produces repeated observations satisfying every authoritative
-count, identity, cell, focus, and heartbeat invariant. Old Extension Hosts
+reviewed evidence importer and adapter are implemented, registered by exact
+source ID, and controlled runs produce repeated observations satisfying every
+schema, authoritative-count, identity, cell, focus, and heartbeat invariant.
+Old Extension Hosts
 continue writing recreated probe registrations until their windows reload;
 those registrations are not authoritative evidence. Packaging emitted
 disposable-probe metadata warnings (no repository, bundled license, or file
