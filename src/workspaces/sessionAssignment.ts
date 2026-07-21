@@ -13,8 +13,8 @@ function isWindowsPath(value: string): boolean {
 }
 
 export function normalizeWorkspaceHostPath(value: string): string {
-    value = typeof value === 'string' ? value.trim() : '';
-    if (!value) {
+    value = typeof value === 'string' ? value : '';
+    if (!value.trim()) {
         return '';
     }
 

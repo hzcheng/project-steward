@@ -276,6 +276,48 @@ function runWorkspaceSessionScopeChecks() {
     assert.strictEqual(Object.isFrozen(scope.workspaceRootHostPaths), true);
     assert.strictEqual(Object.isFrozen(scope.additionalDirectories), true);
 
+    const whitespaceWorkspace = {
+        ...workspace,
+        roots: [
+            {
+                id: 'root-trailing-space', name: 'Trailing space', uri: 'file:///work/repo%20',
+                hostPath: '/work/repo ', ordinal: 0,
+            },
+            {
+                id: 'root-inner-space', name: 'Inner space', uri: 'file:///work/%20api',
+                hostPath: '/work/ api', ordinal: 1,
+            },
+        ],
+    };
+    const directoryProbes = [];
+    const whitespaceScope = workspaceSessionScope.buildAiSessionDirectoryScope(whitespaceWorkspace, {
+        explicitRootId: 'root-trailing-space',
+        isDirectory: value => {
+            directoryProbes.push(value);
+            return value === '/work/repo ' || value === '/work/ api';
+        },
+    });
+    assert.deepStrictEqual(directoryProbes, ['/work/repo ', '/work/ api']);
+    assert.deepStrictEqual(whitespaceScope.workspaceRootHostPaths, ['/work/repo ', '/work/ api']);
+    assert.strictEqual(whitespaceScope.primaryCwd, '/work/repo ');
+    assert.deepStrictEqual(whitespaceScope.additionalDirectories, ['/work/ api']);
+    let blankDirectoryProbeCount = 0;
+    assert.throws(
+        () => workspaceSessionScope.buildAiSessionDirectoryScope({
+            ...workspace,
+            roots: [{
+                id: 'root-blank', name: 'Blank', uri: 'file:///blank', hostPath: ' \t ', ordinal: 0,
+            }],
+        }, {
+            isDirectory: () => {
+                blankDirectoryProbeCount += 1;
+                return true;
+            },
+        }),
+        error => error instanceof workspaceSessionScope.WorkspaceDirectoryScopeError,
+    );
+    assert.strictEqual(blankDirectoryProbeCount, 0, 'blank host paths must fail before filesystem probing');
+
     const nestedWorkspace = {
         ...workspace,
         roots: [
@@ -420,6 +462,32 @@ function runWorkspaceSessionAssignmentChecks() {
     assert.strictEqual(workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/api-old', roots), null);
     assert.strictEqual(workspaceSessionAssignment.assignPathToWorkspaceRoot('', roots), null);
     assert.strictEqual(workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/api', roots).id, 'root-api');
+    assert.strictEqual(workspaceSessionAssignment.normalizeWorkspaceHostPath('/work/repo '), '/work/repo ');
+    assert.strictEqual(workspaceSessionAssignment.normalizeWorkspaceHostPath(' /work/repo'), ' /work/repo');
+    assert.strictEqual(workspaceSessionAssignment.normalizeWorkspaceHostPath(' \t '), '');
+
+    const whitespaceRoots = [
+        {
+            id: 'root-trailing-space', name: 'Trailing space', uri: 'file:///work/repo%20',
+            hostPath: '/work/repo ', ordinal: 0,
+        },
+        {
+            id: 'root-leading-space', name: 'Leading space', uri: 'file:///leading-space',
+            hostPath: ' /work/repo', ordinal: 1,
+        },
+    ];
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/repo /src/index.ts', whitespaceRoots).id,
+        'root-trailing-space',
+    );
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot(' /work/repo/src/index.ts', whitespaceRoots).id,
+        'root-leading-space',
+    );
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/repo/src/index.ts', whitespaceRoots),
+        null,
+    );
 
     const windowsRoots = [
         { id: 'root-windows', name: 'Windows', uri: 'file:///C:/Work/App', hostPath: 'C:\\Work\\App', ordinal: 0 },
@@ -590,6 +658,37 @@ function runWorkspaceSessionHydrationChecks() {
     assert.strictEqual(
         workspaceSessionHydration.hasWorkspaceRuntimeContinuity(workspace, unmanagedRuntime),
         false
+    );
+    const whitespaceWorkspace = {
+        ...workspace,
+        navigationIdentity: 'whitespace-navigation',
+        scopeIdentity: 'whitespace-scope',
+        roots: [{
+            id: 'root-trailing-space', name: 'Trailing space', uri: 'file:///work/repo%20',
+            hostPath: '/work/repo ', ordinal: 0,
+        }],
+    };
+    const whitespaceRuntime = rootPath => ({
+        identity: createTestAiSessionRuntimeIdentity('codex', `${rootPath}/src`, { sessionId: 'space-owned' }, {
+            workspaceScopeIdentity: 'previous-scope',
+            workspaceNavigationIdentity: 'previous-navigation',
+            workspaceRootHostPaths: [rootPath],
+        }),
+    });
+    assert.strictEqual(
+        workspaceSessionHydration.hasWorkspaceRuntimeContinuity(
+            whitespaceWorkspace,
+            whitespaceRuntime('/work/repo '),
+        ),
+        true,
+    );
+    assert.strictEqual(
+        workspaceSessionHydration.hasWorkspaceRuntimeContinuity(
+            whitespaceWorkspace,
+            whitespaceRuntime('/work/repo'),
+        ),
+        false,
+        'a distinct path without the trailing space must not inherit session ownership',
     );
 }
 
@@ -7100,6 +7199,14 @@ function runCommandBuilderChecks() {
             'C:\\Repo\\api',
         ]),
     });
+    const whitespaceScope = Object.freeze({
+        workspaceNavigationIdentity: 'whitespace-navigation',
+        workspaceScopeIdentity: 'whitespace-scope',
+        workspaceRootHostPaths: Object.freeze(['/work/repo ', '/work/ api']),
+        primaryRootId: 'root-trailing-space',
+        primaryCwd: '/work/repo ',
+        additionalDirectories: Object.freeze(['/work/ api']),
+    });
     const marker = '/tmp/provider.done';
     assert.deepStrictEqual(commands.buildCodexNewSessionLaunchSpec(scope, 'fix tests', marker), {
         executable: 'codex',
@@ -7143,6 +7250,24 @@ function runCommandBuilderChecks() {
             '--add-dir', 'C:\\Repo\\api',
         ],
         'launch specs preserve whitespace, quotes, Unicode, metacharacters, and Windows separators before serialization'
+    );
+    assert.deepStrictEqual(
+        commands.buildCodexNewSessionLaunchSpec(whitespaceScope, null, null).args,
+        ['--cd', '/work/repo ', '--add-dir', '/work/ api'],
+    );
+    assert.deepStrictEqual(
+        commands.buildKimiNewSessionLaunchSpec(whitespaceScope, null, null).args,
+        ['--work-dir', '/work/repo ', '--add-dir', '/work/ api'],
+    );
+    assert.deepStrictEqual(
+        commands.buildClaudeNewSessionLaunchSpec(whitespaceScope, null, null),
+        {
+            executable: 'claude',
+            args: ['--add-dir', '/work/ api'],
+            cwd: '/work/repo ',
+            markerPath: null,
+            windowsDirectShell: 'powershell',
+        },
     );
     assert.deepStrictEqual(
         commands.buildClaudeNewSessionLaunchSpec({ ...scope, primaryCwd: '/work/app', additionalDirectories: [] }, "Useful; 'Title'", '/tmp/claude.done'),
