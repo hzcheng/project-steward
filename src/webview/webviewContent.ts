@@ -27,6 +27,7 @@ import {
 import * as Icons from './webviewIcons';
 import type { ActiveAiSessionViewModel, AiSessionTabId } from '../aiSessions/types';
 import type { OpenWorkspaceBridgeStatus } from '../openWorkspaces/bridgeClient';
+import { removeWorkspaceWindowDecorations } from '../workspaces/contextResolver';
 
 const FAVORITES_GROUP_NAME = 'FAVORITES';
 const OPEN_CURRENT_WORKSPACE_GROUP_NAME = 'CURRENT WORKSPACE';
@@ -305,7 +306,10 @@ export function getOpenWorkspacesGroupContent(
 function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?: string): string {
     const roots = card.roots.slice().sort((left, right) => left.ordinal - right.ordinal);
     const rootCount = roots.length;
-    const workspaceName = escapeAttribute(sanitizeProjectName(card.name) || 'Workspace');
+    const compactWorkspaceName = rootCount === 1
+        ? roots[0].name
+        : removeWorkspaceWindowDecorations(card.name);
+    const workspaceName = escapeAttribute(sanitizeProjectName(compactWorkspaceName) || 'Workspace');
     const environmentLabel = escapeAttribute(sanitizeProjectName(card.environmentLabel) || 'Local');
     const remoteType = getWorkspaceRemoteType(card.environment);
     const projectIcon = getProjectIcon(remoteType);
@@ -359,7 +363,7 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
             <span class="project-kind-icon" title="${projectIconTitle}">${projectIcon}</span>
             <h2 class="project-header">${workspaceName}</h2>
         </div>
-        <p class="project-description workspace-metadata">${environmentLabel} · ${folderLabel}</p>
+        <p class="project-description workspace-metadata">${folderLabel}</p>
         ${badge}
         ${sessionSection}
     </div>

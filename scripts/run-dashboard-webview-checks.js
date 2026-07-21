@@ -435,7 +435,10 @@ function runWorkspaceCardRenderingChecks() {
     assert.strictEqual((singleHtml.match(/class="codex-sessions"/g) || []).length, 1);
     assert.ok(singleHtml.includes(icons.folder));
     assert.ok(singleHtml.includes('title="Local Project"'));
-    assert.ok(singleHtml.includes('Local · 1 folder'));
+    assert.ok(singleHtml.includes('<h2 class="project-header">App</h2>'));
+    assert.ok(singleHtml.includes('<p class="project-description workspace-metadata">1 folder</p>'));
+    assert.strictEqual(singleHtml.includes('Local ·'), false,
+        'the environment icon already identifies local workspaces');
     assert.strictEqual(singleHtml.includes('class="ai-session-root-chip"'), false,
         'single-root workspaces must not repeat the only root on every session row');
     assert.ok(singleHtml.includes('data-has-ai-session-badge'),
@@ -513,7 +516,7 @@ function runWorkspaceCardRenderingChecks() {
     const multiHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(3), false);
     assert.strictEqual((multiHtml.match(/class="workspace-card/g) || []).length, 1);
     assert.strictEqual((multiHtml.match(/class="codex-sessions"/g) || []).length, 1);
-    assert.ok(multiHtml.includes('Local · 3 folders'));
+    assert.ok(multiHtml.includes('<p class="project-description workspace-metadata">3 folders</p>'));
     assert.strictEqual(multiHtml.includes('class="workspace-root-tags"'), false);
     assert.strictEqual(multiHtml.includes('class="workspace-root-tag"'), false);
     assert.ok(multiHtml.includes('data-primary-root-id="root-api"'));
@@ -542,14 +545,14 @@ function runWorkspaceCardRenderingChecks() {
         'history and active rows must render the removed-root continuity chip');
 
     const navigationCard = {
-        ...makeWorkspaceCardFixture(2),
+        ...makeWorkspaceCardFixture(1),
         id: 'workspace-other',
         kind: 'navigation',
         navigationIdentity: 'navigation-other',
         scopeIdentity: 'scope-other',
-        name: 'Other Workspace',
-        environment: 'ssh',
-        environmentLabel: 'SSH',
+        name: 'App [Dev Container: Existing Dockerfile]',
+        environment: 'devContainer',
+        environmentLabel: 'Dev Container',
         aiSessions: runningCard.aiSessions,
     };
     const workspaceHtml = webviewContent.getOpenWorkspacesGroupContent(
@@ -559,7 +562,12 @@ function runWorkspaceCardRenderingChecks() {
     const otherWindowsHtml = workspaceHtml.slice(workspaceHtml.indexOf('OTHER WINDOWS'));
     assert.strictEqual((otherWindowsHtml.match(/class="workspace-card/g) || []).length, 1);
     assert.ok(otherWindowsHtml.includes('data-other-workspace'));
-    assert.ok(otherWindowsHtml.includes('SSH · 2 folders'));
+    assert.ok(otherWindowsHtml.includes('<h2 class="project-header">App</h2>'));
+    assert.ok(otherWindowsHtml.includes('<p class="project-description workspace-metadata">1 folder</p>'));
+    assert.strictEqual(otherWindowsHtml.includes('[Dev Container:'), false,
+        'navigation cards must not repeat VS Code remote window decorations in their title');
+    assert.strictEqual(otherWindowsHtml.includes('Dev Container ·'), false,
+        'navigation cards must not repeat their icon environment in metadata');
     assert.ok(otherWindowsHtml.includes(
         '<span class="project-ai-attention-badge" title="1 item needs attention" aria-label="1 item needs attention">1</span>'
     ));

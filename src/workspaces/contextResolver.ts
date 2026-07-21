@@ -61,7 +61,7 @@ function getWorkspaceFileBasename(workspaceFile: WorkspaceUri | null | undefined
     return uriPath.substring(uriPath.lastIndexOf('/') + 1);
 }
 
-function removeWorkspaceWindowDecorations(name: string | undefined): string {
+export function removeWorkspaceWindowDecorations(name: string | undefined): string {
     return (name || '')
         .replace(/\s+\[(?:Dev Container|SSH|WSL)(?::[^\]]*)?\]\s*$/i, '')
         .replace(/\s+\(Workspace\)\s*$/i, '');
