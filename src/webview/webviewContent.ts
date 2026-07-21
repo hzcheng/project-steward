@@ -325,19 +325,24 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
     const aiSessionCount = aiSessions?.aiSessionCount || 0;
     const activeSessionCount = aiSessions?.activeSessionCount || 0;
     const attentionCount = card.attentionCount || 0;
-    const summaryParts = [
+    const summaryParts = isCurrent ? [
         aiSessionCount ? `${aiSessionCount} AI session${aiSessionCount === 1 ? '' : 's'}` : '',
         activeSessionCount ? `${activeSessionCount} active AI session${activeSessionCount === 1 ? '' : 's'}` : '',
         attentionCount ? `${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention` : '',
-    ].filter(Boolean);
+    ].filter(Boolean) : [];
     const summaryLabel = escapeAttribute(summaryParts.join(', '));
-    const badge = summaryParts.length
+    const currentSummaryBadge = summaryParts.length
         ? `<span class="project-codex-badge" data-ai-session-total-count="${aiSessionCount}" data-ai-session-active-count="${activeSessionCount}" data-ai-session-attention-count="${attentionCount}" title="${summaryLabel}" aria-label="${summaryLabel}">${
             aiSessionCount ? `<span class="ai-session-total-count">AI ${aiSessionCount}</span>` : ''
         }${activeSessionCount ? `<span class="ai-session-active-count" aria-label="${activeSessionCount} active AI session${activeSessionCount === 1 ? '' : 's'}">●${activeSessionCount}</span>` : ''
         }${attentionCount ? `<b class="ai-session-attention-count" aria-label="${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention">${attentionCount}</b>` : ''
         }</span>`
         : '';
+    const navigationAttentionLabel = `${attentionCount} item${attentionCount === 1 ? '' : 's'} need${attentionCount === 1 ? 's' : ''} attention`;
+    const navigationAttentionBadge = !isCurrent && attentionCount
+        ? `<span class="project-ai-attention-badge" title="${navigationAttentionLabel}" aria-label="${navigationAttentionLabel}">${attentionCount}</span>`
+        : '';
+    const badge = currentSummaryBadge || navigationAttentionBadge;
     const sessionSection = isCurrent
         ? getAiSessionsDiv(getWorkspaceAiSessionSurface(card), {
             workspaceRoots: roots,
@@ -346,7 +351,7 @@ function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?
         : '';
 
     return `<div class="project-container" data-nodrag>
-    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''}${runningTitle ? ` title="${runningTitle}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'}${badge ? ' data-has-ai-session-badge' : ''} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
+    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''}${runningTitle ? ` title="${runningTitle}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'}${currentSummaryBadge ? ' data-has-ai-session-badge' : ''} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
         <div class="project-aura"></div>
         <div class="project-border steward-item-accent"></div>
         ${sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : ''}

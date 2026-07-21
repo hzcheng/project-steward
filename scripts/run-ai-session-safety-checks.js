@@ -4962,7 +4962,27 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.strictEqual(html.includes('data-workspace-root-id'), false);
     assert.ok(html.includes('data-primary-root-id="root-api"'));
     assert.ok(html.includes('AI 1'));
-    assert.ok(html.includes('2 AI sessions need attention'));
+    const otherWindowsHtml = html.slice(html.indexOf('OTHER WINDOWS'));
+    assert.ok(otherWindowsHtml.includes(
+        '<span class="project-ai-attention-badge" title="2 items need attention" aria-label="2 items need attention">2</span>'
+    ));
+    assert.strictEqual((otherWindowsHtml.match(/class="project-ai-attention-badge"/g) || []).length, 1);
+    assert.strictEqual(otherWindowsHtml.includes('class="project-codex-badge"'), false);
+    for (const privateDetail of [
+        'data-ai-session-total-count',
+        'data-ai-session-active-count',
+        'data-ai-session-attention-count',
+        'AI session',
+        'active session',
+        'running',
+        'Codex',
+        'Kimi',
+        'Claude',
+        '>99<',
+    ]) {
+        assert.strictEqual(otherWindowsHtml.includes(privateDetail), false,
+            `anonymous navigation attention must omit ${privateDetail}`);
+    }
     assert.ok(!html.includes('data-id="saved"'));
     assert.ok(!html.includes('data-id="other"'));
 

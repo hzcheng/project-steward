@@ -560,6 +560,23 @@ function runWorkspaceCardRenderingChecks() {
     assert.strictEqual((otherWindowsHtml.match(/class="workspace-card/g) || []).length, 1);
     assert.ok(otherWindowsHtml.includes('data-other-workspace'));
     assert.ok(otherWindowsHtml.includes('SSH · 2 folders'));
+    assert.ok(otherWindowsHtml.includes(
+        '<span class="project-ai-attention-badge" title="1 item needs attention" aria-label="1 item needs attention">1</span>'
+    ));
+    assert.strictEqual(otherWindowsHtml.includes('class="project-codex-badge"'), false,
+        'navigation attention must use the visible navigation-only badge primitive');
+    for (const privateDetail of [
+        'data-ai-session-total-count',
+        'data-ai-session-active-count',
+        'data-ai-session-attention-count',
+        'active AI session',
+        'Codex',
+        'Kimi',
+        'Claude',
+    ]) {
+        assert.strictEqual(otherWindowsHtml.includes(privateDetail), false,
+            `OTHER WINDOWS attention badges must omit ${privateDetail}`);
+    }
     assert.strictEqual(otherWindowsHtml.includes('class="codex-sessions"'), false,
         'OTHER WINDOWS must never render session/provider controls');
     assert.strictEqual(otherWindowsHtml.includes('data-workspace-root-id'), false,
