@@ -4249,6 +4249,24 @@ function runWebviewContentChecks() {
         'current workspace shell state must be owned by the shared item card');
     assert.strictEqual(sidebarStyles.includes('.project-border'), false,
         'sidebar projects must use the shared accent selector instead of project-specific rail geometry');
+    const projectContainerStyleBlock = extractExactScssBlock(sidebarStyles, '.project-container');
+    assert.ok(projectContainerStyleBlock.includes('box-sizing: border-box'),
+        'sidebar project gutters must be included in the project container width');
+    assert.ok(projectContainerStyleBlock.includes('min-width: 0'),
+        'sidebar project containers must be allowed to shrink with the Webview');
+    assert.ok(projectContainerStyleBlock.includes('max-width: 100%'),
+        'sidebar project containers must not exceed the visible Webview width');
+    assert.ok(projectContainerStyleBlock.includes('padding: 0 2px'),
+        'sidebar project containers must reserve the card outline gutter inside their width');
+    const sharedItemCardBlock = extractExactScssBlock(sidebarStyles, '.steward-item-card');
+    assert.ok(sharedItemCardBlock.includes('width: 100%'),
+        'sidebar cards must fill the shrinkable container without percentage-plus-margin rounding');
+    assert.ok(sharedItemCardBlock.includes('max-width: 100%'),
+        'sidebar cards must not exceed their shrinkable container');
+    assert.ok(sharedItemCardBlock.includes('min-width: 0'),
+        'sidebar cards must be allowed to shrink below their content width');
+    assert.ok(sharedItemCardBlock.includes('margin: 0 0 7px'),
+        'sidebar card horizontal spacing must come from the border-box container gutter');
     const sharedItemAccentBlock = extractExactScssBlock(sidebarStyles, '.steward-item-accent');
     const sharedItemAccentHoverBlock = extractScssBlock(sidebarStyles, '.steward-item-card:hover .steward-item-accent');
     const projectStyleBlock = extractExactScssBlock(sidebarStyles, '.project');

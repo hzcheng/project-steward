@@ -4534,11 +4534,24 @@ function runSourceContractChecks(source) {
         assert.ok(styles.includes(selector), `missing ${selector}`);
     }
     const sidebarStyles = extractCssRule(styles, 'body.steward-sidebar');
+    const projectContainerRule = extractCssRule(sidebarStyles, '.project-container');
+    for (const declaration of [
+        'box-sizing: border-box',
+        'min-width: 0',
+        'max-width: 100%',
+        'padding: 0 2px',
+    ]) {
+        assert.ok(cssRuleIncludesTopLevelDeclaration(projectContainerRule, declaration),
+            `project container is missing ${declaration}`);
+    }
     const sharedItemCardRules = extractCssRules(sidebarStyles, '.steward-item-card');
     const sharedItemCardRule = sharedItemCardRules.join('\n');
     for (const declaration of [
+        'min-width: 0',
+        'width: 100%',
+        'max-width: 100%',
         'height: 58px',
-        'margin: 0 2px 7px 2px',
+        'margin: 0 0 7px',
         'padding: 8px 10px 8px 15px',
         'border: 1px solid var(--vscode-panel-border)',
         'border-radius: 18px',
