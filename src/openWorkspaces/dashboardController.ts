@@ -23,6 +23,7 @@ export interface OpenWorkspaceDashboardControllerOptions {
     getGroups: () => Group[];
     getTodoSearchItems: () => TodoSearchCatalogItem[];
     getCollapsed: () => boolean;
+    getRunningCardAnimation: () => string | undefined;
     getAttentionAggregate: () => AttentionAggregate | null;
     getBridgeInstanceId: () => string;
     postMessage: (message: unknown) => Thenable<boolean>;
@@ -107,6 +108,7 @@ export class OpenWorkspaceDashboardController {
             semanticRevision,
             otherWindowsStatus: this.bridgeStatus,
             todoSearchItems: this.options.getTodoSearchItems(),
+            runningCardAnimation: this.options.getRunningCardAnimation(),
         });
         this.lastPostedSemanticRevision = message.semanticRevision;
         this.options.postMessage(message).then(delivered => {
@@ -163,6 +165,7 @@ export class OpenWorkspaceDashboardController {
         return crypto.createHash('sha256').update(JSON.stringify([
             this.bridgeStatus,
             this.aggregate?.semanticRevision || null,
+            this.options.getRunningCardAnimation(),
         ])).digest('hex');
     }
 

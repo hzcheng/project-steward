@@ -22,6 +22,7 @@ export interface WorkspaceUpdatedMessage {
 
 export interface BuildWorkspaceUpdatedMessageInput {
     card: WorkspaceCardViewModel | null;
+    runningCardAnimation?: string;
 }
 
 export interface OpenWorkspacesUpdatedMessage {
@@ -42,6 +43,7 @@ export interface BuildOpenWorkspacesUpdatedMessageInput {
     semanticRevision: string;
     otherWindowsStatus: OpenWorkspaceBridgeStatus;
     todoSearchItems: TodoSearchCatalogItem[];
+    runningCardAnimation?: string;
 }
 
 export interface BuildAiSessionsUpdatedMessageInput {
@@ -50,6 +52,7 @@ export interface BuildAiSessionsUpdatedMessageInput {
     sequence: number;
     generatedAt: string;
     todoSearchItems: TodoSearchCatalogItem[];
+    runningCardAnimation?: string;
 }
 
 export function buildOpenWorkspacesUpdatedMessage(
@@ -69,7 +72,12 @@ export function buildOpenWorkspacesUpdatedMessage(
             input.cards,
             input.todoSearchItems,
         ),
-        html: getOpenWorkspacesGroupContent(input.cards, input.collapsed, input.otherWindowsStatus),
+        html: getOpenWorkspacesGroupContent(
+            input.cards,
+            input.collapsed,
+            input.otherWindowsStatus,
+            input.runningCardAnimation,
+        ),
     };
 }
 
@@ -81,7 +89,7 @@ export function buildWorkspaceUpdatedMessage(input: BuildWorkspaceUpdatedMessage
         type: 'workspace-updated',
         version: 2,
         currentWorkspaceCount: card ? 1 : 0,
-        html: getCurrentWorkspaceGroupContent(card, false),
+        html: getCurrentWorkspaceGroupContent(card, false, input.runningCardAnimation),
     };
 }
 
@@ -96,6 +104,7 @@ export function buildAiSessionsUpdatedMessage(input: BuildAiSessionsUpdatedMessa
         html: getCurrentWorkspaceGroupContent(
             current,
             input.cards.some(card => card.kind === 'navigation'),
+            input.runningCardAnimation,
         ),
         searchCatalog: buildWorkspaceDashboardSearchCatalog(
             input.groups,

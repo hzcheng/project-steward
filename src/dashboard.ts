@@ -883,6 +883,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getGroups: () => projectService.getGroups(),
         getTodoSearchItems: () => todoService.getSearchItems(),
         getCards: getOpenWorkspaceCards,
+        getRunningCardAnimation: () => getStewardConfiguration()
+            .get<string>('aiSessionRunningCardAnimation', 'current'),
         nextSequence: () => ++aiSessionUpdateSequence,
         postMessage: message => provider.postMessage(message),
         refresh: refreshStewardViews,
@@ -1302,6 +1304,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getGroups: () => projectService.getGroups(),
         getTodoSearchItems: () => todoService.getSearchItems(),
         getCollapsed: () => Boolean(groupCollapseController.getOpenWorkspacesCollapsed()),
+        getRunningCardAnimation: () => getStewardConfiguration()
+            .get<string>('aiSessionRunningCardAnimation', 'current'),
         getAttentionAggregate: () => aiSessionAttentionController.getEffectiveAggregate(),
         getBridgeInstanceId: () => openWorkspaceBridgeClient.instanceId,
         postMessage: message => provider.postMessage(message),

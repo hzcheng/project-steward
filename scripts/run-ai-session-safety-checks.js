@@ -4658,7 +4658,7 @@ function runTmuxSmokeHarnessSafetyChecks() {
 
 function runCurrentWorkspaceRenderingChecks() {
     const config = {
-        get: (_key, defaultValue) => defaultValue,
+        get: (key, defaultValue) => key === 'aiSessionRunningCardAnimation' ? 'breath' : defaultValue,
         displayProjectPath: false,
         searchIsActiveByDefault: false,
         showAddGroupButtonTile: false,
@@ -4764,7 +4764,8 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.ok(currentTags[0].includes('data-current-workspace'));
     assert.ok(currentTags[0].includes('data-workspace-card-kind="current"'));
     assert.ok(currentTags[0].includes('session-running'));
-    assert.ok(currentTags[0].includes('data-session-fx="current"'));
+    assert.ok(currentTags[0].includes('data-session-fx="breath"'),
+        'the full Webview render must use the configured running animation');
     assert.ok(html.includes('title="Workspace — 1 active session running"'));
     assert.strictEqual((html.match(/class="project-session-fx"/g) || []).length, 1);
     assert.strictEqual(navigationTags.length, 1);
@@ -6102,6 +6103,7 @@ function runAiSessionDashboardControllerChecks() {
         getGroups: () => [],
         getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [],
+        getRunningCardAnimation: () => 'halo',
         nextSequence: () => 1,
         postMessage: message => {
             messages.push(message);
@@ -6164,6 +6166,7 @@ function runAiSessionDashboardWatcherCoalescingChecks() {
         getGroups: () => [],
         getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [],
+        getRunningCardAnimation: () => 'ripple',
         nextSequence: () => messages.length + 1,
         postMessage: message => {
             messages.push(message);
@@ -6211,6 +6214,7 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
     const messages = [];
     const diagnostics = [];
     let sessionName = 'Codex One';
+    let runningCardAnimation = 'halo';
     const workspace = () => ({
         id: 'workspace-a',
         kind: 'current',
@@ -6233,8 +6237,12 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
             aiSessionCount: 1,
             attentionCount: 0,
             defaultTab: 'sessions',
-            activeSessions: [],
-            activeSessionCount: 0,
+            activeSessions: [{
+                key: 'codex:session-a', provider: 'codex', sessionId: 'session-a', name: sessionName,
+                executionState: 'running', focused: false, needsAttention: false, pending: false,
+                backend: 'vscode', attached: true,
+            }],
+            activeSessionCount: 1,
             activeAttentionCount: 0,
         },
     });
@@ -6246,6 +6254,7 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
         getGroups: () => [],
         getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [workspace()],
+        getRunningCardAnimation: () => runningCardAnimation,
         nextSequence: () => messages.length + 1,
         postMessage: message => {
             messages.push(message);
@@ -6266,19 +6275,27 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
     await controller.refreshNow('watcher');
     await controller.refreshNow('watcher');
     assert.strictEqual(messages.length, 1, 'unchanged watcher messages should not be posted twice');
+    assert.ok(messages[0].html.includes('data-session-fx="halo"'),
+        'AI session controller updates must use the configured running animation');
     assert.strictEqual(diagnostics.some(event => event.event === 'ai-session-message-skip' && event.reason === 'watcher'), true);
+
+    runningCardAnimation = 'orbit';
+    await controller.refreshNow('watcher');
+    assert.strictEqual(messages.length, 2,
+        'changing only the running animation must not be suppressed by incremental message dedupe');
+    assert.ok(messages[1].html.includes('data-session-fx="orbit"'));
 
     sessionName = 'Codex Two';
     await controller.refreshNow('watcher');
-    assert.strictEqual(messages.length, 2, 'changed watcher messages must still be posted');
-    assert.strictEqual(messages[1].version, 2);
-    assert.strictEqual(messages[1].currentWorkspaceCount, 1);
-    assert.strictEqual(messages[1].searchCatalog.version, 2);
-    assert.deepStrictEqual(messages[1].searchCatalog.openWorkspaces.map(item => item.current), [true]);
-    assert.ok(messages[1].html.includes('Codex Two'));
+    assert.strictEqual(messages.length, 3, 'changed watcher messages must still be posted');
+    assert.strictEqual(messages[2].version, 2);
+    assert.strictEqual(messages[2].currentWorkspaceCount, 1);
+    assert.strictEqual(messages[2].searchCatalog.version, 2);
+    assert.deepStrictEqual(messages[2].searchCatalog.openWorkspaces.map(item => item.current), [true]);
+    assert.ok(messages[2].html.includes('Codex Two'));
 
     await controller.refreshNow('refresh');
-    assert.strictEqual(messages.length, 3, 'explicit refresh messages must not be suppressed by watcher dedupe');
+    assert.strictEqual(messages.length, 4, 'explicit refresh messages must not be suppressed by watcher dedupe');
 }
 
 function extractFunctionBody(source, functionName) {

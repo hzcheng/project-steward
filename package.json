@@ -175,7 +175,7 @@
                     ],
                     "default": "current",
                     "scope": "machine",
-                    "description": "Animation shown on OTHER WINDOWS project cards while AI sessions are executing in another window."
+                    "description": "Animation shown on the CURRENT WORKSPACE card while a local AI session is executing. OTHER WINDOWS cards do not expose provider or session details."
                 },
                 "projectSteward.maxVisibleTodosPerGroup": {
                     "type": "number",

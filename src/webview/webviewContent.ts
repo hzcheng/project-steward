@@ -119,7 +119,10 @@ export function getStewardContent(
         buildWorkspaceDashboardSearchCatalog(groups, workspaceCards, infos.todoSearchItems || [])
     );
     var openWorkspacesContent = getOpenWorkspacesGroupContent(
-        workspaceCards, infos.openWorkspacesGroupCollapsed, otherWindowsStatus
+        workspaceCards,
+        infos.openWorkspacesGroupCollapsed,
+        otherWindowsStatus,
+        infos.config.get<string>('aiSessionRunningCardAnimation', 'current'),
     );
 
     return `

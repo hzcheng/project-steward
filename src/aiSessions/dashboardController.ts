@@ -17,6 +17,7 @@ export interface AiSessionDashboardControllerOptions {
     getGroups: () => Group[];
     getTodoSearchItems: () => TodoSearchCatalogItem[];
     getCards: () => WorkspaceCardViewModel[];
+    getRunningCardAnimation: () => string | undefined;
     nextSequence: () => number;
     postMessage: (message: unknown) => Thenable<boolean>;
     refresh: (reason: string) => void;
@@ -140,6 +141,7 @@ export class AiSessionDashboardController {
             sequence: this.options.nextSequence(),
             generatedAt: new Date().toISOString(),
             todoSearchItems: this.options.getTodoSearchItems(),
+            runningCardAnimation: this.options.getRunningCardAnimation(),
         });
         this.options.logDiagnostic?.({
             event: 'ai-session-message-build',

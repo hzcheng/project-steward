@@ -275,9 +275,11 @@ function runDashboardUpdateMessageChecks() {
         sequence: 7,
         generatedAt: '2026-07-17T00:00:00.000Z',
         todoSearchItems,
+        runningCardAnimation: 'ripple',
     });
     const workspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({
         card: workspaceCard,
+        runningCardAnimation: 'sweep',
     });
     const navigationCard = {
         ...makeWorkspaceCardFixture(2),
@@ -296,6 +298,7 @@ function runDashboardUpdateMessageChecks() {
         semanticRevision: 'b'.repeat(64),
         otherWindowsStatus: 'ready',
         todoSearchItems,
+        runningCardAnimation: 'halo',
     });
     const workspaceSearchCatalog = buildWorkspaceDashboardSearchCatalog([], [workspaceCard], todoSearchItems);
 
@@ -306,6 +309,8 @@ function runDashboardUpdateMessageChecks() {
     assert.strictEqual(aiMessage.searchCatalog.version, 2);
     assert.deepStrictEqual(aiMessage.searchCatalog.openWorkspaces.map(item => item.current), [true]);
     assert.ok(aiMessage.html.includes('data-current-workspace'));
+    assert.ok(aiMessage.html.includes('data-session-fx="ripple"'),
+        'AI session incremental updates must use the configured running animation');
     assert.strictEqual(workspaceMessage.type, 'workspace-updated');
     assert.strictEqual(workspaceMessage.version, 2);
     assert.strictEqual(workspaceSearchCatalog.version, 2);
@@ -314,6 +319,8 @@ function runDashboardUpdateMessageChecks() {
     assert.deepStrictEqual(workspaceSearchCatalog.todos, todoSearchItems);
     assert.strictEqual(workspaceMessage.currentWorkspaceCount, 1);
     assert.ok(workspaceMessage.html.includes('data-workspace-scope-identity="scope-dashboard"'));
+    assert.ok(workspaceMessage.html.includes('data-session-fx="sweep"'),
+        'workspace incremental updates must use the configured running animation');
     const emptyWorkspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({ card: null });
     assert.strictEqual(emptyWorkspaceMessage.currentWorkspaceCount, 0);
     assert.strictEqual(emptyWorkspaceMessage.html.includes('class="workspace-card'), false);
@@ -328,6 +335,8 @@ function runDashboardUpdateMessageChecks() {
         ['show-current-workspace', 'switch-open-workspace'],
     );
     assert.ok(openWorkspacesMessage.html.includes('OTHER WINDOWS'));
+    assert.ok(openWorkspacesMessage.html.includes('data-session-fx="halo"'),
+        'open-workspace incremental updates must use the configured running animation');
 }
 
 function makeWorkspaceCardFixture(rootCount) {

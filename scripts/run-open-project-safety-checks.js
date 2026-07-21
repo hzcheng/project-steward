@@ -875,6 +875,7 @@ async function runOpenWorkspaceClientAndControllerChecks() {
         getGroups: () => [],
         getTodoSearchItems: () => [],
         getCollapsed: () => false,
+        getRunningCardAnimation: () => 'orbit',
         getAttentionAggregate: () => null,
         getBridgeInstanceId: () => SELF,
         postMessage: async message => { posted.push(message); return true; },
@@ -1738,6 +1739,7 @@ async function runOpenWorkspaceHardeningChecks() {
     const posted = [];
     const refreshes = [];
     let deliveryResult = true;
+    let runningCardAnimation = 'halo';
     const dashboard = new OpenWorkspaceDashboardController({
         getCurrentWorkspace: () => current,
         getCurrentWorkspaceAiSessions: () => ({
@@ -1751,13 +1753,18 @@ async function runOpenWorkspaceHardeningChecks() {
             aiSessionCount: 0,
             attentionCount: 0,
             defaultTab: 'sessions',
-            activeSessionCount: 0,
-            activeSessions: [],
+            activeSessionCount: 1,
+            activeSessions: [{
+                key: 'codex:running', provider: 'codex', sessionId: 'running', name: 'Running',
+                executionState: 'running', focused: false, needsAttention: false, pending: false,
+                backend: 'vscode', attached: true,
+            }],
             activeAttentionCount: 0,
         }),
         getGroups: () => [],
         getTodoSearchItems: () => [],
         getCollapsed: () => false,
+        getRunningCardAnimation: () => runningCardAnimation,
         getAttentionAggregate: () => null,
         getBridgeInstanceId: () => SELF,
         postMessage: async message => { posted.push(message); return deliveryResult; },
@@ -1794,6 +1801,14 @@ async function runOpenWorkspaceHardeningChecks() {
     await flush();
     assert.strictEqual(posted.length, 1, 'identical semantic workspace updates must be suppressed');
     assert.strictEqual(posted[0].otherWindowsStatus, 'update-required');
+    assert.ok(posted[0].html.includes('data-session-fx="halo"'),
+        'open-workspace controller updates must use the configured running animation');
+    runningCardAnimation = 'orbit';
+    dashboard.postUpdated();
+    await flush();
+    assert.strictEqual(posted.length, 2,
+        'changing only the running animation must not be suppressed as an unchanged workspace update');
+    assert.ok(posted[1].html.includes('data-session-fx="orbit"'));
     deliveryResult = false;
     dashboard.setBridgeStatus('unavailable');
     dashboard.postUpdated();
