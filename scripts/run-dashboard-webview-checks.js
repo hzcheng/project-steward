@@ -2992,6 +2992,70 @@ async function runDashboardStartupControllerChecks() {
     await controller.startUp();
     assert.strictEqual(showStewardCalls, 3);
 
+    const startupOrdering = [];
+    const orderedController = new DashboardStartupController({
+        stewardInfos: {
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            config: { openOnStartup: 'never' },
+        },
+        isExtensionInstalled: () => false,
+        migrateDataIfNeeded: async () => {
+            startupOrdering.push('project-migration');
+            return migrationResult(true, false);
+        },
+        afterProjectMigrationSucceeded: async () => {
+            startupOrdering.push('pending-workspace-save');
+        },
+        refreshDashboard: () => startupOrdering.push('refresh'),
+        publishOpenProjects: () => startupOrdering.push('publish'),
+        showInformationMessage: () => undefined,
+        showErrorMessage: () => undefined,
+        logError: () => undefined,
+        showSteward: () => undefined,
+        applyProjectColorToCurrentWindow: () => startupOrdering.push('color'),
+        getReopenReason: () => 0,
+        updateReopenReason: () => undefined,
+        reopenNoneValue: 0,
+        getWorkspaceName: () => 'workspace',
+        getVisibleEditorLanguageIds: () => [],
+    });
+    await orderedController.startUp();
+    assert.deepStrictEqual(startupOrdering, [
+        'project-migration', 'refresh', 'publish', 'pending-workspace-save', 'color',
+    ], 'pending workspace save completion must run once after successful project migration');
+
+    const failedProjectMigration = new Error('project migration failed');
+    const failedProjectOrdering = [];
+    const failedProjectController = new DashboardStartupController({
+        stewardInfos: {
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            config: { openOnStartup: 'never' },
+        },
+        isExtensionInstalled: () => false,
+        migrateDataIfNeeded: async () => ({
+            projects: { migrated: false, error: failedProjectMigration },
+            todos: { migrated: false },
+        }),
+        afterProjectMigrationSucceeded: async () => {
+            failedProjectOrdering.push('pending-workspace-save');
+        },
+        refreshDashboard: () => undefined,
+        publishOpenProjects: () => undefined,
+        showInformationMessage: () => undefined,
+        showErrorMessage: () => undefined,
+        logError: () => undefined,
+        showSteward: () => undefined,
+        applyProjectColorToCurrentWindow: () => failedProjectOrdering.push('color'),
+        getReopenReason: () => 0,
+        updateReopenReason: () => undefined,
+        reopenNoneValue: 0,
+        getWorkspaceName: () => 'workspace',
+        getVisibleEditorLanguageIds: () => [],
+    });
+    await failedProjectController.startUp();
+    assert.deepStrictEqual(failedProjectOrdering, ['color'],
+        'project migration failure must retain pending intent while allowing the remaining startup behavior');
+
     let deferredTodoData = { version: 1, groups: [], todos: [] };
     const deferredTodoService = new TodoService({
         globalState: {

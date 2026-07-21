@@ -73,6 +73,10 @@ export class ProjectMutationController {
     }
 
     async saveWorkspaceProject(projectDetails: ProjectDetailsForSave | null): Promise<void> {
+        if (!projectDetails || !projectDetails.path) {
+            this.options.showWarningMessage('No project is currently open.');
+            return;
+        }
         await this.saveProject(null, false, projectDetails);
     }
 

@@ -1541,9 +1541,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         reopenNoneValue: ReopenStewardReason.None,
         getWorkspaceName: () => vscode.workspace.name,
         getVisibleEditorLanguageIds: () => vscode.window.visibleTextEditors.map(editor => editor.document.languageId),
+        afterProjectMigrationSucceeded: async () => {
+            try {
+                await savedWorkspaceProjectAdapter.completePendingWorkspaceSave();
+            } catch (error) {
+                logError('Could not complete the pending workspace save.', error);
+            }
+        },
     });
     const dashboardLifecycleController = new DashboardLifecycleController({
-        checkDataMigration: openStewardAfterMigrate => dashboardStartupController.checkDataMigration(openStewardAfterMigrate),
+        checkDataMigration: async openStewardAfterMigrate => {
+            await dashboardStartupController.checkDataMigration(openStewardAfterMigrate);
+        },
         applyProjectColorToCurrentWindow,
         refresh: refreshStewardViews,
         publishOpenProjects: followsFocusEvent => openWorkspaceController.publish(followsFocusEvent),
@@ -1591,13 +1600,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         dashboardLifecycleController.handleWindowStateChanged(windowState);
     }));
 
-    try {
-        await savedWorkspaceProjectAdapter.completePendingWorkspaceSave();
-    } catch (error) {
-        logError('Could not complete the pending workspace save.', error);
-    }
-
-    void dashboardStartupController.startUp();
+    await dashboardStartupController.startUp();
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~ Functions ~~~~~~~~~~~~~~~~~~~~~~~~~
     function logAiSessionRuntimeFailure(

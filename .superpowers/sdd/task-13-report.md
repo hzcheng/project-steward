@@ -24,6 +24,14 @@ Status: complete
   retaining or resolving a transient card ID. The adapter reads a fresh
   `WorkspaceContextResolver` snapshot after Save Workspace As, rather than the
   potentially stale dashboard controller cache.
+- Command, Webview, and activation entry points share one adapter transaction
+  Promise. Single-folder, saved multi-root, untitled, and pending-completion
+  races cannot execute two project writes or two Save Workspace As commands.
+- Activation consumes pending state only after the existing ProjectService
+  storage migration reports project success. Project migration failure leaves
+  the intent untouched for a later activation retry while the remaining
+  dashboard startup still runs. Extension activation awaits this single ordered
+  startup transaction instead of launching it fire-and-forget.
 - Existing `Project`, group, favorite, color, description, ordinary add/open,
   serialization, and ProjectService APIs remain unchanged. Previously saved
   member projects are neither merged, rewritten, nor deleted.
@@ -62,6 +70,40 @@ snapshot-based handler; the router now maps both `save-current-workspace` and
 `save-project` to the same dedicated workspace callback and never falls through
 to a generic transient-ID handler.
 
+Review RED first failed with:
+
+```text
+AssertionError: singleFolder concurrent callers must share the same transaction Promise
+```
+
+Equivalent saved-multi-root and untitled fixtures now prove one shared Promise,
+one mutation, and one Save Workspace As invocation. A cross-entry RED then
+showed a command save could win the mutex without consuming the activation
+intent:
+
+```text
+AssertionError: a command racing activation must consume the matching intent within the shared write
+```
+
+The unlocked save path now consumes a matching pending intent itself, while
+untitled post-command completion calls a private unlocked method and cannot
+deadlock on its own public transaction.
+
+Startup RED required the order `project migration -> refresh/publication ->
+pending completion -> remaining startup`, and required project migration errors
+to skip pending completion. Integration fixtures use the real ProjectService
+migration/add implementation in both global-state-to-settings and
+settings-to-global-state directions. Each preserves the old member record and
+appends one workspace project. A real ProjectService write failure retains the
+intent, performs no project mutation, reports through the existing migration
+path, and allows unrelated startup behavior to continue.
+
+Failure fixtures also cover pending-clear rejection with explicit retry,
+Save Workspace As rejection with successful clear, details-resolution failure
+after consumption, mutation failure, and null explicit workspace details. The
+last case warns and returns without invoking the legacy current-project
+fallback getter.
+
 ## Consumption and Idempotency
 
 Activation completion reads the validated intent, awaits durable removal, and
@@ -69,11 +111,18 @@ only then checks time, saved-workspace kind, and exact root-set scope identity.
 Project detail resolution and mutation happen after removal. Consequently, a
 mutation failure leaves no pending retry that could create a duplicate.
 
-Within one Extension Host, simultaneous completion calls share one in-flight
-Promise. The safety test invokes two completions concurrently and a third
-sequentially, and observes one added workspace project. Across restart, the
-four-field global-state record is the only handoff; no card ID or in-memory
-group state participates.
+Within one Extension Host, every save and completion entry point shares one
+in-flight Promise. Public entry points delegate to private unlocked operations;
+the untitled path can therefore complete its own post-command intent without
+self-deadlock. The safety tests cover same-entry and command/activation
+cross-entry concurrency and observe one added workspace project. Across
+restart, the four-field global-state record is the only handoff; no card ID or
+in-memory group state participates.
+
+Pending completion awaits durable removal before project detail resolution or
+mutation. A clear failure stops the transaction, propagates the error, performs
+no mutation, and leaves the intent available for retry. Once clear succeeds,
+details or mutation failures propagate without recreating a retryable intent.
 
 ## Verification
 
