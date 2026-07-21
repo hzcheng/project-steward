@@ -4548,6 +4548,43 @@ function runSourceContractChecks(source) {
         '&[data-current-workspace][data-has-ai-session-badge]'
     );
     const plainCurrentWorkspaceRule = extractCssRule(workspaceProjectRule, '&[data-current-workspace]');
+    const sessionSurfaceRules = extractCssRules(workspaceProjectRule, '.codex-sessions');
+    const collapsedSessionSurfaceRule = sessionSurfaceRules.find(rule =>
+        cssRuleIncludesTopLevelDeclaration(rule, 'max-height: 0')
+    );
+    assert.ok(collapsedSessionSurfaceRule, 'collapsed workspace sessions must use a measurable zero-height surface');
+    for (const declaration of [
+        'display: block',
+        'overflow: hidden',
+        'opacity: 0',
+        'visibility: hidden',
+        'pointer-events: none',
+        'margin-top: 0',
+        'padding-top: 0',
+        'transition:',
+    ]) {
+        assert.ok(cssRuleIncludesTopLevelDeclaration(collapsedSessionSurfaceRule, declaration),
+            `collapsed workspace sessions are missing ${declaration}`);
+    }
+    assert.ok(collapsedSessionSurfaceRule.includes('max-height')
+        && collapsedSessionSurfaceRule.includes('opacity')
+        && collapsedSessionSurfaceRule.includes('margin-top')
+        && collapsedSessionSurfaceRule.includes('padding-top'),
+    'workspace session motion must transition measurable height, opacity, and spacing');
+    const expandedSessionSurfaceRule = sessionSurfaceRules.find(rule =>
+        cssRuleIncludesTopLevelDeclaration(rule, 'max-height: 1000px')
+    );
+    assert.ok(expandedSessionSurfaceRule, 'expanded workspace sessions must open to the bounded surface height');
+    for (const declaration of [
+        'opacity: 1',
+        'visibility: visible',
+        'pointer-events: auto',
+        'margin-top: 8px',
+        'padding-top: 7px',
+    ]) {
+        assert.ok(cssRuleIncludesTopLevelDeclaration(expandedSessionSurfaceRule, declaration),
+            `expanded workspace sessions are missing ${declaration}`);
+    }
     assert.ok(badgePresentWorkspaceRule.includes('width: calc(100% - 60px)'),
         'only badge-present current workspace cards may reserve title and description width');
     assert.strictEqual(plainCurrentWorkspaceRule.includes('width: calc(100% - 60px)'), false,
@@ -4573,6 +4610,27 @@ function runSourceContractChecks(source) {
             rule.selectors.includes(`${compiledPlainSelector} ${suffix}`)
         ) && rule.body.includes('width: calc(100% - 60px)')
     ), false, 'compiled plain current-workspace styles must not reserve badge width');
+    const compiledSessionSurfaceSelector = 'body.steward-sidebar .project .codex-sessions';
+    const compiledSessionSurfaceRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledSessionSurfaceSelector,
+    ).filter(rule => rule.selectors.includes(compiledSessionSurfaceSelector));
+    assert.ok(compiledSessionSurfaceRules.some(rule =>
+        rule.body.includes('max-height: 0')
+        && rule.body.includes('opacity: 0')
+        && rule.body.includes('overflow: hidden')
+    ), 'compiled collapsed session surface must preserve the motion contract');
+    const compiledExpandedSessionSelector =
+        'body.steward-sidebar .project[data-current-workspace][data-codex-expanded] .codex-sessions';
+    const compiledExpandedSessionRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledExpandedSessionSelector,
+    );
+    assert.ok(compiledExpandedSessionRules.some(rule =>
+        rule.selectors.includes(compiledExpandedSessionSelector)
+        && rule.body.includes('max-height: 1000px')
+        && rule.body.includes('opacity: 1')
+    ), 'compiled expanded session surface must preserve the motion contract');
 
     for (const forbidden of ['height: 58px', 'border-radius: 18px', 'background: var(', 'box-shadow:']) {
         assert.strictEqual(sidebarProjectRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, forbidden)), false,
@@ -4592,6 +4650,7 @@ function runSourceContractChecks(source) {
     const reducedMotionRule = extractCssRule(styles, '@media (prefers-reduced-motion: reduce)');
     assert.ok(reducedMotionRule.includes('.steward-item-card'));
     assert.ok(reducedMotionRule.includes('.steward-item-accent'));
+    assert.ok(reducedMotionRule.includes('.codex-sessions'));
     assert.ok(reducedMotionRule.includes('transition: none'));
 
     const sharedGroupHeaderRule = extractCssRule(sidebarStyles, '.steward-group-header');

@@ -1670,6 +1670,10 @@ body .project {
     body.steward-sidebar .steward-item-accent {
         transition: none;
     }
+
+    body.steward-sidebar .project .codex-sessions {
+        transition: none !important;
+    }
 }
 
 @media (max-width: 240px) {
@@ -2380,7 +2384,14 @@ body.steward-sidebar {
                 padding-bottom: 9px;
 
                 .codex-sessions {
-                    display: block;
+                    max-height: 1000px;
+                    margin-top: 8px;
+                    padding-top: 7px;
+                    border-top-color: var(--vscode-panel-border);
+                    opacity: 1;
+                    visibility: visible;
+                    pointer-events: auto;
+                    transition-delay: 0s;
                 }
             }
 
@@ -2392,10 +2403,23 @@ body.steward-sidebar {
         }
 
         .codex-sessions {
+            display: block;
             width: 100%;
-            margin-top: 8px;
-            padding-top: 7px;
-            border-top: 1px solid var(--vscode-panel-border);
+            max-height: 0;
+            margin-top: 0;
+            padding-top: 0;
+            overflow: hidden;
+            border-top: 1px solid transparent;
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            transition:
+                max-height 220ms ease,
+                opacity 160ms ease,
+                margin-top 220ms ease,
+                padding-top 220ms ease,
+                border-color 160ms ease,
+                visibility 0s linear 220ms;
         }
 
         .ai-session-module-header {
@@ -3585,6 +3609,7 @@ body.steward-sidebar .project .ai-session-attention-indicator {
 @media (prefers-reduced-motion: reduce) {
     .codex-session-row,
     .ai-session-primary-action,
+    .codex-sessions,
     .project-codex-badge,
     .ai-session-attention-indicator,
     .project-session-fx,

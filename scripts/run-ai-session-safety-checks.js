@@ -4217,6 +4217,15 @@ function runWebviewContentChecks() {
     assert.ok(styles.includes('min-width: 0'));
     assert.ok(styles.includes('text-overflow: ellipsis'));
     assert.ok(styles.includes('overflow-x: hidden'));
+    assert.ok(styles.includes('max-height: 1000px'));
+    assert.ok(styles.includes('transition:\n                max-height'));
+    assert.ok(compiledStyles.includes('.project .codex-sessions{display:block'));
+    assert.ok(compiledStyles.includes('max-height:0'));
+    assert.ok(compiledStyles.includes('opacity:0'));
+    assert.ok(compiledStyles.includes('[data-codex-expanded] .codex-sessions{max-height:1000px'));
+    const sessionReducedMotionStyles = extractExactScssBlock(styles, '@media (prefers-reduced-motion: reduce)');
+    assert.ok(sessionReducedMotionStyles.includes('.codex-sessions'));
+    assert.ok(sessionReducedMotionStyles.includes('transition: none !important'));
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
     const insideProjectClick = extractFunctionBody(webviewProjectScripts, 'onInsideProjectClick');
     const attentionControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'attentionController.ts'), 'utf8');
@@ -6067,10 +6076,14 @@ function runBatchAiSessionWebviewChecks() {
     assert.ok(providerExitIndex < providerMessageIndex);
     const projectCollapse = extractFunctionBody(source, 'toggleCodexSessions');
     const collapseExitIndex = projectCollapse.indexOf('exitAiSessionBatchManagement()');
+    const collapseToggleIndex = projectCollapse.indexOf('toggleAttribute("data-codex-expanded", expanded)');
     const collapseMessageIndex = projectCollapse.indexOf("type: 'toggle-codex-sessions'");
     assert.notStrictEqual(collapseExitIndex, -1);
+    assert.notStrictEqual(collapseToggleIndex, -1);
     assert.notStrictEqual(collapseMessageIndex, -1);
     assert.ok(collapseExitIndex < collapseMessageIndex);
+    assert.ok(collapseToggleIndex < collapseMessageIndex,
+        'the visible CSS transition must start before expansion state is persisted');
 }
 
 function runAiSessionIncrementalRefreshSourceChecks() {
