@@ -93,7 +93,7 @@ You can also create, rename locally, pin, copy session IDs, and archive sessions
 
 Saving a single-folder window adds its folder as one saved project. Saving a saved multi-root window adds its `.code-workspace` file as one project. For an untitled multi-root workspace, Project Steward records a short-lived save intent before opening `Save Workspace As…`, so the save can finish safely after an Extension Host restart. Existing saved projects are preserved unchanged: groups, favorites, colors, descriptions, and already-saved member folders are neither merged nor deleted.
 
-Workspace-first support requires the Project Steward UI Bridge v2. If the UI Bridge is missing or outdated, only `OTHER WINDOWS` degrades; the current workspace and saved projects remain available. This pre-release cutover intentionally ignores v1 open-window state. Legacy terminal and tmux runtime bindings are not adopted or migrated, and existing provider processes are not terminated. Recreate or resume those sessions to manage them with the workspace-aware runtime model.
+Workspace-first support requires the Project Steward UI Bridge v3. If the UI Bridge is missing or outdated, only `OTHER WINDOWS` degrades; the current workspace and saved projects remain available. This upgrade cutover intentionally ignores v1 open-window state. Legacy terminal and tmux runtime bindings are not adopted or migrated, and existing provider processes are not terminated. Recreate or resume those sessions to manage them with the workspace-aware runtime model.
 
 ## Quick Start
 

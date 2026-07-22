@@ -2,7 +2,7 @@
     "name": "project-steward",
     "displayName": "Project Steward",
     "description": "Manage each local, SSH, WSL, or Dev Container workspace as one live card with workspace-scoped AI sessions.",
-    "version": "2.1.3",
+    "version": "2.1.4",
     "publisher": "hzcheng",
     "license": "MIT",
     "icon": "media/extension_icon.png",

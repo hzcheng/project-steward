@@ -15,14 +15,19 @@ function runWorkspaceFirstReleaseContentChecks() {
     const readme = read('README.md');
     const changelog = read('CHANGELOG.md');
     const packageMetadata = JSON.parse(read('package.json'));
-    const currentRelease = changelog.split('## [2.1.3]')[1].split(/\n## \[/)[0];
+    assert.strictEqual(packageMetadata.version, '2.1.4',
+        'the workspace-first release must increment the Project Steward patch version');
+    const currentReleaseMarker = `## [${packageMetadata.version}]`;
+    assert.ok(changelog.includes(currentReleaseMarker),
+        'CHANGELOG must contain the package.json release version');
+    const currentRelease = changelog.split(currentReleaseMarker)[1].split(/\n## \[/)[0];
     const requiredReleaseFacts = [
         ['one card per non-empty VS Code workspace', /one card per non-empty VS Code workspace/i],
         ['all roots with provider-native --add-dir', /all (?:workspace )?roots[\s\S]{0,160}--add-dir/i],
         ['trust and capability preflight', /Restricted Mode[\s\S]{0,200}(?:capability|--add-dir)/i],
         ['safe other-window navigation fallback', /navigation[\s\S]{0,200}(?:Switch Window|save it first)/i],
         ['saved-project preservation', /saved projects[\s\S]{0,160}(?:preserv|unchanged)/i],
-        ['v2 UI Bridge requirement', /(?:UI Bridge|bridge)[\s\S]{0,80}v2/i],
+        ['v3 UI Bridge requirement', /(?:UI Bridge|bridge)[\s\S]{0,80}v3/i],
         ['intentional legacy runtime non-adoption', /legacy[\s\S]{0,160}(?:runtime|terminal|tmux)[\s\S]{0,160}(?:not adopted|not migrated|recreate|resume)/i],
     ];
 
