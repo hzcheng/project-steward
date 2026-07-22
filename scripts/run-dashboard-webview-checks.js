@@ -222,6 +222,7 @@ function makeUpdatedDashboardCatalog() {
     };
 }
 
+// WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001
 function runDashboardUpdateMessageChecks() {
     const previousModuleLoad = Module._load;
     let dashboardUpdateMessages;
@@ -299,6 +300,7 @@ function createSearchResultElement(tagName) {
     return element;
 }
 
+// TODO-TODO-SEARCH-RESULT-RENDERING-001
 function runTodoSearchResultRenderingChecks(source) {
     const context = {
         document: { createElement: createSearchResultElement },
@@ -338,6 +340,7 @@ function runTodoSearchResultRenderingChecks(source) {
     ), 'completed TODO search results must expose completed metadata');
 }
 
+// ERROR-ERROR-CONTENT-001
 function runErrorContentChecks() {
     const html = dashboardErrorContent.getErrorContent(new Error('<script>alert("x")</script>'));
     assert.ok(html.includes('Project Steward could not render this view.'));
@@ -363,6 +366,7 @@ function makeWorkspaceConfiguration(values, inspectedKeys = Object.keys(values),
     };
 }
 
+// SESSION-CONFIGURATION-001
 function runConfigurationChecks() {
     const primary = makeWorkspaceConfiguration({ customCss: '.primary{}' });
     const legacy = makeWorkspaceConfiguration({ customCss: '.legacy{}', displayProjectPath: false });
@@ -379,6 +383,7 @@ function runConfigurationChecks() {
     assert.strictEqual(dashboardConfiguration.hasConfiguredValue(primary, 'missing'), false);
 }
 
+// SESSION-STARTUP-001
 function runStartupChecks() {
     assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
         reopenReason: 1,
@@ -418,12 +423,14 @@ function runStartupChecks() {
     }), false);
 }
 
+// WEBVIEW-WEBVIEW-OPTIONS-001
 function runWebviewOptionsChecks() {
     const options = dashboardWebviewOptions.getDashboardWebviewOptions('/extensions/project-steward', value => ({ uri: value }));
     assert.strictEqual(options.enableScripts, true);
     assert.deepStrictEqual(options.localResourceRoots, [{ uri: path.join('/extensions/project-steward', 'media') }]);
 }
 
+// TODO-GROUP-COLLAPSE-CONTROLLER-001
 async function runGroupCollapseControllerChecks() {
     const updates = [];
     const groups = new Map([
@@ -461,6 +468,7 @@ async function runGroupCollapseControllerChecks() {
     ]);
 }
 
+// TODO-GROUP-PROMPT-001
 async function runGroupPromptChecks() {
     const calls = [];
     const groupName = await queryGroupName(
@@ -486,6 +494,7 @@ async function runGroupPromptChecks() {
     );
 }
 
+// TODO-GROUP-COMMAND-CONTROLLER-001
 async function runGroupCommandControllerChecks() {
     const groups = new Map([['group-a', { id: 'group-a', groupName: 'Old' }]]);
     const actions = [];
@@ -544,6 +553,7 @@ async function runGroupCommandControllerChecks() {
     assert.strictEqual(actions.filter(action => action[0] === 'remove').length, 1);
 }
 
+// TODO-TODO-STORE-001
 async function runTodoStoreChecks() {
     assert.deepStrictEqual(todoTypes.normalizeTodoData(null), { version: 1, groups: [], todos: [] });
     assert.throws(
@@ -726,6 +736,7 @@ async function runTodoStoreChecks() {
     }
 }
 
+// TODO-TODO-ORDERING-MUTATION-001
 async function runTodoOrderingMutationChecks() {
     let storedData = {
         version: 1,
@@ -807,6 +818,7 @@ async function runTodoOrderingMutationChecks() {
     assert.strictEqual(writes.length, previousWrites + 1, 'bulk TODO collapse must use one persisted mutation');
 }
 
+// TODO-TODO-INSERTION-ORDER-NORMALIZATION-001
 async function runTodoInsertionOrderNormalizationChecks() {
     const scenarios = [
         { name: 'gapped target orders', orders: [0, 2] },
@@ -923,6 +935,7 @@ function makeTodoServiceStorageHarness(useSettingsStorage, initialGlobalData, in
     return { service, updates, values };
 }
 
+// TODO-TODO-STORAGE-RESOLUTION-001
 async function runTodoStorageResolutionChecks() {
     const primarySettingsData = makeStoredTodoData('settings-group');
     const globalData = makeStoredTodoData('global-group');
@@ -1040,6 +1053,7 @@ async function runTodoStorageResolutionChecks() {
         'a rejected primary settings write must not advance storage provenance');
 }
 
+// TODO-TODO-MIGRATION-001
 async function runTodoMigrationChecks() {
     const globalSource = makeTodoServiceStorageHarness(true, makeStoredTodoData('global-source'), null);
     assert.strictEqual(await globalSource.service.migrateDataIfNeeded(), true);
@@ -1202,6 +1216,7 @@ async function runTodoMigrationChecks() {
     assert.deepStrictEqual(futureSource.service.getSearchItems().map(item => item.todoId), ['selected-todo']);
 }
 
+// TODO-TODO-BACKEND-SWITCH-BARRIER-001
 async function runTodoBackendSwitchBarrierChecks() {
     let useSettingsStorage = false;
     let storageProvenance;
@@ -1331,6 +1346,7 @@ async function runTodoBackendSwitchBarrierChecks() {
     }
 }
 
+// TODO-TODO-VIEW-STATE-001
 async function runTodoViewStateChecks() {
     const values = new Map([['todoViewState', { showCompleted: true }]]);
     const updates = [];
@@ -1354,6 +1370,7 @@ async function runTodoViewStateChecks() {
     assert.deepStrictEqual(syncUpdates, [], 'TODO view state must remain local and must not be registered for sync');
 }
 
+// TODO-TODO-MUTATION-SERIALIZATION-001
 async function runTodoMutationSerializationChecks() {
     let storedData = { version: 1, groups: [], todos: [] };
     const writes = [];
@@ -1412,6 +1429,7 @@ async function runTodoMutationSerializationChecks() {
     assert.deepStrictEqual(recoveringService.getData().groups.map(group => group.title), ['Recovered']);
 }
 
+// TODO-TODO-REVEAL-SINGLE-WRITE-001
 async function runTodoRevealSingleWriteChecks() {
     const makeRevealData = collapsed => ({
         version: 1,
@@ -1569,6 +1587,7 @@ async function runTodoRevealSingleWriteChecks() {
     assert.strictEqual(queuedData.groups[0].collapsed, true);
 }
 
+// TODO-DASHBOARD-TODO-MIGRATION-SEQUENCING-001
 async function runDashboardTodoMigrationSequencingChecks() {
     const extensionHostSource = fs.readFileSync(extensionHostPath, 'utf8');
     const migrationBody = extractAsyncArrowPropertyBody(extensionHostSource, 'migrateDataIfNeeded');
@@ -1805,6 +1824,7 @@ async function runDashboardTodoMigrationSequencingChecks() {
     }
 }
 
+// TODO-TODO-HOST-MUTATION-001
 async function runTodoHostMutationChecks() {
     const hostModulePath = path.join(root, 'out', 'todos', 'hostMutation.js');
     assert.ok(fs.existsSync(hostModulePath), 'TODO host mutation error boundary must exist');
@@ -2103,6 +2123,7 @@ function makeTodoBoundaryData(todoCount) {
     };
 }
 
+// TODO-TODO-VIEW-MODEL-001
 function runTodoViewModelChecks() {
     const hiddenCompleted = todoViewModel.buildTodoViewModel(makeTodoData(), { showCompleted: false });
     assert.strictEqual(hiddenCompleted.groups.length, 2);
@@ -2268,6 +2289,7 @@ function runTodoViewModelChecks() {
     assert.ok(dashboardViewModel.serializeDashboardSearchCatalog(catalog).includes('Write TODO') === false);
 }
 
+// TODO-TODO-ORDERING-INTERACTION-001
 function runTodoOrderingInteractionChecks() {
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const projectContext = {};
@@ -2389,6 +2411,7 @@ function runTodoOrderingInteractionChecks() {
     assert.strictEqual(dndRoot.__projectStewardDnD, undefined);
 }
 
+// PROJECT-ADD-PROJECTS-FROM-FOLDER-CONTROLLER-001
 async function runAddProjectsFromFolderControllerChecks() {
     const actions = [];
     const errors = [];
@@ -2440,6 +2463,7 @@ async function runAddProjectsFromFolderControllerChecks() {
     assert.deepStrictEqual(errors.slice(-1), ['An error occured while adding the projects.']);
 }
 
+// PROJECT-FAVORITE-PROJECT-CONTROLLER-001
 async function runFavoriteProjectControllerChecks() {
     let groups = [{
         id: 'group-a',
@@ -2479,6 +2503,7 @@ async function runFavoriteProjectControllerChecks() {
     assert.deepStrictEqual(actions, ['refresh', 'refresh']);
 }
 
+// PROJECT-PROJECT-ORDER-CONTROLLER-001
 async function runProjectOrderControllerChecks() {
     const groups = [
         {
@@ -2523,6 +2548,7 @@ async function runProjectOrderControllerChecks() {
     assert.deepStrictEqual(actions, ['refresh']);
 }
 
+// PROJECT-PROJECT-REMOVAL-CONTROLLER-001
 async function runProjectRemovalControllerChecks() {
     const projects = new Map([['project-a', { id: 'project-a', name: 'Alpha' }]]);
     const actions = [];
@@ -2550,6 +2576,7 @@ async function runProjectRemovalControllerChecks() {
     ]);
 }
 
+// RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001
 async function runDashboardRuntimeControllerChecks() {
     const commands = [];
     const refreshes = [];
@@ -2669,6 +2696,7 @@ async function runDashboardRuntimeControllerChecks() {
     ]);
 }
 
+// WEBVIEW-DASHBOARD-STARTUP-CONTROLLER-001
 async function runDashboardStartupControllerChecks() {
     const extensionChecks = [];
     const publications = [];
@@ -2870,6 +2898,7 @@ async function runDashboardStartupControllerChecks() {
         'a successful retry must resume post-migration publication');
 }
 
+// PERSIST-DASHBOARD-LIFECYCLE-CONTROLLER-001
 async function runDashboardLifecycleControllerChecks() {
     const events = [];
     const controller = new DashboardLifecycleController({
@@ -2929,6 +2958,7 @@ async function runDashboardLifecycleControllerChecks() {
     ]);
 }
 
+// WEBVIEW-DASHBOARD-COMMAND-REGISTRATION-001
 async function runDashboardCommandRegistrationChecks() {
     const registered = [];
     const subscriptions = [];
@@ -2985,6 +3015,7 @@ async function runDashboardCommandRegistrationChecks() {
     ]);
 }
 
+// SESSION-ACTIVE-TERMINAL-FILE-REFERENCE-001
 async function runActiveTerminalFileReferenceChecks() {
     const sent = [];
     const warnings = [];
@@ -3104,6 +3135,7 @@ function createElement(id) {
     };
 }
 
+// SESSION-CONTROLLER-001
 function runControllerChecks(source) {
     const openButton = createElement('dashboard-tab-open-button');
     openButton.setAttribute('data-dashboard-tab', 'open');
@@ -3406,6 +3438,7 @@ function runControllerChecks(source) {
     assert.strictEqual(context.window.scrollY, 15, 'background PROJECTS mount must not move search results');
 }
 
+// TODO-TODO-EDIT-RESET-INTERACTION-001
 function runTodoEditResetInteractionChecks() {
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const setTodoEditingBody = extractFunctionBody(projectSource, 'setTodoEditing');
@@ -3543,6 +3576,7 @@ function createTodoComposeFormState() {
     return form;
 }
 
+// TODO-TODO-COMPOSE-PENDING-INTERACTION-001
 function runTodoComposePendingInteractionChecks() {
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const context = {};
@@ -3645,6 +3679,7 @@ function runTodoComposePendingInteractionChecks() {
     assert.strictEqual(successForm.submitButton.getAttribute('aria-busy'), 'true');
 }
 
+// ARCH-SOURCE-CONTRACT-001
 function runSourceContractChecks(source) {
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const dndSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewDnDScripts.js'), 'utf8');
@@ -4204,6 +4239,7 @@ function runSourceContractChecks(source) {
     assert.ok(source.includes("document.body.classList.toggle('dashboard-search-active'"));
 }
 
+// WEBVIEW-DASHBOARD-MESSAGE-ROUTER-001
 async function runDashboardMessageRouterChecks() {
     const routerModule = require(path.join(root, 'out', 'dashboard', 'messageRouter.js'));
     const calls = [];

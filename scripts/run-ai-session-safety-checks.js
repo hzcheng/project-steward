@@ -149,6 +149,7 @@ function hasClassTokens(classValue, ...tokens) {
     return tokens.every(token => classValue.split(/\s+/).includes(token));
 }
 
+// PROJECT-PATH-001
 function runPathChecks() {
     assert.strictEqual(helpers.normalizeAiSessionComparablePath('/work/app/'), '/work/app');
     assert.strictEqual(helpers.normalizeAiSessionComparablePath('/work/My%20App/'), '/work/My App');
@@ -174,6 +175,7 @@ function runPathChecks() {
     assert.strictEqual(projectPathUtils.encodeRemoteAuthority('ssh-remote+user@host'), 'ssh-remote%2Buser@host');
 }
 
+// PROJECT-ASSIGNMENT-001
 function runAssignmentChecks() {
     const candidates = [
         { project: { id: 'root' }, path: '/work' },
@@ -189,6 +191,7 @@ function runAssignmentChecks() {
     assert.strictEqual(assignments.has('root'), false);
 }
 
+// WEBVIEW-DASHBOARD-SEARCH-CATALOG-001
 function runDashboardSearchCatalogChecks() {
     const groups = [{
         id: 'tools', groupName: 'TOOLS', collapsed: false,
@@ -227,6 +230,7 @@ function runDashboardSearchCatalogChecks() {
     assert.deepStrictEqual(JSON.parse(serialized).savedProjects[0].name, '</script><script>bad()</script>');
 }
 
+// ERROR-DASHBOARD-DIAGNOSTICS-001
 function runDashboardDiagnosticsChecks() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-diagnostics-'));
     try {
@@ -271,6 +275,7 @@ function runDashboardDiagnosticsChecks() {
     }
 }
 
+// ATTENTION-ATTENTION-PROJECTION-001
 function runAttentionProjectionChecks() {
     const aggregate = {
         protocolVersion: 1,
@@ -294,6 +299,7 @@ function runAttentionProjectionChecks() {
     )).eventIds[0], 'e2');
 }
 
+// PROJECT-FAVORITE-PROJECT-ORDER-001
 function runFavoriteProjectOrderChecks() {
     const projects = [
         { id: 'legacy-a', favorite: true },
@@ -371,6 +377,7 @@ function runFavoriteProjectOrderChecks() {
     assert.strictEqual(toggleGroups[0].projects[2].favoriteOrder, 9);
 }
 
+// OPEN-OPEN-PROJECT-RUNTIME-IDENTITY-001
 function runOpenProjectRuntimeIdentityChecks() {
     const savedRemotePath = 'vscode-remote://dev-container+fixture/work/app';
     const openProjects = openProjectService.getOpenProjectsFromWorkspace(
@@ -393,6 +400,7 @@ function runOpenProjectRuntimeIdentityChecks() {
     assert.strictEqual(openProjects[0].attentionProjectPath, undefined);
 }
 
+// PROJECT-WORKSPACE-HELPER-001
 function runWorkspaceHelperChecks() {
     const workspaceFile = createTestFileUri('/work/app.code-workspace');
     const workspaceFolders = [
@@ -415,6 +423,7 @@ function runWorkspaceHelperChecks() {
     assert.strictEqual(projectWorkspaceHelpers.getWorkspacePath(null, []), null);
 }
 
+// PROJECT-CANDIDATE-FILTER-001
 function runCandidateFilterChecks() {
     const result = {
         available: true,
@@ -430,6 +439,7 @@ function runCandidateFilterChecks() {
     assert.deepStrictEqual(helpers.normalizeAiSessionCandidatePaths(['/work/app/', '/work/app', '']).map(item => item), ['/work/app']);
 }
 
+// PROJECT-PROJECT-CANDIDATE-001
 function runProjectCandidateChecks() {
     const openProjects = [
         { id: 'app', path: '/work/app/' },
@@ -464,6 +474,7 @@ function runProjectCandidateChecks() {
     assert.strictEqual(aiSessionProjectCandidates.normalizeAiSessionProjectPath(''), '');
 }
 
+// PROJECT-SESSION-PATH-001
 function runSessionPathChecks() {
     const providerDefinitions = [
         { id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions', terminalCwdFields: ['cwd'] },
@@ -503,6 +514,7 @@ function runSessionPathChecks() {
     );
 }
 
+// SESSION-PENDING-TERMINAL-MATCHER-001
 function runPendingTerminalMatcherChecks() {
     const providerDefinitions = [
         { id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions', terminalCwdFields: ['cwd'] },
@@ -550,6 +562,7 @@ function runPendingTerminalMatcherChecks() {
     );
 }
 
+// PROJECT-TERMINAL-CANDIDATE-001
 function runTerminalCandidateChecks() {
     const calls = [];
     const coordinator = {
@@ -571,6 +584,7 @@ function runTerminalCandidateChecks() {
     assert.deepStrictEqual(calls, [['codex', { reason: 'terminal-candidates' }]]);
 }
 
+// SESSION-PENDING-TERMINAL-RESOLVER-001
 async function runPendingTerminalResolverChecks() {
     const providerDefinitions = [
         { id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions', terminalCwdFields: ['cwd'] },
@@ -757,12 +771,14 @@ async function runPendingTerminalResolverChecks() {
     assert.strictEqual(partialSyncs, 1, 'partial success must synchronize exactly once');
 }
 
+// SESSION-SCAN-OPTION-001
 function runScanOptionChecks() {
     assert.strictEqual(aiSessionScanOptions.getAiSessionScanMaxFiles('alias-original-name', 2000), 0);
     assert.strictEqual(aiSessionScanOptions.getAiSessionScanMaxFiles('terminal-candidates', 2000), 0);
     assert.strictEqual(aiSessionScanOptions.getAiSessionScanMaxFiles('refresh', 2000), 2000);
 }
 
+// SESSION-TERMINAL-CWD-001
 function runTerminalCwdChecks() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-terminal-cwd-'));
     try {
@@ -780,6 +796,7 @@ function runTerminalCwdChecks() {
     }
 }
 
+// WEBVIEW-DISPLAY-001
 function runDisplayChecks() {
     const prepared = helpers.prepareAiSessionsForDisplay(
         [
@@ -799,6 +816,7 @@ function runDisplayChecks() {
     assert.strictEqual(prepared[1].name, 'Alias New');
 }
 
+// PERSIST-PIN-STORE-001
 function runPinStoreChecks() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-pins-'));
     try {
@@ -824,6 +842,7 @@ function runPinStoreChecks() {
     }
 }
 
+// SESSION-PIN-CONTROLLER-001
 async function runPinControllerChecks() {
     const events = [];
     const errors = [];
@@ -883,6 +902,7 @@ async function runPinControllerChecks() {
     assert.deepStrictEqual(events.slice(-1), [['show-update-error']]);
 }
 
+// PERSIST-ALIAS-STORE-001
 function runAliasStoreChecks() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-aliases-'));
     try {
@@ -916,6 +936,7 @@ function runAliasStoreChecks() {
     }
 }
 
+// SESSION-ALIAS-CONTROLLER-001
 function runAliasControllerChecks() {
     const saved = [];
     const removed = [];
@@ -981,6 +1002,7 @@ function runAliasControllerChecks() {
     ]);
 }
 
+// PERSIST-PROJECT-STATE-STORE-001
 async function runProjectStateStoreChecks() {
     const data = {
         openProjectsExpandedCodexSessions: ['project-a', 1, '', 'project-b'],
@@ -1022,6 +1044,7 @@ async function runProjectStateStoreChecks() {
     ]);
 }
 
+// PROJECT-ACTIVE-AI-SESSION-PROJECTION-001
 function runActiveAiSessionProjectionChecks() {
     const projects = [{
         id: 'app',
@@ -1172,6 +1195,7 @@ function runActiveAiSessionProjectionChecks() {
     assert.strictEqual(empty[0].activeAiSessionTab, 'sessions');
 }
 
+// SESSION-AI-SESSION-COMMAND-CONTROLLER-001
 async function runAiSessionCommandControllerChecks() {
     const projects = [
         { id: 'project-a', path: '/work/a' },
@@ -1247,6 +1271,7 @@ async function runAiSessionCommandControllerChecks() {
     assert.deepStrictEqual(infoMessages, ['Chat ID copied to clipboard.']);
 }
 
+// SESSION-AI-SESSION-CREATION-CONTROLLER-001
 async function runAiSessionCreationControllerChecks() {
     const projects = [{ id: 'project-a', name: 'Project A', path: '/work/a' }];
     const warnings = [];
@@ -1377,6 +1402,7 @@ async function runAiSessionCreationControllerChecks() {
     assert.strictEqual(refreshes.length, 2);
 }
 
+// SESSION-AI-SESSION-PROVIDER-AVAILABILITY-001
 function runAiSessionProviderAvailabilityChecks() {
     const exists = value => value === '/bin/codex' || value === 'C:\\Tools\\kimi.CMD';
     assert.strictEqual(providerAvailability.isCommandAvailableOnPath(
@@ -1390,6 +1416,7 @@ function runAiSessionProviderAvailabilityChecks() {
     ), true);
 }
 
+// SESSION-AI-SESSION-RESUME-CONTROLLER-001
 async function runAiSessionResumeControllerChecks() {
     const session = { id: 'session-a', name: 'Session A', cwd: '/work/a', updatedAt: '2026-07-16T10:00:00Z' };
     const projects = [
@@ -1537,6 +1564,7 @@ async function runAiSessionResumeControllerChecks() {
     assert.strictEqual(activeTabRequests.length, activeTabCountBeforeReject + 1);
 }
 
+// SESSION-AI-SESSION-TERMINAL-COMMAND-CONTROLLER-001
 async function runAiSessionTerminalCommandControllerChecks() {
     const activeTerminal = {
         showCalls: 0,
@@ -1695,6 +1723,7 @@ async function runAiSessionTerminalCommandControllerChecks() {
     assert.strictEqual(runtimeRefreshes.length, 4, 'missing targets must not refresh');
 }
 
+// RUNTIME-AI-SESSION-RUNTIME-CONTROLLER-001
 async function runAiSessionRuntimeControllerChecks() {
     const controllerRoot = path.join(__dirname, '..', 'src', 'aiSessions');
     const controllerContracts = [
@@ -2017,6 +2046,7 @@ async function runAiSessionRuntimeControllerChecks() {
     assert.strictEqual(resumeRefreshes.length, 5);
 }
 
+// ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001
 async function runAiSessionAttentionControllerChecks() {
     let nowMs = 1000;
     let enabled = true;
@@ -2511,6 +2541,7 @@ async function runAiSessionAttentionControllerChecks() {
     });
 }
 
+// SESSION-AI-SESSION-EXECUTION-CONTROLLER-001
 async function runAiSessionExecutionControllerChecks() {
     let activeSessions = [{
         provider: 'codex',
@@ -2593,6 +2624,7 @@ async function runAiSessionExecutionControllerChecks() {
     assert.ok(!source.toLowerCase().includes('attention'), 'execution controller never reads attention configuration');
 }
 
+// SESSION-SIDEBAR-STEWARD-VIEW-PROVIDER-ORDERING-001
 async function runSidebarStewardViewProviderOrderingChecks() {
     const order = [];
     const visibilityListeners = [];
@@ -2685,6 +2717,7 @@ async function runSidebarStewardViewProviderOrderingChecks() {
     assert.ok(secretView.webview.html.includes('Project Steward could not render this view.'));
 }
 
+// RUNTIME-AI-SESSION-ARCHIVE-RUNTIME-001
 async function runAiSessionArchiveRuntimeChecks() {
     const runtime = {
         identity: {
@@ -2799,6 +2832,7 @@ async function runAiSessionArchiveRuntimeChecks() {
     }, 'archive must revalidate after confirmation and perform no destructive action on a new collision');
 }
 
+// PERSIST-AI-SESSION-PROJECT-HYDRATION-CONTROLLER-001
 async function runAiSessionProjectHydrationControllerChecks() {
     let refreshReason = 'refresh';
     const codexSession = {
@@ -3122,6 +3156,7 @@ async function runAiSessionProjectHydrationControllerChecks() {
     assert.strictEqual(manualPending.title, 'Manual Title');
 }
 
+// PERSIST-AI-SESSION-PROJECT-HYDRATION-PROMOTION-001
 async function runAiSessionProjectHydrationPromotionChecks() {
     const providersForTest = [{
         id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions',
@@ -3642,6 +3677,7 @@ async function runAiSessionProjectHydrationPromotionChecks() {
     assert.deepStrictEqual(legacy.aliasesSet, [['codex', 'session-final', 'Legacy Alias']]);
 }
 
+// SESSION-KEY-001
 function runKeyChecks() {
     const isProviderId = value => value === 'codex' || value === 'kimi' || value === 'claude';
 
@@ -3651,6 +3687,7 @@ function runKeyChecks() {
     assert.strictEqual(helpers.getAiSessionProviderIdFromKey(':missing', isProviderId), null);
 }
 
+// WEBVIEW-ACTIVE-AI-SESSION-TERMINAL-HIGHLIGHT-001
 function runActiveAiSessionTerminalHighlightChecks() {
     const terminalA = { name: 'A' };
     const terminalB = { name: 'B' };
@@ -3731,6 +3768,7 @@ function runActiveAiSessionTerminalHighlightChecks() {
     assert.strictEqual(timers.filter(timer => timer.active).length, 0);
 }
 
+// RUNTIME-TMUX-FOCUSED-RUNTIME-MONITOR-001
 async function runTmuxFocusedRuntimeMonitorChecks() {
     let visible = true;
     const terminal = { name: 'Project tmux attach' };
@@ -3812,6 +3850,7 @@ async function runTmuxFocusedRuntimeMonitorChecks() {
     assert.strictEqual(syncCalls, callsAfterDispose);
 }
 
+// SESSION-AI-SESSION-TERMINAL-RESOLUTION-001
 function runAiSessionTerminalResolutionChecks() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-active-terminal-'));
     try {
@@ -3928,6 +3967,7 @@ function runAiSessionTerminalResolutionChecks() {
     }
 }
 
+// PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001
 async function runAiSessionTerminalBindingStoreChecks() {
     const stateData = {};
     const state = {
@@ -4104,6 +4144,7 @@ async function runAiSessionTerminalBindingStoreChecks() {
     assert.strictEqual(stalledStore.get(42006).sessionId, 'after-stall');
 }
 
+// PERSIST-AI-SESSION-TERMINAL-PERSISTENCE-001
 async function runAiSessionTerminalPersistenceChecks() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-terminal-persistence-'));
     const stateData = {};
@@ -4388,6 +4429,7 @@ async function runAiSessionTerminalPersistenceChecks() {
     }
 }
 
+// PERSIST-BATCH-AI-SESSION-ARCHIVE-001
 function runBatchAiSessionArchiveChecks() {
     assert.ok(archiveBatch.MAX_BATCH_AI_SESSION_ARCHIVE_REQUEST_ENTRIES > 20);
     const excessiveIds = Array.from(
@@ -4483,6 +4525,7 @@ function runBatchAiSessionArchiveChecks() {
     );
 }
 
+// PERSIST-BATCH-AI-SESSION-ARCHIVE-HOST-001
 async function runBatchAiSessionArchiveHostChecks() {
     const sessions = [
         { id: 'archived', name: 'Archived' },
@@ -4610,6 +4653,7 @@ async function runBatchAiSessionArchiveHostChecks() {
     }
 }
 
+// WEBVIEW-WEBVIEW-CONTENT-001
 function runWebviewContentChecks() {
     const webviewContent = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewContent.ts'), 'utf8');
     const webviewProjectScripts = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'), 'utf8');
@@ -5174,6 +5218,7 @@ function runWebviewContentChecks() {
     assert.ok(styles.includes('height: var(--steward-ai-session-list-max-height, calc(3 * 42px + 2 * 2px));'));
 }
 
+// RUNTIME-TMUX-SMOKE-HARNESS-SAFETY-001
 function runTmuxSmokeHarnessSafetyChecks() {
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const safetyScript = packageJson.scripts['test:safety'];
@@ -5197,6 +5242,7 @@ function runTmuxSmokeHarnessSafetyChecks() {
     assert.strictEqual(/\bspawn(?:Sync)?\s*\(/.test(smokeSource), false);
 }
 
+// WEBVIEW-CURRENT-WORKSPACE-RENDERING-001
 function runCurrentWorkspaceRenderingChecks() {
     const config = {
         get: (key, defaultValue) => defaultValue,
@@ -5405,6 +5451,7 @@ function runCurrentWorkspaceRenderingChecks() {
     assert.ok(!projectsHtml.includes('Must Not Render'));
 }
 
+// WEBVIEW-FAVORITE-RENDERING-001
 function runFavoriteRenderingChecks() {
     const config = {
         get: (key, defaultValue) => defaultValue,
@@ -5445,6 +5492,7 @@ function runFavoriteRenderingChecks() {
     assert.ok(hasClassTokens(favoriteContainer[2], 'project', 'steward-item-card'));
 }
 
+// ATTENTION-ATTENTION-PROJECT-RENDERING-001
 function runAttentionProjectRenderingChecks() {
     const config = {
         get: (key, defaultValue) => defaultValue,
@@ -5531,6 +5579,7 @@ function runAttentionProjectRenderingChecks() {
     assert.ok(!quietProjectHtml.includes('class="ai-session-attention-count"'));
 }
 
+// WEBVIEW-FAVORITE-DND-001
 function runFavoriteDndChecks() {
     const sourcePath = path.join(__dirname, '..', 'src', 'webview', 'webviewDnDScripts.js');
     const generatedPath = path.join(__dirname, '..', 'media', 'webviewDnDScripts.js');
@@ -5638,6 +5687,7 @@ function runFavoriteDndChecks() {
     ]);
 }
 
+// WEBVIEW-BATCH-AI-SESSION-WEBVIEW-001
 function runBatchAiSessionWebviewChecks() {
     const sourcePath = path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js');
     const generatedPath = path.join(__dirname, '..', 'media', 'webviewProjectScripts.js');
@@ -6494,6 +6544,7 @@ function runBatchAiSessionWebviewChecks() {
     assert.ok(collapseExitIndex < collapseMessageIndex);
 }
 
+// ARCH-AI-SESSION-INCREMENTAL-REFRESH-SOURCE-001
 function runAiSessionIncrementalRefreshSourceChecks() {
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
     const readCoordinatorPath = path.join(__dirname, '..', 'src', 'aiSessions', 'readCoordinator.ts');
@@ -6648,6 +6699,7 @@ function runAiSessionIncrementalRefreshSourceChecks() {
     assert.ok(controllerSource.includes('this.options.clearTimeout(timeout)'));
 }
 
+// ARCH-AI-SESSION-READ-COORDINATOR-001
 function runAiSessionReadCoordinatorChecks() {
     const calls = [];
     const diagnostics = [];
@@ -6748,6 +6800,7 @@ function runAiSessionReadCoordinatorChecks() {
     );
 }
 
+// OPEN-OPEN-PROJECT-AI-SESSION-VIEW-MODEL-BUILDER-001
 function runOpenProjectAiSessionViewModelBuilderChecks() {
     const project = {
         id: 'project-a',
@@ -6878,6 +6931,7 @@ function runOpenProjectAiSessionViewModelBuilderChecks() {
     assert.strictEqual(differentRendererModel.sessionSectionHtml, 'html:new-renderer:project-a');
 }
 
+// PERSIST-AI-SESSION-PROJECT-HYDRATION-001
 function runAiSessionProjectHydrationChecks() {
     const project = { id: 'project-a', path: '/work/app' };
     const codexSessions = [
@@ -7012,6 +7066,7 @@ function runAiSessionProjectHydrationChecks() {
     assert.strictEqual(fallbackProject.activeAiSessionProvider, 'kimi');
 }
 
+// WEBVIEW-AI-SESSION-DASHBOARD-CONTROLLER-001
 function runAiSessionDashboardControllerChecks() {
     const invalidated = [];
     const messages = [];
@@ -7076,6 +7131,7 @@ function runAiSessionDashboardControllerChecks() {
     assert.strictEqual(clearedTimeouts.length, 0);
 }
 
+// WEBVIEW-AI-SESSION-DASHBOARD-WATCHER-COALESCING-001
 function runAiSessionDashboardWatcherCoalescingChecks() {
     const messages = [];
     const refreshReasons = [];
@@ -7134,6 +7190,7 @@ function runAiSessionDashboardWatcherCoalescingChecks() {
     assert.strictEqual(scheduled[3].delayMs, 100, 'non-watcher refreshes should not be throttled by watcher coalescing');
 }
 
+// WEBVIEW-AI-SESSION-DASHBOARD-UNCHANGED-MESSAGE-SKIP-001
 async function runAiSessionDashboardUnchangedMessageSkipChecks() {
     const messages = [];
     const diagnostics = [];
@@ -7288,6 +7345,7 @@ function extractScssBlock(source, selector) {
     assert.fail(`Could not extract ${selector}`);
 }
 
+// PROJECT-GIT-REPOSITORY-DETECTOR-001
 function runGitRepositoryDetectorChecks() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-git-'));
     try {
@@ -7361,6 +7419,7 @@ function writeCodexSessionMetaFile(sessionsDir, sessionId, payload) {
     return sessionFile;
 }
 
+// SESSION-CODEX-SUBAGENT-SESSION-FILTER-001
 function runCodexSubagentSessionFilterChecks() {
     const previousCodexHome = process.env.CODEX_HOME;
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-codex-subagents-'));
@@ -7460,6 +7519,7 @@ function runCodexSubagentSessionFilterChecks() {
     }
 }
 
+// SESSION-CODEX-SESSION-ACTIVITY-TIMESTAMP-001
 function runCodexSessionActivityTimestampChecks() {
     const previousCodexHome = process.env.CODEX_HOME;
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-codex-activity-'));
@@ -7500,6 +7560,7 @@ function runCodexSessionActivityTimestampChecks() {
     }
 }
 
+// PERSIST-CODEX-SESSION-META-CACHE-001
 function runCodexSessionMetaCacheChecks() {
     const previousCodexHome = process.env.CODEX_HOME;
     const originalOpenSync = fs.openSync;
@@ -7569,6 +7630,7 @@ function runCodexSessionMetaCacheChecks() {
     }
 }
 
+// SESSION-KIMI-NESTED-SUBAGENT-BOUNDARY-001
 function runKimiNestedSubagentBoundaryChecks() {
     const previousKimiHome = process.env.KIMI_SHARE_DIR;
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-kimi-subagents-'));
@@ -7602,6 +7664,7 @@ function runKimiNestedSubagentBoundaryChecks() {
     }
 }
 
+// SESSION-CLAUDE-SESSION-001
 function runClaudeSessionChecks() {
     const previousClaudeHome = process.env.CLAUDE_HOME;
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-claude-'));
@@ -7642,6 +7705,7 @@ function runClaudeSessionChecks() {
     }
 }
 
+// SESSION-AI-SESSION-PROVIDER-MAX-FILES-001
 function runAiSessionProviderMaxFilesChecks() {
     const previousCodexHome = process.env.CODEX_HOME;
     const previousKimiHome = process.env.KIMI_SHARE_DIR;
@@ -7738,6 +7802,7 @@ function runAiSessionProviderMaxFilesChecks() {
     }
 }
 
+// SESSION-PROVIDER-001
 function runProviderChecks() {
     assert.deepStrictEqual(providers.AI_SESSION_PROVIDER_IDS, ['codex', 'kimi', 'claude']);
     assert.strictEqual(providers.getAiSessionProviderLabel('codex'), 'Codex');
@@ -7761,6 +7826,7 @@ function runProviderChecks() {
     );
 }
 
+// PERSIST-PROVIDER-LIFECYCLE-SERVICE-001
 function runProviderLifecycleServiceChecks() {
     const writeLargeLifecycleLog = (filePath, firstEvent, fillerEvent) => {
         const fillerLine = JSON.stringify(fillerEvent);
@@ -7889,6 +7955,7 @@ function runProviderLifecycleServiceChecks() {
     }
 }
 
+// SESSION-COMMAND-BUILDER-001
 function runCommandBuilderChecks() {
     assert.deepStrictEqual(
         commands.buildClaudeNewSessionLaunchSpec('/work/app', "Useful; 'Title'", '/tmp/claude.done'),
@@ -7939,6 +8006,7 @@ function runCommandBuilderChecks() {
     assert.strictEqual(commands.quotePowerShellArg("O'Brien"), "'O''Brien'");
 }
 
+// PERSIST-LIFECYCLE-PARSER-001
 function runLifecycleParserChecks() {
     const runStartedAtMs = Date.parse('2026-07-15T00:00:00.000Z');
     const codexSignal = lifecycle.parseCodexLifecycleLines([
@@ -8070,6 +8138,7 @@ function runLifecycleParserChecks() {
     }
 }
 
+// PERSIST-INCREMENTAL-JSONL-LIFECYCLE-READER-001
 function runIncrementalJsonlLifecycleReaderChecks() {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-incremental-jsonl-lifecycle-'));
     const runStartedAtMs = Date.parse('2026-07-15T00:00:00.000Z');
@@ -8250,6 +8319,7 @@ function runIncrementalJsonlLifecycleReaderChecks() {
     }
 }
 
+// ATTENTION-ATTENTION-MONITOR-001
 function runAttentionMonitorChecks() {
     let now = 0;
     const signal = (token, phase, reason, occurredAtMs = now) => ({ token, phase, reason, occurredAtMs });
@@ -8339,6 +8409,7 @@ function runAttentionMonitorChecks() {
     assert.strictEqual(monitor.getSnapshot()['codex:return-visible'].state, 'needsAttention');
 }
 
+// SESSION-AI-SESSION-EXECUTION-MONITOR-001
 function runAiSessionExecutionMonitorChecks() {
     let now = 1000;
     const monitor = new AiSessionExecutionMonitor({ now: () => now });
@@ -8366,6 +8437,7 @@ function runAiSessionExecutionMonitorChecks() {
     assert.deepStrictEqual(monitor.getSnapshot(), {});
 }
 
+// ATTENTION-ATTENTION-PAYLOAD-001
 function runAttentionPayloadChecks() {
     const payload = attentionPayload.createAttentionPayload([{ projectId: 'a'.repeat(64), sessionKey: 'k', state: 'needsAttention', eventId: 'e', reason: 'input-required', observedAtMs: 10 }], 20);
     assert.deepStrictEqual(attentionPayload.parseAttentionPayload(attentionPayload.serializeAttentionPayload(payload)), payload);
@@ -8454,6 +8526,7 @@ function runAttentionPayloadChecks() {
     assert.doesNotThrow(() => attentionAggregate.validateAttentionAggregate(boundedAggregate));
 }
 
+// ATTENTION-PRODUCTION-ATTENTION-STORE-CLOCK-001
 async function runProductionAttentionStoreClockChecks() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-clock-'));
     const store = new ProductionAttentionStore(root, 'f'.repeat(32));
@@ -8478,6 +8551,7 @@ async function runProductionAttentionStoreClockChecks() {
     }
 }
 
+// ATTENTION-PRODUCTION-ATTENTION-STORE-LIFECYCLE-001
 async function runProductionAttentionStoreLifecycleChecks() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-lifecycle-'));
     let releaseFirst;
@@ -8550,6 +8624,7 @@ async function runProductionAttentionStoreLifecycleChecks() {
     }
 }
 
+// ATTENTION-PRODUCTION-ATTENTION-STORE-UNREGISTER-PROPAGATION-001
 async function runProductionAttentionStoreUnregisterPropagationChecks() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-unregister-'));
     const instanceId = '9'.repeat(32);
@@ -8641,6 +8716,7 @@ async function runProductionAttentionStoreUnregisterPropagationChecks() {
     }
 }
 
+// ATTENTION-PRODUCTION-ATTENTION-STORE-TOMBSTONE-REACTIVATION-RACE-001
 async function runProductionAttentionStoreTombstoneReactivationRaceChecks() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-store-reactivation-race-'));
     const instanceId = '8'.repeat(32);
@@ -8695,6 +8771,7 @@ async function runProductionAttentionStoreTombstoneReactivationRaceChecks() {
     }
 }
 
+// ATTENTION-ATTENTION-BRIDGE-CLIENT-PRIVACY-001
 async function runAttentionBridgeClientPrivacyChecks() {
     const executed = [];
     const registered = new Map();
@@ -8787,6 +8864,7 @@ async function runAttentionBridgeClientPrivacyChecks() {
     }
 }
 
+// ATTENTION-PRODUCTION-ATTENTION-BRIDGE-INTEGRATION-001
 async function runProductionAttentionBridgeIntegrationChecks() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attention-production-integration-'));
     const registered = new Map();
@@ -8893,6 +8971,7 @@ async function runProductionAttentionBridgeIntegrationChecks() {
     }
 }
 
+// ATTENTION-ATTENTION-BRIDGE-CLIENT-LIFECYCLE-001
 async function runAttentionBridgeClientLifecycleChecks() {
     const registered = new Map();
     const commands = [];
@@ -9073,6 +9152,7 @@ async function runAttentionBridgeClientLifecycleChecks() {
     }
 }
 
+// ATTENTION-ATTENTION-PROJECT-001
 function runAttentionProjectChecks() {
     const localKey = attentionProject.getAttentionProjectKey('/work/My%20Repo/');
     assert.strictEqual(localKey, attentionProject.getAttentionProjectKey('/work/My Repo'));
@@ -9155,6 +9235,7 @@ function runAttentionProjectChecks() {
     );
 }
 
+// RELEASE-VSIX-PACKAGING-001
 function runVsixPackagingChecks() {
     const vscodeIgnore = fs.readFileSync(path.join(__dirname, '..', '.vscodeignore'), 'utf8');
     assert.ok(

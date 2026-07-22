@@ -521,6 +521,7 @@ function runtimeRecordFilename(record) {
     return `${canonicalState}-${digest}.json`;
 }
 
+// RUNTIME-RUNTIME-CONFIGURATION-001
 function runRuntimeConfigurationChecks() {
     assert.deepStrictEqual(runtimeConfiguration.readAiSessionRuntimeConfiguration(config({})), {
         mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux',
@@ -543,6 +544,7 @@ function runRuntimeConfigurationChecks() {
     assert.strictEqual(properties['projectSteward.aiSessionTmuxPath'].scope, 'machine');
 }
 
+// RUNTIME-LAUNCH-SPEC-001
 function runLaunchSpecChecks() {
     const spec = commandBuilders.buildCodexResumeLaunchSpec(
         `session'; touch /tmp/nope; '`,
@@ -653,6 +655,7 @@ function runLaunchSpecChecks() {
     );
 }
 
+// RUNTIME-TMUX-LAYOUT-001
 function runTmuxLayoutChecks() {
     assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentityId('pending-codex_1.2:3'), true);
     for (const invalidId of ['', '   ', 'pending id', 'pending\ncontrol', '../unsafe', 'x'.repeat(513)]) {
@@ -748,6 +751,7 @@ function runTmuxLayoutChecks() {
     }
 }
 
+// RUNTIME-TMUX-CLIENT-001
 async function runTmuxClientChecks() {
     const requiredCommands = [
         'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
@@ -1324,6 +1328,7 @@ async function runTmuxClientChecks() {
     assert.strictEqual(JSON.stringify(getterAvailability).includes(availabilityGetterSecret), false);
 }
 
+// RUNTIME-TMUX-DISCOVERY-001
 async function runTmuxDiscoveryChecks() {
     const finalIdentity = {
         provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1',
@@ -2172,6 +2177,7 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(markerFailureDiscovery.getInactive(), []);
 }
 
+// RUNTIME-TMUX-STORE-001
 async function runTmuxStoreChecks() {
     const now = Date.parse('2026-07-18T10:00:00Z');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-tmux-store-'));
@@ -3414,6 +3420,7 @@ async function runTmuxStoreChecks() {
     }
 }
 
+// RUNTIME-TMUX-BACKEND-001
 async function runTmuxBackendChecks() {
     const backendModule = require('../out/aiSessions/tmuxRuntimeBackend');
     const backendCollisionIdentity = {
@@ -5224,6 +5231,7 @@ function createFakeRuntimeBackend(backend, options = {}) {
     return fake;
 }
 
+// SESSION-DIRECT-BACKEND-001
 async function runDirectBackendChecks() {
     const terminalA = { name: 'Codex: Existing' };
     const terminalPending = { name: 'Codex: Pending' };
@@ -5362,6 +5370,7 @@ async function runDirectBackendChecks() {
     assert.strictEqual(operations.filter(item => item.type === 'closed').length, 1);
 }
 
+// RUNTIME-RUNTIME-COORDINATOR-001
 async function runRuntimeCoordinatorChecks() {
     const direct = createFakeRuntimeBackend('vscode');
     const tmux = createFakeRuntimeBackend('tmux');
@@ -6190,6 +6199,7 @@ async function runRuntimeCoordinatorChecks() {
     assert.strictEqual(verifiedWithCollisionTmux.focusCalls.length, 0);
 }
 
+// RUNTIME-RUNTIME-PROJECTION-001
 async function runRuntimeProjectionChecks() {
     const providerFixtures = {
         codex: { id: 'codex', label: 'Codex', projectSessionsKey: 'codexSessions' },
@@ -6454,6 +6464,7 @@ async function runRuntimeProjectionChecks() {
 
 }
 
+// RUNTIME-RUNTIME-CONTROLLER-001
 async function runRuntimeControllerChecks() {
     const project = {
         id: 'project', name: 'Project', path: '/work',
@@ -7252,6 +7263,7 @@ async function runRuntimeControllerChecks() {
         'creating a retained pending runtime refreshes the visible runtime state once');
 }
 
+// RUNTIME-HOST-RUNTIME-COMPOSITION-001
 function runHostRuntimeCompositionChecks() {
     const dashboardSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
     assert.ok(dashboardSource.includes('new TmuxRuntimeBindingStore'));
@@ -7318,6 +7330,7 @@ function runHostRuntimeCompositionChecks() {
         'Direct and tmux attachment restoration must finish before first hydration is possible');
 }
 
+// RUNTIME-TMUX-WEBVIEW-EXPERIENCE-001
 function runTmuxWebviewExperienceChecks() {
     const projectWithTmuxRuntimeFixture = {
         id: 'p', name: 'App', path: '/work/app', activeAiSessionTab: 'active',
@@ -7402,6 +7415,7 @@ function runTmuxWebviewExperienceChecks() {
         'generated styles must give the native primary button a visible keyboard focus outline');
 }
 
+// RUNTIME-REAL-TMUX-SMOKE-HARNESS-SOURCE-001
 async function runRealTmuxSmokeHarnessSourceChecks() {
     const smokePath = path.join(__dirname, 'run-ai-session-tmux-smoke-checks.js');
     assert.ok(fs.existsSync(smokePath), 'the isolated real tmux smoke harness must exist');

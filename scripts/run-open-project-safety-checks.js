@@ -108,6 +108,7 @@ function hasClassTokens(classValue, ...tokens) {
     return tokens.every(token => classValue.split(/\s+/).includes(token));
 }
 
+// ARCH-PROTOCOL-001
 function runProtocolChecks() {
     const publication = makePublication();
     const registration = makeRegistration();
@@ -311,6 +312,7 @@ function runProtocolChecks() {
     );
 }
 
+// OPEN-OPEN-PROJECT-PUBLICATION-001
 function runOpenProjectPublicationChecks() {
     const publication = {
         protocolVersion: 1,
@@ -332,6 +334,7 @@ function runOpenProjectPublicationChecks() {
     assert.deepStrictEqual(replaceOpenProjectPublicationUris(publication, []), publication);
 }
 
+// ATTENTION-REMOTE-ATTENTION-IDENTITY-001
 function runRemoteAttentionIdentityChecks() {
     const localPath = '/workspaces/reddb-dual-active';
     const remoteUri = 'vscode-remote://dev-container%2Btarget/workspaces/reddb-dual-active';
@@ -366,6 +369,7 @@ function runRemoteAttentionIdentityChecks() {
     );
 }
 
+// SESSION-IDENTITY-001
 function runIdentityChecks() {
     assert.strictEqual(projection.normalizeOpenProjectIdentity('/work/shared/'), '/work/shared');
     assert.strictEqual(projection.normalizeOpenProjectIdentity('C:\\work\\shared\\'), 'C:/work/shared');
@@ -399,6 +403,7 @@ function runIdentityChecks() {
     );
 }
 
+// SESSION-RECORD-001
 function runRecordChecks() {
     const records = projection.createOpenProjectRecords([
         { id: 'local', name: 'Local', description: 'Folder', path: '/local', remoteType: models.ProjectRemoteType.None, color: '#111' },
@@ -423,6 +428,7 @@ function runRecordChecks() {
     assert.strictEqual(countedRecords[2].activeSessionCount, undefined, 'projects without counts must be omitted');
 }
 
+// PROJECT-WORKSPACE-CONTROLLER-RECORD-001
 function runWorkspaceControllerRecordChecks() {
     const controller = new OpenProjectWorkspaceController({
         getWorkspaceFile: () => null,
@@ -445,6 +451,7 @@ function runWorkspaceControllerRecordChecks() {
         'initial publication must skip running session counts');
 }
 
+// PROJECT-PROJECTION-001
 function runProjectionChecks() {
     const current = [{
         id: '__openProjects-0', name: 'Current', description: 'Workspace folder',
@@ -562,6 +569,7 @@ function runProjectionChecks() {
     assert.strictEqual(sessionCountCards[1].openProjectActiveSessionCount, 0);
 }
 
+// OPEN-BRIDGE-CLIENT-001
 async function runBridgeClientChecks() {
     let currentNow = 1000;
     let heartbeatCallback;
@@ -837,6 +845,7 @@ async function runBridgeClientChecks() {
     refreshingClient.dispose();
 }
 
+// OPEN-DASHBOARD-BRIDGE-LIFECYCLE-001
 function runDashboardBridgeLifecycleChecks() {
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
     const openProjects = extractFunctionBody(dashboard, 'getOpenProjects');
@@ -951,6 +960,7 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboardRuntimeControllerSource.includes('this.options.publishOpenProjects();'));
 }
 
+// OPEN-OPEN-PROJECT-WORKSPACE-CONTROLLER-001
 async function runOpenProjectWorkspaceControllerChecks() {
     const fileUri = {
         scheme: 'file',
@@ -997,6 +1007,7 @@ async function runOpenProjectWorkspaceControllerChecks() {
     }]);
 }
 
+// OPEN-CURRENT-PROJECT-DETAILS-RESOLVER-001
 async function runCurrentProjectDetailsResolverChecks() {
     const workspaceUri = {
         scheme: 'file',
@@ -1029,6 +1040,7 @@ async function runCurrentProjectDetailsResolverChecks() {
     assert.strictEqual(await emptyResolver.getCurrentProjectDetailsForSave(), null);
 }
 
+// OPEN-PROJECT-OPEN-CONTROLLER-001
 async function runProjectOpenControllerChecks() {
     const commands = [];
     const warnings = [];
@@ -1123,6 +1135,7 @@ async function runProjectOpenControllerChecks() {
     assert.ok(warnings.includes('Tried to open a project with a relative path, but no workspace is open.'));
 }
 
+// WEBVIEW-WEBVIEW-REFRESH-FOCUS-001
 function runWebviewRefreshFocusChecks() {
     const source = fs.readFileSync(
         path.join(__dirname, '..', 'src', 'webview', 'webviewFilterScripts.js'),
@@ -1183,6 +1196,7 @@ function runWebviewRefreshFocusChecks() {
     assert.strictEqual(blurCalls, 0, 'reloading a visible Webview must not alter editor focus');
 }
 
+// OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001
 async function runOpenProjectDashboardControllerChecks() {
     const diagnostics = [];
     const posted = [];
@@ -1351,6 +1365,7 @@ async function runOpenProjectDashboardControllerChecks() {
     assert.strictEqual(undeliveredPosted.length, 2, 'undelivered hidden open project revisions must be retryable');
 }
 
+// OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001
 function runOpenProjectIncrementalRenderingChecks() {
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
     const controllerPath = path.join(__dirname, '..', 'src', 'openProjects', 'dashboardController.ts');
@@ -1496,6 +1511,7 @@ function runOpenProjectIncrementalRenderingChecks() {
     assert.ok(postUpdatedBody.includes("this.options.refresh('open-project-update-post-error');"));
 }
 
+// PERSIST-DASHBOARD-MIGRATION-PUBLICATION-001
 async function runDashboardMigrationPublicationChecks() {
     const publications = [];
     const refreshes = [];
@@ -1550,6 +1566,7 @@ async function runDashboardMigrationPublicationChecks() {
     assert.strictEqual(showStewardCalls, 1);
 }
 
+// PERSIST-STORE-001
 async function runStoreChecks() {
     const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-projects-'));
     const ownInstanceId = 'b'.repeat(32);
@@ -1784,6 +1801,7 @@ async function runStoreChecks() {
     }
 }
 
+// ARCH-COORDINATOR-001
 async function runCoordinatorChecks() {
     const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-project-coordinator-'));
     let currentNow = 1000;
@@ -2081,6 +2099,7 @@ async function runCoordinatorChecks() {
     }
 }
 
+// ARCH-COORDINATOR-AGGREGATE-BOUNDARY-001
 async function runCoordinatorAggregateBoundaryChecks() {
     const registrations = Array.from({ length: 101 }, (_, index) => makeRegistration(
         index.toString(16).padStart(32, '0'),
@@ -2183,6 +2202,7 @@ async function runCoordinatorAggregateBoundaryChecks() {
     }
 }
 
+// ARCH-COORDINATOR-WIRING-001
 async function runCoordinatorWiringChecks() {
     const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'project-steward-open-project-wiring-'));
     const registeredCommands = new Map();
