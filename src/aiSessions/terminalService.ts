@@ -37,6 +37,7 @@ export interface PendingAiSessionTerminal {
     cwd: string;
     createdAt: string;
     excludedSessionIds: string[];
+    projectName?: string;
     title?: string;
     runtimeIdentity?: AiSessionRuntimeIdentity;
 }
@@ -280,6 +281,7 @@ export default class AiSessionTerminalService {
             cwd: entry.runtimeIdentity.cwd,
             createdAt: entry.createdAt,
             excludedSessionIds: entry.excludedSessionIds || [],
+            ...(entry.projectName === undefined ? {} : { projectName: entry.projectName }),
             ...(entry.title === undefined ? {} : { title: entry.title }),
         });
     }
@@ -464,6 +466,7 @@ export default class AiSessionTerminalService {
                     },
                     createdAt: binding.createdAt,
                     excludedSessionIds: binding.excludedSessionIds,
+                    ...(binding.projectName === undefined ? {} : { projectName: binding.projectName }),
                     ...(binding.title === undefined ? {} : { title: binding.title }),
                 }, false);
             }

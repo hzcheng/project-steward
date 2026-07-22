@@ -91,6 +91,8 @@ aiSessionScanOptions = require('../out/aiSessions/scanOptions');
 aiSessionTerminalCwd = require('../out/aiSessions/terminalCwd');
 projectWorkspaceHelpers = require('../out/projects/workspaceHelpers');
 const AiSessionTerminalService = require('../out/aiSessions/terminalService').default;
+const DirectTerminalRuntimeBackend = require('../out/aiSessions/directTerminalRuntimeBackend')
+    .DirectTerminalRuntimeBackend;
 const models = require('../out/models');
 const openProjectService = require('../out/projects/openProjectService');
 const webviewContentModule = require('../out/webview/webviewContent');
@@ -4103,6 +4105,7 @@ async function runAiSessionTerminalPersistenceChecks() {
             ),
             createdAt,
             excludedSessionIds: [],
+            projectName: 'Workspace Card',
             title: 'App',
         });
         const pendingIdentityCopy = firstService.getPendingTerminals()[0].runtimeIdentity;
@@ -4114,16 +4117,38 @@ async function runAiSessionTerminalPersistenceChecks() {
         );
         await firstStore.flush();
 
+        const legacyPendingProcessId = 42012;
+        const persistedPendingKey = AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + processId;
+        const legacyPendingRecord = JSON.parse(JSON.stringify(stateData[persistedPendingKey]));
+        legacyPendingRecord.pendingId = 'pending-legacy-no-project-name';
+        delete legacyPendingRecord.projectName;
+        stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + legacyPendingProcessId]
+            = legacyPendingRecord;
+
         const restoredPendingTerminal = {
             ...created,
             creationOptions: { name: created.name, cwd: '/work/app' },
             processId: Promise.resolve(processId),
         };
+        const legacyPendingTerminal = {
+            ...created,
+            name: 'Codex: Legacy pending',
+            creationOptions: { name: 'Codex: Legacy pending', cwd: '/work/app' },
+            processId: Promise.resolve(legacyPendingProcessId),
+        };
         const secondStore = new AiSessionTerminalBindingStore(state);
         const secondService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, secondStore);
-        await secondService.restorePersistedTerminals([restoredPendingTerminal]);
-        assert.strictEqual(secondService.getPendingTerminals().length, 1);
+        await secondService.restorePersistedTerminals([restoredPendingTerminal, legacyPendingTerminal]);
+        assert.strictEqual(secondService.getPendingTerminals().length, 2);
         assert.strictEqual(secondService.getPendingTerminals()[0].terminal, restoredPendingTerminal);
+        const restoredDirectBackend = new DirectTerminalRuntimeBackend(secondService);
+        assert.strictEqual(restoredDirectBackend.getPending().find(runtime =>
+            runtime.identity.pendingId === 'pending-persisted').projectName, 'Workspace Card');
+        assert.strictEqual(restoredDirectBackend.getPending().find(runtime =>
+            runtime.identity.pendingId === 'pending-legacy-no-project-name').projectName, undefined,
+            'pre-change Direct pending bindings without projectName must remain restorable');
+        secondService.removePendingForTerminal(legacyPendingTerminal);
+        await secondStore.flush();
 
         const timedOutProcessId = 42011;
         const timedOutCreatedAt = new Date(Date.parse(createdAt) + 1).toISOString();

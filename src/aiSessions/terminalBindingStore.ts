@@ -35,6 +35,7 @@ export interface PendingAiSessionTerminalBinding extends AiSessionTerminalBindin
     pendingId: string;
     createdAt: string;
     excludedSessionIds: string[];
+    projectName?: string;
     title?: string;
 }
 
@@ -259,10 +260,12 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         'version', 'state', 'providerId', 'workspaceScopeIdentity',
         'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'markerPath',
         'updatedAtMs', 'pendingId', 'createdAt', 'excludedSessionIds',
-    ], ['title']) || !identity || typeof record.createdAt !== 'string'
+    ], ['projectName', 'title']) || !identity || typeof record.createdAt !== 'string'
         || !Number.isFinite(Date.parse(record.createdAt)) || !Array.isArray(record.excludedSessionIds)
         || record.excludedSessionIds.length > MAX_EXCLUDED_SESSION_IDS
         || record.excludedSessionIds.some(id => !isBoundedString(id, MAX_ID_LENGTH))
+        || (record.projectName !== undefined
+            && (typeof record.projectName !== 'string' || record.projectName.length > MAX_PATH_LENGTH))
         || (record.title !== undefined && (typeof record.title !== 'string' || record.title.length > MAX_TITLE_LENGTH))) {
         return null;
     }
@@ -278,6 +281,7 @@ function validateRecord(value: unknown): AiSessionTerminalBinding | null {
         pendingId: identity.pendingId as string,
         createdAt: record.createdAt,
         excludedSessionIds: [...record.excludedSessionIds] as string[],
+        ...(record.projectName === undefined ? {} : { projectName: record.projectName as string }),
         ...(record.title === undefined ? {} : { title: record.title as string }),
         updatedAtMs: record.updatedAtMs,
     };
