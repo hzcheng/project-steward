@@ -264,11 +264,14 @@ export interface AiSessionPendingPromotionCandidate<TTerminal = unknown>
 extends AiSessionPendingRuntimeSnapshot<TTerminal> {
     /** Internal recovery input; ordinary runtime/UI pending snapshots never populate it. */
     promotionRecoveryDisplayName?: string;
+    /** Internal recovery input; ordinary runtime/UI pending snapshots never populate it. */
+    recoverySessionId?: string;
 }
 
 export interface AiSessionDurablePendingPromotionCandidate<TTerminal = unknown>
 extends AiSessionPendingPromotionCandidate<TTerminal> {
     promotionRecoveryDisplayName: string;
+    recoverySessionId: string;
 }
 
 export interface AiSessionRuntimeConfiguration {

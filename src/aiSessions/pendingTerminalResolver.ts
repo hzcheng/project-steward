@@ -12,6 +12,7 @@ import {
     cloneAiSessionRuntimeIdentity,
     isValidAiSessionPromotionDisplayName,
     isValidAiSessionRuntimeIdentity,
+    isValidAiSessionRuntimeIdentityId,
 } from './runtimeTypes';
 import type { AiSessionProviderDefinition, AiSessionReadResult } from './types';
 
@@ -110,12 +111,8 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
         if (attemptedPendingIdentityKeys.has(pendingIdentityKey)) {
             continue;
         }
-        const session = findPendingAiSessionTerminalMatch(
-            pendingRuntime,
-            sessionResult,
-            claimedSessionKeys,
-            options.getSessionKey,
-            options.providers
+        const session = findPromotionSession(
+            pendingRuntime, sessionResult, claimedSessionKeys, options
         );
         if (!session) {
             continue;
@@ -163,6 +160,10 @@ function getPromotionDisplayName(
     resolvedSessionName: unknown,
     sessionId: string
 ): string {
+    if (pendingRuntime.recoverySessionId !== undefined
+        && pendingRuntime.promotionRecoveryDisplayName === undefined) {
+        throw new Error('The durable promotion display snapshot is missing.');
+    }
     if (pendingRuntime.promotionRecoveryDisplayName !== undefined) {
         if (!isValidAiSessionPromotionDisplayName(
             pendingRuntime.promotionRecoveryDisplayName
@@ -179,6 +180,35 @@ function getPromotionDisplayName(
     return isValidAiSessionPromotionDisplayName(resolvedSessionName)
         ? resolvedSessionName
         : sessionId;
+}
+
+function findPromotionSession<TTerminal>(
+    pendingRuntime: AiSessionPendingPromotionCandidate<TTerminal>,
+    sessionResult: AiSessionReadResult,
+    claimedSessionKeys: Set<string>,
+    options: Pick<ResolvePendingAiSessionTerminalsOptions<TTerminal>, 'getSessionKey' | 'providers'>
+) {
+    if (pendingRuntime.recoverySessionId !== undefined) {
+        if (!isValidAiSessionRuntimeIdentityId(pendingRuntime.recoverySessionId)) {
+            throw new Error('The durable promotion session snapshot is invalid.');
+        }
+        if (!sessionResult.available) {
+            return null;
+        }
+        const matches = sessionResult.sessions.filter(session =>
+            session.id === pendingRuntime.recoverySessionId);
+        if (matches.length > 1) {
+            throw new Error('The durable promotion session snapshot is ambiguous.');
+        }
+        return matches[0] || null;
+    }
+    return findPendingAiSessionTerminalMatch(
+        pendingRuntime,
+        sessionResult,
+        claimedSessionKeys,
+        options.getSessionKey,
+        options.providers
+    );
 }
 
 function getPendingIdentityKey<TTerminal>(runtime: AiSessionPendingRuntimeSnapshot<TTerminal>): string {

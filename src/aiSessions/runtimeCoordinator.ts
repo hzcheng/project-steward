@@ -22,6 +22,7 @@ import {
     cloneAiSessionRuntimeIdentity,
     isValidAiSessionPromotionDisplayName,
     isValidAiSessionRuntimeIdentity,
+    isValidAiSessionRuntimeIdentityId,
     TmuxRuntimeUnavailableError,
 } from './runtimeTypes';
 
@@ -631,12 +632,11 @@ function mergePromotionPendingCandidates<TTerminal>(
 ): AiSessionPendingPromotionCandidate<TTerminal>[] {
     const merged = new Map<string, AiSessionPendingPromotionCandidate<TTerminal>>();
     if (durable.some(candidate => candidate?.backend !== 'tmux'
-        || !isValidAiSessionPromotionDisplayName(
-            candidate.promotionRecoveryDisplayName
-        ))) {
-        throw new Error('A durable pending promotion display snapshot is invalid.');
+        || !isValidAiSessionPromotionDisplayName(candidate.promotionRecoveryDisplayName)
+        || !isValidAiSessionRuntimeIdentityId(candidate.recoverySessionId))) {
+        throw new Error('A durable pending promotion snapshot is invalid.');
     }
-    for (const candidate of [...ordinary.map(stripPromotionRecoveryDisplayName), ...durable]) {
+    for (const candidate of [...ordinary.map(stripPromotionRecoverySnapshot), ...durable]) {
         if (!candidate || candidate.state !== 'pending'
             || (candidate.backend !== 'vscode' && candidate.backend !== 'tmux')
             || !isValidAiSessionRuntimeIdentity(candidate.identity)
@@ -647,7 +647,9 @@ function mergePromotionPendingCandidates<TTerminal>(
             || (candidate.promotionRecoveryDisplayName !== undefined
                 && !isValidAiSessionPromotionDisplayName(
                     candidate.promotionRecoveryDisplayName
-                ))) {
+                ))
+            || (candidate.recoverySessionId !== undefined
+                && !isValidAiSessionRuntimeIdentityId(candidate.recoverySessionId))) {
             throw new Error('A pending runtime promotion candidate is invalid.');
         }
         const key = `${candidate.backend}:${JSON.stringify([
@@ -662,10 +664,12 @@ function mergePromotionPendingCandidates<TTerminal>(
         if (existing && !promotionPendingCandidatesEqual(existing, candidate)) {
             throw new Error('Multiple pending promotion candidates disagree within one backend.');
         }
-        if (existing && candidate.promotionRecoveryDisplayName !== undefined) {
+        if (existing && candidate.promotionRecoveryDisplayName !== undefined
+            && candidate.recoverySessionId !== undefined) {
             merged.set(key, {
                 ...clonePendingRuntime(existing),
                 promotionRecoveryDisplayName: candidate.promotionRecoveryDisplayName,
+                recoverySessionId: candidate.recoverySessionId,
             });
         } else if (!existing) {
             merged.set(key, clonePendingRuntime(candidate));
@@ -686,6 +690,9 @@ function promotionPendingCandidatesEqual<TTerminal>(
         && (left.promotionRecoveryDisplayName === undefined
             || right.promotionRecoveryDisplayName === undefined
             || left.promotionRecoveryDisplayName === right.promotionRecoveryDisplayName)
+        && (left.recoverySessionId === undefined
+            || right.recoverySessionId === undefined
+            || left.recoverySessionId === right.recoverySessionId)
         && left.excludedSessionIds.length === right.excludedSessionIds.length
         && left.excludedSessionIds.every((value, index) => value === right.excludedSessionIds[index])
         && ((!left.tmux && !right.tmux) || (!!left.tmux && !!right.tmux
@@ -694,11 +701,12 @@ function promotionPendingCandidatesEqual<TTerminal>(
             && left.tmux.windowName === right.tmux.windowName));
 }
 
-function stripPromotionRecoveryDisplayName<TTerminal>(
+function stripPromotionRecoverySnapshot<TTerminal>(
     runtime: AiSessionPendingRuntimeSnapshot<TTerminal>
 ): AiSessionPendingPromotionCandidate<TTerminal> {
     const candidate = clonePendingRuntime(runtime) as AiSessionPendingPromotionCandidate<TTerminal>;
     delete candidate.promotionRecoveryDisplayName;
+    delete candidate.recoverySessionId;
     return candidate;
 }
 

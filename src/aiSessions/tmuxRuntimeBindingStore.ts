@@ -127,6 +127,7 @@ export interface TmuxPromotingRuntimeBinding {
 export interface TmuxRecoverablePendingBinding {
     pendingBinding: TmuxPendingRuntimeBinding;
     promotionRecoveryDisplayName: string;
+    recoverySessionId: string;
 }
 
 interface TmuxAmbiguousRuntimeBindingBase {
@@ -632,6 +633,7 @@ export class TmuxRuntimeBindingStore {
                 result.push({
                     pendingBinding: clonePending(intent.pendingBinding),
                     promotionRecoveryDisplayName: intent.finalSessionName,
+                    recoverySessionId: intent.finalSessionId,
                 });
                 continue;
             }
@@ -639,6 +641,7 @@ export class TmuxRuntimeBindingStore {
                 result.push({
                     pendingBinding: clonePending(livePending),
                     promotionRecoveryDisplayName: tombstone.finalSessionName,
+                    recoverySessionId: tombstone.finalSessionId,
                 });
             }
         }

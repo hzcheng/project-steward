@@ -141,6 +141,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         return candidates.map(candidate => ({
             ...pendingSnapshotFromBinding(candidate.pendingBinding),
             promotionRecoveryDisplayName: candidate.promotionRecoveryDisplayName,
+            recoverySessionId: candidate.recoverySessionId,
         }) as AiSessionDurablePendingPromotionCandidate<TTerminal>);
     }
 

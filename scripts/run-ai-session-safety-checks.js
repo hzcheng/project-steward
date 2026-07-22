@@ -1294,16 +1294,60 @@ async function runPendingTerminalResolverChecks() {
     const durableRecoveryPending = {
         ...fallbackPending,
         promotionRecoveryDisplayName: 'Frozen durable name',
+        recoverySessionId: 'frozen-session',
     };
     const durableRecoveryCalls = [];
-    await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
-        resolverOptions([durableRecoveryPending], async (identity, sessionId, sessionName) => {
+    const durableRecoveryOptions = resolverOptions(
+        [durableRecoveryPending], async (identity, sessionId, sessionName) => {
             durableRecoveryCalls.push({ identity, sessionId, sessionName });
             return [finalRuntime(durableRecoveryPending, sessionId)];
-        }, [], () => undefined)
+        }, [], () => undefined
     );
+    durableRecoveryOptions.activeRuntimes = [finalRuntime(
+        durableRecoveryPending, 'frozen-session'
+    )];
+    durableRecoveryOptions.sessionResults.codex.sessions = [{
+        id: 'newer-same-cwd', name: 'Newer current name', cwd: '/work/fallback',
+        updatedAt: '2026-07-15T10:00:02.000Z',
+    }, {
+        id: 'frozen-session', name: 'Changed provider name', cwd: '/different',
+        updatedAt: '2026-07-15T09:00:00.000Z',
+    }];
+    await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(durableRecoveryOptions);
+    assert.strictEqual(durableRecoveryCalls[0].sessionId, 'frozen-session',
+        'durable recovery must select its exact frozen provider session despite claimed/time/cwd heuristics');
     assert.strictEqual(durableRecoveryCalls[0].sessionName, 'Frozen durable name',
         'durable recovery must ignore a changed provider display name');
+
+    const missingRecoveryTargetOptions = resolverOptions(
+        [durableRecoveryPending], async () => {
+            throw new Error('a missing durable target must not be promoted');
+        }, [], () => undefined
+    );
+    missingRecoveryTargetOptions.sessionResults.codex.sessions = [{
+        id: 'newer-same-cwd', name: 'Newer current name', cwd: '/work/fallback',
+        updatedAt: '2026-07-15T10:00:02.000Z',
+    }];
+    assert.deepStrictEqual(
+        await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
+            missingRecoveryTargetOptions
+        ),
+        { attempted: 0, promoted: [], failures: [] },
+        'a durable recovery target absent from provider discovery must remain retryable'
+    );
+
+    for (const invalidRecoverySessionId of ['', 'bad id', 'bad\nrecovery', 'x'.repeat(513)]) {
+        await assert.rejects(
+            aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
+                resolverOptions([{
+                    ...durableRecoveryPending,
+                    recoverySessionId: invalidRecoverySessionId,
+                }], async () => [], [], () => undefined)
+            ),
+            /durable promotion session snapshot is invalid/,
+            'invalid durable recovery session IDs must fail closed before matching'
+        );
+    }
 
     for (const invalidRecoveryName of ['', 'bad\nrecovery', 'x'.repeat(201)]) {
         let invalidRecoveryCalls = 0;
@@ -1311,6 +1355,7 @@ async function runPendingTerminalResolverChecks() {
             .resolvePendingAiSessionTerminals(resolverOptions([{
                 ...fallbackPending,
                 promotionRecoveryDisplayName: invalidRecoveryName,
+                recoverySessionId: 'session-0',
             }], async () => {
                 invalidRecoveryCalls++;
                 return [];
