@@ -1280,7 +1280,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/protocol.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1293,7 +1293,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/projection.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1384,7 +1384,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/projection.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1397,7 +1397,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/projection.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1410,7 +1410,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/projection.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1423,7 +1423,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/workspaceController.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1436,7 +1436,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/projection.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1449,7 +1449,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/bridgeClient.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1462,7 +1462,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/bridgeClient.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1475,7 +1475,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/workspaceController.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1488,7 +1488,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/workspaceController.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1501,7 +1501,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/workspaceController.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1514,7 +1514,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/integration/dashboard/openProjectFlow.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1527,7 +1527,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/dashboardController.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1540,7 +1540,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/integration/dashboard/openProjectFlow.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1553,7 +1553,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/dashboardController.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1566,7 +1566,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/coordinator.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1579,7 +1579,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/coordinator.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1592,7 +1592,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/contract/openProjects/coordinator.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1605,7 +1605,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-open-project-safety-checks.js"
+      "tests/integration/dashboard/openProjectFlow.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"

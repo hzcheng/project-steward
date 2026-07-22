@@ -7,6 +7,7 @@ const {
     createOpenProjectSemanticRevision,
     validateOpenProjectAggregate,
     validateOpenProjectPublication,
+    validateOpenProjectRegistration,
 } = require('../../../out/openProjects/protocol');
 
 const FIRST_INSTANCE_ID = '1'.repeat(32);
@@ -47,10 +48,27 @@ function makeRegistration(instanceId = FIRST_INSTANCE_ID, overrides = {}) {
     };
 }
 
-test('OPEN-PROTOCOL-001 validates a complete publication without changing its payload', () => {
+test('ARCH-PROTOCOL-001 / OPEN-PROTOCOL-001 validates complete protocol envelopes and exact registration fields', () => {
     const publication = makePublication();
+    const registration = makeRegistration();
+    const aggregate = {
+        protocolVersion: 1,
+        semanticRevision: 'revision',
+        observedAtMs: 5000,
+        registrations: [registration],
+    };
 
     assert.deepEqual(validateOpenProjectPublication(publication), publication);
+    assert.deepEqual(validateOpenProjectRegistration(registration), registration);
+    assert.deepEqual(validateOpenProjectAggregate(aggregate), aggregate);
+    assert.throws(
+        () => validateOpenProjectRegistration({ ...registration, unexpected: true }),
+        /unexpected fields/
+    );
+    assert.throws(
+        () => validateOpenProjectRegistration({ ...registration, leaseUpdatedAtMs: Infinity }),
+        /leaseUpdatedAtMs/
+    );
 });
 
 test('OPEN-PROTOCOL-002 rejects publication payloads with non-protocol keys', () => {
