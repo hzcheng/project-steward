@@ -1,11 +1,15 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const {
+    buildTslintInvocation,
     compareWarningBaseline,
     summarizeFailures,
+    writeBaselineAtomically,
 } = require('../../../scripts/check-tslint-baseline');
 
 test('TSLINT-BASELINE-001 ignores line movement when file and rule counts are unchanged', () => {
@@ -61,4 +65,44 @@ test('TSLINT-BASELINE-005 summarizes absolute paths as repository-relative POSIX
     assert.deepEqual(summarizeFailures(failures, root), {
         'src/feature/example.ts': { semicolon: 1 },
     });
+});
+
+test('TSLINT-BASELINE-006 invokes the resolved TSLint JavaScript CLI with the current Node executable', () => {
+    const invocation = buildTslintInvocation();
+
+    assert.equal(invocation.command, process.execPath);
+    assert.equal(invocation.args[0], require.resolve('tslint/bin/tslint'));
+    assert.deepEqual(invocation.args.slice(1), ['-p', './', '-t', 'json']);
+});
+
+test('TSLINT-BASELINE-007 atomically replaces the baseline without leaving a temporary file', t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tslint-baseline-'));
+    const ciDirectory = path.join(root, '.ci');
+    const baselinePath = path.join(ciDirectory, 'tslint-warning-baseline.json');
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    fs.mkdirSync(ciDirectory);
+    fs.writeFileSync(baselinePath, '{"old":true}\n');
+
+    writeBaselineAtomically(baselinePath, { 'src/example.ts': { semicolon: 1 } });
+
+    assert.deepEqual(JSON.parse(fs.readFileSync(baselinePath, 'utf8')), {
+        'src/example.ts': { semicolon: 1 },
+    });
+    assert.deepEqual(fs.readdirSync(ciDirectory), ['tslint-warning-baseline.json']);
+});
+
+test('TSLINT-BASELINE-008 removes the temporary baseline when replacement fails', t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tslint-baseline-'));
+    const ciDirectory = path.join(root, '.ci');
+    const baselinePath = path.join(ciDirectory, 'tslint-warning-baseline.json');
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    fs.mkdirSync(ciDirectory);
+
+    assert.throws(() => writeBaselineAtomically(baselinePath, {}, {
+        mkdirSync: fs.mkdirSync,
+        renameSync: () => { throw new Error('replace failed'); },
+        unlinkSync: fs.unlinkSync,
+        writeFileSync: fs.writeFileSync,
+    }), /replace failed/);
+    assert.deepEqual(fs.readdirSync(ciDirectory), []);
 });

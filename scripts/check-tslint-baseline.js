@@ -49,9 +49,16 @@ function compareWarningBaseline(baseline, current) {
     return increases;
 }
 
+function buildTslintInvocation() {
+    return {
+        command: process.execPath,
+        args: [require.resolve('tslint/bin/tslint'), '-p', './', '-t', 'json'],
+    };
+}
+
 function runTslint(root) {
-    const tslint = path.join(root, 'node_modules', '.bin', 'tslint');
-    const result = childProcess.spawnSync(tslint, ['-p', './', '-t', 'json'], {
+    const invocation = buildTslintInvocation();
+    const result = childProcess.spawnSync(invocation.command, invocation.args, {
         cwd: root,
         encoding: 'utf8',
     });
@@ -64,14 +71,34 @@ function runTslint(root) {
     return JSON.parse(result.stdout);
 }
 
+function writeBaselineAtomically(baselinePath, baseline, fileSystem = fs) {
+    const contents = `${JSON.stringify(baseline, null, 2)}\n`;
+    const directory = path.dirname(baselinePath);
+    const temporaryPath = path.join(
+        directory,
+        `.${path.basename(baselinePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+    );
+    fileSystem.mkdirSync(directory, { recursive: true });
+    try {
+        fileSystem.writeFileSync(temporaryPath, contents);
+        fileSystem.renameSync(temporaryPath, baselinePath);
+    } catch (error) {
+        try {
+            fileSystem.unlinkSync(temporaryPath);
+        } catch (cleanupError) {
+            // The temporary file may not have been created.
+        }
+        throw error;
+    }
+}
+
 function main() {
     const root = path.resolve(__dirname, '..');
     const baselinePath = path.join(root, '.ci', 'tslint-warning-baseline.json');
     const current = summarizeFailures(runTslint(root), root);
 
     if (process.argv.includes('--write-baseline')) {
-        fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
-        fs.writeFileSync(baselinePath, `${JSON.stringify(current, null, 2)}\n`);
+        writeBaselineAtomically(baselinePath, current);
         return;
     }
 
@@ -91,4 +118,9 @@ if (require.main === module) {
     main();
 }
 
-module.exports = { compareWarningBaseline, summarizeFailures };
+module.exports = {
+    buildTslintInvocation,
+    compareWarningBaseline,
+    summarizeFailures,
+    writeBaselineAtomically,
+};
