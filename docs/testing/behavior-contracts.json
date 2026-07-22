@@ -2216,6 +2216,75 @@
     ]
   },
   {
+    "id": "WEBVIEW-SHARED-CARD-STATE-001",
+    "domain": "webview",
+    "title": "Shared dashboard headers and cards retain geometry and interaction states",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss",
+      "media/styles.css"
+    ]
+  },
+  {
+    "id": "WEBVIEW-ACTION-ACCESSIBILITY-001",
+    "domain": "webview",
+    "title": "Danger actions expose matching hover and keyboard focus feedback",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss",
+      "media/styles.css"
+    ]
+  },
+  {
+    "id": "TODO-VISUAL-STATE-001",
+    "domain": "todo",
+    "title": "TODO count priority spacing expansion completion states remain distinct",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss",
+      "media/styles.css"
+    ]
+  },
+  {
+    "id": "WEBVIEW-COLLAPSE-PRESENTATION-001",
+    "domain": "webview",
+    "title": "Group and TODO collapse indicators preserve their rotation state",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss",
+      "media/styles.css"
+    ]
+  },
+  {
+    "id": "TODO-FUTURE-VERSION-DASHBOARD-001",
+    "domain": "todo",
+    "title": "Dashboard live-probes unsupported TODO versions and recovers without stale errors",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoPanelFutureVersion.test.js"
+    ],
+    "evidence": [
+      "src/dashboard.ts"
+    ]
+  },
+  {
     "id": "WEBVIEW-COLLAPSE-BUTTON-STATE-001",
     "domain": "webview",
     "title": "Dashboard collapse controls expose exact disabled and action states",

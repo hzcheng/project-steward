@@ -65,6 +65,77 @@ function validateTodoLayout(source) {
         'TODO-RESPONSIVE-LAYOUT-001 collapsed notes must ellipsize');
 }
 
+function cssRules(source) {
+    return [...source.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(match => ({
+        selectors: match[1].split(',').map(selector => selector.trim()),
+        body: match[2],
+    }));
+}
+
+function ruleForSelector(source, selector, requiredDeclaration) {
+    const matches = cssRules(source).filter(rule => rule.selectors.includes(selector)
+        && (!requiredDeclaration || rule.body.includes(requiredDeclaration)));
+    assert.equal(matches.length, 1, `expected exactly one compiled CSS rule for ${selector}`);
+    return matches[0];
+}
+
+function assertDeclarations(rule, id, declarations) {
+    for (const declaration of declarations) {
+        assert.ok(rule.body.includes(declaration), `${id} missing ${declaration}`);
+    }
+}
+
+function validateSharedCardPresentation(source) {
+    const id = 'WEBVIEW-SHARED-CARD-STATE-001';
+    assertDeclarations(ruleForSelector(source, 'body.steward-sidebar .steward-group-header'), id,
+        ['padding: 4px 6px', 'border-radius: 7px', 'font-size: 15px', 'line-height: 1.25']);
+    assertDeclarations(ruleForSelector(source, 'body.steward-sidebar .steward-item-card', 'height: 58px'), id,
+        ['width: calc(100% - 4px)', 'height: 58px', 'padding: 8px 10px 8px 15px', 'border-radius: 18px']);
+    const hover = ruleForSelector(source, 'body.steward-sidebar .steward-item-card:focus-within');
+    assertDeclarations(hover, id,
+        ['background: var(--vscode-list-hoverBackground)', 'border-color: var(--vscode-focusBorder)', 'transform: translateY(-1px)']);
+    const expanded = ruleForSelector(source, 'body.steward-sidebar .steward-item-card.expanded');
+    assertDeclarations(expanded, id, ['height: auto', 'min-height: 58px']);
+    const selected = ruleForSelector(source, 'body.steward-sidebar .steward-item-card.selected');
+    assertDeclarations(selected, id, ['border-color: var(--vscode-focusBorder)']);
+}
+
+function validateDangerActions(source) {
+    const id = 'WEBVIEW-ACTION-ACCESSIBILITY-001';
+    const hover = 'body.steward-sidebar .steward-group-header .group-actions > .danger:hover';
+    const focus = 'body.steward-sidebar .steward-group-header .group-actions > .danger:focus-visible';
+    const rule = ruleForSelector(source, hover);
+    assert.ok(rule.selectors.includes(focus), `${id} danger actions must share hover and keyboard focus state`);
+    assertDeclarations(rule, id, ['color: var(--vscode-errorForeground)']);
+}
+
+function validateTodoVisualState(source) {
+    const id = 'TODO-VISUAL-STATE-001';
+    assertDeclarations(ruleForSelector(source, '.todo-group-count'), id,
+        ['font-size: 10px', 'opacity: 0.55', 'white-space: nowrap']);
+    assertDeclarations(ruleForSelector(source, '.todo-priority-choice input:checked + span'), id,
+        ['border-color: var(--vscode-panel-border)', 'color: var(--vscode-foreground)',
+            'background: var(--vscode-list-inactiveSelectionBackground)']);
+    assertDeclarations(ruleForSelector(source, '.todo-list > .steward-item-card:last-child'), id, ['margin-bottom: 0']);
+    assertDeclarations(ruleForSelector(source, '.todo-item.expanded .todo-notes'), id, ['white-space: pre-wrap']);
+    assertDeclarations(ruleForSelector(source, '.todo-item:not(.expanded) .todo-item-footer'), id, ['display: none']);
+    const completedRules = cssRules(source).filter(rule =>
+        rule.selectors.some(selector => selector.includes('.todo-item.completed')));
+    assert.ok(completedRules.length > 0, `${id} must retain completed TODO presentation`);
+    assert.equal(completedRules.some(rule => /(^|;)\s*background(?:-color)?\s*:/.test(rule.body)), false,
+        `${id} completed TODO rules must not override the shared card background`);
+}
+
+function validateCollapsePresentation(source) {
+    const id = 'WEBVIEW-COLLAPSE-PRESENTATION-001';
+    assertDeclarations(ruleForSelector(source, '.group.collapsed .collapse-icon svg'), id,
+        ['transform: rotate(-90deg)']);
+    assertDeclarations(ruleForSelector(source, '.todo-expand-control[aria-expanded=false] svg'), id,
+        ['transform: rotate(-90deg)']);
+    assertDeclarations(ruleForSelector(source, '.todo-expand-control svg'), id,
+        ['transition: transform 120ms ease']);
+}
+
 function compileStyles(source) {
     return sass.compileString(source, {
         loadPaths: [path.join(root, 'media'), path.join(root, 'node_modules')],
@@ -81,9 +152,21 @@ function minifyStyles(source) {
     return result.styles;
 }
 
+function assertStyleArtifact(scssSource, cssArtifact) {
+    assert.equal(minifyStyles(compileStyles(scssSource)), cssArtifact,
+        'WEBVIEW-STYLES-ARTIFACT-001 committed CSS must equal compiled and minified SCSS');
+}
+
+const compiledStyles = compileStyles(styles);
+
 test('WEBVIEW-STYLES-ARTIFACT-001 committed CSS exactly matches compiled and minified SCSS', () => {
-    assert.equal(minifyStyles(compileStyles(styles)), generatedStyles);
-    assert.throws(() => assert.equal(minifyStyles(compileStyles(styles)), `${generatedStyles}/* mutation */`));
+    assertStyleArtifact(styles, generatedStyles);
+    const mutatedArtifact = generatedStyles.replace('box-sizing:border-box', 'box-sizing:content-box');
+    assert.notEqual(mutatedArtifact, generatedStyles, 'controlled artifact mutation must alter real CSS');
+    assert.throws(() => assertStyleArtifact(styles, mutatedArtifact), /WEBVIEW-STYLES-ARTIFACT-001/);
+    const mutatedScss = styles.replace('height: 58px;', 'height: 59px;');
+    assert.notEqual(mutatedScss, styles, 'controlled SCSS mutation must alter a real declaration');
+    assert.throws(() => assertStyleArtifact(mutatedScss, generatedStyles), /WEBVIEW-STYLES-ARTIFACT-001/);
 });
 
 test('WEBVIEW-REDUCED-MOTION-001 disables dashboard and session animation for reduced motion', () => {
@@ -106,4 +189,33 @@ test('TODO-RESPONSIVE-LAYOUT-001 keeps TODO titles compact, lists scrollable, an
         '.todo-title-text {\n    min-width: 0;\n    overflow: hidden;\n    display: block;\n    color: var(--vscode-foreground);\n    font-size: 13px;\n    font-weight: 600;\n    line-height: 1.35;\n    text-overflow: ellipsis;\n    white-space: nowrap;',
         '.todo-title-text {\n    min-width: 0;\n    overflow: hidden;\n    display: block;\n    color: var(--vscode-foreground);\n    font-size: 13px;\n    font-weight: 600;\n    line-height: 1.35;\n    text-overflow: ellipsis;\n    white-space: normal;')),
         /TODO-RESPONSIVE-LAYOUT-001/);
+});
+
+test('WEBVIEW-SHARED-CARD-STATE-001 preserves shared header/card geometry and interaction states', () => {
+    validateSharedCardPresentation(compiledStyles);
+    assert.throws(() => validateSharedCardPresentation(compileStyles(styles.replace('height: 58px;', 'height: 59px;'))),
+        /WEBVIEW-SHARED-CARD-STATE-001|expected exactly one compiled CSS rule/);
+});
+
+test('WEBVIEW-ACTION-ACCESSIBILITY-001 gives danger actions matching hover and keyboard focus feedback', () => {
+    validateDangerActions(compiledStyles);
+    assert.throws(() => validateDangerActions(compileStyles(styles.replace(
+        '.group-actions > .danger {\n            &:hover,\n            &:focus-visible {',
+        '.group-actions > .danger {\n            &:hover,\n            &.removed-focus-state {'))),
+        /WEBVIEW-ACTION-ACCESSIBILITY-001|expected exactly one compiled CSS rule/);
+});
+
+test('TODO-VISUAL-STATE-001 preserves count, priority, spacing, notes, footer, and completed-card presentation', () => {
+    validateTodoVisualState(compiledStyles);
+    assert.throws(() => validateTodoVisualState(compileStyles(styles.replace(
+        '.todo-item.completed .todo-title-text {',
+        '.todo-item.completed .todo-title-text {\n    background: red;'))),
+        /TODO-VISUAL-STATE-001/);
+});
+
+test('WEBVIEW-COLLAPSE-PRESENTATION-001 rotates group and TODO collapse indicators', () => {
+    validateCollapsePresentation(compiledStyles);
+    assert.throws(() => validateCollapsePresentation(compileStyles(styles.replace(
+        'transform: rotate(-90deg);', 'transform: rotate(0deg);'))),
+        /WEBVIEW-COLLAPSE-PRESENTATION-001/);
 });

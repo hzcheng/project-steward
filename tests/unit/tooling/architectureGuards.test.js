@@ -100,8 +100,11 @@ for (const mutation of [
     {
         id: 'ARCH-AI-SESSION-FALLBACK-REASON-001',
         file: 'src/dashboard.ts',
-        mutate: source => source.replace("'sync-focused-runtime'", "'sync-runtime'")
-            + "\n// 'sync-focused-runtime'\n",
+        mutate: source => source.replace(
+            "onError: error => logAiSessionRuntimeFailure('sync-focused-runtime', error)",
+            "onError: error => logAiSessionRuntimeFailure('sync-runtime', error)")
+            + "\nfunction deadFallbackDecoy(error: unknown) {"
+            + " logAiSessionRuntimeFailure('sync-focused-runtime', error); }\n",
     },
     {
         id: 'ARCH-PROVIDER-REGISTRY-COMPLETENESS-001',
@@ -114,6 +117,20 @@ for (const mutation of [
         file: 'src/openProjects/protocol.ts',
         mutate: source => source.replace('OPEN_PROJECT_PROTOCOL_VERSION = 1', 'OPEN_PROJECT_PROTOCOL_VERSION = 2')
             + '\nconst OLD_OPEN_PROJECT_PROTOCOL_VERSION = 1;\n',
+    },
+    {
+        id: 'ARCH-PROTOCOL-001',
+        file: 'src/aiSessions/attentionBridgeClient.ts',
+        mutate: source => source.replace(
+            '{ protocolVersion: 1, instanceId: this.instanceId }',
+            '{ protocolVersion: 2, instanceId: this.instanceId }'),
+    },
+    {
+        id: 'ARCH-PROTOCOL-001',
+        file: 'src/aiSessions/attentionPayload.ts',
+        mutate: source => source.replace(
+            "if (record.protocolVersion !== 1) throw new Error('attention unregister protocol is incompatible');",
+            "if (record.protocolVersion !== 2) throw new Error('attention unregister protocol is incompatible');"),
     },
     {
         id: 'ARCH-RELEASE-IDENTITY-001',

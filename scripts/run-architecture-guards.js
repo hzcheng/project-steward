@@ -72,9 +72,10 @@ function stringArrayInitializer(sourceFile, name, id, risk) {
     return declaration.initializer.elements.map(element => element.text);
 }
 
-function callArguments(sourceFile, calleeText) {
+function callArguments(rootNode, calleeText) {
+    const sourceFile = ts.isSourceFile(rootNode) ? rootNode : rootNode.getSourceFile();
     const calls = [];
-    walk(sourceFile, node => {
+    walk(rootNode, node => {
         if (ts.isCallExpression(node) && node.expression.getText(sourceFile) === calleeText) {
             calls.push(node.arguments);
         }
@@ -86,6 +87,179 @@ function stringArgument(argument) {
     return argument && (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument))
         ? argument.text
         : undefined;
+}
+
+function normalizedAstText(node, sourceFile) {
+    return node.getText(sourceFile).replace(/\s+/g, ' ').trim();
+}
+
+function uniqueAstNode(root, predicate, id, risk, label) {
+    const matches = [];
+    walk(root, node => {
+        if (predicate(node)) matches.push(node);
+    });
+    if (matches.length !== 1) fail(id, risk, `${label} must exist exactly once`);
+    return matches[0];
+}
+
+function classMethod(sourceFile, className, methodName, id, risk) {
+    const declaration = uniqueAstNode(sourceFile,
+        node => ts.isClassDeclaration(node) && node.name?.text === className,
+        id, risk, `class ${className}`);
+    return uniqueAstNode(declaration,
+        node => ts.isMethodDeclaration(node) && node.name.getText(sourceFile) === methodName,
+        id, risk, `${className}.${methodName}`);
+}
+
+function protocolScope(sourceFile, descriptor, id, risk) {
+    if (descriptor.kind === 'function') {
+        return uniqueAstNode(sourceFile,
+            node => ts.isFunctionDeclaration(node) && node.name?.text === descriptor.name,
+            id, risk, `function ${descriptor.name}`);
+    }
+    if (descriptor.kind === 'class-method') {
+        return classMethod(sourceFile, descriptor.className, descriptor.methodName, id, risk);
+    }
+    if (descriptor.kind === 'class-method-variable') {
+        const method = classMethod(sourceFile, descriptor.className, descriptor.methodName, id, risk);
+        const variable = uniqueAstNode(method,
+            node => ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+                && node.name.text === descriptor.variableName,
+            id, risk, `${descriptor.className}.${descriptor.methodName} variable ${descriptor.variableName}`);
+        if (!variable.initializer || !ts.isArrowFunction(variable.initializer)) {
+            fail(id, risk, `${descriptor.variableName} must remain an arrow callback`);
+        }
+        return variable.initializer;
+    }
+    if (descriptor.kind === 'registered-callback') {
+        const variable = findVariable(sourceFile, descriptor.variableName, id, risk);
+        if (!variable.initializer || !ts.isCallExpression(variable.initializer)
+            || !variable.initializer.arguments[descriptor.argumentIndex]
+            || !ts.isArrowFunction(variable.initializer.arguments[descriptor.argumentIndex])) {
+            fail(id, risk, `${descriptor.variableName} must retain its registered callback`);
+        }
+        return variable.initializer.arguments[descriptor.argumentIndex];
+    }
+    if (descriptor.kind === 'class-method-call-callback') {
+        const method = classMethod(sourceFile, descriptor.className, descriptor.methodName, id, risk);
+        const call = uniqueAstNode(method,
+            node => ts.isCallExpression(node)
+                && node.expression.getText(sourceFile) === descriptor.callee,
+            id, risk, `${descriptor.className}.${descriptor.methodName} ${descriptor.callee} callback`);
+        const callback = call.arguments[descriptor.argumentIndex];
+        if (!callback || !ts.isArrowFunction(callback)) {
+            fail(id, risk, `${descriptor.callee} must retain its callback argument`);
+        }
+        return callback;
+    }
+    fail(id, risk, `unknown protocol scope ${descriptor.kind}`);
+}
+
+function walkOwnScope(root, visit) {
+    const descend = node => {
+        visit(node);
+        ts.forEachChild(node, child => {
+            if (child !== root && ts.isFunctionLike(child)) return;
+            descend(child);
+        });
+    };
+    descend(root);
+}
+
+const PROTOCOL_EXPECTATIONS = [
+    { file: 'src/aiSessions/attentionBridgeClient.ts', site: 'attention client unregister writer',
+        scope: { kind: 'class-method-variable', className: 'AttentionBridgeClient', methodName: 'dispose', variableName: 'unregister' },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' }] },
+    { file: 'src/aiSessions/attentionBridgeClient.ts', site: 'attention client handshake writer',
+        scope: { kind: 'class-method', className: 'AttentionBridgeClient', methodName: 'handshake' },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' },
+            { kind: ts.SyntaxKind.CallExpression, text: 'validateAttentionBridgeHandshakeResponse(response)' }] },
+    { file: 'src/aiSessions/attentionBridgeClient.ts', site: 'attention client aggregate reader',
+        scope: { kind: 'class-method', className: 'AttentionBridgeClient', methodName: 'receiveAggregate' },
+        nodes: [{ kind: ts.SyntaxKind.CallExpression, text: 'validateAttentionAggregate(raw)' }] },
+    ...['validateAttentionBridgeHandshakeRequest', 'validateAttentionBridgeHandshakeResponse', 'validateAttentionUnregisterRequest']
+        .map(name => ({ file: 'src/aiSessions/attentionPayload.ts', site: `${name} validator and normalized return`,
+            scope: { kind: 'function', name }, nodes: [
+                { kind: ts.SyntaxKind.BinaryExpression, text: 'record.protocolVersion !== 1' },
+                { kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' },
+            ] })),
+    { file: 'src/aiSessions/attentionAggregate.ts', site: 'attention aggregate validator and normalized return',
+        scope: { kind: 'function', name: 'validateAttentionAggregate' }, nodes: [
+            { kind: ts.SyntaxKind.BinaryExpression, text: 'record.protocolVersion !== 1' },
+            { kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' },
+        ] },
+    { file: 'src/aiSessions/attentionAggregate.ts', site: 'attention aggregate writer',
+        scope: { kind: 'function', name: 'aggregateAttentionSnapshots' },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' }] },
+    { file: 'extensions/attention-ui-bridge/src/extension.ts', site: 'bridge handshake reader and response writer',
+        scope: { kind: 'registered-callback', variableName: 'productionHandshakeDisposable', argumentIndex: 1 }, nodes: [
+            { kind: ts.SyntaxKind.CallExpression, text: 'validateAttentionBridgeHandshakeRequest(raw)' },
+            { kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' },
+        ] },
+    { file: 'extensions/attention-ui-bridge/src/extension.ts', site: 'bridge unregister reader',
+        scope: { kind: 'registered-callback', variableName: 'productionUnregisterDisposable', argumentIndex: 1 },
+        nodes: [{ kind: ts.SyntaxKind.CallExpression, text: 'validateAttentionUnregisterRequest(raw)' }] },
+    { file: 'src/openProjects/bridgeClient.ts', site: 'open-project client aggregate reader',
+        scope: { kind: 'class-method', className: 'OpenProjectBridgeClient', methodName: 'receiveAggregate' },
+        nodes: [{ kind: ts.SyntaxKind.CallExpression, text: 'validateOpenProjectAggregate(raw)' }] },
+    { file: 'src/openProjects/bridgeClient.ts', site: 'open-project client unregister writer',
+        scope: { kind: 'class-method', className: 'OpenProjectBridgeClient', methodName: 'dispose' },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' }] },
+    { file: 'src/openProjects/bridgeClient.ts', site: 'open-project client publication writer',
+        scope: { kind: 'class-method', className: 'OpenProjectBridgeClient', methodName: 'publishInternal' },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' }] },
+    ...['validateOpenProjectPublication', 'validateOpenProjectRegistration', 'validateOpenProjectAggregate']
+        .map(name => ({ file: 'src/openProjects/protocol.ts', site: `${name} validator and normalized return`,
+            scope: { kind: 'function', name }, nodes: [
+                { kind: ts.SyntaxKind.BinaryExpression,
+                    text: `${name === 'validateOpenProjectPublication' ? 'publication' : name === 'validateOpenProjectRegistration' ? 'registration' : 'aggregate'}.protocolVersion !== OPEN_PROJECT_PROTOCOL_VERSION` },
+                { kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: OPEN_PROJECT_PROTOCOL_VERSION' },
+            ] })),
+    { file: 'extensions/attention-ui-bridge/src/openProjectCoordinator.ts', site: 'coordinator unregister version forwarding',
+        scope: { kind: 'function', name: 'validateUnregisterRequest' },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: request.protocolVersion' }] },
+    { file: 'extensions/attention-ui-bridge/src/openProjectCoordinator.ts', site: 'coordinator registration writer',
+        scope: { kind: 'class-method-call-callback', className: 'OpenProjectCoordinator', methodName: 'publish', callee: 'this.enqueueMutation', argumentIndex: 0 },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: OPEN_PROJECT_PROTOCOL_VERSION' }] },
+    { file: 'extensions/attention-ui-bridge/src/openProjectCoordinator.ts', site: 'coordinator aggregate writer',
+        scope: { kind: 'class-method', className: 'OpenProjectCoordinator', methodName: 'scanOnce' },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: OPEN_PROJECT_PROTOCOL_VERSION' }] },
+];
+
+function validateProtocolExpectations(root, id, risk) {
+    const parsed = new Map();
+    for (const expectation of PROTOCOL_EXPECTATIONS) {
+        const sourceFile = parsed.get(expectation.file)
+            || parseTypescript(root, expectation.file, id, risk);
+        parsed.set(expectation.file, sourceFile);
+        const scope = protocolScope(sourceFile, expectation.scope, id, risk);
+        for (const expectedNode of expectation.nodes) {
+            const matches = [];
+            walkOwnScope(scope, node => {
+                if (node.kind === expectedNode.kind
+                    && normalizedAstText(node, sourceFile) === expectedNode.text) matches.push(node);
+            });
+            if (matches.length !== 1) {
+                fail(id, risk, `${expectation.site} must contain exactly one ${expectedNode.text}`);
+            }
+        }
+    }
+}
+
+function newExpressionOptionCallback(sourceFile, variableName, constructorName, optionName, id, risk) {
+    const variable = findVariable(sourceFile, variableName, id, risk);
+    if (!variable.initializer || !ts.isNewExpression(variable.initializer)
+        || variable.initializer.expression.getText(sourceFile) !== constructorName
+        || variable.initializer.arguments?.length !== 1
+        || !ts.isObjectLiteralExpression(variable.initializer.arguments[0])) {
+        fail(id, risk, `${variableName} must be constructed with one options object`);
+    }
+    const option = variable.initializer.arguments[0].properties.filter(property =>
+        ts.isPropertyAssignment(property) && property.name.getText(sourceFile) === optionName);
+    if (option.length !== 1 || !ts.isPropertyAssignment(option[0]) || !ts.isArrowFunction(option[0].initializer)) {
+        fail(id, risk, `${variableName}.${optionName} must exist exactly once as an arrow callback`);
+    }
+    return option[0].initializer;
 }
 
 const guards = {
@@ -141,10 +315,13 @@ const guards = {
         if (!lifecycleReasons.includes('evaluate-attention-closed-terminal')) {
             fail(this.id, risk, 'terminal-close attention fallback must have an explicit diagnostic reason');
         }
-        const runtimeFailureArguments = callArguments(dashboard, 'logAiSessionRuntimeFailure');
-        if (!runtimeFailureArguments.some(args => stringArgument(args[0]) === 'sync-focused-runtime')) {
+        const syncErrorCallback = newExpressionOptionCallback(dashboard, 'tmuxFocusedRuntimeMonitor',
+            'TmuxFocusedRuntimeMonitor', 'onError', this.id, risk);
+        const syncFailureCalls = callArguments(syncErrorCallback, 'logAiSessionRuntimeFailure');
+        if (syncFailureCalls.length !== 1 || stringArgument(syncFailureCalls[0][0]) !== 'sync-focused-runtime') {
             fail(this.id, risk, 'focused-runtime fallback must have an explicit diagnostic reason');
         }
+        const runtimeFailureArguments = callArguments(dashboard, 'logAiSessionRuntimeFailure');
         if (!runtimeFailureArguments.some(args => ts.isTemplateExpression(args[0])
             && args[0].getText(dashboard) === '`${fallback.operation}-fallback`')) {
             fail(this.id, risk, 'tmux choice fallback must derive its reason from the failing operation');
@@ -192,27 +369,7 @@ const guards = {
         if (numericInitializer(attentionProtocol, 'ATTENTION_PAYLOAD_VERSION', this.id, risk) !== 1) {
             fail(this.id, risk, 'attention payload version must remain 1 until an explicit migration exists');
         }
-        for (const relativePath of [
-            'src/aiSessions/attentionBridgeClient.ts',
-            'extensions/attention-ui-bridge/src/extension.ts',
-        ]) {
-            const sourceFile = parseTypescript(root, relativePath, this.id, risk);
-            let protocolOne = false;
-            walk(sourceFile, node => {
-                if (ts.isPropertyAssignment(node) && node.name.getText(sourceFile) === 'protocolVersion'
-                    && ts.isNumericLiteral(node.initializer) && node.initializer.text === '1') protocolOne = true;
-            });
-            if (!protocolOne) fail(this.id, risk, `${relativePath} must emit protocol version 1`);
-        }
-        const bridgeCoordinator = parseTypescript(root,
-            'extensions/attention-ui-bridge/src/openProjectCoordinator.ts', this.id, risk);
-        let sharedVersionReferences = 0;
-        walk(bridgeCoordinator, node => {
-            if (ts.isIdentifier(node) && node.text === 'OPEN_PROJECT_PROTOCOL_VERSION') sharedVersionReferences += 1;
-        });
-        if (sharedVersionReferences < 2) {
-            fail(this.id, risk, 'the UI Bridge must import and consume the shared open-project protocol version');
-        }
+        validateProtocolExpectations(root, this.id, risk);
     },
 
     // ARCH-RELEASE-IDENTITY-001
