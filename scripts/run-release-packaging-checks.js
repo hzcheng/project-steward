@@ -39,6 +39,30 @@ function containsKey(value, key) {
         || Object.values(value).some(item => containsKey(item, key));
 }
 
+function containsSecretContext(value) {
+    if (typeof value === 'string') {
+        return /\$\{\{[\s\S]*?\bsecrets\s*\./i.test(value);
+    }
+    if (Array.isArray(value)) {
+        return value.some(containsSecretContext);
+    }
+    return isMapping(value) && Object.values(value).some(containsSecretContext);
+}
+
+function assertExactKeys(value, expectedKeys, label) {
+    assert.deepStrictEqual(Object.keys(value).sort(), [...expectedKeys].sort(),
+        `${label} must define exactly ${expectedKeys.join(', ')}`);
+}
+
+function isFiveFieldGithubCron(value) {
+    if (typeof value !== 'string') {
+        return false;
+    }
+    const fields = value.trim().split(/\s+/);
+    return fields.length === 5
+        && fields.every(field => field.length > 0 && /^[0-9*\/,\-]+$/.test(field));
+}
+
 function parseWorkflow(source, label) {
     let workflow;
     try {
@@ -50,18 +74,15 @@ function parseWorkflow(source, label) {
     return workflow;
 }
 
-function findStep(job, predicate, label) {
-    assert.ok(Array.isArray(job.steps), `${label} steps must be an array`);
-    return job.steps.find(predicate);
-}
-
 function validateScheduledWorkflow(workflow) {
     assert.ok(isMapping(workflow.on), 'scheduled verification on must be a mapping');
     assert.ok(Array.isArray(workflow.on.schedule), 'scheduled verification must define schedule');
     assert.ok(workflow.on.schedule.length > 0, 'scheduled verification schedule must not be empty');
     for (const entry of workflow.on.schedule) {
-        assert.ok(isMapping(entry) && typeof entry.cron === 'string' && entry.cron.trim(),
-            'scheduled verification schedule entries must define cron');
+        assert.ok(isMapping(entry), 'scheduled verification schedule entries must be mappings');
+        assertExactKeys(entry, ['cron'], 'scheduled verification schedule entry');
+        assert.ok(isFiveFieldGithubCron(entry.cron),
+            'scheduled verification cron must use the GitHub Actions five-field format');
     }
     assert.ok(Object.prototype.hasOwnProperty.call(workflow.on, 'workflow_dispatch'),
         'scheduled verification must define workflow_dispatch');
@@ -78,30 +99,42 @@ function validateScheduledWorkflow(workflow) {
     assert.strictEqual(job['timeout-minutes'], 15, 'scheduled-macos timeout must be 15 minutes');
     assert.strictEqual(Object.prototype.hasOwnProperty.call(job, 'permissions'), false,
         'scheduled-macos must not override read-only permissions');
-    assert.ok(findStep(job, step => isMapping(step) && step.uses === 'actions/checkout@v4', 'scheduled-macos'),
+    assert.strictEqual(containsKey(workflow, 'continue-on-error'), false,
+        'scheduled verification must not define continue-on-error');
+    assert.strictEqual(containsSecretContext(workflow), false,
+        'scheduled verification must not reference the GitHub secrets context');
+
+    assert.ok(Array.isArray(job.steps), 'scheduled-macos steps must be an array');
+    assert.strictEqual(job.steps.length, 8, 'scheduled-macos must define exactly eight allowed steps');
+    const checkout = job.steps[0];
+    assert.ok(isMapping(checkout), 'scheduled-macos checkout step must be a mapping');
+    assertExactKeys(checkout, ['name', 'uses'], 'scheduled-macos checkout step');
+    assert.strictEqual(checkout.uses, 'actions/checkout@v4',
         'scheduled-macos must use actions/checkout@v4');
-    const setupNode = findStep(job,
-        step => isMapping(step) && step.uses === 'actions/setup-node@v4', 'scheduled-macos');
-    assert.ok(setupNode && isMapping(setupNode.with), 'scheduled-macos must configure setup-node');
+    const setupNode = job.steps[1];
+    assert.ok(isMapping(setupNode), 'scheduled-macos setup-node step must be a mapping');
+    assertExactKeys(setupNode, ['name', 'uses', 'with'], 'scheduled-macos setup-node step');
+    assert.strictEqual(setupNode.uses, 'actions/setup-node@v4',
+        'scheduled-macos must use actions/setup-node@v4');
+    assert.ok(isMapping(setupNode.with), 'scheduled-macos must configure setup-node');
+    assertExactKeys(setupNode.with, ['node-version', 'cache'], 'scheduled-macos setup-node inputs');
     assert.strictEqual(setupNode.with['node-version'], '22.12.0',
         'scheduled-macos must use Node 22.12.0');
     assert.strictEqual(setupNode.with.cache, 'npm', 'scheduled-macos must cache npm');
-    const commands = job.steps.filter(step => isMapping(step) && typeof step.run === 'string')
-        .map(step => step.run);
-    for (const command of [
+    const commands = [
         'npm ci',
         'npm run test-compile',
         'npm run test:behavior-contracts',
         'npm run test:deterministic:run',
         'npm run lint:ci',
         'npm run test:release-packaging',
-    ]) {
-        assert.ok(commands.includes(command), `scheduled-macos must run ${command}`);
+    ];
+    for (const [index, command] of commands.entries()) {
+        const step = job.steps[index + 2];
+        assert.ok(isMapping(step), `scheduled-macos ${command} step must be a mapping`);
+        assertExactKeys(step, ['name', 'run'], `scheduled-macos ${command} step`);
+        assert.strictEqual(step.run, command, `scheduled-macos must run ${command}`);
     }
-    assert.strictEqual(job.steps.some(step => isMapping(step)
-        && typeof step.uses === 'string'
-        && step.uses.startsWith('actions/upload-artifact@')), false,
-        'scheduled verification must not upload artifacts');
     assert.strictEqual(containsKey(workflow, 'secrets'), false,
         'scheduled verification must not use secrets');
 }
@@ -111,6 +144,8 @@ function validateReleaseWorkflow(workflow) {
     assert.ok(isMapping(workflow.jobs), 'release workflow jobs must be a mapping');
     assert.deepStrictEqual(workflow.permissions, { contents: 'read' },
         'release workflow top-level permissions must be exactly contents: read');
+    assert.strictEqual(containsKey(workflow, 'continue-on-error'), false,
+        'release workflow must not define continue-on-error');
     assert.deepStrictEqual(Object.keys(workflow.jobs).sort(), ['release', 'verify'],
         'release workflow must contain only verify and release jobs');
     const verify = workflow.jobs.verify;
@@ -132,6 +167,21 @@ function assertWorkflowMutationRejected(validate, workflow, mutate, message) {
     const mutation = JSON.parse(JSON.stringify(workflow));
     mutate(mutation);
     assert.throws(() => validate(mutation), assert.AssertionError, message);
+}
+
+function assertWorkflowMutationsRejected(validate, workflow, mutations) {
+    const accepted = [];
+    for (const [message, mutate] of mutations) {
+        const mutation = JSON.parse(JSON.stringify(workflow));
+        mutate(mutation);
+        try {
+            validate(mutation);
+            accepted.push(message);
+        } catch (error) {
+            assert.ok(error instanceof assert.AssertionError, `${message} must fail with an assertion`);
+        }
+    }
+    assert.deepStrictEqual(accepted, [], `workflow contract accepted unsafe mutations: ${accepted.join(', ')}`);
 }
 
 function run() {
@@ -191,6 +241,10 @@ function run() {
 
     const verifyWorkflow = readText('.github/workflows/verify.yml');
     validateVerifyWorkflow(verifyWorkflow);
+    const verifyMutation = parseWorkflow(verifyWorkflow, 'verification workflow mutation fixture');
+    verifyMutation.jobs['quality-linux'].steps[0]['continue-on-error'] = true;
+    assert.throws(() => validateVerifyWorkflow(yaml.safeDump(verifyMutation)), assert.AssertionError,
+        'reusable verification must recursively reject continue-on-error');
 
     const scheduled = parseWorkflow(readText('.github/workflows/scheduled-verification.yml'),
         'scheduled verification workflow');
@@ -206,6 +260,21 @@ function run() {
     assertWorkflowMutationRejected(validateScheduledWorkflow, scheduled,
         value => { value.jobs['scheduled-macos'].permissions = { contents: 'write' }; },
         'scheduled job write permission must be rejected');
+    assertWorkflowMutationsRejected(validateScheduledWorkflow, scheduled, [
+        ['invalid cron expression', value => { value.on.schedule[0].cron = 'not a cron'; }],
+        ['secrets context reference', value => {
+            value.jobs['scheduled-macos'].steps[0].env = {
+                TOKEN: '${{ secrets.RELEASE_TOKEN }}',
+            };
+        }],
+        ['case-insensitive spaced secrets context reference', value => {
+            value.name = 'Scheduled ${{  SeCrEtS . RELEASE_TOKEN }}';
+        }],
+        ['continue-on-error', value => { value.jobs['scheduled-macos']['continue-on-error'] = true; }],
+        ['additional artifact action', value => {
+            value.jobs['scheduled-macos'].steps.push({ uses: 'actions/upload-pages-artifact@v3' });
+        }],
+    ]);
 
     const release = parseWorkflow(workflow, 'release workflow');
     validateReleaseWorkflow(release);
@@ -217,6 +286,9 @@ function run() {
     assertWorkflowMutationRejected(validateReleaseWorkflow, release,
         value => { value.jobs.verify.secrets = 'inherit'; },
         'verification secrets inheritance must be rejected');
+    assertWorkflowMutationRejected(validateReleaseWorkflow, release,
+        value => { value.jobs.release.steps[0]['continue-on-error'] = true; },
+        'release continue-on-error must be rejected recursively');
 }
 
 run();
