@@ -1,0 +1,6 @@
+{
+  "work_dirs": [
+    { "path": "/fixtures/project" },
+    { "path": "/fixtures/other" }
+  ]
+}

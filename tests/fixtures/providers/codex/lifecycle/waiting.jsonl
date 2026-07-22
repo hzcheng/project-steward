@@ -1,0 +1,1 @@
+{"timestamp":"2026-07-20T00:00:02.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"request_user_input","call_id":"fixture-waiting"}}

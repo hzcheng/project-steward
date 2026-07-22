@@ -864,7 +864,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/providers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -877,7 +877,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/providers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -890,7 +890,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/providers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -903,7 +903,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/aiSessions/commandBuilders.test.js",
+      "tests/platform/windows/commandBuilders.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -916,7 +917,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/providers.test.js",
+      "tests/unit/aiSessions/lifecycle.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"

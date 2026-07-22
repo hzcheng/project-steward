@@ -1,0 +1,3 @@
+{"timestamp":1784505599,"message":{"type":"TurnEnd","payload":{"id":"fixture-old"}}}
+{malformed
+{"timestamp":1784505605,"message":{"type":"TurnBegin","payload":{"id":"fixture-recovered"}}}
