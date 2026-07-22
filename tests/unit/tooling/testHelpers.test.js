@@ -2,9 +2,11 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const { createFakeClock } = require('../../helpers/fakeClock');
 const { createFakeVscode } = require('../../helpers/fakeVscode');
+const { loadSiblingTests } = require('../../helpers/loadSiblingTests');
 const { makeTempDirectory } = require('../../helpers/tempDirectory');
 
 test('TEST-HELPERS-001 creates a temporary root for its owning test and removes it afterward', async t => {
@@ -57,4 +59,29 @@ test('TEST-HELPERS-003 exposes only requested VS Code surfaces and records deleg
         method: 'executeCommand',
         args: ['projectSteward.open', 'project-1'],
     }]);
+});
+
+test('TEST-HELPERS-004 discovers sorted sibling tests and loads newly added files', t => {
+    const root = makeTempDirectory(t, 'project-steward-sibling-tests-');
+    const fixtureKey = `__projectStewardSiblingTests${process.pid}${Date.now()}`;
+    globalThis[fixtureKey] = [];
+    t.after(() => { delete globalThis[fixtureKey]; });
+    const writeFixture = (name, marker) => fs.writeFileSync(
+        path.join(root, name),
+        `globalThis[${JSON.stringify(fixtureKey)}].push(${JSON.stringify(marker)});\n`,
+        'utf8'
+    );
+
+    writeFixture('b.test.js', 'b');
+    writeFixture('a.test.js', 'a');
+    writeFixture('index.js', 'index');
+    writeFixture('support.js', 'support');
+    fs.mkdirSync(path.join(root, 'nested.test.js'));
+
+    assert.deepEqual(loadSiblingTests(root), ['a.test.js', 'b.test.js']);
+    assert.deepEqual(globalThis[fixtureKey], ['a', 'b']);
+
+    writeFixture('aa-new.test.js', 'aa-new');
+    assert.deepEqual(loadSiblingTests(root), ['a.test.js', 'aa-new.test.js', 'b.test.js']);
+    assert.deepEqual(globalThis[fixtureKey], ['a', 'b', 'aa-new']);
 });
