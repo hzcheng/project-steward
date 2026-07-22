@@ -71,7 +71,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -110,7 +110,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/projects/orderAndFavorites.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -136,7 +136,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/projects/workspaceAndOpenMatching.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -604,7 +604,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -630,7 +630,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -643,7 +643,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -669,7 +669,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -682,7 +682,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -1618,7 +1618,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1631,7 +1631,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/integration/dashboard/webviewState.test.js",
+      "tests/unit/todos/types.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1683,7 +1684,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1696,7 +1697,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/projects/controllers.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1709,7 +1710,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/projects/controllers.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1722,7 +1723,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/projects/controllers.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1735,7 +1736,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/unit/todos/types.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1748,7 +1749,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/todos/service.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1761,7 +1762,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/unit/todos/types.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1774,7 +1775,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/todos/service.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1787,7 +1788,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/todos/service.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1800,7 +1801,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/todos/service.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1813,7 +1814,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/todos/service.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1826,7 +1827,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/todos/service.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1839,7 +1840,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/todos/service.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1852,7 +1853,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/todos/service.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1865,7 +1866,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/todos/service.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1878,7 +1879,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/unit/todos/types.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1891,7 +1892,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1904,7 +1905,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/projects/controllers.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1917,7 +1918,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/projects/controllers.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1930,7 +1931,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/projects/controllers.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1943,7 +1944,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/projects/controllers.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1969,7 +1970,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/todos/service.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -2034,7 +2035,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -2047,7 +2048,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
