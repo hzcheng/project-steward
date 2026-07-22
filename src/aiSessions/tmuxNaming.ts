@@ -121,10 +121,16 @@ function boundedName(components: string[], suffix: string): string {
 }
 
 function matchesReadableName(value: unknown, prefix: string, suffix: string): boolean {
-    return typeof value === 'string'
-        && value.startsWith(prefix)
-        && value.length > prefix.length + suffix.length + 1
-        && value.endsWith(`-${suffix}`);
+    const suffixComponent = `-${suffix}`;
+    if (typeof value !== 'string'
+        || Array.from(value).length > MAX_TMUX_NAME_LENGTH
+        || !value.startsWith(prefix)
+        || !value.endsWith(suffixComponent)) {
+        return false;
+    }
+    const readableComponent = value.slice(prefix.length, -suffixComponent.length);
+    return readableComponent.normalize('NFKC') === readableComponent
+        && /^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*$/u.test(readableComponent);
 }
 
 function legacyWorkspaceSuffix(identity: AiSessionRuntimeIdentity): string {

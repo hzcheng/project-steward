@@ -740,6 +740,10 @@ function runTmuxLayoutChecks() {
     );
     assert.strictEqual(tmuxNaming.normalizeTmuxReadableComponent(' : . ', 'session'), 'session');
     assert.strictEqual(tmuxNaming.normalizeTmuxReadableComponent('', 'new-session'), 'new-session');
+    assert.strictEqual(
+        tmuxNaming.normalizeTmuxReadableComponent('Fix\u0000replication\u001fnow', 'session'),
+        'Fix-replication-now'
+    );
 
     const readableIdentity = {
         provider: 'codex', workspaceScopeIdentity: 'scope-a',
@@ -763,6 +767,28 @@ function runTmuxLayoutChecks() {
         { ...readable, windowName: readable.windowName.replace(/[0-9a-f]{8}$/, '00000000') },
         readableIdentity
     ), false);
+    const readableRuntimeSuffix = readable.windowName.match(/([0-9a-f]{8})$/)[1];
+    for (const unsafeWindowName of [
+        `codex-bad:name-${readableRuntimeSuffix}`,
+        `codex-bad--name-${readableRuntimeSuffix}`,
+        `codex-bad\u0000name-${readableRuntimeSuffix}`,
+        `codex-Ｆix-${readableRuntimeSuffix}`,
+        `codex-${'a'.repeat(100)}-${readableRuntimeSuffix}`,
+    ]) {
+        assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+            ...readable, windowName: unsafeWindowName,
+        }, readableIdentity), false);
+    }
+    const readableWorkspaceSuffix = readable.sessionName.match(/([0-9a-f]{8})$/)[1];
+    for (const unsafeSessionName of [
+        `ps-bad:name-${readableWorkspaceSuffix}`,
+        `ps-bad\u0000name-${readableWorkspaceSuffix}`,
+        `ps-${'a'.repeat(100)}-${readableWorkspaceSuffix}`,
+    ]) {
+        assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+            ...readable, sessionName: unsafeSessionName,
+        }, readableIdentity), false);
+    }
 
     const duplicateNameIdentity = { ...readableIdentity, sessionId: 'different-session' };
     assert.notStrictEqual(
@@ -784,9 +810,45 @@ function runTmuxLayoutChecks() {
     const readablePendingIdentity = {
         ...readableIdentity, sessionId: undefined, pendingId: 'pending-1',
     };
-    assert.match(tmuxNaming.buildReadableTmuxLocator(readablePendingIdentity, 'project', {
+    const readablePending = tmuxNaming.buildReadableTmuxLocator(readablePendingIdentity, 'project', {
         projectName: 'RedDB', sessionName: '',
-    }).windowName, /^codex-new-session-[0-9a-f]{8}$/);
+    });
+    assert.match(readablePending.windowName, /^codex-new-session-[0-9a-f]{8}$/);
+    assert.deepStrictEqual(tmuxNaming.buildReadableTmuxLocator(readablePendingIdentity, 'project', {
+        projectName: 'RedDB', sessionName: '',
+    }), readablePending);
+    assert.strictEqual(
+        tmuxNaming.tmuxLocatorMatchesIdentity(readablePending, readablePendingIdentity), true
+    );
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(
+        new tmuxLayout.ProjectTmuxLayout().getPendingLocator(readablePendingIdentity),
+        readablePendingIdentity
+    ), true);
+    const otherPendingIdentity = { ...readablePendingIdentity, pendingId: 'pending-2' };
+    const otherReadablePending = tmuxNaming.buildReadableTmuxLocator(otherPendingIdentity, 'project', {
+        projectName: 'RedDB', sessionName: '',
+    });
+    assert.notStrictEqual(otherReadablePending.windowName, readablePending.windowName);
+    assert.strictEqual(
+        tmuxNaming.tmuxLocatorMatchesIdentity(readablePending, otherPendingIdentity), false
+    );
+    const pendingSessionLayout = tmuxNaming.buildReadableTmuxLocator(
+        readablePendingIdentity,
+        'session',
+        { projectName: 'RedDB', sessionName: '' }
+    );
+    const pendingRuntimeSuffix = readablePending.windowName.match(/([0-9a-f]{8})$/)[1];
+    assert.match(
+        pendingSessionLayout.sessionName,
+        new RegExp(`^ps-RedDB-new-session-${pendingRuntimeSuffix}$`)
+    );
+    assert.match(
+        pendingSessionLayout.windowName,
+        new RegExp(`^codex-new-session-${pendingRuntimeSuffix}$`)
+    );
+    assert.strictEqual(
+        tmuxNaming.tmuxLocatorMatchesIdentity(pendingSessionLayout, readablePendingIdentity), true
+    );
 
     const sessionLayout = tmuxNaming.buildReadableTmuxLocator(readableIdentity, 'session', {
         projectName: 'RedDB', sessionName: 'Repair replication',
