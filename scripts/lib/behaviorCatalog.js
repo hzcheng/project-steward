@@ -69,13 +69,18 @@ function validateBehaviorCatalog(entries, options) {
                     errors.push(`${label} has an invalid owner path`);
                     continue;
                 }
-                const ownerPath = path.resolve(repositoryRoot, owner);
+                const catalogOwner = owner.replaceAll('\\', '/');
+                const ownerPath = path.resolve(repositoryRoot, catalogOwner);
                 const relativeOwnerPath = path.relative(repositoryRoot, ownerPath);
-                if (path.isAbsolute(owner) || relativeOwnerPath.startsWith('..') || path.isAbsolute(relativeOwnerPath)) {
+                if (path.isAbsolute(catalogOwner)
+                    || relativeOwnerPath === '..'
+                    || relativeOwnerPath.startsWith(`..${path.sep}`)
+                    || path.isAbsolute(relativeOwnerPath)) {
                     errors.push(`${label} owner path must be repository-relative: ${owner}`);
                     continue;
                 }
-                if (entry.status === 'automated' && LEGACY_COMPATIBILITY_OWNERS.has(owner)) {
+                const canonicalOwner = relativeOwnerPath.split(path.sep).join('/');
+                if (entry.status === 'automated' && LEGACY_COMPATIBILITY_OWNERS.has(canonicalOwner)) {
                     errors.push(`${label} legacy compatibility script cannot own automated behavior: ${owner}`);
                 }
                 let ownerStats;

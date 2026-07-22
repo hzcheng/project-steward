@@ -106,8 +106,24 @@ test('CATALOG-INTEGRITY-009 rejects legacy compatibility scripts as automated ow
     const legacyPath = path.join(root, legacyOwner);
     fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
     fs.writeFileSync(legacyPath, '// PROJECT-PATH-001\n');
-    const errors = validateBehaviorCatalog([automatedEntry({ owners: [legacyOwner] })], {
-        repositoryRoot: root,
-    });
-    assert.ok(errors.some(error => error.includes(`legacy compatibility script cannot own automated behavior: ${legacyOwner}`)));
+    const resemblingOwner = 'scripts/run-ai-session-safety-checks-helper.js';
+    fs.writeFileSync(path.join(root, resemblingOwner), '// PROJECT-PATH-001\n');
+
+    for (const { owner, legacy } of [
+        { owner: legacyOwner, legacy: true },
+        { owner: `./${legacyOwner}`, legacy: true },
+        { owner: 'scripts/../scripts/run-ai-session-safety-checks.js', legacy: true },
+        { owner: 'scripts\\run-ai-session-safety-checks.js', legacy: true },
+        { owner: resemblingOwner, legacy: false },
+    ]) {
+        const errors = validateBehaviorCatalog([automatedEntry({ owners: [owner] })], {
+            repositoryRoot: root,
+        });
+        const legacyError = `legacy compatibility script cannot own automated behavior: ${owner}`;
+        assert.equal(errors.some(error => error.includes(legacyError)), legacy, owner);
+        assert.ok(!errors.some(error => error.includes(`missing owner path ${owner}`)), owner);
+        if (!legacy) {
+            assert.deepEqual(errors, [], owner);
+        }
+    }
 });
