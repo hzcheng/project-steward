@@ -260,6 +260,17 @@ export interface AiSessionPendingRuntimeSnapshot<TTerminal = unknown> extends Ai
     title?: string;
 }
 
+export interface AiSessionPendingPromotionCandidate<TTerminal = unknown>
+extends AiSessionPendingRuntimeSnapshot<TTerminal> {
+    /** Internal recovery input; ordinary runtime/UI pending snapshots never populate it. */
+    promotionRecoveryDisplayName?: string;
+}
+
+export interface AiSessionDurablePendingPromotionCandidate<TTerminal = unknown>
+extends AiSessionPendingPromotionCandidate<TTerminal> {
+    promotionRecoveryDisplayName: string;
+}
+
 export interface AiSessionRuntimeConfiguration {
     mode: AiSessionRuntimeBackendId;
     tmuxLayout: AiSessionTmuxLayout;
@@ -305,7 +316,7 @@ export interface AiSessionRuntimeActionResult<TTerminal = unknown> {
 }
 
 export interface AiSessionExecutableRuntimeBackend<TTerminal = unknown> extends AiSessionRuntimeBackend<TTerminal> {
-    listRecoverablePending?(): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>[]>;
+    listRecoverablePending?(): Promise<AiSessionDurablePendingPromotionCandidate<TTerminal>[]>;
     getRecoverablePending?(
         identity: AiSessionRuntimeIdentity & { pendingId: string }
     ): Promise<AiSessionPendingRuntimeSnapshot<TTerminal> | null>;

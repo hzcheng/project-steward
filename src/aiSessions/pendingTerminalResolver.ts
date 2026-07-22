@@ -3,6 +3,7 @@
 import type { AiSessionProviderId } from '../models';
 import { findPendingAiSessionTerminalMatch } from './pendingTerminals';
 import type {
+    AiSessionPendingPromotionCandidate,
     AiSessionPendingRuntimeSnapshot,
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
@@ -63,7 +64,7 @@ export interface ResolvePendingAiSessionTerminalsResult {
 }
 
 export interface ResolvePendingAiSessionTerminalsOptions<TTerminal = unknown> {
-    pendingRuntimes: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[];
+    pendingRuntimes: readonly AiSessionPendingPromotionCandidate<TTerminal>[];
     activeRuntimes: readonly AiSessionRuntimeSnapshot<TTerminal>[];
     sessionResults: Record<AiSessionProviderId, AiSessionReadResult>;
     providers: readonly AiSessionPendingRuntimeProvider[];
@@ -135,7 +136,7 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
                     options,
                     pendingRuntime,
                     session.id,
-                    getPromotionDisplayName(pendingRuntime.title, session.name, session.id)
+                    getPromotionDisplayName(pendingRuntime, session.name, session.id)
                 );
             settlement = isPromiseLike(pendingSettlement) ? await pendingSettlement : pendingSettlement;
         } catch (_error) {
@@ -158,11 +159,20 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
 }
 
 function getPromotionDisplayName(
-    pendingTitle: unknown,
+    pendingRuntime: AiSessionPendingPromotionCandidate,
     resolvedSessionName: unknown,
     sessionId: string
 ): string {
-    const normalizedTitle = typeof pendingTitle === 'string' ? pendingTitle.trim() : '';
+    if (pendingRuntime.promotionRecoveryDisplayName !== undefined) {
+        if (!isValidAiSessionPromotionDisplayName(
+            pendingRuntime.promotionRecoveryDisplayName
+        )) {
+            throw new Error('The durable promotion display snapshot is invalid.');
+        }
+        return pendingRuntime.promotionRecoveryDisplayName;
+    }
+    const normalizedTitle = typeof pendingRuntime.title === 'string'
+        ? pendingRuntime.title.trim() : '';
     if (isValidAiSessionPromotionDisplayName(normalizedTitle)) {
         return normalizedTitle;
     }
@@ -261,8 +271,8 @@ function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
 }
 
 function clonePendingRuntime<TTerminal>(
-    runtime: AiSessionPendingRuntimeSnapshot<TTerminal>
-): AiSessionPendingRuntimeSnapshot<TTerminal> {
+    runtime: AiSessionPendingPromotionCandidate<TTerminal>
+): AiSessionPendingPromotionCandidate<TTerminal> {
     return {
         ...runtime,
         identity: cloneAiSessionRuntimeIdentity(runtime.identity),

@@ -124,6 +124,11 @@ export interface TmuxPromotingRuntimeBinding {
     recordedAtMs: number;
 }
 
+export interface TmuxRecoverablePendingBinding {
+    pendingBinding: TmuxPendingRuntimeBinding;
+    promotionRecoveryDisplayName: string;
+}
+
 interface TmuxAmbiguousRuntimeBindingBase {
     version: 2;
     state: 'ambiguous';
@@ -174,7 +179,7 @@ export class TmuxRuntimeBindingStore {
         return this.serialize(() => this.listPendingUnlocked());
     }
 
-    listRecoverablePending(): Promise<TmuxPendingRuntimeBinding[]> {
+    listRecoverablePending(): Promise<TmuxRecoverablePendingBinding[]> {
         return this.serialize(() => this.listRecoverablePendingUnlocked());
     }
 
@@ -567,7 +572,7 @@ export class TmuxRuntimeBindingStore {
         return records.map(clonePending);
     }
 
-    private async listRecoverablePendingUnlocked(): Promise<TmuxPendingRuntimeBinding[]> {
+    private async listRecoverablePendingUnlocked(): Promise<TmuxRecoverablePendingBinding[]> {
         const pending = new Map<string, TmuxPendingRuntimeBinding>();
         const promoting = new Map<string, TmuxPromotingRuntimeBinding>();
         const consumed = new Map<string, TmuxConsumedPendingBinding>();
@@ -611,7 +616,7 @@ export class TmuxRuntimeBindingStore {
             }
         }
 
-        const result: TmuxPendingRuntimeBinding[] = [];
+        const result: TmuxRecoverablePendingBinding[] = [];
         const keys = new Set([...promoting.keys(), ...consumed.keys()]);
         for (const key of keys) {
             const intent = promoting.get(key);
@@ -624,15 +629,22 @@ export class TmuxRuntimeBindingStore {
                 if (tombstone && !consumedMatchesPromoting(tombstone, intent)) {
                     throw new Error('Durable tmux promotion records disagree on the final runtime.');
                 }
-                result.push(clonePending(intent.pendingBinding));
+                result.push({
+                    pendingBinding: clonePending(intent.pendingBinding),
+                    promotionRecoveryDisplayName: intent.finalSessionName,
+                });
                 continue;
             }
             if (tombstone?.finalSessionName && livePending) {
-                result.push(clonePending(livePending));
+                result.push({
+                    pendingBinding: clonePending(livePending),
+                    promotionRecoveryDisplayName: tombstone.finalSessionName,
+                });
             }
         }
-        result.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt)
-            || left.pendingId.localeCompare(right.pendingId));
+        result.sort((left, right) => Date.parse(left.pendingBinding.createdAt)
+            - Date.parse(right.pendingBinding.createdAt)
+            || left.pendingBinding.pendingId.localeCompare(right.pendingBinding.pendingId));
         return result;
     }
 

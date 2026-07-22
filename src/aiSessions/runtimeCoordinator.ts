@@ -4,7 +4,9 @@ import type * as vscode from 'vscode';
 import type { AiSessionProviderId } from '../models';
 import type {
     AiSessionCreateRuntimeRequest,
+    AiSessionDurablePendingPromotionCandidate,
     AiSessionExecutableRuntimeBackend,
+    AiSessionPendingPromotionCandidate,
     AiSessionPendingRuntimeSnapshot,
     AiSessionResumeRuntimeRequest,
     AiSessionRuntimeActionResult,
@@ -18,6 +20,7 @@ import {
     AiSessionRuntimeLifecycleBlockedError,
     AiSessionRuntimeTargetChangedError,
     cloneAiSessionRuntimeIdentity,
+    isValidAiSessionPromotionDisplayName,
     isValidAiSessionRuntimeIdentity,
     TmuxRuntimeUnavailableError,
 } from './runtimeTypes';
@@ -130,7 +133,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         ].map(clonePendingRuntime);
     }
 
-    async getPendingForPromotion(): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>[]> {
+    async getPendingForPromotion(): Promise<AiSessionPendingPromotionCandidate<TTerminal>[]> {
         const refresh = await this.refreshBackends(true);
         this.throwRefreshFailure(refresh);
         const durableTmux = typeof this.dependencies.tmux.listRecoverablePending === 'function'
@@ -139,8 +142,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         return mergePromotionPendingCandidates([
             ...this.dependencies.direct.getPending(),
             ...this.dependencies.tmux.getPending(),
-            ...durableTmux,
-        ]);
+        ], durableTmux);
     }
 
     getById(
@@ -624,17 +626,28 @@ function clonePendingRuntime<TTerminal>(
 }
 
 function mergePromotionPendingCandidates<TTerminal>(
-    candidates: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[]
-): AiSessionPendingRuntimeSnapshot<TTerminal>[] {
-    const merged = new Map<string, AiSessionPendingRuntimeSnapshot<TTerminal>>();
-    for (const candidate of candidates) {
+    ordinary: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[],
+    durable: readonly AiSessionDurablePendingPromotionCandidate<TTerminal>[]
+): AiSessionPendingPromotionCandidate<TTerminal>[] {
+    const merged = new Map<string, AiSessionPendingPromotionCandidate<TTerminal>>();
+    if (durable.some(candidate => candidate?.backend !== 'tmux'
+        || !isValidAiSessionPromotionDisplayName(
+            candidate.promotionRecoveryDisplayName
+        ))) {
+        throw new Error('A durable pending promotion display snapshot is invalid.');
+    }
+    for (const candidate of [...ordinary.map(stripPromotionRecoveryDisplayName), ...durable]) {
         if (!candidate || candidate.state !== 'pending'
             || (candidate.backend !== 'vscode' && candidate.backend !== 'tmux')
             || !isValidAiSessionRuntimeIdentity(candidate.identity)
             || !candidate.identity.pendingId || candidate.identity.sessionId !== undefined
             || typeof candidate.createdAt !== 'string'
             || !Number.isFinite(Date.parse(candidate.createdAt))
-            || !Array.isArray(candidate.excludedSessionIds)) {
+            || !Array.isArray(candidate.excludedSessionIds)
+            || (candidate.promotionRecoveryDisplayName !== undefined
+                && !isValidAiSessionPromotionDisplayName(
+                    candidate.promotionRecoveryDisplayName
+                ))) {
             throw new Error('A pending runtime promotion candidate is invalid.');
         }
         const key = `${candidate.backend}:${JSON.stringify([
@@ -649,7 +662,12 @@ function mergePromotionPendingCandidates<TTerminal>(
         if (existing && !promotionPendingCandidatesEqual(existing, candidate)) {
             throw new Error('Multiple pending promotion candidates disagree within one backend.');
         }
-        if (!existing) {
+        if (existing && candidate.promotionRecoveryDisplayName !== undefined) {
+            merged.set(key, {
+                ...clonePendingRuntime(existing),
+                promotionRecoveryDisplayName: candidate.promotionRecoveryDisplayName,
+            });
+        } else if (!existing) {
             merged.set(key, clonePendingRuntime(candidate));
         }
     }
@@ -657,20 +675,31 @@ function mergePromotionPendingCandidates<TTerminal>(
 }
 
 function promotionPendingCandidatesEqual<TTerminal>(
-    left: AiSessionPendingRuntimeSnapshot<TTerminal>,
-    right: AiSessionPendingRuntimeSnapshot<TTerminal>
+    left: AiSessionPendingPromotionCandidate<TTerminal>,
+    right: AiSessionPendingPromotionCandidate<TTerminal>
 ): boolean {
     return samePendingIdentity(left.identity, right.identity)
         && left.backend === right.backend
         && left.createdAt === right.createdAt
         && left.projectName === right.projectName
         && left.title === right.title
+        && (left.promotionRecoveryDisplayName === undefined
+            || right.promotionRecoveryDisplayName === undefined
+            || left.promotionRecoveryDisplayName === right.promotionRecoveryDisplayName)
         && left.excludedSessionIds.length === right.excludedSessionIds.length
         && left.excludedSessionIds.every((value, index) => value === right.excludedSessionIds[index])
         && ((!left.tmux && !right.tmux) || (!!left.tmux && !!right.tmux
             && left.tmux.layout === right.tmux.layout
             && left.tmux.sessionName === right.tmux.sessionName
             && left.tmux.windowName === right.tmux.windowName));
+}
+
+function stripPromotionRecoveryDisplayName<TTerminal>(
+    runtime: AiSessionPendingRuntimeSnapshot<TTerminal>
+): AiSessionPendingPromotionCandidate<TTerminal> {
+    const candidate = clonePendingRuntime(runtime) as AiSessionPendingPromotionCandidate<TTerminal>;
+    delete candidate.promotionRecoveryDisplayName;
+    return candidate;
 }
 
 function cloneActionResult<TTerminal>(

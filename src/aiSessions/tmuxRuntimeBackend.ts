@@ -5,6 +5,7 @@ import type * as vscode from 'vscode';
 import { serializeTmuxLaunchCommand } from './launchSpec';
 import type {
     AiSessionCreateRuntimeRequest,
+    AiSessionDurablePendingPromotionCandidate,
     AiSessionExecutableRuntimeBackend,
     AiSessionPendingRuntimeSnapshot,
     AiSessionResumeRuntimeRequest,
@@ -135,10 +136,12 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         return this.dependencies.discovery.find(identity).map(runtime => this.withAttach(runtime));
     }
 
-    async listRecoverablePending(): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>[]> {
-        const bindings = await this.dependencies.runtimeStore.listRecoverablePending();
-        return bindings.map(binding =>
-            pendingSnapshotFromBinding(binding) as AiSessionPendingRuntimeSnapshot<TTerminal>);
+    async listRecoverablePending(): Promise<AiSessionDurablePendingPromotionCandidate<TTerminal>[]> {
+        const candidates = await this.dependencies.runtimeStore.listRecoverablePending();
+        return candidates.map(candidate => ({
+            ...pendingSnapshotFromBinding(candidate.pendingBinding),
+            promotionRecoveryDisplayName: candidate.promotionRecoveryDisplayName,
+        }) as AiSessionDurablePendingPromotionCandidate<TTerminal>);
     }
 
     async getRecoverablePending(

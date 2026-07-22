@@ -1291,6 +1291,35 @@ async function runPendingTerminalResolverChecks() {
             'invalid provider display names must fall back to the provider session ID');
     }
 
+    const durableRecoveryPending = {
+        ...fallbackPending,
+        promotionRecoveryDisplayName: 'Frozen durable name',
+    };
+    const durableRecoveryCalls = [];
+    await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
+        resolverOptions([durableRecoveryPending], async (identity, sessionId, sessionName) => {
+            durableRecoveryCalls.push({ identity, sessionId, sessionName });
+            return [finalRuntime(durableRecoveryPending, sessionId)];
+        }, [], () => undefined)
+    );
+    assert.strictEqual(durableRecoveryCalls[0].sessionName, 'Frozen durable name',
+        'durable recovery must ignore a changed provider display name');
+
+    for (const invalidRecoveryName of ['', 'bad\nrecovery', 'x'.repeat(201)]) {
+        let invalidRecoveryCalls = 0;
+        const invalidRecoveryResult = await aiSessionPendingTerminalResolver
+            .resolvePendingAiSessionTerminals(resolverOptions([{
+                ...fallbackPending,
+                promotionRecoveryDisplayName: invalidRecoveryName,
+            }], async () => {
+                invalidRecoveryCalls++;
+                return [];
+            }, [], () => undefined));
+        assert.strictEqual(invalidRecoveryCalls, 0);
+        assert.strictEqual(invalidRecoveryResult.failures[0].reason, 'promotion-error',
+            'invalid durable recovery display snapshots must fail closed before promotion');
+    }
+
     const duplicatePending = { ...validPending, identity: { ...validPending.identity } };
     const duplicateCases = [{
         reason: null,
@@ -1647,10 +1676,61 @@ async function runWorkspacePendingSessionPromotionChecks() {
         assert.strictEqual(diagnostics[0].event, 'workspace-ai-session-promotion-failed');
     }
 
+    async function runDrainCompletionRaceCase() {
+        const pendingRuntime = makePending();
+        let pending = [pendingRuntime];
+        let active = [];
+        let enumerationAttempts = 0;
+        let promotionAttempts = 0;
+        let injected = false;
+        let racedRequest;
+        const controller = new WorkspacePendingSessionPromotionController({
+            providers: providersForPromotion,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            runtimeCoordinator: {
+                getPending: () => pending,
+                getPendingForPromotion: async () => {
+                    enumerationAttempts++;
+                    return pending;
+                },
+                getActive: () => active,
+                promotePending: async () => {
+                    promotionAttempts++;
+                    const final = makeFinal(pendingRuntime);
+                    pending = [];
+                    active = [final];
+                    return [final];
+                },
+            },
+            setAlias: () => undefined,
+            syncActiveRuntime: () => undefined,
+            evaluateExecution: () => undefined,
+            scheduleRefresh: () => undefined,
+        });
+        const queue = controller.queuedByScope;
+        const queueHas = queue.has.bind(queue);
+        queue.has = scope => {
+            const present = queueHas(scope);
+            if (!present && enumerationAttempts === 1 && !injected) {
+                injected = true;
+                racedRequest = controller.promote(workspace, sessionResults, 'empty-finally-window');
+            }
+            return present;
+        };
+
+        await controller.promote(workspace, sessionResults, 'initial');
+        await racedRequest;
+        assert.strictEqual(enumerationAttempts, 2,
+            'a request queued after the empty check must be drained before its promise settles');
+        assert.strictEqual(promotionAttempts, 1,
+            'the raced refresh must observe settled state without promoting twice');
+    }
+
     await runSuccessCase();
     await runRetryCase();
     await runConcurrentCase();
     await runEnumerationRetryCase();
+    await runDrainCompletionRaceCase();
 }
 
 function runScanOptionChecks() {

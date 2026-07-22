@@ -183,9 +183,15 @@ function createTmuxBackendHarness(options = {}) {
                 const tombstone = consumed.get(key);
                 const livePending = pending.get(key);
                 if (intent) {
-                    records.push(intent.pendingBinding);
+                    records.push({
+                        pendingBinding: intent.pendingBinding,
+                        promotionRecoveryDisplayName: intent.finalSessionName,
+                    });
                 } else if (tombstone?.finalSessionName && livePending) {
-                    records.push(livePending);
+                    records.push({
+                        pendingBinding: livePending,
+                        promotionRecoveryDisplayName: tombstone.finalSessionName,
+                    });
                 }
             }
             return records;
@@ -3729,8 +3735,11 @@ async function runTmuxStoreChecks() {
             provider: 'codex', workspaceScopeIdentity: 'other', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         }), null);
         await store.setPending(promotingRecord.pendingBinding);
-        assert.deepStrictEqual((await store.listRecoverablePending()).map(record => record.pendingId),
+        assert.deepStrictEqual((await store.listRecoverablePending()).map(record =>
+            record.pendingBinding.pendingId),
             ['p-promoting'], 'a strict durable intent must enumerate its exact pending snapshot');
+        assert.strictEqual((await store.listRecoverablePending())[0].promotionRecoveryDisplayName,
+            promotingRecord.finalSessionName);
         const expiredPromotionStore = new runtimeStoreModule.TmuxRuntimeBindingStore(root,
             () => now + (24 * 60 * 60 * 1000) + 1);
         assert.strictEqual(await expiredPromotionStore.getPending(
@@ -3740,7 +3749,7 @@ async function runTmuxStoreChecks() {
             promotingRecord
         )), promotingRecord);
         assert.deepStrictEqual((await expiredPromotionStore.listRecoverablePending())
-            .map(record => record.pendingId), ['p-promoting'],
+            .map(record => record.pendingBinding.pendingId), ['p-promoting'],
         'the intent snapshot must remain authoritative after the live pending record expires');
 
         const inconsistentDurableRoot = path.join(root, 'inconsistent-durable');
@@ -3809,7 +3818,7 @@ async function runTmuxStoreChecks() {
             conflictingPromoting
         )), conflictingPromoting);
         assert.deepStrictEqual((await store.listRecoverablePending()).map(record =>
-            `${record.workspaceScopeIdentity}:${record.pendingId}`).sort(), [
+            `${record.pendingBinding.workspaceScopeIdentity}:${record.pendingBinding.pendingId}`).sort(), [
             'other-project:p-promoting', 'pk:p-promoting',
         ], 'multiple strict durable identities must enumerate independently');
         await store.removePromoting({
@@ -5989,7 +5998,6 @@ async function runTmuxBackendChecks() {
                 },
                 projectName: 'Product Recovery', terminalName: 'Codex: Product recovery',
                 createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
-                title: 'Product recovery',
                 launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/product-recovery' },
             };
             const finalSessionId = `product-recovery-final-${productRecoveryCase.label}`;
@@ -5997,9 +6005,10 @@ async function runTmuxBackendChecks() {
             const providerDispatches = harness.operations.filter(operation =>
                 operation.type === 'new-session' || operation.type === 'new-window').length;
             await assert.rejects(initial.tmux.promotePending(
-                request.identity, finalSessionId, 'Product recovery'
+                request.identity, finalSessionId, 'First frozen name'
             ), productRecoveryCase.failure);
-            assert.ok(await initial.runtimeStore.getPromoting(request.identity));
+            const frozenIntent = await initial.runtimeStore.getPromoting(request.identity);
+            assert.strictEqual(frozenIntent.finalSessionName, 'First frozen name');
             await initial.attachStore.flush();
 
             const restartedAttachState = clonePersistedAttachState(attachState);
@@ -6007,6 +6016,10 @@ async function runTmuxBackendChecks() {
                 harness, runtimeRoot, restartedAttachState
             );
             await restarted.tmux.restoreAttachTerminals([pendingRuntime.terminal]);
+            await assert.rejects(restarted.coordinator.promotePending(
+                request.identity, finalSessionId, 'Second current name'
+            ), /conflicting promotion|different promotion/i,
+            'an explicit replay with a different current display name must remain fail closed');
             const controller = createPromotionController(restarted.coordinator);
             await controller.promote({
                 scopeIdentity: request.identity.workspaceScopeIdentity,
@@ -6015,7 +6028,7 @@ async function runTmuxBackendChecks() {
                 codex: {
                     available: true, scannedFiles: 1, parsedFiles: 1,
                     sessions: [{
-                        id: finalSessionId, name: 'Product recovery', cwd: '/work',
+                        id: finalSessionId, name: 'Second current name', cwd: '/work',
                         updatedAt: '2026-07-18T10:00:01.000Z',
                     }],
                 },
@@ -6023,7 +6036,9 @@ async function runTmuxBackendChecks() {
 
             const consumed = await restarted.runtimeStore.getConsumed(request.identity);
             assert.ok(consumed,
-                'the real workspace promotion controller must enumerate durable recovery candidates');
+                'automatic recovery must replay the frozen durable display name');
+            assert.strictEqual(consumed.finalSessionName, 'First frozen name');
+            assert.deepStrictEqual(consumed.finalLocator, frozenIntent.finalLocator);
             assert.strictEqual(await restarted.runtimeStore.getPromoting(request.identity), null);
             assert.strictEqual(await restarted.runtimeStore.getPending(request.identity), null);
             assert.strictEqual(harness.operations.filter(operation =>
@@ -7972,6 +7987,7 @@ async function runRuntimeCoordinatorChecks() {
     durableConflictTmux.recoverablePending.push({
         ...durableConflictPending,
         backend: 'tmux',
+        promotionRecoveryDisplayName: 'Durable conflict',
         identity: { ...durableConflictPending.identity },
     });
     durableConflictTmux.getRecoverablePending = async () => ({
@@ -8011,6 +8027,23 @@ async function runRuntimeCoordinatorChecks() {
     assert.strictEqual(durableConflictDirect.promoted.length, 0);
     assert.strictEqual(durableConflictTmux.promoted.length, 0,
         'a durable tmux candidate must not bypass a projected Direct pending conflict');
+
+    const invalidDurableCandidateTmux = createFakeRuntimeBackend('tmux');
+    invalidDurableCandidateTmux.recoverablePending.push({
+        ...durableConflictPending,
+        backend: 'tmux',
+        promotionRecoveryDisplayName: 'bad\nrecovery',
+        identity: { ...durableConflictPending.identity },
+    });
+    const invalidDurableCandidateCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: createFakeRuntimeBackend('vscode'),
+        tmux: invalidDurableCandidateTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await assert.rejects(invalidDurableCandidateCoordinator.getPendingForPromotion(),
+        /durable pending promotion display snapshot is invalid/,
+    'invalid durable snapshots must fail closed at the coordinator boundary');
     const closedTerminal = { name: 'closed' };
     routed.handleClosedTerminal(closedTerminal);
     assert.deepStrictEqual(routedDirect.closed, [closedTerminal]);

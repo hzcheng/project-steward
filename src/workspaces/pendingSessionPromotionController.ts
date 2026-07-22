@@ -8,6 +8,7 @@ import type {
     PendingAiSessionRuntimeCoordinator,
 } from '../aiSessions/pendingTerminalResolver';
 import type {
+    AiSessionPendingPromotionCandidate,
     AiSessionPendingRuntimeSnapshot,
     AiSessionRuntimeSnapshot,
 } from '../aiSessions/runtimeTypes';
@@ -26,7 +27,7 @@ interface WorkspacePromotionRuntimeCoordinator<TTerminal>
 extends PendingAiSessionRuntimeCoordinator<TTerminal> {
     getActive(): AiSessionRuntimeSnapshot<TTerminal>[];
     getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[];
-    getPendingForPromotion(): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>[]>;
+    getPendingForPromotion(): Promise<AiSessionPendingPromotionCandidate<TTerminal>[]>;
 }
 
 interface PromotionRequest {
@@ -66,12 +67,27 @@ export class WorkspacePendingSessionPromotionController<TTerminal = unknown> {
         if (existing) {
             return existing;
         }
-        const running = this.drain(scope).finally(() => {
+        return this.startDrain(scope);
+    }
+
+    private startDrain(scope: string): Promise<void> {
+        let resolveDrain: () => void;
+        let rejectDrain: (error: unknown) => void;
+        const drainResult = new Promise<void>((resolve, reject) => {
+            resolveDrain = resolve;
+            rejectDrain = reject;
+        });
+        let running: Promise<void>;
+        running = drainResult.finally(() => {
             if (this.inFlightByScope.get(scope) === running) {
                 this.inFlightByScope.delete(scope);
+                if (this.queuedByScope.has(scope)) {
+                    return this.startDrain(scope);
+                }
             }
         });
         this.inFlightByScope.set(scope, running);
+        this.drain(scope).then(resolveDrain, rejectDrain);
         return running;
     }
 
