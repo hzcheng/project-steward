@@ -84,7 +84,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/errors/failureMapping.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -266,7 +266,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/persistence/stores.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -292,7 +292,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/persistence/stores.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -318,7 +318,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/persistence/stores.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -449,7 +449,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/integration/dashboard/errorRecovery.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -553,7 +553,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/persistence/stores.test.js",
+      "tests/contract/errors/failureMapping.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -984,7 +985,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/aiSessions/attention.test.js"
+      "tests/contract/aiSessions/attention.test.js",
+      "tests/contract/persistence/stores.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -997,7 +999,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/aiSessions/attention.test.js"
+      "tests/contract/aiSessions/attention.test.js",
+      "tests/contract/persistence/stores.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -1166,7 +1169,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/aiSessions/tmuxStore.test.js"
+      "tests/contract/aiSessions/tmuxStore.test.js",
+      "tests/contract/persistence/stores.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1556,7 +1560,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/openProjects/dashboardController.test.js"
+      "tests/contract/openProjects/dashboardController.test.js",
+      "tests/contract/persistence/migrations.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1569,7 +1574,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/openProjects/coordinator.test.js"
+      "tests/contract/persistence/stores.test.js"
     ],
     "evidence": [
       "scripts/run-open-project-safety-checks.js"
@@ -1648,7 +1653,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/integration/dashboard/errorRecovery.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1739,7 +1744,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/unit/todos/types.test.js"
+      "tests/unit/todos/types.test.js",
+      "tests/contract/persistence/stores.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1791,7 +1797,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/todos/service.test.js"
+      "tests/contract/persistence/migrations.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1856,7 +1862,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/todos/service.test.js"
+      "tests/contract/persistence/migrations.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1986,7 +1992,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/integration/dashboard/errorRecovery.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
