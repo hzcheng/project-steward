@@ -315,6 +315,7 @@
         "gulp-clean-css": "^4.3.0",
         "gulp-mode": "^1.1.0",
         "gulp-sass": "^5.0.0",
+        "js-yaml": "3.14.0",
         "sass": "^1.56.0",
         "ts-loader": "^6.2.2",
         "tslint": "^6.1.3",

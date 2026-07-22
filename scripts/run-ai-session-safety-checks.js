@@ -6,6 +6,7 @@ const fs = require('fs');
 const Module = require('module');
 const os = require('os');
 const path = require('path');
+const { validateSafetyScripts } = require('./lib/ciContracts');
 const vm = require('vm');
 const commands = require('../out/aiSessions/commandBuilders');
 const launchSpec = require('../out/aiSessions/launchSpec');
@@ -5221,13 +5222,7 @@ function runWebviewContentChecks() {
 // RUNTIME-TMUX-SMOKE-HARNESS-SAFETY-001
 function runTmuxSmokeHarnessSafetyChecks() {
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-    const safetyScript = packageJson.scripts['test:safety'];
-    const safetyRunScript = packageJson.scripts['test:safety:run'] || '';
-    const ordinarySafetyScripts = `${safetyScript} && ${safetyRunScript}`;
-    assert.ok(ordinarySafetyScripts.includes('node scripts/run-ai-session-tmux-checks.js'),
-        'ordinary safety CI must run the pure fake-tmux checks');
-    assert.strictEqual(ordinarySafetyScripts.includes('run-ai-session-tmux-smoke-checks.js'), false,
-        'ordinary safety CI must never start a real tmux server');
+    validateSafetyScripts(packageJson.scripts);
     assert.strictEqual(packageJson.scripts['test:tmux:smoke'],
         'npm run test-compile && node scripts/run-ai-session-tmux-smoke-checks.js');
 

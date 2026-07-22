@@ -3,6 +3,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { validateVerifyWorkflow } = require('./lib/ciContracts');
 
 const repositoryRoot = path.resolve(__dirname, '..');
 
@@ -78,24 +79,7 @@ function run() {
     assertNotIncludes(workflow, 'npx --yes @vscode/vsce package --allow-star-activation --out "${{ steps.meta.outputs.vsix_file }}"', 'GitHub release workflow');
 
     const verifyWorkflow = readText('.github/workflows/verify.yml');
-    assertIncludes(verifyWorkflow, 'pull_request:', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'push:', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, '- main', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'workflow_dispatch:', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'workflow_call:', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'contents: read', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'group: verify-${{ github.workflow }}-${{ github.ref }}', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'cancel-in-progress: true', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'quality-linux:', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'platform-windows:', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'actions/checkout@v4', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'actions/setup-node@v4', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'node-version: 22.12.0', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'npm ci', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'timeout-minutes: 10', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'npm run test:ci:linux', 'GitHub verification workflow');
-    assertIncludes(verifyWorkflow, 'npm run test:ci:windows', 'GitHub verification workflow');
-    assertNotIncludes(verifyWorkflow, 'continue-on-error', 'GitHub verification workflow');
+    validateVerifyWorkflow(verifyWorkflow);
 }
 
 run();
