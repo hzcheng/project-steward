@@ -109,7 +109,8 @@ async function runTodoPanelContract(transform) {
         const dashboard = loadDashboard(transform);
         await dashboard.activate(context);
         await new Promise(resolve => setImmediate(resolve));
-        assert.ok(listeners.viewProvider, 'TODO-FUTURE-VERSION-DASHBOARD-001 activation must register the production view provider');
+        assert.ok(listeners.viewProvider,
+            'TODO-FUTURE-VERSION-DASHBOARD-001 / RELEASE-SCHEDULED-EXTENSION-HOST-001 activation must register the production view provider');
 
         const posted = [];
         let onMessage;
@@ -159,6 +160,10 @@ if (mode === 'missing-live-probe') {
     transform = source => source.replace(
         'if (!(error instanceof types_1.UnsupportedTodoDataVersionError))',
         'if (error instanceof types_1.UnsupportedTodoDataVersionError)');
+} else if (mode === 'missing-view-registration') {
+    transform = source => source.replace(
+        'context.subscriptions.push(vscode.window.registerWebviewViewProvider(viewProvider_1.SidebarStewardViewProvider.viewType, provider));',
+        'context.subscriptions.push({ dispose: () => undefined });');
 }
 
 runTodoPanelContract(transform).catch(error => {

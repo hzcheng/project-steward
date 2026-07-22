@@ -5,6 +5,14 @@ const path = require('node:path');
 
 const VSCODE_STABLE_VERSION = '1.130.0';
 const EXTENSION_HOST_TIMEOUT_MS = 120000;
+const EXTENSION_HOST_WORKER_TIMEOUT_MS = 480000;
+const HOSTILE_EXTENSION_HOST_ENVIRONMENT_KEYS = Object.freeze([
+    'ELECTRON_RUN_AS_NODE',
+    'VSCODE_ESM_ENTRYPOINT',
+    'VSCODE_CWD',
+    'VSCODE_NLS_CONFIG',
+    'VSCODE_IPC_HOOK_CLI',
+]);
 const OWNERSHIP_MARKER = '.project-steward-extension-host-test';
 const OWNERSHIP_VALUE = 'owned temporary extension host test directory\n';
 
@@ -54,9 +62,85 @@ function createRunTestsOptions(repositoryRoot, environment) {
             KIMI_SHARE_DIR: environment.kimiHome,
             CLAUDE_HOME: environment.claudeHome,
             PROJECT_STEWARD_EXTENSION_HOST_TIMEOUT_MS: String(EXTENSION_HOST_TIMEOUT_MS),
-            VSCODE_IPC_HOOK_CLI: '',
         },
     };
+}
+
+async function withSanitizedExtensionHostEnvironment(callback) {
+    const previous = new Map(HOSTILE_EXTENSION_HOST_ENVIRONMENT_KEYS.map(key => [key, {
+        existed: Object.prototype.hasOwnProperty.call(process.env, key),
+        value: process.env[key],
+    }]));
+    for (const key of HOSTILE_EXTENSION_HOST_ENVIRONMENT_KEYS) delete process.env[key];
+    try {
+        return await callback();
+    } finally {
+        for (const [key, state] of previous) {
+            if (state.existed) process.env[key] = state.value;
+            else delete process.env[key];
+        }
+    }
+}
+
+function runWorkerWithWatchdog(spawnWorker, options = {}) {
+    const timeoutMs = options.timeoutMs || EXTENSION_HOST_WORKER_TIMEOUT_MS;
+    const platform = options.platform || process.platform;
+    const killProcess = options.killProcess || process.kill.bind(process);
+    const setTimeoutFn = options.setTimeout || setTimeout;
+    const clearTimeoutFn = options.clearTimeout || clearTimeout;
+    return new Promise((resolve, reject) => {
+        let child;
+        let timedOut = false;
+        let forceTimer;
+        let timeoutTimer;
+        let settled = false;
+        const clearTimers = () => {
+            if (timeoutTimer !== undefined) clearTimeoutFn(timeoutTimer);
+            if (forceTimer !== undefined) clearTimeoutFn(forceTimer);
+        };
+        const finish = error => {
+            if (settled) return;
+            settled = true;
+            clearTimers();
+            error ? reject(error) : resolve();
+        };
+        const terminate = signal => {
+            if (!child || !child.pid) return;
+            if (platform === 'darwin' || platform === 'linux') killProcess(-child.pid, signal);
+            else child.kill(signal);
+        };
+        try {
+            child = spawnWorker();
+        } catch (error) {
+            finish(error);
+            return;
+        }
+        child.once('error', finish);
+        child.once('close', (code, signal) => {
+            if (timedOut) {
+                finish(new Error(`Extension Host worker exceeded ${timeoutMs} ms and was terminated`));
+            } else if (code === 0) {
+                finish();
+            } else {
+                finish(new Error(`Extension Host worker failed with code ${code === null ? signal : code}`));
+            }
+        });
+        timeoutTimer = setTimeoutFn(() => {
+            timedOut = true;
+            try {
+                terminate('SIGTERM');
+                forceTimer = setTimeoutFn(() => {
+                    try {
+                        terminate('SIGKILL');
+                    } catch (error) {
+                        finish(error);
+                    }
+                }, 5000);
+            } catch (error) {
+                finish(error);
+            }
+        }, timeoutMs);
+    });
 }
 
 function removeExtensionHostTestEnvironment(isolatedRoot) {
@@ -70,8 +154,12 @@ function removeExtensionHostTestEnvironment(isolatedRoot) {
 
 module.exports = {
     EXTENSION_HOST_TIMEOUT_MS,
+    EXTENSION_HOST_WORKER_TIMEOUT_MS,
+    HOSTILE_EXTENSION_HOST_ENVIRONMENT_KEYS,
     VSCODE_STABLE_VERSION,
     createExtensionHostTestEnvironment,
     createRunTestsOptions,
     removeExtensionHostTestEnvironment,
+    runWorkerWithWatchdog,
+    withSanitizedExtensionHostEnvironment,
 };

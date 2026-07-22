@@ -11,19 +11,18 @@ async function verifyExtensionHostLifecycle() {
     const bridgeExtension = vscode.extensions.getExtension(BRIDGE_EXTENSION_ID);
     assert.ok(mainExtension, `${MAIN_EXTENSION_ID} must be discoverable in the Extension Host`);
     assert.ok(bridgeExtension, `${BRIDGE_EXTENSION_ID} must be discoverable in the Extension Host`);
+    assert.deepEqual(mainExtension.packageJSON.extensionDependencies, [BRIDGE_EXTENSION_ID],
+        `${MAIN_EXTENSION_ID} extensionDependencies must contain only ${BRIDGE_EXTENSION_ID}`);
+    assert.deepEqual(bridgeExtension.packageJSON.extensionKind, ['ui'],
+        `${BRIDGE_EXTENSION_ID} must remain a UI extension`);
 
-    await bridgeExtension.activate();
     await mainExtension.activate();
-    assert.equal(bridgeExtension.isActive, true, `${BRIDGE_EXTENSION_ID} must activate`);
     assert.equal(mainExtension.isActive, true, `${MAIN_EXTENSION_ID} must activate`);
+    assert.equal(bridgeExtension.isActive, true,
+        `${BRIDGE_EXTENSION_ID} must auto-activate as the main extension dependency`);
 
-    const commands = await vscode.commands.getCommands(true);
-    assert.ok(commands.includes('projectSteward.open'),
-        'activated main extension must register projectSteward.open');
-    const views = mainExtension.packageJSON.contributes && mainExtension.packageJSON.contributes.views;
-    assert.ok(Array.isArray(views && views['project-steward'])
-        && views['project-steward'].some(view => view.id === 'projectSteward.steward'),
-    'main extension must contribute the projectSteward.steward view');
+    await vscode.commands.executeCommand('projectSteward.open');
+    await vscode.commands.executeCommand('projectSteward.steward.focus');
 }
 
 // RELEASE-SCHEDULED-EXTENSION-HOST-001

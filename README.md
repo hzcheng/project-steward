@@ -213,7 +213,7 @@ The weekly/manual macOS workflow also runs a real Extension Host smoke against p
 npm run test:extension-host
 ```
 
-This downloads the fixed VS Code test build when it is not cached and requires a host capable of launching Electron. It is intentionally scheduled rather than part of the Linux pull-request gate.
+This downloads the fixed VS Code test build when it is not cached and requires a host capable of launching Electron. A worker watchdog covers download, Electron startup, and test-suite loading; on macOS/Linux it terminates the owned worker process group after eight minutes. The scheduled job retains a separate 15-minute hard timeout. The scenario is intentionally scheduled rather than part of the Linux pull-request gate.
 
 Run the real-tmux smoke test on a POSIX host with tmux installed. The harness uses and cleans up a uniquely named test server; it never uses the default tmux server:
 

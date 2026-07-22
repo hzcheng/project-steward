@@ -21,3 +21,9 @@ for (const mutation of ['missing-live-probe', 'missing-catch-mapping']) {
             /TODO-FUTURE-VERSION-DASHBOARD-001/);
     });
 }
+
+test('RELEASE-SCHEDULED-EXTENSION-HOST-001 rejects missing view-provider registration mutation', async () => {
+    await assert.rejects(
+        execFile(process.execPath, [harnessPath, 'missing-view-registration'], harnessOptions),
+        /RELEASE-SCHEDULED-EXTENSION-HOST-001/);
+});

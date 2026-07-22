@@ -2433,6 +2433,10 @@
     "evidence": [
       ".github/workflows/scheduled-verification.yml",
       "scripts/run-extension-host-tests.js",
+      "scripts/run-extension-host-worker.js",
+      "tests/unit/tooling/extensionHostLauncher.test.js",
+      "tests/unit/tooling/extensionHostSuite.test.js",
+      "tests/integration/dashboard/todoPanelFutureVersion.test.js",
       "package.json",
       "extensions/attention-ui-bridge/package.json"
     ]
