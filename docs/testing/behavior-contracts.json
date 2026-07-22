@@ -136,7 +136,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/unit/projects/workspaceAndOpenMatching.test.js"
+      "tests/unit/projects/workspaceAndOpenMatching.test.js",
+      "tests/platform/windows/projectPaths.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
