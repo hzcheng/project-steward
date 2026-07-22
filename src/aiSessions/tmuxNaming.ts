@@ -100,16 +100,24 @@ export function tmuxLocatorMatchesIdentity(
         locator.windowName, `${identity.provider}-`, runtimeSuffix
     );
     if (locator.layout === 'project') {
-        const legacyProjectSession = legacy.sessionName;
         const legacyProjectWindow = legacy.windowName;
-        const sessionMatches = locator.sessionName === legacyProjectSession
-            || matchesReadableName(locator.sessionName, 'ps-', readableWorkspaceSuffix(identity));
         const windowMatches = locator.windowName === legacyProjectWindow || readableWindow;
-        return sessionMatches && windowMatches;
+        return projectTmuxSessionMatchesWorkspace(locator.sessionName, identity) && windowMatches;
     }
     return locator.layout === 'session'
         && matchesReadableSessionName(locator.sessionName, runtimeSuffix)
         && readableWindow;
+}
+
+export function projectTmuxSessionMatchesWorkspace(
+    sessionName: unknown,
+    identity: AiSessionRuntimeIdentity
+): sessionName is string {
+    if (typeof sessionName !== 'string' || !isValidAiSessionRuntimeIdentity(identity)) {
+        return false;
+    }
+    return sessionName === legacyTmuxLocator(identity, 'project').sessionName
+        || matchesReadableName(sessionName, 'ps-', readableWorkspaceSuffix(identity));
 }
 
 function boundedName(components: string[], suffix: string): string {

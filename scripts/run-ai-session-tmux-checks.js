@@ -904,6 +904,29 @@ function runTmuxLayoutChecks() {
         readable
     );
     assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(readable, readableIdentity), true);
+    const readableWorkspaceSuffix = readable.sessionName.match(/([0-9a-f]{8})$/)[1];
+    assert.strictEqual(tmuxNaming.projectTmuxSessionMatchesWorkspace(
+        readable.sessionName, readableIdentity
+    ), true);
+    assert.strictEqual(tmuxNaming.projectTmuxSessionMatchesWorkspace(
+        `ps-Renamed-Card-${readableWorkspaceSuffix}`, readableIdentity
+    ), true, 'project session ownership must ignore the creation-time readable prefix');
+    assert.strictEqual(tmuxNaming.projectTmuxSessionMatchesWorkspace(
+        new tmuxLayout.ProjectTmuxLayout().getLocator(readableIdentity).sessionName,
+        readableIdentity
+    ), true, 'legacy project sessions must remain workspace-owned');
+    for (const invalidProjectSession of [
+        `ps-Renamed-Card-00000000`,
+        `ps-Bad:Card-${readableWorkspaceSuffix}`,
+        `ps-Bad\nCard-${readableWorkspaceSuffix}`,
+        `ps-${'x'.repeat(100)}-${readableWorkspaceSuffix}`,
+        `ps-Ｃard-${readableWorkspaceSuffix}`,
+        `ps--${readableWorkspaceSuffix}`,
+    ]) {
+        assert.strictEqual(tmuxNaming.projectTmuxSessionMatchesWorkspace(
+            invalidProjectSession, readableIdentity
+        ), false, `project workspace ownership must reject ${JSON.stringify(invalidProjectSession)}`);
+    }
     assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(
         { ...readable, windowName: readable.windowName.replace(/[0-9a-f]{8}$/, '00000000') },
         readableIdentity
@@ -920,7 +943,6 @@ function runTmuxLayoutChecks() {
             ...readable, windowName: unsafeWindowName,
         }, readableIdentity), false);
     }
-    const readableWorkspaceSuffix = readable.sessionName.match(/([0-9a-f]{8})$/)[1];
     for (const unsafeSessionName of [
         `ps-bad:name-${readableWorkspaceSuffix}`,
         `ps-bad\u0000name-${readableWorkspaceSuffix}`,
@@ -4619,6 +4641,106 @@ async function runTmuxBackendChecks() {
         ['new-session', 'new-window', 'store-ambiguous', 'session-options', 'window-options']
             .includes(operation.type)), false,
     'ambiguous workspace ownership must fail before provider dispatch or tmux mutation');
+
+    const renamedContainerIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'renamed-container',
+        workspaceNavigationIdentity: 'nav-renamed-container', workspaceRootHostPaths: ['/work'],
+        cwd: '/work', sessionId: 'renamed-container-runtime',
+    };
+    const renamedContainerPreferred = tmuxNaming.buildReadableTmuxLocator(
+        renamedContainerIdentity, 'project', {
+            projectName: 'Original Card', sessionName: 'Repair ownership',
+        }
+    );
+    const renamedContainerSuffix = renamedContainerPreferred.sessionName.match(/([0-9a-f]{8})$/)[1];
+    const renamedContainerMetadata = {
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'renamed-container',
+    };
+    const seedProjectContainer = (harness, sessionName, index = 0) => {
+        harness.windows.push({
+            sessionName, windowName: 'project-steward', windowId: `@renamed-container-${index}`,
+            active: false, sessionMetadata: { ...renamedContainerMetadata },
+            windowMetadata: {}, metadata: {},
+        });
+    };
+    const renamedContainerRequest = {
+        identity: renamedContainerIdentity,
+        projectName: 'Current Card', sessionName: 'Repair ownership', terminalName: 'Ownership',
+        launch: { executable: 'codex', args: ['resume', 'renamed-container-runtime'] },
+    };
+    const mutationTypes = new Set([
+        'store-ambiguous', 'new-session', 'new-window', 'session-options', 'window-options',
+    ]);
+    for (const invalidSessionName of [
+        'externally-renamed-without-suffix',
+        `ps-Wrong-Suffix-00000000`,
+        `ps-Bad:Card-${renamedContainerSuffix}`,
+        `ps-Bad\nCard-${renamedContainerSuffix}`,
+        `ps-${'x'.repeat(100)}-${renamedContainerSuffix}`,
+        `ps-Ｃard-${renamedContainerSuffix}`,
+        `ps--${renamedContainerSuffix}`,
+    ]) {
+        const invalidContainerHarness = createTmuxBackendHarness();
+        seedProjectContainer(invalidContainerHarness, invalidSessionName);
+        await assert.rejects(new backendModule.TmuxRuntimeBackend(
+            invalidContainerHarness.dependencies
+        ).ensureResume(renamedContainerRequest, 'project'), error =>
+            error && error.name === 'AiSessionRuntimeConflictError'
+            && error.conflicts.length === 1
+            && error.conflicts[0].tmux.sessionName === invalidSessionName);
+        assert.strictEqual(invalidContainerHarness.operations.some(operation =>
+            mutationTypes.has(operation.type)), false,
+        `invalid owned container ${JSON.stringify(invalidSessionName)} must fail before dispatch/mutation`);
+    }
+
+    for (const validSessionName of [
+        `ps-Old-Card-${renamedContainerSuffix}`,
+        new tmuxLayout.ProjectTmuxLayout().getLocator(renamedContainerIdentity).sessionName,
+    ]) {
+        const validContainerHarness = createTmuxBackendHarness();
+        seedProjectContainer(validContainerHarness, validSessionName);
+        const reused = await new backendModule.TmuxRuntimeBackend(
+            validContainerHarness.dependencies
+        ).ensureResume(renamedContainerRequest, 'project');
+        assert.strictEqual(reused.tmux.sessionName, validSessionName,
+            'canonical readable and legacy project containers must remain reusable');
+        assert.strictEqual(validContainerHarness.operations.filter(operation =>
+            operation.type === 'new-session').length, 0);
+        assert.strictEqual(validContainerHarness.operations.filter(operation =>
+            operation.type === 'new-window').length, 1);
+    }
+
+    const mixedOwnershipHarness = createTmuxBackendHarness();
+    const validOwnedSession = `ps-Old-Card-${renamedContainerSuffix}`;
+    const invalidOwnedSession = 'externally-renamed-without-suffix';
+    seedProjectContainer(mixedOwnershipHarness, validOwnedSession, 1);
+    seedProjectContainer(mixedOwnershipHarness, invalidOwnedSession, 2);
+    await assert.rejects(new backendModule.TmuxRuntimeBackend(
+        mixedOwnershipHarness.dependencies
+    ).ensureResume(renamedContainerRequest, 'project'), error =>
+        error && error.name === 'AiSessionRuntimeConflictError'
+        && error.conflicts.length === 2
+        && error.conflicts.map(runtime => runtime.tmux.sessionName).sort().join(',')
+            === [invalidOwnedSession, validOwnedSession].sort().join(','));
+    assert.strictEqual(mixedOwnershipHarness.operations.some(operation =>
+        mutationTypes.has(operation.type)), false,
+    'one valid plus one invalid owned container must fail before dispatch/mutation');
+
+    const createTargetDefenseHarness = createTmuxBackendHarness();
+    seedProjectContainer(createTargetDefenseHarness, invalidOwnedSession);
+    let defenseProviderDispatches = 0;
+    await assert.rejects(new backendModule.TmuxRuntimeBackend(
+        createTargetDefenseHarness.dependencies
+    ).createTarget('project', {
+        ...renamedContainerPreferred, sessionName: invalidOwnedSession,
+    }, '/work', 'codex resume', renamedContainerIdentity, async () => {
+        defenseProviderDispatches++;
+    }), /unverified target/);
+    assert.strictEqual(defenseProviderDispatches, 0,
+        'createTarget must independently reject an invalid workspace session before dispatch');
+    assert.strictEqual(createTargetDefenseHarness.operations.some(operation =>
+        mutationTypes.has(operation.type)), false,
+    'createTarget defense must run before project window or metadata mutation');
     const verifiedFocusStart = projectHarness.operations.length;
     await projectBackend.focus(firstProject);
     const verifiedFocusOperations = projectHarness.operations.slice(verifiedFocusStart);

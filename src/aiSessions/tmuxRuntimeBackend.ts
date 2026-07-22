@@ -33,7 +33,11 @@ import {
 } from './tmuxLayout';
 import { TmuxAttachBinding, TmuxAttachBindingStore } from './tmuxAttachBindingStore';
 import { TmuxClient, TmuxClientError } from './tmuxClient';
-import { buildReadableTmuxLocator, tmuxLocatorMatchesIdentity } from './tmuxNaming';
+import {
+    buildReadableTmuxLocator,
+    projectTmuxSessionMatchesWorkspace,
+    tmuxLocatorMatchesIdentity,
+} from './tmuxNaming';
 import {
     TmuxAmbiguousRuntimeBinding,
     TmuxConsumedPendingBinding,
@@ -899,6 +903,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             return;
         }
 
+        if (!projectTmuxSessionMatchesWorkspace(locator.sessionName, identity)) {
+            throw new Error('The requested project tmux session is an unverified target.');
+        }
         const hasSession = await this.dependencies.client.hasSession(locator.sessionName);
         const compatibleContainer = this.projectContainerIsVerified(locator, identity.workspaceScopeIdentity)
             || (hasSession && recordsEqual(
@@ -951,7 +958,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (containers.size === 0) {
             return { ...preferred };
         }
-        if (containers.size === 1) {
+        const hasInvalidContainer = [...containers.keys()].some(sessionName =>
+            !projectTmuxSessionMatchesWorkspace(sessionName, identity));
+        if (containers.size === 1 && !hasInvalidContainer) {
             return { ...preferred, sessionName: containers.keys().next().value as string };
         }
         const conflicts = [...containers].map(([sessionName, windowName]) => ({
