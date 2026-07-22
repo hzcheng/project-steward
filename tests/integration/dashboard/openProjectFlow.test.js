@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 const {
     SELF,
     OTHER,
@@ -23,21 +24,99 @@ const OpenProjectBridgeClient = loadWithFakeVscode(
     '../../../out/openProjects/bridgeClient'
 ).default;
 
-function extractFunctionBody(source, functionName) {
-    const signatureIndex = source.indexOf(`function ${functionName}(`);
-    assert.notEqual(signatureIndex, -1, `missing function ${functionName}`);
-    const openingBraceIndex = source.indexOf('{', signatureIndex);
-    let depth = 0;
-    for (let index = openingBraceIndex; index < source.length; index += 1) {
-        if (source[index] === '{') depth += 1;
-        if (source[index] === '}') depth -= 1;
-        if (depth === 0) return source.slice(openingBraceIndex + 1, index);
-    }
-    throw new Error(`could not extract function ${functionName}`);
-}
+const repositoryRoot = path.join(__dirname, '..', '..', '..');
+const projectWebviewSource = fs.readFileSync(path.join(
+    repositoryRoot,
+    'src', 'webview', 'webviewProjectScripts.js'
+), 'utf8');
+const filterWebviewSource = fs.readFileSync(path.join(
+    repositoryRoot,
+    'src', 'webview', 'webviewFilterScripts.js'
+), 'utf8');
 
 function hasClassTokens(value, ...tokens) {
     return tokens.every(token => value.split(/\s+/).includes(token));
+}
+
+function createClassList() {
+    const values = new Set();
+    return {
+        add: value => values.add(value),
+        remove: value => values.delete(value),
+        contains: value => values.has(value),
+        toggle(value, force) {
+            if (force === undefined ? !values.has(value) : force) values.add(value);
+            else values.delete(value);
+            return values.has(value);
+        },
+    };
+}
+
+function createOpenProjectUpdateVm(wrapper, catalogs) {
+    const document = {
+        activeElement: null,
+        body: {
+            classList: createClassList(),
+            style: { setProperty: () => undefined },
+        },
+        querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null,
+        querySelectorAll: selector => {
+            const projectTags = Array.from(wrapper.innerHTML.matchAll(/<div class="([^"]*)"[^>]*data-id=[^>]*>/g))
+                .filter(match => hasClassTokens(match[1], 'project', 'steward-item-card'))
+                .map(match => match[0]);
+            if (selector === '.sticky-groups-wrapper .project[data-id]') {
+                return projectTags.map(() => ({}));
+            }
+            if (selector === '.sticky-groups-wrapper .project[data-project-navigation][data-id]') {
+                return projectTags.filter(tag => tag.includes('data-project-navigation')).map(() => ({}));
+            }
+            if (selector === '.sticky-groups-wrapper .open-other-windows-group') {
+                return wrapper.innerHTML.includes('open-other-windows-group') ? [{}] : [];
+            }
+            return [];
+        },
+    };
+    const context = {
+        document,
+        normalizeDashboardSearchCatalog: value => value
+            && Array.isArray(value.sessions)
+            && Array.isArray(value.openProjects)
+            && Array.isArray(value.savedProjects)
+            && Array.isArray(value.todos)
+            ? value
+            : { sessions: [], openProjects: [], savedProjects: [], todos: [] },
+        window: {
+            __projectStewardDashboard: {
+                replaceSearchCatalog: catalog => catalogs.push(catalog),
+            },
+        },
+    };
+    vm.runInNewContext(projectWebviewSource, context, {
+        filename: 'webviewProjectScripts.js',
+    });
+    return context;
+}
+
+function createFilterVm(input) {
+    const context = {
+        document: {
+            body: { classList: createClassList() },
+            getElementById: id => id === 'filter' ? input : { addEventListener: () => undefined },
+            querySelectorAll: () => [],
+        },
+        requestAnimationFrame: callback => callback(),
+        sessionStorage: {
+            getItem: () => '',
+            setItem: () => undefined,
+        },
+        window: {
+            addEventListener: () => undefined,
+        },
+    };
+    vm.runInNewContext(filterWebviewSource, context, {
+        filename: 'webviewFilterScripts.js',
+    });
+    return context;
 }
 
 test('ARCH-COORDINATOR-WIRING-001 carries sequenced publications through the bridge into dashboard cards', async t => {
@@ -123,46 +202,10 @@ test('OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001 excludes the current card and 
 });
 
 test('OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001 applies consistent updates and rolls back DOM that loses peer cards', () => {
-    const source = fs.readFileSync(path.join(
-        __dirname,
-        '..', '..', '..',
-        'src', 'webview', 'webviewProjectScripts.js'
-    ), 'utf8');
     const wrapper = { innerHTML: '<div>old</div>' };
-    const document = {
-        querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null,
-        querySelectorAll: selector => {
-            const projectTags = Array.from(wrapper.innerHTML.matchAll(/<div class="([^"]*)"[^>]*data-id=[^>]*>/g))
-                .filter(match => hasClassTokens(match[1], 'project', 'steward-item-card'))
-                .map(match => match[0]);
-            if (selector === '.sticky-groups-wrapper .project[data-id]') {
-                return projectTags.map(() => ({}));
-            }
-            if (selector === '.sticky-groups-wrapper .project[data-project-navigation][data-id]') {
-                return projectTags.filter(tag => tag.includes('data-project-navigation')).map(() => ({}));
-            }
-            if (selector === '.sticky-groups-wrapper .open-other-windows-group') {
-                return wrapper.innerHTML.includes('open-other-windows-group') ? [{}] : [];
-            }
-            return [];
-        },
-    };
     const catalogs = [];
-    const applyOpenProjectsUpdate = new Function(
-        'document',
-        'window',
-        'normalizeDashboardSearchCatalog',
-        `
-        function getOpenProjectsUpdateCatalogCounts(searchCatalog) {${extractFunctionBody(source, 'getOpenProjectsUpdateCatalogCounts')}}
-        function getOpenProjectsUpdateDomState() {${extractFunctionBody(source, 'getOpenProjectsUpdateDomState')}}
-        function isOpenProjectsUpdateDomConsistent(message) {${extractFunctionBody(source, 'isOpenProjectsUpdateDomConsistent')}}
-        return function applyOpenProjectsUpdate(message) {${extractFunctionBody(source, 'applyOpenProjectsUpdate')}};
-        `
-    )(
-        document,
-        { __projectStewardDashboard: { replaceSearchCatalog: catalog => catalogs.push(catalog) } },
-        value => value
-    );
+    const context = createOpenProjectUpdateVm(wrapper, catalogs);
+    assert.equal(typeof context.applyOpenProjectsUpdate, 'function');
     const catalog = {
         sessions: [],
         openProjects: [
@@ -177,7 +220,7 @@ test('OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001 applies consistent updates and
         '<div class="group open-other-windows-group"><div class="project steward-item-card" data-project-navigation data-id="other"></div></div>',
     ].join('');
 
-    assert.equal(applyOpenProjectsUpdate({
+    assert.equal(context.applyOpenProjectsUpdate({
         type: 'open-projects-updated',
         version: 1,
         semanticRevision: 'valid',
@@ -187,7 +230,7 @@ test('OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001 applies consistent updates and
     }), true);
     assert.equal(catalogs[0].todos[0].todoId, 'preserved');
 
-    assert.equal(applyOpenProjectsUpdate({
+    assert.equal(context.applyOpenProjectsUpdate({
         type: 'open-projects-updated',
         version: 1,
         semanticRevision: 'lost-peer',
@@ -199,44 +242,19 @@ test('OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001 applies consistent updates and
 });
 
 test('WEBVIEW-WEBVIEW-REFRESH-FOCUS-001 focuses active search on initialization without blurring editor focus', () => {
-    const source = fs.readFileSync(path.join(
-        __dirname,
-        '..', '..', '..',
-        'src', 'webview', 'webviewFilterScripts.js'
-    ), 'utf8');
-    const initFiltering = new Function(
-        'document',
-        'window',
-        'sessionStorage',
-        'requestAnimationFrame',
-        `return function initFiltering(activeByDefault, dashboard) {${extractFunctionBody(source, 'initFiltering')}};`
-    );
     const calls = [];
-    const classList = {
-        add: () => undefined,
-        remove: () => undefined,
-        contains: () => false,
-        toggle: () => undefined,
-    };
     const input = {
         value: '',
-        parentElement: { classList },
+        parentElement: { classList: createClassList() },
         focus: () => calls.push('focus'),
         blur: () => calls.push('blur'),
         select: () => calls.push('select'),
         addEventListener: () => undefined,
     };
+    const context = createFilterVm(input);
+    assert.equal(typeof context.initFiltering, 'function');
 
-    initFiltering(
-        {
-            body: { classList },
-            getElementById: id => id === 'filter' ? input : { addEventListener: () => undefined },
-            querySelectorAll: () => [],
-        },
-        { addEventListener: () => undefined },
-        { getItem: () => '', setItem: () => undefined },
-        callback => callback()
-    )(true, {
+    context.initFiltering(true, {
         isSearchActive: () => false,
         setSearchQuery: () => undefined,
     });

@@ -1,8 +1,10 @@
 'use strict';
 
-require('./bridgeClient.test');
-require('./coordinator.test');
-require('./dashboardController.test');
-require('./projection.test');
-require('./protocol.test');
-require('./workspaceController.test');
+const fs = require('node:fs');
+const path = require('node:path');
+
+fs.readdirSync(__dirname, { withFileTypes: true })
+    .filter(entry => entry.isFile() && entry.name.endsWith('.test.js'))
+    .map(entry => entry.name)
+    .sort()
+    .forEach(fileName => require(path.join(__dirname, fileName)));
