@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const { makeTempDirectory } = require('../../helpers/tempDirectory');
 const { DirectTerminalRuntimeBackend } = require('../../../out/aiSessions/directTerminalRuntimeBackend');
@@ -95,6 +97,34 @@ async function restoreRuntimeHost(composition, terminals, createHydration) {
     await composition.tmux.restoreAttachTerminals(terminals);
     return createHydration();
 }
+
+function runProductionActivation(mode) {
+    const environment = { ...process.env, NODE_V8_COVERAGE: '' };
+    const result = spawnSync(process.execPath, [
+        path.resolve(__dirname, '../../fixtures/aiSessions/runtimeHostActivationHarness.js'),
+        mode,
+    ], { encoding: 'utf8', env: environment });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    return JSON.parse(result.stdout);
+}
+
+test('RUNTIME-HOST-RUNTIME-COMPOSITION-001 production activation assembles runtime modules and restores before hydration', () => {
+    const result = runProductionActivation('success');
+    assert.equal(result.failure, null);
+    assert.deepEqual(result.events.slice(0, 4), [
+        'inactive-restored', 'direct-restored', 'tmux-restored', 'hydration-constructed',
+    ]);
+    assert.deepEqual(result.verified, [
+        'client-store-discovery', 'direct-tmux-coordinator', 'tmux-backend',
+    ]);
+});
+
+test('RUNTIME-HOST-RUNTIME-COMPOSITION-001 production activation blocks tmux restore and hydration after Direct failure', () => {
+    const result = runProductionActivation('direct-failure');
+    assert.match(result.failure, /controlled direct restore failure/);
+    assert.deepEqual(result.events, ['inactive-restored', 'direct-failed']);
+    assert.deepEqual(result.verified, ['client-store-discovery']);
+});
 
 test('RUNTIME-HOST-RUNTIME-COMPOSITION-001 assembles real runtime components and restores ownership before hydration', async t => {
     const events = [];

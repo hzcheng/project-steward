@@ -67,21 +67,39 @@ test('RUNTIME-LAUNCH-SPEC-001 preserves argv boundaries and renders hostile valu
     assert.ok(tmuxCommand.includes("'\\''"));
     assert.ok(tmuxCommand.includes('rm -f'));
     assert.ok(tmuxCommand.includes(': >'));
+    assert.ok(tmuxCommand.includes('exit'));
 
-    assert.deepEqual(
-        commandBuilders.buildKimiResumeLaunchSpec('kimi; nope', '/work/Kimi App', '/tmp/kimi.done').args,
-        ['--work-dir', '/work/Kimi App', '--resume', 'kimi; nope']
+    const windowsResumePayload = decodePowerShellPayload(
+        launchSpec.serializeDirectLaunchCommand(resume, 'win32')
     );
-    assert.deepEqual(
-        commandBuilders.buildKimiNewSessionLaunchSpec('/work/Kimi App', "owner's task", '/tmp/kimi-new.done').args,
-        ['--work-dir', '/work/Kimi App', '--prompt', "owner's task"]
-    );
-    assert.equal(commandBuilders.buildClaudeResumeLaunchSpec(
+    assert.ok(windowsResumePayload.includes("Remove-Item -LiteralPath '/tmp/done marker'"));
+    assert.ok(windowsResumePayload.includes("New-Item -ItemType File -Force -Path '/tmp/done marker'"));
+    assert.ok(windowsResumePayload.includes("'session''; touch /tmp/nope; '''"));
+
+    assert.deepEqual(commandBuilders.buildKimiResumeLaunchSpec(
+        'kimi; nope', '/work/Kimi App', '/tmp/kimi.done'
+    ), {
+        executable: 'kimi', args: ['--work-dir', '/work/Kimi App', '--resume', 'kimi; nope'],
+        markerPath: '/tmp/kimi.done', windowsDirectShell: 'current',
+    });
+    assert.deepEqual(commandBuilders.buildKimiNewSessionLaunchSpec(
+        '/work/Kimi App', "owner's task", '/tmp/kimi-new.done'
+    ), {
+        executable: 'kimi', args: ['--work-dir', '/work/Kimi App', '--prompt', "owner's task"],
+        markerPath: '/tmp/kimi-new.done', windowsDirectShell: 'powershell',
+    });
+    assert.deepEqual(commandBuilders.buildClaudeResumeLaunchSpec(
         'claude-session', '/work/claude', '/tmp/claude.done'
-    ).cwd, '/work/claude');
-    assert.equal(commandBuilders.buildClaudeNewSessionLaunchSpec(
+    ), {
+        executable: 'claude', args: ['--resume', 'claude-session'], cwd: '/work/claude',
+        markerPath: '/tmp/claude.done', windowsDirectShell: 'current',
+    });
+    assert.deepEqual(commandBuilders.buildClaudeNewSessionLaunchSpec(
         '/work/app', 'Title', '/tmp/claude-new.done'
-    ).cwd, '/work/app');
+    ), {
+        executable: 'claude', args: ['--name', 'Title'], cwd: '/work/app',
+        markerPath: '/tmp/claude-new.done', windowsDirectShell: 'powershell',
+    });
 
     const hostile = `Prompt "quoted"; Set-Content C:\\tmp\\pwned 1; #`;
     const windows = launchSpec.serializeDirectLaunchCommand(
@@ -92,6 +110,36 @@ test('RUNTIME-LAUNCH-SPEC-001 preserves argv boundaries and renders hostile valu
     const payload = decodePowerShellPayload(windows);
     assert.ok(payload.includes("'Prompt \"quoted\"; Set-Content C:\\tmp\\pwned 1; #'"));
     assert.ok(payload.includes("codex --cd 'C:\\work\\O''Brien'"));
+    for (const hostileSpec of [
+        commandBuilders.buildKimiNewSessionLaunchSpec(`C:\\work\\O'Brien`, hostile, `C:\\tmp\\done`),
+        commandBuilders.buildClaudeNewSessionLaunchSpec(`C:\\work\\O'Brien`, hostile, `C:\\tmp\\done`),
+    ]) {
+        const hostileCommand = launchSpec.serializeDirectLaunchCommand(hostileSpec, 'win32');
+        assert.equal(hostileCommand.includes('Set-Content'), false);
+        const hostilePayload = decodePowerShellPayload(hostileCommand);
+        assert.ok(hostilePayload.includes("'Prompt \"quoted\"; Set-Content C:\\tmp\\pwned 1; #'"));
+        assert.ok(hostileSpec.cwd
+            ? hostilePayload.includes("Set-Location -LiteralPath 'C:\\work\\O''Brien'")
+            : hostilePayload.includes("'C:\\work\\O''Brien'"));
+    }
+    assert.equal(commandBuilders.buildCodexResumeCommand(
+        'session-1', 'C:\\Repo App', null, 'win32'
+    ), 'codex resume --cd "C:\\Repo App" "session-1"');
+    assert.equal(commandBuilders.buildKimiResumeCommand(
+        'session-1', 'C:\\Repo App', null, 'win32'
+    ), 'kimi --work-dir "C:\\Repo App" --resume "session-1"');
+    assert.equal(commandBuilders.buildClaudeResumeCommand(
+        'session-1', 'C:\\Repo App', null, 'win32'
+    ), 'cd "C:\\Repo App" && claude --resume "session-1"');
+    assert.equal(decodePowerShellPayload(commandBuilders.buildCodexNewSessionCommand(
+        'C:\\Repo App', 'Prompt', null, 'win32'
+    )), "codex --cd 'C:\\Repo App' 'Prompt'");
+    assert.equal(decodePowerShellPayload(commandBuilders.buildKimiNewSessionCommand(
+        'C:\\Repo App', 'Prompt', null, 'win32'
+    )), "kimi --work-dir 'C:\\Repo App' --prompt 'Prompt'");
+    assert.equal(decodePowerShellPayload(commandBuilders.buildClaudeNewSessionCommand(
+        'C:\\Repo App', 'Title', null, 'win32'
+    )), "Set-Location -LiteralPath 'C:\\Repo App'; claude --name 'Title'");
     assert.equal(launchSpec.serializeDirectLaunchCommand({
         executable: 'tool', args: ['deploy', '--target', 'value'],
     }, 'linux'), "tool deploy --target 'value'");

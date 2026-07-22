@@ -58,16 +58,28 @@ test('RUNTIME-TMUX-CLIENT-001 caches availability and sends exact argv without s
     assert.ok(calls.slice(-3).every(call => call.file === '/new path/tmux'));
     assert.throws(() => client.setExecutablePath('   '), /executable/);
 
-    const missingCapability = new TmuxClient('tmux', {
-        run: async (_file, args) => args[0] === '-V'
-            ? { exitCode: 0, stdout: 'tmux 3.4\n', stderr: '' }
-            : { exitCode: 0, stdout: REQUIRED_COMMANDS.filter(name => name !== 'attach-session').join('\n'), stderr: '' },
-    });
-    assert.deepEqual(await missingCapability.checkAvailability(), {
-        available: false,
-        category: 'missing-capability',
-        message: 'The configured tmux does not provide all required commands.',
-    });
+    for (const omitted of ['attach-session', 'has-session', 'rename-session', 'rename-window']) {
+        const missingCapability = new TmuxClient('tmux', {
+            run: async (_file, args) => args[0] === '-V'
+                ? { exitCode: 0, stdout: 'tmux 3.4\n', stderr: '' }
+                : { exitCode: 0, stdout: REQUIRED_COMMANDS.filter(name => name !== omitted).join('\n'), stderr: '' },
+        });
+        assert.deepEqual(await missingCapability.checkAvailability(), {
+            available: false,
+            category: 'missing-capability',
+            message: 'The configured tmux does not provide all required commands.',
+        }, omitted);
+    }
+    for (const stdout of ['tmux   \n', 'tmux 3.4 token=secret\n']) {
+        const invalidVersion = new TmuxClient('tmux', {
+            run: async () => ({ exitCode: 0, stdout, stderr: 'credential=never-report' }),
+        });
+        assert.deepEqual(await invalidVersion.checkAvailability(), {
+            available: false,
+            category: 'invalid-version',
+            message: 'The configured tmux returned an unrecognized version.',
+        });
+    }
 });
 
 test('RUNTIME-TMUX-CLIENT-001 parses one active window and rejects malformed, foreign, or secret output', async () => {
@@ -130,12 +142,34 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
         'session-a|projectKey': 'project-key',
         'session-a:window-a|provider': 'codex',
         'session-a:window-a|sessionId': 'session-id',
+        '@12|managed': '1',
+        '@12|version': '1',
+        '@12|layout': 'project',
+        '@12|provider': 'codex',
+        '@12|sessionId': 'session-id-12',
+        '@12|marker': '/tmp/done-12 marker',
+        '@13|managed': '1',
+        '@13|version': '1',
+        '@13|layout': 'project',
+        '@13|provider': 'kimi',
+        '@13|sessionId': 'session-id-13',
+        '@13|marker': '/tmp/done-13 marker',
     };
     const runner = {
         run: async (file, args) => {
             calls.push({ file, args });
             const available = availabilityResult(args);
             if (available) return available;
+            if (args[0] === 'list-windows') {
+                return {
+                    exitCode: 0,
+                    stdout: [
+                        'session-a\u001fwindow-a\u001f@12\u001f1',
+                        'session-a\u001fwindow-a\u001f@13\u001f0',
+                    ].join('\n') + '\n',
+                    stderr: '',
+                };
+            }
             if (args[0] === 'show-options') {
                 const target = args[args.indexOf('-t') + 1];
                 const option = args.at(-1);
@@ -147,6 +181,29 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
         },
     };
     const client = new TmuxClient('tmux', runner);
+    const windows = await client.listWindows();
+    assert.deepEqual(windows.map(window => ({
+        windowId: window.windowId,
+        active: window.active,
+        provider: window.metadata.provider,
+        sessionId: window.metadata.sessionId,
+        marker: window.metadata.marker,
+        projectKey: window.metadata.projectKey,
+    })), [
+        {
+            windowId: '@12', active: true, provider: 'codex', sessionId: 'session-id-12',
+            marker: '/tmp/done-12 marker', projectKey: 'project-key',
+        },
+        {
+            windowId: '@13', active: false, provider: 'kimi', sessionId: 'session-id-13',
+            marker: '/tmp/done-13 marker', projectKey: 'project-key',
+        },
+    ]);
+    for (const windowId of ['@12', '@13']) {
+        assert.ok(calls.some(call => JSON.stringify(call.args) === JSON.stringify([
+            'show-options', '-qvw', '-t', windowId, '@project-steward-provider',
+        ])));
+    }
     assert.deepEqual(await client.getSessionOptions('session-a'), {
         managed: '1', version: '1', layout: 'project', projectKey: 'project-key',
     });
@@ -159,17 +216,19 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
     await client.clearPendingMetadata({
         layout: 'project', sessionName: 'session-a', windowName: 'window-a',
     });
+    await client.clearPendingMetadata({ layout: 'session', sessionName: 'session-a' });
     assert.ok(calls.some(call => JSON.stringify(call.args) === JSON.stringify([
         'set-option', '-t', 'session-a', '@project-steward-managed', '1',
     ])));
     assert.ok(calls.some(call => JSON.stringify(call.args) === JSON.stringify([
         'set-option', '-w', '-t', 'session-a:window-a', '@project-steward-session-id', 'session-id',
     ])));
-    assert.deepEqual(calls.slice(-4).map(call => call.args), [
+    assert.deepEqual(calls.slice(-5).map(call => call.args), [
         ['set-option', '-w', '-t', 'session-a:window-a', 'automatic-rename', 'off'],
         ['set-option', '-w', '-t', 'session-a:window-a', 'allow-rename', 'off'],
         ['set-option', '-w', '-t', 'session-a:window-a', 'remain-on-exit', 'off'],
         ['set-option', '-uw', '-t', 'session-a:window-a', '@project-steward-pending-id'],
+        ['set-option', '-u', '-t', 'session-a', '@project-steward-pending-id'],
     ]);
     await assert.rejects(client.setSessionOptions('session-a', { status: 'not-allowed' }), /metadata option/);
     await assert.rejects(client.clearPendingMetadata({ layout: 'project', sessionName: 'session-a' }), TypeError);
@@ -198,6 +257,45 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
         for (const secret of ['token=secret', '/secret/tmux', 'secret-session', 'secret-window', '/secret/cwd']) {
             assert.equal(publicError.includes(secret), false);
         }
+        return true;
+    });
+});
+
+test('RUNTIME-TMUX-CLIENT-001 rejects malformed runner results and sanitizes forged error objects', async () => {
+    const malformedCategory = 'category=do-not-report';
+    const malformed = new TmuxClient('tmux', {
+        run: async (_file, args) => availabilityResult(args) || {
+            exitCode: null, stdout: '', stderr: '', failureCategory: malformedCategory,
+        },
+    });
+    await assert.rejects(malformed.hasSession('s'), error => {
+        assert.equal(error.operation, 'has-session');
+        assert.equal(error.category, 'invalid-output');
+        assert.equal(error.message.includes(malformedCategory), false);
+        return true;
+    });
+
+    const forgedSecrets = {
+        message: 'message=forged-secret', operation: 'operation=forged-secret',
+        category: 'category=forged-secret', name: 'name=forged-secret',
+        stack: 'stack=forged-secret', code: 'code=forged-secret',
+    };
+    const forged = new TmuxClientError(forgedSecrets.operation, forgedSecrets.category);
+    Object.assign(forged, forgedSecrets);
+    const sanitized = new TmuxClient('tmux', {
+        run: async (_file, args) => {
+            const available = availabilityResult(args);
+            if (available) return available;
+            throw forged;
+        },
+    });
+    await assert.rejects(sanitized.hasSession('s'), error => {
+        assert.ok(error instanceof TmuxClientError);
+        assert.notEqual(error, forged);
+        assert.equal(error.operation, 'has-session');
+        assert.equal(error.category, 'unsupported');
+        const publicError = `${error.name} ${error.message} ${error.stack} ${JSON.stringify(error)}`;
+        for (const secret of Object.values(forgedSecrets)) assert.equal(publicError.includes(secret), false);
         return true;
     });
 });
