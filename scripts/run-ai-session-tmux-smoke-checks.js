@@ -25,7 +25,7 @@ const OWNED_TEMP_PREFIXES = new Set([
     'project-steward-tmux-smoke-',
     'project-steward-tmux-server-',
 ]);
-const ownedTemporaryRootToken = Symbol('ownedTemporaryRoot');
+const ownedTemporaryRoots = new WeakMap();
 const configuredTmuxPath = process.env.PROJECT_STEWARD_TMUX_PATH || 'tmux';
 const serverName = `project-steward-test-${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
 const isolatedPrefix = ['-L', serverName, '-f', '/dev/null'];
@@ -42,41 +42,84 @@ function createOwnedTemporaryRoot(prefix) {
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
         throw new Error('The created smoke temporary root was not a real directory.');
     }
-    return Object.freeze({
-        [ownedTemporaryRootToken]: true,
-        path: rootPath,
+    const descriptor = Object.freeze({ path: rootPath, prefix });
+    const quarantinePath = path.join(parentPath,
+        `.${path.basename(rootPath)}.quarantine-${crypto.randomBytes(16).toString('hex')}`);
+    ownedTemporaryRoots.set(descriptor, {
+        rootPath,
+        quarantinePath,
         parentPath,
         prefix,
         device: stat.dev,
         inode: stat.ino,
+        state: 'active',
     });
+    return descriptor;
 }
 
-function validateOwnedTemporaryRoot(ownership) {
-    if (!ownership || ownership[ownedTemporaryRootToken] !== true) {
-        throw new Error('Cleanup requires a validated owned temporary root.');
+function validateOwnedTemporaryRoot(ownership, fileSystem = fs, candidatePath) {
+    const metadata = ownership && ownedTemporaryRoots.get(ownership);
+    if (!metadata) {
+        throw new Error(
+            'Cleanup requires a validated owned temporary root: the exact registered owned temporary root object.'
+        );
     }
-    if (!OWNED_TEMP_PREFIXES.has(ownership.prefix)
-        || !path.isAbsolute(ownership.path)
-        || path.dirname(ownership.path) !== ownership.parentPath
-        || fs.realpathSync(os.tmpdir()) !== ownership.parentPath
-        || !path.basename(ownership.path).startsWith(ownership.prefix)) {
+    if (!OWNED_TEMP_PREFIXES.has(metadata.prefix)
+        || !path.isAbsolute(metadata.rootPath)
+        || path.dirname(metadata.rootPath) !== metadata.parentPath
+        || path.dirname(metadata.quarantinePath) !== metadata.parentPath
+        || fileSystem.realpathSync(os.tmpdir()) !== metadata.parentPath
+        || !path.basename(metadata.rootPath).startsWith(metadata.prefix)
+        || metadata.quarantinePath === metadata.rootPath) {
         throw new Error('The owned temporary root failed path validation.');
     }
-    const stat = fs.lstatSync(ownership.path);
+    const verifiedPath = candidatePath || (metadata.state === 'quarantined'
+        ? metadata.quarantinePath : metadata.rootPath);
+    const stat = fileSystem.lstatSync(verifiedPath);
     if (!stat.isDirectory() || stat.isSymbolicLink()
-        || fs.realpathSync(ownership.path) !== ownership.path
-        || stat.dev !== ownership.device || stat.ino !== ownership.inode) {
+        || fileSystem.realpathSync(verifiedPath) !== verifiedPath
+        || stat.dev !== metadata.device || stat.ino !== metadata.inode) {
         throw new Error('The owned temporary root identity changed before cleanup.');
     }
-    return ownership.path;
+    return metadata;
 }
 
-function removeOwnedTemporaryRoot(ownership) {
-    const ownedPath = validateOwnedTemporaryRoot(ownership);
-    fs.rmSync(ownedPath, { recursive: true, force: true });
-    assert.strictEqual(fs.existsSync(ownedPath), false,
+function tryRestoreUnexpectedQuarantine(fileSystem, metadata) {
+    try {
+        if (fileSystem.existsSync(metadata.quarantinePath)
+            && !fileSystem.existsSync(metadata.rootPath)) {
+            fileSystem.renameSync(metadata.quarantinePath, metadata.rootPath);
+        }
+    } catch (error) {
+        // Fail closed: leave both paths untouched for diagnosis rather than deleting either.
+    }
+}
+
+function removeOwnedTemporaryRoot(ownership, dependencies = {}) {
+    const fileSystem = dependencies.fileSystem || fs;
+    const metadata = validateOwnedTemporaryRoot(ownership, fileSystem);
+    if (metadata.state === 'active') {
+        try {
+            fileSystem.renameSync(metadata.rootPath, metadata.quarantinePath);
+        } catch (error) {
+            throw new Error('The owned temporary root could not be quarantined.');
+        }
+        try {
+            validateOwnedTemporaryRoot(ownership, fileSystem, metadata.quarantinePath);
+        } catch (error) {
+            tryRestoreUnexpectedQuarantine(fileSystem, metadata);
+            throw new Error('The owned temporary root identity changed after quarantine rename.');
+        }
+        metadata.state = 'quarantined';
+    }
+    try {
+        fileSystem.rmSync(metadata.quarantinePath, { recursive: true, force: true });
+    } catch (error) {
+        throw new Error('The quarantined owned temporary root could not be removed.');
+    }
+    assert.strictEqual(fileSystem.existsSync(metadata.quarantinePath), false,
         'the validated owned temporary root must be absent after cleanup');
+    ownedTemporaryRoots.delete(ownership);
 }
 
 class CleanupAggregateError extends Error {

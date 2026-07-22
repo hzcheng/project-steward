@@ -7482,6 +7482,31 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
         fs.rmSync(foreignRoot, { recursive: true, force: true });
     }
 
+    const copySourceRoot = smokeHarness.createOwnedTemporaryRoot(
+        'project-steward-tmux-smoke-'
+    );
+    const forgedForeignRoot = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'project-steward-tmux-smoke-')
+    );
+    const forgedForeignStat = fs.lstatSync(forgedForeignRoot);
+    const copiedDescriptor = {
+        ...copySourceRoot,
+        path: forgedForeignRoot,
+        device: forgedForeignStat.dev,
+        inode: forgedForeignStat.ino,
+    };
+    try {
+        assert.throws(
+            () => smokeHarness.removeOwnedTemporaryRoot(copiedDescriptor),
+            /exact registered owned temporary root/
+        );
+        assert.ok(fs.existsSync(forgedForeignRoot),
+            'a copied descriptor must never authorize deletion of another matching-prefix root');
+    } finally {
+        smokeHarness.removeOwnedTemporaryRoot(copySourceRoot);
+        fs.rmSync(forgedForeignRoot, { recursive: true, force: true });
+    }
+
     const replacedRoot = smokeHarness.createOwnedTemporaryRoot(
         'project-steward-tmux-server-'
     );
@@ -7499,6 +7524,66 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
         fs.rmSync(replacedRoot.path, { recursive: true, force: true });
         fs.rmSync(movedRoot, { recursive: true, force: true });
     }
+
+    const renameRaceRoot = smokeHarness.createOwnedTemporaryRoot(
+        'project-steward-tmux-smoke-'
+    );
+    const renameRaceOriginal = `${renameRaceRoot.path}-original`;
+    let renameCalls = 0;
+    const raceFileSystem = Object.create(fs);
+    raceFileSystem.renameSync = (sourcePath, targetPath) => {
+        renameCalls++;
+        if (renameCalls === 1) {
+            fs.renameSync(sourcePath, renameRaceOriginal);
+            fs.mkdirSync(sourcePath);
+            fs.renameSync(sourcePath, targetPath);
+            return;
+        }
+        fs.renameSync(sourcePath, targetPath);
+    };
+    try {
+        assert.throws(
+            () => smokeHarness.removeOwnedTemporaryRoot(renameRaceRoot, {
+                fileSystem: raceFileSystem,
+            }),
+            /identity changed after quarantine rename/
+        );
+        assert.ok(renameCalls >= 1, 'cleanup must quarantine by atomic same-parent rename');
+        assert.ok(fs.existsSync(renameRaceRoot.path),
+            'the replacement target must be restored or retained after fail-closed validation');
+        assert.ok(fs.existsSync(renameRaceOriginal),
+            'the original owned root must not be recursively deleted after a rename race');
+    } finally {
+        fs.rmSync(renameRaceRoot.path, { recursive: true, force: true });
+        fs.rmSync(renameRaceOriginal, { recursive: true, force: true });
+    }
+
+    const retryableRoot = smokeHarness.createOwnedTemporaryRoot(
+        'project-steward-tmux-server-'
+    );
+    const failingRemoveFileSystem = Object.create(fs);
+    let removeAttempts = 0;
+    failingRemoveFileSystem.rmSync = () => {
+        removeAttempts++;
+        throw new Error('injected removal failure');
+    };
+    assert.throws(
+        () => smokeHarness.removeOwnedTemporaryRoot(retryableRoot, {
+            fileSystem: failingRemoveFileSystem,
+        }),
+        error => error
+            && error.message === 'The quarantined owned temporary root could not be removed.'
+            && !error.message.includes(retryableRoot.path)
+    );
+    assert.strictEqual(removeAttempts, 1);
+    assert.strictEqual(fs.existsSync(retryableRoot.path), false,
+        'a verified root remains at its private quarantine path after removal failure');
+    smokeHarness.removeOwnedTemporaryRoot(retryableRoot);
+    assert.throws(
+        () => smokeHarness.removeOwnedTemporaryRoot(retryableRoot),
+        /exact registered owned temporary root/,
+        'successful deletion must revoke the descriptor registration'
+    );
     const cleanupStages = [
         'captureSocket', 'killServer', 'verifyStopped',
         'removeSocket', 'terminateProviders', 'removeFixtures',
