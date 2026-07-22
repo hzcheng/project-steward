@@ -1107,7 +1107,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/aiSessions/runtimeBackends.test.js"
+      "tests/contract/aiSessions/runtimePrimitives.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1120,7 +1120,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/aiSessions/runtimeBackends.test.js"
+      "tests/contract/aiSessions/runtimePrimitives.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1133,7 +1133,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/aiSessions/runtimeBackends.test.js"
+      "tests/contract/aiSessions/runtimePrimitives.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1146,7 +1146,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/aiSessions/runtimeBackends.test.js",
+      "tests/contract/aiSessions/tmuxClientBehavior.test.js",
       "tests/contract/errors/failureMapping.test.js"
     ],
     "evidence": [
@@ -1252,7 +1252,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/aiSessions/runtimeBackends.test.js"
+      "tests/contract/aiSessions/runtimeComposition.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"

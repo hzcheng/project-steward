@@ -7,11 +7,6 @@ const {
 } = require('../../helpers/runtimeContract');
 
 // SESSION-DIRECT-BACKEND-001
-// RUNTIME-RUNTIME-CONFIGURATION-001: backend selection rejects unavailable or invalid runtime configuration.
-// RUNTIME-LAUNCH-SPEC-001: each contract submits immutable create/resume launch inputs.
-// RUNTIME-TMUX-LAYOUT-001: both project and session layouts execute the same public backend contract.
-// RUNTIME-TMUX-CLIENT-001: the fake runner is only the environment boundary for the real client/backend contract.
-// RUNTIME-HOST-RUNTIME-COMPOSITION-001: Direct and tmux backends expose one coordinator-compatible surface.
 defineRuntimeContract({
     backendId: 'vscode',
     layout: 'direct',
