@@ -4867,7 +4867,6 @@ function runWebviewContentChecks() {
     assert.match(dashboard, /aiSessionExecutionInterval = setInterval\(\(\) => \{ aiSessionExecutionController\.evaluate\(\); \}, 1_000\)/);
     assert.match(dashboard, /setTimeout\(\(\) => \{ aiSessionExecutionController\.evaluate\(\); \}, 0\)/);
     assert.ok(dashboard.includes('clearInterval(aiSessionExecutionInterval)'));
-    assert.match(dashboard, /onDidCloseTerminal\(terminal => \{[\s\S]*?handleClosedTerminal\(terminal\);[\s\S]*?aiSessionExecutionController\.evaluate\(\);/);
     assert.ok(!evaluateExecutionFunction.includes('isEnabled'));
     assert.ok(!evaluateExecutionFunction.includes('attention'));
     assert.ok(evaluateAttentionFunction.includes('if (!this.options.isEnabled())'));
@@ -4946,20 +4945,6 @@ function runWebviewContentChecks() {
     assert.match(dashboard, /aiSessionTerminalCompletionInterval = setInterval\(\(\) => \{[\s\S]*?getCompletedSessions\(\)[\s\S]*?tmuxRuntimeDiscovery\.getInactive\(\)[\s\S]*?\}, 1_000\)/);
     assert.match(dashboard, /queueAiSessionRuntimeSettlements\(\[\.\.\.completedRuntimes, \.\.\.inactiveTmuxRuntimes\]\)/,
         'one completion polling round must queue one structured batch');
-    const closeTerminalHandlerStart = dashboard.indexOf('vscode.window.onDidCloseTerminal(terminal => {');
-    const closeTerminalHandlerEnd = dashboard.indexOf(
-        'context.subscriptions.push(activeAiSessionTerminalHighlighter);',
-        closeTerminalHandlerStart
-    );
-    assert.ok(closeTerminalHandlerStart >= 0 && closeTerminalHandlerEnd > closeTerminalHandlerStart);
-    const closeTerminalHandler = dashboard.slice(closeTerminalHandlerStart, closeTerminalHandlerEnd);
-    assert.match(closeTerminalHandler, /hadRuntimeClient[\s\S]*?aiSessionRuntimeCoordinator\.handleClosedTerminal\(terminal\)[\s\S]*?closedSessions\.length \|\| hadRuntimeClient[\s\S]*?refreshAiSessionViewsIncrementally\(\)/);
-    assert.ok(!dashboard.includes('acknowledge-closed-attention'));
-    assert.doesNotMatch(
-        closeTerminalHandler,
-        /acknowledgeAiSessionAttention\(|aiSessionAttentionController\.acknowledge\(|aiSessionAttentionBridgeClient\.acknowledge\(/,
-        'terminal closure must not acknowledge user attention'
-    );
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
     assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?runSafeAiSessionRuntimeLifecycleTask\([\s\S]*?'evaluate-attention-active-terminal'[\s\S]*?\}\)/);
     assert.ok(!dashboard.includes('void evaluateAiSessionAttention()'));
@@ -4973,7 +4958,6 @@ function runWebviewContentChecks() {
     assert.ok(webviewProjectScripts.includes("type: 'request-active-ai-session-terminal'"));
     assert.ok(webviewProjectScripts.includes("message.type === 'active-ai-session-terminal-changed'"));
     assert.ok(webviewProjectScripts.includes('data-ai-session-active-terminal'));
-    assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal)'));
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.sync()'));
     assert.ok(dashboard.includes('onVisibleChanged: async visible =>'));
     assert.ok(dashboard.includes('activeAiSessionTerminalHighlighter.setVisible(visible)'));
@@ -6539,161 +6523,6 @@ function runBatchAiSessionWebviewChecks() {
     assert.notStrictEqual(collapseExitIndex, -1);
     assert.notStrictEqual(collapseMessageIndex, -1);
     assert.ok(collapseExitIndex < collapseMessageIndex);
-}
-
-// ARCH-AI-SESSION-INCREMENTAL-REFRESH-SOURCE-001
-function runAiSessionIncrementalRefreshSourceChecks() {
-    const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
-    const readCoordinatorPath = path.join(__dirname, '..', 'src', 'aiSessions', 'readCoordinator.ts');
-    assert.ok(fs.existsSync(readCoordinatorPath));
-    const readCoordinatorSource = fs.readFileSync(readCoordinatorPath, 'utf8');
-    const viewModelsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'viewModels.ts');
-    assert.ok(fs.existsSync(viewModelsPath));
-    const viewModelsSource = fs.readFileSync(viewModelsPath, 'utf8');
-    const projectHydrationPath = path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydration.ts');
-    assert.ok(fs.existsSync(projectHydrationPath));
-    const projectHydrationSource = fs.readFileSync(projectHydrationPath, 'utf8');
-    const projectCandidatesPath = path.join(__dirname, '..', 'src', 'aiSessions', 'projectCandidates.ts');
-    assert.ok(fs.existsSync(projectCandidatesPath));
-    const projectCandidatesSource = fs.readFileSync(projectCandidatesPath, 'utf8');
-    const sessionPathsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'sessionPaths.ts');
-    assert.ok(fs.existsSync(sessionPathsPath));
-    const sessionPathsSource = fs.readFileSync(sessionPathsPath, 'utf8');
-    const pendingTerminalsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'pendingTerminals.ts');
-    assert.ok(fs.existsSync(pendingTerminalsPath));
-    const pendingTerminalsSource = fs.readFileSync(pendingTerminalsPath, 'utf8');
-    const pendingTerminalResolverPath = path.join(__dirname, '..', 'src', 'aiSessions', 'pendingTerminalResolver.ts');
-    assert.ok(fs.existsSync(pendingTerminalResolverPath));
-    const pendingTerminalResolverSource = fs.readFileSync(pendingTerminalResolverPath, 'utf8');
-    const terminalCandidatesPath = path.join(__dirname, '..', 'src', 'aiSessions', 'terminalCandidates.ts');
-    assert.ok(fs.existsSync(terminalCandidatesPath));
-    const terminalCandidatesSource = fs.readFileSync(terminalCandidatesPath, 'utf8');
-    const scanOptionsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'scanOptions.ts');
-    assert.ok(fs.existsSync(scanOptionsPath));
-    const scanOptionsSource = fs.readFileSync(scanOptionsPath, 'utf8');
-    const terminalCwdPath = path.join(__dirname, '..', 'src', 'aiSessions', 'terminalCwd.ts');
-    assert.ok(fs.existsSync(terminalCwdPath));
-    const terminalCwdSource = fs.readFileSync(terminalCwdPath, 'utf8');
-    const workspaceHelpersPath = path.join(__dirname, '..', 'src', 'projects', 'workspaceHelpers.ts');
-    assert.ok(fs.existsSync(workspaceHelpersPath));
-    const workspaceHelpersSource = fs.readFileSync(workspaceHelpersPath, 'utf8');
-    const typesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'types.ts'), 'utf8');
-    assert.ok(typesSource.includes('scannedFiles: number;'));
-    assert.ok(typesSource.includes('parsedFiles: number;'));
-    assert.ok(typesSource.includes('maxFiles?: number;'));
-    assert.ok(typesSource.includes('reason?: string;'));
-    const providersSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'providers.ts'), 'utf8');
-    assert.ok(providersSource.includes('export interface AiSessionProviderRegistry'));
-    assert.ok(providersSource.includes('export function createAiSessionProviderRegistry('));
-    assert.ok(providersSource.includes('providers(): AiSessionProvider[]'));
-    assert.ok(!dashboard.includes('AI_SESSION_PROVIDER_IDS'));
-    const controllerPath = path.join(__dirname, '..', 'src', 'aiSessions', 'dashboardController.ts');
-    assert.ok(fs.existsSync(controllerPath));
-    const controllerSource = fs.readFileSync(controllerPath, 'utf8');
-    assert.ok(controllerSource.includes('export class AiSessionDashboardController'));
-    assert.ok(controllerSource.includes('scheduleRefresh('));
-    assert.ok(controllerSource.includes('setWatchersActive('));
-    assert.ok(controllerSource.includes('buildAiSessionsUpdatedMessage'));
-    assert.ok(dashboard.includes('AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS'));
-    assert.ok(dashboard.includes('watcherRefreshMinIntervalMs: AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS'));
-    const refreshFunction = extractFunctionBody(dashboard, 'refreshAiSessionViewsIncrementally');
-    assert.ok(refreshFunction.includes('aiSessionDashboardController.refreshNow()'));
-    assert.ok(controllerSource.includes("async refreshNow(reason = 'refresh'): Promise<void>"));
-    assert.ok(controllerSource.includes('const message = this.getUpdatedMessage(reason);'));
-    assert.ok(controllerSource.includes('this.options.postMessage(message).then(delivered =>'));
-    assert.ok(controllerSource.includes('if (!delivered)'));
-    assert.ok(controllerSource.includes('refresh: (reason: string) => void;'));
-    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-not-delivered');"));
-    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-post-error');"));
-    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-build-error');"));
-    const attentionControllerPath = path.join(__dirname, '..', 'src', 'aiSessions', 'attentionController.ts');
-    assert.ok(fs.existsSync(attentionControllerPath));
-    const attentionControllerSource = fs.readFileSync(attentionControllerPath, 'utf8');
-    const evaluateAttentionBody = extractMethodBody(attentionControllerSource, 'evaluate');
-    assert.ok(evaluateAttentionBody.includes('const providers = this.options.getProviders();'));
-    const projectHydrationControllerPath = path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydrationController.ts');
-    assert.ok(fs.existsSync(projectHydrationControllerPath));
-    const projectHydrationControllerSource = fs.readFileSync(projectHydrationControllerPath, 'utf8');
-    const hydrateOpenProjectsBody = extractMethodBody(projectHydrationControllerSource, 'hydrate');
-    assert.ok(hydrateOpenProjectsBody.includes('hydrateOpenProjectsWithAiSessions({'));
-    assert.ok(projectHydrationSource.includes('export function hydrateOpenProjectsWithAiSessions('));
-    assert.ok(projectHydrationSource.includes('prepareAiSessionsForDisplay('));
-    assert.ok(projectHydrationSource.includes('getAttentionSessionLookupKey('));
-    assert.ok(projectHydrationSource.includes('function getActiveAiSessionProvider('));
-    assert.ok(!dashboard.includes('function getActiveAiSessionProvider('));
-    const openProjectViewModelBody = extractFunctionBody(dashboard, 'getOpenProjectAiSessionViewModel');
-    assert.ok(openProjectViewModelBody.includes('openProjectAiSessionViewModelBuilder.build({'));
-    assert.ok(viewModelsSource.includes('export function buildOpenProjectAiSessionViewModel('));
-    assert.ok(viewModelsSource.includes('export function createOpenProjectAiSessionViewModelBuilder('));
-    assert.ok(viewModelsSource.includes('sessionsByProvider[providerId]'));
-    assert.ok(viewModelsSource.includes('attentionCount: project.aiSessionAttentionCount ?? providers.reduce'));
-    const getAiSessionResultsBody = extractMethodBody(projectHydrationControllerSource, 'getAiSessionResults');
-    assert.ok(!dashboard.includes('function getAiSessionResults('));
-    assert.ok(getAiSessionResultsBody.includes('this.options.readCoordinator.getResults('));
-    assert.ok(projectHydrationControllerSource.includes("from './scanOptions'"));
-    assert.ok(hydrateOpenProjectsBody.includes('const maxFiles = getAiSessionScanMaxFiles(reason, this.options.incrementalScanMaxFiles);'));
-    assert.ok(getAiSessionResultsBody.includes('candidatePaths, reason, maxFiles'));
-    assert.ok(projectCandidatesSource.includes('export function getAiSessionOpenProjectCandidates'));
-    assert.ok(projectCandidatesSource.includes('export function getAiSessionCandidatePaths'));
-    assert.ok(projectCandidatesSource.includes('export function getOpenProjectAiSessionKey('));
-    assert.ok(projectCandidatesSource.includes('export function getOpenProjectTerminalCwd('));
-    assert.ok(sessionPathsSource.includes('export function getProjectAiSessions('));
-    assert.ok(sessionPathsSource.includes('export function getAiSessionTerminalCwd('));
-    assert.ok(sessionPathsSource.includes('export function getAiSessionComparableCwd('));
-    assert.ok(sessionPathsSource.includes('export function getAiSessionTerminalName('));
-    assert.ok(pendingTerminalsSource.includes('export function getAiSessionIdsForCwd('));
-    assert.ok(pendingTerminalsSource.includes('export function findPendingAiSessionTerminalMatch('));
-    assert.ok(pendingTerminalResolverSource.includes('export async function resolvePendingAiSessionTerminals'));
-    assert.ok(pendingTerminalResolverSource.includes('runtimeCoordinator.promotePending('));
-    assert.ok(pendingTerminalResolverSource.includes('options.settlePending'));
-    assert.ok(!pendingTerminalResolverSource.includes('replacePendingTerminals'));
-    assert.ok(terminalCandidatesSource.includes('export function getAiSessionTerminalCandidates('));
-    assert.ok(terminalCandidatesSource.includes("reason: 'terminal-candidates'"));
-    assert.ok(scanOptionsSource.includes('export function getAiSessionScanMaxFiles('));
-    assert.ok(scanOptionsSource.includes("reason === 'alias-original-name'"));
-    assert.ok(scanOptionsSource.includes("reason === 'terminal-candidates'"));
-    assert.ok(terminalCwdSource.includes('export function getUsableTerminalCwd('));
-    assert.ok(workspaceHelpersSource.includes('export function getWorkspacePath('));
-    assert.ok(workspaceHelpersSource.includes('export function getWorkspaceUri('));
-    assert.ok(workspaceHelpersSource.includes('export function getWorkspaceUris('));
-    assert.ok(!dashboard.includes('function getCodexOpenProjectCandidates('));
-    assert.ok(!dashboard.includes('function normalizeCodexComparablePath('));
-    assert.ok(!dashboard.includes('function getProjectAiSessions('));
-    assert.ok(!dashboard.includes('function getAiSessionTerminalCwd('));
-    assert.ok(!dashboard.includes('function getAiSessionComparableCwd('));
-    assert.ok(!dashboard.includes('function getAiSessionTerminalName('));
-    assert.ok(!dashboard.includes('function getAiSessionIdsForCwd('));
-    assert.ok(!dashboard.includes('function findPendingAiSessionTerminalMatch('));
-    assert.ok(!dashboard.includes('function resolvePendingAiSessionTerminals('));
-    assert.ok(!dashboard.includes('function getTrackedAiSessionTerminalKeys('));
-    assert.ok(!dashboard.includes('function getAiSessionTerminalCandidates('));
-    assert.ok(!dashboard.includes('function getAiSessionScanMaxFiles('));
-    assert.ok(!dashboard.includes('function getUsableTerminalCwd('));
-    assert.ok(!dashboard.includes('function getAiSessionTerminalMarkerPath('));
-    assert.ok(!dashboard.includes('function getPendingAiSessionTerminalMarkerPath('));
-    assert.ok(!dashboard.includes('function getWorkspacePath('));
-    assert.ok(!dashboard.includes('function getWorkspaceUri('));
-    assert.ok(!dashboard.includes('function getWorkspaceUris('));
-    const getAiSessionAssignmentsBody = extractMethodBody(projectHydrationControllerSource, 'getAiSessionAssignments');
-    assert.ok(!dashboard.includes('function getAiSessionAssignments('));
-    assert.ok(getAiSessionAssignmentsBody.includes('this.options.readCoordinator.getAssignments('));
-    assert.ok(!dashboard.includes('function withAiSessions('));
-    assert.ok(!dashboard.includes('function trackPendingAiSessionTerminal('));
-    assert.strictEqual((dashboard.match(/\.service\.getSessions\(/g) || []).length, 0);
-    assert.strictEqual(dashboard.includes('function getProviderAiSessions('), false);
-    assert.ok(readCoordinatorSource.includes('export class AiSessionReadCoordinator'));
-    assert.ok(readCoordinatorSource.includes("event: 'ai-session-scan'"));
-    assert.ok(readCoordinatorSource.includes('durationMs: this.now() - startedAt'));
-    assert.ok(readCoordinatorSource.includes('scannedFileCount: result.scannedFiles'));
-    assert.ok(readCoordinatorSource.includes('parsedFileCount: result.parsedFiles'));
-    assert.ok(readCoordinatorSource.includes('scanBudget: normalizedOptions.maxFiles || null'));
-    assert.ok(controllerSource.includes("this.scheduleRefresh('watcher')"));
-    assert.ok(controllerSource.includes("this.refreshNow('new-session')"));
-    assert.ok(controllerSource.includes('private newSessionRefreshTimeouts: NodeJS.Timeout[] = []'));
-    assert.ok(controllerSource.includes('let firedSynchronously = false'));
-    assert.ok(controllerSource.includes('this.newSessionRefreshTimeouts.push(timeout)'));
-    assert.ok(controllerSource.includes('for (let timeout of this.newSessionRefreshTimeouts)'));
-    assert.ok(controllerSource.includes('this.options.clearTimeout(timeout)'));
 }
 
 // ARCH-AI-SESSION-READ-COORDINATOR-001
@@ -9292,7 +9121,6 @@ async function main() {
     runAttentionProjectRenderingChecks();
     runFavoriteDndChecks();
     runBatchAiSessionWebviewChecks();
-    runAiSessionIncrementalRefreshSourceChecks();
     runAiSessionReadCoordinatorChecks();
     runOpenProjectAiSessionViewModelBuilderChecks();
     runAiSessionProjectHydrationChecks();

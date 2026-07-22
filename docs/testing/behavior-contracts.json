@@ -699,10 +699,10 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "scripts/run-architecture-guards.js"
     ],
     "evidence": [
-      "scripts/run-ai-session-safety-checks.js"
+      "src/aiSessions/dashboardController.ts"
     ]
   },
   {
@@ -1317,10 +1317,11 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/openProjects/protocol.test.js"
+      "tests/contract/openProjects/protocol.test.js",
+      "scripts/run-architecture-guards.js"
     ],
     "evidence": [
-      "scripts/run-open-project-safety-checks.js"
+      "src/openProjects/protocol.ts"
     ]
   },
   {
@@ -1620,7 +1621,7 @@
       "tests/contract/openProjects/coordinator.test.js"
     ],
     "evidence": [
-      "scripts/run-open-project-safety-checks.js"
+      "extensions/attention-ui-bridge/src/openProjectCoordinator.ts"
     ]
   },
   {
@@ -1633,7 +1634,7 @@
       "tests/contract/openProjects/coordinator.test.js"
     ],
     "evidence": [
-      "scripts/run-open-project-safety-checks.js"
+      "extensions/attention-ui-bridge/src/openProjectCoordinator.ts"
     ]
   },
   {
@@ -1646,7 +1647,7 @@
       "tests/integration/dashboard/openProjectFlow.test.js"
     ],
     "evidence": [
-      "scripts/run-open-project-safety-checks.js"
+      "extensions/attention-ui-bridge/src/extension.ts"
     ]
   },
   {
@@ -2094,16 +2095,71 @@
     ]
   },
   {
-    "id": "ARCH-SOURCE-CONTRACT-001",
+    "id": "ARCH-AI-SESSION-SCAN-BOUNDARY-001",
     "domain": "architecture",
-    "title": "Source Contract behavior",
+    "title": "AI session discovery keeps a bounded scan budget",
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "scripts/run-architecture-guards.js",
+      "tests/unit/tooling/architectureGuards.test.js"
     ],
     "evidence": [
-      "scripts/run-dashboard-webview-checks.js"
+      "src/aiSessions/projectHydrationController.ts"
+    ]
+  },
+  {
+    "id": "ARCH-AI-SESSION-FALLBACK-REASON-001",
+    "domain": "architecture",
+    "title": "Runtime fallback paths retain explicit diagnostic reasons",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "scripts/run-architecture-guards.js"
+    ],
+    "evidence": [
+      "src/dashboard.ts"
+    ]
+  },
+  {
+    "id": "ARCH-PROVIDER-REGISTRY-COMPLETENESS-001",
+    "domain": "architecture",
+    "title": "Provider registry covers every supported provider",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "scripts/run-architecture-guards.js"
+    ],
+    "evidence": [
+      "src/aiSessions/providers.ts"
+    ]
+  },
+  {
+    "id": "ARCH-RELEASE-IDENTITY-001",
+    "domain": "architecture",
+    "title": "Main and UI Bridge release identities remain connected",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "scripts/run-architecture-guards.js"
+    ],
+    "evidence": [
+      "package.json",
+      "extensions/attention-ui-bridge/package.json"
+    ]
+  },
+  {
+    "id": "ARCH-CI-QUALITY-GATE-001",
+    "domain": "architecture",
+    "title": "Linux quality gate runs architecture guards after one compile",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/tooling/ciContracts.test.js"
+    ],
+    "evidence": [
+      "package.json",
+      "scripts/lib/ciContracts.js"
     ]
   },
   {

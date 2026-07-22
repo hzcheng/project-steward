@@ -707,8 +707,8 @@ function createDndHarness({ projectContainers = [], todoGroups = [], todoLists =
             if (selector === '.groups-wrapper') return [{}];
             if (selector === '.todo-groups') return todoGroups;
             if (selector === '.todo-list') return todoLists;
+            if (selector === '.todo-groups > .todo-group[data-todo-group-id]') return groupElements;
             if (selector === '.groups-wrapper > [data-group-id]:not([data-virtual-group])') return groupElements;
-            if (selector === '.groups-wrapper >') return groupElements;
             return [];
         },
     };
@@ -767,6 +767,7 @@ test('TODO-TODO-ORDERING-INTERACTION-001 constrains TODO drag state and posts ex
     const harness = createDndHarness({
         todoGroups: [todoGroupsContainer],
         todoLists: [todoList],
+        groupElements,
     });
 
     const todoGroupElement = { matches: selector => selector === '.todo-group' };
@@ -788,7 +789,7 @@ test('TODO-TODO-ORDERING-INTERACTION-001 constrains TODO drag state and posts ex
     harness.drakes[2].handlers.drop();
     harness.drakes[3].handlers.drop({}, todoList, todoList);
     assert.deepEqual(toPlain(harness.messages), [
-        { type: 'todo-reorder-groups', groupIds: [] },
+        { type: 'todo-reorder-groups', groupIds: ['group-b', 'group-a'] },
         { type: 'todo-reorder-items', groupId: 'group-a', todoIds: ['todo-b', 'todo-a'] },
     ]);
 

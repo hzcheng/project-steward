@@ -122,7 +122,15 @@ function validateSafetyScripts(scripts) {
         'ordinary safety CI must never start a real tmux server');
 }
 
+function validateQualityGateScripts(scripts) {
+    assert.equal(scripts['test:architecture-guards'], 'node scripts/run-architecture-guards.js',
+        'test:architecture-guards must run the architecture guard entry point exactly');
+    assert.ok(includesShellCommand(scripts['test:ci:linux'], 'npm run test:architecture-guards'),
+        'test:ci:linux must invoke npm run test:architecture-guards');
+}
+
 module.exports = {
+    validateQualityGateScripts,
     validateSafetyScripts,
     validateVerifyWorkflow,
 };

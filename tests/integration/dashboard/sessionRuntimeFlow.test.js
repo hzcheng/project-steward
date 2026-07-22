@@ -1,8 +1,6 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
 const { createFakeClock } = require('../../helpers/fakeClock');
 const { loadFreshWithFakeVscode } = require('../../helpers/runtimeContract');
@@ -196,7 +194,7 @@ test('WEBVIEW-AI-SESSION-DASHBOARD-UNCHANGED-MESSAGE-SKIP-001 retries an unchang
     assert.ok(diagnostics.some(event => event.event === 'ai-session-message-skip'));
 });
 
-test('WEBVIEW-ACTIVE-AI-SESSION-TERMINAL-HIGHLIGHT-001 terminal completion triggers handoff while close only clears focus', () => {
+test('WEBVIEW-ACTIVE-AI-SESSION-TERMINAL-HIGHLIGHT-001 ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 terminal close clears focus without publishing completion', () => {
     const terminal = { name: 'fixture terminal' };
     let activeTerminal = terminal;
     let complete = false;
@@ -228,16 +226,4 @@ test('WEBVIEW-ACTIVE-AI-SESSION-TERMINAL-HIGHLIGHT-001 terminal completion trigg
     timers.find(timer => timer.active).callback();
     assert.equal(completionCount, 1);
     assert.equal(publications.pop(), null);
-});
-
-test('ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 terminal-close dashboard flow never acknowledges unread attention', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../src/dashboard.ts'), 'utf8');
-    const start = source.indexOf('vscode.window.onDidCloseTerminal(terminal => {');
-    const end = source.indexOf('context.subscriptions.push(activeAiSessionTerminalHighlighter);', start);
-    assert.ok(start >= 0 && end > start, 'terminal-close lifecycle boundary must remain discoverable');
-    const handler = source.slice(start, end);
-    assert.match(handler, /aiSessionRuntimeCoordinator\.handleClosedTerminal\(terminal\)/);
-    assert.doesNotMatch(handler,
-        /acknowledgeAiSessionAttention\(|aiSessionAttentionController\.acknowledge\(|aiSessionAttentionBridgeClient\.acknowledge\(/,
-        'closing a terminal must not acknowledge user attention');
 });

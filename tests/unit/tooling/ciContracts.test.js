@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const {
+    validateQualityGateScripts,
     validateSafetyScripts,
     validateVerifyWorkflow,
 } = require('../../../scripts/lib/ciContracts');
@@ -13,6 +14,10 @@ const verifyWorkflow = fs.readFileSync(
     path.resolve(__dirname, '../../../.github/workflows/verify.yml'),
     'utf8'
 );
+const packageScripts = JSON.parse(fs.readFileSync(
+    path.resolve(__dirname, '../../../package.json'),
+    'utf8'
+)).scripts;
 
 test('RELEASE-VSIX-PACKAGING-001 accepts the unquoted GitHub Actions on key', () => {
     assert.doesNotThrow(() => validateVerifyWorkflow(verifyWorkflow));
@@ -80,4 +85,15 @@ test('RUNTIME-TMUX-SMOKE-HARNESS-SAFETY-001 requires the developer wrapper to in
         'test:safety': 'npm run test-compile',
         'test:safety:run': 'node scripts/run-ai-session-tmux-checks.js',
     }), /test:safety must invoke npm run test:safety:run/);
+});
+
+test('ARCH-CI-QUALITY-GATE-001 requires architecture guards in the compile-once Linux chain', () => {
+    assert.throws(() => validateQualityGateScripts({
+        'test:ci:linux': 'npm run test-compile && npm run test:safety:run',
+        'test:architecture-guards': 'node scripts/run-architecture-guards.js',
+    }), /test:ci:linux must invoke npm run test:architecture-guards/);
+});
+
+test('ARCH-CI-QUALITY-GATE-001 keeps the repository Linux quality chain wired exactly', () => {
+    assert.doesNotThrow(() => validateQualityGateScripts(packageScripts));
 });
