@@ -7584,6 +7584,32 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
         /exact registered owned temporary root/,
         'successful deletion must revoke the descriptor registration'
     );
+
+    const removedThenFailedRoot = smokeHarness.createOwnedTemporaryRoot(
+        'project-steward-tmux-smoke-'
+    );
+    const removeThenThrowFileSystem = Object.create(fs);
+    removeThenThrowFileSystem.rmSync = (targetPath, options) => {
+        fs.rmSync(targetPath, options);
+        throw new Error(`injected post-delete failure: ${targetPath}`);
+    };
+    assert.throws(
+        () => smokeHarness.removeOwnedTemporaryRoot(removedThenFailedRoot, {
+            fileSystem: removeThenThrowFileSystem,
+        }),
+        error => error
+            && error.message === 'The quarantined owned temporary root could not be removed.'
+            && !error.message.includes(removedThenFailedRoot.path)
+    );
+    assert.strictEqual(fs.existsSync(removedThenFailedRoot.path), false);
+    assert.throws(
+        () => smokeHarness.removeOwnedTemporaryRoot(removedThenFailedRoot),
+        error => error
+            && /exact registered owned temporary root/.test(error.message)
+            && !error.message.includes(removedThenFailedRoot.path)
+            && !error.message.includes('ENOENT'),
+        'a post-delete throw must still terminate registration without leaking the quarantine path'
+    );
     const cleanupStages = [
         'captureSocket', 'killServer', 'verifyStopped',
         'removeSocket', 'terminateProviders', 'removeFixtures',

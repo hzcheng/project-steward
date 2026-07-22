@@ -64,20 +64,33 @@ function validateOwnedTemporaryRoot(ownership, fileSystem = fs, candidatePath) {
             'Cleanup requires a validated owned temporary root: the exact registered owned temporary root object.'
         );
     }
+    let temporaryParentPath;
+    try {
+        temporaryParentPath = fileSystem.realpathSync(os.tmpdir());
+    } catch (error) {
+        throw new Error('The owned temporary root identity could not be verified.');
+    }
     if (!OWNED_TEMP_PREFIXES.has(metadata.prefix)
         || !path.isAbsolute(metadata.rootPath)
         || path.dirname(metadata.rootPath) !== metadata.parentPath
         || path.dirname(metadata.quarantinePath) !== metadata.parentPath
-        || fileSystem.realpathSync(os.tmpdir()) !== metadata.parentPath
+        || temporaryParentPath !== metadata.parentPath
         || !path.basename(metadata.rootPath).startsWith(metadata.prefix)
         || metadata.quarantinePath === metadata.rootPath) {
         throw new Error('The owned temporary root failed path validation.');
     }
     const verifiedPath = candidatePath || (metadata.state === 'quarantined'
         ? metadata.quarantinePath : metadata.rootPath);
-    const stat = fileSystem.lstatSync(verifiedPath);
+    let stat;
+    let realPath;
+    try {
+        stat = fileSystem.lstatSync(verifiedPath);
+        realPath = fileSystem.realpathSync(verifiedPath);
+    } catch (error) {
+        throw new Error('The owned temporary root identity could not be verified.');
+    }
     if (!stat.isDirectory() || stat.isSymbolicLink()
-        || fileSystem.realpathSync(verifiedPath) !== verifiedPath
+        || realPath !== verifiedPath
         || stat.dev !== metadata.device || stat.ino !== metadata.inode) {
         throw new Error('The owned temporary root identity changed before cleanup.');
     }
@@ -115,10 +128,24 @@ function removeOwnedTemporaryRoot(ownership, dependencies = {}) {
     try {
         fileSystem.rmSync(metadata.quarantinePath, { recursive: true, force: true });
     } catch (error) {
+        try {
+            if (!fileSystem.existsSync(metadata.quarantinePath)) {
+                ownedTemporaryRoots.delete(ownership);
+            }
+        } catch (statusError) {
+            // Retain registration when the final quarantine state cannot be verified.
+        }
         throw new Error('The quarantined owned temporary root could not be removed.');
     }
-    assert.strictEqual(fileSystem.existsSync(metadata.quarantinePath), false,
-        'the validated owned temporary root must be absent after cleanup');
+    let quarantineStillExists;
+    try {
+        quarantineStillExists = fileSystem.existsSync(metadata.quarantinePath);
+    } catch (error) {
+        throw new Error('The quarantined owned temporary root state could not be verified.');
+    }
+    if (quarantineStillExists) {
+        throw new Error('The quarantined owned temporary root remained after cleanup.');
+    }
     ownedTemporaryRoots.delete(ownership);
 }
 
