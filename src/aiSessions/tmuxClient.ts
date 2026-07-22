@@ -760,7 +760,8 @@ function isMissingSessionResult(result: TmuxCommandResult): boolean {
     const stderr = result.stderr.trim();
     return /^can't find session: .+$/.test(stderr)
         || /^no server running on \S.*$/.test(stderr)
-        || stderr === 'no sessions';
+        || stderr === 'no sessions'
+        || stderr === 'no current target';
 }
 
 function isMissingTargetResult(result: TmuxCommandResult): boolean {

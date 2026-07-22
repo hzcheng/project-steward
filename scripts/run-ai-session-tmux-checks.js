@@ -1221,11 +1221,16 @@ async function runTmuxClientChecks() {
             if (args[0] === 'list-windows') {
                 return { exitCode: 1, stdout: '', stderr: 'no current target\n' };
             }
+            if (args[0] === 'has-session') {
+                return { exitCode: 1, stdout: '', stderr: 'no current target\n' };
+            }
             return { exitCode: 0, stdout: '', stderr: '' };
         },
     });
     assert.deepStrictEqual(await emptyServerClient.listWindows(), [],
         'an empty tmux server with no current target must discover zero windows');
+    assert.strictEqual(await emptyServerClient.hasSession('absent'), false,
+        'an empty tmux server with no current target must report sessions as absent');
     await client.selectWindow({
         layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-b',
     });
