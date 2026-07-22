@@ -109,7 +109,7 @@ function validateScheduledWorkflow(workflow) {
     assert.strictEqual(containsKey(workflow, 'continue-on-error'), false,
         'scheduled verification must not define continue-on-error');
     assert.ok(Array.isArray(job.steps), 'scheduled-macos steps must be an array');
-    assert.strictEqual(job.steps.length, 8, 'scheduled-macos must define exactly eight allowed steps');
+    assert.strictEqual(job.steps.length, 9, 'scheduled-macos must define exactly nine allowed steps');
     const checkout = job.steps[0];
     assert.ok(isMapping(checkout), 'scheduled-macos checkout step must be a mapping');
     assertExactKeys(checkout, ['name', 'uses'], 'scheduled-macos checkout step');
@@ -132,6 +132,7 @@ function validateScheduledWorkflow(workflow) {
         'npm run test:deterministic:run',
         'npm run lint:ci',
         'npm run test:release-packaging',
+        'npm run test:extension-host',
     ];
     for (const [index, command] of commands.entries()) {
         const step = job.steps[index + 2];
@@ -203,6 +204,11 @@ function run() {
 
     assert.ok(mainPackage.scripts['package:release'], 'package.json must define package:release');
     assert.ok(mainPackage.scripts['test:release-packaging'], 'package.json must define test:release-packaging');
+    assert.strictEqual(mainPackage.scripts['test:extension-host'],
+        'npm run vscode:prepublish && npm run attention:bridge:bundle && node scripts/run-extension-host-tests.js',
+        'package.json must define the reviewed Extension Host runner');
+    assert.strictEqual(mainPackage.devDependencies['@vscode/test-electron'], '3.0.0',
+        '@vscode/test-electron must remain an exact direct development dependency');
 
     const releasePackager = readText('scripts/package-release-extensions.js');
     assertIncludes(releasePackager, 'extensions\', \'attention-ui-bridge', 'release packager');
@@ -261,6 +267,9 @@ function run() {
     assertWorkflowMutationRejected(validateScheduledWorkflow, scheduled,
         value => { value.jobs['scheduled-macos'].steps.push({ uses: 'actions/upload-artifact@v4' }); },
         'artifact upload must be rejected');
+    assertWorkflowMutationRejected(validateScheduledWorkflow, scheduled,
+        value => { value.jobs['scheduled-macos'].steps.pop(); },
+        'Extension Host step removal must be rejected');
     assertWorkflowMutationRejected(validateScheduledWorkflow, scheduled,
         value => { value.jobs['scheduled-macos'].permissions = { contents: 'write' }; },
         'scheduled job write permission must be rejected');

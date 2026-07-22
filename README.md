@@ -207,6 +207,14 @@ Run all deterministic unit, contract, and integration suites:
 npm run test:deterministic
 ```
 
+The weekly/manual macOS workflow also runs a real Extension Host smoke against pinned VS Code Stable `1.130.0`. It loads both the main workspace extension and the UI bridge from this checkout, activates them, and verifies the main command/view lifecycle with isolated temporary user data, extensions, workspace, home, and provider directories:
+
+```bash
+npm run test:extension-host
+```
+
+This downloads the fixed VS Code test build when it is not cached and requires a host capable of launching Electron. It is intentionally scheduled rather than part of the Linux pull-request gate.
+
 Run the real-tmux smoke test on a POSIX host with tmux installed. The harness uses and cleans up a uniquely named test server; it never uses the default tmux server:
 
 ```bash

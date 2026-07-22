@@ -2422,6 +2422,22 @@
     "manualReason": "Requires interactive VS Code terminal focus observation across multiple live terminals."
   },
   {
+    "id": "RELEASE-SCHEDULED-EXTENSION-HOST-001",
+    "domain": "release",
+    "title": "Scheduled macOS verification activates both production extensions in pinned stable VS Code",
+    "priority": "P0",
+    "status": "scheduled",
+    "owners": [
+      "tests/extension-host/suite/index.js"
+    ],
+    "evidence": [
+      ".github/workflows/scheduled-verification.yml",
+      "scripts/run-extension-host-tests.js",
+      "package.json",
+      "extensions/attention-ui-bridge/package.json"
+    ]
+  },
+  {
     "id": "RUNTIME-SLEEP-DISCONNECT-RECOVERY-001",
     "domain": "runtime",
     "title": "Sleep and remote disconnect recover without duplicate or stale runtime state",

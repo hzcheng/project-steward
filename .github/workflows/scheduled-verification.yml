@@ -33,3 +33,5 @@ jobs:
         run: npm run lint:ci
       - name: Verify release packaging contracts
         run: npm run test:release-packaging
+      - name: Run stable Extension Host smoke
+        run: npm run test:extension-host

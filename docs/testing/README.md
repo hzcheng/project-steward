@@ -43,6 +43,8 @@ npm run test:deterministic
 PROJECT_STEWARD_TMUX_PATH=/usr/bin/tmux npm run test:tmux:smoke
 ```
 
+The scheduled macOS gate additionally runs `npm run test:extension-host` with the exact direct `@vscode/test-electron` dependency and pinned VS Code Stable `1.130.0`. The launcher supplies both extension development roots so `hzcheng.project-steward` and its `hzcheng.project-steward-attention-ui-bridge` dependency are discoverable and activatable in the real Extension Host. Its temporary workspace, user data, extension directory, HOME/XDG roots, provider homes, and two-minute suite timeout are isolated and self-cleaning. This real Electron scenario runs only in `.github/workflows/scheduled-verification.yml`, not in the Linux pull-request gate.
+
 The Linux CI-equivalent command compiles once and runs behavior-catalog validation, the lint and coverage ratchets, deterministic and compatibility suites, architecture guards, production bundling, and release-package checks:
 
 ```bash

@@ -2,7 +2,7 @@
 
 ## Scope and revision
 
-Verification was performed on 2026-07-23 against source commit `6406f090fe2cdb6fad4a545dba81708dae0a11ea` on `feat/refactor-and-ci`. This report and the two developer-documentation updates are committed immediately on top of that verified revision; no production source, workflow, baseline, package metadata, or repository setting is changed by the documentation commit.
+The original full verification was performed on 2026-07-23 against source commit `6406f090fe2cdb6fad4a545dba81708dae0a11ea` on `feat/refactor-and-ci`. A later follow-up on this branch adds the scheduled real Extension Host smoke, its exact test dependency, contract, and documentation; the original command table below remains evidence for the earlier verified revision and does not claim that the new macOS scenario has already run in GitHub Actions.
 
 Environment: Linux, Node.js 22.12.0, npm 10.9.0, and tmux 3.2a. The test process used isolated temporary provider roots. This report intentionally omits local absolute paths, provider prompts, session content, and temporary resource names.
 
@@ -26,13 +26,13 @@ An additional isolation audit ran `test:deterministic:run`, `test:safety:run`, a
 
 ## Behavior and quality baselines
 
-The validated catalog contains 185 contracts:
+The validated catalog contains 186 contracts after adding the scheduled Extension Host scenario:
 
 | Dimension | Counts |
 | --- | --- |
-| Domain | architecture 11; attention 16; error 2; open-project 21; persistence 17; project 19; release 1; runtime 21; session 31; todo 23; webview 23 |
-| Priority | P0 12; P1 173; P2 0 |
-| Status | automated 177; manual 8; scheduled 0 |
+| Domain | architecture 11; attention 16; error 2; open-project 21; persistence 17; project 19; release 2; runtime 21; session 31; todo 23; webview 23 |
+| Priority | P0 13; P1 173; P2 0 |
+| Status | automated 177; manual 8; scheduled 1 |
 
 Each catalog entry has one valid `status`; automated owners contain the behavior ID, and every manual entry has a non-empty reason and is owned by the versioned manual matrix.
 
@@ -51,7 +51,9 @@ The fresh result meets or exceeds every stored coverage baseline. Behavior IDs r
 
 The eight manual contracts cover interactive multi-window focus and same-workspace identity, Remote SSH reconnect, WSL identity, Dev Container lifecycle, attention visuals/accessibility, live terminal focus, and operating-system sleep or remote-disconnect recovery. They were **not executed as part of this verification** and must not be treated as passing evidence.
 
-Execute them according to [`docs/manual-tests/cross-platform-remote-matrix.md`](../../manual-tests/cross-platform-remote-matrix.md), recording the execution date; OS, VS Code, remote-extension, provider, and extension versions; host placement; result; and redacted evidence. The scheduled workflow covers macOS deterministic checks, but this local Linux run does not establish a macOS result. No stable interactive Extension Host harness is configured in the scheduled workflow; interactive Extension Host, SSH, WSL, Dev Container, visual, multi-window, sleep, and transport-interruption scenarios remain environment-only limitations owned by the manual matrix.
+Execute them according to [`docs/manual-tests/cross-platform-remote-matrix.md`](../../manual-tests/cross-platform-remote-matrix.md), recording the execution date; OS, VS Code, remote-extension, provider, and extension versions; host placement; result; and redacted evidence. The scheduled workflow now covers macOS deterministic checks plus a real dual-extension lifecycle on pinned VS Code Stable `1.130.0`; interactive SSH, WSL, Dev Container, visual, multi-window, sleep, and transport-interruption scenarios remain environment-only limitations owned by the manual matrix.
+
+The local Linux follow-up used Node.js 22.12.0 and npm 10.9.0 for `npm ci`, the 105-test unit run, release/schedule contracts, and behavior-catalog validation; those checks passed. It built both production extension bundles and downloaded the official fixed VS Code artifact before attempting the real Host. This host has neither `xvfb-run`/`Xvfb` nor the Electron runtime library `libnspr4.so`, so Electron exited 127 before the Extension Host could start. **CI pending first scheduled run**: this scenario is not recorded as PASS until the macOS scheduled/manual workflow completes it successfully.
 
 ## Branch-protection handoff
 
