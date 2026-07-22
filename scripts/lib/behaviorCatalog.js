@@ -69,12 +69,32 @@ function validateBehaviorCatalog(entries, options) {
                     errors.push(`${label} owner path must be repository-relative: ${owner}`);
                     continue;
                 }
-                if (!fs.existsSync(ownerPath)) {
-                    errors.push(`${label} has missing owner path ${owner}`);
+                let ownerStats;
+                try {
+                    ownerStats = fs.statSync(ownerPath);
+                } catch (error) {
+                    if (error && error.code === 'ENOENT') {
+                        errors.push(`${label} has missing owner path ${owner}`);
+                    } else {
+                        errors.push(`${label} cannot inspect owner path ${owner}: ${error.message}`);
+                    }
                     continue;
                 }
-                if (entry.status === 'automated' && !fs.readFileSync(ownerPath, 'utf8').includes(entry.id)) {
-                    errors.push(`${label} owner path ${owner} does not reference id ${entry.id}`);
+                if (!ownerStats.isFile()) {
+                    errors.push(`${label} owner path must be a regular file: ${owner}`);
+                    continue;
+                }
+                if (entry.status === 'automated') {
+                    let ownerContents;
+                    try {
+                        ownerContents = fs.readFileSync(ownerPath, 'utf8');
+                    } catch (error) {
+                        errors.push(`${label} cannot read owner path ${owner}: ${error.message}`);
+                        continue;
+                    }
+                    if (!ownerContents.includes(entry.id)) {
+                        errors.push(`${label} owner path ${owner} does not reference id ${entry.id}`);
+                    }
                 }
             }
         }

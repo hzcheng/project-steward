@@ -73,3 +73,29 @@ test('CATALOG-INTEGRITY-006 rejects manual behaviors without a manual reason', t
     });
     assert.ok(errors.some(error => error.includes('manualReason must be a non-empty string')));
 });
+
+test('CATALOG-INTEGRITY-007 rejects automated owner directories without throwing', t => {
+    const root = createRoot(t);
+    const owner = 'tests/unit/automated-owner-directory';
+    fs.mkdirSync(path.join(root, owner));
+    let errors;
+    assert.doesNotThrow(() => {
+        errors = validateBehaviorCatalog([automatedEntry({ owners: [owner] })], { repositoryRoot: root });
+    });
+    assert.ok(errors.some(error => error.includes(`owner path must be a regular file: ${owner}`)));
+});
+
+test('CATALOG-INTEGRITY-008 rejects manual owner directories without throwing', t => {
+    const root = createRoot(t);
+    const owner = 'tests/unit/manual-owner-directory';
+    fs.mkdirSync(path.join(root, owner));
+    let errors;
+    assert.doesNotThrow(() => {
+        errors = validateBehaviorCatalog([automatedEntry({
+            status: 'manual',
+            owners: [owner],
+            manualReason: 'Requires a human review.',
+        })], { repositoryRoot: root });
+    });
+    assert.ok(errors.some(error => error.includes(`owner path must be a regular file: ${owner}`)));
+});
