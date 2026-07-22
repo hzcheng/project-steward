@@ -2,7 +2,7 @@
     "name": "project-steward-attention-ui-bridge",
     "displayName": "Project Steward Attention UI Bridge",
     "description": "Local UI-host bridge for Project Steward AI session attention.",
-    "version": "0.1.3",
+    "version": "0.1.4",
     "publisher": "hzcheng",
     "license": "MIT",
     "repository": { "type": "git", "url": "https://github.com/hzcheng/project-steward.git" },

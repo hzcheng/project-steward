@@ -183,9 +183,16 @@ function readProviderInvocations(invocationLogPath) {
         .map(line => JSON.parse(line));
 }
 
-function resumeRequest(provider, projectKey, cwd, sessionId, fixture, terminalName) {
+function resumeRequest(provider, workspaceScopeIdentity, cwd, sessionId, fixture, terminalName) {
     return {
-        identity: { provider, projectKey, cwd, sessionId },
+        identity: {
+            provider,
+            workspaceScopeIdentity,
+            workspaceNavigationIdentity: workspaceScopeIdentity,
+            workspaceRootHostPaths: [cwd],
+            cwd,
+            sessionId,
+        },
         projectName: 'Smoke Project',
         terminalName,
         launch: { ...fixture.launch, cwd },
@@ -218,6 +225,38 @@ function locatorMatches(row, locator) {
         && (locator.layout === 'session' || row.windowName === locator.windowName);
 }
 
+function assertReadableLocator(locator, layout, sessionPrefix, windowPrefix) {
+    assert.strictEqual(locator.layout, layout);
+    assert.match(locator.sessionName, new RegExp(`^${sessionPrefix}-[0-9a-f]{8}$`));
+    assert.match(locator.windowName, new RegExp(`^${windowPrefix}-[0-9a-f]{8}$`));
+}
+
+async function assertNativeReadableLocators(runner, projectLocator, sessionLocator) {
+    assertReadableLocator(
+        projectLocator, 'project', 'ps-Smoke-Project', 'codex-session-one-special'
+    );
+    assertReadableLocator(
+        sessionLocator, 'session', 'ps-Smoke-Project-kimi-isolated-one',
+        'kimi-kimi-isolated-one'
+    );
+    const nativeSessions = await runner.run(configuredTmuxPath, [
+        'list-sessions', '-F', '#{session_name}',
+    ]);
+    const nativeWindows = await runner.run(configuredTmuxPath, [
+        'list-windows', '-a', '-F', '#{session_name}\t#{window_name}',
+    ]);
+    assert.strictEqual(nativeSessions.exitCode, 0, nativeSessions.stderr);
+    assert.strictEqual(nativeWindows.exitCode, 0, nativeWindows.stderr);
+    const sessionRows = nativeSessions.stdout.trim().split(/\r?\n/);
+    const windowRows = nativeWindows.stdout.trim().split(/\r?\n/);
+    for (const locator of [projectLocator, sessionLocator]) {
+        assert.ok(sessionRows.includes(locator.sessionName),
+            `native list-sessions must contain ${locator.sessionName}`);
+        assert.ok(windowRows.includes(`${locator.sessionName}\t${locator.windowName}`),
+            `native list-windows must contain ${locator.sessionName}:${locator.windowName}`);
+    }
+}
+
 async function assertPaneAlive(runner, locator) {
     const target = locator.windowName
         ? `${locator.sessionName}:${locator.windowName}`
@@ -240,17 +279,17 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
         sessionTwo: providerFixture(root, 'session-two', `${payload}:four`, fixtureRegistry),
         pending: providerFixture(root, 'pending', `${payload}:pending`, fixtureRegistry),
     };
-    const projectKey = "project:key with spaces ' ; $";
+    const workspaceScopeIdentity = "workspace:scope with spaces ' ; $";
     const terminals = [];
     const contextA = buildRuntimeContext(client, root, terminals);
     const contextB = buildRuntimeContext(client, root, terminals);
 
     const projectOneRequest = resumeRequest(
-        'codex', projectKey, cwd, "session one:';$", fixtures.projectOne,
+        'codex', workspaceScopeIdentity, cwd, 'session.one-special', fixtures.projectOne,
         'Project Steward: Smoke Project [tmux]'
     );
     const projectTwoRequest = resumeRequest(
-        'claude', projectKey, cwd, 'session-two.special:$', fixtures.projectTwo,
+        'claude', workspaceScopeIdentity, cwd, 'session-two.special', fixtures.projectTwo,
         'Project Steward: Smoke Project [tmux]'
     );
     const [projectOne, concurrentProjectOne] = await Promise.all([
@@ -279,7 +318,7 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
     const projectManagedSessions = new Set(rows.filter(row =>
         row.sessionMetadata.managed === '1'
         && row.sessionMetadata.layout === 'project'
-        && row.sessionMetadata.projectKey === projectKey
+        && row.sessionMetadata.workspaceScopeIdentity === workspaceScopeIdentity
     ).map(row => row.sessionName));
     assert.strictEqual(projectManagedSessions.size, 1,
         'project layout must have exactly one managed project session');
@@ -304,7 +343,7 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
     await freshProjectContext.discovery.refresh(true);
     assert.deepStrictEqual(
         freshProjectContext.discovery.getActive()
-            .filter(runtime => runtime.identity.projectKey === projectKey)
+            .filter(runtime => runtime.identity.workspaceScopeIdentity === workspaceScopeIdentity)
             .map(runtime => runtime.identity.sessionId).sort(),
         [projectOneRequest.identity.sessionId, projectTwoRequest.identity.sessionId].sort(),
         'a new production discovery instance must recover metadata-backed runtimes'
@@ -334,13 +373,21 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
         'session layout must create one independent tmux session per AI session');
     assert.ok(sessionRows.every(row => Object.keys(row.windowMetadata).sort().join(',')
         === 'layout,managed,version'), 'session-layout window metadata must remain base-only');
+    await assertNativeReadableLocators(runner, projectOne.tmux, sessionOne.tmux);
     await contextA.backend.detach(sessionOne);
     await assertPaneAlive(runner, sessionOne.tmux);
 
-    const pendingId = "pending:create ' ;$";
+    const pendingId = 'pending:create.special';
     const pendingCreatedAt = new Date().toISOString();
     const pending = await contextA.backend.ensurePending({
-        identity: { provider: 'claude', projectKey, cwd, pendingId },
+        identity: {
+            provider: 'claude',
+            workspaceScopeIdentity,
+            workspaceNavigationIdentity: workspaceScopeIdentity,
+            workspaceRootHostPaths: [cwd],
+            cwd,
+            pendingId,
+        },
         projectName: 'Smoke Project',
         terminalName: 'Project Steward: Smoke Project [tmux]',
         createdAt: pendingCreatedAt,
@@ -362,8 +409,10 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
         assert.strictEqual(records[0].payload, fixture.payload);
     }
     const pendingLocator = { ...pending.tmux };
-    const finalSessionId = "promoted:session ' ;$";
-    const promoted = await contextA.backend.promotePending(pendingId, finalSessionId);
+    const finalSessionId = 'promoted:session.special';
+    const promoted = await contextA.backend.promotePending(
+        pending.identity, finalSessionId, "Title with 'quotes' ; $HOME"
+    );
     assert.strictEqual(promoted.length, 1);
     assert.strictEqual(promoted[0].identity.sessionId, finalSessionId);
     rows = await client.listWindows();

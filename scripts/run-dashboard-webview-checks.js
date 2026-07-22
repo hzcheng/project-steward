@@ -28,7 +28,7 @@ const { TodoService } = require('../out/todos/service');
 const { deleteTodoWithConfirmation, runTodoMutation } = require('../out/todos/hostMutation');
 const todoViewModel = require('../out/todos/viewModel');
 const todoWebviewContent = require('../out/todos/webviewContent');
-const { buildDashboardSearchCatalog } = require('../out/webview/dashboardViewModel');
+const { buildWorkspaceDashboardSearchCatalog } = require('../out/webview/dashboardViewModel');
 const AsyncFunction = Object.getPrototypeOf(async function () { return undefined; }).constructor;
 
 const root = path.join(__dirname, '..');
@@ -91,6 +91,24 @@ function extractHtmlElementBody(source, openingTag) {
         }
     }
     throw new Error(`Unterminated HTML element ${openingTag}`);
+}
+
+function extractDirectHtmlChildOpeningTags(source) {
+    const children = [];
+    const tagPattern = /<\/?([a-z][\w-]*)\b[^>]*>/gi;
+    let depth = 0;
+    let match;
+    while ((match = tagPattern.exec(source))) {
+        const tag = match[0];
+        if (tag.startsWith('</')) {
+            depth -= 1;
+        } else {
+            if (depth === 0) children.push(tag);
+            if (!tag.endsWith('/>')) depth += 1;
+        }
+    }
+    assert.strictEqual(depth, 0, 'HTML fragment must contain balanced child elements');
+    return children;
 }
 
 function extractCssRule(source, selector) {
@@ -190,14 +208,18 @@ function cssRuleIncludesTopLevelDeclaration(rule, declaration) {
 
 function makeDashboardCatalog() {
     return {
+        version: 2,
         sessions: [{
-            key: 'codex:c1', searchText: 'fix dashboard codex c1', projectId: 'current',
-            projectName: 'Dashboard', provider: 'codex', sessionId: 'c1', name: 'Fix dashboard', active: true,
+            key: 'codex:c1', searchText: 'fix dashboard codex c1', workspaceId: 'workspace-current',
+            workspaceNavigationIdentity: 'navigation-current', workspaceName: 'Dashboard Workspace',
+            provider: 'codex', sessionId: 'c1', name: 'Fix dashboard', active: true,
+            action: 'reveal-workspace-session',
         }],
-        openProjects: [{
-            key: 'open:/work/dashboard', identity: '/work/dashboard', searchText: 'dashboard current',
-            projectId: 'current', name: 'Dashboard', description: 'Current',
-            action: 'open-current', groupLabels: [],
+        openWorkspaces: [{
+            key: 'workspace:navigation-current', navigationIdentity: 'navigation-current',
+            searchText: 'dashboard workspace local app api', workspaceId: 'workspace-current',
+            name: 'Dashboard Workspace', description: '2 folders', environmentLabel: 'Local',
+            action: 'show-current-workspace', current: true,
         }],
         savedProjects: [{
             key: 'saved:/work/dashboard', identity: '/work/dashboard', searchText: 'dashboard tools',
@@ -216,9 +238,36 @@ function makeUpdatedDashboardCatalog() {
     return {
         ...catalog,
         sessions: catalog.sessions.concat({
-            key: 'kimi:k1', searchText: 'review dashboard kimi k1', projectId: 'current',
-            projectName: 'Dashboard', provider: 'kimi', sessionId: 'k1', name: 'Review dashboard',
+            key: 'kimi:k1', searchText: 'review dashboard kimi k1', workspaceId: 'workspace-current',
+            workspaceNavigationIdentity: 'navigation-current', workspaceName: 'Dashboard Workspace',
+            provider: 'kimi', sessionId: 'k1', name: 'Review dashboard',
+            action: 'reveal-workspace-session',
         }),
+    };
+}
+
+function makeWorkspaceDashboardCatalog() {
+    return {
+        version: 2,
+        sessions: [{
+            key: 'codex:c1', searchText: 'fix dashboard codex c1', workspaceId: 'workspace-current',
+            workspaceNavigationIdentity: 'navigation-current', workspaceName: 'Dashboard Workspace',
+            provider: 'codex', sessionId: 'c1', name: 'Fix dashboard', active: true,
+            action: 'reveal-workspace-session',
+        }],
+        openWorkspaces: [{
+            key: 'workspace:navigation-current', navigationIdentity: 'navigation-current',
+            searchText: 'dashboard workspace local app api', workspaceId: 'workspace-current',
+            name: 'Dashboard Workspace', description: '2 folders', environmentLabel: 'Local',
+            action: 'show-current-workspace', current: true,
+        }, {
+            key: 'workspace:navigation-other', navigationIdentity: 'navigation-other',
+            searchText: 'other workspace ssh other', workspaceId: 'workspace-other',
+            name: 'Other Workspace', description: '1 folder', environmentLabel: 'SSH',
+            action: 'switch-open-workspace', current: false,
+        }],
+        savedProjects: makeDashboardCatalog().savedProjects,
+        todos: makeDashboardCatalog().todos,
     };
 }
 
@@ -237,27 +286,574 @@ function runDashboardUpdateMessageChecks() {
         Module._load = previousModuleLoad;
     }
     const todoSearchItems = makeDashboardCatalog().todos;
-    const openMessage = dashboardUpdateMessages.buildOpenProjectsUpdatedMessage({
-        groups: [],
-        cards: [],
-        collapsed: false,
-        stewardInfos: { openProjectsGroupCollapsed: false, config: {} },
-        semanticRevision: 'todo-catalog-open',
-        todoSearchItems,
-    });
+    const workspaceCard = makeWorkspaceCardFixture(3);
     const aiMessage = dashboardUpdateMessages.buildAiSessionsUpdatedMessage({
         groups: [],
-        cards: [],
+        cards: [workspaceCard],
         sequence: 7,
         generatedAt: '2026-07-17T00:00:00.000Z',
-        openProjects: [],
         todoSearchItems,
+        runningCardAnimation: 'ripple',
     });
+    const workspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({
+        card: workspaceCard,
+        runningCardAnimation: 'sweep',
+    });
+    const navigationCard = {
+        ...makeWorkspaceCardFixture(2),
+        id: 'workspace-other',
+        kind: 'navigation',
+        navigationIdentity: 'navigation-other',
+        scopeIdentity: 'scope-other',
+        name: 'Other Workspace',
+        environment: 'ssh',
+        environmentLabel: 'SSH',
+        aiSessions: undefined,
+    };
+    const openWorkspacesMessage = dashboardUpdateMessages.buildOpenWorkspacesUpdatedMessage({
+        groups: [],
+        cards: [workspaceCard, navigationCard],
+        collapsed: false,
+        semanticRevision: 'b'.repeat(64),
+        otherWindowsStatus: 'ready',
+        todoSearchItems,
+        runningCardAnimation: 'halo',
+    });
+    const workspaceSearchCatalog = buildWorkspaceDashboardSearchCatalog([], [workspaceCard], todoSearchItems);
 
-    assert.deepStrictEqual(openMessage.searchCatalog.todos, todoSearchItems,
-        'OPEN incremental catalog rebuilds must preserve real TODO search items');
     assert.deepStrictEqual(aiMessage.searchCatalog.todos, todoSearchItems,
         'AI incremental catalog rebuilds must preserve real TODO search items');
+    assert.strictEqual(aiMessage.version, 2);
+    assert.strictEqual(aiMessage.currentWorkspaceCount, 1);
+    assert.strictEqual(aiMessage.searchCatalog.version, 2);
+    assert.deepStrictEqual(aiMessage.searchCatalog.openWorkspaces.map(item => item.current), [true]);
+    assert.ok(aiMessage.html.includes('data-current-workspace'));
+    assert.ok(aiMessage.html.includes('data-session-fx="ripple"'),
+        'AI session incremental updates must use the configured running animation');
+    assert.strictEqual(workspaceMessage.type, 'workspace-updated');
+    assert.strictEqual(workspaceMessage.version, 2);
+    assert.strictEqual(workspaceSearchCatalog.version, 2);
+    assert.deepStrictEqual(workspaceSearchCatalog.openWorkspaces.map(item => item.current), [true]);
+    assert.deepStrictEqual(workspaceSearchCatalog.sessions.map(item => item.action), ['reveal-workspace-session']);
+    assert.deepStrictEqual(workspaceSearchCatalog.todos, todoSearchItems);
+    assert.strictEqual(workspaceMessage.currentWorkspaceCount, 1);
+    assert.ok(workspaceMessage.html.includes('data-workspace-scope-identity="scope-dashboard"'));
+    assert.ok(workspaceMessage.html.includes('data-session-fx="sweep"'),
+        'workspace incremental updates must use the configured running animation');
+    const emptyWorkspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({ card: null });
+    assert.strictEqual(emptyWorkspaceMessage.currentWorkspaceCount, 0);
+    assert.strictEqual(emptyWorkspaceMessage.html.includes('class="workspace-card'), false);
+    assert.strictEqual(openWorkspacesMessage.type, 'open-workspaces-updated');
+    assert.strictEqual(openWorkspacesMessage.version, 2);
+    assert.strictEqual(openWorkspacesMessage.currentWorkspaceCount, 1);
+    assert.strictEqual(openWorkspacesMessage.navigationWorkspaceCount, 1);
+    assert.strictEqual(openWorkspacesMessage.searchCatalog.version, 2);
+    assert.strictEqual(openWorkspacesMessage.otherWindowsStatus, 'ready');
+    assert.deepStrictEqual(
+        openWorkspacesMessage.searchCatalog.openWorkspaces.map(item => item.action),
+        ['show-current-workspace', 'switch-open-workspace'],
+    );
+    assert.ok(openWorkspacesMessage.html.includes('OTHER WINDOWS'));
+    assert.ok(openWorkspacesMessage.html.includes('data-session-fx="halo"'),
+        'open-workspace incremental updates must use the configured running animation');
+}
+
+function makeWorkspaceCardFixture(rootCount) {
+    const roots = [
+        { id: 'root-app', name: 'App', ordinal: 0 },
+        { id: 'root-api', name: 'API', ordinal: 1 },
+        { id: 'root-docs', name: 'Docs', ordinal: 2 },
+    ].slice(0, rootCount);
+    return {
+        id: 'workspace-dashboard',
+        kind: 'current',
+        workspaceKind: 'savedMultiRoot',
+        showSaveAction: false,
+        runningSessionCount: 0,
+        navigationIdentity: 'navigation-dashboard',
+        scopeIdentity: 'scope-dashboard',
+        name: 'Dashboard',
+        environment: 'local',
+        environmentLabel: 'Local',
+        roots,
+        attentionCount: 1,
+        aiSessions: {
+            workspaceScopeIdentity: 'scope-dashboard',
+            workspaceNavigationIdentity: 'navigation-dashboard',
+            activeProvider: 'codex',
+            expanded: true,
+            providers: [
+                { id: 'codex', label: 'Codex', count: 1 },
+                { id: 'kimi', label: 'Kimi', count: 0 },
+                { id: 'claude', label: 'Claude', count: 0 },
+            ],
+            sessionsByProvider: {
+                codex: [{
+                    id: 'session-api', name: 'API work', provider: 'codex',
+                    primaryRootId: 'root-api', primaryRootLabel: 'API',
+                }],
+                kimi: [],
+                claude: [],
+            },
+            unavailableProviders: [],
+            aiSessionCount: 1,
+            attentionCount: 0,
+            defaultTab: 'sessions',
+            activeSessions: [{
+                key: 'codex:session-api', provider: 'codex', sessionId: 'session-api', name: 'API work',
+                executionState: 'running', focused: false, needsAttention: false, pending: false,
+                backend: 'vscode', attached: true, primaryRootId: 'root-api', primaryRootLabel: 'API',
+            }],
+            activeSessionCount: 1,
+            activeAttentionCount: 0,
+        },
+    };
+}
+
+function runWorkspaceCardRenderingChecks() {
+    const previousModuleLoad = Module._load;
+    let webviewContent;
+    try {
+        Module._load = function (request, parent, isMain) {
+            if (request === 'vscode') return {};
+            return previousModuleLoad.call(this, request, parent, isMain);
+        };
+        webviewContent = require('../out/webview/webviewContent');
+    } finally {
+        Module._load = previousModuleLoad;
+    }
+    const icons = require('../out/webview/webviewIcons');
+
+    const emptyHtml = webviewContent.getCurrentWorkspaceGroupContent(null, false);
+    assert.strictEqual((emptyHtml.match(/class="workspace-card/g) || []).length, 0);
+
+    const emptyRootsHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(0), false);
+    assert.strictEqual((emptyRootsHtml.match(/class="workspace-card/g) || []).length, 0,
+        'a non-null invalid zero-root snapshot must render the empty current-workspace state');
+
+    const collapsedSingleCard = makeWorkspaceCardFixture(1);
+    collapsedSingleCard.aiSessions.expanded = false;
+    const singleHtml = webviewContent.getCurrentWorkspaceGroupContent(collapsedSingleCard, false);
+    assert.strictEqual((singleHtml.match(/class="workspace-card/g) || []).length, 1);
+    assert.strictEqual((singleHtml.match(/class="codex-sessions"/g) || []).length, 1);
+    assert.ok(singleHtml.includes(icons.folder));
+    assert.ok(singleHtml.includes('title="Local Project"'));
+    assert.ok(singleHtml.includes('<h2 class="project-header">App</h2>'));
+    assert.ok(singleHtml.includes('<p class="project-description workspace-metadata">1 folder</p>'));
+    assert.strictEqual(singleHtml.includes('Local ·'), false,
+        'the environment icon already identifies local workspaces');
+    assert.strictEqual(singleHtml.includes('class="ai-session-root-chip"'), false,
+        'single-root workspaces must not repeat the only root on every session row');
+    assert.ok(singleHtml.includes('class="codex-sessions" data-ai-session-region'),
+        'the existing AI Sessions root must define the non-toggle click boundary');
+    assert.strictEqual(singleHtml.includes('workspace-card-summary'), false,
+        'the click boundary must not add a summary wrapper that could alter card layout');
+    const coloredCurrentCard = makeWorkspaceCardFixture(1);
+    coloredCurrentCard.color = '#123456';
+    const coloredCurrentHtml = webviewContent.getCurrentWorkspaceGroupContent(coloredCurrentCard, false);
+    assert.ok(coloredCurrentHtml.includes('style="--project-color: #123456;"'));
+    assert.ok(coloredCurrentHtml.includes('class="project-border steward-item-accent" style="background: #123456;"'));
+    assert.strictEqual(singleHtml.includes('--project-color:'), false,
+        'an unmatched current workspace must not synthesize a foreground-colored accent');
+    assert.ok(singleHtml.includes('data-has-ai-session-badge'),
+        'current workspace cards must declare when their AI session summary badge is present');
+    assert.strictEqual(singleHtml.includes('data-codex-expanded'), false,
+        'the collapsed-card fixture must keep its AI session module hidden');
+    const collapsedCardStart = singleHtml.indexOf('<div class="workspace-card');
+    const collapsedCardOpeningEnd = singleHtml.indexOf('>', collapsedCardStart);
+    const collapsedCardOpeningTag = singleHtml.slice(collapsedCardStart, collapsedCardOpeningEnd + 1);
+    const collapsedCardBody = extractHtmlElementBody(singleHtml, collapsedCardOpeningTag);
+    const collapsedSessionIndex = collapsedCardBody.indexOf('<div class="codex-sessions"');
+    assert.ok(collapsedSessionIndex >= 0, 'collapsed current workspace cards must retain the hidden session module');
+    const collapsedCardSummary = collapsedCardBody.slice(0, collapsedSessionIndex);
+    const collapsedContentChildren = extractDirectHtmlChildOpeningTags(collapsedCardSummary).filter(tag =>
+        !/class="[^"]*\b(?:project-aura|steward-item-accent|project-session-fx|project-codex-badge)\b/.test(tag)
+    );
+    assert.deepStrictEqual(collapsedContentChildren, [
+        '<div class="fitty-container project-title-row">',
+        '<p class="project-description workspace-metadata">',
+    ], 'collapsed current workspace cards must have only title and description rows before the session module');
+
+    const runningCard = makeWorkspaceCardFixture(1);
+    runningCard.aiSessions.activeSessions.push(
+        {
+            key: 'codex:session-starting', provider: 'codex', sessionId: 'session-starting', name: 'Starting',
+            executionState: 'starting', focused: false, needsAttention: false, pending: true,
+            backend: 'vscode', attached: true,
+        },
+        {
+            key: 'codex:session-stopped', provider: 'codex', sessionId: 'session-stopped', name: 'Stopped',
+            executionState: 'stopped', focused: false, needsAttention: false, pending: false,
+            backend: 'vscode', attached: true,
+        },
+    );
+    const orbitHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, 'orbit');
+    assert.ok(orbitHtml.includes('class="workspace-card project steward-item-card session-running"'));
+    assert.ok(orbitHtml.includes('data-session-fx="orbit"'));
+    assert.ok(orbitHtml.includes('<div class="project-session-fx"></div>'));
+    assert.ok(orbitHtml.indexOf('project-session-fx') > orbitHtml.indexOf('steward-item-accent'));
+    assert.ok(orbitHtml.includes('title="Workspace — 1 active session running"'));
+
+    for (const animation of ['current', 'sweep', 'orbit', 'halo', 'ripple', 'breath']) {
+        const animationHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, animation);
+        assert.ok(animationHtml.includes(`data-session-fx="${animation}"`),
+            `the current workspace card must accept the ${animation} running animation`);
+        assert.ok(animationHtml.includes('<div class="project-session-fx"></div>'));
+    }
+    const noneHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, 'none');
+    assert.ok(noneHtml.includes('class="workspace-card project steward-item-card session-running"'));
+    assert.ok(noneHtml.includes('data-session-fx="none"'));
+    assert.strictEqual(noneHtml.includes('project-session-fx'), false,
+        'none must retain static running state without an animation layer');
+    const invalidHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, 'invalid');
+    assert.ok(invalidHtml.includes('data-session-fx="current"'),
+        'an invalid animation value must fail safely to current');
+
+    const idleCard = makeWorkspaceCardFixture(1);
+    idleCard.aiSessions.activeSessions = runningCard.aiSessions.activeSessions.filter(
+        session => session.executionState !== 'running'
+    );
+    const idleHtml = webviewContent.getCurrentWorkspaceGroupContent(idleCard, false, 'halo');
+    assert.strictEqual(idleHtml.includes('session-running'), false,
+        'starting and stopped sessions must not activate the card running state');
+    assert.strictEqual(idleHtml.includes('data-session-fx'), false);
+    assert.strictEqual(idleHtml.includes('active session running'), false);
+    const unhydratedCard = makeWorkspaceCardFixture(1);
+    delete unhydratedCard.aiSessions;
+    unhydratedCard.attentionCount = 0;
+    const unhydratedHtml = webviewContent.getCurrentWorkspaceGroupContent(unhydratedCard, false);
+    assert.strictEqual((unhydratedHtml.match(/class="codex-sessions"/g) || []).length, 1,
+        'a current card must keep one AI module while hydration is temporarily unavailable');
+    assert.strictEqual(unhydratedHtml.includes('data-has-ai-session-badge'), false,
+        'badge-free current workspace cards must keep their full title and description width');
+
+    const multiHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(3), false);
+    assert.strictEqual((multiHtml.match(/class="workspace-card/g) || []).length, 1);
+    assert.strictEqual((multiHtml.match(/class="codex-sessions"/g) || []).length, 1);
+    assert.ok(multiHtml.includes('<p class="project-description workspace-metadata">3 folders</p>'));
+    assert.strictEqual(multiHtml.includes('class="workspace-root-tags"'), false);
+    assert.strictEqual(multiHtml.includes('class="workspace-root-tag"'), false);
+    assert.ok(multiHtml.includes('data-primary-root-id="root-api"'));
+    assert.ok(multiHtml.includes('class="ai-session-root-chip"'));
+    assert.ok(multiHtml.includes('data-action="create-ai-session"'));
+    assert.strictEqual(multiHtml.includes('data-action="open-new-session-in"'), false);
+    assert.strictEqual(multiHtml.includes('data-action="new-session-in"'), false);
+    assert.strictEqual(multiHtml.includes('data-action="selected-project"'), false);
+    assert.strictEqual(multiHtml.includes('data-project-navigation'), false);
+    assert.strictEqual(multiHtml.includes('data-has-save-action'), false);
+
+    const untitledWorkspaceCard = makeWorkspaceCardFixture(3);
+    untitledWorkspaceCard.workspaceKind = 'untitledMultiRoot';
+    untitledWorkspaceCard.showSaveAction = true;
+    const untitledWorkspaceHtml = webviewContent.getCurrentWorkspaceGroupContent(
+        untitledWorkspaceCard,
+        false,
+    );
+    assert.ok(untitledWorkspaceHtml.includes('data-has-save-action'));
+    assert.strictEqual(
+        (untitledWorkspaceHtml.match(/data-action="save-current-workspace"/g) || []).length,
+        1,
+        'an untitled current multi-root workspace must expose exactly one save action',
+    );
+    assert.ok(untitledWorkspaceHtml.includes('title="Save Workspace"'));
+    const projectActionMessages = [];
+    const triggerProjectAction = new Function(
+        'target',
+        'projectId',
+        'window',
+        extractFunctionBody(fs.readFileSync(projectScriptPath, 'utf8'), 'onTriggerProjectAction'),
+    );
+    assert.strictEqual(triggerProjectAction({
+        closest: selector => selector === '[data-action]'
+            ? { getAttribute: attribute => attribute === 'data-action' ? 'save-current-workspace' : null }
+            : null,
+    }, untitledWorkspaceCard.id, {
+        vscode: { postMessage: message => projectActionMessages.push(message) },
+    }), true);
+    assert.deepStrictEqual(projectActionMessages, [{
+        type: 'save-current-workspace',
+        projectId: untitledWorkspaceCard.id,
+    }], 'the save badge must use its dedicated workspace-only host route');
+    const unregisteredSavedWorkspace = makeWorkspaceCardFixture(3);
+    unregisteredSavedWorkspace.showSaveAction = true;
+    const unregisteredSavedWorkspaceHtml = webviewContent.getCurrentWorkspaceGroupContent(
+        unregisteredSavedWorkspace,
+        false,
+    );
+    assert.ok(unregisteredSavedWorkspaceHtml.includes('data-action="save-current-workspace"'),
+        'a saved workspace missing from Saved Projects must retain the save action');
+
+    const devContainerCard = makeWorkspaceCardFixture(1);
+    devContainerCard.environment = 'devContainer';
+    devContainerCard.environmentLabel = 'Dev Container';
+    const devContainerHtml = webviewContent.getCurrentWorkspaceGroupContent(devContainerCard, false);
+    assert.ok(devContainerHtml.includes(icons.container));
+    assert.ok(devContainerHtml.includes('title="Dev Container Project"'));
+    assert.strictEqual(devContainerHtml.includes('class="workspace-root-tags"'), false);
+    assert.strictEqual(devContainerHtml.includes('class="workspace-root-tag"'), false);
+
+    const outsideWorkspaceCard = makeWorkspaceCardFixture(3);
+    outsideWorkspaceCard.aiSessions.sessionsByProvider.codex[0].primaryRootId = undefined;
+    outsideWorkspaceCard.aiSessions.sessionsByProvider.codex[0].primaryRootLabel = 'Outside workspace';
+    outsideWorkspaceCard.aiSessions.activeSessions[0].primaryRootId = undefined;
+    outsideWorkspaceCard.aiSessions.activeSessions[0].primaryRootLabel = 'Outside workspace';
+    const outsideWorkspaceHtml = webviewContent.getCurrentWorkspaceGroupContent(outsideWorkspaceCard, false);
+    assert.strictEqual((outsideWorkspaceHtml.match(/>Outside workspace<\/span>/g) || []).length, 2,
+        'history and active rows must render the removed-root continuity chip');
+
+    const navigationCard = {
+        ...makeWorkspaceCardFixture(1),
+        id: 'workspace-other',
+        kind: 'navigation',
+        navigationIdentity: 'navigation-other',
+        scopeIdentity: 'scope-other',
+        name: 'App [Dev Container: Existing Dockerfile]',
+        environment: 'devContainer',
+        environmentLabel: 'Dev Container',
+        runningSessionCount: 2,
+        color: '#abcdef',
+        aiSessions: runningCard.aiSessions,
+    };
+    const workspaceHtml = webviewContent.getOpenWorkspacesGroupContent(
+        [makeWorkspaceCardFixture(3), navigationCard],
+        false,
+        'ready',
+        'halo',
+    );
+    const otherWindowsHtml = workspaceHtml.slice(workspaceHtml.indexOf('OTHER WINDOWS'));
+    assert.strictEqual((otherWindowsHtml.match(/class="workspace-card/g) || []).length, 1);
+    assert.ok(otherWindowsHtml.includes('data-other-workspace'));
+    assert.ok(otherWindowsHtml.includes('style="--project-color: #abcdef;"'));
+    assert.ok(otherWindowsHtml.includes('class="project-border steward-item-accent" style="background: #abcdef;"'));
+    assert.ok(otherWindowsHtml.includes('class="workspace-card project steward-item-card session-running"'));
+    assert.ok(otherWindowsHtml.includes('data-session-fx="halo"'));
+    assert.ok(otherWindowsHtml.includes('title="Workspace — 2 active sessions running"'));
+    assert.ok(otherWindowsHtml.includes('<span class="ai-session-active-count" aria-label="2 active AI sessions">●2</span>'));
+    assert.ok(otherWindowsHtml.includes('<h2 class="project-header">App</h2>'));
+    assert.ok(otherWindowsHtml.includes('<p class="project-description workspace-metadata">1 folder</p>'));
+    assert.strictEqual(otherWindowsHtml.includes('[Dev Container:'), false,
+        'navigation cards must not repeat VS Code remote window decorations in their title');
+    assert.strictEqual(otherWindowsHtml.includes('Dev Container ·'), false,
+        'navigation cards must not repeat their icon environment in metadata');
+    assert.ok(otherWindowsHtml.includes(
+        '<span class="project-ai-attention-badge" title="1 item needs attention" aria-label="1 item needs attention">1</span>'
+    ));
+    assert.strictEqual((otherWindowsHtml.match(/class="project-codex-badge"/g) || []).length, 1,
+        'a running navigation workspace must expose one compact active-session badge');
+    const untitledNavigationHtml = webviewContent.getOpenWorkspacesGroupContent([{
+        ...navigationCard,
+        workspaceKind: 'untitledMultiRoot',
+    }], false);
+    assert.strictEqual(untitledNavigationHtml.includes('data-action="save-current-workspace"'), false,
+        'OTHER WINDOWS cards must never expose a save action');
+    for (const privateDetail of [
+        'data-ai-session-total-count',
+        'data-ai-session-attention-count',
+        'Codex',
+        'Kimi',
+        'Claude',
+    ]) {
+        assert.strictEqual(otherWindowsHtml.includes(privateDetail), false,
+            `OTHER WINDOWS attention badges must omit ${privateDetail}`);
+    }
+    assert.strictEqual(otherWindowsHtml.includes('class="codex-sessions"'), false,
+        'OTHER WINDOWS must never render session/provider controls');
+    assert.strictEqual(otherWindowsHtml.includes('data-workspace-root-id'), false,
+        'OTHER WINDOWS roots are aggregate metadata, not expandable rows');
+    assert.strictEqual((otherWindowsHtml.match(/active session/g) || []).length, 1,
+        'OTHER WINDOWS must render only its protocol count, not injected aiSessions details');
+
+    const updateRequiredHtml = webviewContent.getOpenWorkspacesGroupContent(
+        [makeWorkspaceCardFixture(3)],
+        true,
+        'update-required',
+    );
+    const updateRequiredGroupIndex = updateRequiredHtml.indexOf('<div class="group steward-section open-other-windows-group');
+    const updateRequiredCurrentHtml = updateRequiredHtml.slice(0, updateRequiredGroupIndex);
+    const updateRequiredOtherHtml = updateRequiredHtml.slice(updateRequiredGroupIndex);
+    assert.ok(updateRequiredOtherHtml.includes('data-other-windows-status="update-required"'));
+    assert.strictEqual(updateRequiredOtherHtml.includes('open-other-windows-group collapsed'), false,
+        'an actionable bridge upgrade state must not be hidden by the saved collapse state');
+    assert.ok(updateRequiredOtherHtml.includes('Update the Project Steward UI Bridge'));
+    assert.ok(updateRequiredOtherHtml.includes('data-action="open-bridge-extension"'),
+        'the bridge mismatch state must include an actionable upgrade control');
+    assert.strictEqual(updateRequiredOtherHtml.includes('class="codex-sessions"'), false,
+        'the bridge mismatch state must not create a session expander');
+    assert.ok(updateRequiredCurrentHtml.includes('data-current-workspace'));
+    assert.ok(updateRequiredCurrentHtml.includes('data-action="create-ai-session"'),
+        'the local current workspace NEW action must remain enabled during bridge degradation');
+    assert.strictEqual(updateRequiredCurrentHtml.includes('data-action="new-session-in"'), false);
+
+    const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
+    const consistencyBody = extractFunctionBody(projectSource, 'isWorkspaceUpdateDomConsistent');
+    assert.ok(consistencyBody.includes('currentWorkspaceCount'));
+    assert.strictEqual(/rootCount|sessionCount|aiSessionCount/.test(consistencyBody), false,
+        'current-card DOM consistency must not equate card count with roots or sessions');
+    const stateBody = extractFunctionBody(projectSource, 'getWorkspaceUpdateDomState');
+    assert.ok(stateBody.includes('.open-current-workspace-group'));
+    assert.ok(stateBody.includes('.workspace-card[data-workspace-scope-identity]'));
+    assert.strictEqual(/workspace-root|codex-session-row/.test(stateBody), false);
+
+    let createdReplacementHolder = false;
+    const currentCard = {};
+    const duplicateCardOutsideCurrentGroup = {};
+    const currentGroup = {
+        contains: card => card === currentCard,
+    };
+    const wrapper = {
+        querySelector: selector => selector === '.open-current-workspace-group' ? currentGroup : null,
+        querySelectorAll: selector => selector === '.workspace-card[data-current-workspace][data-workspace-scope-identity]'
+            ? [currentCard, duplicateCardOutsideCurrentGroup]
+            : [],
+    };
+    const context = {
+        document: {
+            querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null,
+            createElement: () => {
+                createdReplacementHolder = true;
+                throw new Error('a duplicate current card must be rejected before parsing replacement HTML');
+            },
+        },
+        window: {},
+    };
+    vm.runInNewContext(projectSource, context);
+    assert.strictEqual(context.applyWorkspaceUpdate({
+        type: 'workspace-updated', version: 2, currentWorkspaceCount: 1, html: '<div></div>',
+    }), false);
+    assert.strictEqual(createdReplacementHolder, false,
+        'the v2 handler must not mount another current card when one exists outside the owned group');
+
+    const preservedOtherNavigationCard = {
+        matches: selector => selector === '.workspace-card[data-other-workspace]',
+        textContent: 'Other Workspace · SSH · 2 folders',
+    };
+    const preservedOtherWindowsGroup = {
+        matches: selector => selector === '.open-other-windows-group',
+        children: [preservedOtherNavigationCard],
+        querySelector: selector => selector === '.workspace-card[data-other-workspace]'
+            ? preservedOtherNavigationCard
+            : null,
+    };
+    const replacementCard = {};
+    const replacementGroup = {
+        matches: selector => selector === '.open-current-workspace-group',
+        querySelectorAll: selector => selector === '.workspace-card[data-workspace-scope-identity]'
+            ? [replacementCard]
+            : [],
+    };
+    let mountedCurrentGroup;
+    let successfulWrapper;
+    const replaceableCurrentGroup = {
+        matches: selector => selector === '.open-current-workspace-group',
+        contains: card => card === currentCard,
+        replaceWith: replacement => {
+            const currentIndex = successfulWrapper.children.indexOf(replaceableCurrentGroup);
+            assert.notStrictEqual(currentIndex, -1, 'the fake current group must be mounted before replacement');
+            successfulWrapper.children.splice(currentIndex, 1, replacement);
+            mountedCurrentGroup = replacement;
+        },
+    };
+    successfulWrapper = {
+        children: [replaceableCurrentGroup, preservedOtherWindowsGroup],
+        querySelector(selector) {
+            if (selector === '.open-current-workspace-group') {
+                return this.children.find(node => node.matches?.(selector)) || null;
+            }
+            if (selector === '.open-other-windows-group') {
+                return this.children.find(node => node.matches?.(selector)) || null;
+            }
+            if (selector === '.workspace-card[data-other-workspace]') {
+                return this.querySelector('.open-other-windows-group')?.querySelector(selector) || null;
+            }
+            return null;
+        },
+        querySelectorAll: selector => selector === '.workspace-card[data-current-workspace][data-workspace-scope-identity]'
+            ? [currentCard]
+            : [],
+    };
+    const successfulContext = {
+        document: {
+            querySelector: selector => selector === '.sticky-groups-wrapper' ? successfulWrapper : null,
+            createElement: () => ({
+                children: [replacementGroup],
+                firstElementChild: replacementGroup,
+                set innerHTML(_value) {},
+            }),
+        },
+        window: {},
+    };
+    vm.runInNewContext(projectSource, successfulContext);
+    assert.strictEqual(successfulContext.applyWorkspaceUpdate({
+        type: 'workspace-updated', version: 2, currentWorkspaceCount: 1,
+        html: '<div class="open-current-workspace-group"></div>',
+    }), true);
+    assert.strictEqual(mountedCurrentGroup, replacementGroup,
+        'a valid current-group update must replace the current group');
+    assert.deepStrictEqual(successfulWrapper.children, [replacementGroup, preservedOtherWindowsGroup],
+        'a current-group update must replace one child while preserving the real OTHER WINDOWS sibling');
+    assert.strictEqual(successfulWrapper.querySelector('.open-other-windows-group'), preservedOtherWindowsGroup,
+        'the same OTHER WINDOWS node must remain mounted');
+    assert.strictEqual(
+        successfulWrapper.querySelector('.workspace-card[data-other-workspace]'),
+        preservedOtherNavigationCard,
+        'the same other-window navigation card must survive current-group replacement',
+    );
+    assert.ok(preservedOtherNavigationCard.textContent.includes('Other Workspace · SSH · 2 folders'),
+        'the surviving navigation card must retain its content');
+
+    const stableCardId = '__currentWorkspace-stable-scope';
+    let persistedState = {};
+    const vscodeApi = {
+        getState: () => persistedState,
+        setState: state => { persistedState = state; },
+    };
+    function makeTabSurface(cardId) {
+        const attributes = {};
+        const sessionSection = { setAttribute: (name, value) => { attributes[name] = value; } };
+        const tabs = ['active', 'sessions'].map(tab => {
+            const values = { 'data-ai-session-tab': tab };
+            return {
+                getAttribute: name => values[name] || null,
+                setAttribute: (name, value) => { values[name] = value; },
+            };
+        });
+        const panels = ['active', 'sessions'].map(tab => ({
+            getAttribute: name => name === 'data-ai-session-panel' ? tab : null,
+            toggleAttribute: (name, enabled) => { attributes[`${tab}:${name}`] = enabled; },
+        }));
+        return {
+            attributes,
+            getAttribute: name => name === 'data-id' ? cardId : null,
+            querySelector: selector => selector === '.codex-sessions' ? sessionSection : null,
+            querySelectorAll: selector => selector === '[data-ai-session-tab]'
+                ? tabs
+                : selector === '[data-ai-session-panel]' ? panels : [],
+        };
+    }
+    const untitledSurface = makeTabSurface(stableCardId);
+    const savedSurface = makeTabSurface(stableCardId);
+    const stateContext = { document: {}, window: {} };
+    vm.runInNewContext(projectSource, stateContext);
+    const zeroRootCurrentGroup = {
+        matches: selector => selector === '.open-current-workspace-group',
+        querySelectorAll: selector => selector === '.workspace-card[data-workspace-scope-identity]' ? [] : [],
+    };
+    assert.strictEqual(stateContext.isWorkspaceUpdateDomConsistent({ currentWorkspaceCount: 0 }, zeroRootCurrentGroup), true,
+        'a zero-root resolver message must be DOM-consistent with an empty current group');
+    assert.strictEqual(stateContext.isWorkspaceUpdateDomConsistent({ currentWorkspaceCount: 1 }, zeroRootCurrentGroup), false,
+        'the incremental consistency guard must reject a declared 1/rendered 0 split');
+    stateContext.writeAiSessionTabState(vscodeApi, stableCardId, 'active');
+    stateContext.restoreAiSessionTabsFromState({
+        querySelectorAll: () => [savedSurface],
+    }, vscodeApi);
+    assert.strictEqual(savedSurface.attributes['data-selected-ai-session-tab'], 'active',
+        'ACTIVE tab state must survive untitled-to-saved navigation identity changes');
+    stateContext.writeAiSessionTabState(vscodeApi, stableCardId, 'sessions');
+    stateContext.restoreAiSessionTabsFromState({
+        querySelectorAll: () => [untitledSurface],
+    }, vscodeApi);
+    assert.strictEqual(untitledSurface.attributes['data-selected-ai-session-tab'], 'sessions',
+        'SESSIONS tab state must remain keyed by the stable scope-owned card ID');
 }
 
 function createSearchResultElement(tagName) {
@@ -297,45 +893,6 @@ function createSearchResultElement(tagName) {
         contains: value => element.className.split(/\s+/).includes(value),
     };
     return element;
-}
-
-function runTodoSearchResultRenderingChecks(source) {
-    const context = {
-        document: { createElement: createSearchResultElement },
-    };
-    vm.runInNewContext(source, context);
-    const container = createSearchResultElement('div');
-    context.renderDashboardSearchResults(container, [{
-        id: 'todos',
-        title: 'TODO RESULTS',
-        type: 'todo',
-        items: [{
-            ...makeDashboardCatalog().todos[0],
-            completed: true,
-            notesSearchText: 'A concise release note summary',
-        }],
-    }]);
-
-    const section = container.children[0];
-    const button = section.children[1];
-    assert.strictEqual(button.dataset.todoId, 't1');
-    assert.strictEqual(button.dataset.groupId, 'todo-group-a');
-    assert.strictEqual(button.classList.contains('completed'), true,
-        'completed TODO search results need an explicit state class');
-    assert.ok(button.children.some(child =>
-        child.className === 'dashboard-search-result-notes'
-        && child.textContent === 'A concise release note summary'
-    ), 'TODO search results must render the notes search summary');
-    const metadata = button.children.find(child => child.className === 'dashboard-search-result-meta');
-    assert.ok(metadata.children.some(child =>
-        child.className.includes('dashboard-search-result-group') && child.textContent === 'Planning'
-    ), 'TODO search results must render the group badge');
-    assert.ok(metadata.children.some(child =>
-        child.className.includes('dashboard-search-result-priority') && child.textContent === 'HIGH'
-    ), 'TODO search results must render textual priority metadata');
-    assert.ok(metadata.children.some(child =>
-        child.className.includes('dashboard-search-result-status') && child.textContent === 'Completed'
-    ), 'completed TODO search results must expose completed metadata');
 }
 
 function runErrorContentChecks() {
@@ -443,17 +1000,17 @@ async function runGroupCollapseControllerChecks() {
     });
 
     assert.strictEqual(controller.getFavoritesCollapsed(), true);
-    assert.strictEqual(controller.getOpenProjectsCollapsed(), undefined);
+    assert.strictEqual(controller.getOpenWorkspacesCollapsed(), undefined);
 
     await controller.collapseGroup('__favorites', true);
-    await controller.collapseGroup('__openProjects', false);
+    await controller.collapseGroup('__openWorkspaces', false);
     await controller.collapseGroup('group-a');
     await controller.collapseGroup('group-b', false);
     await controller.collapseGroup('missing-group', true);
 
     assert.deepStrictEqual(updates, [
         ['favoritesGroupCollapsed', true],
-        ['openProjectsGroupCollapsed', false],
+        ['openWorkspacesGroupCollapsed.v2', false],
     ]);
     assert.deepStrictEqual(projectServiceUpdates, [
         ['group-a', { id: 'group-a', groupName: 'A', collapsed: true }],
@@ -1678,7 +2235,7 @@ async function runDashboardTodoMigrationSequencingChecks() {
                 gate
             ),
             refreshDashboard: async () => { refreshes.push('refreshed'); },
-            publishOpenProjects: () => publications.push('published'),
+            publishOpenWorkspace: () => publications.push('published'),
             showInformationMessage: () => undefined,
             showErrorMessage: message => errors.push(message),
             logError: (message, error) => logs.push([message, error]),
@@ -2263,7 +2820,9 @@ function runTodoViewModelChecks() {
     assert.strictEqual(emptyGroupHtml.includes('No todos yet'), false);
 
     const dashboardViewModel = require('../out/webview/dashboardViewModel');
-    const catalog = dashboardViewModel.buildDashboardSearchCatalog([], [], todoTypes.buildTodoSearchItems(makeTodoData()));
+    const catalog = dashboardViewModel.buildWorkspaceDashboardSearchCatalog(
+        [], [], todoTypes.buildTodoSearchItems(makeTodoData())
+    );
     assert.strictEqual(catalog.todos.length, 2);
     assert.ok(dashboardViewModel.serializeDashboardSearchCatalog(catalog).includes('Write TODO') === false);
 }
@@ -2574,8 +3133,8 @@ async function runDashboardRuntimeControllerChecks() {
             return Promise.resolve();
         },
         viewType: 'project-steward.views.sidebar',
-        publishOpenProjects: () => published.push('open-projects'),
-        getOpenProjects: () => projects,
+        publishOpenWorkspace: () => published.push('open-workspace'),
+        getCurrentSavedProject: () => projects[0],
         syncProjectColorToCurrentWindow: project => {
             colorSyncs.push(project);
             return Promise.resolve();
@@ -2598,7 +3157,7 @@ async function runDashboardRuntimeControllerChecks() {
 
     visible = true;
     await controller.showSteward();
-    assert.deepStrictEqual(published, ['open-projects']);
+    assert.deepStrictEqual(published, ['open-workspace']);
     assert.deepStrictEqual(commands, [
         ['workbench.view.extension.project-steward'],
         ['project-steward.views.sidebar.focus'],
@@ -2609,30 +3168,28 @@ async function runDashboardRuntimeControllerChecks() {
     await controller.openSettings();
     assert.deepStrictEqual(commands[commands.length - 1], ['workbench.action.openSettings', '@ext:hzcheng.project-steward']);
 
-    controller.postAttentionProjectsUpdated([{ projectKey: 'p', attentionCount: 1, eventIds: ['e'], sessions: [] }]);
     controller.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
     controller.postActiveAiSessionTerminalChanged({ provider: 'codex', sessionId: 's1' });
     controller.postActiveAiSessionTerminalChanged(null);
     await new Promise(resolve => setImmediate(resolve));
     assert.deepStrictEqual(posted.map(message => message.type), [
-        'ai-session-attention-projects-updated',
         'ai-session-batch-archive-completed',
         'active-ai-session-terminal-changed',
         'active-ai-session-terminal-changed',
     ]);
-    assert.deepStrictEqual(posted[2], { type: 'active-ai-session-terminal-changed', provider: 'codex', sessionId: 's1' });
-    assert.deepStrictEqual(posted[3], { type: 'active-ai-session-terminal-changed', provider: null, sessionId: null });
+    assert.deepStrictEqual(posted[1], { type: 'active-ai-session-terminal-changed', provider: 'codex', sessionId: 's1' });
+    assert.deepStrictEqual(posted[2], { type: 'active-ai-session-terminal-changed', provider: null, sessionId: null });
 
     controller.applyProjectColorToCurrentWindow();
     controller.applyProjectColorToCurrentWindow({ id: 'save', showSaveAction: true });
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepStrictEqual(colorSyncs, [projects[0], null]);
+    assert.deepStrictEqual(colorSyncs, [projects[0], { id: 'save', showSaveAction: true }]);
 
     controller.refreshAfterMutation();
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepStrictEqual(colorSyncs, [projects[0], null, projects[0]]);
+    assert.deepStrictEqual(colorSyncs, [projects[0], { id: 'save', showSaveAction: true }, projects[0]]);
     assert.deepStrictEqual(diagnostics.slice(-1), [{ event: 'full-refresh', reason: 'project-mutation' }]);
-    assert.deepStrictEqual(published, ['open-projects', 'open-projects']);
+    assert.deepStrictEqual(published, ['open-workspace', 'open-workspace']);
 
     const failingController = new DashboardRuntimeController({
         ...baseOptions,
@@ -2640,12 +3197,10 @@ async function runDashboardRuntimeControllerChecks() {
         postMessage: () => Promise.reject(new Error('post failed')),
     });
     failingController.applyProjectColorToCurrentWindow(projects[0]);
-    failingController.postAttentionProjectsUpdated([{ projectKey: 'p', attentionCount: 1, eventIds: ['e'], sessions: [] }]);
     failingController.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepStrictEqual(errors.slice(-3).map(item => item[0]), [
+    assert.deepStrictEqual(errors.slice(-2).map(item => item[0]), [
         'Failed to apply project color to current window.',
-        'Failed to post AI session attention projects.',
         'Failed to post batch AI session archive completion.',
     ]);
 
@@ -2659,12 +3214,10 @@ async function runDashboardRuntimeControllerChecks() {
     });
     await syncThrowController.revealSidebarSteward();
     syncThrowController.applyProjectColorToCurrentWindow(projects[0]);
-    syncThrowController.postAttentionProjectsUpdated([{ projectKey: 'p', attentionCount: 1, eventIds: ['e'], sessions: [] }]);
     syncThrowController.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
     await new Promise(resolve => setImmediate(resolve));
     assert.deepStrictEqual(syncThrowErrors, [
         ['Failed to apply project color to current window.', 'color threw'],
-        ['Failed to post AI session attention projects.', 'post threw'],
         ['Failed to post batch AI session archive completion.', 'post threw'],
     ]);
 }
@@ -2700,7 +3253,7 @@ async function runDashboardStartupControllerChecks() {
         },
         migrateDataIfNeeded: async () => migrationResult(migrated),
         refreshDashboard: () => undefined,
-        publishOpenProjects: () => publications.push('published'),
+        publishOpenWorkspace: () => publications.push('published'),
         showInformationMessage: message => informationMessages.push(message),
         showSteward: () => { showStewardCalls += 1; },
         applyProjectColorToCurrentWindow: () => colorApplications.push('applied'),
@@ -2744,6 +3297,70 @@ async function runDashboardStartupControllerChecks() {
     await controller.startUp();
     assert.strictEqual(showStewardCalls, 3);
 
+    const startupOrdering = [];
+    const orderedController = new DashboardStartupController({
+        stewardInfos: {
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            config: { openOnStartup: 'never' },
+        },
+        isExtensionInstalled: () => false,
+        migrateDataIfNeeded: async () => {
+            startupOrdering.push('project-migration');
+            return migrationResult(true, false);
+        },
+        afterProjectMigrationSucceeded: async () => {
+            startupOrdering.push('pending-workspace-save');
+        },
+        refreshDashboard: () => startupOrdering.push('refresh'),
+        publishOpenWorkspace: () => startupOrdering.push('publish'),
+        showInformationMessage: () => undefined,
+        showErrorMessage: () => undefined,
+        logError: () => undefined,
+        showSteward: () => undefined,
+        applyProjectColorToCurrentWindow: () => startupOrdering.push('color'),
+        getReopenReason: () => 0,
+        updateReopenReason: () => undefined,
+        reopenNoneValue: 0,
+        getWorkspaceName: () => 'workspace',
+        getVisibleEditorLanguageIds: () => [],
+    });
+    await orderedController.startUp();
+    assert.deepStrictEqual(startupOrdering, [
+        'project-migration', 'refresh', 'publish', 'pending-workspace-save', 'color',
+    ], 'pending workspace save completion must run once after successful project migration');
+
+    const failedProjectMigration = new Error('project migration failed');
+    const failedProjectOrdering = [];
+    const failedProjectController = new DashboardStartupController({
+        stewardInfos: {
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            config: { openOnStartup: 'never' },
+        },
+        isExtensionInstalled: () => false,
+        migrateDataIfNeeded: async () => ({
+            projects: { migrated: false, error: failedProjectMigration },
+            todos: { migrated: false },
+        }),
+        afterProjectMigrationSucceeded: async () => {
+            failedProjectOrdering.push('pending-workspace-save');
+        },
+        refreshDashboard: () => undefined,
+        publishOpenWorkspace: () => undefined,
+        showInformationMessage: () => undefined,
+        showErrorMessage: () => undefined,
+        logError: () => undefined,
+        showSteward: () => undefined,
+        applyProjectColorToCurrentWindow: () => failedProjectOrdering.push('color'),
+        getReopenReason: () => 0,
+        updateReopenReason: () => undefined,
+        reopenNoneValue: 0,
+        getWorkspaceName: () => 'workspace',
+        getVisibleEditorLanguageIds: () => [],
+    });
+    await failedProjectController.startUp();
+    assert.deepStrictEqual(failedProjectOrdering, ['color'],
+        'project migration failure must retain pending intent while allowing the remaining startup behavior');
+
     let deferredTodoData = { version: 1, groups: [], todos: [] };
     const deferredTodoService = new TodoService({
         globalState: {
@@ -2758,11 +3375,11 @@ async function runDashboardStartupControllerChecks() {
     const refreshGate = new Promise(resolve => { releaseRefresh = resolve; });
     const provider = {
         refresh: async () => {
-            rebuiltCatalogs.push(buildDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
+            rebuiltCatalogs.push(buildWorkspaceDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
             await refreshGate;
         },
     };
-    rebuiltCatalogs.push(buildDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
+    rebuiltCatalogs.push(buildWorkspaceDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
     assert.deepStrictEqual(rebuiltCatalogs[0].todos, [],
         'the provider may render its initial search catalog before TODO migration settles');
 
@@ -2777,7 +3394,7 @@ async function runDashboardStartupControllerChecks() {
         isExtensionInstalled: () => false,
         migrateDataIfNeeded: () => deferredMigration,
         refreshDashboard: () => provider.refresh(),
-        publishOpenProjects: () => undefined,
+        publishOpenWorkspace: () => undefined,
         showInformationMessage: () => undefined,
         showErrorMessage: () => undefined,
         logError: () => undefined,
@@ -2837,7 +3454,7 @@ async function runDashboardStartupControllerChecks() {
                 : Promise.resolve(migrationResult(false, true));
         },
         refreshDashboard: () => retryRefreshes.push('refreshed'),
-        publishOpenProjects: () => retryPublications.push('published'),
+        publishOpenWorkspace: () => retryPublications.push('published'),
         showInformationMessage: () => undefined,
         showErrorMessage: message => migrationErrors.push(message),
         logError: (message, error) => migrationLogs.push([message, error]),
@@ -2876,7 +3493,7 @@ async function runDashboardLifecycleControllerChecks() {
         checkDataMigration: async openStewardAfterMigrate => events.push(['migrate', openStewardAfterMigrate]),
         applyProjectColorToCurrentWindow: () => events.push(['color']),
         refresh: reason => events.push(['refresh', reason]),
-        publishOpenProjects: followsFocusEvent => events.push(['publish', followsFocusEvent]),
+        publishOpenWorkspace: followsFocusEvent => events.push(['publish', followsFocusEvent]),
         evaluateAiSessionAttention: () => events.push(['attention']),
     });
     const makeConfigurationEvent = affectedSections => ({
@@ -3172,20 +3789,37 @@ function runControllerChecks(source) {
     }), false);
     assert.strictEqual(context.globToDashboardRegex('dash*').test('dashboard'), true);
     assert.strictEqual(context.globToDashboardRegex('data?').test('data1'), true);
-    const sections = context.filterDashboardCatalog(makeDashboardCatalog(), 'dashboard');
+    const workspaceSections = context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'dashboard');
     assert.deepStrictEqual(
-        JSON.parse(JSON.stringify(sections.map(section => section.id))),
-        ['ai-sessions', 'open-projects', 'saved-projects']
+        JSON.parse(JSON.stringify(workspaceSections.map(section => section.title))),
+        ['AI SESSIONS', 'OPEN WORKSPACES', 'SAVED PROJECTS']
     );
-    const todoSections = context.filterDashboardCatalog(makeDashboardCatalog(), 'ship');
     assert.deepStrictEqual(
-        JSON.parse(JSON.stringify(todoSections.map(section => section.id))),
-        ['todos']
+        JSON.parse(JSON.stringify(workspaceSections.map(section => section.id))),
+        ['ai-sessions', 'open-workspaces', 'saved-projects']
     );
-    assert.strictEqual(context.filterDashboardCatalog(makeDashboardCatalog(), 'missing').length, 0);
+    const workspaceTodoSections = context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'ship');
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(workspaceTodoSections.map(section => section.title))),
+        [],
+        'v2 search must expose exactly AI SESSIONS, OPEN WORKSPACES, and SAVED PROJECTS'
+    );
+    assert.strictEqual(context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'missing').length, 0);
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(context.normalizeDashboardSearchCatalog(null))),
-        { sessions: [], openProjects: [], savedProjects: [], todos: [] }
+        { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: [] }
+    );
+    assert.strictEqual(
+        context.normalizeDashboardSearchCatalog(makeWorkspaceDashboardCatalog()).version,
+        2
+    );
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(context.normalizeDashboardSearchCatalog({
+            ...makeDashboardCatalog(),
+            openWorkspaces: null,
+        }))),
+        { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: [] },
+        'a malformed v2 catalog must fail closed'
     );
     const state = {
         activeTab: 'projects',
@@ -3369,41 +4003,27 @@ function runControllerChecks(source) {
 
     storage.set('projectSteward.activeDashboardTab', 'projects');
     const searchMessages = [];
-    const searchController = context.initDashboard({
+    const workspaceRevealCalls = [];
+    context.window.__projectStewardRevealWorkspaceSession = (...args) => workspaceRevealCalls.push(args);
+    const workspaceSearchController = context.initDashboard({
         initialSearchQuery: 'dashboard',
+        clearSearch: () => undefined,
         postMessage: message => searchMessages.push(message),
     });
-    assert.strictEqual(searchController.getActiveTab(), 'projects');
-    assert.strictEqual(searchController.isSearchActive(), true);
-    assert.strictEqual(searchController.getProjectsState(), 'unloaded');
-    assert.strictEqual(searchController.getTodoState(), 'unloaded');
-    assert.strictEqual(searchMessages.length, 0, 'restored search must not load PROJECTS');
-    searchController.replaceSearchCatalog(makeDashboardCatalog());
-    const sessionSection = searchResults.children.find(section => section.dataset.sectionType === 'session');
-    const sessionResult = sessionSection.children[1];
-    const sessionMetadata = sessionResult.children.find(child => child.className === 'dashboard-search-result-meta');
-    assert.ok(sessionMetadata.children.some(child =>
-        child.className.includes('dashboard-search-result-status') && child.textContent === 'Active'
-    ), 'active AI Session search results must expose Active metadata');
-    sessionResult.closest = selector => selector === '.dashboard-search-result[data-search-action]'
-        ? sessionResult
+    workspaceSearchController.replaceSearchCatalog(makeWorkspaceDashboardCatalog());
+    const workspaceSessionSection = searchResults.children.find(section => section.dataset.sectionType === 'session');
+    const workspaceSessionResult = workspaceSessionSection.children[1];
+    assert.strictEqual(workspaceSessionResult.dataset.searchAction, 'reveal-workspace-session');
+    assert.strictEqual(workspaceSessionResult.dataset.workspaceNavigationIdentity, 'navigation-current');
+    workspaceSessionResult.closest = selector => selector === '.dashboard-search-result[data-search-action]'
+        ? workspaceSessionResult
         : null;
-    searchResults.dispatch('click', { target: sessionResult });
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(searchMessages)), [{
-        type: 'resume-codex-session', provider: 'codex', projectId: 'current', sessionId: 'c1',
-    }]);
-    searchMessages.length = 0;
-    searchController.setSearchQuery('');
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(searchMessages)), [
-        { type: 'request-projects-panel', version: 1, requestId: 1 },
-    ]);
-    context.window.scrollY = 88;
-    searchController.setSearchQuery('dashboard');
-    context.window.scrollY = 15;
-    assert.strictEqual(searchController.applyProjectsPanelMessage({
-        type: 'projects-panel-content', version: 1, requestId: 1, html: '<div>projects while searching</div>',
-    }), true);
-    assert.strictEqual(context.window.scrollY, 15, 'background PROJECTS mount must not move search results');
+    searchResults.dispatch('click', { target: workspaceSessionResult });
+    assert.deepStrictEqual(workspaceRevealCalls, [[
+        'navigation-current', 'codex', 'c1',
+    ]], 'workspace session search must reveal its workspace row instead of resuming a root-owned session');
+    assert.deepStrictEqual(searchMessages, [], 'workspace session reveal must not post a resume action');
+
 }
 
 function runTodoEditResetInteractionChecks() {
@@ -3665,6 +4285,12 @@ function runSourceContractChecks(source) {
     const stylesPath = path.join(root, 'media', 'styles.scss');
     const generatedStylesPath = path.join(root, 'media', 'styles.css');
     const styles = fs.readFileSync(stylesPath, 'utf8');
+    assert.strictEqual(styles.includes('.workspace-root-tags'), false);
+    assert.strictEqual(styles.includes('.workspace-root-tag'), false);
+    assert.ok(styles.includes('@media (max-width: 280px)'));
+    assert.ok(styles.includes('min-width: 0'));
+    assert.ok(styles.includes('text-overflow: ellipsis'));
+    assert.ok(styles.includes('overflow-x: hidden'));
     const compiledStyles = compileDashboardStyles(styles);
     const generatedStyles = fs.readFileSync(generatedStylesPath, 'utf8');
     const minifiedCompiledStyles = new CleanCSS({ rebaseTo: path.dirname(generatedStylesPath) }).minify({
@@ -3681,11 +4307,13 @@ function runSourceContractChecks(source) {
     const updateMessagePath = path.join(root, 'src', 'dashboard', 'webviewUpdateMessages.ts');
     assert.ok(fs.existsSync(updateMessagePath));
     const updateMessages = fs.readFileSync(updateMessagePath, 'utf8');
-    assert.ok(updateMessages.includes('export function buildOpenProjectsUpdatedMessage('));
+    assert.ok(updateMessages.includes('export function buildOpenWorkspacesUpdatedMessage('));
+    assert.ok(!updateMessages.includes('export function buildOpenProjectsUpdatedMessage('));
     assert.ok(updateMessages.includes('export function buildAiSessionsUpdatedMessage('));
-    assert.ok(updateMessages.includes("type: 'open-projects-updated'"));
+    assert.ok(updateMessages.includes("type: 'open-workspaces-updated'"));
+    assert.ok(!updateMessages.includes("type: 'open-projects-updated'"));
     assert.ok(updateMessages.includes("type: 'ai-sessions-updated'"));
-    assert.ok(updateMessages.includes('version: 1'));
+    assert.ok(updateMessages.includes('version: 2'));
     const viewProviderPath = path.join(root, 'src', 'dashboard', 'viewProvider.ts');
     assert.ok(fs.existsSync(viewProviderPath));
     const viewProviderSource = fs.readFileSync(viewProviderPath, 'utf8');
@@ -3697,7 +4325,8 @@ function runSourceContractChecks(source) {
     const routerSource = fs.readFileSync(routerPath, 'utf8');
     assert.ok(routerSource.includes('export interface DashboardMessageHandlers'));
     assert.ok(routerSource.includes('handlers: Record<string, DashboardMessageHandler>'));
-    assert.ok(routerSource.includes('resumeAiSession?: DashboardAiSessionMessageHandler'));
+    assert.ok(routerSource.includes('createAiSession?: DashboardAiSessionCreateMessageHandler'));
+    assert.ok(routerSource.includes('resumeAiSession?: DashboardAiSessionLaunchMessageHandler'));
     assert.ok(routerSource.includes('archiveAiSession?: DashboardAiSessionMessageHandler'));
     assert.ok(routerSource.includes('export function createDashboardMessageRouter('));
     assert.strictEqual(routerSource.includes('handleRawMessage'), false);
@@ -3705,7 +4334,7 @@ function runSourceContractChecks(source) {
     assert.ok(source.includes("projectSteward.activeDashboardTab"));
     assert.ok(webviewContentSource.includes('class="group steward-section'));
     assert.ok(webviewContentSource.includes('class="group-title steward-section-header steward-group-header"'));
-    assert.ok(webviewContentSource.includes('class="project steward-item-card${projectCardClassModifier}"'));
+    assert.ok(webviewContentSource.includes('class="project steward-item-card"'));
     assert.ok(webviewContentSource.includes('class="project-border steward-item-accent"'));
     assert.ok(webviewContentSource.includes('onTodoMounted: () =>'));
     assert.ok(webviewContentSource.includes("window.__projectStewardSyncCollapseButton('todo')"));
@@ -3860,21 +4489,22 @@ function runSourceContractChecks(source) {
     assert.strictEqual(renderSearchBody.includes('innerHTML'), false);
     assert.strictEqual(renderSearchBody.includes('project-ai-attention-badge'), false);
     assert.strictEqual(renderSearchBody.includes('data-current-workspace'), false);
-    assert.ok(renderSearchBody.includes('dashboard-search-result-notes'));
-    assert.ok(renderSearchBody.includes("button.classList.toggle('completed'"));
+    assert.strictEqual(renderSearchBody.includes('dashboard-search-result-notes'), false);
     assert.ok(filterSource.includes('ctrlKey'));
     assert.ok(filterSource.includes('metaKey'));
     assert.ok(filterSource.includes('Escape'));
     assert.ok(source.includes('initialSearchQuery'));
     assert.ok(source.includes('replaceSearchCatalog'));
     assert.ok(source.includes('isSearchActive'));
-    assert.ok(source.includes("title: 'TODO RESULTS'"));
+    assert.strictEqual(source.includes("title: 'TODO RESULTS'"), false);
+    assert.ok(source.includes("title: 'OPEN WORKSPACES'"));
     assert.ok(projectSource.includes('__projectStewardAcknowledgeSession'));
-    assert.ok(projectSource.includes('__projectStewardShowCurrentProject'));
+    assert.strictEqual(projectSource.includes('__projectStewardShowCurrentProject'), false);
+    assert.ok(projectSource.includes('__projectStewardRevealWorkspaceSession'));
     const refreshStewardViewsBody = extractFunctionBody(extensionHostSource, 'refreshStewardViews');
     const aiSessionsMessageBody = extractFunctionBody(extensionHostSource, 'getAiSessionsUpdatedMessage');
-    const openProjectsMessageBody = extractFunctionBody(extensionHostSource, 'postOpenProjectsUpdated');
-    const openProjectControllerSource = fs.readFileSync(path.join(root, 'src', 'openProjects', 'dashboardController.ts'), 'utf8');
+    const openWorkspacesMessageBody = extractFunctionBody(extensionHostSource, 'postOpenWorkspacesUpdated');
+    const openWorkspaceControllerSource = fs.readFileSync(path.join(root, 'src', 'openWorkspaces', 'dashboardController.ts'), 'utf8');
     const aiSessionControllerSource = fs.readFileSync(path.join(root, 'src', 'aiSessions', 'dashboardController.ts'), 'utf8');
     const dashboardDiagnosticsSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'diagnostics.ts'), 'utf8');
     const dashboardErrorContentSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'errorContent.ts'), 'utf8');
@@ -3915,7 +4545,7 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("from './dashboard/groupCollapseController'"));
     assert.ok(!extensionHostSource.includes('async function collapseGroup('));
     assert.ok(!extensionHostSource.includes('context.globalState.update(FAVORITES_GROUP_COLLAPSED_KEY'));
-    assert.ok(!extensionHostSource.includes('context.globalState.update(OPEN_PROJECTS_GROUP_COLLAPSED_KEY'));
+    assert.ok(!extensionHostSource.includes('context.globalState.update(OPEN_WORKSPACES_GROUP_COLLAPSED_KEY'));
     assert.ok(groupCollapseControllerSource.includes('export class GroupCollapseController'));
     assert.ok(groupCollapseControllerSource.includes('collapseGroup('));
     const groupPromptsSource = fs.readFileSync(path.join(root, 'src', 'projects', 'groupPrompts.ts'), 'utf8');
@@ -3947,17 +4577,28 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("from './projects/projectRemovalController'"));
     assert.ok(!extensionHostSource.includes('async function removeProject('));
     assert.ok(projectRemovalControllerSource.includes('export class ProjectRemovalController'));
-    assert.ok(openProjectsMessageBody.includes('openProjectDashboardController.postUpdated()'));
-    assert.ok(openProjectControllerSource.includes('buildOpenProjectsUpdatedMessage({'));
-    assert.ok(openProjectControllerSource.includes('groups: this.options.getGroups()'));
-    assert.ok(openProjectControllerSource.includes('cards'));
-    assert.ok(openProjectControllerSource.includes('semanticRevision: this.aggregate.semanticRevision'));
+    assert.ok(openWorkspacesMessageBody.includes('openWorkspaceDashboardController.postUpdated()'));
+    assert.ok(extensionHostSource.includes('function scheduleAttentionViewsRefresh()'));
+    const attentionBridgeWiring = extensionHostSource.slice(
+        extensionHostSource.indexOf('new AttentionBridgeClient('),
+        extensionHostSource.indexOf('const aiSessionAttentionInterval')
+    );
+    assert.ok(attentionBridgeWiring.includes('scheduleAttentionViewsRefresh()'));
+    assert.ok(openWorkspaceControllerSource.includes('buildOpenWorkspacesUpdatedMessage({'));
+    assert.ok(openWorkspaceControllerSource.includes('groups: this.options.getGroups()'));
+    assert.ok(openWorkspaceControllerSource.includes('cards: this.getCards()'));
+    assert.ok(openWorkspaceControllerSource.includes('semanticRevision,'));
+    assert.ok(openWorkspaceControllerSource.includes('otherWindowsStatus: this.bridgeStatus'));
+    assert.ok(openWorkspaceControllerSource.includes('getViewSemanticRevision()'));
     assert.ok(aiSessionsMessageBody.includes('aiSessionDashboardController.getUpdatedMessage()'));
     assert.ok(aiSessionControllerSource.includes('buildAiSessionsUpdatedMessage({'));
     assert.ok(aiSessionControllerSource.includes('groups: this.options.getGroups()'));
     assert.ok(aiSessionControllerSource.includes('cards'));
     assert.ok(aiSessionControllerSource.includes('sequence: this.options.nextSequence()'));
     assert.ok(projectSource.includes('replaceSearchCatalog(message.searchCatalog)'));
+    assert.ok(projectSource.includes("type: 'open-bridge-extension'"));
+    assert.ok(extensionHostSource.includes("'workbench.extensions.action.showExtensionsWithIds'"));
+    assert.ok(extensionHostSource.includes("'hzcheng.project-steward-attention-ui-bridge'"));
     assert.strictEqual(projectSource.includes("sessionStorage.setItem('projectSteward.activeDashboardTab', 'open')"), false);
     for (const selector of [
         '.steward-section', '.steward-section-header', '.steward-card',
@@ -3975,11 +4616,24 @@ function runSourceContractChecks(source) {
         assert.ok(styles.includes(selector), `missing ${selector}`);
     }
     const sidebarStyles = extractCssRule(styles, 'body.steward-sidebar');
+    const projectContainerRule = extractCssRule(sidebarStyles, '.project-container');
+    for (const declaration of [
+        'box-sizing: border-box',
+        'min-width: 0',
+        'max-width: 100%',
+        'padding: 0 2px',
+    ]) {
+        assert.ok(cssRuleIncludesTopLevelDeclaration(projectContainerRule, declaration),
+            `project container is missing ${declaration}`);
+    }
     const sharedItemCardRules = extractCssRules(sidebarStyles, '.steward-item-card');
     const sharedItemCardRule = sharedItemCardRules.join('\n');
     for (const declaration of [
+        'min-width: 0',
+        'width: 100%',
+        'max-width: 100%',
         'height: 58px',
-        'margin: 0 2px 7px 2px',
+        'margin: 0 0 7px',
         'padding: 8px 10px 8px 15px',
         'border: 1px solid var(--vscode-panel-border)',
         'border-radius: 18px',
@@ -3997,6 +4651,96 @@ function runSourceContractChecks(source) {
     }
 
     const sidebarProjectRules = extractCssRules(sidebarStyles, '.project');
+    const workspaceProjectRule = sidebarProjectRules.find(rule =>
+        rule.includes('&[data-current-workspace][data-has-ai-session-badge]')
+    );
+    assert.ok(workspaceProjectRule, 'workspace project styles must define the badge-present state');
+    const badgePresentWorkspaceRule = extractCssRule(
+        workspaceProjectRule,
+        '&[data-current-workspace][data-has-ai-session-badge]'
+    );
+    const sessionSurfaceRules = extractCssRules(workspaceProjectRule, '.codex-sessions');
+    const collapsedSessionSurfaceRule = sessionSurfaceRules.find(rule =>
+        cssRuleIncludesTopLevelDeclaration(rule, 'max-height: 0')
+    );
+    assert.ok(collapsedSessionSurfaceRule, 'collapsed workspace sessions must use a measurable zero-height surface');
+    for (const declaration of [
+        'display: block',
+        'overflow: hidden',
+        'opacity: 0',
+        'visibility: hidden',
+        'pointer-events: none',
+        'margin-top: 0',
+        'padding-top: 0',
+        'transition:',
+    ]) {
+        assert.ok(cssRuleIncludesTopLevelDeclaration(collapsedSessionSurfaceRule, declaration),
+            `collapsed workspace sessions are missing ${declaration}`);
+    }
+    assert.ok(collapsedSessionSurfaceRule.includes('max-height')
+        && collapsedSessionSurfaceRule.includes('opacity')
+        && collapsedSessionSurfaceRule.includes('margin-top')
+        && collapsedSessionSurfaceRule.includes('padding-top'),
+    'workspace session motion must transition measurable height, opacity, and spacing');
+    const expandedSessionSurfaceRule = sessionSurfaceRules.find(rule =>
+        cssRuleIncludesTopLevelDeclaration(rule, 'max-height: 1000px')
+    );
+    assert.ok(expandedSessionSurfaceRule, 'expanded workspace sessions must open to the bounded surface height');
+    for (const declaration of [
+        'opacity: 1',
+        'visibility: visible',
+        'pointer-events: auto',
+        'margin-top: 8px',
+        'padding-top: 7px',
+    ]) {
+        assert.ok(cssRuleIncludesTopLevelDeclaration(expandedSessionSurfaceRule, declaration),
+            `expanded workspace sessions are missing ${declaration}`);
+    }
+    assert.ok(badgePresentWorkspaceRule.includes('width: calc(100% - 60px)'),
+        'badge-present workspace cards must reserve title and description width');
+
+    const compiledBadgeSelector =
+        'body.steward-sidebar .project[data-current-workspace][data-has-ai-session-badge]';
+    const compiledBadgeRules = extractCompiledCssRulesContainingSelector(compiledStyles, compiledBadgeSelector);
+    for (const suffix of ['.fitty-container', '.project-description']) {
+        const exactSelector = `${compiledBadgeSelector} ${suffix}`;
+        assert.ok(compiledBadgeRules.some(rule =>
+            rule.selectors.includes(exactSelector)
+            && rule.body.includes('width: calc(100% - 60px)')
+        ), `compiled badge-present workspace styles must reserve width for ${suffix}`);
+    }
+    const compiledPlainSelector = 'body.steward-sidebar .project[data-current-workspace]';
+    const compiledCurrentWorkspaceRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledPlainSelector
+    );
+    assert.strictEqual(compiledCurrentWorkspaceRules.some(rule =>
+        ['.fitty-container', '.project-description'].some(suffix =>
+            rule.selectors.includes(`${compiledPlainSelector} ${suffix}`)
+        ) && rule.body.includes('width: calc(100% - 60px)')
+    ), false, 'compiled plain current-workspace styles must not reserve badge width');
+    const compiledSessionSurfaceSelector = 'body.steward-sidebar .project .codex-sessions';
+    const compiledSessionSurfaceRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledSessionSurfaceSelector,
+    ).filter(rule => rule.selectors.includes(compiledSessionSurfaceSelector));
+    assert.ok(compiledSessionSurfaceRules.some(rule =>
+        rule.body.includes('max-height: 0')
+        && rule.body.includes('opacity: 0')
+        && rule.body.includes('overflow: hidden')
+    ), 'compiled collapsed session surface must preserve the motion contract');
+    const compiledExpandedSessionSelector =
+        'body.steward-sidebar .project[data-current-workspace][data-codex-expanded] .codex-sessions';
+    const compiledExpandedSessionRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledExpandedSessionSelector,
+    );
+    assert.ok(compiledExpandedSessionRules.some(rule =>
+        rule.selectors.includes(compiledExpandedSessionSelector)
+        && rule.body.includes('max-height: 1000px')
+        && rule.body.includes('opacity: 1')
+    ), 'compiled expanded session surface must preserve the motion contract');
+
     for (const forbidden of ['height: 58px', 'border-radius: 18px', 'background: var(', 'box-shadow:']) {
         assert.strictEqual(sidebarProjectRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, forbidden)), false,
             `project domain rule must not duplicate ${forbidden}`);
@@ -4006,15 +4750,40 @@ function runSourceContractChecks(source) {
     assert.ok(sharedAccentRule.includes('left: 7px'));
     assert.ok(sharedAccentRule.includes('width: 4px'));
     assert.ok(sharedAccentRule.includes('border-radius: 999px'));
+    assert.ok(sharedAccentRule.includes('background: var(--project-color, transparent)'));
+    assert.ok(sharedAccentRule.includes('box-shadow: 0 0 12px var(--project-color, transparent)'));
     assert.ok(sharedItemCardRule.includes('&.completed'));
     assert.ok(sharedItemCardRule.includes('&.selected'));
     assert.ok(sharedItemCardRule.includes('&[data-current-workspace]'));
+    assert.strictEqual(sharedItemCardRule.includes('&.selected,\n        &[data-current-workspace]'), false,
+        'CURRENT WINDOW location must replace the permanent selected shell treatment');
+    assert.strictEqual(sharedItemCardRule.includes('&.selected:focus-within,\n        &[data-current-workspace]:hover'), false,
+        'current workspace hover must use the same shared card shell as Projects');
     assert.ok(sharedItemCardRule.includes('&[data-codex-expanded]:hover'));
+    const currentWorkspaceShellRule = extractCssRule(sharedItemCardRule, '&[data-current-workspace]');
+    assert.ok(cssRuleIncludesTopLevelDeclaration(currentWorkspaceShellRule, 'height: auto'),
+        'CURRENT WORKSPACE must remain intrinsically sized while its child collapses');
+    assert.ok(cssRuleIncludesTopLevelDeclaration(currentWorkspaceShellRule, 'min-height: 58px'));
+    assert.strictEqual(
+        cssRuleIncludesTopLevelDeclaration(currentWorkspaceShellRule, 'height: 58px'),
+        false,
+        'CURRENT WORKSPACE must not switch to the fixed collapsed shell height',
+    );
+    const compiledCurrentWorkspaceShellSelector =
+        'body.steward-sidebar .steward-item-card[data-current-workspace]';
+    const compiledCurrentWorkspaceShellRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledCurrentWorkspaceShellSelector,
+    ).filter(rule => rule.selectors.includes(compiledCurrentWorkspaceShellSelector));
+    assert.ok(compiledCurrentWorkspaceShellRules.some(rule =>
+        rule.body.includes('height: auto') && rule.body.includes('min-height: 58px')
+    ), 'compiled CURRENT WORKSPACE shell must remain intrinsic in collapsed and expanded states');
     assert.strictEqual(styles.includes('.steward-card-compact'), false);
 
     const reducedMotionRule = extractCssRule(styles, '@media (prefers-reduced-motion: reduce)');
     assert.ok(reducedMotionRule.includes('.steward-item-card'));
     assert.ok(reducedMotionRule.includes('.steward-item-accent'));
+    assert.ok(reducedMotionRule.includes('.codex-sessions'));
     assert.ok(reducedMotionRule.includes('transition: none'));
 
     const sharedGroupHeaderRule = extractCssRule(sidebarStyles, '.steward-group-header');
@@ -4220,11 +4989,17 @@ async function runDashboardMessageRouterChecks() {
                 calls.push(['selected-project', message.projectId]);
             },
         },
-        resumeAiSession: (message, providerId) => {
-            calls.push(['resume-ai-session', providerId, message.sessionId]);
+        createAiSession: message => {
+            calls.push(['create-ai-session', message.projectId]);
+        },
+        resumeAiSession: (message, providerId, rootId) => {
+            calls.push(['resume-ai-session', providerId, message.sessionId, rootId]);
         },
         archiveAiSession: (message, providerId) => {
             calls.push(['archive-ai-session', providerId, message.sessionId]);
+        },
+        saveCurrentWorkspace: message => {
+            calls.push(['save-current-workspace', message.type, message.requestId]);
         },
     });
 
@@ -4236,21 +5011,43 @@ async function runDashboardMessageRouterChecks() {
     await router({ type: 'request-projects-panel', requestId: 7 });
     await router({ type: 'request-todo-panel', requestId: 8 });
     await router({ type: 'selected-project', projectId: 'project-a' });
+    await router({ type: 'create-ai-session', projectId: 'workspace-a', rootId: 'root-api' });
+    await router({ type: 'new-session-in', projectId: 'workspace-a' });
+    await router({ type: 'new-session-in', projectId: 'workspace-a', rootId: 'root-api' });
     await router({ type: 'resume-ai-session', provider: 'codex', sessionId: 'c1' });
+    await router({ type: 'resume-ai-session', provider: 'codex', sessionId: 'c2', rootId: 'root-web' });
     await router({ type: 'resume-ai-session', provider: 'unknown', sessionId: 'invalid' });
     await router({ type: 'resume-kimi-session', sessionId: 'k1' });
     await router({ type: 'archive-claude-session', sessionId: 'a1' });
     await router({ type: 'resume-unknown-session', sessionId: 'ignored' });
+    await router({ type: 'save-current-workspace', requestId: 9 });
+    await router({ type: 'save-project', projectId: '__currentWorkspace-transient-card-id' });
 
     assert.deepStrictEqual(calls, [
         ['request-projects-panel', 7],
         ['request-todo-panel', 8],
         ['selected-project', 'project-a'],
-        ['resume-ai-session', 'codex', 'c1'],
-        ['resume-ai-session', null, 'invalid'],
-        ['resume-ai-session', 'kimi', 'k1'],
+        ['create-ai-session', 'workspace-a'],
+        ['resume-ai-session', 'codex', 'c1', null],
+        ['resume-ai-session', 'codex', 'c2', 'root-web'],
+        ['resume-ai-session', null, 'invalid', null],
+        ['resume-ai-session', 'kimi', 'k1', null],
         ['archive-ai-session', 'claude', 'a1'],
+        ['save-current-workspace', 'save-current-workspace', 9],
+        ['save-current-workspace', 'save-project', undefined],
     ]);
+
+    const genericSaveCalls = [];
+    const routerWithoutSaveHandler = routerModule.createDashboardMessageRouter({
+        handlers: {
+            'save-current-workspace': message => genericSaveCalls.push(message.requestId),
+        },
+    });
+    await routerWithoutSaveHandler({ type: 'save-current-workspace', requestId: 10 });
+    await routerWithoutSaveHandler({ type: 'save-project', projectId: '__currentWorkspace-stale' });
+    assert.deepStrictEqual(genericSaveCalls, [],
+        'workspace save messages must remain reserved routes when their dedicated handler is unavailable');
+
 }
 
 async function main() {
@@ -4283,9 +5080,9 @@ async function main() {
     await runDashboardTodoMigrationSequencingChecks();
     await runTodoHostMutationChecks();
     runDashboardUpdateMessageChecks();
+    runWorkspaceCardRenderingChecks();
     runTodoViewModelChecks();
     runTodoOrderingInteractionChecks();
-    runTodoSearchResultRenderingChecks(source);
     runControllerChecks(source);
     runTodoEditResetInteractionChecks();
     runTodoComposePendingInteractionChecks();

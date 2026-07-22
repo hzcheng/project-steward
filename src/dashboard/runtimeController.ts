@@ -1,7 +1,6 @@
 'use strict';
 
 import type { AiSessionProviderId, Project } from '../models';
-import type { AttentionProjectSummary } from '../aiSessions/attentionProject';
 import type { AiSessionActiveTerminalChangedMessage, AiSessionBatchArchiveCompletedMessage } from '../aiSessions/types';
 import type { ActiveAiSessionTerminalIdentity } from '../aiSessions/activeTerminalHighlight';
 
@@ -11,8 +10,8 @@ export interface DashboardRuntimeControllerOptions<TProject extends Project = Pr
     logDashboardDiagnostic: (event: Record<string, unknown>) => void;
     executeCommand: (command: string, ...args: unknown[]) => Thenable<unknown> | Promise<unknown>;
     viewType: string;
-    publishOpenProjects: () => void;
-    getOpenProjects: () => TProject[];
+    publishOpenWorkspace: () => void;
+    getCurrentSavedProject: () => TProject | null;
     syncProjectColorToCurrentWindow: (project: TProject | null) => Thenable<void> | Promise<void>;
     postMessage: (message: unknown) => Thenable<unknown> | Promise<unknown>;
     logError: (message: string, error: unknown) => void;
@@ -37,7 +36,7 @@ export class DashboardRuntimeController<TProject extends Project = Project> {
     }
 
     async showSteward(): Promise<void> {
-        this.options.publishOpenProjects();
+        this.options.publishOpenWorkspace();
         await this.revealSidebarSteward();
         this.refresh('show-steward');
     }
@@ -57,7 +56,7 @@ export class DashboardRuntimeController<TProject extends Project = Project> {
     refreshAfterMutation(reason = 'project-mutation'): void {
         this.applyProjectColorToCurrentWindow();
         this.refresh(reason);
-        this.options.publishOpenProjects();
+        this.options.publishOpenWorkspace();
     }
 
     revealSidebarSteward(): Promise<void> {
@@ -65,19 +64,6 @@ export class DashboardRuntimeController<TProject extends Project = Project> {
             .then(() => this.runAsync(() => this.options.executeCommand(`${this.options.viewType}.focus`)))
             .then(undefined, () => this.runAsync(() => this.options.executeCommand(`${this.options.viewType}.focus`)))
             .then(undefined, () => undefined);
-    }
-
-    postAttentionProjectsUpdated(projects: AttentionProjectSummary[]): void {
-        if (!this.options.isVisible()) {
-            return;
-        }
-
-        this.runAsync(() => this.options.postMessage({
-            type: 'ai-session-attention-projects-updated',
-            projects,
-        })).then(undefined, error => {
-            this.options.logError('Failed to post AI session attention projects.', error);
-        });
     }
 
     postBatchArchiveCompletion(message: AiSessionBatchArchiveCompletedMessage): void {
@@ -98,10 +84,7 @@ export class DashboardRuntimeController<TProject extends Project = Project> {
     }
 
     applyProjectColorToCurrentWindow(project: TProject = null): void {
-        let targetProject: TProject | null = project || this.options.getOpenProjects()[0] || null;
-        if (targetProject?.showSaveAction) {
-            targetProject = null;
-        }
+        const targetProject: TProject | null = project || this.options.getCurrentSavedProject();
         this.runAsync(() => this.options.syncProjectColorToCurrentWindow(targetProject)).then(undefined, error => {
             this.options.logError('Failed to apply project color to current window.', error);
         });

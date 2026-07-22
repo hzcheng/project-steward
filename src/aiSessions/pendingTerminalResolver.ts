@@ -3,8 +3,16 @@
 import type { AiSessionProviderId } from '../models';
 import { findPendingAiSessionTerminalMatch } from './pendingTerminals';
 import type {
+    AiSessionPendingPromotionCandidate,
     AiSessionPendingRuntimeSnapshot,
     AiSessionRuntimeSnapshot,
+} from './runtimeTypes';
+import {
+    aiSessionRuntimeIdentitiesEqual,
+    cloneAiSessionRuntimeIdentity,
+    isValidAiSessionPromotionDisplayName,
+    isValidAiSessionRuntimeIdentity,
+    isValidAiSessionRuntimeIdentityId,
 } from './runtimeTypes';
 import type { AiSessionProviderDefinition, AiSessionReadResult } from './types';
 
@@ -15,8 +23,9 @@ type AiSessionPendingRuntimeProvider = Pick<
 
 export interface PendingAiSessionRuntimeCoordinator<TTerminal = unknown> {
     promotePending(
-        pendingId: string,
-        sessionId: string
+        identity: AiSessionPendingRuntimeSnapshot<TTerminal>['identity'] & { pendingId: string },
+        sessionId: string,
+        sessionName: string
     ): AiSessionRuntimeSnapshot<TTerminal>[] | Promise<AiSessionRuntimeSnapshot<TTerminal>[]>;
 }
 
@@ -56,7 +65,7 @@ export interface ResolvePendingAiSessionTerminalsResult {
 }
 
 export interface ResolvePendingAiSessionTerminalsOptions<TTerminal = unknown> {
-    pendingRuntimes: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[];
+    pendingRuntimes: readonly AiSessionPendingPromotionCandidate<TTerminal>[];
     activeRuntimes: readonly AiSessionRuntimeSnapshot<TTerminal>[];
     sessionResults: Record<AiSessionProviderId, AiSessionReadResult>;
     providers: readonly AiSessionPendingRuntimeProvider[];
@@ -102,12 +111,8 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
         if (attemptedPendingIdentityKeys.has(pendingIdentityKey)) {
             continue;
         }
-        const session = findPendingAiSessionTerminalMatch(
-            pendingRuntime,
-            sessionResult,
-            claimedSessionKeys,
-            options.getSessionKey,
-            options.providers
+        const session = findPromotionSession(
+            pendingRuntime, sessionResult, claimedSessionKeys, options
         );
         if (!session) {
             continue;
@@ -124,7 +129,12 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
         try {
             const pendingSettlement = options.settlePending
                 ? options.settlePending(pendingRuntime, session.id)
-                : settlePendingAiSessionPromotion(options, pendingRuntime, session.id);
+                : settlePendingAiSessionPromotion(
+                    options,
+                    pendingRuntime,
+                    session.id,
+                    getPromotionDisplayName(pendingRuntime, session.name, session.id)
+                );
             settlement = isPromiseLike(pendingSettlement) ? await pendingSettlement : pendingSettlement;
         } catch (_error) {
             result.failures.push({ ...promotionIdentity, reason: 'promotion-error' });
@@ -145,10 +155,68 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
     return result;
 }
 
+function getPromotionDisplayName(
+    pendingRuntime: AiSessionPendingPromotionCandidate,
+    resolvedSessionName: unknown,
+    sessionId: string
+): string {
+    if (pendingRuntime.recoverySessionId !== undefined
+        && pendingRuntime.promotionRecoveryDisplayName === undefined) {
+        throw new Error('The durable promotion display snapshot is missing.');
+    }
+    if (pendingRuntime.promotionRecoveryDisplayName !== undefined) {
+        if (!isValidAiSessionPromotionDisplayName(
+            pendingRuntime.promotionRecoveryDisplayName
+        )) {
+            throw new Error('The durable promotion display snapshot is invalid.');
+        }
+        return pendingRuntime.promotionRecoveryDisplayName;
+    }
+    const normalizedTitle = typeof pendingRuntime.title === 'string'
+        ? pendingRuntime.title.trim() : '';
+    if (isValidAiSessionPromotionDisplayName(normalizedTitle)) {
+        return normalizedTitle;
+    }
+    return isValidAiSessionPromotionDisplayName(resolvedSessionName)
+        ? resolvedSessionName
+        : sessionId;
+}
+
+function findPromotionSession<TTerminal>(
+    pendingRuntime: AiSessionPendingPromotionCandidate<TTerminal>,
+    sessionResult: AiSessionReadResult,
+    claimedSessionKeys: Set<string>,
+    options: Pick<ResolvePendingAiSessionTerminalsOptions<TTerminal>, 'getSessionKey' | 'providers'>
+) {
+    if (pendingRuntime.recoverySessionId !== undefined) {
+        if (!isValidAiSessionRuntimeIdentityId(pendingRuntime.recoverySessionId)) {
+            throw new Error('The durable promotion session snapshot is invalid.');
+        }
+        if (!sessionResult.available) {
+            return null;
+        }
+        const matches = sessionResult.sessions.filter(session =>
+            session.id === pendingRuntime.recoverySessionId);
+        if (matches.length > 1) {
+            throw new Error('The durable promotion session snapshot is ambiguous.');
+        }
+        return matches[0] || null;
+    }
+    return findPendingAiSessionTerminalMatch(
+        pendingRuntime,
+        sessionResult,
+        claimedSessionKeys,
+        options.getSessionKey,
+        options.providers
+    );
+}
+
 function getPendingIdentityKey<TTerminal>(runtime: AiSessionPendingRuntimeSnapshot<TTerminal>): string {
     return JSON.stringify([
         runtime.identity.provider,
-        runtime.identity.projectKey,
+        runtime.identity.workspaceScopeIdentity,
+        runtime.identity.workspaceNavigationIdentity,
+        runtime.identity.workspaceRootHostPaths.slice().sort(),
         runtime.identity.cwd,
         runtime.identity.pendingId || '',
     ]);
@@ -157,16 +225,18 @@ function getPendingIdentityKey<TTerminal>(runtime: AiSessionPendingRuntimeSnapsh
 function settlePendingAiSessionPromotion<TTerminal>(
     options: ResolvePendingAiSessionTerminalsOptions<TTerminal>,
     pendingRuntime: AiSessionPendingRuntimeSnapshot<TTerminal>,
-    sessionId: string
+    sessionId: string,
+    sessionName: string
 ): PendingAiSessionPromotionSettlement | Promise<PendingAiSessionPromotionSettlement> {
     const promotion = options.runtimeCoordinator.promotePending(
-        pendingRuntime.identity.pendingId,
-        sessionId
+        cloneAiSessionRuntimeIdentity(pendingRuntime.identity) as typeof pendingRuntime.identity & { pendingId: string },
+        sessionId,
+        sessionName
     );
     const settle = (runtimes: unknown): PendingAiSessionPromotionSettlement => {
         const failureReason = getPendingAiSessionPromotionFailureReason(
             runtimes,
-            pendingRuntime.identity.provider,
+            pendingRuntime.identity,
             sessionId
         );
         if (!failureReason) {
@@ -179,7 +249,7 @@ function settlePendingAiSessionPromotion<TTerminal>(
 
 export function getPendingAiSessionPromotionFailureReason(
     runtimes: unknown,
-    provider: AiSessionProviderId,
+    pendingIdentity: AiSessionPendingRuntimeSnapshot['identity'],
     sessionId: string
 ): PendingAiSessionPromotionFailureReason | null {
     if (!Array.isArray(runtimes) || runtimes.length === 0) {
@@ -198,7 +268,12 @@ export function getPendingAiSessionPromotionFailureReason(
     if (runtime.state !== 'active') {
         return 'non-active-runtime';
     }
-    if (runtime.identity.provider !== provider || runtime.identity.sessionId !== sessionId) {
+    const expectedIdentity = {
+        ...cloneAiSessionRuntimeIdentity(pendingIdentity),
+        pendingId: undefined,
+        sessionId,
+    };
+    if (!aiSessionRuntimeIdentitiesEqual(runtime.identity, expectedIdentity)) {
         return 'identity-mismatch';
     }
     return null;
@@ -208,9 +283,7 @@ function isRuntimeSnapshot(value: unknown): value is AiSessionRuntimeSnapshot<un
     if (!isRecord(value) || !isRecord(value.identity)) {
         return false;
     }
-    return typeof value.identity.provider === 'string'
-        && typeof value.identity.projectKey === 'string'
-        && typeof value.identity.cwd === 'string'
+    return isValidAiSessionRuntimeIdentity(value.identity)
         && typeof value.identity.sessionId === 'string'
         && (value.backend === 'vscode' || value.backend === 'tmux')
         && typeof value.state === 'string'
@@ -228,11 +301,11 @@ function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
 }
 
 function clonePendingRuntime<TTerminal>(
-    runtime: AiSessionPendingRuntimeSnapshot<TTerminal>
-): AiSessionPendingRuntimeSnapshot<TTerminal> {
+    runtime: AiSessionPendingPromotionCandidate<TTerminal>
+): AiSessionPendingPromotionCandidate<TTerminal> {
     return {
         ...runtime,
-        identity: { ...runtime.identity },
+        identity: cloneAiSessionRuntimeIdentity(runtime.identity),
         ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
         state: 'pending',
         excludedSessionIds: [...runtime.excludedSessionIds],

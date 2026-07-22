@@ -12,7 +12,6 @@ const launchSpec = require('../out/aiSessions/launchSpec');
 const helpers = require('../out/aiSessions/sessionHelpers');
 const archiveBatch = require('../out/aiSessions/archiveBatch');
 const activeTerminalHighlight = require('../out/aiSessions/activeTerminalHighlight');
-const activeSessionProjection = require('../out/aiSessions/activeSessionProjection');
 const lifecycle = require('../out/aiSessions/lifecycle');
 const IncrementalJsonlLifecycleReader = require('../out/aiSessions/incrementalJsonlLifecycleReader').default;
 const jsonlTail = require('../out/aiSessions/jsonlTail');
@@ -24,17 +23,25 @@ const AiSessionExecutionMonitor = require('../out/aiSessions/executionMonitor').
 const attentionPayload = require('../out/aiSessions/attentionPayload');
 const attentionAggregate = require('../out/aiSessions/attentionAggregate');
 const attentionProject = require('../out/aiSessions/attentionProject');
+const workspaceAttentionProjection = require('../out/workspaces/attentionProjection');
 const AiSessionReadCoordinator = require('../out/aiSessions/readCoordinator').AiSessionReadCoordinator;
-const aiSessionViewModels = require('../out/aiSessions/viewModels');
-const aiSessionProjectHydration = require('../out/aiSessions/projectHydration');
 const AiSessionAliasStore = require('../out/aiSessions/aliasStore').default;
 const AiSessionAliasController = require('../out/aiSessions/aliasController').default;
-const AiSessionProjectStateStore = require('../out/aiSessions/projectStateStore').default;
+const AiSessionWorkspaceStateStore = require('../out/aiSessions/workspaceStateStore').default;
 const ProductionAttentionStore = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/productionAttentionStore').ProductionAttentionStore;
 const AiSessionPinStore = require('../out/aiSessions/pinStore').default;
 const AiSessionPinController = require('../out/aiSessions/pinController').default;
 const providers = require('../out/aiSessions/providers');
 const providerAvailability = require('../out/aiSessions/providerAvailability');
+const workspaceSessionScope = require('../out/workspaces/sessionScope');
+const workspaceSessionAssignment = require('../out/workspaces/sessionAssignment');
+const workspaceSessionHydration = require('../out/workspaces/sessionHydration');
+const WorkspaceSessionHydrationController = require('../out/workspaces/sessionHydrationController')
+    .WorkspaceSessionHydrationController;
+const WorkspacePendingSessionPromotionController = require('../out/workspaces/pendingSessionPromotionController')
+    .WorkspacePendingSessionPromotionController;
+const workspacePrimaryRootStore = require('../out/workspaces/primaryRootStore');
+const WorkspacePrimaryRootStore = workspacePrimaryRootStore.WorkspacePrimaryRootStore;
 const AiSessionTerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
 const CodexSessionService = require('../out/services/codexSessionService').default;
 const KimiSessionService = require('../out/services/kimiSessionService').default;
@@ -84,12 +91,15 @@ aiSessionScanOptions = require('../out/aiSessions/scanOptions');
 aiSessionTerminalCwd = require('../out/aiSessions/terminalCwd');
 projectWorkspaceHelpers = require('../out/projects/workspaceHelpers');
 const AiSessionTerminalService = require('../out/aiSessions/terminalService').default;
+const DirectTerminalRuntimeBackend = require('../out/aiSessions/directTerminalRuntimeBackend')
+    .DirectTerminalRuntimeBackend;
 const models = require('../out/models');
 const openProjectService = require('../out/projects/openProjectService');
 const webviewContentModule = require('../out/webview/webviewContent');
 const dashboardViewModel = require('../out/webview/dashboardViewModel');
 const AiSessionDashboardController = require('../out/aiSessions/dashboardController').AiSessionDashboardController;
-const AiSessionCommandController = require('../out/aiSessions/commandController').AiSessionCommandController;
+const aiSessionCommandControllerModule = require('../out/aiSessions/commandController');
+const AiSessionCommandController = aiSessionCommandControllerModule.AiSessionCommandController;
 const AiSessionCreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
 const AiSessionResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const AiSessionAttentionController = require('../out/aiSessions/attentionController').AiSessionAttentionController;
@@ -99,7 +109,6 @@ const TmuxFocusedRuntimeMonitor = require('../out/aiSessions/tmuxFocusedRuntimeM
 const settleAiSessionRuntimeLifecycles = require('../out/aiSessions/attentionController').settleAiSessionRuntimeLifecycles;
 const runAiSessionRuntimeLifecycleTask = require('../out/aiSessions/attentionController').runAiSessionRuntimeLifecycleTask;
 const AiSessionArchiveController = require('../out/aiSessions/archiveController').AiSessionArchiveController;
-const AiSessionProjectHydrationController = require('../out/aiSessions/projectHydrationController').AiSessionProjectHydrationController;
 const SidebarStewardViewProvider = require('../out/dashboard/viewProvider').SidebarStewardViewProvider;
 const dashboardErrorContent = require('../out/dashboard/errorContent');
 Module._load = originalModuleLoad;
@@ -115,6 +124,36 @@ const TODO_SEARCH_ITEMS = [{
     notesSearchText: 'non-empty AI safety fixture',
     searchText: 'preserve ai catalog release medium non-empty ai safety fixture',
 }];
+
+function createTestAiSessionDirectoryScope(primaryCwd, additionalDirectories = []) {
+    return Object.freeze({
+        workspaceNavigationIdentity: `navigation:${primaryCwd}`,
+        workspaceScopeIdentity: `scope:${primaryCwd}`,
+        workspaceRootHostPaths: Object.freeze([primaryCwd, ...additionalDirectories]),
+        primaryRootId: `root:${primaryCwd}`,
+        primaryCwd,
+        additionalDirectories: Object.freeze([...additionalDirectories]),
+    });
+}
+
+function createTestAiSessionRuntimeIdentity(provider, cwd, id, overrides = {}) {
+    return {
+        provider,
+        workspaceScopeIdentity: `scope:${cwd}`,
+        workspaceNavigationIdentity: `navigation:${cwd}`,
+        workspaceRootHostPaths: [cwd],
+        cwd,
+        ...id,
+        ...overrides,
+    };
+}
+
+function createTestAiSessionTerminalBindingIdentity(providerId, cwd, id, overrides = {}) {
+    const { provider: _provider, ...identity } = createTestAiSessionRuntimeIdentity(
+        providerId, cwd, id, overrides
+    );
+    return { providerId, ...identity };
+}
 
 function decodePowerShellPayload(command) {
     const prefix = 'powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ';
@@ -189,6 +228,517 @@ function runAssignmentChecks() {
     assert.strictEqual(assignments.has('root'), false);
 }
 
+function runWorkspaceSessionScopeChecks() {
+    const workspace = {
+        navigationIdentity: 'workspace-navigation',
+        scopeIdentity: 'workspace-scope',
+        kind: 'savedMultiRoot',
+        displayName: 'Platform',
+        navigationUri: 'file:///work/platform.code-workspace',
+        environment: 'local',
+        roots: [
+            { id: 'root-api', name: 'API', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 0 },
+            { id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/web', ordinal: 1 },
+        ],
+    };
+
+    assert.strictEqual(workspaceSessionScope.selectPrimaryWorkspaceRoot(workspace, {
+        explicitRootId: 'root-web',
+        activeEditorUri: { fsPath: '/work/api/src/index.ts' },
+        lastUsedRootId: 'root-api',
+    }).id, 'root-web');
+    assert.strictEqual(workspaceSessionScope.selectPrimaryWorkspaceRoot(workspace, {
+        activeEditorUri: { fsPath: '/work/web/src/index.ts' },
+        lastUsedRootId: 'root-api',
+    }).id, 'root-web');
+    assert.strictEqual(workspaceSessionScope.selectPrimaryWorkspaceRoot(workspace, {
+        activeEditorUri: { fsPath: '/elsewhere/index.ts' },
+        lastUsedRootId: 'root-web',
+    }).id, 'root-web');
+    assert.strictEqual(workspaceSessionScope.selectPrimaryWorkspaceRoot({
+        ...workspace,
+        roots: [workspace.roots[1], workspace.roots[0]],
+    }, {
+        explicitRootId: 'removed-root',
+        lastUsedRootId: 'removed-root',
+    }).id, 'root-api');
+
+    const scope = workspaceSessionScope.buildAiSessionDirectoryScope(workspace, {
+        explicitRootId: 'root-web',
+        isDirectory: value => value !== '/work/missing',
+    });
+    assert.deepStrictEqual(scope, {
+        workspaceNavigationIdentity: workspace.navigationIdentity,
+        workspaceScopeIdentity: workspace.scopeIdentity,
+        workspaceRootHostPaths: ['/work/api', '/work/web'],
+        primaryRootId: 'root-web',
+        primaryCwd: '/work/web',
+        additionalDirectories: ['/work/api'],
+    });
+    assert.notStrictEqual(scope.workspaceRootHostPaths, workspace.roots);
+    assert.strictEqual(Object.isFrozen(scope), true);
+    assert.strictEqual(Object.isFrozen(scope.workspaceRootHostPaths), true);
+    assert.strictEqual(Object.isFrozen(scope.additionalDirectories), true);
+
+    const whitespaceWorkspace = {
+        ...workspace,
+        roots: [
+            {
+                id: 'root-trailing-space', name: 'Trailing space', uri: 'file:///work/repo%20',
+                hostPath: '/work/repo ', ordinal: 0,
+            },
+            {
+                id: 'root-inner-space', name: 'Inner space', uri: 'file:///work/%20api',
+                hostPath: '/work/ api', ordinal: 1,
+            },
+        ],
+    };
+    const directoryProbes = [];
+    const whitespaceScope = workspaceSessionScope.buildAiSessionDirectoryScope(whitespaceWorkspace, {
+        explicitRootId: 'root-trailing-space',
+        isDirectory: value => {
+            directoryProbes.push(value);
+            return value === '/work/repo ' || value === '/work/ api';
+        },
+    });
+    assert.deepStrictEqual(directoryProbes, ['/work/repo ', '/work/ api']);
+    assert.deepStrictEqual(whitespaceScope.workspaceRootHostPaths, ['/work/repo ', '/work/ api']);
+    assert.strictEqual(whitespaceScope.primaryCwd, '/work/repo ');
+    assert.deepStrictEqual(whitespaceScope.additionalDirectories, ['/work/ api']);
+    let blankDirectoryProbeCount = 0;
+    assert.throws(
+        () => workspaceSessionScope.buildAiSessionDirectoryScope({
+            ...workspace,
+            roots: [{
+                id: 'root-blank', name: 'Blank', uri: 'file:///blank', hostPath: ' \t ', ordinal: 0,
+            }],
+        }, {
+            isDirectory: () => {
+                blankDirectoryProbeCount += 1;
+                return true;
+            },
+        }),
+        error => error instanceof workspaceSessionScope.WorkspaceDirectoryScopeError,
+    );
+    assert.strictEqual(blankDirectoryProbeCount, 0, 'blank host paths must fail before filesystem probing');
+
+    const nestedWorkspace = {
+        ...workspace,
+        roots: [
+            { id: 'root-platform', name: 'Platform', uri: 'file:///work', hostPath: '/work', ordinal: 0 },
+            { id: 'root-api', name: 'API', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 1 },
+            { id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/web', ordinal: 2 },
+        ],
+    };
+    const nestedHistoricalScope = workspaceSessionScope.buildAiSessionDirectoryScope(nestedWorkspace, {
+        explicitRootId: 'root-api',
+        primaryCwd: '/work/api/packages/service/../service',
+        isDirectory: () => true,
+    });
+    assert.deepStrictEqual(nestedHistoricalScope, {
+        workspaceNavigationIdentity: workspace.navigationIdentity,
+        workspaceScopeIdentity: workspace.scopeIdentity,
+        workspaceRootHostPaths: ['/work', '/work/api', '/work/web'],
+        primaryRootId: 'root-api',
+        primaryCwd: '/work/api/packages/service',
+        additionalDirectories: ['/work', '/work/web'],
+    }, 'a nested historical cwd must stay exact while add-dir excludes its owning root');
+
+    const duplicatePathScope = workspaceSessionScope.buildAiSessionDirectoryScope({
+        ...workspace,
+        roots: workspace.roots.concat({
+            id: 'root-api-alias', name: 'API alias', uri: 'file:///work/api/', hostPath: '/work/api/', ordinal: 2,
+        }),
+    }, {
+        explicitRootId: 'root-api-alias',
+        isDirectory: () => true,
+    });
+    assert.deepStrictEqual(duplicatePathScope.workspaceRootHostPaths, ['/work/api', '/work/web']);
+    assert.strictEqual(duplicatePathScope.primaryRootId, 'root-api-alias');
+    assert.strictEqual(duplicatePathScope.primaryCwd, '/work/api');
+    assert.deepStrictEqual(duplicatePathScope.additionalDirectories, ['/work/web']);
+
+    const uncDuplicatePathScope = workspaceSessionScope.buildAiSessionDirectoryScope({
+        ...workspace,
+        roots: [
+            {
+                id: 'root-unc-original', name: 'UNC original', uri: 'file://server/Share/App',
+                hostPath: '\\\\Server\\Share\\App', ordinal: 0,
+            },
+            {
+                id: 'root-unc-alias', name: 'UNC alias', uri: 'file://server/share/app',
+                hostPath: '\\\\server\\share\\app\\', ordinal: 1,
+            },
+        ],
+    }, {
+        explicitRootId: 'root-unc-alias',
+        isDirectory: () => true,
+    });
+    assert.deepStrictEqual(uncDuplicatePathScope.workspaceRootHostPaths, ['\\\\Server\\Share\\App']);
+    assert.strictEqual(uncDuplicatePathScope.primaryRootId, 'root-unc-alias');
+    assert.strictEqual(uncDuplicatePathScope.primaryCwd, '\\\\server\\share\\app');
+    assert.deepStrictEqual(uncDuplicatePathScope.additionalDirectories, []);
+
+    const invalidWorkspace = {
+        ...workspace,
+        roots: workspace.roots.concat({
+            id: 'root-missing', name: 'Missing root', uri: 'file:///work/missing', hostPath: '/work/missing', ordinal: 2,
+        }),
+    };
+    assert.throws(
+        () => workspaceSessionScope.buildAiSessionDirectoryScope(invalidWorkspace, {
+            isDirectory: value => value !== '/work/missing',
+        }),
+        error => {
+            assert.ok(error instanceof workspaceSessionScope.WorkspaceDirectoryScopeError);
+            assert.deepStrictEqual(error.invalidRoots, [{ id: 'root-missing', name: 'Missing root' }]);
+            assert.ok(error.message.includes('root-missing'));
+            assert.ok(error.message.includes('Missing root'));
+            assert.strictEqual(error.message.includes('codex'), false);
+            assert.strictEqual(error.message.includes('--add-dir'), false);
+            return true;
+        }
+    );
+
+    const unreadableWorkspace = {
+        ...workspace,
+        roots: workspace.roots.concat({
+            id: 'root-unreadable', name: 'Unreadable root', uri: 'file:///work/unreadable',
+            hostPath: '/work/unreadable', ordinal: 2,
+        }),
+    };
+    let unreadableScope;
+    assert.throws(
+        () => {
+            unreadableScope = workspaceSessionScope.buildAiSessionDirectoryScope(unreadableWorkspace, {
+                isDirectory: value => {
+                    if (value === '/work/unreadable') {
+                        throw new Error('EACCES while preparing codex --add-dir /work/unreadable');
+                    }
+                    return true;
+                },
+            });
+        },
+        error => {
+            assert.ok(error instanceof workspaceSessionScope.WorkspaceDirectoryScopeError);
+            assert.deepStrictEqual(error.invalidRoots, [{ id: 'root-unreadable', name: 'Unreadable root' }]);
+            assert.ok(error.message.includes('root-unreadable'));
+            assert.ok(error.message.includes('Unreadable root'));
+            assert.strictEqual(error.message.includes('codex'), false);
+            assert.strictEqual(error.message.includes('--add-dir'), false);
+            assert.strictEqual(error.message.includes('/work/unreadable'), false);
+            return true;
+        }
+    );
+    assert.strictEqual(unreadableScope, undefined, 'unreadable roots must not return a partial scope');
+
+    const values = new Map();
+    const updates = [];
+    const store = new WorkspacePrimaryRootStore({
+        get: key => values.get(key),
+        update: async (key, value) => {
+            updates.push([key, value]);
+            values.set(key, value);
+        },
+    });
+    assert.strictEqual(store.getPrimaryRootId(workspace.scopeIdentity, workspace.roots), null);
+    return store.setPrimaryRootId(workspace.scopeIdentity, 'root-web').then(() => {
+        assert.strictEqual(store.getPrimaryRootId(workspace.scopeIdentity, workspace.roots), 'root-web');
+        assert.strictEqual(store.getPrimaryRootId(workspace.scopeIdentity, [workspace.roots[0]]), null);
+        assert.strictEqual(store.getPrimaryRootId('different-scope', workspace.roots), null);
+        assert.deepStrictEqual(updates, [[
+            workspacePrimaryRootStore.WORKSPACE_PRIMARY_ROOTS_STATE_KEY,
+            { [workspace.scopeIdentity]: 'root-web' },
+        ]]);
+    });
+}
+
+function runWorkspaceSessionAssignmentChecks() {
+    const roots = [
+        { id: 'root-api', name: 'API', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 0 },
+        { id: 'root-core', name: 'Core', uri: 'file:///work/api/packages/core', hostPath: '/work/api/packages/core', ordinal: 1 },
+    ];
+
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/api/packages/core/src/index.ts', roots).id,
+        'root-core'
+    );
+    assert.strictEqual(workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/api-old', roots), null);
+    assert.strictEqual(workspaceSessionAssignment.assignPathToWorkspaceRoot('', roots), null);
+    assert.strictEqual(workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/api', roots).id, 'root-api');
+    assert.strictEqual(workspaceSessionAssignment.normalizeWorkspaceHostPath('/work/repo '), '/work/repo ');
+    assert.strictEqual(workspaceSessionAssignment.normalizeWorkspaceHostPath(' /work/repo'), ' /work/repo');
+    assert.strictEqual(workspaceSessionAssignment.normalizeWorkspaceHostPath(' \t '), '');
+
+    const whitespaceRoots = [
+        {
+            id: 'root-trailing-space', name: 'Trailing space', uri: 'file:///work/repo%20',
+            hostPath: '/work/repo ', ordinal: 0,
+        },
+        {
+            id: 'root-leading-space', name: 'Leading space', uri: 'file:///leading-space',
+            hostPath: ' /work/repo', ordinal: 1,
+        },
+    ];
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/repo /src/index.ts', whitespaceRoots).id,
+        'root-trailing-space',
+    );
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot(' /work/repo/src/index.ts', whitespaceRoots).id,
+        'root-leading-space',
+    );
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/repo/src/index.ts', whitespaceRoots),
+        null,
+    );
+
+    const windowsRoots = [
+        { id: 'root-windows', name: 'Windows', uri: 'file:///C:/Work/App', hostPath: 'C:\\Work\\App', ordinal: 0 },
+    ];
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('c:\\work\\APP\\src\\index.ts', windowsRoots).id,
+        'root-windows'
+    );
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('C:\\Work\\Application', windowsRoots),
+        null
+    );
+
+    const duplicateRoots = [
+        { id: 'root-later', name: 'Later', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 2 },
+        { id: 'root-first', name: 'First', uri: 'file:///work/api/', hostPath: '/work/api/', ordinal: 0 },
+    ];
+    assert.strictEqual(
+        workspaceSessionAssignment.assignPathToWorkspaceRoot('/work/api/src', duplicateRoots).id,
+        'root-first'
+    );
+}
+
+function runWorkspaceSessionHydrationChecks() {
+    const workspace = {
+        navigationIdentity: 'workspace-navigation',
+        scopeIdentity: 'workspace-scope',
+        kind: 'savedMultiRoot',
+        displayName: 'Platform',
+        navigationUri: 'file:///work/platform.code-workspace',
+        environment: 'local',
+        roots: [
+            { id: 'root-app', name: 'App', uri: 'file:///work/app', hostPath: '/work/app/', ordinal: 0 },
+            { id: 'root-api', name: 'API', uri: 'file:///work/app/api', hostPath: '/work/app/api', ordinal: 1 },
+            { id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/./web', ordinal: 2 },
+            { id: 'root-web-duplicate', name: 'Web duplicate', uri: 'file:///work/web/', hostPath: '/work/web/', ordinal: 3 },
+        ],
+    };
+    const reads = { codex: [], kimi: [], claude: [] };
+    const resultFor = (provider, sessions, available = true) => ({
+        id: provider,
+        label: provider[0].toUpperCase() + provider.slice(1),
+        terminalCwdFields: provider === 'kimi' ? ['workDir'] : ['cwd'],
+        service: {
+            getSessions: options => {
+                reads[provider].push(options);
+                return { available, sessions, scannedFiles: sessions.length, parsedFiles: sessions.length };
+            },
+        },
+    });
+    const providersForHydration = [
+        resultFor('codex', [
+            { id: 'api-history', name: 'API history', cwd: '/work/app/api/service', updatedAt: '2026-07-20T12:00:00Z' },
+            { id: 'api-history', name: 'Duplicate API history', cwd: '/work/app/api/duplicate', updatedAt: '2026-07-20T13:00:00Z' },
+            { id: 'web-history', name: 'Web history', cwd: '/work/web/client', updatedAt: '2026-07-20T11:00:00Z' },
+            { id: 'outside-history', name: 'Inactive outside history', cwd: '/work/removed' },
+        ]),
+        resultFor('kimi', [], false),
+        resultFor('claude', [{ id: 'app-history', name: 'App history', cwd: '/work/app/client' }]),
+    ];
+    const readCoordinator = new AiSessionReadCoordinator(providersForHydration, () => undefined);
+    const runtime = (provider, backend, cwd, id, overrides = {}) => ({
+        identity: createTestAiSessionRuntimeIdentity(provider, cwd, id, {
+            workspaceScopeIdentity: workspace.scopeIdentity,
+            workspaceNavigationIdentity: workspace.navigationIdentity,
+            workspaceRootHostPaths: workspace.roots.map(root => root.hostPath),
+            ...overrides,
+        }),
+        backend,
+        state: id.pendingId ? 'pending' : 'active',
+        markerPath: `/markers/${id.sessionId || id.pendingId}`,
+        runStartedAtMs: id.pendingId ? 20 : 30,
+        attached: backend === 'vscode',
+        ...(backend === 'tmux' ? { tmux: { layout: 'project', sessionName: `tmux-${id.sessionId || id.pendingId}` } } : {}),
+        ...(id.pendingId ? {
+            createdAt: id.pendingId === 'pending-direct'
+                ? '2026-07-20T10:00:00Z' : '2026-07-20T10:01:00Z',
+            excludedSessionIds: [],
+            title: id.pendingId === 'pending-direct' ? 'Direct pending' : 'Tmux pending',
+        } : {}),
+    });
+    const outsideNavigationRuntime = runtime('codex', 'vscode', '/work/removed', { sessionId: 'removed-active' }, {
+        workspaceScopeIdentity: 'removed-scope',
+        workspaceRootHostPaths: ['/work/removed'],
+    });
+    const outsideOverlapRuntime = runtime('claude', 'tmux', '/work/previous', { sessionId: 'overlap-active' }, {
+        workspaceScopeIdentity: 'previous-scope',
+        workspaceNavigationIdentity: 'previous-navigation',
+        workspaceRootHostPaths: ['/work/app', '/work/previous'],
+    });
+    const unmanagedRuntime = runtime('codex', 'tmux', '/unrelated', { sessionId: 'unmanaged-active' }, {
+        workspaceScopeIdentity: 'unrelated-scope',
+        workspaceNavigationIdentity: 'unrelated-navigation',
+        workspaceRootHostPaths: ['/unrelated'],
+    });
+    const activeRuntimes = [
+        outsideNavigationRuntime,
+        outsideOverlapRuntime,
+        unmanagedRuntime,
+        runtime('codex', 'tmux', '/work/web', { sessionId: 'web-history' }),
+    ];
+    const pendingRuntimes = [
+        runtime('codex', 'vscode', '/work/app', { pendingId: 'pending-direct' }),
+        runtime('claude', 'tmux', '/work/app/api', { pendingId: 'pending-tmux' }),
+        runtime('codex', 'vscode', '/work/removed-pending', { pendingId: 'pending-outside' }),
+    ];
+    const workspaceAttention = {
+        protocolVersion: 1,
+        aggregateRevision: 'a'.repeat(64),
+        generatedAtMs: 200,
+        sessions: [{
+            projectId: attentionProject.getAttentionProjectKeys(['file:///work/app/api'])[0],
+            sessionKey: 'codex:api-history',
+            eventIds: ['event-api'], reasons: ['completed'], observedAtMs: 100,
+        }, {
+            projectId: attentionProject.getAttentionProjectKeys(['file:///work/web'])[0],
+            sessionKey: 'codex:web-history:30:tmux',
+            eventIds: ['event-web-old'], reasons: ['completed'], observedAtMs: 110,
+        }, {
+            projectId: attentionProject.getAttentionProjectKeys(['file:///work/web'])[0],
+            sessionKey: 'codex:web-history:40:tmux',
+            eventIds: ['event-web-new'], reasons: ['input-required'], observedAtMs: 120,
+        }, {
+            projectId: attentionProject.getAttentionProjectKeys(['file:///work/app'])[0],
+            sessionKey: 'codex:web-history',
+            eventIds: ['event-wrong-root'], reasons: ['failed'], observedAtMs: 130,
+        }],
+    };
+    const readNotifications = [];
+    const controller = new WorkspaceSessionHydrationController({
+        providers: providersForHydration,
+        readCoordinator,
+        incrementalScanMaxFiles: 100,
+        getRefreshReason: () => 'workspace-test',
+        getSessionComparableCwd: (providerId, session) => providerId === 'kimi' ? session.workDir : session.cwd,
+        getPinnedSessions: () => new Set(),
+        getAliases: () => ({}),
+        getActiveProvider: () => 'codex',
+        getExpanded: () => true,
+        getActiveRuntimes: () => activeRuntimes,
+        getPendingRuntimes: () => pendingRuntimes,
+        getExecutionSnapshot: () => ({}),
+        getFocusedIdentity: () => outsideNavigationRuntime.identity,
+        getAttentionAggregate: () => workspaceAttention,
+        onDidReadSessions: (notifiedWorkspace, sessionResults, reason) => {
+            readNotifications.push({ notifiedWorkspace, sessionResults, reason });
+        },
+    });
+
+    const result = controller.hydrate(workspace);
+
+    assert.strictEqual(readNotifications.length, 1);
+    assert.strictEqual(readNotifications[0].notifiedWorkspace, workspace);
+    assert.strictEqual(readNotifications[0].reason, 'workspace-test');
+    assert.strictEqual(readNotifications[0].sessionResults.codex.sessions[0].id, 'api-history');
+    assert.strictEqual(result.workspaceScopeIdentity, workspace.scopeIdentity);
+    assert.strictEqual(result.workspaceNavigationIdentity, workspace.navigationIdentity);
+    assert.deepStrictEqual(result.sessionsByProvider.codex.map(value => [value.id, value.primaryRootId]), [
+        ['api-history', 'root-api'],
+        ['web-history', 'root-web'],
+    ]);
+    assert.strictEqual(result.sessionsByProvider.codex[0].name, 'API history');
+    assert.deepStrictEqual(result.sessionsByProvider.codex[0].attention, {
+        eventId: 'event-api', reason: 'completed', unread: true,
+    });
+    assert.deepStrictEqual(result.sessionsByProvider.codex[1].attention, {
+        eventId: 'event-web-new', reason: 'input-required', unread: true,
+    });
+    assert.deepStrictEqual(result.sessionsByProvider.claude.map(value => [value.id, value.primaryRootId]), [
+        ['app-history', 'root-app'],
+    ]);
+    assert.deepStrictEqual(result.unavailableProviders, ['kimi']);
+    assert.strictEqual(result.providers.find(provider => provider.id === 'kimi').unavailable, true);
+    const removedActive = result.activeSessions.find(session => session.sessionId === 'removed-active');
+    assert.strictEqual(removedActive.primaryRootLabel, 'Outside workspace');
+    assert.strictEqual(removedActive.outsideWorkspace, true);
+    assert.ok(result.activeSessions.some(session => session.sessionId === 'overlap-active'
+        && session.outsideWorkspace === true));
+    assert.ok(!result.activeSessions.some(session => session.sessionId === 'unmanaged-active'));
+    assert.ok(result.activeSessions.some(session => session.sessionId === 'web-history'
+        && session.backend === 'tmux' && session.primaryRootId === 'root-web'));
+    const activeWeb = result.activeSessions.find(session => session.sessionId === 'web-history');
+    assert.strictEqual(activeWeb.needsAttention, true);
+    assert.strictEqual(activeWeb.status, 'needsAttention');
+    assert.strictEqual(activeWeb.attentionEventId, 'event-web-new');
+    assert.strictEqual(result.attentionCount, 2);
+    assert.strictEqual(result.activeAttentionCount, 1);
+    assert.ok(result.activeSessions.some(session => session.pending && session.backend === 'vscode'
+        && session.primaryRootId === 'root-app'));
+    assert.ok(result.activeSessions.some(session => session.pending && session.backend === 'tmux'
+        && session.primaryRootId === 'root-api'));
+    assert.ok(!result.activeSessions.some(session => session.key === 'pending:codex:pending-outside'));
+    assert.strictEqual(result.cardCount, undefined, 'hydration must not create per-root cards');
+    for (const provider of providersForHydration) {
+        assert.strictEqual(reads[provider.id].length, 1, `${provider.id} must be read once`);
+        assert.deepStrictEqual(
+            reads[provider.id][0].candidatePaths,
+            ['/work/app', '/work/app/api', '/work/web'],
+            `${provider.id} must receive normalized unique workspace roots in one scan`
+        );
+    }
+
+    assert.strictEqual(
+        workspaceSessionHydration.hasWorkspaceRuntimeContinuity(workspace, outsideNavigationRuntime),
+        true
+    );
+    assert.strictEqual(
+        workspaceSessionHydration.hasWorkspaceRuntimeContinuity(workspace, outsideOverlapRuntime),
+        true
+    );
+    assert.strictEqual(
+        workspaceSessionHydration.hasWorkspaceRuntimeContinuity(workspace, unmanagedRuntime),
+        false
+    );
+    const whitespaceWorkspace = {
+        ...workspace,
+        navigationIdentity: 'whitespace-navigation',
+        scopeIdentity: 'whitespace-scope',
+        roots: [{
+            id: 'root-trailing-space', name: 'Trailing space', uri: 'file:///work/repo%20',
+            hostPath: '/work/repo ', ordinal: 0,
+        }],
+    };
+    const whitespaceRuntime = rootPath => ({
+        identity: createTestAiSessionRuntimeIdentity('codex', `${rootPath}/src`, { sessionId: 'space-owned' }, {
+            workspaceScopeIdentity: 'previous-scope',
+            workspaceNavigationIdentity: 'previous-navigation',
+            workspaceRootHostPaths: [rootPath],
+        }),
+    });
+    assert.strictEqual(
+        workspaceSessionHydration.hasWorkspaceRuntimeContinuity(
+            whitespaceWorkspace,
+            whitespaceRuntime('/work/repo '),
+        ),
+        true,
+    );
+    assert.strictEqual(
+        workspaceSessionHydration.hasWorkspaceRuntimeContinuity(
+            whitespaceWorkspace,
+            whitespaceRuntime('/work/repo'),
+        ),
+        false,
+        'a distinct path without the trailing space must not inherit session ownership',
+    );
+}
+
 function runDashboardSearchCatalogChecks() {
     const groups = [{
         id: 'tools', groupName: 'TOOLS', collapsed: false,
@@ -198,30 +748,73 @@ function runDashboardSearchCatalogChecks() {
             { id: 'other', name: 'Other', description: 'Other', path: '/work/other' },
         ],
     }];
-    const openProjects = [{
-        id: '__openProjects-0', name: 'Dashboard', description: 'Current', path: '/work/dashboard',
-        openProjectCardKind: 'current',
-        codexSessions: [{ id: 'c1', name: 'Fix dashboard', updatedAt: '2026-07-15T10:00:00Z', active: true }],
-        kimiSessions: [{ id: 'k1', name: 'Review layout', updatedAt: '2026-07-15T09:00:00Z' }],
-        claudeSessions: [],
-    }, {
-        id: '__openProjectNavigation-remote', name: 'Remote Dashboard', description: 'Remote',
-        path: 'vscode-remote://ssh-remote+host/work/dashboard-api',
-        openProjectCardKind: 'projectNavigation', openProjectEnvironmentLabel: 'SSH',
-    }];
-
-    const catalog = dashboardViewModel.buildDashboardSearchCatalog(groups, openProjects);
-    assert.deepStrictEqual(catalog.sessions.map(item => item.key), ['codex:c1', 'kimi:k1']);
-    assert.strictEqual(catalog.sessions.find(item => item.sessionId === 'c1').active, true);
-    assert.deepStrictEqual(catalog.openProjects.map(item => item.action), ['open-current', 'switch-open']);
-    assert.strictEqual(catalog.savedProjects.length, 2);
-    assert.deepStrictEqual(catalog.savedProjects[0].groupLabels, ['FAVORITES', 'TOOLS']);
-    assert.strictEqual(catalog.savedProjects[0].identity, '/work/dashboard');
-    assert.strictEqual(catalog.openProjects[1].environmentLabel, 'SSH');
+    const currentWorkspace = {
+        id: 'workspace-current', kind: 'current', navigationIdentity: 'navigation-current',
+        scopeIdentity: 'scope-current', name: 'Dashboard Workspace', environment: 'local', environmentLabel: 'Local',
+        roots: [
+            { id: 'root-app', name: 'App', ordinal: 0 },
+            { id: 'root-api', name: 'API', ordinal: 1 },
+        ],
+        attentionCount: 0,
+        aiSessions: {
+            workspaceScopeIdentity: 'scope-current',
+            workspaceNavigationIdentity: 'navigation-current',
+            sessionsByProvider: {
+                codex: [{
+                    id: 'c1', name: 'Fix dashboard', provider: 'codex',
+                    primaryRootId: 'root-api', primaryRootLabel: 'API', active: true,
+                }],
+            },
+        },
+    };
+    const otherWorkspace = {
+        id: 'workspace-other', kind: 'navigation', navigationIdentity: 'navigation-other',
+        scopeIdentity: 'scope-other', name: 'Other Workspace', environment: 'ssh', environmentLabel: 'SSH',
+        roots: [{ id: 'root-other', name: 'Other', ordinal: 0 }], attentionCount: 0,
+    };
+    const workspaceCatalog = dashboardViewModel.buildWorkspaceDashboardSearchCatalog(
+        groups,
+        [
+            otherWorkspace,
+            currentWorkspace,
+            { ...otherWorkspace, id: 'workspace-other-duplicate', name: 'Duplicate publisher' },
+            { ...otherWorkspace, id: 'workspace-current-shadow', navigationIdentity: 'navigation-current' },
+        ],
+    );
+    assert.strictEqual(workspaceCatalog.version, 2);
+    assert.strictEqual(workspaceCatalog.openWorkspaces.filter(item => item.current).length, 1);
+    assert.deepStrictEqual(
+        workspaceCatalog.openWorkspaces.map(item => item.navigationIdentity),
+        ['navigation-current', 'navigation-other']
+    );
+    assert.strictEqual(workspaceCatalog.openWorkspaces.some(item => item.rootId), false);
+    assert.strictEqual(workspaceCatalog.savedProjects.length, 2);
+    assert.deepStrictEqual(workspaceCatalog.savedProjects[0].groupLabels, ['FAVORITES', 'TOOLS']);
+    assert.strictEqual(workspaceCatalog.savedProjects[0].identity, '/work/dashboard');
+    assert.deepStrictEqual(workspaceCatalog.sessions.map(item => ({
+        action: item.action,
+        workspaceId: item.workspaceId,
+        workspaceNavigationIdentity: item.workspaceNavigationIdentity,
+        provider: item.provider,
+        sessionId: item.sessionId,
+        rootId: item.rootId,
+        projectId: item.projectId,
+    })), [{
+        action: 'reveal-workspace-session',
+        workspaceId: 'workspace-current',
+        workspaceNavigationIdentity: 'navigation-current',
+        provider: 'codex',
+        sessionId: 'c1',
+        rootId: undefined,
+        projectId: undefined,
+    }]);
 
     const serialized = dashboardViewModel.serializeDashboardSearchCatalog({
-        ...catalog,
-        savedProjects: [{ ...catalog.savedProjects[0], name: '</script><script>bad()</script>' }],
+        ...workspaceCatalog,
+        savedProjects: [{
+            ...workspaceCatalog.savedProjects[0],
+            name: '</script><script>bad()</script>',
+        }],
     });
     assert.strictEqual(serialized.includes('</script>'), false);
     assert.deepStrictEqual(JSON.parse(serialized).savedProjects[0].name, '</script><script>bad()</script>');
@@ -236,36 +829,64 @@ function runDashboardDiagnosticsChecks() {
             outputChannel: { appendLine: line => lines.push(line) },
             globalStoragePath: tempRoot,
             now: () => new Date(nowMs),
-            maxOpenProjectDiagnosticBytes: 120,
+            maxOpenWorkspaceDiagnosticBytes: 120,
         });
 
         diagnostics.logError('Failed action.', new Error('Boom'));
         diagnostics.logAiSessionDiagnostic({ event: 'scan', count: 1 });
         diagnostics.logDashboardDiagnostic({ event: 'refresh' });
-        diagnostics.logOpenProjectDiagnostic('Workspace', { event: 'snapshot' });
+        diagnostics.logOpenWorkspaceDiagnostic('Workspace', { event: 'snapshot' });
 
         assert.strictEqual(lines[0], 'Failed action.');
         assert.ok(lines[1].includes('Boom'));
         assert.strictEqual(lines[2], '[AiSessions] {"event":"scan","count":1}');
         assert.strictEqual(lines[3], '[Dashboard] {"loggedAt":"2026-07-16T12:00:00.000Z","event":"refresh"}');
-        assert.strictEqual(lines[4], '[OpenProjects][Workspace] {"event":"snapshot"}');
+        assert.strictEqual(lines[4], '[OpenWorkspaces][Workspace] {"event":"snapshot"}');
 
-        const diagnosticPath = path.join(tempRoot, 'open-project-diagnostics.jsonl');
+        const diagnosticPath = path.join(tempRoot, 'open-workspace-diagnostics.jsonl');
         assert.deepStrictEqual(
             fs.readFileSync(diagnosticPath, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line).component),
             ['Workspace']
         );
 
         nowMs += 1000;
-        diagnostics.logOpenProjectDiagnostic('Bridge', { event: 'large', payload: 'x'.repeat(100) });
+        diagnostics.logOpenWorkspaceDiagnostic('Bridge', { event: 'large', payload: 'x'.repeat(100) });
         const persisted = fs.readFileSync(diagnosticPath, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line));
         assert.deepStrictEqual(persisted.map(item => item.component), ['Bridge']);
         assert.strictEqual(persisted[0].loggedAt, '2026-07-16T12:00:01.000Z');
 
+        const bridgeErrorSentinel = new Error(
+            '/private/main-workspace raw-command --session secret-session arbitrary message'
+        );
+        assert.strictEqual(typeof diagnostics.logOpenWorkspaceBridgeError, 'function',
+            'DashboardDiagnostics must expose a privacy-bounded bridge error entry');
+        diagnostics.logOpenWorkspaceBridgeError(bridgeErrorSentinel);
+        const privacyOutput = lines.join('\n');
+        const privacyFile = fs.readFileSync(diagnosticPath, 'utf8');
+        assert.strictEqual(privacyOutput.includes(bridgeErrorSentinel.message), false,
+            'the main OutputChannel must not contain raw open-workspace bridge errors');
+        assert.strictEqual(privacyFile.includes(bridgeErrorSentinel.message), false,
+            'the persisted open-workspace diagnostics must not contain raw bridge errors');
+        assert.ok(privacyOutput.includes(
+            '[OpenWorkspaces][Bridge] {"event":"error","errorCategory":"open-workspace-bridge","errorCode":"unavailable"}'
+        ));
+        assert.deepStrictEqual(
+            JSON.parse(privacyFile.trim().split(/\r?\n/).pop()),
+            {
+                loggedAt: '2026-07-16T12:00:01.000Z',
+                component: 'Bridge',
+                event: {
+                    event: 'error',
+                    errorCategory: 'open-workspace-bridge',
+                    errorCode: 'unavailable',
+                },
+            },
+        );
+
         const circular = {};
         circular.self = circular;
-        diagnostics.logOpenProjectDiagnostic('Renderer', circular);
-        assert.ok(lines.some(line => line.includes('[OpenProjects][Renderer] Failed to serialize diagnostic:')));
+        diagnostics.logOpenWorkspaceDiagnostic('Renderer', circular);
+        assert.ok(lines.some(line => line.includes('[OpenWorkspaces][Renderer] Failed to serialize diagnostic:')));
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -292,6 +913,71 @@ function runAttentionProjectionChecks() {
     assert.strictEqual(index.get(attentionProject.getAttentionSessionLookupKey(
         attentionProject.getAttentionProjectKey('/work/current'), 'kimi:k1'
     )).eventIds[0], 'e2');
+
+    const workspace = {
+        navigationIdentity: 'navigation-workspace',
+        roots: [
+            { uri: 'file:///work/app' },
+            { uri: 'file:///work/api' },
+        ],
+    };
+    const workspaceAggregate = {
+        protocolVersion: 1,
+        aggregateRevision: '1'.repeat(64),
+        generatedAtMs: 4,
+        sessions: [
+            {
+                projectId: attentionProject.getAttentionProjectKey('/work/app'),
+                sessionKey: 'codex:shared', reasons: ['completed'],
+                eventIds: ['event-one', 'event-two'], observedAtMs: 1,
+            },
+            {
+                projectId: attentionProject.getAttentionProjectKey('/work/api'),
+                sessionKey: 'codex:shared', reasons: ['completed'],
+                eventIds: ['event-one', 'event-two'], observedAtMs: 2,
+            },
+            {
+                projectId: attentionProject.getAttentionProjectKey('/work/api'),
+                sessionKey: 'codex:shared', reasons: ['input-required'],
+                eventIds: ['event-two', 'event-three'], observedAtMs: 3,
+            },
+            {
+                projectId: attentionProject.getAttentionProjectKey('/work/api'),
+                sessionKey: 'kimi:second', reasons: ['failed'],
+                eventIds: ['event-four'], observedAtMs: 4,
+            },
+        ],
+    };
+    const workspaceSummary = workspaceAttentionProjection.getWorkspaceAttentionSummary(
+        workspace,
+        workspaceAggregate
+    );
+    assert.strictEqual(workspaceSummary.attentionCount, 2,
+        'one provider session observed through multiple roots must count once');
+    assert.deepStrictEqual(workspaceSummary.eventIds, [
+        'event-four', 'event-one', 'event-three', 'event-two',
+    ]);
+    assert.deepStrictEqual(workspaceSummary.sessions, [{
+        sessionKey: 'codex:shared',
+        eventId: 'event-one',
+        eventIds: ['event-one', 'event-three', 'event-two'],
+    }, {
+        sessionKey: 'kimi:second',
+        eventId: 'event-four',
+        eventIds: ['event-four'],
+    }]);
+
+    const otherWindowAttention = workspaceAttentionProjection.getOtherWorkspaceAttention({
+        navigationIdentity: 'navigation-other',
+        roots: [
+            { uri: 'vscode-remote://ssh-remote+fixture/work/app' },
+            { uri: 'vscode-remote://ssh-remote+fixture/work/api' },
+        ],
+    }, workspaceAggregate);
+    assert.deepStrictEqual(otherWindowAttention, {
+        navigationIdentity: 'navigation-other',
+        attentionCount: 2,
+    }, 'other-window attention joins by privacy-bounded root URIs without session details');
 }
 
 function runFavoriteProjectOrderChecks() {
@@ -371,28 +1057,6 @@ function runFavoriteProjectOrderChecks() {
     assert.strictEqual(toggleGroups[0].projects[2].favoriteOrder, 9);
 }
 
-function runOpenProjectRuntimeIdentityChecks() {
-    const savedRemotePath = 'vscode-remote://dev-container+fixture/work/app';
-    const openProjects = openProjectService.getOpenProjectsFromWorkspace(
-        null,
-        [{ uri: createTestFileUri('/work/app'), name: 'app' }],
-        {
-            savedProjects: [{
-                id: 'saved-remote',
-                name: 'App',
-                path: savedRemotePath,
-                remoteType: models.ProjectRemoteType.DevContainer,
-            }],
-            currentRemoteName: 'dev-container',
-            isFolderGitRepo: () => true,
-        }
-    );
-
-    assert.strictEqual(openProjects.length, 1);
-    assert.strictEqual(openProjects[0].path, '/work/app');
-    assert.strictEqual(openProjects[0].attentionProjectPath, undefined);
-}
-
 function runWorkspaceHelperChecks() {
     const workspaceFile = createTestFileUri('/work/app.code-workspace');
     const workspaceFolders = [
@@ -430,68 +1094,19 @@ function runCandidateFilterChecks() {
     assert.deepStrictEqual(helpers.normalizeAiSessionCandidatePaths(['/work/app/', '/work/app', '']).map(item => item), ['/work/app']);
 }
 
-function runProjectCandidateChecks() {
-    const openProjects = [
-        { id: 'app', path: '/work/app/' },
-        { id: 'remote', path: 'vscode-remote://ssh-remote+host/work/remote' },
-    ];
-    const workspaceFile = createTestFileUri('/work/app.code-workspace');
-    const workspaceFolders = [
-        { uri: createTestFileUri('/work/app') },
-        { uri: createTestFileUri('/work/app/packages/api') },
-        { uri: createTestFileUri('/work/app/packages/api/') },
-    ];
-    const candidates = aiSessionProjectCandidates.getAiSessionOpenProjectCandidates(
-        openProjects,
-        workspaceFile,
-        workspaceFolders
-    );
-
-    assert.deepStrictEqual(candidates.map(candidate => ({
-        id: candidate.project.id,
-        path: candidate.path,
-    })), [
-        { id: 'app', path: '/work/app' },
-        { id: 'remote', path: '/work/remote' },
-        { id: 'app', path: '/work/app/packages/api' },
-    ]);
-    assert.deepStrictEqual(
-        aiSessionProjectCandidates.getAiSessionCandidatePaths(openProjects, workspaceFile, workspaceFolders),
-        ['/work/app', '/work/remote', '/work/app/packages/api']
-    );
-    assert.strictEqual(aiSessionProjectCandidates.getOpenProjectAiSessionKey(openProjects[0]), '/work/app');
-    assert.strictEqual(aiSessionProjectCandidates.getOpenProjectTerminalCwd(openProjects[1]), '/work/remote');
-    assert.strictEqual(aiSessionProjectCandidates.normalizeAiSessionProjectPath(''), '');
-}
-
 function runSessionPathChecks() {
     const providerDefinitions = [
-        { id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions', terminalCwdFields: ['cwd'] },
-        { id: 'kimi', terminalNamePrefix: 'Kimi', projectSessionsKey: 'kimiSessions', terminalCwdFields: ['workDir', 'cwd'] },
-        { id: 'claude', terminalNamePrefix: 'Claude', projectSessionsKey: 'claudeSessions', terminalCwdFields: ['workDir', 'cwd'] },
+        { id: 'codex', terminalNamePrefix: 'Codex', terminalCwdFields: ['cwd'] },
+        { id: 'kimi', terminalNamePrefix: 'Kimi', terminalCwdFields: ['workDir', 'cwd'] },
+        { id: 'claude', terminalNamePrefix: 'Claude', terminalCwdFields: ['workDir', 'cwd'] },
     ];
-    const project = {
-        id: 'project-a',
-        path: '/work/app',
-        codexSessions: [{ id: 'c1', cwd: '/work/app/codex' }],
-        kimiSessions: [{ id: 'k1', cwd: '/work/app/kimi-cwd', workDir: '/work/app/kimi-workdir' }],
-    };
-
-    assert.deepStrictEqual(
-        aiSessionSessionPaths.getProjectAiSessions(project, 'codex', providerDefinitions).map(session => session.id),
-        ['c1']
-    );
-    assert.deepStrictEqual(
-        aiSessionSessionPaths.getProjectAiSessions(project, 'claude', providerDefinitions),
-        []
-    );
     assert.strictEqual(
-        aiSessionSessionPaths.getAiSessionComparableCwd('kimi', project.kimiSessions[0], providerDefinitions),
+        aiSessionSessionPaths.getAiSessionComparableCwd(
+            'kimi',
+            { id: 'k1', cwd: '/work/app/kimi-cwd', workDir: '/work/app/kimi-workdir' },
+            providerDefinitions,
+        ),
         '/work/app/kimi-workdir'
-    );
-    assert.strictEqual(
-        aiSessionSessionPaths.getAiSessionTerminalCwd('claude', { id: 'missing', name: 'Missing' }, project, providerDefinitions),
-        '/work/app'
     );
     assert.strictEqual(
         aiSessionSessionPaths.getAiSessionTerminalName('codex', { id: 'c1', name: 'Fix bug' }, providerDefinitions),
@@ -531,7 +1146,9 @@ function runPendingTerminalMatcherChecks() {
     );
 
     const match = aiSessionPendingTerminals.findPendingAiSessionTerminalMatch({
-        identity: { provider: 'codex', pendingId: 'pending-codex', projectKey: '/work/app', cwd: '/work/app' },
+        identity: createTestAiSessionRuntimeIdentity(
+            'codex', '/work/app', { pendingId: 'pending-codex' }
+        ),
         createdAt: '2026-07-15T10:00:00Z',
         excludedSessionIds: ['excluded'],
     }, result, new Set(['codex:claimed']), (providerId, sessionId) => `${providerId}:${sessionId}`, providerDefinitions);
@@ -539,7 +1156,9 @@ function runPendingTerminalMatcherChecks() {
     assert.strictEqual(match.id, 'newest');
     assert.strictEqual(
         aiSessionPendingTerminals.findPendingAiSessionTerminalMatch({
-            identity: { provider: 'kimi', pendingId: 'pending-kimi', projectKey: '/work/app', cwd: '/work/app' },
+            identity: createTestAiSessionRuntimeIdentity(
+                'kimi', '/work/app', { pendingId: 'pending-kimi' }
+            ),
             createdAt: '2026-07-15T10:00:00Z',
             excludedSessionIds: [],
         }, {
@@ -577,7 +1196,7 @@ async function runPendingTerminalResolverChecks() {
     ];
     function pending(pendingId, cwd, createdAt, title) {
         return {
-            identity: { provider: 'codex', pendingId, projectKey: cwd, cwd },
+            identity: createTestAiSessionRuntimeIdentity('codex', cwd, { pendingId }),
             backend: 'vscode', state: 'pending', markerPath: `/tmp/${pendingId}.done`,
             runStartedAtMs: Date.parse(createdAt), attached: true,
             createdAt, excludedSessionIds: [], ...(title === undefined ? {} : { title }),
@@ -586,10 +1205,9 @@ async function runPendingTerminalResolverChecks() {
     function finalRuntime(pendingRuntime, sessionId, overrides = {}) {
         return {
             identity: {
-                provider: pendingRuntime.identity.provider,
+                ...pendingRuntime.identity,
                 sessionId,
-                projectKey: pendingRuntime.identity.projectKey,
-                cwd: pendingRuntime.identity.cwd,
+                pendingId: undefined,
             },
             backend: pendingRuntime.backend,
             state: 'active',
@@ -608,6 +1226,7 @@ async function runPendingTerminalResolverChecks() {
                     available: true, scannedFiles: 3, parsedFiles: 3,
                     sessions: pendingRuntimes.map((runtime, index) => ({
                         id: `session-${index}`,
+                        name: 'Provider generated title',
                         cwd: runtime.identity.cwd,
                         updatedAt: new Date(Date.parse(runtime.createdAt) + 1000).toISOString(),
                     })),
@@ -621,21 +1240,130 @@ async function runPendingTerminalResolverChecks() {
         };
     }
 
-    const validPending = pending('pending-valid', '/work/valid', '2026-07-15T10:00:00Z', 'Created Alias');
+    const validPending = pending(
+        'pending-valid', '/work/valid', '2026-07-15T10:00:00Z', 'Investigate replication'
+    );
     const validAliases = [];
+    const promotionCalls = [];
     let validSyncs = 0;
     const validResult = await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
-        resolverOptions([validPending], async (_pendingId, sessionId) => [
-            finalRuntime(validPending, sessionId),
-        ], validAliases, () => { validSyncs++; })
+        resolverOptions([validPending], async (identity, sessionId, sessionName) => {
+            promotionCalls.push({ identity, sessionId, sessionName });
+            return [finalRuntime(validPending, sessionId)];
+        }, validAliases, () => { validSyncs++; })
     );
     assert.deepStrictEqual(validResult, {
         attempted: 1,
         promoted: [{ pendingId: 'pending-valid', provider: 'codex', sessionId: 'session-0' }],
         failures: [],
     });
-    assert.deepStrictEqual(validAliases, [['codex', 'session-0', 'Created Alias']]);
+    assert.deepStrictEqual(promotionCalls[0], {
+        identity: validPending.identity,
+        sessionId: 'session-0',
+        sessionName: 'Investigate replication',
+    });
+    assert.deepStrictEqual(validAliases, [['codex', 'session-0', 'Investigate replication']]);
     assert.strictEqual(validSyncs, 1);
+
+    const fallbackPending = pending(
+        'pending-fallback', '/work/fallback', '2026-07-15T10:00:00Z', ''
+    );
+    const fallbackPromotionCalls = [];
+    await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
+        resolverOptions([fallbackPending], async (identity, sessionId, sessionName) => {
+            fallbackPromotionCalls.push({ identity, sessionId, sessionName });
+            return [finalRuntime(fallbackPending, sessionId)];
+        }, [], () => undefined)
+    );
+    assert.strictEqual(fallbackPromotionCalls[0].sessionName, 'Provider generated title');
+
+    for (const invalidProviderName of ['   ', 'bad\nname', 'x'.repeat(201)]) {
+        const invalidNameCalls = [];
+        const invalidNameOptions = resolverOptions(
+            [fallbackPending], async (identity, sessionId, sessionName) => {
+                invalidNameCalls.push({ identity, sessionId, sessionName });
+                return [finalRuntime(fallbackPending, sessionId)];
+            }, [], () => undefined
+        );
+        invalidNameOptions.sessionResults.codex.sessions[0].name = invalidProviderName;
+        await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(invalidNameOptions);
+        assert.strictEqual(invalidNameCalls[0].sessionName, 'session-0',
+            'invalid provider display names must fall back to the provider session ID');
+    }
+
+    const durableRecoveryPending = {
+        ...fallbackPending,
+        promotionRecoveryDisplayName: 'Frozen durable name',
+        recoverySessionId: 'frozen-session',
+    };
+    const durableRecoveryCalls = [];
+    const durableRecoveryOptions = resolverOptions(
+        [durableRecoveryPending], async (identity, sessionId, sessionName) => {
+            durableRecoveryCalls.push({ identity, sessionId, sessionName });
+            return [finalRuntime(durableRecoveryPending, sessionId)];
+        }, [], () => undefined
+    );
+    durableRecoveryOptions.activeRuntimes = [finalRuntime(
+        durableRecoveryPending, 'frozen-session'
+    )];
+    durableRecoveryOptions.sessionResults.codex.sessions = [{
+        id: 'newer-same-cwd', name: 'Newer current name', cwd: '/work/fallback',
+        updatedAt: '2026-07-15T10:00:02.000Z',
+    }, {
+        id: 'frozen-session', name: 'Changed provider name', cwd: '/different',
+        updatedAt: '2026-07-15T09:00:00.000Z',
+    }];
+    await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(durableRecoveryOptions);
+    assert.strictEqual(durableRecoveryCalls[0].sessionId, 'frozen-session',
+        'durable recovery must select its exact frozen provider session despite claimed/time/cwd heuristics');
+    assert.strictEqual(durableRecoveryCalls[0].sessionName, 'Frozen durable name',
+        'durable recovery must ignore a changed provider display name');
+
+    const missingRecoveryTargetOptions = resolverOptions(
+        [durableRecoveryPending], async () => {
+            throw new Error('a missing durable target must not be promoted');
+        }, [], () => undefined
+    );
+    missingRecoveryTargetOptions.sessionResults.codex.sessions = [{
+        id: 'newer-same-cwd', name: 'Newer current name', cwd: '/work/fallback',
+        updatedAt: '2026-07-15T10:00:02.000Z',
+    }];
+    assert.deepStrictEqual(
+        await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
+            missingRecoveryTargetOptions
+        ),
+        { attempted: 0, promoted: [], failures: [] },
+        'a durable recovery target absent from provider discovery must remain retryable'
+    );
+
+    for (const invalidRecoverySessionId of ['', 'bad id', 'bad\nrecovery', 'x'.repeat(513)]) {
+        await assert.rejects(
+            aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
+                resolverOptions([{
+                    ...durableRecoveryPending,
+                    recoverySessionId: invalidRecoverySessionId,
+                }], async () => [], [], () => undefined)
+            ),
+            /durable promotion session snapshot is invalid/,
+            'invalid durable recovery session IDs must fail closed before matching'
+        );
+    }
+
+    for (const invalidRecoveryName of ['', 'bad\nrecovery', 'x'.repeat(201)]) {
+        let invalidRecoveryCalls = 0;
+        const invalidRecoveryResult = await aiSessionPendingTerminalResolver
+            .resolvePendingAiSessionTerminals(resolverOptions([{
+                ...fallbackPending,
+                promotionRecoveryDisplayName: invalidRecoveryName,
+                recoverySessionId: 'session-0',
+            }], async () => {
+                invalidRecoveryCalls++;
+                return [];
+            }, [], () => undefined));
+        assert.strictEqual(invalidRecoveryCalls, 0);
+        assert.strictEqual(invalidRecoveryResult.failures[0].reason, 'promotion-error',
+            'invalid durable recovery display snapshots must fail closed before promotion');
+    }
 
     const duplicatePending = { ...validPending, identity: { ...validPending.identity } };
     const duplicateCases = [{
@@ -716,6 +1444,28 @@ async function runPendingTerminalResolverChecks() {
         reason: 'identity-mismatch',
         promote: async () => [finalRuntime(validPending, 'other-session')],
     }, {
+        reason: 'identity-mismatch',
+        promote: async (_identity, sessionId) => [finalRuntime(validPending, sessionId, {
+            identity: {
+                ...validPending.identity,
+                workspaceScopeIdentity: 'scope:/other-workspace',
+                pendingId: undefined,
+                sessionId,
+            },
+        })],
+    }, {
+        reason: 'identity-mismatch',
+        promote: async (_identity, sessionId) => [finalRuntime(validPending, sessionId, {
+            identity: {
+                ...validPending.identity,
+                workspaceNavigationIdentity: 'nav:/different',
+                workspaceRootHostPaths: ['/different-root'],
+                cwd: '/different-root',
+                pendingId: undefined,
+                sessionId,
+            },
+        })],
+    }, {
         reason: 'promotion-error',
         promote: async () => { throw new Error('promotion failed'); },
     }];
@@ -739,8 +1489,8 @@ async function runPendingTerminalResolverChecks() {
     const partialAliases = [];
     let partialSyncs = 0;
     const partial = await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
-        resolverOptions([first, second], async (pendingId, sessionId) => {
-            if (pendingId === 'pending-second') {
+        resolverOptions([first, second], async (identity, sessionId) => {
+            if (identity.pendingId === 'pending-second') {
                 throw new Error('later promotion failed');
             }
             return [finalRuntime(first, sessionId)];
@@ -755,6 +1505,277 @@ async function runPendingTerminalResolverChecks() {
     });
     assert.deepStrictEqual(partialAliases, [['codex', 'session-0', 'First Alias']]);
     assert.strictEqual(partialSyncs, 1, 'partial success must synchronize exactly once');
+}
+
+async function runWorkspacePendingSessionPromotionChecks() {
+    const workspace = {
+        navigationIdentity: 'workspace-navigation',
+        scopeIdentity: 'workspace-scope',
+        kind: 'savedMultiRoot',
+        displayName: 'Workspace',
+        navigationUri: 'file:///work/workspace.code-workspace',
+        environment: 'local',
+        roots: [{
+            id: 'root-app', name: 'App', uri: 'file:///work/app',
+            hostPath: '/work/app', ordinal: 0,
+        }],
+    };
+    const providersForPromotion = [{
+        id: 'codex', terminalNamePrefix: 'Codex',
+        projectSessionsKey: 'codexSessions', terminalCwdFields: ['cwd'],
+    }];
+    const sessionResults = {
+        codex: {
+            available: true, scannedFiles: 1, parsedFiles: 1,
+            sessions: [{
+                id: 'session-final', cwd: '/work/app',
+                updatedAt: '2026-07-22T10:00:01.000Z',
+            }],
+        },
+    };
+    const makePending = (scopeIdentity = workspace.scopeIdentity) => ({
+        identity: createTestAiSessionRuntimeIdentity(
+            'codex', '/work/app', { pendingId: 'pending-workspace' }, {
+                workspaceScopeIdentity: scopeIdentity,
+                workspaceNavigationIdentity: scopeIdentity === workspace.scopeIdentity
+                    ? workspace.navigationIdentity : 'other-navigation',
+                workspaceRootHostPaths: ['/work/app'],
+            }
+        ),
+        backend: 'vscode', state: 'pending', markerPath: '/tmp/pending-workspace.done',
+        runStartedAtMs: Date.parse('2026-07-22T10:00:00.000Z'), attached: true,
+        createdAt: '2026-07-22T10:00:00.000Z', excludedSessionIds: [],
+        title: 'New Codex session',
+    });
+    const makeFinal = pending => ({
+        ...pending,
+        identity: {
+            ...pending.identity,
+            pendingId: undefined,
+            sessionId: 'session-final',
+        },
+        state: 'active',
+    });
+
+    async function runSuccessCase() {
+        const inScope = makePending();
+        const outOfScope = makePending('other-scope');
+        let pending = [inScope, outOfScope];
+        let active = [];
+        const promotions = [];
+        const aliases = [];
+        const refreshReasons = [];
+        let syncCount = 0;
+        let evaluationCount = 0;
+        const controller = new WorkspacePendingSessionPromotionController({
+            providers: providersForPromotion,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            runtimeCoordinator: {
+                getPending: () => pending,
+                getPendingForPromotion: async () => pending,
+                getActive: () => active,
+                promotePending: async (identity, sessionId) => {
+                    promotions.push([identity.pendingId, sessionId]);
+                    const final = makeFinal(inScope);
+                    pending = [outOfScope];
+                    active = [final];
+                    return [final];
+                },
+            },
+            setAlias: (providerId, sessionId, alias) => aliases.push([providerId, sessionId, alias]),
+            syncActiveRuntime: () => { syncCount++; },
+            evaluateExecution: () => { evaluationCount++; },
+            scheduleRefresh: reason => refreshReasons.push(reason),
+        });
+
+        await controller.promote(workspace, sessionResults, 'watcher');
+        assert.deepStrictEqual(promotions, [['pending-workspace', 'session-final']]);
+        assert.deepStrictEqual(aliases, [['codex', 'session-final', 'New Codex session']]);
+        assert.strictEqual(syncCount, 1);
+        assert.strictEqual(evaluationCount, 1);
+        assert.deepStrictEqual(refreshReasons, ['pending-promotion']);
+    }
+
+    async function runRetryCase() {
+        const pendingRuntime = makePending();
+        let pending = [pendingRuntime];
+        let active = [];
+        let attempts = 0;
+        let syncCount = 0;
+        let evaluationCount = 0;
+        const aliases = [];
+        const controller = new WorkspacePendingSessionPromotionController({
+            providers: providersForPromotion,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            runtimeCoordinator: {
+                getPending: () => pending,
+                getPendingForPromotion: async () => pending,
+                getActive: () => active,
+                promotePending: async () => {
+                    attempts++;
+                    if (attempts === 1) return [];
+                    const final = makeFinal(pendingRuntime);
+                    pending = [];
+                    active = [final];
+                    return [final];
+                },
+            },
+            setAlias: (providerId, sessionId, alias) => aliases.push([providerId, sessionId, alias]),
+            syncActiveRuntime: () => { syncCount++; },
+            evaluateExecution: () => { evaluationCount++; },
+            scheduleRefresh: () => undefined,
+        });
+
+        await controller.promote(workspace, sessionResults, 'first-scan');
+        await controller.promote(workspace, sessionResults, 'retry-scan');
+        assert.strictEqual(attempts, 2);
+        assert.strictEqual(syncCount, 1);
+        assert.strictEqual(evaluationCount, 1);
+        assert.strictEqual(aliases.length, 1);
+    }
+
+    async function runConcurrentCase() {
+        const pendingRuntime = makePending();
+        let pending = [pendingRuntime];
+        let active = [];
+        let releaseEnumeration;
+        const enumerationGate = new Promise(resolve => { releaseEnumeration = resolve; });
+        let enumerationAttempts = 0;
+        let attempts = 0;
+        const controller = new WorkspacePendingSessionPromotionController({
+            providers: providersForPromotion,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            runtimeCoordinator: {
+                getPending: () => pending,
+                getPendingForPromotion: async () => {
+                    enumerationAttempts++;
+                    if (enumerationAttempts === 1) await enumerationGate;
+                    return pending;
+                },
+                getActive: () => active,
+                promotePending: async () => {
+                    attempts++;
+                    const final = makeFinal(pendingRuntime);
+                    pending = [];
+                    active = [final];
+                    return [final];
+                },
+            },
+            setAlias: () => undefined,
+            syncActiveRuntime: () => undefined,
+            evaluateExecution: () => undefined,
+            scheduleRefresh: () => undefined,
+        });
+
+        const first = controller.promote(workspace, sessionResults, 'first');
+        const second = controller.promote(workspace, sessionResults, 'second');
+        releaseEnumeration();
+        await Promise.all([first, second]);
+        assert.strictEqual(attempts, 1,
+            'concurrent hydration must not promote one pending identity twice');
+        assert.strictEqual(enumerationAttempts, 2,
+            'a queued refresh must re-enumerate after the in-flight promotion settles');
+    }
+
+    async function runEnumerationRetryCase() {
+        const pendingRuntime = makePending();
+        let pending = [pendingRuntime];
+        let active = [];
+        let enumerationAttempts = 0;
+        let promotionAttempts = 0;
+        const diagnostics = [];
+        const controller = new WorkspacePendingSessionPromotionController({
+            providers: providersForPromotion,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            runtimeCoordinator: {
+                getPending: () => pending,
+                getPendingForPromotion: async () => {
+                    enumerationAttempts++;
+                    if (enumerationAttempts === 1) {
+                        throw new Error('durable promotion enumeration failed');
+                    }
+                    return pending;
+                },
+                getActive: () => active,
+                promotePending: async () => {
+                    promotionAttempts++;
+                    const final = makeFinal(pendingRuntime);
+                    pending = [];
+                    active = [final];
+                    return [final];
+                },
+            },
+            setAlias: () => undefined,
+            syncActiveRuntime: () => undefined,
+            evaluateExecution: () => undefined,
+            scheduleRefresh: () => undefined,
+            logDiagnostic: diagnostic => diagnostics.push(diagnostic),
+        });
+
+        await controller.promote(workspace, sessionResults, 'failed-enumeration');
+        assert.strictEqual(promotionAttempts, 0,
+            'a refresh or durable-list error must fail closed before promotion dispatch');
+        await controller.promote(workspace, sessionResults, 'retry-enumeration');
+        assert.strictEqual(promotionAttempts, 1);
+        assert.strictEqual(enumerationAttempts, 2);
+        assert.strictEqual(diagnostics[0].event, 'workspace-ai-session-promotion-failed');
+    }
+
+    async function runDrainCompletionRaceCase() {
+        const pendingRuntime = makePending();
+        let pending = [pendingRuntime];
+        let active = [];
+        let enumerationAttempts = 0;
+        let promotionAttempts = 0;
+        let injected = false;
+        let racedRequest;
+        const controller = new WorkspacePendingSessionPromotionController({
+            providers: providersForPromotion,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            runtimeCoordinator: {
+                getPending: () => pending,
+                getPendingForPromotion: async () => {
+                    enumerationAttempts++;
+                    return pending;
+                },
+                getActive: () => active,
+                promotePending: async () => {
+                    promotionAttempts++;
+                    const final = makeFinal(pendingRuntime);
+                    pending = [];
+                    active = [final];
+                    return [final];
+                },
+            },
+            setAlias: () => undefined,
+            syncActiveRuntime: () => undefined,
+            evaluateExecution: () => undefined,
+            scheduleRefresh: () => undefined,
+        });
+        const queue = controller.queuedByScope;
+        const queueHas = queue.has.bind(queue);
+        queue.has = scope => {
+            const present = queueHas(scope);
+            if (!present && enumerationAttempts === 1 && !injected) {
+                injected = true;
+                racedRequest = controller.promote(workspace, sessionResults, 'empty-finally-window');
+            }
+            return present;
+        };
+
+        await controller.promote(workspace, sessionResults, 'initial');
+        await racedRequest;
+        assert.strictEqual(enumerationAttempts, 2,
+            'a request queued after the empty check must be drained before its promise settles');
+        assert.strictEqual(promotionAttempts, 1,
+            'the raced refresh must observe settled state without promoting twice');
+    }
+
+    await runSuccessCase();
+    await runRetryCase();
+    await runConcurrentCase();
+    await runEnumerationRetryCase();
+    await runDrainCompletionRaceCase();
 }
 
 function runScanOptionChecks() {
@@ -981,13 +2002,13 @@ function runAliasControllerChecks() {
     ]);
 }
 
-async function runProjectStateStoreChecks() {
+async function runWorkspaceStateStoreChecks() {
     const data = {
-        openProjectsExpandedCodexSessions: ['project-a', 1, '', 'project-b'],
-        openProjectsActiveAiSessionProvider: {
-            'project-a': 'codex',
-            'project-b': 'unknown',
-            'project-c': 'kimi',
+        'workspaceExpandedAiSessions.v2': ['scope-a', 1, '', 'scope-b'],
+        'workspaceActiveAiSessionProvider.v2': {
+            'scope-a': 'codex',
+            'scope-b': 'unknown',
+            'scope-c': 'kimi',
         },
     };
     const updates = [];
@@ -998,185 +2019,39 @@ async function runProjectStateStoreChecks() {
             data[key] = value;
         },
     };
-    const store = new AiSessionProjectStateStore(state, value => value === 'codex' || value === 'kimi' || value === 'claude');
+    const store = new AiSessionWorkspaceStateStore(state, value => value === 'codex' || value === 'kimi' || value === 'claude');
 
-    assert.deepStrictEqual(Array.from(store.getExpandedProjects()), ['project-a', 'project-b']);
+    assert.deepStrictEqual(Array.from(store.getExpandedWorkspaces()), ['scope-a', 'scope-b']);
     assert.deepStrictEqual(store.getActiveProviders(), {
-        'project-a': 'codex',
-        'project-c': 'kimi',
+        'scope-a': 'codex',
+        'scope-c': 'kimi',
     });
 
-    await store.setExpanded('project-c', true);
-    await store.setExpanded('project-a', false);
-    await store.setActiveProvider('project-d', 'claude');
-    await store.setActiveProvider('project-e', 'unknown');
+    await store.setExpanded('scope-c', true);
+    await store.setExpanded('scope-a', false);
+    await store.setActiveProvider('scope-d', 'claude');
+    await store.setActiveProvider('scope-e', 'unknown');
 
     assert.deepStrictEqual(updates, [
-        ['openProjectsExpandedCodexSessions', ['project-a', 'project-b', 'project-c']],
-        ['openProjectsExpandedCodexSessions', ['project-b', 'project-c']],
-        ['openProjectsActiveAiSessionProvider', {
-            'project-a': 'codex',
-            'project-c': 'kimi',
-            'project-d': 'claude',
+        ['workspaceExpandedAiSessions.v2', ['scope-a', 'scope-b', 'scope-c']],
+        ['workspaceExpandedAiSessions.v2', ['scope-b', 'scope-c']],
+        ['workspaceActiveAiSessionProvider.v2', {
+            'scope-a': 'codex',
+            'scope-c': 'kimi',
+            'scope-d': 'claude',
         }],
     ]);
-}
-
-function runActiveAiSessionProjectionChecks() {
-    const projects = [{
-        id: 'app',
-        path: '/work/app',
-        codexSessions: [{ id: 'c1', name: 'Codex live', updatedAt: '2026-07-18T01:00:00Z' }],
-        kimiSessions: [{
-            id: 'k1',
-            name: 'Kimi waiting',
-            updatedAt: '2026-07-18T02:00:00Z',
-            attention: { eventId: 'e1', reason: 'input-required', unread: true },
-        }],
-        claudeSessions: [],
-    }];
-    const projected = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects,
-        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
-        activeRuntimes: [
-            {
-                identity: { provider: 'codex', sessionId: 'c1', projectKey: '/work/app', cwd: '/work/app' },
-                backend: 'vscode', state: 'active', markerPath: '/tmp/c1.done', runStartedAtMs: 10, attached: true,
-            },
-            {
-                identity: { provider: 'kimi', sessionId: 'k1', projectKey: '/work/app', cwd: '/work/app' },
-                backend: 'vscode', state: 'active', markerPath: '/tmp/k1.done', runStartedAtMs: 20, attached: true,
-            },
-        ],
-        pendingRuntimes: [{
-            identity: { provider: 'claude', pendingId: 'pending-claude', projectKey: '/work/app', cwd: '/work/app' },
-            backend: 'vscode', state: 'pending', markerPath: '/tmp/claude.done',
-            runStartedAtMs: Date.parse('2026-07-18T03:00:00Z'), attached: true,
-            createdAt: '2026-07-18T03:00:00Z',
-            excludedSessionIds: [],
-            title: 'New Claude',
-        }],
-        executionSnapshot: {
-            'codex:c1': { state: 'running', stateChangedAt: 100 },
-            'kimi:k1': { state: 'stopped', stateChangedAt: 200 },
-        },
-        focusedIdentity: { provider: 'codex', sessionId: 'c1' },
-        getProjectCwd: project => project.path,
-        normalizePath: value => value && value.replace(/\/$/, ''),
-    });
-
-    assert.deepStrictEqual(projected[0].activeAiSessions.map(item => ({
-        provider: item.provider,
-        executionState: item.executionState,
-        status: item.status,
-        focused: item.focused,
-        needsAttention: item.needsAttention,
-    })), [
-        { provider: 'kimi', executionState: 'stopped', status: 'needsAttention', focused: false, needsAttention: true },
-        { provider: 'codex', executionState: 'running', status: 'focused', focused: true, needsAttention: false },
-        { provider: 'claude', executionState: 'starting', status: 'starting', focused: false, needsAttention: false },
-    ]);
-    assert.deepStrictEqual(projected[0].activeAiSessions.map(item => item.provider), ['kimi', 'codex', 'claude']);
-    assert.strictEqual(projected[0].activeAiSessions[0].focused, false);
-    assert.strictEqual(projected[0].codexSessions[0].active, true);
-    assert.strictEqual(projected[0].codexSessions[0].focused, true);
-    assert.strictEqual(projected[0].kimiSessions[0].active, true);
-    assert.strictEqual(projected[0].activeAiSessionTab, 'active');
-    assert.strictEqual(projects[0].codexSessions[0].active, undefined, 'projection must not mutate hydration input');
-
-    const swappedExecutionStates = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects,
-        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
-        activeTerminals: [
-            { provider: 'codex', sessionId: 'c1', cwd: '/work/app', runStartedAtMs: 10 },
-            { provider: 'kimi', sessionId: 'k1', cwd: '/work/app', runStartedAtMs: 20 },
-        ],
-        pendingTerminals: [{
-            provider: 'claude',
-            cwd: '/work/app',
-            createdAt: '2026-07-18T03:00:00Z',
-            title: 'New Claude',
-        }],
-        executionSnapshot: {
-            'codex:c1': { state: 'stopped', stateChangedAt: 300 },
-            'kimi:k1': { state: 'running', stateChangedAt: 400 },
-        },
-        focusedIdentity: { provider: 'codex', sessionId: 'c1' },
-        getProjectCwd: project => project.path,
-        normalizePath: value => value && value.replace(/\/$/, ''),
-    });
-    assert.deepStrictEqual(
-        swappedExecutionStates[0].activeAiSessions.map(item => item.provider),
-        ['kimi', 'codex', 'claude']
-    );
-
-    const withoutHistory = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{ id: 'historyless', path: '/work/historyless', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
-        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
-        activeRuntimes: [{
-            identity: {
-                provider: 'claude', sessionId: '1234567890abcdef',
-                projectKey: '/work/historyless', cwd: '/work/historyless/',
-            },
-            backend: 'vscode', state: 'active', markerPath: '/tmp/historyless.done',
-            runStartedAtMs: 30,
-            attached: true,
-        }],
-        pendingRuntimes: [],
-        executionSnapshot: {},
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value && value.replace(/\/$/, ''),
-    });
-    assert.strictEqual(withoutHistory[0].activeAiSessions.length, 1);
-    assert.strictEqual(withoutHistory[0].activeAiSessions[0].provider, 'claude');
-    assert.strictEqual(withoutHistory[0].activeAiSessions[0].executionState, 'stopped');
-    assert.ok(withoutHistory[0].activeAiSessions[0].name.includes('12345678'));
-    assert.deepStrictEqual(withoutHistory[0].claudeSessions, []);
-
-    const stableStarting = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{ id: 'stable', path: '/work/stable', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
-        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
-        activeRuntimes: [],
-        pendingRuntimes: [
-            {
-                identity: { provider: 'kimi', pendingId: 'first', projectKey: '/work/stable', cwd: '/work/stable' },
-                backend: 'vscode', state: 'pending', markerPath: '/tmp/first.done', attached: true,
-                runStartedAtMs: Date.parse('2026-07-18T03:00:00Z'),
-                createdAt: '2026-07-18T03:00:00Z', excludedSessionIds: [], title: 'First',
-            },
-            {
-                identity: { provider: 'codex', pendingId: 'second', projectKey: '/work/stable', cwd: '/work/stable' },
-                backend: 'vscode', state: 'pending', markerPath: '/tmp/second.done', attached: true,
-                runStartedAtMs: Date.parse('2026-07-18T03:01:00Z'),
-                createdAt: '2026-07-18T03:01:00Z', excludedSessionIds: [], title: 'Second',
-            },
-        ],
-        executionSnapshot: {},
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.deepStrictEqual(stableStarting[0].activeAiSessions.map(item => item.name), ['First', 'Second']);
-
-    const empty = activeSessionProjection.applyAiSessionRuntimeProjection({
-        projects: [{ id: 'empty', path: '/work/empty', codexSessions: [], kimiSessions: [], claudeSessions: [] }],
-        providers: providers.AI_SESSION_PROVIDER_DEFINITIONS,
-        activeRuntimes: [],
-        pendingRuntimes: [],
-        executionSnapshot: {},
-        focusedIdentity: null,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-    });
-    assert.strictEqual(empty[0].activeAiSessionTab, 'sessions');
 }
 
 async function runAiSessionCommandControllerChecks() {
-    const projects = [
-        { id: 'project-a', path: '/work/a' },
-        { id: 'project-b', path: '/work/b' },
-    ];
+    const workspaceTarget = {
+        cardId: 'workspace-a',
+        workspace: {
+            scopeIdentity: 'scope-a',
+            navigationIdentity: 'navigation-a',
+            roots: [{ id: 'root-a', name: 'A', uri: 'file:///work/a', ordinal: 0 }],
+        },
+    };
     const expanded = [];
     const activeProviders = [];
     const refreshes = [];
@@ -1188,11 +2063,12 @@ async function runAiSessionCommandControllerChecks() {
     let pinToggleResult = true;
     let nextInputValue = '  Renamed Chat  ';
     const controller = new AiSessionCommandController({
-        getOpenProjects: () => projects,
-        getProjectKey: project => `key:${project.path}`,
+        getWorkspaceTarget: cardId => cardId === workspaceTarget.cardId ? workspaceTarget : null,
         isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
-        setExpanded: async (projectKey, value) => expanded.push([projectKey, value]),
-        setActiveProvider: async (projectKey, providerId) => activeProviders.push([projectKey, providerId]),
+        setExpanded: async (workspaceScopeIdentity, value) => expanded.push([workspaceScopeIdentity, value]),
+        setActiveProvider: async (workspaceScopeIdentity, providerId) => {
+            activeProviders.push([workspaceScopeIdentity, providerId]);
+        },
         togglePin: (providerId, sessionId) => {
             pinToggles.push([providerId, sessionId]);
             return pinToggleResult;
@@ -1214,15 +2090,15 @@ async function runAiSessionCommandControllerChecks() {
         refresh: () => refreshes.push('refresh'),
     });
 
-    await controller.toggleSessionsExpanded('project-a', true);
-    assert.deepStrictEqual(expanded, [['key:/work/a', true]]);
+    await controller.toggleSessionsExpanded('workspace-a', true);
+    assert.deepStrictEqual(expanded, [['scope-a', true]]);
 
-    await controller.selectProvider('project-a', 'kimi');
-    assert.deepStrictEqual(activeProviders, [['key:/work/a', 'kimi']]);
+    await controller.selectProvider('workspace-a', 'kimi');
+    assert.deepStrictEqual(activeProviders, [['scope-a', 'kimi']]);
     assert.strictEqual(refreshes.length, 1);
 
     await controller.selectProvider('missing', 'codex');
-    await controller.selectProvider('project-a', 'invalid');
+    await controller.selectProvider('workspace-a', 'invalid');
     assert.strictEqual(activeProviders.length, 1);
 
     await controller.togglePin('codex', 'session-1');
@@ -1247,136 +2123,6 @@ async function runAiSessionCommandControllerChecks() {
     assert.deepStrictEqual(infoMessages, ['Chat ID copied to clipboard.']);
 }
 
-async function runAiSessionCreationControllerChecks() {
-    const projects = [{ id: 'project-a', name: 'Project A', path: '/work/a' }];
-    const warnings = [];
-    const announcements = [];
-    const terminals = [];
-    const tracked = [];
-    const pendingKeys = new Set();
-    const removed = [];
-    const sent = [];
-    const scheduled = [];
-    const existingSessionInputs = [];
-    const activeTabRequests = [];
-    const refreshes = [];
-    const timeoutQueue = [];
-    const providerPicks = [];
-    const inputValues = ['  Test Title  ', ''];
-    let nextProvider;
-    let resolveDeferredProvider;
-    let warningAction;
-    let usableCwd = '/work/a';
-    const controller = new AiSessionCreationController({
-        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
-        getOpenProjects: () => projects,
-        pickProvider: async () => {
-            providerPicks.push('pick');
-            if (nextProvider === 'deferred') {
-                return new Promise(resolve => { resolveDeferredProvider = resolve; });
-            }
-            return nextProvider;
-        },
-        getProviderLabel: providerId => providerId.toUpperCase(),
-        getProvider: providerId => ({
-            id: providerId,
-            label: providerId.toUpperCase(),
-            terminalNamePrefix: `${providerId}-terminal`,
-        }),
-        getTerminalCwd: project => project.path,
-        getUsableTerminalCwd: () => usableCwd,
-        showInputBox: async () => inputValues.shift(),
-        showActiveTab: async projectId => activeTabRequests.push(projectId),
-        announceStatus: async (projectId, message) => announcements.push([projectId, message]),
-        showWarningMessage: async (message, ...items) => {
-            warnings.push([message, items]);
-            return warningAction;
-        },
-        refresh: () => refreshes.push('refresh'),
-        createTerminal: options => {
-            const terminal = {
-                name: options.name,
-                showCalls: 0,
-                disposeCalls: 0,
-                show() { this.showCalls += 1; },
-                dispose() { this.disposeCalls += 1; },
-            };
-            terminals.push({ terminal, options });
-            return { terminal, cwdAccepted: true };
-        },
-        getExistingSessionIdsForCwd: (providerId, cwd) => {
-            existingSessionInputs.push([providerId, cwd]);
-            return [`existing:${providerId}:${cwd}`];
-        },
-        getPendingMarkerPath: providerId => `/tmp/${providerId}.marker`,
-        trackPendingTerminal: pending => {
-            tracked.push(pending);
-            pendingKeys.add(`${pending.provider}:${pending.createdAt}`);
-        },
-        sendNewSessionCommand: async (providerId, terminal, cwd, title, markerPath) => sent.push([providerId, terminal, cwd, title, markerPath]),
-        scheduleNewSessionRefresh: providerId => scheduled.push(providerId),
-        isPending: (providerId, createdAt) => pendingKeys.has(`${providerId}:${createdAt}`),
-        removePending: (providerId, createdAt) => {
-            pendingKeys.delete(`${providerId}:${createdAt}`);
-            removed.push([providerId, createdAt]);
-        },
-        setTimeout: (callback, delayMs) => {
-            const timeout = { callback, delayMs, cleared: false };
-            timeoutQueue.push(timeout);
-            return timeout;
-        },
-        clearTimeout: timeout => { timeout.cleared = true; },
-        bindingTimeoutMs: 15_000,
-        nowMs: () => Date.parse('2026-07-18T04:00:00.000Z'),
-    });
-
-    await controller.createSession('missing');
-    assert.deepStrictEqual(warnings, [['Open project not found.', []]]);
-    assert.strictEqual(terminals.length, 0);
-
-    nextProvider = undefined;
-    await controller.createSession('project-a');
-    assert.strictEqual(terminals.length, 0);
-
-    nextProvider = 'deferred';
-    const firstCreate = controller.createSession('project-a');
-    await Promise.resolve();
-    const duplicateCreate = controller.createSession('project-a');
-    await Promise.resolve();
-    assert.strictEqual(providerPicks.length, 2, 'a duplicate request must not open another picker');
-    resolveDeferredProvider('codex');
-    await Promise.all([firstCreate, duplicateCreate]);
-    assert.strictEqual(terminals[0].options.name, 'codex-terminal: Project A');
-    assert.strictEqual(terminals[0].options.cwd, '/work/a');
-    assert.strictEqual(tracked[0].provider, 'codex');
-    assert.strictEqual(tracked[0].cwd, '/work/a');
-    assert.deepStrictEqual(tracked[0].excludedSessionIds, ['existing:codex:/work/a']);
-    assert.strictEqual(tracked[0].title, 'Test Title');
-    assert.deepStrictEqual(sent[0], ['codex', terminals[0].terminal, '/work/a', 'Test Title', '/tmp/codex.marker']);
-    assert.deepStrictEqual(scheduled, ['codex']);
-    assert.strictEqual(terminals[0].terminal.showCalls, 1);
-    assert.deepStrictEqual(activeTabRequests, ['project-a']);
-    assert.strictEqual(refreshes.length, 1);
-    assert.strictEqual(timeoutQueue.length, 0, 'creating a session must not schedule pending removal');
-    assert.strictEqual(pendingKeys.has(`codex:${tracked[0].createdAt}`), true);
-
-    usableCwd = null;
-    nextProvider = 'kimi';
-    await controller.createSession('project-a');
-    assert.strictEqual(terminals[1].options.cwd, null);
-    assert.deepStrictEqual(existingSessionInputs[1], ['kimi', '/work/a']);
-    assert.strictEqual(tracked[1].cwd, '/work/a');
-    assert.deepStrictEqual(sent[1], ['kimi', terminals[1].terminal, null, '', '/tmp/kimi.marker']);
-    assert.strictEqual(timeoutQueue.length, 0, 'elapsed time must not own the pending lifecycle');
-    assert.strictEqual(pendingKeys.has(`kimi:${tracked[1].createdAt}`), true);
-    assert.deepStrictEqual(removed, []);
-    assert.deepStrictEqual(announcements, []);
-    assert.deepStrictEqual(warnings, [['Open project not found.', []]]);
-    assert.strictEqual(terminals[1].terminal.showCalls, 1);
-    assert.strictEqual(terminals[1].terminal.disposeCalls, 0);
-    assert.strictEqual(refreshes.length, 2);
-}
-
 function runAiSessionProviderAvailabilityChecks() {
     const exists = value => value === '/bin/codex' || value === 'C:\\Tools\\kimi.CMD';
     assert.strictEqual(providerAvailability.isCommandAvailableOnPath(
@@ -1390,571 +2136,422 @@ function runAiSessionProviderAvailabilityChecks() {
     ), true);
 }
 
-async function runAiSessionResumeControllerChecks() {
-    const session = { id: 'session-a', name: 'Session A', cwd: '/work/a', updatedAt: '2026-07-16T10:00:00Z' };
-    const projects = [
-        { id: 'project-a', name: 'Project A', path: '/work/a' },
-    ];
-    const warnings = [];
-    const shown = [];
-    const begins = [];
-    const finishes = [];
-    const created = [];
-    const tracked = [];
-    const sent = [];
-    const synced = [];
-    const pendingLookups = [];
-    const runtimeRefreshes = [];
-    const activeTabRequests = [];
-    const claimedPendingTerminals = [];
-    let existingEntry = null;
-    let beginResult = true;
-    let createCwdAccepted = false;
-    let pendingTerminal = null;
-    let rejectResumeSend = false;
-    const makeTerminal = name => ({ name, show() { shown.push(name); } });
-    const controller = new AiSessionResumeController({
-        getOpenProjects: () => projects,
-        getProvider: providerId => ({ label: providerId.toUpperCase(), terminalEnvKey: `${providerId.toUpperCase()}_SESSION_ID` }),
-        getProjectSession: (project, providerId, sessionId) => project.id === 'project-a' && providerId === 'codex' && sessionId === session.id ? session : null,
-        getTerminalCwd: () => '/work/a',
-        getTerminalName: (providerId, value) => `${providerId}: ${value.name}`,
-        getComparableCwd: () => '/work/a',
-        getUsableTerminalCwd: cwd => cwd,
-        normalizeProjectPath: cwd => cwd,
-        getExistingTerminal: () => existingEntry,
-        isTerminalComplete: entry => Boolean(entry.complete),
-        beginResume: (providerId, sessionId) => {
-            begins.push([providerId, sessionId]);
-            return beginResult;
-        },
-        finishResume: (providerId, sessionId) => finishes.push([providerId, sessionId]),
-        getMarkerPath: (providerId, sessionId) => `/tmp/${providerId}-${sessionId}.marker`,
-        findPendingTerminalForSession: (providerId, sessionId, cwd, updatedAt) => {
-            pendingLookups.push([providerId, sessionId, cwd, updatedAt]);
-            return pendingTerminal;
-        },
-        createTerminal: options => {
-            const terminal = makeTerminal(`created:${created.length}`);
-            created.push(options);
-            return { terminal, cwdAccepted: createCwdAccepted };
-        },
-        track: (providerId, sessionId, entry) => tracked.push([providerId, sessionId, entry]),
-        claimPendingTerminal: terminal => claimedPendingTerminals.push(terminal),
-        sendResumeCommand: async (providerId, terminal, sessionId, cwd, markerPath) => {
-            if (rejectResumeSend) {
-                throw new Error('send failed');
-            }
-            sent.push([providerId, terminal, sessionId, cwd, markerPath]);
-        },
-        showWarningMessage: message => warnings.push(message),
-        syncActiveTerminal: () => synced.push('sync'),
-        refresh: () => runtimeRefreshes.push('refresh'),
-        showActiveTab: projectId => activeTabRequests.push(projectId),
-        logError() {},
-        nowMs: () => 123456,
-    });
-
-    await controller.resumeProjectSession('project-a', null, session.id);
-    assert.strictEqual(begins.length, 0);
-
-    await controller.resumeProjectSession('project-a', 'codex', 'missing');
-    assert.deepStrictEqual(warnings, ['Selected CODEX session not found.']);
-    assert.strictEqual(begins.length, 0);
-
-    existingEntry = { terminal: makeTerminal('existing-running'), markerPath: '/tmp/existing.marker', complete: false };
-    await controller.resumeProjectSession('project-a', 'codex', session.id);
-    assert.deepStrictEqual(shown, ['existing-running']);
-    assert.strictEqual(begins.length, 0);
-    assert.strictEqual(runtimeRefreshes.length, 1);
-    assert.deepStrictEqual(activeTabRequests, ['project-a']);
-
-    existingEntry = null;
-    beginResult = false;
-    await controller.resumeProjectSession('project-a', 'codex', session.id);
-    assert.deepStrictEqual(begins, [['codex', session.id]]);
-    assert.strictEqual(created.length, 0);
-
-    beginResult = true;
-    await controller.resumeProjectSession('project-a', 'codex', session.id);
-    assert.strictEqual(created[0].name, 'codex: Session A');
-    assert.deepStrictEqual(created[0].env, { CODEX_SESSION_ID: session.id });
-    assert.deepStrictEqual(pendingLookups[0], ['codex', session.id, '/work/a', session.updatedAt]);
-    assert.deepStrictEqual(tracked[0][0], 'codex');
-    assert.strictEqual(tracked[0][2].markerPath, `/tmp/codex-${session.id}.marker`);
-    assert.strictEqual(tracked[0][2].runStartedAtMs, 123456);
-    assert.strictEqual(tracked[0][2].cwd, '/work/a');
-    assert.deepStrictEqual(sent[0], ['codex', tracked[0][2].terminal, session.id, null, `/tmp/codex-${session.id}.marker`]);
-    assert.deepStrictEqual(finishes.slice(-1)[0], ['codex', session.id]);
-    assert.deepStrictEqual(synced, ['sync']);
-    assert.strictEqual(runtimeRefreshes.length, 2);
-    assert.deepStrictEqual(activeTabRequests, ['project-a', 'project-a']);
-
-    createCwdAccepted = true;
-    pendingTerminal = { terminal: makeTerminal('pending'), markerPath: '/tmp/pending.marker' };
-    await controller.resumeProjectSession('project-a', 'codex', session.id);
-    assert.strictEqual(created.length, 1);
-    assert.strictEqual(tracked[1][2].terminal, pendingTerminal.terminal);
-    assert.deepStrictEqual(sent[1], ['codex', pendingTerminal.terminal, session.id, '/work/a', '/tmp/pending.marker']);
-    assert.deepStrictEqual(claimedPendingTerminals, [pendingTerminal.terminal]);
-    assert.deepStrictEqual(activeTabRequests, ['project-a', 'project-a', 'project-a']);
-
-    pendingTerminal = null;
-    rejectResumeSend = true;
-    const finishCountBeforeReject = finishes.length;
-    const syncCountBeforeReject = synced.length;
-    const trackedCountBeforeReject = tracked.length;
-    const refreshCountBeforeReject = runtimeRefreshes.length;
-    const activeTabCountBeforeReject = activeTabRequests.length;
-    let rejected = false;
-    try {
-        await controller.resumeProjectSession('project-a', 'codex', session.id);
-    } catch (error) {
-        rejected = true;
-        assert.strictEqual(error.message, 'send failed');
-    }
-    assert.strictEqual(rejected, true);
-    assert.strictEqual(finishes.length, finishCountBeforeReject + 1);
-    assert.strictEqual(synced.length, syncCountBeforeReject);
-    assert.strictEqual(tracked.length, trackedCountBeforeReject, 'a failed resume must not appear Active');
-    assert.strictEqual(runtimeRefreshes.length, refreshCountBeforeReject);
-    assert.strictEqual(activeTabRequests.length, activeTabCountBeforeReject, 'a failed resume must not steal the current Tab');
-
-    rejectResumeSend = false;
-    const releasedTerminal = makeTerminal('released-existing');
-    existingEntry = { terminal: releasedTerminal, markerPath: '/tmp/released.marker', complete: true };
-    const createdCountBeforeReleasedResume = created.length;
-    const trackedCountBeforeReleasedResume = tracked.length;
-    const sentCountBeforeReleasedResume = sent.length;
-    await controller.resumeProjectSession('project-a', 'codex', session.id);
-    assert.strictEqual(created.length, createdCountBeforeReleasedResume, 'a released terminal must be reused');
-    assert.strictEqual(tracked.length, trackedCountBeforeReleasedResume + 1);
-    assert.strictEqual(tracked[tracked.length - 1][2].terminal, releasedTerminal);
-    assert.deepStrictEqual(
-        sent[sentCountBeforeReleasedResume],
-        ['codex', releasedTerminal, session.id, '/work/a', '/tmp/released.marker']
-    );
-    assert.strictEqual(activeTabRequests.length, activeTabCountBeforeReject + 1);
-}
-
-async function runAiSessionTerminalCommandControllerChecks() {
-    const activeTerminal = {
-        showCalls: 0,
-        disposeCalls: 0,
-        show() { this.showCalls++; },
-        dispose() { this.disposeCalls++; },
+async function runWorkspaceCreationDirectoryFirstChecks() {
+    const workspace = {
+        displayName: 'Workspace A',
+        navigationIdentity: 'navigation-a',
+        scopeIdentity: 'scope-a',
+        roots: [
+            { id: 'root-web', name: 'Web', hostPath: '/work/web', ordinal: 0 },
+            { id: 'root-api', name: 'API', hostPath: '/work/api', ordinal: 1 },
+        ],
     };
-    const historylessTerminal = {
-        showCalls: 0,
-        disposeCalls: 0,
-        show() { this.showCalls++; },
-        dispose() { this.disposeCalls++; },
+    const target = {
+        cardId: 'workspace-a',
+        workspace,
+        sessions: { sessionsByProvider: {} },
     };
-    const pendingTerminal = {
-        showCalls: 0,
-        disposeCalls: 0,
-        show() { this.showCalls++; },
-        dispose() { this.disposeCalls++; },
-    };
-    const failingTerminal = {
-        show() {},
-        dispose() { throw new Error('dispose failed'); },
-    };
-    const projects = [
-        { id: 'app', path: '/work/app', codexSessions: [{ id: 'c1' }], kimiSessions: [], claudeSessions: [] },
-        { id: 'other', path: '/work/other', codexSessions: [], kimiSessions: [], claudeSessions: [] },
-    ];
-    const activeEntries = new Map([
-        ['codex:c1', { terminal: activeTerminal, cwd: '/work/app' }],
-        ['kimi:historyless', { terminal: historylessTerminal, cwd: '/work/app/' }],
-        ['claude:failing', { terminal: failingTerminal, cwd: '/work/app' }],
-    ]);
-    const pending = [{
-        provider: 'claude', terminal: pendingTerminal, cwd: '/work/app', createdAt: '2026-07-18T03:00:00Z',
-    }];
-    const refreshes = [];
-    const errors = [];
-    let confirmation;
-    const controller = new AiSessionTerminalCommandController({
-        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
-        getOpenProjects: () => projects,
-        getProjectSessions: (project, providerId) => project[`${providerId}Sessions`] || [],
-        getActiveTerminal: (providerId, sessionId) => activeEntries.get(`${providerId}:${sessionId}`) || null,
-        getPendingTerminals: () => pending,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value && value.replace(/\/$/, ''),
-        confirmClose: async () => confirmation,
-        showErrorMessage: async message => errors.push(message),
-        getProviderLabel: providerId => providerId.toUpperCase(),
-        refresh: () => refreshes.push('refresh'),
-    });
-
-    await controller.focusPending('app', 'claude', '2026-07-18T03:00:00Z');
-    assert.strictEqual(pendingTerminal.showCalls, 1);
-    assert.deepStrictEqual(refreshes, ['refresh']);
-    await controller.focusActive('app', 'codex', 'c1');
-    assert.strictEqual(activeTerminal.showCalls, 1);
-    assert.deepStrictEqual(refreshes, ['refresh', 'refresh']);
-    await controller.focusActive('app', 'kimi', 'historyless');
-    assert.strictEqual(historylessTerminal.showCalls, 1, 'matching binding cwd scopes a historyless active session');
-    assert.deepStrictEqual(refreshes, ['refresh', 'refresh', 'refresh']);
-
-    await controller.focusActive('other', 'codex', 'c1');
-    await controller.focusActive('app', 'codex', 'missing');
-    await controller.focusActive('app', 'invalid', 'c1');
-    await controller.focusPending('other', 'claude', '2026-07-18T03:00:00Z');
-    await controller.focusPending('app', 'claude', 'missing');
-    assert.strictEqual(activeTerminal.showCalls, 1);
-    assert.strictEqual(pendingTerminal.showCalls, 1);
-
-    confirmation = undefined;
-    await controller.closeTerminal({ projectId: 'app', providerId: 'codex', sessionId: 'c1' });
-    assert.strictEqual(activeTerminal.disposeCalls, 0);
-
-    confirmation = 'Close Terminal';
-    await controller.closeTerminal({ projectId: 'app', providerId: 'codex', sessionId: 'c1' });
-    assert.strictEqual(activeTerminal.disposeCalls, 1);
-    assert.strictEqual(refreshes.length, 4);
-
-    await controller.closeTerminal({
-        projectId: 'app', providerId: 'claude', pendingCreatedAt: '2026-07-18T03:00:00Z',
-    });
-    assert.strictEqual(pendingTerminal.disposeCalls, 1);
-    assert.strictEqual(refreshes.length, 5);
-
-    await controller.closeTerminal({ projectId: 'other', providerId: 'codex', sessionId: 'c1' });
-    await controller.closeTerminal({
-        projectId: 'app', providerId: 'codex', sessionId: 'c1', pendingCreatedAt: '2026-07-18T03:00:00Z',
-    });
-    assert.strictEqual(activeTerminal.disposeCalls, 1);
-
-    await controller.closeTerminal({ projectId: 'app', providerId: 'claude', sessionId: 'failing' });
-    assert.deepStrictEqual(errors, ['Could not close the AI session terminal.']);
-    assert.strictEqual(refreshes.length, 5);
-
-    const runtimeRefreshes = [];
-    const runtimeAnnouncements = [];
-    let runtimeCandidates;
-    let focusSelectedResult = true;
-    const runtime = {
-        identity: { provider: 'codex', sessionId: 'c1', projectKey: 'key:/work/app', cwd: '/work/app' },
-        backend: 'tmux', state: 'active', markerPath: '/tmp/c1.done', runStartedAtMs: 1,
-        attached: true,
-        tmux: { layout: 'project', sessionName: 'project-steward-p-app', windowName: 'ai-codex-c1' },
-    };
-    const runtimePending = {
-        identity: { provider: 'claude', pendingId: 'pending-1', projectKey: 'key:/work/app', cwd: '/work/app' },
-        backend: 'tmux', state: 'pending', markerPath: '/tmp/pending.done', runStartedAtMs: 2,
-        attached: true, createdAt: '2026-07-20T00:00:00.000Z', excludedSessionIds: [],
-        tmux: { layout: 'project', sessionName: 'project-steward-p-app', windowName: 'pending-claude-1' },
-    };
-    const runtimeController = new AiSessionTerminalCommandController({
-        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
-        getOpenProjects: () => [{
-            id: 'app', path: '/work/app', codexSessions: [{ id: 'c1' }],
-            kimiSessions: [], claudeSessions: [],
-        }],
-        getProjectSessions: (project, providerId) => project[`${providerId}Sessions`] || [],
-        getProjectKey: project => `key:${project.path}`,
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
-        runtimeCoordinator: {
-            getById: (_providerId, sessionId) => sessionId === 'c1' ? runtime : null,
-            getActiveCandidates: (_providerId, sessionId) => sessionId === 'c1'
-                ? (runtimeCandidates || [runtime]) : [],
-            getUnverifiedConflicts: () => [],
-            getPending: () => [runtimePending],
-            focus: async () => undefined,
-            focusSelected: async () => focusSelectedResult,
-            detach: async () => undefined,
-        },
-        confirmRuntimeClose: async () => undefined,
-        chooseRuntimeConflict: async runtimes => runtimes[0],
-        announceStatus: async (_projectId, message) => runtimeAnnouncements.push(message),
-        showErrorMessage: async () => undefined,
-        getProviderLabel: providerId => providerId.toUpperCase(),
-        refresh: () => runtimeRefreshes.push('refresh'),
-    });
-    await runtimeController.focusActive('app', 'codex', 'c1');
-    await runtimeController.focusPending('app', 'claude', '2026-07-20T00:00:00.000Z');
-    assert.deepStrictEqual(runtimeRefreshes, ['refresh', 'refresh']);
-
-    runtimeCandidates = [{ ...runtime, state: 'conflict' }];
-    await runtimeController.focusActive('app', 'codex', 'c1');
-    assert.deepStrictEqual(runtimeRefreshes, ['refresh', 'refresh', 'refresh']);
-
-    focusSelectedResult = false;
-    await runtimeController.focusActive('app', 'codex', 'c1');
-    assert.strictEqual(runtimeRefreshes.length, 4,
-        'a stale selected runtime keeps its existing invalidation refresh without adding a success refresh');
-    assert.strictEqual(runtimeAnnouncements.length, 1);
-
-    runtimeCandidates = [];
-    await runtimeController.focusActive('app', 'codex', 'missing');
-    await runtimeController.focusPending('app', 'claude', 'missing');
-    assert.strictEqual(runtimeRefreshes.length, 4, 'missing targets must not refresh');
-}
-
-async function runAiSessionRuntimeControllerChecks() {
-    const controllerRoot = path.join(__dirname, '..', 'src', 'aiSessions');
-    const controllerContracts = [
-        ['creationController.ts', 'AiSessionCreationRuntimeControllerOptions', 'AiSessionCreationLegacyControllerOptions'],
-        ['resumeController.ts', 'AiSessionResumeRuntimeControllerOptions', 'AiSessionResumeLegacyControllerOptions'],
-        ['terminalCommandController.ts', 'AiSessionTerminalCommandRuntimeControllerOptions', 'AiSessionTerminalCommandLegacyControllerOptions'],
-    ];
-    for (const [fileName, runtimeName, legacyName] of controllerContracts) {
-        const source = fs.readFileSync(path.join(controllerRoot, fileName), 'utf8');
-        assert.ok(source.includes(`export interface ${runtimeName}`));
-        assert.ok(source.includes(`export interface ${legacyName}`));
-        assert.ok(source.includes(`| ${legacyName}`), `${fileName} must export a discriminated runtime/legacy union`);
-    }
-    assert.throws(() => new AiSessionCreationController({ runtimeCoordinator: {} }),
-        /runtime controller options are invalid/);
-    assert.throws(() => new AiSessionResumeController({ runtimeCoordinator: {} }),
-        /runtime controller options are invalid/);
-    assert.throws(() => new AiSessionTerminalCommandController({ runtimeCoordinator: {} }),
-        /runtime controller options are invalid/);
-    assert.throws(() => new AiSessionTerminalCommandController({
-        runtimeCoordinator: {
-            getById: () => null,
-            getPending: () => [],
-            focus: async () => undefined,
-            detach: async () => undefined,
-        },
-        getProjectKey: () => 'project-key',
-        confirmRuntimeClose: async () => undefined,
-        announceStatus: async () => undefined,
-    }), /runtime controller options are invalid/,
-    'runtime terminal options must enumerate every open project for ownership resolution');
-    const session = Object.freeze({
-        id: 'session-a', name: 'Session A', cwd: '/work/a', updatedAt: '2026-07-19T03:00:00Z',
-    });
-    const project = Object.freeze({
-        id: 'project-a', name: 'Project A', path: '/work/a',
-        codexSessions: Object.freeze([session]), kimiSessions: Object.freeze([]), claudeSessions: Object.freeze([]),
-    });
-    const existingIds = Object.freeze(['existing-a', 'existing-b']);
-    const launchSpec = Object.freeze({
-        executable: 'codex', args: Object.freeze(['new', 'Test Title']),
-        cwd: '/work/a', markerPath: '/tmp/new.marker',
-    });
-    const createRequests = [];
-    const createResults = [];
-    const pending = [];
-    const activeCreationRuntimes = [];
-    const creationWarnings = [];
-    const creationErrors = [];
-    const creationFailures = [];
-    const creationAnnouncements = [];
-    const creationTabs = [];
-    const creationRefreshes = [];
-    const scheduled = [];
-    const timeouts = [];
-    let createError = null;
-    const creationCoordinator = {
-        create: async request => {
-            createRequests.push(request);
-            if (createError) {
-                const error = createError;
-                createError = null;
-                throw error;
-            }
-            return createResults.shift();
-        },
-        getActive: () => activeCreationRuntimes.slice(),
-        getPending: () => pending.slice(),
-    };
-    let nextPending = 0;
-    let pendingIdOverride = null;
+    const events = [];
+    const requests = [];
+    let pickerResult = 'root-api';
     const creation = new AiSessionCreationController({
-        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
-        getOpenProjects: () => [project],
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        pickWorkspaceRoot: async selectedWorkspace => {
+            assert.strictEqual(selectedWorkspace, workspace);
+            events.push('root');
+            return pickerResult;
+        },
+        pickProvider: async () => {
+            events.push('provider');
+            return 'codex';
+        },
+        getProviderLabel: () => 'Codex',
+        getProvider: () => ({
+            label: 'Codex',
+            terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: scope => ({
+                executable: 'codex', args: [], cwd: scope.primaryCwd,
+            }),
+        }),
+        resolveWorkspaceDirectoryScope: async (_resolved, _providerId, rootId) => {
+            events.push(`scope:${rootId || 'implicit'}`);
+            const selectedRoot = workspace.roots.find(root => root.id === rootId) || workspace.roots[0];
+            return {
+                workspaceNavigationIdentity: workspace.navigationIdentity,
+                workspaceScopeIdentity: workspace.scopeIdentity,
+                workspaceRootHostPaths: workspace.roots.map(root => root.hostPath),
+                primaryRootId: selectedRoot.id,
+                primaryCwd: selectedRoot.hostPath,
+                additionalDirectories: workspace.roots
+                    .filter(root => root.id !== selectedRoot.id)
+                    .map(root => root.hostPath),
+            };
+        },
+        runtimeCoordinator: {
+            create: async request => {
+                requests.push(request);
+                return { status: 'started', runtime: {} };
+            },
+            getActive: () => [],
+            getPending: () => [],
+        },
+        createPendingId: () => `pending-directory-first-${requests.length}`,
+        showInputBox: async () => {
+            events.push('title');
+            return '';
+        },
+        showActiveTab: async () => undefined,
+        announceStatus: async () => undefined,
+        showWarningMessage: async () => undefined,
+        refresh: () => undefined,
+        getExistingSessionIdsForCwd: () => [],
+        getPendingMarkerPath: () => '/tmp/directory-first.marker',
+        scheduleNewSessionRefresh: () => undefined,
+        nowMs: () => 1,
+    });
+
+    await creation.createSession(target.cardId);
+    assert.deepStrictEqual(events, ['root', 'provider', 'title', 'scope:root-api']);
+    assert.strictEqual(requests[0].directoryScope.primaryRootId, 'root-api');
+
+    events.length = 0;
+    pickerResult = undefined;
+    await creation.createSession(target.cardId);
+    assert.deepStrictEqual(events, ['root'],
+        'cancelling the workspace root picker must stop before provider and title prompts');
+    assert.strictEqual(requests.length, 1);
+
+    events.length = 0;
+    workspace.roots = [workspace.roots[0]];
+    await creation.createSession(target.cardId);
+    assert.deepStrictEqual(events, ['provider', 'title', 'scope:implicit'],
+        'single-folder creation must skip the workspace root picker');
+    assert.strictEqual(requests[1].directoryScope.primaryRootId, 'root-web');
+}
+
+async function runWorkspaceScopeControllerLaunchChecks() {
+    const workspaceTarget = {
+        cardId: 'workspace-a',
+        workspace: {
+            displayName: 'Workspace A',
+            navigationIdentity: 'navigation-a',
+            scopeIdentity: 'scope-a',
+            roots: [],
+        },
+        sessions: { sessionsByProvider: {} },
+    };
+    const scope = Object.freeze({
+        workspaceNavigationIdentity: 'navigation-a',
+        workspaceScopeIdentity: 'scope-a',
+        workspaceRootHostPaths: Object.freeze(['/work/web', '/work/api', '/work/文档']),
+        primaryRootId: 'root-web',
+        primaryCwd: '/work/web',
+        additionalDirectories: Object.freeze(['/work/api', '/work/文档']),
+    });
+    for (const providerId of ['codex', 'kimi', 'claude']) {
+        const createScopes = [];
+        const createRequests = [];
+        const createLaunch = Object.freeze({
+            executable: providerId,
+            args: Object.freeze(['create', providerId]),
+            cwd: scope.primaryCwd,
+            markerPath: `/tmp/${providerId}-create.marker`,
+        });
+        const creation = new AiSessionCreationController({
+            isProviderId: value => value === providerId,
+            getWorkspaceTarget: cardId => cardId === workspaceTarget.cardId ? workspaceTarget : null,
+            pickWorkspaceRoot: async () => undefined,
+            pickProvider: async () => providerId,
+            getProviderLabel: () => providerId,
+            getProvider: () => ({
+                label: providerId,
+                terminalNamePrefix: providerId,
+                buildNewSessionLaunchSpec: directoryScope => {
+                    createScopes.push(directoryScope);
+                    return createLaunch;
+                },
+            }),
+            resolveWorkspaceDirectoryScope: async resolvedTarget => {
+                assert.strictEqual(resolvedTarget, workspaceTarget);
+                return scope;
+            },
+            createPendingId: () => `pending-${providerId}`,
+            showInputBox: async () => '',
+            showActiveTab: async () => undefined,
+            announceStatus: async () => undefined,
+            showWarningMessage: async () => undefined,
+            refresh: () => undefined,
+            getExistingSessionIdsForCwd: () => [],
+            getPendingMarkerPath: () => `/tmp/${providerId}-create.marker`,
+            scheduleNewSessionRefresh: () => undefined,
+            nowMs: () => Date.parse('2026-07-20T10:00:00.000Z'),
+            runtimeCoordinator: {
+                create: async request => {
+                    createRequests.push(request);
+                    return { status: 'started', runtime: {} };
+                },
+                getActive: () => [],
+                getPending: () => [],
+            },
+        });
+        await creation.createSession(workspaceTarget.cardId);
+        assert.strictEqual(createScopes[0], scope,
+            `${providerId} creation must pass the injected complete scope unchanged to its builder`);
+        assert.deepStrictEqual(createRequests[0].launch, {
+            executable: providerId,
+            args: ['create', providerId],
+            cwd: scope.primaryCwd,
+            markerPath: `/tmp/${providerId}-create.marker`,
+        });
+        assert.strictEqual(createRequests[0].identity.cwd, scope.primaryCwd);
+
+        const session = Object.freeze({
+            id: `${providerId}-session`,
+            name: `${providerId} Session`,
+            cwd: '/historical/session-path',
+            updatedAt: '2026-07-20T09:00:00.000Z',
+        });
+        workspaceTarget.sessions.sessionsByProvider[providerId] = [session];
+        const resumeScopes = [];
+        const resumeRequests = [];
+        const resumeLaunch = Object.freeze({
+            executable: providerId,
+            args: Object.freeze(['resume', session.id]),
+            cwd: scope.primaryCwd,
+            markerPath: `/tmp/${providerId}-resume.marker`,
+        });
+        const resume = new AiSessionResumeController({
+            getWorkspaceTarget: cardId => cardId === workspaceTarget.cardId ? workspaceTarget : null,
+            getProvider: () => ({
+                label: providerId,
+                terminalEnvKey: `${providerId}_SESSION_ID`,
+                buildResumeLaunchSpec: (sessionId, directoryScope) => {
+                    assert.strictEqual(sessionId, session.id);
+                    resumeScopes.push(directoryScope);
+                    return resumeLaunch;
+                },
+            }),
+            resolveWorkspaceDirectoryScope: async (resolvedTarget, resolvedSession) => {
+                assert.strictEqual(resolvedTarget, workspaceTarget);
+                assert.strictEqual(resolvedSession, session);
+                return scope;
+            },
+            getTerminalName: () => `${providerId}: Session`,
+            getMarkerPath: () => `/tmp/${providerId}-resume.marker`,
+            showWarningMessage: () => undefined,
+            announceStatus: async () => undefined,
+            refresh: () => undefined,
+            showActiveTab: async () => undefined,
+            runtimeCoordinator: {
+                resume: async request => {
+                    resumeRequests.push(request);
+                    return { status: 'started', runtime: {} };
+                },
+            },
+        });
+        await resume.resumeProjectSession(workspaceTarget.cardId, providerId, session.id);
+        assert.strictEqual(resumeScopes[0], scope,
+            `${providerId} resume must pass the injected complete scope unchanged to its builder`);
+        assert.deepStrictEqual(resumeRequests[0].launch, {
+            executable: providerId,
+            args: ['resume', session.id],
+            cwd: scope.primaryCwd,
+            markerPath: `/tmp/${providerId}-resume.marker`,
+        });
+        assert.strictEqual(resumeRequests[0].identity.cwd, scope.primaryCwd);
+    }
+}
+
+async function runWorkspaceLaunchPreflightControllerChecks() {
+    const workspace = {
+        navigationIdentity: 'navigation-a',
+        scopeIdentity: 'scope-a',
+        kind: 'savedMultiRoot',
+        displayName: 'Workspace A',
+        navigationUri: 'file:///work/workspace.code-workspace',
+        environment: 'local',
+        roots: [{
+            id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/web', ordinal: 0,
+        }, {
+            id: 'root-api', name: 'API', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 1,
+        }],
+    };
+    const workspaceTarget = {
+        cardId: 'workspace-a',
+        workspace,
+        sessions: { sessionsByProvider: { codex: [] } },
+    };
+    let trusted = true;
+    let providerPresent = true;
+    let capabilityStatus = 'supported';
+    let activeEditorUri = { fsPath: '/work/api/src/index.ts' };
+    let lastUsedRootId = 'root-web';
+    let pickerResult;
+    const invalidDirectories = new Set();
+    const warnings = [];
+    const primaryRootWrites = [];
+    const capabilityRequests = [];
+    const pickedRoots = [];
+    const commandController = new AiSessionCommandController({
+        getWorkspaceTarget: cardId => cardId === workspaceTarget.cardId ? workspaceTarget : null,
+        getOpenWorkspace: () => workspace,
+        getActiveEditorUri: () => activeEditorUri,
+        isWorkspaceTrusted: () => trusted,
+        getProvider: providerId => providerPresent ? {
+            id: providerId, label: 'Codex', commandName: 'codex',
+        } : null,
+        getProviderDirectoryCapability: async provider => {
+            capabilityRequests.push(provider.id);
+            return { status: capabilityStatus };
+        },
+        getPrimaryRootId: currentWorkspace => {
+            assert.strictEqual(currentWorkspace, workspace);
+            return lastUsedRootId;
+        },
+        setPrimaryRootId: async (scopeIdentity, rootId) => primaryRootWrites.push([scopeIdentity, rootId]),
+        pickWorkspaceRoot: async (currentWorkspace, action) => {
+            pickedRoots.push([currentWorkspace.scopeIdentity, action]);
+            return pickerResult;
+        },
+        isDirectory: hostPath => !invalidDirectories.has(hostPath),
+        showWarningMessage: message => warnings.push(message),
+        isProviderId: value => value === 'codex',
+        setExpanded: async () => undefined,
+        setActiveProvider: async () => undefined,
+        togglePin: () => false,
+        getAliases: () => ({}),
+        saveAliases: () => undefined,
+        getOriginalName: () => null,
+        getSessionKey: () => '',
+        showInputBox: async () => undefined,
+        writeClipboard: async () => undefined,
+        showInformationMessage: () => undefined,
+        refresh: () => undefined,
+    });
+
+    const activeEditorScope = await commandController.resolveWorkspaceDirectoryScope(workspace, 'codex');
+    assert.strictEqual(activeEditorScope.primaryRootId, 'root-api',
+        'the active editor root must win over the last-used root for implicit creation');
+    assert.deepStrictEqual(activeEditorScope.additionalDirectories, ['/work/web']);
+
+    const explicitScope = await commandController.resolveWorkspaceDirectoryScope(
+        workspace, 'codex', undefined, 'root-web'
+    );
+    assert.strictEqual(explicitScope.primaryRootId, 'root-web',
+        'New Session in… must use the explicit root');
+    const workDirScope = await commandController.resolveWorkspaceDirectoryScope(workspace, 'codex', {
+        id: 'work-dir-session', name: 'Work-dir session', workDir: '/work/api/packages/from-work-dir',
+    });
+    assert.strictEqual(workDirScope.primaryRootId, 'root-api');
+    assert.strictEqual(workDirScope.primaryCwd, '/work/api/packages/from-work-dir',
+        'provider histories that expose workDir must preserve the exact nested cwd too');
+
+    const createRequests = [];
+    const createScopes = [];
+    const markerRequests = [];
+    let createResult = { status: 'started', runtime: {} };
+    let createError = null;
+    let creationRootId = 'root-api';
+    const creation = new AiSessionCreationController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === workspaceTarget.cardId ? workspaceTarget : null,
+        pickWorkspaceRoot: async () => creationRootId,
         pickProvider: async () => 'codex',
         getProviderLabel: () => 'Codex',
         getProvider: () => ({
-            label: 'Codex', terminalNamePrefix: 'Codex',
-            buildNewSessionLaunchSpec: () => launchSpec,
+            label: 'Codex',
+            terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: directoryScope => {
+                createScopes.push(directoryScope);
+                return {
+                    executable: 'codex', args: ['--cd', directoryScope.primaryCwd], cwd: directoryScope.primaryCwd,
+                };
+            },
         }),
-        getProjectKey: () => 'project-key-a',
-        createPendingId: () => pendingIdOverride === null ? `pending-${++nextPending}` : pendingIdOverride,
-        getTerminalCwd: () => '/work/a',
-        getUsableTerminalCwd: cwd => cwd,
-        showInputBox: async () => '  Test Title  ',
-        showActiveTab: async projectId => creationTabs.push(projectId),
-        announceStatus: async (projectId, message) => creationAnnouncements.push([projectId, message]),
-        showWarningMessage: async (message, ...items) => {
-            creationWarnings.push([message, items]);
-            return 'Focus Terminal';
+        resolveWorkspaceDirectoryScope: (resolvedTarget, providerId, explicitRootId) =>
+            commandController.resolveWorkspaceDirectoryScope(
+                resolvedTarget.workspace, providerId, undefined, explicitRootId
+            ),
+        rememberDirectoryScope: directoryScope => commandController.rememberDirectoryScope(directoryScope),
+        runtimeCoordinator: {
+            create: async request => {
+                createRequests.push(request);
+                if (createError) {
+                    const error = createError;
+                    createError = null;
+                    throw error;
+                }
+                return createResult;
+            },
+            getActive: () => [],
+            getPending: () => [],
         },
-        showErrorMessage: async message => creationErrors.push(message),
-        logRuntimeFailure: (operation, error, backend) => {
-            creationFailures.push([operation, error.message, backend]);
+        createPendingId: () => `pending-${createRequests.length + 1}`,
+        showInputBox: async () => '',
+        showActiveTab: async () => undefined,
+        announceStatus: async () => undefined,
+        showWarningMessage: async () => undefined,
+        showErrorMessage: async () => undefined,
+        refresh: () => undefined,
+        getExistingSessionIdsForCwd: () => [],
+        getPendingMarkerPath: () => {
+            markerRequests.push('create');
+            return '/tmp/create.marker';
         },
-        refresh: () => creationRefreshes.push('refresh'),
-        getExistingSessionIdsForCwd: () => existingIds,
-        getPendingMarkerPath: () => '/tmp/new.marker',
-        scheduleNewSessionRefresh: provider => scheduled.push(provider),
-        normalizeProjectPath: value => value,
-        setTimeout: (callback, delayMs) => {
-            const timeout = { callback, delayMs, cleared: false };
-            timeouts.push(timeout);
-            return timeout;
-        },
-        clearTimeout: timeout => { timeout.cleared = true; },
-        bindingTimeoutMs: 15_000,
-        nowMs: () => Date.parse('2026-07-19T04:00:00.000Z'),
-        runtimeCoordinator: creationCoordinator,
+        scheduleNewSessionRefresh: () => undefined,
+        nowMs: () => Date.parse('2026-07-20T10:00:00.000Z'),
     });
 
-    const pendingRuntime = (backend, pendingId) => ({
-        identity: { provider: 'codex', pendingId, projectKey: 'project-key-a', cwd: '/work/a' },
-        backend, state: 'pending', markerPath: '/tmp/new.marker',
-        runStartedAtMs: Date.parse('2026-07-19T04:00:00.000Z'), attached: backend === 'vscode',
-        createdAt: '2026-07-19T04:00:00.000Z', excludedSessionIds: [...existingIds], title: 'Test Title',
-        ...(backend === 'tmux' ? {
-            tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: `pending-codex-${pendingId}` },
-        } : {}),
-    });
-    createResults.push({ status: 'started', runtime: pendingRuntime('vscode', 'pending-1') });
-    await creation.createSession('project-a');
-    assert.deepStrictEqual(createRequests[0], {
-        identity: {
-            provider: 'codex', projectKey: 'project-key-a', cwd: '/work/a', pendingId: 'pending-1',
-        },
-        projectName: 'Project A',
-        terminalName: 'Codex: Project A',
-        createdAt: '2026-07-19T04:00:00.000Z',
-        excludedSessionIds: ['existing-a', 'existing-b'],
-        title: 'Test Title',
-        launch: {
-            executable: 'codex', args: ['new', 'Test Title'], cwd: '/work/a', markerPath: '/tmp/new.marker',
-        },
-    });
-    assert.deepStrictEqual(existingIds, ['existing-a', 'existing-b']);
-    assert.deepStrictEqual(launchSpec, {
-        executable: 'codex', args: ['new', 'Test Title'], cwd: '/work/a', markerPath: '/tmp/new.marker',
-    });
-    assert.deepStrictEqual(creationTabs, ['project-a']);
-    assert.deepStrictEqual(scheduled, ['codex']);
-    assert.strictEqual(timeouts.length, 0,
-        'runtime pending sessions must not be removed by a short feedback timeout');
+    await creation.createSession(workspaceTarget.cardId);
+    assert.deepStrictEqual(createRequests[0].directoryScope, activeEditorScope);
+    assert.strictEqual(createRequests[0].identity.cwd, activeEditorScope.primaryCwd);
+    assert.strictEqual(createScopes[0], createRequests[0].directoryScope);
+    assert.deepStrictEqual(primaryRootWrites, [[workspace.scopeIdentity, activeEditorScope.primaryRootId]]);
 
-    const tmuxPendingRuntime = pendingRuntime('tmux', 'pending-2');
-    createResults.push({ status: 'started', runtime: tmuxPendingRuntime });
-    await creation.createSession('project-a');
-    pending.push(tmuxPendingRuntime);
-    assert.strictEqual(createRequests[1].identity.pendingId, 'pending-2');
-    assert.strictEqual(timeouts.length, 0,
-        'elapsed time must not own the runtime pending lifecycle');
-    assert.deepStrictEqual(creationAnnouncements, []);
-    assert.deepStrictEqual(creationWarnings, []);
+    creationRootId = 'root-web';
+    await creation.createSession(workspaceTarget.cardId);
+    assert.strictEqual(createRequests[1].directoryScope.primaryRootId, 'root-web');
+    assert.deepStrictEqual(primaryRootWrites[1], [workspace.scopeIdentity, 'root-web']);
 
-    const sideEffectsBeforeFallback = {
-        tabs: creationTabs.length, refreshes: creationRefreshes.length,
-        scheduled: scheduled.length, timeouts: timeouts.length,
+    createResult = { status: 'focused', runtime: {} };
+    creationRootId = 'root-api';
+    await creation.createSession(workspaceTarget.cardId);
+    assert.strictEqual(primaryRootWrites.length, 2,
+        'focusing an existing runtime must not persist a scope that was not launched');
+    createResult = { status: 'started', runtime: {} };
+
+    createError = new Error('launch failed');
+    await creation.createSession(workspaceTarget.cardId);
+    assert.strictEqual(primaryRootWrites.length, 2,
+        'a failed launch must not persist the selected root');
+
+    const session = {
+        id: 'session-a', name: 'Session A', cwd: '/work/api/packages/service', updatedAt: '2026-07-20T09:00:00Z',
     };
-    createResults.push({ status: 'cancelled' }, { status: 'settings' }, {
-        status: 'conflict', conflicts: [pendingRuntime('vscode', 'pending-conflict')],
-    }, {
-        status: 'blocked', blockers: [],
-    });
-    await creation.createSession('project-a');
-    await creation.createSession('project-a');
-    await creation.createSession('project-a');
-    assert.deepStrictEqual(creationAnnouncements.slice(-1)[0], [
-        'project-a', 'Multiple live runtimes match this AI session.',
-    ]);
-    await creation.createSession('project-a');
-    assert.strictEqual(creationTabs.length, sideEffectsBeforeFallback.tabs);
-    assert.strictEqual(scheduled.length, sideEffectsBeforeFallback.scheduled);
-    assert.strictEqual(timeouts.length, sideEffectsBeforeFallback.timeouts);
-    assert.strictEqual(creationRefreshes.length, sideEffectsBeforeFallback.refreshes + 2);
-    assert.deepStrictEqual(creationAnnouncements.slice(-1)[0], [
-        'project-a', 'Runtime creation is still awaiting lifecycle acknowledgement.',
-    ]);
-
-    createError = new Error('create failed');
-    await creation.createSession('project-a');
-    assert.deepStrictEqual(creationErrors, ['Could not start the AI session runtime.']);
-    assert.deepStrictEqual(creationFailures, [['create-runtime', 'create failed', 'tmux']]);
-    createResults.push({ status: 'cancelled' });
-    await creation.createSession('project-a');
-    assert.strictEqual(createRequests.length, 8, 'a failed create must release the controller guard');
-    assert.strictEqual(timeouts.length, sideEffectsBeforeFallback.timeouts,
-        'failed and cancelled creates must not leave pending feedback timers');
-    pendingIdOverride = '';
-    const effectsBeforeInvalidPendingId = {
-        requests: createRequests.length,
-        tabs: creationTabs.length,
-        refreshes: creationRefreshes.length,
-        scheduled: scheduled.length,
-        timeouts: timeouts.length,
-    };
-    await assert.rejects(creation.createSession('project-a'), /pending identity is invalid/);
-    assert.deepStrictEqual({
-        requests: createRequests.length,
-        tabs: creationTabs.length,
-        refreshes: creationRefreshes.length,
-        scheduled: scheduled.length,
-        timeouts: timeouts.length,
-    }, effectsBeforeInvalidPendingId, 'an invalid pending ID must fail before runtime side effects');
-    for (const malformedId of ['   ', 'pending id', 'pending\ncontrol', '../unsafe', 'x'.repeat(513)]) {
-        pendingIdOverride = malformedId;
-        await assert.rejects(creation.createSession('project-a'), /pending identity is invalid/);
-    }
-    pendingIdOverride = 'duplicate-pending';
-    pending.push(pendingRuntime('tmux', pendingIdOverride));
-    await assert.rejects(creation.createSession('project-a'), /pending identity is already in use/);
-    pending.length = 0;
-    activeCreationRuntimes.push({
-        ...pendingRuntime('vscode', pendingIdOverride), state: 'active',
-    });
-    await assert.rejects(creation.createSession('project-a'), /pending identity is already in use/);
-    assert.deepStrictEqual({
-        requests: createRequests.length,
-        tabs: creationTabs.length,
-        refreshes: creationRefreshes.length,
-        scheduled: scheduled.length,
-        timeouts: timeouts.length,
-    }, effectsBeforeInvalidPendingId, 'malformed and duplicate pending IDs fail before runtime side effects');
-    assert.strictEqual(timeouts.length, 0,
-        'runtime creation must retain unresolved pending sessions for discovery or terminal closure');
-
+    workspaceTarget.sessions.sessionsByProvider.codex = [session];
     const resumeRequests = [];
-    const resumeResults = [];
-    const resumeTabs = [];
-    const resumeRefreshes = [];
-    const resumeAnnouncements = [];
-    const resumeWarnings = [];
-    const resumeErrors = [];
-    const resumeFailures = [];
-    const resumeSpec = Object.freeze({
-        executable: 'codex', args: Object.freeze(['resume', session.id]),
-        cwd: '/work/a', markerPath: '/tmp/resume.marker',
-    });
+    const resumeScopes = [];
+    const resumeMarkerRequests = [];
+    let resumeResult = { status: 'started', runtime: {} };
     let resumeError = null;
     const resume = new AiSessionResumeController({
-        getOpenProjects: () => [project],
-        getProvider: () => ({
-            label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
-            buildResumeLaunchSpec: () => resumeSpec,
-        }),
-        getProjectSession: (_project, provider, id) => provider === 'codex' && id === session.id ? session : null,
-        getProjectKey: () => 'project-key-a',
-        getTerminalCwd: () => '/work/a',
-        getTerminalName: () => 'Codex: Session A',
-        getComparableCwd: () => '/work/a',
-        getUsableTerminalCwd: cwd => cwd,
-        normalizeProjectPath: value => value,
-        getMarkerPath: () => '/tmp/resume.marker',
-        showWarningMessage: message => resumeWarnings.push(message),
-        showErrorMessage: async message => resumeErrors.push(message),
-        logRuntimeFailure: (operation, error, backend) => {
-            resumeFailures.push([operation, error.message, backend]);
-        },
-        announceStatus: async (projectId, message) => resumeAnnouncements.push([projectId, message]),
-        refresh: () => resumeRefreshes.push('refresh'),
-        showActiveTab: projectId => resumeTabs.push(projectId),
+        getWorkspaceTarget: cardId => cardId === workspaceTarget.cardId ? workspaceTarget : null,
+        getProvider: () => providerPresent ? ({
+            label: 'Codex',
+            terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: (_sessionId, directoryScope) => {
+                resumeScopes.push(directoryScope);
+                return {
+                    executable: 'codex', args: ['resume', session.id], cwd: directoryScope.primaryCwd,
+                };
+            },
+        }) : null,
+        resolveWorkspaceDirectoryScope: (resolvedTarget, resolvedSession, providerId, explicitRootId) =>
+            commandController.resolveWorkspaceDirectoryScope(
+                resolvedTarget.workspace, providerId, resolvedSession, explicitRootId
+            ),
+        rememberDirectoryScope: directoryScope => commandController.rememberDirectoryScope(directoryScope),
         runtimeCoordinator: {
             resume: async request => {
                 resumeRequests.push(request);
@@ -1963,70 +2560,154 @@ async function runAiSessionRuntimeControllerChecks() {
                     resumeError = null;
                     throw error;
                 }
-                return resumeResults.shift();
+                return resumeResult;
             },
         },
+        getTerminalName: () => 'Codex: Session A',
+        getMarkerPath: () => {
+            resumeMarkerRequests.push('resume');
+            return '/tmp/resume.marker';
+        },
+        showWarningMessage: () => undefined,
+        showErrorMessage: async () => undefined,
+        announceStatus: async () => undefined,
+        refresh: () => undefined,
+        showActiveTab: async () => undefined,
     });
 
-    resumeResults.push({ status: 'started', runtime: {
-        identity: { provider: 'codex', sessionId: session.id, projectKey: 'project-key-a', cwd: '/work/a' },
-        backend: 'vscode', state: 'active', markerPath: '/tmp/resume.marker',
-        runStartedAtMs: 1, attached: true,
-    } }, { status: 'focused', runtime: {
-        identity: { provider: 'codex', sessionId: session.id, projectKey: 'project-key-a', cwd: '/work/a' },
-        backend: 'tmux', state: 'active', markerPath: '/tmp/resume.marker',
-        runStartedAtMs: 1, attached: false,
-        tmux: { layout: 'session', sessionName: 'project-steward-s-codex-a' },
-    } }, { status: 'cancelled' }, { status: 'settings' }, {
-        status: 'conflict', conflicts: [],
-    }, {
-        status: 'blocked', blockers: [],
+    workspace.roots.push({
+        id: 'root-docs', name: 'Docs', uri: 'file:///work/docs', hostPath: '/work/docs', ordinal: 2,
     });
-    for (let index = 0; index < 6; index++) {
-        await resume.resumeProjectSession('project-a', 'codex', session.id);
-    }
-    assert.deepStrictEqual(resumeRequests[0], {
-        identity: {
-            provider: 'codex', sessionId: session.id, projectKey: 'project-key-a', cwd: '/work/a',
-        },
-        projectName: 'Project A',
-        terminalName: 'Codex: Session A',
-        launch: {
-            executable: 'codex', args: ['resume', session.id], cwd: '/work/a', markerPath: '/tmp/resume.marker',
-        },
-    });
-    assert.deepStrictEqual(session, {
-        id: 'session-a', name: 'Session A', cwd: '/work/a', updatedAt: '2026-07-19T03:00:00Z',
-    });
-    assert.deepStrictEqual(resumeSpec, {
-        executable: 'codex', args: ['resume', session.id], cwd: '/work/a', markerPath: '/tmp/resume.marker',
-    });
-    assert.deepStrictEqual(resumeTabs, ['project-a', 'project-a']);
-    assert.strictEqual(resumeRefreshes.length, 4,
-        'started, focused, conflict, and blocked results refresh; fallback cancellations do not');
-    assert.deepStrictEqual(resumeAnnouncements, [
-        ['project-a', 'Multiple live runtimes match this AI session.'],
-        ['project-a', 'The previous runtime is still awaiting lifecycle acknowledgement.'],
-    ]);
-    assert.deepStrictEqual(resumeWarnings, []);
-    resumeError = new Error('resume failed');
-    await resume.resumeProjectSession('project-a', 'codex', session.id);
-    assert.deepStrictEqual(resumeErrors, ['Could not resume the AI session runtime.']);
-    assert.deepStrictEqual(resumeFailures, [['resume-runtime', 'resume failed', 'tmux']]);
-    assert.strictEqual(resumeTabs.length, 2);
-    assert.strictEqual(resumeRefreshes.length, 5);
+    await resume.resumeProjectSession(workspaceTarget.cardId, 'codex', session.id, 'root-web');
+    assert.strictEqual(resumeRequests[0].directoryScope.primaryRootId, 'root-api',
+        'a current historical cwd must win over an explicit resume fallback');
+    assert.strictEqual(resumeRequests[0].directoryScope.primaryCwd, '/work/api/packages/service',
+        'resume preflight must preserve the normalized historical cwd inside the longest matching root');
+    assert.deepStrictEqual(resumeRequests[0].directoryScope.workspaceRootHostPaths,
+        ['/work/web', '/work/api', '/work/docs'], 'resume must recalculate all current roots');
+    assert.deepStrictEqual(resumeRequests[0].directoryScope.additionalDirectories,
+        ['/work/web', '/work/docs'], 'the owning root must not be repeated as an additional directory');
+    assert.strictEqual(resumeRequests[0].launch.cwd, '/work/api/packages/service',
+        'the provider launch spec must consume the same exact historical cwd');
+    assert.strictEqual(resumeRequests[0].identity.cwd, resumeRequests[0].directoryScope.primaryCwd);
+    assert.strictEqual(resumeScopes[0], resumeRequests[0].directoryScope);
+    assert.deepStrictEqual(primaryRootWrites[2], [workspace.scopeIdentity, 'root-api']);
+
+    session.cwd = '/historical/outside-workspace';
+    pickerResult = 'root-web';
+    await resume.resumeProjectSession(workspaceTarget.cardId, 'codex', session.id);
+    assert.deepStrictEqual(pickedRoots.slice(-1)[0], [workspace.scopeIdentity, 'resume']);
+    assert.strictEqual(resumeRequests[1].directoryScope.primaryRootId, 'root-web');
+    assert.deepStrictEqual(primaryRootWrites[3], [workspace.scopeIdentity, 'root-web']);
+
+    pickerResult = undefined;
+    const resumeRequestCountBeforeCancel = resumeRequests.length;
+    const resumeMarkerCountBeforeCancel = resumeMarkerRequests.length;
+    await resume.resumeProjectSession(workspaceTarget.cardId, 'codex', session.id);
+    assert.strictEqual(resumeRequests.length, resumeRequestCountBeforeCancel);
+    assert.strictEqual(resumeMarkerRequests.length, resumeMarkerCountBeforeCancel,
+        'picker cancellation must happen before marker creation');
+
+    pickerResult = 'root-api';
+    resumeError = new Error('resume launch failed');
+    await resume.resumeProjectSession(workspaceTarget.cardId, 'codex', session.id);
+    assert.strictEqual(primaryRootWrites.length, 4,
+        'a failed resume launch must not persist the selected root');
+
+    const assertCreateBlockedWithoutPartials = async configure => {
+        trusted = true;
+        providerPresent = true;
+        capabilityStatus = 'supported';
+        invalidDirectories.clear();
+        configure();
+        const requestsBefore = createRequests.length;
+        const markersBefore = markerRequests.length;
+        const writesBefore = primaryRootWrites.length;
+        await creation.createSession(workspaceTarget.cardId);
+        assert.strictEqual(createRequests.length, requestsBefore);
+        assert.strictEqual(markerRequests.length, markersBefore);
+        assert.strictEqual(primaryRootWrites.length, writesBefore);
+    };
+    await assertCreateBlockedWithoutPartials(() => { trusted = false; });
+    await assertCreateBlockedWithoutPartials(() => { invalidDirectories.add('/work/docs'); });
+    await assertCreateBlockedWithoutPartials(() => { providerPresent = false; });
+    await assertCreateBlockedWithoutPartials(() => { capabilityStatus = 'unavailable'; });
+    await assertCreateBlockedWithoutPartials(() => { capabilityStatus = 'unsupported'; });
+
+    const assertResumeBlockedWithoutPartials = async (configure, expectedWarning) => {
+        trusted = true;
+        providerPresent = true;
+        capabilityStatus = 'supported';
+        invalidDirectories.clear();
+        session.cwd = '/work/api/packages/service';
+        configure();
+        const requestsBefore = resumeRequests.length;
+        const scopesBefore = resumeScopes.length;
+        const markersBefore = resumeMarkerRequests.length;
+        const writesBefore = primaryRootWrites.length;
+        const warningsBefore = warnings.length;
+        await resume.resumeProjectSession(workspaceTarget.cardId, 'codex', session.id);
+        assert.strictEqual(resumeRequests.length, requestsBefore);
+        assert.strictEqual(resumeScopes.length, scopesBefore);
+        assert.strictEqual(resumeMarkerRequests.length, markersBefore);
+        assert.strictEqual(primaryRootWrites.length, writesBefore);
+        assert.ok(warnings.slice(warningsBefore).some(message => message.includes(expectedWarning)),
+            `blocked resume must surface a warning containing ${expectedWarning}`);
+    };
+    await assertResumeBlockedWithoutPartials(() => { trusted = false; }, 'Restricted Mode');
+    await assertResumeBlockedWithoutPartials(() => { invalidDirectories.add('/work/docs'); }, 'Docs');
+    await assertResumeBlockedWithoutPartials(() => { providerPresent = false; }, 'no longer available');
+    await assertResumeBlockedWithoutPartials(() => { capabilityStatus = 'unavailable'; }, 'unavailable');
+    await assertResumeBlockedWithoutPartials(() => { capabilityStatus = 'unsupported'; }, '--add-dir');
+
+    trusted = true;
+    providerPresent = true;
+    capabilityStatus = 'unsupported';
+    invalidDirectories.clear();
+    session.cwd = '/work/web/packages/app';
+    const multiRootWorkspaceRoots = workspace.roots;
+    workspace.roots = [multiRootWorkspaceRoots[0]];
+    const requestsBeforeSingleRootResume = resumeRequests.length;
+    const writesBeforeSingleRootResume = primaryRootWrites.length;
+    await resume.resumeProjectSession(workspaceTarget.cardId, 'codex', session.id);
+    assert.strictEqual(resumeRequests.length, requestsBeforeSingleRootResume + 1,
+        'a provider without multi-root support must still resume in a single-root workspace');
+    assert.strictEqual(primaryRootWrites.length, writesBeforeSingleRootResume + 1);
+    assert.strictEqual(resumeRequests.at(-1).directoryScope.primaryRootId, 'root-web');
+    workspace.roots = multiRootWorkspaceRoots;
+
+    assert.ok(warnings.some(message => message.includes('Restricted Mode')));
+    assert.ok(warnings.some(message => message.includes('Docs')));
+    assert.ok(warnings.some(message => message.includes('Codex')));
+    assert.ok(warnings.some(message => message.includes('--add-dir')));
+    assert.ok(capabilityRequests.length > 0);
 }
 
 async function runAiSessionAttentionControllerChecks() {
     let nowMs = 1000;
     let enabled = true;
-    const projects = [{
-        id: 'project-a',
-        path: '/work/a',
-        codexSessions: [{ id: 'session-a', updatedAt: '2026-07-16T10:00:00Z' }],
-        kimiSessions: [],
-        claudeSessions: [],
-    }];
+    const workspaceTarget = {
+        cardId: 'workspace-a',
+        workspace: {
+            displayName: 'Workspace A',
+            navigationIdentity: 'navigation-a',
+            scopeIdentity: 'scope-a',
+            roots: [{
+                id: 'root-a', name: 'A', uri: 'file:///work/a', hostPath: '/work/a', ordinal: 0,
+            }],
+        },
+        sessions: {
+            sessionsByProvider: {
+                codex: [{
+                    id: 'session-a',
+                    updatedAt: '2026-07-16T10:00:00Z',
+                    primaryRootId: 'root-a',
+                }],
+                kimi: [],
+                claude: [],
+            },
+        },
+    };
     const providersForTest = [{
         id: 'codex',
         projectSessionsKey: 'codexSessions',
@@ -2052,9 +2733,9 @@ async function runAiSessionAttentionControllerChecks() {
     }];
     const runtimeEntries = new Map([
         ['codex:session-a', {
-            identity: {
-                provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
-            },
+            identity: createTestAiSessionRuntimeIdentity(
+                'codex', '/work/a', { sessionId: 'session-a' }
+            ),
             backend: 'tmux', state: 'completed', markerPath: '/tmp/completed.marker',
             runStartedAtMs: 900, attached: false,
             tmux: { layout: 'session', sessionName: 'project-steward-s-codex-a' },
@@ -2062,13 +2743,11 @@ async function runAiSessionAttentionControllerChecks() {
     ]);
     const published = [];
     const scheduled = [];
-    const postedSummaries = [];
     const controller = new AiSessionAttentionController({
         isEnabled: () => enabled,
-        getOpenProjects: () => projects,
+        getWorkspaceTarget: () => workspaceTarget,
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
-        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
         getRuntimeById: (providerId, sessionId) => runtimeEntries.get(`${providerId}:${sessionId}`) || null,
         isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async (items, forceHeartbeat) => {
@@ -2076,7 +2755,6 @@ async function runAiSessionAttentionControllerChecks() {
             return true;
         },
         scheduleRefresh: reason => scheduled.push(reason),
-        postProjectsUpdated: summaries => postedSummaries.push(summaries.map(summary => ({ ...summary }))),
         nowMs: () => nowMs,
     });
 
@@ -2094,7 +2772,10 @@ async function runAiSessionAttentionControllerChecks() {
     assert.strictEqual(published.length, 1);
     assert.strictEqual(published[0].forceHeartbeat, false);
     assert.strictEqual(published[0].items.length, 1);
-    assert.strictEqual(published[0].items[0].projectId, attentionProject.getAttentionProjectKey('/work/a'));
+    assert.strictEqual(
+        published[0].items[0].projectId,
+        attentionProject.getAttentionProjectKeys([workspaceTarget.workspace.roots[0].uri])[0],
+    );
     assert.strictEqual(published[0].items[0].sessionKey, 'codex:session-a');
     assert.strictEqual(published[0].items[0].state, 'needsAttention');
     assert.strictEqual(published[0].items[0].reason, 'completed');
@@ -2102,7 +2783,6 @@ async function runAiSessionAttentionControllerChecks() {
     assert.ok(published[0].items[0].eventId.endsWith(
         crypto.createHash('sha256').update('terminal-exit:900').digest('hex')
     ), 'a current completion marker must preserve the existing terminal-exit attention signal');
-    assert.strictEqual(postedSummaries.length, 1, 'local fallback posts project summaries when no bridge aggregate is available');
     assert.deepStrictEqual(controller.getRecoverySessionEvents(), [{
         sessionKey: 'codex:session-a',
         eventIds: [published[0].items[0].eventId],
@@ -2112,31 +2792,33 @@ async function runAiSessionAttentionControllerChecks() {
     await controller.acknowledge([published[0].items[0].eventId]);
     assert.strictEqual(controller.getLocalSnapshot()['codex:session-a'].state, 'acknowledged');
     assert.strictEqual(controller.getEffectiveAggregate().sessions.length, 0, 'local fallback aggregate must reflect acknowledged owner events immediately');
+    assert.deepStrictEqual(controller.getRecoverySessionEvents(), [],
+        'acknowledged owner events must not be restored into the webview acknowledgement map');
+    assert.deepStrictEqual(controller.getAttentionEventIds(), [],
+        'acknowledged owner events must not be restored into the webview attention event set');
 
     const coexistPublished = [];
     const coexistController = new AiSessionAttentionController({
         isEnabled: () => true,
-        getOpenProjects: () => projects,
+        getWorkspaceTarget: () => workspaceTarget,
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
-        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
         getRuntimeById: () => ({
-            identity: {
-                provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
-            },
+            identity: createTestAiSessionRuntimeIdentity(
+                'codex', '/work/a', { sessionId: 'session-a' }
+            ),
             backend: 'vscode', state: 'active', markerPath: '/tmp/live.marker',
             runStartedAtMs: 1200, attached: true,
         }),
         isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async items => { coexistPublished.push(items.map(item => ({ ...item }))); return true; },
         scheduleRefresh: () => undefined,
-        postProjectsUpdated: () => undefined,
         nowMs: () => nowMs,
     });
     const oldInactiveRuntime = {
-        identity: {
-            provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
-        },
+        identity: createTestAiSessionRuntimeIdentity(
+            'codex', '/work/a', { sessionId: 'session-a' }
+        ),
         backend: 'tmux', state: 'completed', markerPath: '/tmp/old.marker',
         runStartedAtMs: 800, attached: false,
         tmux: { layout: 'session', sessionName: 'old-inactive' },
@@ -2167,10 +2849,9 @@ async function runAiSessionAttentionControllerChecks() {
     const retainedPublished = [];
     const retainedController = new AiSessionAttentionController({
         isEnabled: () => true,
-        getOpenProjects: () => projects,
+        getWorkspaceTarget: () => workspaceTarget,
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
-        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
         getRuntimeById: () => null,
         isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async items => {
@@ -2178,7 +2859,6 @@ async function runAiSessionAttentionControllerChecks() {
             return true;
         },
         scheduleRefresh: () => undefined,
-        postProjectsUpdated: () => undefined,
         nowMs: () => nowMs,
     });
     const retainedKey = 'codex:session-a:800:tmux';
@@ -2204,15 +2884,13 @@ async function runAiSessionAttentionControllerChecks() {
     let disableClearsEnabled = true;
     const disableClearsController = new AiSessionAttentionController({
         isEnabled: () => disableClearsEnabled,
-        getOpenProjects: () => projects,
+        getWorkspaceTarget: () => workspaceTarget,
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
-        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
         getRuntimeById: () => null,
         isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async () => true,
         scheduleRefresh: () => undefined,
-        postProjectsUpdated: () => undefined,
         nowMs: () => nowMs,
     });
     await disableClearsController.evaluate([{
@@ -2231,15 +2909,13 @@ async function runAiSessionAttentionControllerChecks() {
     const boundedPublished = [];
     const boundedController = new AiSessionAttentionController({
         isEnabled: () => true,
-        getOpenProjects: () => projects,
+        getWorkspaceTarget: () => workspaceTarget,
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
-        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
         getRuntimeById: () => null,
         isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async items => { boundedPublished.push(items); return true; },
         scheduleRefresh: () => undefined,
-        postProjectsUpdated: () => undefined,
         nowMs: () => nowMs,
     });
     const boundedEvaluation = await boundedController.evaluate(Array.from({ length: 1001 }, (_, index) => ({
@@ -2266,15 +2942,13 @@ async function runAiSessionAttentionControllerChecks() {
     const equalTimestampPublished = [];
     const equalTimestampController = new AiSessionAttentionController({
         isEnabled: () => true,
-        getOpenProjects: () => projects,
+        getWorkspaceTarget: () => workspaceTarget,
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
-        getProjectKey: project => attentionProject.getAttentionProjectKey(project.path),
         getRuntimeById: () => null,
         isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async items => { equalTimestampPublished.push(items); return true; },
         scheduleRefresh: () => undefined,
-        postProjectsUpdated: () => undefined,
         nowMs: () => nowMs,
     });
     await equalTimestampController.evaluate([
@@ -2468,9 +3142,9 @@ async function runAiSessionAttentionControllerChecks() {
         'throwing and rejecting lifecycle failure reporters must remain contained');
 
     runtimeEntries.set('codex:session-a', {
-        identity: {
-            provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
-        },
+        identity: createTestAiSessionRuntimeIdentity(
+            'codex', '/work/a', { sessionId: 'session-a' }
+        ),
         backend: 'tmux', state: 'stopped', markerPath: '/tmp/stopped.marker',
         runStartedAtMs: 900, attached: false,
         tmux: { layout: 'session', sessionName: 'project-steward-s-codex-a' },
@@ -2498,6 +3172,11 @@ async function runAiSessionAttentionControllerChecks() {
     assert.strictEqual(controller.hasRemoteAggregate(), true);
     assert.strictEqual(controller.getEffectiveAggregate().sessions[0].sessionKey, 'kimi:remote:1200:tmux');
     assert.deepStrictEqual(controller.getRecoverySessionEvents().map(item => item.sessionKey), ['kimi:remote']);
+    controller.acknowledge(['remote-event']);
+    assert.deepStrictEqual(controller.getEffectiveAggregate().sessions, [],
+        'a local acknowledgement must hide a stale remote aggregate without waiting for the bridge round trip');
+    assert.deepStrictEqual(controller.getRecoverySessionEvents(), [],
+        'a locally acknowledged remote event must not be restored into the webview acknowledgement map');
 
     enabled = false;
     const disabledEvaluation = await controller.evaluate();
@@ -2584,6 +3263,8 @@ async function runAiSessionExecutionControllerChecks() {
     activeSessions = [];
     await controller.evaluate();
     assert.deepStrictEqual(controller.getSnapshot(), {});
+    assert.deepStrictEqual(scheduled, ['execution', 'execution', 'execution'],
+        'removing a tracked session must publish the stopped cross-window state');
     assert.strictEqual(providerCalls.codex.length, 3, 'providers without active requests are not queried');
     assert.deepStrictEqual(providerCalls.kimi, []);
     assert.deepStrictEqual(providerCalls.claude, []);
@@ -2686,10 +3367,24 @@ async function runSidebarStewardViewProviderOrderingChecks() {
 }
 
 async function runAiSessionArchiveRuntimeChecks() {
-    const runtime = {
-        identity: {
-            provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
+    const archiveCardId = '__currentWorkspace-archive';
+    const archiveWorkspaceTarget = {
+        cardId: archiveCardId,
+        workspace: {
+            scopeIdentity: 'scope:/work/a',
+            navigationIdentity: 'navigation:/work/a',
         },
+        sessions: {
+            activeProvider: 'codex',
+            workspaceScopeIdentity: 'scope:/work/a',
+            workspaceNavigationIdentity: 'navigation:/work/a',
+            sessionsByProvider: { codex: [{ id: 'session-a', name: 'Session A' }] },
+        },
+    };
+    const runtime = {
+        identity: createTestAiSessionRuntimeIdentity(
+            'codex', '/work/a', { sessionId: 'session-a' }
+        ),
         backend: 'tmux', state: 'active', markerPath: '/tmp/runtime.marker',
         runStartedAtMs: 900, attached: false,
         tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-a' },
@@ -2706,6 +3401,7 @@ async function runAiSessionArchiveRuntimeChecks() {
         }),
         getProviderLabel: () => 'Codex',
         getOpenProjects: () => [],
+        getWorkspaceTarget: cardId => cardId === archiveCardId ? archiveWorkspaceTarget : null,
         getProjectSessions: () => [],
         getRuntimeById: (providerId, sessionId) => providerId === 'codex' && sessionId === 'session-a'
             ? runtime : null,
@@ -2727,21 +3423,21 @@ async function runAiSessionArchiveRuntimeChecks() {
         logUnexpectedError: () => undefined,
     });
 
-    await controller.archiveSession('codex', 'session-a');
+    await controller.archiveSession(archiveCardId, 'codex', 'session-a');
     assert.strictEqual(confirmCount, 0, 'an active detached tmux runtime blocks archive before confirmation');
     assert.strictEqual(archiveCount, 0, 'an active detached tmux runtime is never archived');
     assert.strictEqual(warnings.length, 1);
-    assert.deepStrictEqual(focused, [{
-        provider: 'codex', sessionId: 'session-a', projectKey: 'project-a', cwd: '/work/a',
-    }]);
+    assert.deepStrictEqual(focused, [createTestAiSessionRuntimeIdentity(
+        'codex', '/work/a', { sessionId: 'session-a' }
+    )]);
 
     runtime.state = 'conflict';
-    await controller.archiveSession('codex', 'session-a');
+    await controller.archiveSession(archiveCardId, 'codex', 'session-a');
     assert.strictEqual(confirmCount, 0, 'a discovery collision blocks archive before confirmation');
     assert.strictEqual(archiveCount, 0, 'a discovery collision performs zero destructive archive actions');
 
     runtime.state = 'stopped';
-    await controller.archiveSession('codex', 'session-a');
+    await controller.archiveSession(archiveCardId, 'codex', 'session-a');
     assert.strictEqual(confirmCount, 1, 'a stopped runtime no longer owns the archive guard');
     assert.strictEqual(archiveCount, 1, 'a stopped runtime can be archived');
 
@@ -2758,6 +3454,7 @@ async function runAiSessionArchiveRuntimeChecks() {
                 service: { archiveSession: () => { freshArchiveCount++; return true; } },
             }),
             getProviderLabel: () => 'Codex', getOpenProjects: () => [], getProjectSessions: () => [],
+            getWorkspaceTarget: cardId => cardId === archiveCardId ? archiveWorkspaceTarget : null,
             getRuntimeById: () => currentRuntime,
             refreshRuntimeGuard: async (providerId, sessionId) => {
                 refreshCount++;
@@ -2783,7 +3480,7 @@ async function runAiSessionArchiveRuntimeChecks() {
     const beforeConfirmation = createFreshArchiveController({
         runtimeAfterRefresh: () => conflictRuntime,
     });
-    await beforeConfirmation.controller.archiveSession('codex', 'session-a');
+    await beforeConfirmation.controller.archiveSession(archiveCardId, 'codex', 'session-a');
     assert.deepStrictEqual(beforeConfirmation.state(), {
         refreshCount: 1, freshConfirmCount: 0, freshArchiveCount: 0,
         refreshIdentities: [['codex', 'session-a']],
@@ -2792,854 +3489,187 @@ async function runAiSessionArchiveRuntimeChecks() {
     const afterConfirmation = createFreshArchiveController({
         runtimeAfterRefresh: count => count === 1 ? null : conflictRuntime,
     });
-    await afterConfirmation.controller.archiveSession('codex', 'session-a');
+    await afterConfirmation.controller.archiveSession(archiveCardId, 'codex', 'session-a');
     assert.deepStrictEqual(afterConfirmation.state(), {
         refreshCount: 2, freshConfirmCount: 1, freshArchiveCount: 0,
         refreshIdentities: [['codex', 'session-a'], ['codex', 'session-a']],
     }, 'archive must revalidate after confirmation and perform no destructive action on a new collision');
 }
 
-async function runAiSessionProjectHydrationControllerChecks() {
-    let refreshReason = 'refresh';
-    const codexSession = {
-        id: 'session-a',
-        name: 'Original Name',
-        cwd: '/work/a',
-        updatedAt: '2026-07-16T10:00:00Z',
+async function runWorkspaceCardActionControllerIntegrationChecks() {
+    const workspace = {
+        navigationIdentity: 'navigation-workspace-card', scopeIdentity: 'scope-workspace-card',
+        kind: 'savedMultiRoot', displayName: 'Workspace Card',
+        navigationUri: 'file:///work/workspace.code-workspace', environment: 'local',
+        roots: [
+            { id: 'root-web', name: 'Web', uri: 'file:///work/web', hostPath: '/work/web', ordinal: 0 },
+            { id: 'root-api', name: 'API', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 1 },
+        ],
     };
-    const providersForTest = [{
-        id: 'codex',
-        terminalNamePrefix: 'Codex',
-        projectSessionsKey: 'codexSessions',
-        projectSessionsUnavailableKey: 'codexSessionsUnavailable',
-        terminalCwdFields: ['cwd'],
-    }, {
-        id: 'kimi',
-        terminalNamePrefix: 'Kimi',
-        projectSessionsKey: 'kimiSessions',
-        projectSessionsUnavailableKey: 'kimiSessionsUnavailable',
-        terminalCwdFields: ['cwd'],
-    }, {
-        id: 'claude',
-        terminalNamePrefix: 'Claude',
-        projectSessionsKey: 'claudeSessions',
-        projectSessionsUnavailableKey: 'claudeSessionsUnavailable',
-        terminalCwdFields: ['cwd'],
-    }];
-    const readOptions = [];
-    const assignmentInputs = [];
-    const terminalService = {
-        pending: [],
-        tracked: [],
-        replaced: [],
-        getPendingTerminals() {
-            return this.pending;
-        },
-        getTrackedSessionKeys() {
-            return new Set();
-        },
-        track(providerId, sessionId, entry) {
-            this.tracked.push([providerId, sessionId, entry]);
-        },
-        replacePendingTerminals(pending) {
-            this.replaced.push(pending);
-            this.pending = pending;
-        },
-        trackPending(pending) {
-            this.pending.push(pending);
-        },
-    };
-    const activeRuntimes = [];
-    const runtimeCoordinator = {
-        getActive: () => activeRuntimes,
-        getPending: () => terminalService.pending.map((pending, index) => ({
-            identity: {
-                provider: pending.provider,
-                pendingId: `hydration:${pending.createdAt}:${index}`,
-                projectKey: pending.cwd,
-                cwd: pending.cwd,
-            },
-            backend: 'vscode',
-            state: 'pending',
-            markerPath: pending.markerPath,
-            runStartedAtMs: Date.parse(pending.createdAt),
-            attached: true,
-            createdAt: pending.createdAt,
-            excludedSessionIds: [...pending.excludedSessionIds],
-            ...(pending.title === undefined ? {} : { title: pending.title }),
-        })),
-        promotePending: async (pendingId, sessionId) => {
-            const pending = runtimeCoordinator.getPending().find(runtime => runtime.identity.pendingId === pendingId);
-            const entry = terminalService.pending.find(candidate => candidate.createdAt === pending?.createdAt);
-            if (!entry) {
-                return [];
-            }
-            terminalService.track(entry.provider, sessionId, {
-                terminal: entry.terminal,
-                markerPath: entry.markerPath,
-                runStartedAtMs: Date.parse(entry.createdAt),
-                cwd: entry.cwd,
-            });
-            terminalService.replacePendingTerminals(
-                terminalService.pending.filter(candidate => candidate !== entry)
-            );
-            return [{
-                identity: {
-                    provider: entry.provider,
-                    sessionId,
-                    projectKey: entry.cwd,
-                    cwd: entry.cwd,
-                },
-                backend: 'vscode', state: 'active', markerPath: entry.markerPath,
-                runStartedAtMs: Date.parse(entry.createdAt), attached: true,
-                terminal: entry.terminal,
-            }];
-        },
-    };
-    const aliasesSet = [];
-    const synced = [];
-    const diagnostics = [];
-    let nowMs = 1000;
-    let workspaceFile = null;
-    let workspaceFolders = null;
-    const attentionEventId = 'attention-event-a';
-    const controller = new AiSessionProjectHydrationController({
-        getWorkspaceFile: () => workspaceFile,
-        getWorkspaceFolders: () => workspaceFolders,
-        getRefreshReason: () => refreshReason,
-        incrementalScanMaxFiles: 123,
-        getProviders: () => providersForTest,
-        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
-        readCoordinator: {
-            getResults: options => {
-                readOptions.push(options);
-                return {
-                    codex: { available: true, scannedFiles: 1, parsedFiles: 1, sessions: [codexSession] },
-                    kimi: { available: false, scannedFiles: 0, parsedFiles: 0, sessions: [] },
-                    claude: { available: true, scannedFiles: 0, parsedFiles: 0, sessions: [] },
-                };
-            },
-            getAssignments: (candidates, sessionResults, getSessionPath) => {
-                assignmentInputs.push({
-                    candidates,
-                    sessionPath: getSessionPath('codex', codexSession),
-                    sessionResults,
-                });
-                return {
-                    codex: new Map([['project-a', [codexSession]]]),
-                    kimi: new Map(),
-                    claude: new Map(),
-                };
-            },
-        },
-        terminalService,
-        runtimeCoordinator,
-        setAlias: (providerId, sessionId, alias) => aliasesSet.push([providerId, sessionId, alias]),
-        syncActiveTerminal: () => synced.push('sync'),
-        getSessionComparableCwd: (providerId, session) => session.cwd,
-        getExpandedProjects: () => new Set(['key:/work/a']),
-        getActiveProviders: () => ({ 'key:/work/a': 'codex' }),
-        getPinnedSessions: () => new Set(['codex:session-a']),
-        getAliases: () => ({ 'codex:session-a': 'Renamed Name' }),
-        getAttentionAggregate: () => ({
-            protocolVersion: 1,
-            aggregateRevision: '2'.repeat(64),
-            generatedAtMs: 1,
-            sessions: [{
-                projectId: attentionProject.getAttentionProjectKey('/work/a'),
-                sessionKey: 'codex:session-a',
-                reasons: ['completed'],
-                eventIds: [attentionEventId],
-                observedAtMs: 2,
+    const session = { id: 'session-id', name: 'Readable Session Alias', cwd: '/work/api' };
+    const target = {
+        cardId: '__currentWorkspace-card', workspace,
+        sessions: {
+            workspaceScopeIdentity: workspace.scopeIdentity,
+            workspaceNavigationIdentity: workspace.navigationIdentity,
+            activeProvider: 'codex', expanded: false,
+            providers: [{ id: 'codex', label: 'Codex', count: 1 }],
+            sessionsByProvider: { codex: [session] }, unavailableProviders: [],
+            aiSessionCount: 1, attentionCount: 0, defaultTab: 'sessions', activeSessions: [{
+                key: 'codex:active-card', provider: 'codex', sessionId: 'active-card', name: 'Active Card',
+                executionState: 'running', status: 'running', focused: false, needsAttention: false,
+                pending: false, backend: 'vscode', attached: true,
             }],
-        }),
-        getLocalAttentionBySession: () => ({}),
-        hasRemoteAttentionAggregate: () => true,
-        getProjectKey: project => `key:${project.path}`,
-        normalizeProjectPath: value => value ? value.replace(/\/+$/, '') : '',
-        nowMs: () => {
-            nowMs += 7;
-            return nowMs;
-        },
-        logDiagnostic: event => diagnostics.push(event),
-    });
-
-    assert.deepStrictEqual(controller.hydrate([]), []);
-    assert.strictEqual(readOptions.length, 0);
-    assert.deepStrictEqual(diagnostics[0], {
-        event: 'ai-session-hydration',
-        reason: 'refresh',
-        durationMs: 7,
-        projectCount: 0,
-        hydratedProjectCount: 0,
-        candidatePathCount: 0,
-        providerCount: 3,
-        sessionCount: 0,
-        pendingTerminalCount: 0,
-        cacheHit: false,
-    });
-
-    terminalService.pending = [{
-        provider: 'codex',
-        terminal: { name: 'pending-terminal' },
-        markerPath: '/tmp/session-a.done',
-        cwd: '/work/a',
-        createdAt: '2026-07-16T10:00:00.000Z',
-        excludedSessionIds: [],
-        title: ' Pending Alias ',
-    }];
-    const hydrated = controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A' }]);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    assert.deepStrictEqual(readOptions[0], {
-        candidatePaths: ['/work/a'],
-        reason: 'refresh',
-        maxFiles: 123,
-    });
-    assert.deepStrictEqual(diagnostics[1], {
-        event: 'ai-session-hydration',
-        reason: 'refresh',
-        durationMs: 7,
-        projectCount: 1,
-        hydratedProjectCount: 1,
-        candidatePathCount: 1,
-        providerCount: 3,
-        sessionCount: 1,
-        pendingTerminalCount: 1,
-        cacheHit: false,
-    });
-    assert.strictEqual(assignmentInputs[0].candidates[0].path, '/work/a');
-    assert.strictEqual(assignmentInputs[0].sessionPath, '/work/a');
-    assert.strictEqual(terminalService.tracked[0][0], 'codex');
-    assert.strictEqual(terminalService.tracked[0][1], 'session-a');
-    assert.strictEqual(terminalService.tracked[0][2].runStartedAtMs, Date.parse('2026-07-16T10:00:00.000Z'));
-    assert.deepStrictEqual(aliasesSet, [['codex', 'session-a', ' Pending Alias ']]);
-    assert.deepStrictEqual(synced, ['sync']);
-    assert.strictEqual(hydrated[0].codexSessionsUnavailable, false);
-    assert.strictEqual(hydrated[0].kimiSessionsUnavailable, true);
-    assert.strictEqual(hydrated[0].codexSessionsExpanded, true);
-    assert.strictEqual(hydrated[0].activeAiSessionProvider, 'codex');
-    assert.strictEqual(hydrated[0].codexSessions[0].name, 'Renamed Name');
-    assert.strictEqual(hydrated[0].codexSessions[0].pinned, true);
-    assert.deepStrictEqual(hydrated[0].codexSessions[0].attention, {
-        eventId: attentionEventId,
-        reason: 'completed',
-        unread: true,
-    });
-
-    refreshReason = 'terminal-candidates';
-    controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A' }]);
-    assert.strictEqual(readOptions[1].maxFiles, 0);
-    controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A' }]);
-    assert.strictEqual(readOptions.length, 2, 'same-turn hydration cache should avoid duplicate reads');
-    assert.strictEqual(diagnostics[3].cacheHit, true);
-    assert.strictEqual(diagnostics[3].reason, 'terminal-candidates');
-    controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A', isGitRepo: true }]);
-    assert.strictEqual(readOptions.length, 3, 'hydration cache signature must include all raw project fields');
-    providersForTest[0].projectSessionsUnavailableKey = 'codexSessionsTemporarilyUnavailable';
-    controller.hydrate([{ id: 'project-a', path: '/work/a', name: 'Project A', isGitRepo: true }]);
-    assert.strictEqual(readOptions.length, 4, 'hydration cache signature must include provider rendering fields');
-    providersForTest[0].projectSessionsUnavailableKey = 'codexSessionsUnavailable';
-    workspaceFile = createTestFileUri('/work/missing.code-workspace');
-    workspaceFolders = [{ uri: createTestFileUri('/work/shared') }];
-    controller.hydrate([
-        { id: 'project-a', path: '/work/a', name: 'Project A' },
-        { id: 'project-b', path: '/work/b', name: 'Project B' },
-    ]);
-    assert.strictEqual(readOptions.length, 5);
-    assert.deepStrictEqual(
-        assignmentInputs[assignmentInputs.length - 1].candidates.map(candidate => ({
-            projectId: candidate.project.id,
-            path: candidate.path,
-        })),
-        [
-            { projectId: 'project-a', path: '/work/a' },
-            { projectId: 'project-b', path: '/work/b' },
-            { projectId: 'project-a', path: '/work/shared' },
-        ]
-    );
-    workspaceFile = createTestFileUri('/work/b');
-    controller.hydrate([
-        { id: 'project-a', path: '/work/a', name: 'Project A' },
-        { id: 'project-b', path: '/work/b', name: 'Project B' },
-    ]);
-    assert.strictEqual(readOptions.length, 6, 'hydration cache signature must include candidate project ownership');
-    assert.deepStrictEqual(
-        assignmentInputs[assignmentInputs.length - 1].candidates.map(candidate => ({
-            projectId: candidate.project.id,
-            path: candidate.path,
-        })),
-        [
-            { projectId: 'project-a', path: '/work/a' },
-            { projectId: 'project-b', path: '/work/b' },
-            { projectId: 'project-b', path: '/work/shared' },
-        ]
-    );
-    await Promise.resolve();
-    controller.hydrate([
-        { id: 'project-a', path: '/work/a', name: 'Project A' },
-        { id: 'project-b', path: '/work/b', name: 'Project B' },
-    ]);
-    assert.strictEqual(readOptions.length, 7, 'hydration cache must clear after the current turn');
-
-    const runtimeSignatureProject = [
-        { id: 'project-a', path: '/work/a', name: 'Project A' },
-        { id: 'project-b', path: '/work/b', name: 'Project B' },
-    ];
-    activeRuntimes.push({
-        identity: { provider: 'codex', sessionId: 'session-a', projectKey: 'key:/work/a', cwd: '/work/a' },
-        backend: 'vscode', state: 'active', markerPath: '/tmp/session-a.done',
-        runStartedAtMs: 1, attached: true,
-    });
-    controller.hydrate(runtimeSignatureProject);
-    assert.strictEqual(readOptions.length, 8, 'hydration cache signature must include active runtime identities');
-    activeRuntimes[0].backend = 'tmux';
-    controller.hydrate(runtimeSignatureProject);
-    assert.strictEqual(readOptions.length, 9, 'hydration cache signature must include runtime backend');
-    activeRuntimes[0].tmux = { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-a' };
-    controller.hydrate(runtimeSignatureProject);
-    assert.strictEqual(readOptions.length, 10, 'hydration cache signature must include tmux locator');
-    activeRuntimes[0].tmux.layout = 'session';
-    controller.hydrate(runtimeSignatureProject);
-    assert.strictEqual(readOptions.length, 11, 'hydration cache signature must include tmux layout');
-    activeRuntimes[0].attached = false;
-    controller.hydrate(runtimeSignatureProject);
-    assert.strictEqual(readOptions.length, 12, 'hydration cache signature must include attachment state');
-    activeRuntimes[0].state = 'conflict';
-    controller.hydrate(runtimeSignatureProject);
-    assert.strictEqual(readOptions.length, 13, 'hydration cache signature must include conflict state');
-
-    controller.trackPendingTerminal('codex', null, '/tmp/skip.done', '/work/a', '2026-07-16T10:00:00.000Z', [], 'skip');
-    controller.trackPendingTerminal('codex', { name: 'terminal' }, '', '/work/a', '2026-07-16T10:00:00.000Z', [], 'skip');
-    controller.trackPendingTerminal('codex', { name: 'terminal' }, '/tmp/manual.done', '/work/a/', '2026-07-16T10:00:00.000Z', ['session-a', '', null, 'session-b'], ' Manual\nTitle ');
-    const manualPending = terminalService.pending[terminalService.pending.length - 1];
-    assert.strictEqual(manualPending.provider, 'codex');
-    assert.strictEqual(manualPending.cwd, '/work/a');
-    assert.deepStrictEqual(manualPending.excludedSessionIds, ['session-a', 'session-b']);
-    assert.strictEqual(manualPending.title, 'Manual Title');
-}
-
-async function runAiSessionProjectHydrationPromotionChecks() {
-    const providersForTest = [{
-        id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions',
-        projectSessionsUnavailableKey: 'codexSessionsUnavailable', terminalCwdFields: ['cwd'],
-    }, {
-        id: 'kimi', terminalNamePrefix: 'Kimi', projectSessionsKey: 'kimiSessions',
-        projectSessionsUnavailableKey: 'kimiSessionsUnavailable', terminalCwdFields: ['cwd'],
-    }, {
-        id: 'claude', terminalNamePrefix: 'Claude', projectSessionsKey: 'claudeSessions',
-        projectSessionsUnavailableKey: 'claudeSessionsUnavailable', terminalCwdFields: ['cwd'],
-    }];
-    const session = {
-        id: 'session-final', name: 'Original Name', cwd: '/work/app',
-        updatedAt: '2026-07-18T10:01:00Z',
-    };
-    const pendingRuntime = {
-        identity: { provider: 'codex', pendingId: 'pending-runtime', projectKey: 'pk', cwd: '/work/app' },
-        backend: 'tmux', state: 'pending', markerPath: '/tmp/pending.done',
-        runStartedAtMs: Date.parse('2026-07-18T10:00:00Z'), attached: false,
-        tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'pending-codex-a' },
-        createdAt: '2026-07-18T10:00:00Z', excludedSessionIds: [], title: 'Promoted Alias',
-    };
-    const finalRuntime = {
-        identity: { provider: 'codex', sessionId: session.id, projectKey: 'pk', cwd: '/work/app' },
-        backend: 'tmux', state: 'active', markerPath: '/tmp/pending.done',
-        runStartedAtMs: pendingRuntime.runStartedAtMs, attached: false,
-        tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-a' },
-    };
-
-    function createHarness(options = {}) {
-        const sessionProvider = options.providerId || 'codex';
-        const aliases = {};
-        const aliasesSet = [];
-        const syncs = [];
-        const diagnostics = [];
-        const promotions = [];
-        const terminalService = {
-            pending: options.legacyPending ? [options.legacyPending] : [],
-            tracked: [],
-            getPendingTerminals() { return this.pending; },
-            getTrackedSessionKeys() { return new Set(); },
-            track(providerId, sessionId, entry) { this.tracked.push([providerId, sessionId, entry]); },
-            replacePendingTerminals(pending) { this.pending = pending; },
-            trackPending(pending) { this.pending.push(pending); },
-        };
-        const controller = new AiSessionProjectHydrationController({
-            getWorkspaceFile: () => null,
-            getWorkspaceFolders: () => null,
-            getRefreshReason: () => 'refresh',
-            incrementalScanMaxFiles: 123,
-            getProviders: () => providersForTest,
-            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
-            readCoordinator: {
-                getResults: () => Object.fromEntries(providersForTest.map(provider => [provider.id, {
-                    available: true,
-                    scannedFiles: provider.id === sessionProvider ? 1 : 0,
-                    parsedFiles: provider.id === sessionProvider ? 1 : 0,
-                    sessions: provider.id === sessionProvider ? [session] : [],
-                }])),
-                getAssignments: () => Object.fromEntries(providersForTest.map(provider => [
-                    provider.id,
-                    provider.id === sessionProvider
-                        ? new Map([['project-a', [session]]])
-                        : new Map(),
-                ])),
-            },
-            terminalService,
-            ...(options.runtimeCoordinator ? { runtimeCoordinator: options.runtimeCoordinator } : {}),
-            setAlias: (providerId, sessionId, alias) => {
-                aliases[`${providerId}:${sessionId}`] = alias;
-                aliasesSet.push([providerId, sessionId, alias]);
-            },
-            syncActiveTerminal: () => {
-                syncs.push('sync');
-                options.onSync?.();
-            },
-            onDidPromoteRuntime: () => {
-                promotions.push('promoted');
-                options.onPromoted?.();
-            },
-            getSessionComparableCwd: (_providerId, item) => item.cwd,
-            getExpandedProjects: () => new Set(),
-            getActiveProviders: () => ({}),
-            getPinnedSessions: () => new Set(),
-            getAliases: () => ({ ...aliases }),
-            getAttentionAggregate: () => ({
-                protocolVersion: 1, aggregateRevision: '3'.repeat(64),
-                generatedAtMs: 1, sessions: [],
-            }),
-            getLocalAttentionBySession: () => ({}),
-            hasRemoteAttentionAggregate: () => false,
-            getProjectKey: project => `key:${project.path}`,
-            normalizeProjectPath: value => value,
-            logDiagnostic: event => diagnostics.push(event),
-        });
-        return { controller, terminalService, aliases, aliasesSet, syncs, diagnostics, promotions };
-    }
-    function project(name = 'Project') {
-        return [{ id: 'project-a', path: '/work/app', name }];
-    }
-    async function flushSettlements() {
-        await Promise.resolve();
-        await Promise.resolve();
-        await Promise.resolve();
-    }
-
-    let resolveDelayed;
-    let delayedCalls = 0;
-    const delayedPromotion = new Promise(resolve => { resolveDelayed = resolve; });
-    const delayedCoordinator = {
-        getActive: () => [],
-        getPending: () => [pendingRuntime],
-        promotePending: () => { delayedCalls++; return delayedPromotion; },
-    };
-    const delayed = createHarness({ runtimeCoordinator: delayedCoordinator });
-    const first = delayed.controller.hydrate(project());
-    const second = delayed.controller.hydrate(project());
-    assert.strictEqual(delayedCalls, 1, 'same pending hydration must share one promotion');
-    assert.strictEqual(first, second, 'same-generation hydration should share the cached projection');
-    assert.strictEqual(first[0].codexSessions[0].name, 'Original Name');
-    resolveDelayed([finalRuntime]);
-    await flushSettlements();
-    assert.strictEqual(first[0].codexSessions[0].name, 'Promoted Alias');
-    assert.strictEqual(second[0].codexSessions[0].name, 'Promoted Alias');
-    assert.deepStrictEqual(delayed.aliasesSet, [['codex', 'session-final', 'Promoted Alias']]);
-    assert.deepStrictEqual(delayed.syncs, ['sync']);
-    assert.deepStrictEqual(delayed.promotions, ['promoted']);
-
-    let resolveGeneration;
-    let generationCalls = 0;
-    const generationPromotion = new Promise(resolve => { resolveGeneration = resolve; });
-    const generationCoordinator = {
-        getActive: () => [],
-        getPending: () => [pendingRuntime],
-        promotePending: () => { generationCalls++; return generationPromotion; },
-    };
-    const generations = createHarness({ runtimeCoordinator: generationCoordinator });
-    const stale = generations.controller.hydrate(project('Stale generation'));
-    const current = generations.controller.hydrate(project('Current generation'));
-    assert.strictEqual(generationCalls, 1, 'different hydration generations must share the pending promotion');
-    resolveGeneration([finalRuntime]);
-    await flushSettlements();
-    assert.strictEqual(current[0].name, 'Current generation');
-    assert.strictEqual(current[0].codexSessions[0].name, 'Promoted Alias');
-    assert.strictEqual(stale[0].codexSessions[0].name, 'Original Name', 'stale settlement must not overwrite an old generation');
-    assert.deepStrictEqual(generations.aliasesSet, [['codex', 'session-final', 'Promoted Alias']],
-        'different hydration generations must settle the alias once');
-    assert.deepStrictEqual(generations.syncs, ['sync']);
-    assert.deepStrictEqual(generations.promotions, ['promoted']);
-
-    let visibleConsumedPending = [pendingRuntime];
-    let resolveConsumedPending;
-    let consumedEvaluationCount = 0;
-    const consumedPendingPromotion = new Promise(resolve => { resolveConsumedPending = resolve; });
-    const consumedExecutionController = new AiSessionExecutionController({
-        getActiveSessions: () => visibleConsumedPending.length ? [] : [{
-            provider: finalRuntime.identity.provider,
-            sessionId: finalRuntime.identity.sessionId,
-            cwd: finalRuntime.identity.cwd,
-            runStartedAtMs: finalRuntime.runStartedAtMs,
-        }],
-        getProviders: () => [{
-            id: 'codex',
-            service: {
-                getLifecycleSignals: () => {
-                    consumedEvaluationCount++;
-                    return {
-                        [session.id]: {
-                            token: `codex:async-run:${session.id}`,
-                            phase: 'running',
-                            executionState: 'running',
-                            occurredAtMs: pendingRuntime.runStartedAtMs + 1_000,
-                        },
-                    };
-                },
-            },
-        }],
-        getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
-        scheduleRefresh: () => undefined,
-        nowMs: () => pendingRuntime.runStartedAtMs,
-    });
-    const consumedPending = createHarness({
-        runtimeCoordinator: {
-            getActive: () => visibleConsumedPending.length ? [] : [finalRuntime],
-            getPending: () => visibleConsumedPending,
-            promotePending: () => consumedPendingPromotion,
-        },
-        onPromoted: () => consumedExecutionController.evaluate(),
-    });
-    consumedPending.controller.hydrate(project('Promotion started'));
-    visibleConsumedPending = [];
-    consumedPending.controller.hydrate(project('Backend consumed pending'));
-    assert.deepStrictEqual(consumedExecutionController.getSnapshot(), {},
-        'async execution handoff must wait for the promotion settlement');
-    resolveConsumedPending([finalRuntime]);
-    await flushSettlements();
-    assert.deepStrictEqual(consumedPending.promotions, ['promoted'],
-        'the promotion that consumed its own pending runtime must complete its handoff once');
-    assert.deepStrictEqual(consumedPending.aliasesSet,
-        [['codex', 'session-final', 'Promoted Alias']]);
-    assert.strictEqual(consumedPending.diagnostics.some(diagnostic =>
-        diagnostic.event === 'ai-session-pending-runtime-promotion-result'
-        && diagnostic.failureReasons?.includes('stale-pending')), false);
-    assert.strictEqual(consumedExecutionController.getSnapshot()['codex:session-final'].state, 'running');
-    assert.strictEqual(consumedEvaluationCount, 1,
-        'async promotion settlement must evaluate the final runtime exactly once');
-
-    let resolveCancelled;
-    let cancelledCalls = 0;
-    const cancelledPromotion = new Promise(resolve => { resolveCancelled = resolve; });
-    const cancelled = createHarness({
-        runtimeCoordinator: {
-            getActive: () => [],
-            getPending: () => [pendingRuntime],
-            promotePending: () => { cancelledCalls++; return cancelledPromotion; },
-        },
-    });
-    const cancelledProjection = cancelled.controller.hydrate(project('Cancelled generation'));
-    cancelled.controller.hydrate([]);
-    resolveCancelled([finalRuntime]);
-    await flushSettlements();
-    assert.strictEqual(cancelledCalls, 1);
-    assert.strictEqual(cancelledProjection[0].codexSessions[0].name, 'Original Name');
-    assert.deepStrictEqual(cancelled.aliasesSet, [], 'an absent pending identity must retire the old settlement');
-    assert.deepStrictEqual(cancelled.syncs, [], 'an invalidated generation must not synchronize');
-    assert.deepStrictEqual(cancelled.promotions, [], 'an invalidated project scope must not emit a promotion handoff');
-
-    let reentered = false;
-    let reentrantController;
-    let reentrantCalls = 0;
-    const reentrant = createHarness({
-        runtimeCoordinator: {
-            getActive: () => [],
-            getPending: () => [pendingRuntime],
-            promotePending: () => { reentrantCalls++; return [finalRuntime]; },
-        },
-        onSync: () => {
-            if (!reentered) {
-                reentered = true;
-                reentrantController.hydrate(project('Synchronous reentry'));
-            }
-        },
-    });
-    reentrantController = reentrant.controller;
-    reentrant.controller.hydrate(project('Initial sync'));
-    await flushSettlements();
-    assert.strictEqual(reentrantCalls, 1, 'synchronous sync reentry must retain the successful settlement memo');
-    assert.deepStrictEqual(reentrant.aliasesSet, [['codex', 'session-final', 'Promoted Alias']]);
-    assert.deepStrictEqual(reentrant.syncs, ['sync']);
-    assert.deepStrictEqual(reentrant.promotions, ['promoted']);
-
-    let promotionReentered = false;
-    let promotionReentrantController;
-    let promotionReentrantCalls = 0;
-    const promotionReentrant = createHarness({
-        runtimeCoordinator: {
-            getActive: () => [],
-            getPending: () => [pendingRuntime],
-            promotePending: () => { promotionReentrantCalls++; return [finalRuntime]; },
-        },
-        onPromoted: () => {
-            if (!promotionReentered) {
-                promotionReentered = true;
-                promotionReentrantController.hydrate(project('Promotion notification reentry'));
-            }
-        },
-    });
-    promotionReentrantController = promotionReentrant.controller;
-    promotionReentrant.controller.hydrate(project('Initial promotion notification'));
-    await flushSettlements();
-    assert.strictEqual(promotionReentrantCalls, 1,
-        'synchronous promotion notification reentry must reuse the memoized settlement');
-    assert.deepStrictEqual(promotionReentrant.promotions, ['promoted']);
-    assert.deepStrictEqual(promotionReentrant.aliasesSet,
-        [['codex', 'session-final', 'Promoted Alias']]);
-    assert.deepStrictEqual(promotionReentrant.syncs, ['sync']);
-
-    const notificationFailure = createHarness({
-        runtimeCoordinator: {
-            getActive: () => [],
-            getPending: () => [pendingRuntime],
-            promotePending: () => [finalRuntime],
-        },
-        onPromoted: () => { throw new TypeError('do not expose this text'); },
-    });
-    notificationFailure.controller.hydrate(project('Notification failure'));
-    await flushSettlements();
-    assert.deepStrictEqual(notificationFailure.aliasesSet,
-        [['codex', 'session-final', 'Promoted Alias']]);
-    assert.ok(notificationFailure.diagnostics.some(diagnostic =>
-        diagnostic.event === 'ai-session-runtime-promotion-notification-failed'
-        && diagnostic.category === 'TypeError'));
-    assert.strictEqual(JSON.stringify(notificationFailure.diagnostics).includes('do not expose this text'), false);
-
-    const handoffFixtures = [
-        { providerId: 'codex', backend: 'tmux', layout: 'project' },
-        { providerId: 'codex', backend: 'tmux', layout: 'session' },
-        { providerId: 'kimi', backend: 'tmux', layout: 'project' },
-        { providerId: 'kimi', backend: 'tmux', layout: 'session' },
-        { providerId: 'claude', backend: 'tmux', layout: 'project' },
-        { providerId: 'claude', backend: 'tmux', layout: 'session' },
-        { providerId: 'codex', backend: 'vscode', layout: 'direct' },
-    ];
-    for (const fixture of handoffFixtures) {
-        const fixturePending = {
-            ...pendingRuntime,
-            identity: { ...pendingRuntime.identity, provider: fixture.providerId },
-            backend: fixture.backend,
-            attached: fixture.backend === 'vscode',
-            tmux: fixture.backend === 'tmux'
-                ? {
-                    layout: fixture.layout,
-                    sessionName: fixture.layout === 'project'
-                        ? `project-steward-p-${fixture.providerId}`
-                        : `project-steward-s-${fixture.providerId}`,
-                    ...(fixture.layout === 'project' ? { windowName: `ai-${fixture.providerId}-a` } : {}),
-                }
-                : undefined,
-        };
-        const fixtureFinal = {
-            ...finalRuntime,
-            identity: { ...finalRuntime.identity, provider: fixture.providerId },
-            backend: fixture.backend,
-            attached: fixture.backend === 'vscode',
-            tmux: fixturePending.tmux,
-        };
-        let active = [];
-        let pending = [fixturePending];
-        const runtimeCoordinator = {
-            getActive: () => active,
-            getPending: () => pending,
-            promotePending: () => {
-                active = [fixtureFinal];
-                pending = [];
-                return [fixtureFinal];
-            },
-        };
-        let signal = {
-            token: `${fixture.providerId}:first-run:${session.id}`,
-            phase: 'running',
-            executionState: 'running',
-            occurredAtMs: pendingRuntime.runStartedAtMs + 1_000,
-        };
-        let evaluationCount = 0;
-        const executionController = new AiSessionExecutionController({
-            getActiveSessions: () => active.map(runtime => ({
-                provider: runtime.identity.provider,
-                sessionId: runtime.identity.sessionId,
-                cwd: runtime.identity.cwd,
-                runStartedAtMs: runtime.runStartedAtMs,
-            })),
-            getProviders: () => [{
-                id: fixture.providerId,
-                service: {
-                    getLifecycleSignals: () => {
-                        evaluationCount++;
-                        return { [session.id]: signal };
-                    },
-                },
-            }],
-            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
-            scheduleRefresh: () => undefined,
-            nowMs: () => pendingRuntime.runStartedAtMs,
-        });
-        const handoff = createHarness({
-            providerId: fixture.providerId,
-            runtimeCoordinator,
-            onPromoted: () => executionController.evaluate(),
-        });
-        handoff.controller.hydrate(project(`${fixture.providerId} ${fixture.layout} handoff`));
-        const sessionKey = `${fixture.providerId}:${session.id}`;
-        assert.strictEqual(executionController.getSnapshot()[sessionKey].state, 'running');
-        assert.strictEqual(evaluationCount, 1,
-            `${fixture.providerId}/${fixture.layout} promotion must trigger one immediate evaluation`);
-        assert.strictEqual(fixtureFinal.runStartedAtMs, fixturePending.runStartedAtMs);
-
-        signal = {
-            token: `${fixture.providerId}:first-stop:${session.id}`,
-            phase: 'needsAttention',
-            reason: 'completed',
-            executionState: 'stopped',
-            occurredAtMs: pendingRuntime.runStartedAtMs + 2_000,
-        };
-        executionController.evaluate();
-        assert.strictEqual(executionController.getSnapshot()[sessionKey].state, 'stopped');
-
-        signal = {
-            token: `${fixture.providerId}:later-run:${session.id}`,
-            phase: 'running',
-            executionState: 'running',
-            occurredAtMs: pendingRuntime.runStartedAtMs + 3_000,
-        };
-        executionController.evaluate();
-        assert.strictEqual(executionController.getSnapshot()[sessionKey].state, 'running');
-
-        signal = {
-            token: `${fixture.providerId}:later-stop:${session.id}`,
-            phase: 'needsAttention',
-            reason: 'completed',
-            executionState: 'stopped',
-            occurredAtMs: pendingRuntime.runStartedAtMs + 4_000,
-        };
-        executionController.evaluate();
-        assert.strictEqual(executionController.getSnapshot()[sessionKey].state, 'stopped');
-    }
-
-    let visiblePending = [pendingRuntime];
-    let lifecycleCalls = 0;
-    const lifecycle = createHarness({
-        runtimeCoordinator: {
-            getActive: () => [],
-            getPending: () => visiblePending,
-            promotePending: () => { lifecycleCalls++; return [finalRuntime]; },
-        },
-    });
-    lifecycle.controller.hydrate(project('First lifecycle'));
-    await flushSettlements();
-    visiblePending = [];
-    lifecycle.controller.hydrate(project('Pending absent'));
-    visiblePending = [pendingRuntime];
-    lifecycle.controller.hydrate(project('Second lifecycle'));
-    await flushSettlements();
-    assert.strictEqual(lifecycleCalls, 2, 'a successful settlement memo must clear after pending disappears');
-    assert.strictEqual(lifecycle.aliasesSet.length, 2);
-    assert.strictEqual(lifecycle.syncs.length, 2);
-
-    let retryCalls = 0;
-    const retryCoordinator = {
-        getActive: () => [],
-        getPending: () => [pendingRuntime],
-        promotePending: async () => {
-            retryCalls++;
-            if (retryCalls === 1) {
-                throw new Error('first promotion failed');
-            }
-            return [finalRuntime];
+            activeSessionCount: 1, activeAttentionCount: 0,
         },
     };
-    const retry = createHarness({ runtimeCoordinator: retryCoordinator });
-    retry.controller.hydrate(project());
-    await flushSettlements();
-    const retried = retry.controller.hydrate(project('Retry generation'));
-    await flushSettlements();
-    assert.strictEqual(retryCalls, 2, 'rejected single-flight must clear so promotion can retry');
-    assert.strictEqual(retried[0].codexSessions[0].name, 'Promoted Alias');
-    assert.deepStrictEqual(retry.syncs, ['sync']);
+    let legacyProjectReads = 0;
+    const expandedWrites = [];
+    const providerWrites = [];
+    const commandController = new AiSessionCommandController({
+        getOpenProjects: () => { legacyProjectReads++; return []; },
+        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        getProjectKey: () => { throw new Error('must not select a root Project'); },
+        getOpenWorkspace: () => workspace,
+        getActiveEditorUri: () => ({ fsPath: '/work/web/file.ts' }),
+        isWorkspaceTrusted: () => true,
+        getProvider: () => ({ id: 'codex', label: 'Codex', commandName: 'codex' }),
+        getProviderDirectoryCapability: async () => ({ status: 'supported' }),
+        getPrimaryRootId: () => null,
+        pickWorkspaceRoot: async () => 'root-web',
+        isDirectory: () => true,
+        isProviderId: value => value === 'codex',
+        setExpanded: async (...args) => expandedWrites.push(args),
+        setActiveProvider: async (...args) => providerWrites.push(args),
+        togglePin: () => false, getAliases: () => ({}), saveAliases: () => undefined,
+        getOriginalName: () => null, getSessionKey: () => '', showInputBox: async () => undefined,
+        writeClipboard: async () => undefined, showInformationMessage: () => undefined,
+        showWarningMessage: () => undefined, refresh: () => undefined,
+    });
+    await commandController.toggleSessionsExpanded(target.cardId, true);
+    await commandController.selectProvider(target.cardId, 'codex');
+    assert.deepStrictEqual(expandedWrites, [[workspace.scopeIdentity, true]]);
+    assert.deepStrictEqual(providerWrites, [[workspace.scopeIdentity, 'codex']]);
 
-    const duplicateFailureFixtures = [
-        { backend: 'vscode', reason: 'conflict' },
-        { backend: 'vscode', reason: 'promotion-error' },
-        { backend: 'tmux', reason: 'conflict' },
-        { backend: 'tmux', reason: 'promotion-error' },
-    ];
-    for (const fixture of duplicateFailureFixtures) {
-        const fixturePending = {
-            ...pendingRuntime,
-            backend: fixture.backend,
-            attached: fixture.backend === 'vscode',
-            ...(fixture.backend === 'vscode' ? { tmux: undefined } : {}),
+    const createRequests = [];
+    const creation = new AiSessionCreationController({
+        isProviderId: value => value === 'codex', getOpenProjects: () => { legacyProjectReads++; return []; },
+        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        pickWorkspaceRoot: async () => 'root-web',
+        pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
+        getProvider: () => ({ label: 'Codex', terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: scope => ({ executable: 'codex', args: [], cwd: scope.primaryCwd }) }),
+        resolveDirectoryScope: () => { throw new Error('must not resolve a root Project'); },
+        resolveWorkspaceDirectoryScope: (resolved, providerId, rootId) =>
+            commandController.resolveWorkspaceDirectoryScope(resolved.workspace, providerId, undefined, rootId),
+        runtimeCoordinator: { create: async request => { createRequests.push(request); return { status: 'started', runtime: {} }; },
+            getActive: () => [], getPending: () => [] },
+        createPendingId: () => 'pending-workspace-card',
+        showInputBox: async () => 'Investigate replication',
+        showActiveTab: async () => undefined, announceStatus: async () => undefined,
+        showWarningMessage: async () => undefined, refresh: () => undefined,
+        getExistingSessionIdsForCwd: () => [], getPendingMarkerPath: () => '/tmp/card.marker',
+        scheduleNewSessionRefresh: () => undefined, nowMs: () => 1,
+    });
+    await creation.createSession(target.cardId);
+    assert.strictEqual(createRequests[0].identity.workspaceScopeIdentity, workspace.scopeIdentity);
+    assert.strictEqual(createRequests[0].projectName, 'Workspace Card');
+    assert.strictEqual(createRequests[0].title, 'Investigate replication');
+
+    const resumeRequests = [];
+    const resume = new AiSessionResumeController({
+        getOpenProjects: () => { legacyProjectReads++; return []; },
+        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        getProvider: () => ({ label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: (_id, scope) => ({ executable: 'codex', args: [], cwd: scope.primaryCwd }) }),
+        getProjectSession: () => { throw new Error('must not select a root Project session'); },
+        resolveDirectoryScope: () => { throw new Error('must not resolve a root Project'); },
+        resolveWorkspaceDirectoryScope: (resolved, resolvedSession, providerId, rootId) =>
+            commandController.resolveWorkspaceDirectoryScope(resolved.workspace, providerId, resolvedSession, rootId),
+        runtimeCoordinator: { resume: async request => { resumeRequests.push(request); return { status: 'started', runtime: {} }; } },
+        getTerminalName: () => 'Codex: Card Session', getMarkerPath: () => '/tmp/card.marker',
+        showWarningMessage: () => undefined, refresh: () => undefined,
+        showActiveTab: async () => undefined, announceStatus: async () => undefined,
+    });
+    await resume.resumeProjectSession(target.cardId, 'codex', session.id);
+    assert.strictEqual(resumeRequests[0].identity.workspaceScopeIdentity, workspace.scopeIdentity);
+    assert.strictEqual(resumeRequests[0].projectName, 'Workspace Card');
+    assert.strictEqual(resumeRequests[0].sessionName, 'Readable Session Alias');
+    assert.strictEqual(resumeRequests[0].identity.sessionId, 'session-id');
+
+    const focused = [];
+    const runtime = { identity: createTestAiSessionRuntimeIdentity('codex', '/work/api', {
+        sessionId: 'active-card', workspaceScopeIdentity: workspace.scopeIdentity,
+        workspaceNavigationIdentity: workspace.navigationIdentity,
+        workspaceRootHostPaths: ['/work/web', '/work/api'],
+    }), backend: 'vscode', state: 'active', markerPath: '/tmp/card.marker', runStartedAtMs: 1, attached: true,
+        terminal: { show() {}, dispose() {} } };
+    const terminalController = new AiSessionTerminalCommandController({
+        isProviderId: value => value === 'codex', getOpenProjects: () => { legacyProjectReads++; return []; },
+        getWorkspaceTarget: cardId => cardId === target.cardId ? target : null,
+        getProjectSessions: () => { throw new Error('must not select root sessions'); },
+        getProjectCwd: () => { throw new Error('must not select a root cwd'); }, normalizePath: value => value,
+        runtimeCoordinator: { getById: () => runtime, getPending: () => [],
+            focus: async identity => focused.push(identity), detach: async () => undefined },
+        getWorkspaceScopeIdentity: () => workspace.scopeIdentity,
+        confirmRuntimeClose: async () => undefined, announceStatus: async () => undefined,
+        showErrorMessage: async () => undefined, getProviderLabel: () => 'Codex', refresh: () => undefined,
+    });
+    await terminalController.focusActive(target.cardId, 'codex', 'active-card');
+    assert.strictEqual(focused[0].workspaceScopeIdentity, workspace.scopeIdentity);
+
+    const archived = [];
+    let currentArchiveTarget = target;
+    let onSingleArchiveConfirmation = () => undefined;
+    const archive = new AiSessionArchiveController({
+        isProviderId: value => value === 'codex', getProvider: () => ({ label: 'Codex', service: {
+            archiveSession: id => { archived.push(id); return true; },
+        } }), getProviderLabel: () => 'Codex',
+        getOpenProjects: () => { legacyProjectReads++; return []; },
+        getWorkspaceTarget: cardId => cardId === currentArchiveTarget?.cardId ? currentArchiveTarget : null,
+        getProjectSessions: () => { throw new Error('must not select root sessions'); },
+        getRuntimeById: () => null, isRuntimeComplete: () => true, focusRuntime: () => undefined,
+        deleteRuntimeMarker: () => undefined, untrackRuntime: () => undefined,
+        deletePin: () => undefined, deleteAlias: () => undefined,
+        confirmSingleArchive: async () => { onSingleArchiveConfirmation(); return 'Archive'; },
+        confirmBatchArchive: async () => 'Archive',
+        showWarningMessage: () => undefined, showErrorMessage: () => undefined,
+        showInformationMessage: () => undefined, appendLine: () => undefined,
+        postCompletion: () => undefined, refresh: () => undefined,
+        syncActiveRuntime: () => undefined, logUnexpectedError: error => { throw error; },
+    });
+    await archive.archiveSessions(target.cardId, 'codex', [session.id]);
+    assert.deepStrictEqual(archived, [session.id]);
+    archived.length = 0;
+
+    await archive.archiveSession(target.cardId, 'codex', session.id);
+    assert.deepStrictEqual(archived, [session.id], 'a valid v2 single archive must reach the provider');
+    archived.length = 0;
+
+    await archive.archiveSession(target.cardId, 'codex', 'forged-session');
+    await archive.archiveSession('__currentWorkspace-forged', 'codex', session.id);
+    assert.deepStrictEqual(archived, [], 'unknown v2 sessions and cards must not reach the provider');
+
+    onSingleArchiveConfirmation = () => {
+        currentArchiveTarget = {
+            ...target,
+            workspace: { ...workspace, scopeIdentity: 'scope-replaced-during-confirmation' },
+            sessions: { ...target.sessions, workspaceScopeIdentity: 'scope-replaced-during-confirmation' },
         };
-        const fixtureFinal = {
-            ...finalRuntime,
-            backend: fixture.backend,
-            attached: fixture.backend === 'vscode',
-            ...(fixture.backend === 'vscode' ? { tmux: undefined } : {}),
-        };
-        let allowSuccess = false;
-        let promotionCalls = 0;
-        const duplicateFailure = createHarness({
-            runtimeCoordinator: {
-                getActive: () => [],
-                getPending: () => [fixturePending, {
-                    ...fixturePending,
-                    identity: { ...fixturePending.identity },
-                    title: 'Duplicate title must not produce another attempt',
-                }],
-                promotePending: async () => {
-                    promotionCalls++;
-                    if (allowSuccess) {
-                        return [fixtureFinal];
-                    }
-                    if (fixture.reason === 'promotion-error') {
-                        throw new Error('fixture rejection');
-                    }
-                    return [{ ...fixtureFinal, state: 'conflict' }];
-                },
-            },
-        });
-        duplicateFailure.controller.hydrate(project(`${fixture.backend} duplicate failure`));
-        await flushSettlements();
-        assert.strictEqual(promotionCalls, 1, `${fixture.backend} duplicate failure must attempt promotion once`);
-        const failureDiagnostics = duplicateFailure.diagnostics.filter(diagnostic => {
-            return diagnostic.event === 'ai-session-pending-runtime-promotion-result';
-        });
-        assert.strictEqual(failureDiagnostics.length, 1);
-        assert.deepStrictEqual(failureDiagnostics[0].failureReasons, [fixture.reason]);
-        assert.deepStrictEqual(duplicateFailure.aliasesSet, []);
-        assert.deepStrictEqual(duplicateFailure.syncs, []);
-
-        allowSuccess = true;
-        const recovered = duplicateFailure.controller.hydrate(project(`${fixture.backend} retry`));
-        await flushSettlements();
-        assert.strictEqual(promotionCalls, 2, 'a later resolver invocation must retry a failed identity');
-        assert.strictEqual(recovered[0].codexSessions[0].name, 'Promoted Alias');
-        assert.strictEqual(duplicateFailure.aliasesSet.length, 1);
-        assert.deepStrictEqual(duplicateFailure.syncs, ['sync']);
-    }
-
-    const legacyPending = {
-        provider: 'codex', terminal: { name: 'Legacy pending' }, markerPath: '/tmp/legacy.done',
-        cwd: '/work/app', createdAt: '2026-07-18T10:00:00Z', excludedSessionIds: [],
-        title: 'Legacy Alias',
     };
-    const legacy = createHarness({ legacyPending });
-    const legacyHydrated = legacy.controller.hydrate(project('Legacy'));
-    assert.strictEqual(legacyHydrated[0].codexSessions[0].name, 'Legacy Alias',
-        'legacy Direct promotion must make the alias visible before hydrate returns');
-    assert.deepStrictEqual(legacy.aliasesSet, [['codex', 'session-final', 'Legacy Alias']]);
+    await archive.archiveSession(target.cardId, 'codex', session.id);
+    assert.deepStrictEqual(archived, [], 'a workspace change during confirmation must cancel archive');
+
+    currentArchiveTarget = target;
+    onSingleArchiveConfirmation = () => {
+        currentArchiveTarget = {
+            ...target,
+            sessions: { ...target.sessions, sessionsByProvider: { codex: [] } },
+        };
+    };
+    await archive.archiveSession(target.cardId, 'codex', session.id);
+    assert.deepStrictEqual(archived, [], 'a session disappearing during confirmation must cancel archive');
+    assert.strictEqual(legacyProjectReads, 0, 'v2 current-card actions must never select a member Project');
 }
 
 function runKeyChecks() {
@@ -3662,8 +3692,8 @@ function runActiveAiSessionTerminalHighlightChecks() {
     let completedResolution = null;
     let timers = [];
     const resolutions = new Map([
-        [terminalA, { terminal: terminalA, provider: 'codex', sessionId: 'a', entry: { markerPath: 'a.done' } }],
-        [terminalB, { terminal: terminalB, provider: 'kimi', sessionId: 'b', entry: { markerPath: 'b.done' } }],
+        [terminalA, { terminal: terminalA, provider: 'codex', sessionId: 'a', workspaceScopeIdentity: 'scope-a', entry: { markerPath: 'a.done' } }],
+        [terminalB, { terminal: terminalB, provider: 'kimi', sessionId: 'b', workspaceScopeIdentity: 'scope-b', entry: { markerPath: 'b.done' } }],
     ]);
     const highlighter = new activeTerminalHighlight.default({
         isVisible: () => visible,
@@ -3684,16 +3714,16 @@ function runActiveAiSessionTerminalHighlightChecks() {
     });
 
     highlighter.sync();
-    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a' });
+    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a', workspaceScopeIdentity: 'scope-a' });
     const firstIdentity = highlighter.getIdentity();
-    assert.deepStrictEqual(firstIdentity, { provider: 'codex', sessionId: 'a' });
+    assert.deepStrictEqual(firstIdentity, { provider: 'codex', sessionId: 'a', workspaceScopeIdentity: 'scope-a' });
     firstIdentity.sessionId = 'mutated';
-    assert.deepStrictEqual(highlighter.getIdentity(), { provider: 'codex', sessionId: 'a' });
+    assert.deepStrictEqual(highlighter.getIdentity(), { provider: 'codex', sessionId: 'a', workspaceScopeIdentity: 'scope-a' });
     assert.strictEqual(timers.filter(timer => timer.active).length, 1);
 
     activeTerminal = terminalB;
     highlighter.sync();
-    assert.deepStrictEqual(published.pop(), { provider: 'kimi', sessionId: 'b' });
+    assert.deepStrictEqual(published.pop(), { provider: 'kimi', sessionId: 'b', workspaceScopeIdentity: 'scope-b' });
     assert.strictEqual(timers.filter(timer => timer.active).length, 1);
 
     complete.add('b');
@@ -3719,7 +3749,7 @@ function runActiveAiSessionTerminalHighlightChecks() {
     visible = true;
     highlighter.setVisible(true);
     highlighter.request();
-    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a' });
+    assert.deepStrictEqual(published.pop(), { provider: 'codex', sessionId: 'a', workspaceScopeIdentity: 'scope-a' });
     assert.strictEqual(timers.filter(timer => timer.active).length, 1);
 
     resolutions.delete(terminalA);
@@ -3769,7 +3799,7 @@ async function runTmuxFocusedRuntimeMonitorChecks() {
     assert.strictEqual(first, joined);
     assert.strictEqual(syncCalls, 1);
     resolveSync({ monitored: true, changed: true, identity: {
-        provider: 'codex', sessionId: 's1', projectKey: 'pk', cwd: '/work/app',
+        ...createTestAiSessionRuntimeIdentity('codex', '/work/app', { sessionId: 's1' }),
     } });
     await first;
     assert.deepStrictEqual(refreshes, ['refresh']);
@@ -3818,10 +3848,37 @@ function runAiSessionTerminalResolutionChecks() {
         const service = new AiSessionTerminalService(tempRoot, providers.AI_SESSION_PROVIDER_IDS.map(providerId =>
             providers.getAiSessionProviderDefinition(providerId)), 0
         );
+        const scopedA = { name: 'Codex: Shared A', creationOptions: {}, processId: Promise.resolve(42101) };
+        const scopedB = { name: 'Codex: Shared B', creationOptions: {}, processId: Promise.resolve(42102) };
+        service.track('codex', 'shared-session', {
+            terminal: scopedA, markerPath: path.join(tempRoot, 'shared-a.done'), runStartedAtMs: 1,
+            runtimeIdentity: createTestAiSessionRuntimeIdentity('codex', '/work/a', {
+                sessionId: 'shared-session',
+            }),
+        });
+        service.track('codex', 'shared-session', {
+            terminal: scopedB, markerPath: path.join(tempRoot, 'shared-b.done'), runStartedAtMs: 2,
+            runtimeIdentity: createTestAiSessionRuntimeIdentity('codex', '/work/b', {
+                sessionId: 'shared-session',
+            }),
+        });
+        assert.strictEqual(service.getTrackedTerminalEntries().filter(entry =>
+            entry.provider === 'codex' && entry.sessionId === 'shared-session').length, 2,
+        'same provider/session Direct runtimes in separate scopes must coexist');
+        assert.strictEqual(service.getById('codex', 'shared-session', 'scope:/work/a').terminal, scopedA);
+        assert.strictEqual(service.getById('codex', 'shared-session', 'scope:/work/b').terminal, scopedB);
+        service.releaseCompletedSession('codex', 'shared-session', 'scope:/work/a');
+        assert.strictEqual(service.getActiveById('codex', 'shared-session', 'scope:/work/a'), null);
+        assert.strictEqual(service.getActiveById('codex', 'shared-session', 'scope:/work/b').terminal, scopedB,
+            'releasing one scope must leave the identical Direct runtime in the other scope active');
+        service.handleClosedTerminal(scopedA);
         const tracked = { name: 'Codex: One [session-]', creationOptions: {} };
         service.track('codex', 'session-one', {
             terminal: tracked,
             markerPath: path.join(tempRoot, 'session-one.done'),
+            runtimeIdentity: createTestAiSessionRuntimeIdentity(
+                'codex', '/work/app', { sessionId: 'session-one' }
+            ),
         });
         const candidateCalls = [];
         const candidates = {
@@ -3858,6 +3915,14 @@ function runAiSessionTerminalResolutionChecks() {
             byName,
             ordinary
         );
+        service.track('codex', 'session-env', {
+            terminal: byEnv,
+            markerPath: recoveredMarkerPath,
+            runStartedAtMs: Date.now(),
+            runtimeIdentity: createTestAiSessionRuntimeIdentity(
+                'codex', '/work/app', { sessionId: 'session-env' }
+            ),
+        });
 
         const recoveredByEnv = service.resolveTerminalSession(byEnv, getCandidates);
         assert.strictEqual(recoveredByEnv.sessionId, 'session-env');
@@ -3871,34 +3936,35 @@ function runAiSessionTerminalResolutionChecks() {
             ['codex:session-env'],
             'completed terminals must be discoverable without being active or visible'
         );
-        assert.deepStrictEqual(candidateCalls, ['codex']);
+        assert.deepStrictEqual(candidateCalls, []);
 
-        service.releaseCompletedSession('codex', 'session-env');
+        service.releaseCompletedSession('codex', 'session-env', 'scope:/work/app');
         assert.strictEqual(fs.existsSync(recoveredMarkerPath), false, 'releasing a completed session removes its marker');
-        const releasedByEnv = service.getById('codex', 'session-env');
+        const releasedByEnv = service.getById('codex', 'session-env', 'scope:/work/app');
         assert.strictEqual(releasedByEnv.terminal, byEnv, 'a completed shell remains available for an explicit resume');
         assert.strictEqual(service.isComplete(releasedByEnv), true, 'a released shell must take the resume path');
         assert.strictEqual(
-            service.getActiveById('codex', 'session-env'),
+            service.getActiveById('codex', 'session-env', 'scope:/work/app'),
             null,
             'released shells must not generate a second terminal-exit attention event'
         );
         assert.deepStrictEqual(
             service.getReleasedSessions(),
-            [{ provider: 'codex', sessionId: 'session-env' }],
+            [{ provider: 'codex', sessionId: 'session-env', workspaceScopeIdentity: 'scope:/work/app' }],
             'released sessions must remain discoverable for stale bridge-event recovery'
         );
         candidateCalls.length = 0;
         assert.strictEqual(service.resolveTerminalSession(byEnv, getCandidates), null, 'active terminal resolution must ignore a completed shell');
-        assert.deepStrictEqual(candidateCalls, ['codex']);
+        assert.deepStrictEqual(candidateCalls, []);
 
         candidateCalls.length = 0;
         assert.strictEqual(service.resolveTerminalSession(archivedByEnv, getCandidates), null);
-        assert.deepStrictEqual(candidateCalls, ['codex']);
+        assert.deepStrictEqual(candidateCalls, []);
 
         candidateCalls.length = 0;
-        assert.strictEqual(service.resolveTerminalSession(byName, getCandidates).sessionId, 'named-123456');
-        assert.deepStrictEqual(candidateCalls, ['kimi']);
+        assert.strictEqual(service.resolveTerminalSession(byName, getCandidates), null,
+            'unowned terminal name inference must not create a v2 runtime identity');
+        assert.deepStrictEqual(candidateCalls, []);
 
         candidateCalls.length = 0;
         assert.strictEqual(service.resolveTerminalSession(ordinary, getCandidates), null);
@@ -3919,7 +3985,7 @@ function runAiSessionTerminalResolutionChecks() {
 
         assert.deepStrictEqual(
             service.handleClosedTerminal(tracked),
-            [{ provider: 'codex', sessionId: 'session-one' }],
+            [{ provider: 'codex', sessionId: 'session-one', workspaceScopeIdentity: 'scope:/work/app' }],
             'closing a tracked terminal must identify the session whose attention should be acknowledged'
         );
     } finally {
@@ -3937,9 +4003,10 @@ async function runAiSessionTerminalBindingStoreChecks() {
     const processId = 42001;
     const first = new AiSessionTerminalBindingStore(state);
     first.setPending(Promise.resolve(processId), {
-        providerId: 'codex',
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { pendingId: 'pending-store' }
+        ),
         markerPath: '/tmp/pending.done',
-        cwd: '/work/app',
         createdAt: '2026-07-15T08:00:00.000Z',
         excludedSessionIds: ['old'],
         title: 'New chat',
@@ -3951,14 +4018,28 @@ async function runAiSessionTerminalBindingStoreChecks() {
     assert.strictEqual(restoredPending.providerId, 'codex');
     assert.deepStrictEqual(restoredPending.excludedSessionIds, ['old']);
     assert.ok(stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + processId]);
+    const validPendingRecord = JSON.parse(JSON.stringify(
+        stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + processId]
+    ));
+    for (const [offset, invalid] of [
+        [1, { ...validPendingRecord, sessionId: 'also-bound' }],
+        [2, { ...validPendingRecord, projectKey: 'legacy' }],
+        [3, { ...validPendingRecord, unexpected: true }],
+        [4, (() => { const value = { ...validPendingRecord }; delete value.updatedAtMs; return value; })()],
+    ]) {
+        const invalidId = processId + offset;
+        stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + invalidId] = invalid;
+        assert.strictEqual(new AiSessionTerminalBindingStore(state).get(invalidId), null,
+            'v2 terminal bindings must reject both IDs, missing fields, legacy fields, and extras');
+    }
 
     const second = new AiSessionTerminalBindingStore(state);
     second.setBound(processId, {
-        providerId: 'codex',
-        sessionId: 'session-new',
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { sessionId: 'session-new' }
+        ),
         markerPath: '/tmp/session-new.done',
         runStartedAtMs: 1784102400000,
-        cwd: '/work/app',
     });
     await second.flush();
     assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId).sessionId, 'session-new');
@@ -3966,36 +4047,33 @@ async function runAiSessionTerminalBindingStoreChecks() {
 
     const legacyBoundProcessId = 42010;
     stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + legacyBoundProcessId] = {
-        version: 2,
+        version: 1,
         state: 'bound',
         providerId: 'kimi',
+        projectKey: '/work/app',
+        cwd: '/work/app',
         sessionId: 'legacy-session',
         markerPath: '/tmp/legacy.done',
         runStartedAtMs: 10,
         updatedAtMs: 11,
     };
-    assert.deepStrictEqual(new AiSessionTerminalBindingStore(state).get(legacyBoundProcessId), {
-        version: 2,
-        state: 'bound',
-        providerId: 'kimi',
-        sessionId: 'legacy-session',
-        markerPath: '/tmp/legacy.done',
-        runStartedAtMs: 10,
-        updatedAtMs: 11,
-    });
+    assert.strictEqual(new AiSessionTerminalBindingStore(state).get(legacyBoundProcessId), null,
+        'v1 terminal bindings are ignored rather than migrated');
 
     const released = new AiSessionTerminalBindingStore(state);
     released.setReleased(processId, {
-        providerId: 'codex',
-        sessionId: 'session-new',
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { sessionId: 'session-new' }
+        ),
         markerPath: '/tmp/session-new.done',
     });
     await released.flush();
     assert.deepStrictEqual(new AiSessionTerminalBindingStore(state).get(processId), {
         version: 2,
         state: 'released',
-        providerId: 'codex',
-        sessionId: 'session-new',
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { sessionId: 'session-new' }
+        ),
         markerPath: '/tmp/session-new.done',
         updatedAtMs: released.get(processId).updatedAtMs,
     });
@@ -4029,10 +4107,16 @@ async function runAiSessionTerminalBindingStoreChecks() {
     const leftStore = new AiSessionTerminalBindingStore(concurrentState);
     const rightStore = new AiSessionTerminalBindingStore(concurrentState);
     leftStore.setBound(Promise.resolve(leftProcessId), {
-        providerId: 'codex', sessionId: 'left', markerPath: '/tmp/left.done', runStartedAtMs: 1,
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { sessionId: 'left' }
+        ),
+        markerPath: '/tmp/left.done', runStartedAtMs: 1,
     });
     rightStore.setBound(Promise.resolve(rightProcessId), {
-        providerId: 'codex', sessionId: 'right', markerPath: '/tmp/right.done', runStartedAtMs: 2,
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { sessionId: 'right' }
+        ),
+        markerPath: '/tmp/right.done', runStartedAtMs: 2,
     });
     await Promise.resolve();
     await Promise.resolve();
@@ -4052,10 +4136,16 @@ async function runAiSessionTerminalBindingStoreChecks() {
         update: async () => { throw new Error('workspaceState unavailable'); },
     }, () => { persistenceErrors++; });
     failingStore.setBound(42004, {
-        providerId: 'codex', sessionId: 'first', markerPath: '/tmp/first.done', runStartedAtMs: 1,
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { sessionId: 'first' }
+        ),
+        markerPath: '/tmp/first.done', runStartedAtMs: 1,
     });
     failingStore.setBound(42005, {
-        providerId: 'codex', sessionId: 'second', markerPath: '/tmp/second.done', runStartedAtMs: 2,
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { sessionId: 'second' }
+        ),
+        markerPath: '/tmp/second.done', runStartedAtMs: 2,
     });
     await failingStore.flush();
     assert.strictEqual(persistenceErrors, 1, 'persistent workspaceState failures are logged once per store');
@@ -4072,11 +4162,17 @@ async function runAiSessionTerminalBindingStoreChecks() {
         },
     });
     orderedStore.setPending(deferredProcessId, {
-        providerId: 'codex', markerPath: '/tmp/deferred.done', cwd: '/work/app',
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { pendingId: 'pending-deferred' }
+        ),
+        markerPath: '/tmp/deferred.done',
         createdAt: new Date().toISOString(), excludedSessionIds: [],
     });
     orderedStore.setBound(deferredProcessId, {
-        providerId: 'codex', sessionId: 'deferred-session', markerPath: '/tmp/deferred.done', runStartedAtMs: 4,
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { sessionId: 'deferred-session' }
+        ),
+        markerPath: '/tmp/deferred.done', runStartedAtMs: 4,
     });
     orderedStore.remove(deferredProcessId);
     resolveDeferredProcessId(42007);
@@ -4090,11 +4186,17 @@ async function runAiSessionTerminalBindingStoreChecks() {
         update: async (key, value) => { stalledData[key] = value; },
     }, undefined, undefined, 5);
     stalledStore.setPending(new Promise(() => {}), {
-        providerId: 'codex', markerPath: '/tmp/stalled.done', cwd: '/work/app',
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { pendingId: 'pending-stalled' }
+        ),
+        markerPath: '/tmp/stalled.done',
         createdAt: new Date().toISOString(), excludedSessionIds: [],
     });
     stalledStore.setBound(42006, {
-        providerId: 'codex', sessionId: 'after-stall', markerPath: '/tmp/after-stall.done', runStartedAtMs: 3,
+        ...createTestAiSessionTerminalBindingIdentity(
+            'codex', '/work/app', { sessionId: 'after-stall' }
+        ),
+        markerPath: '/tmp/after-stall.done', runStartedAtMs: 3,
     });
     const stalledFlushCompleted = await Promise.race([
         stalledStore.flush().then(() => true),
@@ -4153,6 +4255,9 @@ async function runAiSessionTerminalPersistenceChecks() {
             terminal: readyRetryTerminal,
             markerPath: path.join(tempRoot, 'retry-after-ready.done'),
             cwd: '/work/app',
+            runtimeIdentity: createTestAiSessionRuntimeIdentity(
+                'codex', '/work/app', { pendingId: 'pending-retry' }
+            ),
             createdAt,
             excludedSessionIds: [],
             title: 'Retry after ready',
@@ -4168,7 +4273,7 @@ async function runAiSessionTerminalPersistenceChecks() {
         await readyRetryService.sendNewSessionCommand(
             'codex',
             readyRetryTerminal,
-            '/work/app',
+            createTestAiSessionDirectoryScope('/work/app'),
             'Retry after ready',
             path.join(tempRoot, 'retry-after-ready.done')
         );
@@ -4197,22 +4302,55 @@ async function runAiSessionTerminalPersistenceChecks() {
             terminal: created,
             markerPath: path.join(tempRoot, 'pending.done'),
             cwd: '/work/app',
+            runtimeIdentity: createTestAiSessionRuntimeIdentity(
+                'codex', '/work/app', { pendingId: 'pending-persisted' }
+            ),
             createdAt,
             excludedSessionIds: [],
+            projectName: 'Workspace Card',
             title: 'App',
         });
+        const pendingIdentityCopy = firstService.getPendingTerminals()[0].runtimeIdentity;
+        pendingIdentityCopy.workspaceRootHostPaths[0] = '/mutated-by-caller';
+        assert.strictEqual(
+            firstService.getPendingTerminals()[0].runtimeIdentity.workspaceRootHostPaths[0],
+            '/work/app',
+            'pending terminal reads must defensively clone the runtime root snapshot'
+        );
         await firstStore.flush();
+
+        const legacyPendingProcessId = 42012;
+        const persistedPendingKey = AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + processId;
+        const legacyPendingRecord = JSON.parse(JSON.stringify(stateData[persistedPendingKey]));
+        legacyPendingRecord.pendingId = 'pending-legacy-no-project-name';
+        delete legacyPendingRecord.projectName;
+        stateData[AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX + legacyPendingProcessId]
+            = legacyPendingRecord;
 
         const restoredPendingTerminal = {
             ...created,
             creationOptions: { name: created.name, cwd: '/work/app' },
             processId: Promise.resolve(processId),
         };
+        const legacyPendingTerminal = {
+            ...created,
+            name: 'Codex: Legacy pending',
+            creationOptions: { name: 'Codex: Legacy pending', cwd: '/work/app' },
+            processId: Promise.resolve(legacyPendingProcessId),
+        };
         const secondStore = new AiSessionTerminalBindingStore(state);
         const secondService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, secondStore);
-        await secondService.restorePersistedTerminals([restoredPendingTerminal]);
-        assert.strictEqual(secondService.getPendingTerminals().length, 1);
+        await secondService.restorePersistedTerminals([restoredPendingTerminal, legacyPendingTerminal]);
+        assert.strictEqual(secondService.getPendingTerminals().length, 2);
         assert.strictEqual(secondService.getPendingTerminals()[0].terminal, restoredPendingTerminal);
+        const restoredDirectBackend = new DirectTerminalRuntimeBackend(secondService);
+        assert.strictEqual(restoredDirectBackend.getPending().find(runtime =>
+            runtime.identity.pendingId === 'pending-persisted').projectName, 'Workspace Card');
+        assert.strictEqual(restoredDirectBackend.getPending().find(runtime =>
+            runtime.identity.pendingId === 'pending-legacy-no-project-name').projectName, undefined,
+            'pre-change Direct pending bindings without projectName must remain restorable');
+        secondService.removePendingForTerminal(legacyPendingTerminal);
+        await secondStore.flush();
 
         const timedOutProcessId = 42011;
         const timedOutCreatedAt = new Date(Date.parse(createdAt) + 1).toISOString();
@@ -4228,6 +4366,9 @@ async function runAiSessionTerminalPersistenceChecks() {
             terminal: timedOutTerminal,
             markerPath: path.join(tempRoot, 'timed-out.done'),
             cwd: '/work/app',
+            runtimeIdentity: createTestAiSessionRuntimeIdentity(
+                'kimi', '/work/app', { pendingId: 'pending-timeout' }
+            ),
             createdAt: timedOutCreatedAt,
             excludedSessionIds: [],
         });
@@ -4244,6 +4385,9 @@ async function runAiSessionTerminalPersistenceChecks() {
             markerPath: path.join(tempRoot, 'session-new.done'),
             runStartedAtMs: 1784102400000,
             cwd: '/work/app',
+            runtimeIdentity: createTestAiSessionRuntimeIdentity(
+                'codex', '/work/app', { sessionId: 'session-new' }
+            ),
         });
         await secondStore.flush();
 
@@ -4259,19 +4403,24 @@ async function runAiSessionTerminalPersistenceChecks() {
         const thirdStore = new AiSessionTerminalBindingStore(state);
         const thirdService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, thirdStore);
         await thirdService.restorePersistedTerminals([restoredBoundTerminal]);
-        assert.strictEqual(thirdService.getById('codex', 'session-new').terminal, restoredBoundTerminal);
-        assert.strictEqual(thirdService.getById('codex', 'session-new').cwd, '/work/app');
+        assert.strictEqual(thirdService.getById(
+            'codex', 'session-new', 'scope:/work/app'
+        ).terminal, restoredBoundTerminal);
+        assert.strictEqual(thirdService.getById(
+            'codex', 'session-new', 'scope:/work/app'
+        ).cwd, '/work/app');
         const activeSnapshot = thirdService.getActiveSessions();
         assert.deepStrictEqual(activeSnapshot, [{
             provider: 'codex',
             sessionId: 'session-new',
+            workspaceScopeIdentity: 'scope:/work/app',
             cwd: '/work/app',
             runStartedAtMs: 1784102400000,
         }]);
         activeSnapshot[0].cwd = '/mutated';
         assert.strictEqual(thirdService.getActiveSessions()[0].cwd, '/work/app');
 
-        thirdService.releaseCompletedSession('codex', 'session-new');
+        thirdService.releaseCompletedSession('codex', 'session-new', 'scope:/work/app');
         await thirdStore.flush();
         assert.strictEqual(new AiSessionTerminalBindingStore(state).get(processId).state, 'released');
 
@@ -4283,7 +4432,9 @@ async function runAiSessionTerminalPersistenceChecks() {
         const fourthStore = new AiSessionTerminalBindingStore(state);
         const fourthService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, fourthStore);
         await fourthService.restorePersistedTerminals([releasedTerminalAfterReload]);
-        const releasedEntryAfterReload = fourthService.getById('codex', 'session-new');
+        const releasedEntryAfterReload = fourthService.getById(
+            'codex', 'session-new', 'scope:/work/app'
+        );
         assert.strictEqual(
             releasedEntryAfterReload.terminal,
             releasedTerminalAfterReload,
@@ -4296,7 +4447,10 @@ async function runAiSessionTerminalPersistenceChecks() {
         );
         assert.deepStrictEqual(
             fourthService.getReleasedSessions(),
-            [{ provider: 'codex', sessionId: 'session-new' }],
+            [{
+                provider: 'codex', sessionId: 'session-new',
+                workspaceScopeIdentity: 'scope:/work/app',
+            }],
             'released session recovery must survive extension reload'
         );
 
@@ -4312,9 +4466,10 @@ async function runAiSessionTerminalPersistenceChecks() {
         const expiredProcessId = 49999;
         const expiredStore = new AiSessionTerminalBindingStore(state);
         expiredStore.setPending(expiredProcessId, {
-            providerId: 'codex',
+            ...createTestAiSessionTerminalBindingIdentity(
+                'codex', '/work/app', { pendingId: 'pending-expired' }
+            ),
             markerPath: path.join(tempRoot, 'expired.done'),
-            cwd: '/work/app',
             createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
             excludedSessionIds: [],
         });
@@ -4333,8 +4488,9 @@ async function runAiSessionTerminalPersistenceChecks() {
         const recoverableProcessId = 50001;
         const timeoutStore = new AiSessionTerminalBindingStore(state);
         timeoutStore.setBound(recoverableProcessId, {
-            providerId: 'codex',
-            sessionId: 'session-after-stalled-terminal',
+            ...createTestAiSessionTerminalBindingIdentity(
+                'codex', '/work/app', { sessionId: 'session-after-stalled-terminal' }
+            ),
             markerPath: path.join(tempRoot, 'session-after-stalled-terminal.done'),
             runStartedAtMs: 1784102400000,
         });
@@ -4358,15 +4514,18 @@ async function runAiSessionTerminalPersistenceChecks() {
         ]);
         assert.strictEqual(restoreCompleted, true, 'one unresolved terminal processId must not block extension activation');
         assert.strictEqual(
-            timeoutService.getById('codex', 'session-after-stalled-terminal').terminal,
+            timeoutService.getById(
+                'codex', 'session-after-stalled-terminal', 'scope:/work/app'
+            ).terminal,
             recoverableTerminal
         );
 
         const reusedProcessId = 50002;
         const reusedProcessStore = new AiSessionTerminalBindingStore(state);
         reusedProcessStore.setBound(reusedProcessId, {
-            providerId: 'codex',
-            sessionId: 'stale-session',
+            ...createTestAiSessionTerminalBindingIdentity(
+                'codex', '/work/app', { sessionId: 'stale-session' }
+            ),
             markerPath: path.join(tempRoot, 'stale-session.done'),
             runStartedAtMs: 1784102400000,
         });
@@ -4379,7 +4538,9 @@ async function runAiSessionTerminalPersistenceChecks() {
         };
         const reusedProcessService = new AiSessionTerminalService(tempRoot, terminalProviders, 0, undefined, reusedProcessStore);
         await reusedProcessService.restorePersistedTerminals([ordinaryTerminalWithReusedPid]);
-        assert.strictEqual(reusedProcessService.getById('codex', 'stale-session'), null);
+        assert.strictEqual(reusedProcessService.getById(
+            'codex', 'stale-session', 'scope:/work/app'
+        ), null);
         await reusedProcessStore.flush();
         assert.strictEqual(reusedProcessStore.get(reusedProcessId), null, 'a reused PID must clear its stale binding');
     } finally {
@@ -4616,14 +4777,26 @@ function runWebviewContentChecks() {
     const webviewIcons = fs.readFileSync(path.join(__dirname, '..', 'src', 'webview', 'webviewIcons.ts'), 'utf8');
     const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
     const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
+    assert.strictEqual(styles.includes('.workspace-root-tags'), false);
+    assert.strictEqual(styles.includes('.workspace-root-tag'), false);
+    assert.ok(styles.includes('@media (max-width: 280px)'));
+    assert.ok(styles.includes('min-width: 0'));
+    assert.ok(styles.includes('text-overflow: ellipsis'));
+    assert.ok(styles.includes('overflow-x: hidden'));
+    assert.ok(styles.includes('max-height: 1000px'));
+    assert.ok(styles.includes('transition:\n                max-height'));
+    assert.ok(compiledStyles.includes('.project .codex-sessions{display:block'));
+    assert.ok(compiledStyles.includes('max-height:0'));
+    assert.ok(compiledStyles.includes('opacity:0'));
+    assert.ok(compiledStyles.includes('[data-codex-expanded] .codex-sessions{max-height:1000px'));
+    const sessionReducedMotionStyles = extractExactScssBlock(styles, '@media (prefers-reduced-motion: reduce)');
+    assert.ok(sessionReducedMotionStyles.includes('.codex-sessions'));
+    assert.ok(sessionReducedMotionStyles.includes('transition: none !important'));
     const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
     const insideProjectClick = extractFunctionBody(webviewProjectScripts, 'onInsideProjectClick');
-    const projectHydrationControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydrationController.ts'), 'utf8');
-    const hydrateOpenProjectsFunction = extractMethodBody(projectHydrationControllerSource, 'hydrate');
     const attentionControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'attentionController.ts'), 'utf8');
     const attentionMonitorSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'attentionMonitor.ts'), 'utf8');
     const executionControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'executionController.ts'), 'utf8');
-    const activeSessionProjectionSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'activeSessionProjection.ts'), 'utf8');
     const dashboardRuntimeControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'runtimeController.ts'), 'utf8');
     const dashboardLifecycleControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'lifecycleController.ts'), 'utf8');
     const evaluateAttentionFunction = extractMethodBody(attentionControllerSource, 'evaluate');
@@ -4638,39 +4811,59 @@ function runWebviewContentChecks() {
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const settingsFunction = extractFunctionBody(dashboard, 'showProjectStewardSettings');
     const sidebarStyles = extractExactScssBlock(styles, 'body.steward-sidebar');
-    const sessionFxKeyframes = {
-        current: 'flow',
-        sweep: 'sweep',
-        orbit: 'orbit',
-        ripple: 'ripple',
-        halo: 'halo',
-        breath: 'breath',
-    };
-    for (const sessionFx of Object.keys(sessionFxKeyframes)) {
-        assert.ok(styles.includes(`&[data-session-fx="${sessionFx}"]`),
-            `styles must define the ${sessionFx} session-running animation`);
-        const keyframes = `steward-session-running-${sessionFxKeyframes[sessionFx]}`;
-        assert.ok(styles.includes(`@keyframes ${keyframes}`),
-            `styles must define the ${keyframes} keyframes`);
-        assert.ok(compiledStyles.includes(keyframes),
-            `compiled styles must include the ${keyframes} keyframes`);
-    }
-    assert.ok(compiledStyles.includes('.project-session-fx'));
     assert.strictEqual(sidebarStyles.includes('.project[data-current-workspace]'), false,
         'current workspace shell state must be owned by the shared item card');
     assert.strictEqual(sidebarStyles.includes('.project-border'), false,
         'sidebar projects must use the shared accent selector instead of project-specific rail geometry');
+    const sidebarGroupStyleBlock = extractExactScssBlock(sidebarStyles, '.group');
+    assert.ok(sidebarGroupStyleBlock.includes('grid-template-columns: minmax(0, 1fr)'),
+        'sidebar groups must use a shrinkable grid track instead of their content min-width');
+    assert.ok(sidebarGroupStyleBlock.includes('min-width: 0'),
+        'sidebar groups must be allowed to shrink with the Webview');
+    assert.ok(sidebarGroupStyleBlock.includes('max-width: 100%'),
+        'sidebar groups must not exceed the visible Webview width');
+    const sidebarGroupListStyleBlock = extractExactScssBlock(sidebarGroupStyleBlock, '.group-list');
+    assert.ok(sidebarGroupListStyleBlock.includes('min-width: 0'),
+        'sidebar group lists must not propagate card content min-width into the grid track');
+    assert.ok(sidebarGroupListStyleBlock.includes('max-width: 100%'),
+        'sidebar group lists must not exceed the shrinkable grid track');
+    const projectContainerStyleBlock = extractExactScssBlock(sidebarStyles, '.project-container');
+    assert.ok(projectContainerStyleBlock.includes('box-sizing: border-box'),
+        'sidebar project gutters must be included in the project container width');
+    assert.ok(projectContainerStyleBlock.includes('min-width: 0'),
+        'sidebar project containers must be allowed to shrink with the Webview');
+    assert.ok(projectContainerStyleBlock.includes('max-width: 100%'),
+        'sidebar project containers must not exceed the visible Webview width');
+    assert.ok(projectContainerStyleBlock.includes('padding: 0 2px'),
+        'sidebar project containers must reserve the card outline gutter inside their width');
+    const sharedItemCardBlock = extractExactScssBlock(sidebarStyles, '.steward-item-card');
+    assert.ok(sharedItemCardBlock.includes('width: 100%'),
+        'sidebar cards must fill the shrinkable container without percentage-plus-margin rounding');
+    assert.ok(sharedItemCardBlock.includes('max-width: 100%'),
+        'sidebar cards must not exceed their shrinkable container');
+    assert.ok(sharedItemCardBlock.includes('min-width: 0'),
+        'sidebar cards must be allowed to shrink below their content width');
+    assert.ok(sharedItemCardBlock.includes('margin: 0 0 7px'),
+        'sidebar card horizontal spacing must come from the border-box container gutter');
     const sharedItemAccentBlock = extractExactScssBlock(sidebarStyles, '.steward-item-accent');
     const sharedItemAccentHoverBlock = extractScssBlock(sidebarStyles, '.steward-item-card:hover .steward-item-accent');
     const projectStyleBlock = extractExactScssBlock(sidebarStyles, '.project');
-    const openProjectStyleBlock = extractExactScssBlock(projectStyleBlock, '&[data-open-project]');
-    const expandedProjectHoverBlock = extractExactScssBlock(openProjectStyleBlock, '&[data-codex-expanded]:hover');
+    const currentWorkspaceStyleBlock = extractExactScssBlock(projectStyleBlock, '&[data-current-workspace]');
+    const expandedProjectHoverBlock = extractExactScssBlock(currentWorkspaceStyleBlock, '&[data-codex-expanded]:hover');
     const expandedProjectAccentBlock = extractExactScssBlock(expandedProjectHoverBlock, '.steward-item-accent');
     const compiledSharedItemAccentBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .steward-item-accent');
     const compiledSharedItemAccentHoverBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .steward-item-card:hover .steward-item-accent');
-    const compiledExpandedProjectAccentBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .project[data-open-project][data-codex-expanded]:hover .steward-item-accent');
-    const currentItemCardStyleBlock = extractExactScssBlock(sidebarStyles, '&[data-current-workspace]');
-    const compiledCurrentItemCardStyleBlock = extractScssBlock(compiledStyles, 'body.steward-sidebar .steward-item-card[data-current-workspace]');
+    const compiledExpandedProjectAccentBlock = extractExactCssBlock(compiledStyles, 'body.steward-sidebar .project[data-current-workspace][data-codex-expanded]:hover .steward-item-accent');
+    const currentItemCardShellBlock = extractExactScssBlock(sidebarStyles, '&[data-current-workspace]');
+    const currentItemCardVisualBlock = extractExactScssBlock(sharedItemCardBlock, '&.selected');
+    const compiledCurrentItemCardShellBlock = extractScssBlock(
+        compiledStyles,
+        'body.steward-sidebar .steward-item-card[data-current-workspace]',
+    );
+    const compiledCurrentItemCardVisualBlock = extractExactCssBlock(
+        compiledStyles,
+        'body.steward-sidebar .steward-item-card.selected',
+    );
     const sessionTabsHtml = webviewContentModule.getAiSessionsDiv({
         id: 'project-a',
         activeAiSessionProvider: 'codex',
@@ -4706,6 +4899,30 @@ function runWebviewContentChecks() {
     assert.ok(sessionTabsHtml.includes('class="ai-session-module-header"'));
     assert.ok(sessionTabsHtml.includes('data-action="create-ai-session"'));
     assert.ok(!sessionTabsHtml.includes('data-action="create-ai-session" data-provider='));
+    const workspaceHtml = webviewContentModule.getCurrentWorkspaceGroupContent({
+        id: 'workspace-a', kind: 'current', navigationIdentity: 'navigation-a', scopeIdentity: 'scope-a',
+        name: 'Workspace A', environment: 'local', environmentLabel: 'Local', attentionCount: 0,
+        roots: [
+            { id: 'root-app', name: 'App', ordinal: 0 },
+            { id: 'root-api', name: 'API', ordinal: 1 },
+        ],
+        aiSessions: {
+            workspaceScopeIdentity: 'scope-a', workspaceNavigationIdentity: 'navigation-a',
+            activeProvider: 'codex', expanded: true,
+            providers: [{ id: 'codex', label: 'Codex', count: 1 }],
+            sessionsByProvider: { codex: [{
+                id: 'c1', name: 'Codex live', provider: 'codex', primaryRootId: 'root-api', primaryRootLabel: 'API',
+            }] },
+            unavailableProviders: [], aiSessionCount: 1, attentionCount: 0, defaultTab: 'sessions',
+            activeSessions: [], activeSessionCount: 0, activeAttentionCount: 0,
+        },
+    }, false);
+    assert.strictEqual((workspaceHtml.match(/class="workspace-card/g) || []).length, 1);
+    assert.strictEqual((workspaceHtml.match(/class="codex-sessions"/g) || []).length, 1);
+    assert.ok(workspaceHtml.includes('data-primary-root-id="root-api"'));
+    assert.ok(workspaceHtml.includes('class="ai-session-root-chip"'));
+    assert.strictEqual(workspaceHtml.includes('data-action="open-new-session-in"'), false);
+    assert.strictEqual(workspaceHtml.includes('data-action="new-session-in"'), false);
     assert.ok(sessionTabsHtml.includes('role="tablist" aria-label="AI Session views"'));
     assert.ok(sessionTabsHtml.includes('data-ai-session-tab="active"'));
     assert.ok(sessionTabsHtml.includes('data-ai-session-tab="sessions"'));
@@ -4768,7 +4985,7 @@ function runWebviewContentChecks() {
     assert.ok(sessionTabsHtml.includes('class="ai-session-primary-action"'));
     assert.ok(sessionTabsHtml.includes('role="group"'));
     assert.ok(!/class="codex-session-row[^>]*tabindex=/.test(sessionTabsHtml));
-    assert.ok(webviewProjectScripts.includes('updateOpenProjectAiSessionBadge(projectDiv, totalCount, attentionCount, activeCount)'));
+    assert.ok(!webviewProjectScripts.includes('updateOpenProjectAiSessionBadge('));
 
     assert.ok(webviewContent.includes('data-action="add" title="Add Project"'));
     assert.ok(webviewContent.includes('class="project no-projects" data-action="add-project" data-nodrag'));
@@ -4778,23 +4995,20 @@ function runWebviewContentChecks() {
     assert.ok(webviewProjectScripts.includes("type: 'open-settings'"));
     assert.ok(webviewProjectScripts.includes('projectId,'));
     assert.ok(!webviewProjectScripts.includes('projectUri'));
-    assert.ok(insideProjectClick.includes('projectDiv.hasAttribute("data-project-navigation")'));
+    assert.ok(insideProjectClick.includes('projectDiv.hasAttribute("data-current-workspace")'));
+    assert.ok(insideProjectClick.includes('projectDiv.hasAttribute("data-workspace-navigation")'));
+    assert.ok(!insideProjectClick.includes('data-project-navigation'));
     assert.ok(insideProjectClick.includes('openProject(dataId, ProjectOpenType.Default)'));
     assert.ok(
-        insideProjectClick.indexOf('projectDiv.hasAttribute("data-project-navigation")')
+        insideProjectClick.indexOf('projectDiv.hasAttribute("data-workspace-navigation")')
             < insideProjectClick.indexOf('var currentWindow = e.ctrlKey || e.metaKey')
     );
-    assert.ok(webviewProjectScripts.includes("message.type === 'ai-session-attention-projects-updated'"));
-    assert.ok(webviewProjectScripts.includes('syncAiSessionAttentionRows(projectDiv, summary ? summary.sessions : [])'));
-    assert.ok(webviewProjectScripts.includes(".project[data-attention-project-key]"));
-    assert.ok(webviewProjectScripts.includes("project-ai-attention-badge"));
-    assert.ok(styles.includes('.project-ai-attention-badge'));
-    assert.ok(webviewContent.includes('resolveAttentionProjectKey(project)'));
+    assert.ok(!webviewProjectScripts.includes("message.type === 'ai-session-attention-projects-updated'"));
     assert.ok(webviewContent.includes('class="ai-session-attention-indicator"'));
     assert.ok(styles.includes('.ai-session-attention-indicator'));
-    assert.ok(dashboard.includes('getProjectKey: project => getAttentionProjectKey(project.path)'));
-    assert.ok(attentionControllerSource.includes('const projectKey = this.options.getProjectKey(project);'));
-    assert.ok(attentionControllerSource.includes('projectId: projectKey'));
+    assert.ok(dashboard.includes('getWorkspaceTarget: getCurrentWorkspaceActionTargetWithoutCardId'));
+    assert.ok(attentionControllerSource.includes('getWorkspaceTarget: () => WorkspaceAiSessionActionTarget | null;'));
+    assert.ok(attentionControllerSource.includes('getAttentionProjectKeys([root.uri])[0]'));
     assert.ok(attentionControllerSource.includes('observedAtMs: attention.stateChangedAt'));
     assert.ok(attentionControllerSource.includes("if (!runtime || runtime.state === 'stopped'"));
     assert.ok(attentionControllerSource.includes('provider.service.getLifecycleSignals(requests)'));
@@ -4806,19 +5020,20 @@ function runWebviewContentChecks() {
     assert.ok(pendingTerminalResolverSource.includes('runtimeCoordinator.promotePending('));
     assert.ok(pendingTerminalResolverSource.includes('options.settlePending'));
     assert.ok(!pendingTerminalResolverSource.includes('.terminal'));
-    assert.ok(resumeControllerSource.includes('runStartedAtMs: this.options.nowMs()'));
-    assert.ok(dashboard.includes('nowMs: () => Date.now()'));
-    assert.ok(dashboardRuntimeControllerSource.includes("type: 'ai-session-attention-projects-updated'"));
+    assert.ok(resumeControllerSource.includes('runtimeCoordinator.resume(request)'));
+    assert.ok(!dashboardRuntimeControllerSource.includes("type: 'ai-session-attention-projects-updated'"));
     assert.ok(dashboard.includes('sessionEvents: aiSessionAttentionController.getRecoverySessionEvents()'));
     assert.ok(webviewProjectScripts.includes('message.sessionEvents'));
     assert.ok(dashboard.includes('settleAiSessionRuntimeLifecycles'));
+    assert.match(dashboard,
+        /for \(const runtime of runtimes\) \{\s*if \(!runtimeBelongsToCurrentWorkspace\(runtime\)\) \{\s*continue;\s*\}/,
+        'dashboard lifecycle attention collection must reject other scopes before session-key processing');
     assert.ok(dashboard.includes('const aiSessionAttentionController = new AiSessionAttentionController<AiSessionRuntimeSnapshot<vscode.Terminal>>({'));
     assert.ok(dashboard.includes("import { AiSessionExecutionController } from './aiSessions/executionController';"));
     assert.ok(dashboard.includes('const aiSessionExecutionController = new AiSessionExecutionController({'));
-    assert.match(dashboard,
-        /new AiSessionProjectHydrationController[\s\S]*?onDidPromoteRuntime: \(\) => \{[\s\S]*?aiSessionExecutionController\.evaluate\(\);[\s\S]*?\}/);
+    assert.ok(dashboard.includes('new WorkspaceSessionHydrationController<vscode.Terminal>({'));
+    assert.ok(dashboard.includes('getExecutionSnapshot: () => aiSessionExecutionController.getSnapshot()'));
     assert.ok(dashboard.includes('getActiveSessions: () => aiSessionRuntimeCoordinator.getActive()'));
-    assert.ok(dashboard.includes('executionSnapshot: aiSessionExecutionController.getSnapshot()'));
     assert.match(dashboard, /aiSessionExecutionInterval = setInterval\(\(\) => \{ aiSessionExecutionController\.evaluate\(\); \}, 1_000\)/);
     assert.match(dashboard, /setTimeout\(\(\) => \{ aiSessionExecutionController\.evaluate\(\); \}, 0\)/);
     assert.ok(dashboard.includes('clearInterval(aiSessionExecutionInterval)'));
@@ -4827,8 +5042,6 @@ function runWebviewContentChecks() {
     assert.ok(!evaluateExecutionFunction.includes('attention'));
     assert.ok(evaluateAttentionFunction.includes('if (!this.options.isEnabled())'));
     assert.ok(evaluateAttentionMonitorFunction.includes('signal.phase'));
-    assert.ok(activeSessionProjectionSource.includes('executionSnapshot: Record<string, AiSessionExecutionSnapshot>;'));
-    assert.ok(activeSessionProjectionSource.includes("executionState: input.executionSnapshot[key]?.state || 'stopped'"));
     assert.ok(!dashboard.includes('function getEffectiveAiSessionAttentionAggregate('));
     assert.ok(!dashboard.includes('function getAiSessionAttentionRecoverySessionEvents('));
     assert.ok(dashboard.includes('async function evaluateAiSessionAttention('));
@@ -4848,23 +5061,25 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('aiSessionPinController.getAll()'));
     assert.ok(dashboard.includes('aiSessionPinController.toggle('));
     assert.ok(dashboard.includes('aiSessionPinController.remove('));
-    assert.ok(dashboard.includes('aiSessionPinController.migrateLegacy('));
+    assert.ok(!dashboard.includes('aiSessionPinController.migrateLegacy('));
     assert.ok(!dashboard.includes('function getPinnedAiSessionKeys('));
     assert.ok(!dashboard.includes('function migrateLegacyPinnedAiSessions('));
     assert.ok(!dashboard.includes('function deletePinnedAiSession('));
     assert.ok(dashboard.includes('new AiSessionAliasStore(context.globalStoragePath)'));
-    assert.ok(dashboard.includes('new AiSessionProjectStateStore(context.globalState'));
+    assert.ok(dashboard.includes('new AiSessionWorkspaceStateStore(context.globalState'));
     assert.ok(dashboard.includes('new AiSessionTerminalBindingStore(context.workspaceState'));
     assert.ok(dashboard.includes('new DashboardDiagnostics({'));
     assert.ok(!dashboard.includes('function logAiSessionDiagnostic('));
     assert.ok(!dashboard.includes('function logDashboardDiagnostic('));
-    assert.ok(!dashboard.includes('function logOpenProjectDiagnostic('));
+    assert.ok(!dashboard.includes('function logOpenWorkspaceDiagnostic('));
     assert.ok(dashboard.includes('export async function activate(context: vscode.ExtensionContext)'));
     const terminalServiceSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'terminalService.ts'), 'utf8');
     assert.ok(!terminalServiceSource.includes('AI_SESSION_PROVIDER_IDS'));
     assert.ok(dashboard.includes('const aiSessionProviders = aiSessionProviderRegistry.providers();'));
     assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('await tmuxRuntimeBackend.restoreAttachTerminals(vscode.window.terminals)'));
+    assert.match(dashboard, /onDidOpenTerminal\(terminal => \{[\s\S]*?tmuxRuntimeBackend\.restoreAttachTerminals\(\[terminal\]\)/,
+        'a terminal restored after extension activation must still recover its tmux attachment');
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
     assert.ok(dashboard.includes('new TmuxFocusedRuntimeMonitor<vscode.Terminal>({'));
     assert.ok(dashboard.includes('tmuxFocusedRuntimeMonitor.start();'));
@@ -4872,7 +5087,14 @@ function runWebviewContentChecks() {
         'view visibility and active-terminal changes must both request reconciliation');
     assert.ok(dashboard.includes("logAiSessionRuntimeFailure('sync-focused-runtime', error)"));
     assert.ok(dashboard.includes('context.subscriptions.push(tmuxFocusedRuntimeMonitor);'));
-    assert.match(dashboard, /const acknowledgeAiSessionAttentionEventIds = async[\s\S]*?aiSessionAttentionController\.acknowledge\(uniqueEventIds\);[\s\S]*?await aiSessionAttentionBridgeClient\.acknowledge\(uniqueEventIds\)/);
+    assert.match(dashboard,
+        /beforeRefresh: reason => \{\s*currentAiSessionRefreshReason = reason;\s*postAiSessionAttentionState\(\);\s*\}/,
+        'every incremental AI-session render must publish its current attention event map before the HTML update');
+    assert.match(dashboard,
+        /function postAiSessionAttentionState\(\) \{[\s\S]*?sessionEvents: aiSessionAttentionController\.getRecoverySessionEvents\(\)[\s\S]*?eventIds: aiSessionAttentionController\.getAttentionEventIds\(\)/,
+        'the shared attention-state publisher must carry every event for each logical session');
+    assert.match(dashboard, /const acknowledgeAiSessionAttentionEventIds = async[\s\S]*?aiSessionAttentionController\.acknowledge\(uniqueEventIds\);\s*refreshAiSessionViewsIncrementally\(\);\s*await aiSessionAttentionBridgeClient\.acknowledge\(uniqueEventIds\)/,
+        'attention acknowledgement must refresh the local view before waiting for the cross-window bridge');
     assert.match(dashboard, /const acknowledgeAiSessionAttention = async[\s\S]*?await acknowledgeAiSessionAttentionEventIds\(getAiSessionAttentionEventIds\(identity\)\)/);
     const selectedProjectHandler = dashboard.slice(
         dashboard.indexOf("'selected-project': async e =>"),
@@ -4894,6 +5116,14 @@ function runWebviewContentChecks() {
         'a later aggregate must not auto-acknowledge a delivered completion'
     );
     assert.match(dashboard, /onComplete: resolution => \{[\s\S]*?queueAiSessionRuntimeSettlements\(\[\{/);
+    const runtimeSettlementQueue = dashboard.slice(
+        dashboard.indexOf('const queueAiSessionRuntimeSettlements = ('),
+        dashboard.indexOf('const drainAiSessionRuntimeSettlements = async')
+    );
+    assert.ok(
+        runtimeSettlementQueue.includes('runtime.identity.workspaceScopeIdentity'),
+        'runtime lifecycle settlement keys must separate otherwise-identical runtimes in different workspace scopes'
+    );
     assert.ok(!dashboard.includes('void settleAiSessionRuntime('),
         'lifecycle settlement scheduling must not create unhandled fire-and-forget rejections');
     assert.ok(dashboard.includes('getRuntimeById: getAiSessionRuntimeById'));
@@ -4922,7 +5152,7 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('runAiSessionRuntimeLifecycleTask('));
     assert.match(dashboard, /onDidChangeWindowState\(windowState => \{[\s\S]*?dashboardLifecycleController\.handleWindowStateChanged\(windowState\);[\s\S]*?\}\)/);
     assert.ok(dashboardLifecycleControllerSource.includes('this.options.evaluateAiSessionAttention();'));
-    assert.ok(dashboardLifecycleControllerSource.includes('this.options.publishOpenProjects(true);'));
+    assert.ok(dashboardLifecycleControllerSource.includes('this.options.publishOpenWorkspace(true);'));
     assert.ok(dashboard.includes("'request-active-ai-session-terminal': () =>"));
     assert.ok(dashboardRuntimeControllerSource.includes("type: 'active-ai-session-terminal-changed'"));
     assert.ok(webviewProjectScripts.includes("type: 'request-active-ai-session-terminal'"));
@@ -4951,6 +5181,7 @@ function runWebviewContentChecks() {
     );
     assert.ok(dashboard.includes('await aiSessionArchiveController.archiveSessions('));
     assert.ok(dashboard.includes('await aiSessionArchiveController.archiveSession('));
+    assert.match(dashboard, /archiveSession\(\s*e\.projectId as string,\s*providerId as AiSessionProviderId \| null,\s*e\.sessionId as string\s*\)/);
     assert.ok(!dashboard.includes('async function archiveAiSession('));
     assert.ok(!dashboard.includes('function archiveAiSessionItem('));
     assert.ok(!dashboard.includes('async function archiveAiSessions('));
@@ -5007,11 +5238,6 @@ function runWebviewContentChecks() {
     assert.ok(styles.includes('.ai-session-execution-dot'));
     assert.ok(!extractScssBlock(styles, '.ai-session-execution-dot').includes('animation'));
     assert.ok(styles.includes('[data-execution-state="running"] .ai-session-execution-status'));
-    assert.ok(styles.includes('[data-execution-state="running"] .codex-session-icon'),
-        'styles must animate the terminal icon edge while a session executes');
-    assert.ok(styles.includes('@keyframes steward-session-icon-spin'));
-    assert.ok(compiledStyles.includes('[data-execution-state=running] .codex-session-icon'));
-    assert.ok(compiledStyles.includes('steward-session-icon-spin'));
     assert.ok(styles.includes('var(--vscode-terminal-ansiGreen, #89d185)'));
     assert.ok(styles.includes('[data-execution-state="stopped"] .ai-session-execution-status'));
     assert.ok(styles.includes('[data-execution-state="starting"] .ai-session-execution-status'));
@@ -5032,6 +5258,29 @@ function runWebviewContentChecks() {
     assert.ok(styles.includes('[data-session-pending]'));
     assert.ok(styles.includes('@media (max-width: 280px)'));
     assert.ok(styles.includes('@media (prefers-reduced-motion: reduce)'));
+    for (const keyframe of [
+        'steward-session-running-flow',
+        'steward-session-running-sweep',
+        'steward-session-running-orbit',
+        'steward-session-running-halo',
+        'steward-session-running-ripple',
+        'steward-session-running-breath',
+    ]) {
+        assert.ok(styles.includes(`@keyframes ${keyframe}`),
+            `workspace card styles must retain ${keyframe}`);
+        assert.ok(compiledStyles.includes(`@keyframes ${keyframe}`),
+            `generated workspace card styles must retain ${keyframe}`);
+    }
+    assert.ok(styles.includes('.project-session-fx'));
+    assert.ok(compiledStyles.includes('.project-session-fx'));
+    const reducedMotionStyles = styles.slice(styles.indexOf('@media (prefers-reduced-motion: reduce)'));
+    assert.ok(reducedMotionStyles.includes('.project-session-fx'));
+    assert.ok(reducedMotionStyles.includes('.project.session-running[data-session-fx="breath"]'));
+    assert.ok(reducedMotionStyles.includes('animation: none !important'));
+    assert.ok(styles.includes('[data-execution-state="running"] .codex-session-icon'));
+    assert.ok(styles.includes('@keyframes steward-session-icon-spin'));
+    assert.ok(compiledStyles.includes('[data-execution-state=running] .codex-session-icon::before'));
+    assert.ok(compiledStyles.includes('@keyframes steward-session-icon-spin'));
     assert.ok(styles.includes('[data-ai-session-managing]'));
     assert.ok(styles.includes('grid-template-columns: minmax(0, 1fr) 24px;'));
     assert.ok(styles.includes('.ai-session-manage-button[aria-pressed="true"]'));
@@ -5053,19 +5302,22 @@ function runWebviewContentChecks() {
         ['vscode', 'tmux']
     );
     assert.deepStrictEqual(
-        packageJson.contributes.configuration.properties['projectSteward.aiSessionRunningCardAnimation'].enum,
+        packageJson.contributes.configuration.properties[
+            'projectSteward.aiSessionRunningCardAnimation'
+        ].enum,
         ['current', 'sweep', 'orbit', 'halo', 'ripple', 'breath', 'none']
     );
-    assert.ok(projectHydrationControllerSource.includes('getAliases: () => Record<string, string>;'));
-    assert.ok(hydrateOpenProjectsFunction.includes('aliases: this.options.getAliases()'));
-    assert.ok(!projectHydrationControllerSource.includes('pruneAiSessionAliases('));
+    assert.ok(!fs.existsSync(path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydrationController.ts')));
+    assert.ok(!fs.existsSync(path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydration.ts')));
+    assert.ok(!fs.existsSync(path.join(__dirname, '..', 'src', 'aiSessions', 'activeSessionProjection.ts')));
     assert.ok(!dashboard.includes('function pruneAiSessionAliases('));
     assert.ok(!dashboard.includes("const AI_SESSION_ALIASES_FILE_NAME = 'ai-session-aliases.json';"));
     assert.ok(!dashboard.includes('function getAiSessionAliasesPath('));
     assert.ok(dashboard.includes('new AiSessionAliasController({'));
     assert.ok(dashboard.includes('aiSessionAliasController.getAll()'));
     assert.ok(dashboard.includes('aiSessionAliasController.saveAll(aliases)'));
-    assert.ok(dashboard.includes('aiSessionAliasController.set('));
+    assert.strictEqual((dashboard.match(/aiSessionAliasController\.set\(/g) || []).length, 1,
+        'workspace pending promotion must persist the resolved Session alias once');
     assert.ok(dashboard.includes('aiSessionAliasController.remove('));
     assert.ok(dashboard.includes('aiSessionAliasController.getOriginalName('));
     assert.ok(!dashboard.includes('function getAiSessionAliases('));
@@ -5073,10 +5325,10 @@ function runWebviewContentChecks() {
     assert.ok(!dashboard.includes('function deleteAiSessionAlias('));
     assert.ok(!dashboard.includes('function setAiSessionAlias('));
     assert.ok(!dashboard.includes('function getAiSessionOriginalName('));
-    assert.ok(dashboard.includes('aiSessionProjectStateStore.getExpandedProjects()'));
-    assert.ok(dashboard.includes('aiSessionProjectStateStore.setExpanded('));
-    assert.ok(dashboard.includes('aiSessionProjectStateStore.getActiveProviders()'));
-    assert.ok(dashboard.includes('aiSessionProjectStateStore.setActiveProvider('));
+    assert.ok(dashboard.includes('aiSessionWorkspaceStateStore.getExpandedWorkspaces()'));
+    assert.ok(dashboard.includes('aiSessionWorkspaceStateStore.setExpanded('));
+    assert.ok(dashboard.includes('aiSessionWorkspaceStateStore.getActiveProviders()'));
+    assert.ok(dashboard.includes('aiSessionWorkspaceStateStore.setActiveProvider('));
     assert.ok(!dashboard.includes('async function toggleCodexSessions('));
     assert.ok(!dashboard.includes('async function selectAiSessionProvider('));
     assert.ok(!dashboard.includes('async function toggleAiSessionPin('));
@@ -5117,7 +5369,7 @@ function runWebviewContentChecks() {
     assert.ok(favoriteProjectControllerSource.includes('withFavoriteProjectOrder(groups, projectIds)'));
     assert.ok(favoriteProjectControllerSource.includes('withToggledProjectFavorite(groups, projectId)'));
     assert.ok(dashboard.includes("function applyProjectColorToCurrentWindow(project: Project = null)"));
-    assert.ok(dashboardRuntimeControllerSource.includes('targetProject?.showSaveAction'));
+    assert.ok(dashboardRuntimeControllerSource.includes('this.options.getCurrentSavedProject()'));
     assert.ok(dashboard.includes('dashboardRuntimeController.applyProjectColorToCurrentWindow(project)'));
     assert.ok(projectWindowColorService.includes("PROJECT_COLOR_TO_WINDOW_KEY = 'applyProjectColorToWindow'"));
     assert.ok(projectWindowColorService.includes("PROJECT_WINDOW_COLOR_BACKUP_KEY"));
@@ -5138,19 +5390,20 @@ function runWebviewContentChecks() {
     assert.ok(projectWindowColorService.includes("'activityBar.activeBackground': auraPalette.activityActive"));
     assert.ok(projectWindowColorService.includes("'commandCenter.activeBorder': auraPalette.commandBorder"));
     assert.ok(!extractMethodBody(projectWindowColorService, 'getWindowColorCustomizations').includes("'activityBar.background'"));
-    assert.ok(webviewContent.includes('style="${projectStyle}"'));
-    assert.ok(webviewContent.includes("options.readOnlyProjects || isProjectNavigation ? ' data-readonly-project' : ''"));
-    assert.ok(webviewContent.includes("showCurrentAttention ? ' data-current-workspace' : ''"));
-    assert.ok(webviewContent.includes("options.projectAttentionMode === 'none'"));
+    assert.ok(webviewContent.includes('style="${colorStyles.cardStyle}"'));
+    assert.ok(webviewContent.includes("options.readOnlyProjects ? ' data-readonly-project' : ''"));
     assert.ok(styles.includes('--project-color'));
     assert.ok(styles.includes('.project-aura'));
-    assert.ok(currentItemCardStyleBlock.includes('--vscode-list-inactiveSelectionBackground'));
-    assert.ok(currentItemCardStyleBlock.includes('var(--vscode-focusBorder)'));
-    assert.ok(currentItemCardStyleBlock.includes('box-shadow'));
-    assert.ok(compiledCurrentItemCardStyleBlock.includes('var(--vscode-focusBorder)'));
-    assert.ok(!currentItemCardStyleBlock.includes('animation'));
-    assert.ok(styles.indexOf('&[data-current-workspace]') > styles.indexOf('&[data-codex-expanded]:hover'));
-    assert.ok(compiledStyles.indexOf('.steward-item-card[data-current-workspace]') > compiledStyles.indexOf('.steward-item-card[data-codex-expanded]:hover'));
+    assert.ok(currentItemCardVisualBlock.includes('--vscode-list-inactiveSelectionBackground'));
+    assert.ok(currentItemCardVisualBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(currentItemCardVisualBlock.includes('box-shadow'));
+    assert.ok(currentItemCardShellBlock.includes('height: auto'));
+    assert.ok(currentItemCardShellBlock.includes('min-height: 58px'));
+    assert.strictEqual(/(^|\n)\s*height\s*:\s*58px/.test(currentItemCardShellBlock), false);
+    assert.ok(compiledCurrentItemCardVisualBlock.includes('var(--vscode-focusBorder)'));
+    assert.ok(compiledCurrentItemCardShellBlock.includes('height:auto'));
+    assert.ok(compiledCurrentItemCardShellBlock.includes('min-height:58px'));
+    assert.ok(!currentItemCardShellBlock.includes('animation'));
     assert.ok(sharedItemAccentBlock.includes('top: 31%'));
     assert.ok(sharedItemAccentBlock.includes('bottom: 31%'));
     assert.ok(sharedItemAccentBlock.includes('height: auto'));
@@ -5199,10 +5452,79 @@ function runTmuxSmokeHarnessSafetyChecks() {
 
 function runCurrentWorkspaceRenderingChecks() {
     const config = {
-        get: (key, defaultValue) => defaultValue,
+        get: (key, defaultValue) => key === 'aiSessionRunningCardAnimation' ? 'breath' : defaultValue,
         displayProjectPath: false,
         searchIsActiveByDefault: false,
         showAddGroupButtonTile: false,
+    };
+    const current = {
+        id: 'workspace-current',
+        kind: 'current',
+        navigationIdentity: 'navigation-current',
+        scopeIdentity: 'scope-current',
+        name: 'Workspace A',
+        environment: 'local',
+        environmentLabel: 'Local',
+        attentionCount: 0,
+        roots: [
+            { id: 'root-app', name: 'App', ordinal: 0 },
+            { id: 'root-api', name: 'API', ordinal: 1 },
+        ],
+        aiSessions: {
+            workspaceScopeIdentity: 'scope-current',
+            workspaceNavigationIdentity: 'navigation-current',
+            activeProvider: 'codex',
+            expanded: true,
+            providers: [{ id: 'codex', label: 'Codex', count: 1 }],
+            sessionsByProvider: {
+                codex: [{
+                    id: 'session',
+                    name: 'Session',
+                    provider: 'codex',
+                    primaryRootId: 'root-api',
+                    primaryRootLabel: 'API',
+                }],
+            },
+            unavailableProviders: [],
+            aiSessionCount: 1,
+            attentionCount: 0,
+            defaultTab: 'sessions',
+            activeSessions: [
+                {
+                    key: 'codex:running', provider: 'codex', sessionId: 'running', name: 'Running',
+                    executionState: 'running', focused: false, needsAttention: false, pending: false,
+                    backend: 'vscode', attached: true,
+                },
+                {
+                    key: 'codex:starting', provider: 'codex', sessionId: 'starting', name: 'Starting',
+                    executionState: 'starting', focused: false, needsAttention: false, pending: true,
+                    backend: 'vscode', attached: true,
+                },
+                {
+                    key: 'codex:stopped', provider: 'codex', sessionId: 'stopped', name: 'Stopped',
+                    executionState: 'stopped', focused: false, needsAttention: false, pending: false,
+                    backend: 'vscode', attached: true,
+                },
+            ],
+            activeSessionCount: 3,
+            activeAttentionCount: 0,
+        },
+    };
+    const navigation = {
+        id: 'workspace-navigation',
+        kind: 'navigation',
+        navigationIdentity: 'navigation-other',
+        scopeIdentity: 'scope-other',
+        name: 'Other Window',
+        environment: 'ssh',
+        environmentLabel: 'SSH',
+        attentionCount: 2,
+        roots: [{ id: 'root-other', name: 'Other', ordinal: 0 }],
+        aiSessions: {
+            activeSessions: [{ executionState: 'running' }],
+            activeSessionCount: 99,
+            aiSessionCount: 99,
+        },
     };
     const html = webviewContentModule.getStewardContent(
         { extensionPath: '/extension' },
@@ -5223,160 +5545,81 @@ function runCurrentWorkspaceRenderingChecks() {
             config,
             relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
             otherStorageHasData: false,
-            openProjects: [
-                {
-                    id: '__openProjects-0', name: 'Saved', path: '/work/saved', color: '#00aacc',
-                    openProjectCardKind: 'current', codexSessions: [{ id: 'session', name: 'Session' }],
-                },
-                {
-                    id: '__openProjectNavigation-other', name: 'Other Window', path: '/work/other-window',
-                    description: 'Other workspace', remoteType: models.ProjectRemoteType.SSH,
-                    color: 'red;" data-injected="yes', openProjectCardKind: 'projectNavigation', showSaveAction: true,
-                    favorite: true, aiSessionAttentionCount: 2,
-                    codexSessions: [{ id: 'leaked-session', name: 'Leaked Session' }],
-                },
-            ],
         },
-        true
+        true,
+        [current, navigation],
     );
-    const getCardTags = (content, projectId) => Array.from(content.matchAll(
-        new RegExp(`<div class="([^"]*)"[^>]*data-id="${projectId}"[^>]*>`, 'g')
-    )).filter(match => hasClassTokens(match[1], 'project', 'steward-item-card')).map(match => match[0]);
-    const hasProjectAccent = (content, style) => Array.from(
-        content.matchAll(/<div class="([^"]*)" style="([^"]*)"><\/div>/g)
-    ).some(match => match[2] === style && hasClassTokens(match[1], 'project-border', 'steward-item-accent'));
-    const savedTags = getCardTags(html, 'saved');
-    const otherTags = getCardTags(html, 'other');
-    const openTags = getCardTags(html, '__openProjects-0');
-    const navigationTags = getCardTags(html, '__openProjectNavigation-other');
+    const getCardTags = (content, cardId) => Array.from(content.matchAll(
+        new RegExp(`<div class="([^"]*)"[^>]*data-id="${cardId}"[^>]*>`, 'g')
+    )).filter(match => hasClassTokens(match[1], 'workspace-card', 'steward-item-card'))
+        .map(match => match[0]);
+    const currentTags = getCardTags(html, current.id);
+    const navigationTags = getCardTags(html, navigation.id);
 
-    assert.strictEqual(savedTags.length, 0);
-    assert.strictEqual(otherTags.length, 0);
-    assert.strictEqual(openTags.length, 1);
-    assert.ok(openTags[0].includes('data-current-workspace'));
+    assert.strictEqual(currentTags.length, 1);
+    assert.ok(currentTags[0].includes('data-current-workspace'));
+    assert.ok(currentTags[0].includes('data-workspace-card-kind="current"'));
+    assert.ok(currentTags[0].includes('session-running'));
+    assert.ok(currentTags[0].includes('data-session-fx="breath"'),
+        'the full Webview render must use the configured running animation');
+    assert.ok(html.includes('title="Workspace — 1 active session running"'));
+    assert.strictEqual((html.match(/class="project-session-fx"/g) || []).length, 1);
     assert.strictEqual(navigationTags.length, 1);
-    assert.ok(!navigationTags[0].includes('data-current-workspace'));
-    assert.ok(!navigationTags[0].includes('data-open-project'));
-    assert.ok(navigationTags[0].includes('data-project-navigation'));
+    assert.ok(navigationTags[0].includes('data-workspace-navigation'));
+    assert.ok(navigationTags[0].includes('data-other-workspace'));
     assert.ok(navigationTags[0].includes('data-readonly-project'));
-    assert.ok(navigationTags[0].includes('title="Switch to this project"'));
-    assert.match(html, /data-open-project/);
-    assert.match(html, /data-project-navigation/);
-    assert.match(html, /title="Switch to this project"/);
+    assert.ok(!navigationTags[0].includes('data-current-workspace'));
+    for (const forbidden of ['session-running', 'data-session-fx', 'active session running']) {
+        assert.strictEqual(navigationTags[0].includes(forbidden), false,
+            `navigation cards must structurally omit ${forbidden}`);
+    }
+    assert.strictEqual((html.match(/class="workspace-card/g) || []).length, 2);
     assert.strictEqual((html.match(/class="codex-sessions"/g) || []).length, 1);
-    assert.ok(navigationTags[0].includes('data-attention-project-key'));
-    assert.ok(!navigationTags[0].includes('data-has-favorite-toggle'));
-    assert.ok(!navigationTags[0].includes('data-has-save-action'));
-    const navigationCardStart = html.indexOf(navigationTags[0]);
-    const navigationCardEnd = html.indexOf('</div>\n</div>', navigationCardStart);
-    const navigationHtml = html.slice(navigationCardStart, navigationCardEnd);
-    assert.ok(!navigationHtml.includes('project-save-badge'));
-    assert.ok(!navigationHtml.includes('project-favorite-badge'));
-    assert.ok(!navigationHtml.includes('project-actions-wrapper'));
-    assert.ok(navigationHtml.includes('project-ai-attention-badge'));
-    assert.ok(!navigationHtml.includes('project-codex-badge'));
-    assert.ok(!navigationHtml.includes('class="codex-sessions"'));
-    assert.ok(!navigationHtml.includes('Leaked Session'));
-    assert.ok(!html.includes('data-injected'));
-    assert.ok(!navigationHtml.includes('red;'));
-    assert.ok(hasProjectAccent(navigationHtml, ''));
-    assert.ok(openTags[0].includes('style="--project-color: #00aacc;"'));
-    assert.ok(hasProjectAccent(html, 'background: #00aacc;'));
-    assert.ok(navigationHtml.includes('title="SSH Project"'));
-    assert.match(navigationHtml, /class="project-description" title="Other workspace">\s*Other workspace\s*<\/p>/);
-
-    const runningNavigation = webviewContentModule.getOpenProjectsGroupContent([
-        {
-            id: 'other-running', name: 'Other Running', path: '/work/other-running',
-            remoteType: models.ProjectRemoteType.SSH,
-            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 2,
-        },
-    ], false, { config });
-    assert.ok(runningNavigation.includes('class="project steward-item-card session-running"'),
-        'navigation cards with running sessions must mark the card as session-running');
-    assert.ok(runningNavigation.includes('data-session-fx="current"'),
-        'navigation cards with running sessions must default to the current animation');
-    assert.ok(runningNavigation.includes('<div class="project-session-fx"></div>'),
-        'navigation cards with running sessions must render the session fx layer');
-    assert.ok(!runningNavigation.includes('project-kind-icon session-running'),
-        'the kind icon must not own the session-running animation');
-    assert.ok(runningNavigation.includes('title="SSH Project — 2 active sessions running"'));
-    const orbitNavigation = webviewContentModule.getOpenProjectsGroupContent([
-        {
-            id: 'other-orbit', name: 'Other Orbit', path: '/work/other-orbit',
-            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 1,
-        },
-    ], false, { config: { ...config, get: key => key === 'aiSessionRunningCardAnimation' ? 'orbit' : undefined } });
-    assert.ok(orbitNavigation.includes('data-session-fx="orbit"'),
-        'navigation cards must honor the configured animation');
-    const invalidFxNavigation = webviewContentModule.getOpenProjectsGroupContent([
-        {
-            id: 'other-invalid-fx', name: 'Other Invalid Fx', path: '/work/other-invalid-fx',
-            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 1,
-        },
-    ], false, { config: { ...config, get: key => key === 'aiSessionRunningCardAnimation' ? 'bogus' : undefined } });
-    assert.ok(invalidFxNavigation.includes('data-session-fx="current"'),
-        'unknown animation values must fall back to the current animation');
-    const noFxNavigation = webviewContentModule.getOpenProjectsGroupContent([
-        {
-            id: 'other-no-fx', name: 'Other No Fx', path: '/work/other-no-fx',
-            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 1,
-        },
-    ], false, { config: { ...config, get: key => key === 'aiSessionRunningCardAnimation' ? 'none' : undefined } });
-    assert.ok(noFxNavigation.includes('class="project steward-item-card session-running"'),
-        'the none animation must keep the static running border');
-    assert.ok(noFxNavigation.includes('data-session-fx="none"'));
-    assert.ok(!noFxNavigation.includes('project-session-fx'),
-        'the none animation must not render the session fx layer');
-    const idleNavigation = webviewContentModule.getOpenProjectsGroupContent([
-        {
-            id: 'other-idle', name: 'Other Idle', path: '/work/other-idle',
-            remoteType: models.ProjectRemoteType.SSH,
-            openProjectCardKind: 'projectNavigation', openProjectActiveSessionCount: 0,
-        },
-    ], false, { config });
-    assert.ok(idleNavigation.includes('class="project-kind-icon"'));
-    assert.ok(!idleNavigation.includes('session-running'),
-        'navigation cards without running sessions must not animate the card edge');
-    assert.ok(!idleNavigation.includes('project-session-fx'),
-        'navigation cards without running sessions must not render the session fx layer');
-    const currentWithSessions = webviewContentModule.getOpenProjectsGroupContent([
-        {
-            id: 'current-with-sessions', name: 'Current', path: '/work/current',
-            remoteType: models.ProjectRemoteType.SSH,
-            openProjectCardKind: 'current', openProjectActiveSessionCount: 2,
-        },
-    ], false, { config });
-    assert.ok(!currentWithSessions.includes('session-running'),
-        'current-workspace cards must not use the navigation session-running animation');
-    assert.ok(!currentWithSessions.includes('project-session-fx'),
-        'current-workspace cards must not render the session fx layer');
+    assert.strictEqual(html.includes('class="workspace-root-tags"'), false);
+    assert.strictEqual(html.includes('class="workspace-root-tag"'), false);
+    assert.strictEqual(html.includes('data-workspace-root-id'), false);
+    assert.ok(html.includes('data-primary-root-id="root-api"'));
+    assert.ok(html.includes('AI 1'));
+    const otherWindowsHtml = html.slice(html.indexOf('OTHER WINDOWS'));
+    assert.ok(otherWindowsHtml.includes(
+        '<span class="project-ai-attention-badge" title="2 items need attention" aria-label="2 items need attention">2</span>'
+    ));
+    assert.strictEqual((otherWindowsHtml.match(/class="project-ai-attention-badge"/g) || []).length, 1);
+    assert.strictEqual(otherWindowsHtml.includes('class="project-codex-badge"'), false);
+    for (const privateDetail of [
+        'data-ai-session-total-count',
+        'data-ai-session-active-count',
+        'data-ai-session-attention-count',
+        'AI session',
+        'active session',
+        'running',
+        'Codex',
+        'Kimi',
+        'Claude',
+        '>99<',
+    ]) {
+        assert.strictEqual(otherWindowsHtml.includes(privateDetail), false,
+            `anonymous navigation attention must omit ${privateDetail}`);
+    }
+    assert.ok(!html.includes('data-id="saved"'));
+    assert.ok(!html.includes('data-id="other"'));
 
     assert.ok(html.includes('role="tablist"'));
     assert.ok(html.includes('data-dashboard-tab="open"'));
     assert.ok(html.includes('data-dashboard-tab="projects"'));
     assert.ok(html.includes('id="dashboard-tab-open"'));
     assert.ok(html.includes('id="dashboard-tab-projects"'));
-    assert.ok(html.includes('aria-controls="dashboard-tab-open"'));
-    assert.ok(html.includes('aria-controls="dashboard-tab-projects"'));
-    assert.ok(html.includes('aria-labelledby="dashboard-tab-open-button"'));
-    assert.ok(html.includes('aria-labelledby="dashboard-tab-projects-button"'));
     assert.ok(html.includes('id="dashboard-search-results"'));
     assert.ok(html.includes('id="dashboard-search-catalog"'));
     assert.strictEqual(html.includes('dashboard-projects-template'), false);
     assert.strictEqual(html.includes('class="groups-wrapper"'), false);
 
-    const currentOnly = webviewContentModule.getOpenProjectsGroupContent([
-        { id: 'current-only', name: 'Current', path: '/work/current', openProjectCardKind: 'current' },
-    ], false, { config });
-    const currentAndOther = webviewContentModule.getOpenProjectsGroupContent([
-        { id: 'current-both', name: 'Current', path: '/work/current', openProjectCardKind: 'current' },
-        { id: 'other-both', name: 'Other', path: '/work/other', openProjectCardKind: 'projectNavigation', aiSessionAttentionCount: 2 },
-    ], false, { config });
-    const navigationOnly = webviewContentModule.getOpenProjectsGroupContent([
-        { id: 'other-only', name: 'Other', path: '/work/other', openProjectCardKind: 'projectNavigation', aiSessionAttentionCount: 2 },
-    ], false, { config });
-    const noCards = webviewContentModule.getOpenProjectsGroupContent([], false, { config });
+    const currentOnly = webviewContentModule.getOpenWorkspacesGroupContent([current], false);
+    const currentAndOther = webviewContentModule.getOpenWorkspacesGroupContent(
+        [current, navigation], false
+    );
+    const navigationOnly = webviewContentModule.getOpenWorkspacesGroupContent([navigation], false);
+    const noCards = webviewContentModule.getOpenWorkspacesGroupContent([], false);
 
     assert.ok(currentOnly.includes('CURRENT WORKSPACE'));
     assert.strictEqual(currentOnly.includes('OTHER WINDOWS'), false);
@@ -5398,8 +5641,6 @@ function runCurrentWorkspaceRenderingChecks() {
     }], { config, otherStorageHasData: false });
     assert.ok(projectsHtml.includes('data-id="static-project"'));
     assert.ok(!projectsHtml.includes('data-current-workspace'));
-    assert.ok(!projectsHtml.includes('data-attention-project-key'));
-    assert.ok(!projectsHtml.includes('project-ai-attention-badge'));
     assert.ok(!projectsHtml.includes('project-codex-badge'));
     assert.ok(!projectsHtml.includes('class="codex-sessions"'));
     assert.ok(!projectsHtml.includes('Must Not Render'));
@@ -5485,25 +5726,29 @@ function runAttentionProjectRenderingChecks() {
             config,
             relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
             otherStorageHasData: false,
-            openProjects: [{
-                id: 'open-project',
-                name: 'Open Repo',
-                path: '/work/open-repo',
-                color: '#00aacc',
-                aiSessionAttentionCount: 2,
-                codexSessions: [{
-                    id: 'codex-one',
-                    name: 'Codex One',
-                    active: true,
-                    attention: { eventId: 'local-event', reason: 'input-required', unread: true },
-                }],
-                activeAiSessions: [{
+        },
+        true,
+        [{
+            id: 'open-workspace', kind: 'current', navigationIdentity: 'navigation-open',
+            scopeIdentity: 'scope-open', name: 'Open Repo', environment: 'local', environmentLabel: 'Local',
+            roots: [{ id: 'root-open', name: 'Open Repo', ordinal: 0 }], attentionCount: 1,
+            aiSessions: {
+                workspaceScopeIdentity: 'scope-open', workspaceNavigationIdentity: 'navigation-open',
+                activeProvider: 'codex', expanded: true,
+                providers: [{ id: 'codex', label: 'Codex', count: 1 }],
+                sessionsByProvider: { codex: [{
+                    id: 'codex-one', name: 'Codex One', provider: 'codex',
+                    primaryRootId: 'root-open', primaryRootLabel: 'Open Repo',
+                }] },
+                unavailableProviders: [], aiSessionCount: 1, attentionCount: 1,
+                defaultTab: 'active', activeSessionCount: 1, activeAttentionCount: 1,
+                activeSessions: [{
                     key: 'codex:codex-one', provider: 'codex', sessionId: 'codex-one', name: 'Codex One',
                     executionState: 'stopped', focused: false, needsAttention: true, pending: false,
+                    backend: 'vscode', attached: true,
                 }],
-            }],
-        },
-        true
+            },
+        }]
     );
     assert.ok(!openProjectHtml.includes('class="project-ai-attention-badge"'));
     assert.ok(openProjectHtml.includes('class="project-codex-badge"'));
@@ -5520,12 +5765,24 @@ function runAttentionProjectRenderingChecks() {
             config,
             relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
             otherStorageHasData: false,
-            openProjects: [{
-                id: 'quiet-project', name: 'Quiet', path: '/work/quiet', color: '#00aacc',
-                codexSessions: [{ id: 'history', name: 'History' }], activeAiSessions: [],
-            }],
         },
-        true
+        true,
+        [{
+            id: 'quiet-workspace', kind: 'current', navigationIdentity: 'navigation-quiet',
+            scopeIdentity: 'scope-quiet', name: 'Quiet', environment: 'local', environmentLabel: 'Local',
+            roots: [{ id: 'root-quiet', name: 'Quiet', ordinal: 0 }], attentionCount: 0,
+            aiSessions: {
+                workspaceScopeIdentity: 'scope-quiet', workspaceNavigationIdentity: 'navigation-quiet',
+                activeProvider: 'codex', expanded: false,
+                providers: [{ id: 'codex', label: 'Codex', count: 1 }],
+                sessionsByProvider: { codex: [{
+                    id: 'history', name: 'History', provider: 'codex',
+                    primaryRootId: 'root-quiet', primaryRootLabel: 'Quiet',
+                }] },
+                unavailableProviders: [], aiSessionCount: 1, attentionCount: 0,
+                defaultTab: 'sessions', activeSessions: [], activeSessionCount: 0, activeAttentionCount: 0,
+            },
+        }]
     );
     assert.ok(!quietProjectHtml.includes('class="ai-session-active-count"'));
     assert.ok(!quietProjectHtml.includes('class="ai-session-attention-count"'));
@@ -5544,7 +5801,7 @@ function runFavoriteDndChecks() {
                 return kind === 'favorites' ? {} : null;
             }
             if (selector === '[data-virtual-group]') {
-                return kind === 'favorites' || kind === 'open-projects' ? {} : null;
+                return kind === 'favorites' || kind === 'open-workspaces' ? {} : null;
             }
             return null;
         },
@@ -5553,19 +5810,19 @@ function runFavoriteDndChecks() {
     const noDrag = { hasAttribute: attribute => attribute === 'data-nodrag' };
     const favorites = createContainer('favorites');
     const otherFavorites = createContainer('favorites');
-    const openProjects = createContainer('open-projects');
+    const openWorkspaces = createContainer('open-workspaces');
     const ordinary = createContainer('ordinary');
     const ordinaryTwo = createContainer('ordinary');
 
     assert.strictEqual(context.canMoveProject(draggable, favorites), true);
-    assert.strictEqual(context.canMoveProject(draggable, openProjects), false);
+    assert.strictEqual(context.canMoveProject(draggable, openWorkspaces), false);
     assert.strictEqual(context.canMoveProject(draggable, ordinary), true);
     assert.strictEqual(context.canMoveProject(noDrag, favorites), false);
     assert.strictEqual(context.canAcceptProject(favorites, favorites), true);
     assert.strictEqual(context.canAcceptProject(otherFavorites, favorites), false);
     assert.strictEqual(context.canAcceptProject(ordinary, favorites), false);
     assert.strictEqual(context.canAcceptProject(favorites, ordinary), false);
-    assert.strictEqual(context.canAcceptProject(openProjects, ordinary), false);
+    assert.strictEqual(context.canAcceptProject(openWorkspaces, ordinary), false);
     assert.strictEqual(context.canAcceptProject(ordinaryTwo, ordinary), true);
     assert.ok(source.includes("type: 'reordered-favorites'"));
     assert.strictEqual(fs.readFileSync(generatedPath, 'utf8'), source);
@@ -5719,7 +5976,8 @@ function runBatchAiSessionWebviewChecks() {
         return row;
     };
     const createProject = (projectId, provider) => {
-        const attributes = new Set(['data-open-project']);
+        const attributes = new Set(['data-current-workspace']);
+        const attributeValues = { 'data-id': projectId };
         let rows = [];
         let replacementRows = null;
         const sessionSection = {};
@@ -5751,10 +6009,16 @@ function runBatchAiSessionWebviewChecks() {
                 nextRows.forEach(row => { row.project = project; });
                 replacementRows = nextRows;
             },
-            getAttribute: attribute => attribute === 'data-id' ? projectId : null,
+            getAttribute: attribute => attributeValues[attribute] || null,
             hasAttribute: attribute => attributes.has(attribute),
-            removeAttribute: attribute => attributes.delete(attribute),
-            setAttribute: attribute => attributes.add(attribute),
+            removeAttribute: attribute => {
+                attributes.delete(attribute);
+                delete attributeValues[attribute];
+            },
+            setAttribute: (attribute, value) => {
+                attributes.add(attribute);
+                attributeValues[attribute] = String(value ?? '');
+            },
             toggleAttribute: (attribute, force) => {
                 if (force) {
                     attributes.add(attribute);
@@ -5780,8 +6044,12 @@ function runBatchAiSessionWebviewChecks() {
             querySelectorAll: selector => {
                 if (selector === '.ai-session-batch-actions button') return batchButtons;
                 if (selector === '.codex-session-row[data-session-id]') return rows;
+                if (selector === '.codex-session-row[data-session-id][data-session-provider]') return rows;
                 return [];
             },
+            focus: () => {},
+            scrollIntoView: () => {},
+            addEventListener: () => {},
         };
         return project;
     };
@@ -5795,6 +6063,17 @@ function runBatchAiSessionWebviewChecks() {
     projectB.replaceRowsOnNextUpdate([sameIdOtherProviderRow]);
     projectB.querySelector('.codex-sessions').outerHTML = '';
     const projects = [projectA, projectB];
+    const workspaceProject = createProject('workspace-current', 'codex');
+    const workspaceSessionRow = createSessionRow('codex', 'workspace-session');
+    let workspaceSessionFocuses = 0;
+    let workspaceSessionScrolls = 0;
+    workspaceSessionRow.focus = () => { workspaceSessionFocuses += 1; };
+    workspaceSessionRow.scrollIntoView = () => { workspaceSessionScrolls += 1; };
+    workspaceSessionRow.addEventListener = () => {};
+    workspaceProject.setAttribute('data-workspace-navigation-identity', 'navigation-current');
+    workspaceProject.setAttribute('data-codex-expanded', '');
+    workspaceProject.replaceRowsOnNextUpdate([workspaceSessionRow]);
+    workspaceProject.querySelector('.codex-sessions').outerHTML = '';
     let attentionBadge = null;
     const attentionProjectClasses = new Set();
     const attentionRow = createSessionRow('codex', 'attention-session');
@@ -5854,7 +6133,7 @@ function runBatchAiSessionWebviewChecks() {
     };
     const openAttentionProjectCard = {
         getAttribute: attribute => attribute === 'data-attention-project-key' ? 'attention-project-a' : null,
-        hasAttribute: attribute => attribute === 'data-open-project',
+        hasAttribute: attribute => attribute === 'data-current-workspace',
         classList: { add: () => {}, remove: () => {} },
         querySelector: selector => {
             if (selector === '.project-ai-attention-badge') return openAttentionBadge;
@@ -5920,11 +6199,12 @@ function runBatchAiSessionWebviewChecks() {
     const context = {
         normalizeDashboardSearchCatalog: value => value
             && Array.isArray(value.sessions)
-            && Array.isArray(value.openProjects)
             && Array.isArray(value.savedProjects)
             && Array.isArray(value.todos)
+            && value.version === 2
+            && Array.isArray(value.openWorkspaces)
             ? value
-            : { sessions: [], openProjects: [], savedProjects: [], todos: [] },
+            : { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: [] },
         document: {
             body: {
                 classList: { toggle: () => {} },
@@ -5940,8 +6220,11 @@ function runBatchAiSessionWebviewChecks() {
             }),
             querySelector: () => null,
             querySelectorAll: selector => {
-                if (selector === '.project[data-open-project][data-id]') {
+                if (selector === '.workspace-card[data-current-workspace][data-id]') {
                     return projects;
+                }
+                if (selector === '.workspace-card[data-workspace-navigation-identity]') {
+                    return [workspaceProject];
                 }
                 if (selector === '.project[data-ai-session-managing], .project[data-ai-session-pending]') {
                     return projects.filter(project => project.hasAttribute('data-ai-session-managing')
@@ -6056,9 +6339,17 @@ function runBatchAiSessionWebviewChecks() {
     });
     messages.length = 0;
 
+    assert.strictEqual(context.window.__projectStewardRevealWorkspaceSession(
+        'navigation-current', 'codex', 'workspace-session'
+    ), true);
+    assert.strictEqual(workspaceSessionFocuses, 1);
+    assert.strictEqual(workspaceSessionScrolls, 1);
+    assert.deepStrictEqual(messages, [],
+        'revealing a workspace session must not resume it or target a synthetic root project');
+
     const navigationProject = {
-        getAttribute: attribute => attribute === 'data-id' ? '__openProjectNavigation-other' : null,
-        hasAttribute: attribute => attribute === 'data-project-navigation' || attribute === 'data-readonly-project',
+        getAttribute: attribute => attribute === 'data-id' ? '__openWorkspaceNavigation-other' : null,
+        hasAttribute: attribute => attribute === 'data-workspace-navigation' || attribute === 'data-readonly-project',
     };
     const navigationTarget = {
         closest: selector => selector === '.project' || selector === '.project[data-id]'
@@ -6071,22 +6362,48 @@ function runBatchAiSessionWebviewChecks() {
     assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [
         {
             type: 'selected-project',
-            projectId: '__openProjectNavigation-other',
+            projectId: '__openWorkspaceNavigation-other',
             projectOpenType: 0,
         },
         {
             type: 'selected-project',
-            projectId: '__openProjectNavigation-other',
+            projectId: '__openWorkspaceNavigation-other',
             projectOpenType: 0,
         },
         {
             type: 'selected-project',
-            projectId: '__openProjectNavigation-other',
+            projectId: '__openWorkspaceNavigation-other',
             projectOpenType: 0,
         },
     ]);
     assert.ok(messages.every(message => !Object.prototype.hasOwnProperty.call(message, 'uri')));
     messages.length = 0;
+
+    const clickBoundaryProject = createProject('workspace-click-target', 'codex');
+    const aiSessionRegion = {};
+    const createWorkspaceClickTarget = insideAiSessionRegion => ({
+        closest: selector => {
+            if (selector === '.project' || selector === '.project[data-id]') return clickBoundaryProject;
+            if (selector === '[data-ai-session-region]' && insideAiSessionRegion) return aiSessionRegion;
+            return null;
+        },
+    });
+    const summaryTarget = createWorkspaceClickTarget(false);
+    const sessionPanelTarget = createWorkspaceClickTarget(true);
+    const sessionDividerTarget = createWorkspaceClickTarget(true);
+
+    eventListeners.click({ button: 0, target: summaryTarget });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [{
+        type: 'toggle-codex-sessions',
+        projectId: 'workspace-click-target',
+        expanded: true,
+    }], 'clicking the CURRENT WORKSPACE summary must still toggle AI Sessions');
+    messages.length = 0;
+
+    eventListeners.click({ button: 0, target: sessionPanelTarget });
+    eventListeners.click({ button: 0, target: sessionDividerTarget });
+    assert.deepStrictEqual(messages, [],
+        'clicking the AI Sessions panel or its divider must not collapse CURRENT WORKSPACE');
 
     activeRow.setAttribute('data-session-active', '');
     const pendingRow = createSessionRow('claude', '');
@@ -6135,6 +6452,10 @@ function runBatchAiSessionWebviewChecks() {
     const tmuxRow = createSessionRow('kimi', 'tmux-session', 'tmux');
     tmuxRow.project = projectA;
     tmuxRow.setAttribute('data-session-active', '');
+    activeRow.setAttribute('data-ai-session-attention', '');
+    activeRow.setAttribute('data-session-event-id', 'attention-active-session');
+    tmuxRow.setAttribute('data-ai-session-attention', '');
+    tmuxRow.setAttribute('data-session-event-id', 'attention-tmux-session');
     const detachTmuxTarget = {
         getAttribute: attribute => attribute === 'data-action' ? 'detach-ai-session-terminal' : null,
         closest: selector => {
@@ -6157,10 +6478,14 @@ function runBatchAiSessionWebviewChecks() {
     }, {
         type: 'create-ai-session', projectId: 'project-a',
     }, {
+        type: 'acknowledge-ai-session-attention', eventIds: ['attention-active-session'],
+    }, {
         type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'codex', sessionId: 'active-session',
     }, {
         type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'claude',
         pendingCreatedAt: '2026-07-18T08:00:00Z',
+    }, {
+        type: 'acknowledge-ai-session-attention', eventIds: ['attention-tmux-session'],
     }, {
         type: 'detach-ai-session-terminal', projectId: 'project-a', provider: 'kimi',
         sessionId: 'tmux-session',
@@ -6226,6 +6551,20 @@ function runBatchAiSessionWebviewChecks() {
     }, 'pointer context-menu activation must preserve the Direct close route');
     messages.length = 0;
 
+    eventListeners.contextmenu({
+        target: otherCodexRow.primaryAction,
+        preventDefault: () => {},
+        clientX: 20,
+        clientY: 20,
+        keyboardTrigger: false,
+    });
+    eventListeners.click({ button: 0, target: archiveMenuItem });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.pop())), {
+        type: 'archive-codex-session', projectId: 'project-a', provider: 'codex',
+        sessionId: 'other-session',
+    }, 'context-menu archive must preserve the owning workspace card ID');
+    messages.length = 0;
+
     attentionRow.setAttribute('data-ai-session-attention', '');
     attentionRow.setAttribute('data-session-event-id', 'full-owner-event-a');
     windowEventListeners.message({ data: {
@@ -6243,93 +6582,6 @@ function runBatchAiSessionWebviewChecks() {
         eventIds: ['full-owner-event-a', 'full-owner-event-b'],
     }, 'a fresh full render must acknowledge every current owner event before an incremental update');
     messages.length = 0;
-    windowEventListeners.message({ data: {
-        type: 'ai-session-attention-projects-updated',
-        projects: [{
-            projectKey: 'attention-project-a',
-            attentionCount: 1,
-            eventIds: ['existing-event'],
-            sessions: [{ sessionKey: 'codex:attention-session', eventId: 'existing-event' }],
-        }],
-    } });
-    assert.strictEqual(attentionBadge.textContent, '1');
-    assert.strictEqual(attentionBadge.title, '1 AI session needs attention');
-    assert.strictEqual(openAttentionBadge, null);
-    assert.strictEqual(openAttentionBadgeInsertions, 0);
-    assert.strictEqual(openSessionBadgeChildren['.ai-session-attention-count'].textContent, '1');
-    assert.strictEqual(attentionRow.hasAttribute('data-ai-session-attention'), true);
-    assert.ok(attentionRow.querySelector('.ai-session-attention-indicator'));
-    assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
-
-    windowEventListeners.message({ data: {
-        type: 'ai-session-attention-projects-updated',
-        projects: [{
-            projectKey: 'attention-project-a',
-            attentionCount: 2,
-            eventIds: ['existing-event', 'new-event'],
-            sessions: [
-                { sessionKey: 'codex:attention-session', eventId: 'existing-event' },
-                { sessionKey: 'codex:not-rendered', eventId: 'new-event' },
-            ],
-        }],
-    } });
-    assert.strictEqual(attentionBadge.textContent, '2');
-    assert.strictEqual(attentionProjectClasses.has('attention-animate'), true);
-    timeoutCallbacks.splice(0).forEach(callback => callback());
-    assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
-
-    windowEventListeners.message({ data: {
-        type: 'ai-session-attention-projects-updated',
-        projects: [{
-            projectKey: 'attention-project-a',
-            attentionCount: 2,
-            eventIds: ['existing-event', 'new-event'],
-            sessions: [
-                { sessionKey: 'codex:attention-session', eventId: 'existing-event' },
-                { sessionKey: 'codex:not-rendered', eventId: 'new-event' },
-            ],
-        }],
-    } });
-    assert.strictEqual(attentionProjectClasses.has('attention-animate'), false);
-    windowEventListeners.message({ data: {
-        type: 'ai-session-attention-projects-updated',
-        projects: [],
-    } });
-    assert.strictEqual(attentionBadge, null);
-    assert.strictEqual(attentionRow.hasAttribute('data-ai-session-attention'), false);
-    assert.strictEqual(attentionRow.querySelector('.ai-session-attention-indicator'), null);
-
-    windowEventListeners.message({ data: {
-        type: 'ai-session-attention-projects-updated',
-        projects: [{
-            projectKey: 'attention-project-a', attentionCount: 1,
-            eventIds: ['owner-event-a', 'owner-event-b'],
-            sessions: [{
-                sessionKey: 'codex:attention-session',
-                eventId: 'owner-event-a',
-                eventIds: ['owner-event-a', 'owner-event-b'],
-            }],
-        }],
-    } });
-    messages.length = 0;
-    eventListeners.click({ button: 0, target: attentionRow.primaryAction });
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0])), {
-        type: 'acknowledge-ai-session-attention',
-        eventIds: ['owner-event-a', 'owner-event-b'],
-    });
-    windowEventListeners.message({ data: {
-        type: 'ai-session-attention-projects-updated',
-        projects: [{
-            projectKey: 'attention-project-a', attentionCount: 1,
-            eventIds: ['later-generation'],
-            sessions: [{ sessionKey: 'codex:attention-session', eventId: 'later-generation', eventIds: ['later-generation'] }],
-        }],
-    } });
-    messages.length = 0;
-    eventListeners.click({ button: 0, target: attentionRow.primaryAction });
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages[0].eventIds)), ['later-generation']);
-    messages.length = 0;
-
     windowEventListeners.message({ data: {
         type: 'active-ai-session-terminal-changed',
         provider: 'codex',
@@ -6351,28 +6603,24 @@ function runBatchAiSessionWebviewChecks() {
         provider: 'codex',
         sessionId: 'active-session',
     } });
-    const replacementActiveRow = createSessionRow('codex', 'active-session');
-    const replacementOtherRow = createSessionRow('codex', 'replacement-other');
-    projectA.replaceRowsOnNextUpdate([replacementActiveRow, replacementOtherRow]);
+    context.applyWorkspaceUpdate = message => message.type === 'workspace-updated'
+        && message.version === 2
+        && message.currentWorkspaceCount === 1
+        && typeof message.html === 'string';
     windowEventListeners.message({ data: {
         type: 'ai-sessions-updated',
-        version: 1,
+        version: 2,
         sequence: 1,
-        searchCatalog: { sessions: [], openProjects: [], savedProjects: [], todos: TODO_SEARCH_ITEMS },
-        openProjects: [{
-            projectId: 'project-a',
-            expanded: true,
-            aiSessionCount: 0,
-            sessionSectionHtml: '<div class="codex-sessions">replacement</div>',
-        }],
+        currentWorkspaceCount: 1,
+        html: '<div class="open-current-workspace-group"></div>',
+        searchCatalog: { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: TODO_SEARCH_ITEMS },
     } });
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(replacedSearchCatalog.todos)),
         TODO_SEARCH_ITEMS,
         'AI incremental rendering must preserve the non-empty TODO catalog replacement'
     );
-    assert.strictEqual(replacementActiveRow.hasAttribute('data-ai-session-active-terminal'), true);
-    assert.strictEqual(replacementOtherRow.hasAttribute('data-ai-session-active-terminal'), false);
+    assert.strictEqual(activeRow.hasAttribute('data-ai-session-active-terminal'), true);
 
     const manager = context.window.__projectStewardBatchAiSessions;
     manager.enter('project-a', 'codex');
@@ -6488,164 +6736,99 @@ function runBatchAiSessionWebviewChecks() {
     assert.ok(providerExitIndex < providerMessageIndex);
     const projectCollapse = extractFunctionBody(source, 'toggleCodexSessions');
     const collapseExitIndex = projectCollapse.indexOf('exitAiSessionBatchManagement()');
+    const collapseToggleIndex = projectCollapse.indexOf('toggleAttribute("data-codex-expanded", expanded)');
     const collapseMessageIndex = projectCollapse.indexOf("type: 'toggle-codex-sessions'");
     assert.notStrictEqual(collapseExitIndex, -1);
+    assert.notStrictEqual(collapseToggleIndex, -1);
     assert.notStrictEqual(collapseMessageIndex, -1);
     assert.ok(collapseExitIndex < collapseMessageIndex);
+    assert.ok(collapseToggleIndex < collapseMessageIndex,
+        'the visible CSS transition must start before expansion state is persisted');
 }
 
 function runAiSessionIncrementalRefreshSourceChecks() {
-    const dashboard = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
-    const readCoordinatorPath = path.join(__dirname, '..', 'src', 'aiSessions', 'readCoordinator.ts');
-    assert.ok(fs.existsSync(readCoordinatorPath));
-    const readCoordinatorSource = fs.readFileSync(readCoordinatorPath, 'utf8');
-    const viewModelsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'viewModels.ts');
-    assert.ok(fs.existsSync(viewModelsPath));
-    const viewModelsSource = fs.readFileSync(viewModelsPath, 'utf8');
-    const projectHydrationPath = path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydration.ts');
-    assert.ok(fs.existsSync(projectHydrationPath));
-    const projectHydrationSource = fs.readFileSync(projectHydrationPath, 'utf8');
-    const projectCandidatesPath = path.join(__dirname, '..', 'src', 'aiSessions', 'projectCandidates.ts');
-    assert.ok(fs.existsSync(projectCandidatesPath));
-    const projectCandidatesSource = fs.readFileSync(projectCandidatesPath, 'utf8');
-    const sessionPathsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'sessionPaths.ts');
-    assert.ok(fs.existsSync(sessionPathsPath));
-    const sessionPathsSource = fs.readFileSync(sessionPathsPath, 'utf8');
-    const pendingTerminalsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'pendingTerminals.ts');
-    assert.ok(fs.existsSync(pendingTerminalsPath));
-    const pendingTerminalsSource = fs.readFileSync(pendingTerminalsPath, 'utf8');
-    const pendingTerminalResolverPath = path.join(__dirname, '..', 'src', 'aiSessions', 'pendingTerminalResolver.ts');
-    assert.ok(fs.existsSync(pendingTerminalResolverPath));
-    const pendingTerminalResolverSource = fs.readFileSync(pendingTerminalResolverPath, 'utf8');
-    const terminalCandidatesPath = path.join(__dirname, '..', 'src', 'aiSessions', 'terminalCandidates.ts');
-    assert.ok(fs.existsSync(terminalCandidatesPath));
-    const terminalCandidatesSource = fs.readFileSync(terminalCandidatesPath, 'utf8');
-    const scanOptionsPath = path.join(__dirname, '..', 'src', 'aiSessions', 'scanOptions.ts');
-    assert.ok(fs.existsSync(scanOptionsPath));
-    const scanOptionsSource = fs.readFileSync(scanOptionsPath, 'utf8');
-    const terminalCwdPath = path.join(__dirname, '..', 'src', 'aiSessions', 'terminalCwd.ts');
-    assert.ok(fs.existsSync(terminalCwdPath));
-    const terminalCwdSource = fs.readFileSync(terminalCwdPath, 'utf8');
-    const workspaceHelpersPath = path.join(__dirname, '..', 'src', 'projects', 'workspaceHelpers.ts');
-    assert.ok(fs.existsSync(workspaceHelpersPath));
-    const workspaceHelpersSource = fs.readFileSync(workspaceHelpersPath, 'utf8');
-    const typesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'types.ts'), 'utf8');
-    assert.ok(typesSource.includes('scannedFiles: number;'));
-    assert.ok(typesSource.includes('parsedFiles: number;'));
-    assert.ok(typesSource.includes('maxFiles?: number;'));
-    assert.ok(typesSource.includes('reason?: string;'));
-    const providersSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'providers.ts'), 'utf8');
-    assert.ok(providersSource.includes('export interface AiSessionProviderRegistry'));
-    assert.ok(providersSource.includes('export function createAiSessionProviderRegistry('));
-    assert.ok(providersSource.includes('providers(): AiSessionProvider[]'));
-    assert.ok(!dashboard.includes('AI_SESSION_PROVIDER_IDS'));
-    const controllerPath = path.join(__dirname, '..', 'src', 'aiSessions', 'dashboardController.ts');
-    assert.ok(fs.existsSync(controllerPath));
-    const controllerSource = fs.readFileSync(controllerPath, 'utf8');
+    const root = path.join(__dirname, '..');
+    const dashboard = fs.readFileSync(path.join(root, 'src', 'dashboard.ts'), 'utf8');
+    const readCoordinatorSource = fs.readFileSync(
+        path.join(root, 'src', 'aiSessions', 'readCoordinator.ts'), 'utf8'
+    );
+    const controllerSource = fs.readFileSync(
+        path.join(root, 'src', 'aiSessions', 'dashboardController.ts'), 'utf8'
+    );
+    const workspaceHydrationSource = fs.readFileSync(
+        path.join(root, 'src', 'workspaces', 'sessionHydrationController.ts'), 'utf8'
+    );
+    const projectCandidatesSource = fs.readFileSync(
+        path.join(root, 'src', 'aiSessions', 'projectCandidates.ts'), 'utf8'
+    );
+    const sessionPathsSource = fs.readFileSync(
+        path.join(root, 'src', 'aiSessions', 'sessionPaths.ts'), 'utf8'
+    );
+    const projectWebviewSource = fs.readFileSync(
+        path.join(root, 'src', 'webview', 'webviewProjectScripts.js'), 'utf8'
+    );
+
+    for (const removed of [
+        'src/aiSessions/viewModels.ts',
+        'src/aiSessions/projectHydration.ts',
+        'src/aiSessions/projectHydrationController.ts',
+        'src/aiSessions/activeSessionProjection.ts',
+    ]) {
+        assert.strictEqual(fs.existsSync(path.join(root, removed)), false, `${removed} must stay deleted`);
+    }
+
     assert.ok(controllerSource.includes('export class AiSessionDashboardController'));
-    assert.ok(controllerSource.includes('scheduleRefresh('));
-    assert.ok(controllerSource.includes('setWatchersActive('));
     assert.ok(controllerSource.includes('buildAiSessionsUpdatedMessage'));
+    assert.ok(controllerSource.includes('getCards: () => WorkspaceCardViewModel[];'));
+    assert.ok(controllerSource.includes("async refreshNow(reason = 'refresh'): Promise<void>"));
+    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-not-delivered');"));
+    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-post-error');"));
+    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-build-error');"));
+    assert.ok(controllerSource.includes("this.scheduleRefresh('watcher')"));
+    assert.ok(controllerSource.includes("this.refreshNow('new-session')"));
+    assert.ok(!controllerSource.includes('openProjectCardKind'));
+    assert.ok(!controllerSource.includes('getOpenProjectAiSessionViewModel'));
+
+    const aiSessionUpdateBody = extractFunctionBody(projectWebviewSource, 'applyAiSessionsUpdate');
+    assert.ok(aiSessionUpdateBody.includes('syncAiSessionBatchManagementDom(projectDiv)'));
+    assert.ok(projectWebviewSource.includes("message.type !== 'ai-sessions-updated'"));
+    assert.ok(aiSessionUpdateBody.includes('message.version !== 2'));
+
     assert.ok(dashboard.includes('AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS'));
     assert.ok(dashboard.includes('watcherRefreshMinIntervalMs: AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS'));
     const refreshFunction = extractFunctionBody(dashboard, 'refreshAiSessionViewsIncrementally');
     assert.ok(refreshFunction.includes('aiSessionDashboardController.refreshNow()'));
-    assert.ok(controllerSource.includes("async refreshNow(reason = 'refresh'): Promise<void>"));
-    assert.ok(controllerSource.includes('const message = this.getUpdatedMessage(reason);'));
-    assert.ok(controllerSource.includes('this.options.postMessage(message).then(delivered =>'));
-    assert.ok(controllerSource.includes('if (!delivered)'));
-    assert.ok(controllerSource.includes('refresh: (reason: string) => void;'));
-    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-not-delivered');"));
-    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-post-error');"));
-    assert.ok(controllerSource.includes("this.options.refresh('ai-session-update-build-error');"));
-    const attentionControllerPath = path.join(__dirname, '..', 'src', 'aiSessions', 'attentionController.ts');
-    assert.ok(fs.existsSync(attentionControllerPath));
-    const attentionControllerSource = fs.readFileSync(attentionControllerPath, 'utf8');
-    const evaluateAttentionBody = extractMethodBody(attentionControllerSource, 'evaluate');
-    assert.ok(evaluateAttentionBody.includes('const providers = this.options.getProviders();'));
-    const projectHydrationControllerPath = path.join(__dirname, '..', 'src', 'aiSessions', 'projectHydrationController.ts');
-    assert.ok(fs.existsSync(projectHydrationControllerPath));
-    const projectHydrationControllerSource = fs.readFileSync(projectHydrationControllerPath, 'utf8');
-    const hydrateOpenProjectsBody = extractMethodBody(projectHydrationControllerSource, 'hydrate');
-    assert.ok(hydrateOpenProjectsBody.includes('hydrateOpenProjectsWithAiSessions({'));
-    assert.ok(projectHydrationSource.includes('export function hydrateOpenProjectsWithAiSessions('));
-    assert.ok(projectHydrationSource.includes('prepareAiSessionsForDisplay('));
-    assert.ok(projectHydrationSource.includes('getAttentionSessionLookupKey('));
-    assert.ok(projectHydrationSource.includes('function getActiveAiSessionProvider('));
-    assert.ok(!dashboard.includes('function getActiveAiSessionProvider('));
-    const openProjectViewModelBody = extractFunctionBody(dashboard, 'getOpenProjectAiSessionViewModel');
-    assert.ok(openProjectViewModelBody.includes('openProjectAiSessionViewModelBuilder.build({'));
-    assert.ok(viewModelsSource.includes('export function buildOpenProjectAiSessionViewModel('));
-    assert.ok(viewModelsSource.includes('export function createOpenProjectAiSessionViewModelBuilder('));
-    assert.ok(viewModelsSource.includes('sessionsByProvider[providerId]'));
-    assert.ok(viewModelsSource.includes('attentionCount: project.aiSessionAttentionCount ?? providers.reduce'));
-    const getAiSessionResultsBody = extractMethodBody(projectHydrationControllerSource, 'getAiSessionResults');
-    assert.ok(!dashboard.includes('function getAiSessionResults('));
-    assert.ok(getAiSessionResultsBody.includes('this.options.readCoordinator.getResults('));
-    assert.ok(projectHydrationControllerSource.includes("from './scanOptions'"));
-    assert.ok(hydrateOpenProjectsBody.includes('const maxFiles = getAiSessionScanMaxFiles(reason, this.options.incrementalScanMaxFiles);'));
-    assert.ok(getAiSessionResultsBody.includes('candidatePaths, reason, maxFiles'));
-    assert.ok(projectCandidatesSource.includes('export function getAiSessionOpenProjectCandidates'));
-    assert.ok(projectCandidatesSource.includes('export function getAiSessionCandidatePaths'));
-    assert.ok(projectCandidatesSource.includes('export function getOpenProjectAiSessionKey('));
-    assert.ok(projectCandidatesSource.includes('export function getOpenProjectTerminalCwd('));
-    assert.ok(sessionPathsSource.includes('export function getProjectAiSessions('));
-    assert.ok(sessionPathsSource.includes('export function getAiSessionTerminalCwd('));
+    assert.ok(dashboard.includes('new WorkspaceSessionHydrationController<vscode.Terminal>({'));
+    assert.ok(dashboard.includes('getCurrentWorkspaceAiSessions: workspace => workspaceSessionHydrationController.hydrate(workspace)'));
+    assert.strictEqual(
+        (dashboard.match(/getWorkspaceTarget: getCurrentWorkspaceActionTarget/g) || []).length,
+        6,
+        'all live AI action and attention controllers must resolve the v2 current workspace',
+    );
+    assert.strictEqual(dashboard.includes('as unknown as Project[]'), false);
+    assert.strictEqual((dashboard.match(/\.service\.getSessions\(/g) || []).length, 0);
+
+    assert.ok(workspaceHydrationSource.includes('export class WorkspaceSessionHydrationController'));
+    assert.ok(workspaceHydrationSource.includes('getWorkspaceAiSessionCandidatePaths(workspace)'));
+    assert.ok(workspaceHydrationSource.includes('this.options.readCoordinator.getResults({ candidatePaths, reason, maxFiles })'));
+    assert.ok(workspaceHydrationSource.includes('hydrateWorkspaceAiSessions({'));
+    assert.ok(workspaceHydrationSource.includes('activeProvider: this.options.getActiveProvider(workspace.scopeIdentity)'));
+    assert.ok(workspaceHydrationSource.includes('expanded: this.options.getExpanded(workspace.scopeIdentity)'));
+
+    assert.ok(projectCandidatesSource.includes("from '../workspaces/sessionHydration'"));
+    assert.ok(!projectCandidatesSource.includes('getOpenProjectAiSessionKey'));
+    assert.ok(!projectCandidatesSource.includes('getOpenProjectTerminalCwd'));
+    assert.ok(!sessionPathsSource.includes('getProjectAiSessions'));
+    assert.ok(!sessionPathsSource.includes('getAiSessionTerminalCwd'));
     assert.ok(sessionPathsSource.includes('export function getAiSessionComparableCwd('));
     assert.ok(sessionPathsSource.includes('export function getAiSessionTerminalName('));
-    assert.ok(pendingTerminalsSource.includes('export function getAiSessionIdsForCwd('));
-    assert.ok(pendingTerminalsSource.includes('export function findPendingAiSessionTerminalMatch('));
-    assert.ok(pendingTerminalResolverSource.includes('export async function resolvePendingAiSessionTerminals'));
-    assert.ok(pendingTerminalResolverSource.includes('runtimeCoordinator.promotePending('));
-    assert.ok(pendingTerminalResolverSource.includes('options.settlePending'));
-    assert.ok(!pendingTerminalResolverSource.includes('replacePendingTerminals'));
-    assert.ok(terminalCandidatesSource.includes('export function getAiSessionTerminalCandidates('));
-    assert.ok(terminalCandidatesSource.includes("reason: 'terminal-candidates'"));
-    assert.ok(scanOptionsSource.includes('export function getAiSessionScanMaxFiles('));
-    assert.ok(scanOptionsSource.includes("reason === 'alias-original-name'"));
-    assert.ok(scanOptionsSource.includes("reason === 'terminal-candidates'"));
-    assert.ok(terminalCwdSource.includes('export function getUsableTerminalCwd('));
-    assert.ok(workspaceHelpersSource.includes('export function getWorkspacePath('));
-    assert.ok(workspaceHelpersSource.includes('export function getWorkspaceUri('));
-    assert.ok(workspaceHelpersSource.includes('export function getWorkspaceUris('));
-    assert.ok(!dashboard.includes('function getCodexOpenProjectCandidates('));
-    assert.ok(!dashboard.includes('function normalizeCodexComparablePath('));
-    assert.ok(!dashboard.includes('function getProjectAiSessions('));
-    assert.ok(!dashboard.includes('function getAiSessionTerminalCwd('));
-    assert.ok(!dashboard.includes('function getAiSessionComparableCwd('));
-    assert.ok(!dashboard.includes('function getAiSessionTerminalName('));
-    assert.ok(!dashboard.includes('function getAiSessionIdsForCwd('));
-    assert.ok(!dashboard.includes('function findPendingAiSessionTerminalMatch('));
-    assert.ok(!dashboard.includes('function resolvePendingAiSessionTerminals('));
-    assert.ok(!dashboard.includes('function getTrackedAiSessionTerminalKeys('));
-    assert.ok(!dashboard.includes('function getAiSessionTerminalCandidates('));
-    assert.ok(!dashboard.includes('function getAiSessionScanMaxFiles('));
-    assert.ok(!dashboard.includes('function getUsableTerminalCwd('));
-    assert.ok(!dashboard.includes('function getAiSessionTerminalMarkerPath('));
-    assert.ok(!dashboard.includes('function getPendingAiSessionTerminalMarkerPath('));
-    assert.ok(!dashboard.includes('function getWorkspacePath('));
-    assert.ok(!dashboard.includes('function getWorkspaceUri('));
-    assert.ok(!dashboard.includes('function getWorkspaceUris('));
-    const getAiSessionAssignmentsBody = extractMethodBody(projectHydrationControllerSource, 'getAiSessionAssignments');
-    assert.ok(!dashboard.includes('function getAiSessionAssignments('));
-    assert.ok(getAiSessionAssignmentsBody.includes('this.options.readCoordinator.getAssignments('));
-    assert.ok(!dashboard.includes('function withAiSessions('));
-    assert.ok(!dashboard.includes('function trackPendingAiSessionTerminal('));
-    assert.strictEqual((dashboard.match(/\.service\.getSessions\(/g) || []).length, 0);
-    assert.strictEqual(dashboard.includes('function getProviderAiSessions('), false);
+
     assert.ok(readCoordinatorSource.includes('export class AiSessionReadCoordinator'));
     assert.ok(readCoordinatorSource.includes("event: 'ai-session-scan'"));
     assert.ok(readCoordinatorSource.includes('durationMs: this.now() - startedAt'));
     assert.ok(readCoordinatorSource.includes('scannedFileCount: result.scannedFiles'));
     assert.ok(readCoordinatorSource.includes('parsedFileCount: result.parsedFiles'));
     assert.ok(readCoordinatorSource.includes('scanBudget: normalizedOptions.maxFiles || null'));
-    assert.ok(controllerSource.includes("this.scheduleRefresh('watcher')"));
-    assert.ok(controllerSource.includes("this.refreshNow('new-session')"));
-    assert.ok(controllerSource.includes('private newSessionRefreshTimeouts: NodeJS.Timeout[] = []'));
-    assert.ok(controllerSource.includes('let firedSynchronously = false'));
-    assert.ok(controllerSource.includes('this.newSessionRefreshTimeouts.push(timeout)'));
-    assert.ok(controllerSource.includes('for (let timeout of this.newSessionRefreshTimeouts)'));
-    assert.ok(controllerSource.includes('this.options.clearTimeout(timeout)'));
 }
 
 function runAiSessionReadCoordinatorChecks() {
@@ -6748,270 +6931,6 @@ function runAiSessionReadCoordinatorChecks() {
     );
 }
 
-function runOpenProjectAiSessionViewModelBuilderChecks() {
-    const project = {
-        id: 'project-a',
-        name: 'Project A',
-        path: '/work/project-a',
-        activeAiSessionProvider: 'kimi',
-        codexSessionsExpanded: true,
-        codexSessions: [
-            { id: 'c1', name: 'Codex One', updatedAt: '2026-07-16T00:00:00.000Z', attention: { unread: true } },
-        ],
-        kimiSessions: [
-            { id: 'k1', name: 'Kimi One', updatedAt: '2026-07-16T00:01:00.000Z' },
-        ],
-        claudeSessions: [],
-        kimiSessionsUnavailable: true,
-        activeAiSessionTab: 'active',
-        activeAiSessions: [
-            {
-                key: 'codex:c1', provider: 'codex', sessionId: 'c1', name: 'Codex One',
-                executionState: 'running', focused: false, needsAttention: false, pending: false,
-            },
-            {
-                key: 'kimi:k1', provider: 'kimi', sessionId: 'k1', name: 'Kimi One',
-                executionState: 'stopped', focused: false, needsAttention: true, pending: false,
-            },
-        ],
-    };
-    const model = aiSessionViewModels.buildOpenProjectAiSessionViewModel({
-        project,
-        providers: [
-            { id: 'codex', label: 'Codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
-            { id: 'kimi', label: 'Kimi', projectSessionsKey: 'kimiSessions', projectSessionsUnavailableKey: 'kimiSessionsUnavailable' },
-            { id: 'claude', label: 'Claude', projectSessionsKey: 'claudeSessions', projectSessionsUnavailableKey: 'claudeSessionsUnavailable' },
-        ],
-        getProjectKey: item => `key:${item.id}`,
-        getSearchText: item => `search:${item.name}`,
-        renderSessionSection: item => `html:${item.id}`,
-    });
-
-    assert.strictEqual(model.projectId, 'project-a');
-    assert.strictEqual(model.projectKey, 'key:project-a');
-    assert.strictEqual(model.activeProvider, 'kimi');
-    assert.strictEqual(model.expanded, true);
-    assert.deepStrictEqual(model.providers.map(provider => ({
-        id: provider.id,
-        label: provider.label,
-        count: provider.count,
-        unavailable: provider.unavailable,
-    })), [
-        { id: 'codex', label: 'Codex', count: 1, unavailable: false },
-        { id: 'kimi', label: 'Kimi', count: 1, unavailable: true },
-        { id: 'claude', label: 'Claude', count: 0, unavailable: false },
-    ]);
-    assert.deepStrictEqual(model.unavailableProviders, ['kimi']);
-    assert.deepStrictEqual(model.sessionsByProvider.codex, [{
-        id: 'c1',
-        name: 'Codex One',
-        updatedAt: '2026-07-16T00:00:00.000Z',
-        attention: { unread: true },
-        provider: 'codex',
-    }]);
-    assert.deepStrictEqual(model.sessionsByProvider.kimi, [{
-        id: 'k1',
-        name: 'Kimi One',
-        updatedAt: '2026-07-16T00:01:00.000Z',
-        provider: 'kimi',
-    }]);
-    assert.strictEqual(model.searchText, 'search:Project A');
-    assert.strictEqual(model.aiSessionCount, 2);
-    assert.strictEqual(model.attentionCount, 1);
-    assert.strictEqual(model.defaultTab, 'active');
-    assert.strictEqual(model.activeSessionCount, 2);
-    assert.strictEqual(model.activeAttentionCount, 1);
-    assert.deepStrictEqual(model.activeSessions.map(item => item.key), ['codex:c1', 'kimi:k1']);
-    assert.strictEqual(model.sessionSectionHtml, 'html:project-a');
-
-    const explicitAttentionModel = aiSessionViewModels.buildOpenProjectAiSessionViewModel({
-        project: { ...project, aiSessionAttentionCount: 7 },
-        providers: [
-            { id: 'codex', label: 'Codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
-        ],
-        getProjectKey: item => item.id,
-        getSearchText: () => '',
-        renderSessionSection: () => '',
-    });
-    assert.strictEqual(explicitAttentionModel.attentionCount, 7);
-
-    const cachedBuilder = aiSessionViewModels.createOpenProjectAiSessionViewModelBuilder({ maxEntries: 2 });
-    let searchCalls = 0;
-    let renderCalls = 0;
-    const cachedInput = {
-        project,
-        providers: [
-            { id: 'codex', label: 'Codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
-            { id: 'kimi', label: 'Kimi', projectSessionsKey: 'kimiSessions', projectSessionsUnavailableKey: 'kimiSessionsUnavailable' },
-        ],
-        getProjectKey: item => `key:${item.id}`,
-        getSearchText: item => {
-            searchCalls++;
-            return `search:${item.name}`;
-        },
-        renderSessionSection: item => {
-            renderCalls++;
-            return `html:${item.id}:${item.kimiSessions[0].name}`;
-        },
-    };
-    const cachedFirst = cachedBuilder.build(cachedInput);
-    const cachedSecond = cachedBuilder.build(cachedInput);
-    assert.strictEqual(cachedSecond, cachedFirst);
-    assert.strictEqual(searchCalls, 1);
-    assert.strictEqual(renderCalls, 1);
-
-    const changedCachedModel = cachedBuilder.build({
-        ...cachedInput,
-        project: {
-            ...project,
-            kimiSessions: [{ ...project.kimiSessions[0], name: 'Kimi Two' }],
-        },
-    });
-    assert.notStrictEqual(changedCachedModel, cachedFirst);
-    assert.strictEqual(searchCalls, 2);
-    assert.strictEqual(renderCalls, 2);
-
-    const differentRendererModel = cachedBuilder.build({
-        ...cachedInput,
-        renderSessionSection: item => `html:new-renderer:${item.id}`,
-    });
-    assert.strictEqual(differentRendererModel.sessionSectionHtml, 'html:new-renderer:project-a');
-}
-
-function runAiSessionProjectHydrationChecks() {
-    const project = { id: 'project-a', path: '/work/app' };
-    const codexSessions = [
-        { id: 'c1', name: 'Codex One', cwd: '/work/app', updatedAt: '2026-07-16T00:00:00.000Z' },
-        { id: 'c2', name: 'Codex Two', cwd: '/work/app', updatedAt: '2026-07-16T00:01:00.000Z' },
-    ];
-    const aggregateByProjectAndSession = new Map();
-    aggregateByProjectAndSession.set(
-        attentionProject.getAttentionSessionLookupKey(
-            attentionProject.getAttentionProjectKey('/work/app'),
-            'codex:c2'
-        ),
-        {
-            sessionKey: 'codex:c2',
-            eventIds: ['remote-event'],
-            reasons: ['completed'],
-            observedAtMs: 17,
-        }
-    );
-
-    const hydrated = aiSessionProjectHydration.hydrateOpenProjectsWithAiSessions({
-        projects: [project],
-        providers: [
-            { id: 'codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
-            { id: 'kimi', projectSessionsKey: 'kimiSessions', projectSessionsUnavailableKey: 'kimiSessionsUnavailable' },
-        ],
-        sessionResults: {
-            codex: { available: true, sessions: codexSessions, scannedFiles: 2, parsedFiles: 2 },
-            kimi: { available: false, sessions: [], scannedFiles: 0, parsedFiles: 0 },
-        },
-        assignments: {
-            codex: new Map([['project-a', codexSessions]]),
-            kimi: new Map(),
-        },
-        expandedProjects: new Set(['project-key']),
-        activeProviders: { 'project-key': 'kimi' },
-        pinnedSessions: new Set(['codex:c2']),
-        aliases: { 'codex:c1': 'Aliased Codex One' },
-        aggregateByProjectAndSession,
-        localAttentionBySession: {
-            'codex:c1': {
-                state: 'needsAttention',
-                stateChangedAt: 3,
-                event: { eventId: 'local-event', reason: 'input-required' },
-            },
-        },
-        includeLocalAttention: false,
-        getProjectKey: item => item.id === 'project-a' ? 'project-key' : item.id,
-    });
-
-    assert.strictEqual(hydrated[0], project, 'hydration preserves project object identity');
-    assert.strictEqual(project.codexSessionsExpanded, true);
-    assert.strictEqual(project.activeAiSessionProvider, 'kimi');
-    assert.strictEqual(project.codexSessionsUnavailable, false);
-    assert.strictEqual(project.kimiSessionsUnavailable, true);
-    assert.deepStrictEqual(project.codexSessions.map(session => ({
-        id: session.id,
-        name: session.name,
-        pinned: session.pinned,
-        attention: session.attention,
-    })), [
-        {
-            id: 'c2',
-            name: 'Codex Two',
-            pinned: true,
-            attention: { eventId: 'remote-event', reason: 'completed', unread: true },
-        },
-        {
-            id: 'c1',
-            name: 'Aliased Codex One',
-            pinned: false,
-            attention: undefined,
-        },
-    ]);
-
-    aiSessionProjectHydration.hydrateOpenProjectsWithAiSessions({
-        projects: [project],
-        providers: [
-            { id: 'codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
-        ],
-        sessionResults: {
-            codex: { available: true, sessions: codexSessions, scannedFiles: 2, parsedFiles: 2 },
-        },
-        assignments: {
-            codex: new Map([['project-a', [codexSessions[0]]]]),
-        },
-        expandedProjects: new Set(),
-        activeProviders: {},
-        pinnedSessions: new Set(),
-        aliases: {},
-        aggregateByProjectAndSession: new Map(),
-        localAttentionBySession: {
-            'codex:c1': {
-                state: 'needsAttention',
-                stateChangedAt: 3,
-                event: { eventId: 'local-event', reason: 'input-required' },
-            },
-        },
-        includeLocalAttention: true,
-        getProjectKey: () => 'project-key',
-    });
-    assert.deepStrictEqual(project.codexSessions[0].attention, {
-        eventId: 'local-event',
-        reason: 'input-required',
-        unread: true,
-    });
-
-    const fallbackProject = { id: 'fallback', path: '/fallback', codexSessions: [], kimiSessions: [{ id: 'k2' }] };
-    aiSessionProjectHydration.hydrateOpenProjectsWithAiSessions({
-        projects: [fallbackProject],
-        providers: [
-            { id: 'codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexSessionsUnavailable' },
-            { id: 'kimi', projectSessionsKey: 'kimiSessions', projectSessionsUnavailableKey: 'kimiSessionsUnavailable' },
-        ],
-        sessionResults: {
-            codex: { available: true, sessions: [], scannedFiles: 0, parsedFiles: 0 },
-            kimi: { available: true, sessions: [{ id: 'k2' }], scannedFiles: 1, parsedFiles: 1 },
-        },
-        assignments: {
-            codex: new Map(),
-            kimi: new Map([['fallback', [{ id: 'k2' }]]]),
-        },
-        expandedProjects: new Set(),
-        activeProviders: { fallback: 'claude' },
-        pinnedSessions: new Set(),
-        aliases: {},
-        aggregateByProjectAndSession: new Map(),
-        localAttentionBySession: {},
-        includeLocalAttention: false,
-        getProjectKey: item => item.id,
-    });
-    assert.strictEqual(fallbackProject.activeAiSessionProvider, 'kimi');
-}
-
 function runAiSessionDashboardControllerChecks() {
     const invalidated = [];
     const messages = [];
@@ -7027,7 +6946,7 @@ function runAiSessionDashboardControllerChecks() {
         getGroups: () => [],
         getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [],
-        getOpenProjectAiSessionViewModel: project => project,
+        getRunningCardAnimation: () => 'halo',
         nextSequence: () => 1,
         postMessage: message => {
             messages.push(message);
@@ -7065,13 +6984,13 @@ function runAiSessionDashboardControllerChecks() {
         reason: 'new-session',
         durationMs: 5,
         cardCount: 0,
-        openProjectCount: 0,
+        currentWorkspaceCount: 0,
     }, {
         event: 'ai-session-message-build',
         reason: 'new-session',
         durationMs: 5,
         cardCount: 0,
-        openProjectCount: 0,
+        currentWorkspaceCount: 0,
     }]);
     assert.strictEqual(clearedTimeouts.length, 0);
 }
@@ -7090,7 +7009,7 @@ function runAiSessionDashboardWatcherCoalescingChecks() {
         getGroups: () => [],
         getTodoSearchItems: () => TODO_SEARCH_ITEMS,
         getCards: () => [],
-        getOpenProjectAiSessionViewModel: project => project,
+        getRunningCardAnimation: () => 'ripple',
         nextSequence: () => messages.length + 1,
         postMessage: message => {
             messages.push(message);
@@ -7138,13 +7057,39 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
     const messages = [];
     const diagnostics = [];
     let sessionName = 'Codex One';
-    const project = {
-        id: 'project-a',
-        path: '/work/app',
-        codexSessions: [{ id: 'session-a', name: sessionName }],
-        kimiSessions: [],
-        claudeSessions: [],
-    };
+    let runningCardAnimation = 'halo';
+    const workspace = () => ({
+        id: 'workspace-a',
+        kind: 'current',
+        navigationIdentity: 'navigation-a',
+        scopeIdentity: 'scope-a',
+        name: 'Workspace A',
+        environment: 'local',
+        environmentLabel: 'Local',
+        roots: [{ id: 'root-a', name: 'App', ordinal: 0 }],
+        attentionCount: 0,
+        aiSessions: {
+            workspaceScopeIdentity: 'scope-a',
+            workspaceNavigationIdentity: 'navigation-a',
+            activeProvider: 'codex',
+            expanded: true,
+            providers: [{ id: 'codex', label: 'Codex', count: 1 }],
+            sessionsByProvider: {
+                codex: [{ id: 'session-a', name: sessionName, provider: 'codex' }],
+            },
+            unavailableProviders: [],
+            aiSessionCount: 1,
+            attentionCount: 0,
+            defaultTab: 'sessions',
+            activeSessions: [{
+                key: 'codex:session-a', provider: 'codex', sessionId: 'session-a', name: sessionName,
+                executionState: 'running', focused: false, needsAttention: false, pending: false,
+                backend: 'vscode', attached: true,
+            }],
+            activeSessionCount: 1,
+            activeAttentionCount: 0,
+        },
+    });
     const controller = new AiSessionDashboardController({
         providerIds: ['codex'],
         isVisible: () => true,
@@ -7152,17 +7097,8 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
         watchSessionChanges: () => ({ dispose() {} }),
         getGroups: () => [],
         getTodoSearchItems: () => TODO_SEARCH_ITEMS,
-        getCards: () => [project],
-        getOpenProjectAiSessionViewModel: item => ({
-            projectId: item.id,
-            projectKey: item.path,
-            activeProvider: 'codex',
-            expanded: true,
-            providers: [{ id: 'codex', label: 'Codex', count: 1 }],
-            sessionsByProvider: {
-                codex: [{ id: 'session-a', name: sessionName, provider: 'codex' }],
-            },
-        }),
+        getCards: () => [workspace()],
+        getRunningCardAnimation: () => runningCardAnimation,
         nextSequence: () => messages.length + 1,
         postMessage: message => {
             messages.push(message);
@@ -7183,14 +7119,27 @@ async function runAiSessionDashboardUnchangedMessageSkipChecks() {
     await controller.refreshNow('watcher');
     await controller.refreshNow('watcher');
     assert.strictEqual(messages.length, 1, 'unchanged watcher messages should not be posted twice');
+    assert.ok(messages[0].html.includes('data-session-fx="halo"'),
+        'AI session controller updates must use the configured running animation');
     assert.strictEqual(diagnostics.some(event => event.event === 'ai-session-message-skip' && event.reason === 'watcher'), true);
+
+    runningCardAnimation = 'orbit';
+    await controller.refreshNow('watcher');
+    assert.strictEqual(messages.length, 2,
+        'changing only the running animation must not be suppressed by incremental message dedupe');
+    assert.ok(messages[1].html.includes('data-session-fx="orbit"'));
 
     sessionName = 'Codex Two';
     await controller.refreshNow('watcher');
-    assert.strictEqual(messages.length, 2, 'changed watcher messages must still be posted');
+    assert.strictEqual(messages.length, 3, 'changed watcher messages must still be posted');
+    assert.strictEqual(messages[2].version, 2);
+    assert.strictEqual(messages[2].currentWorkspaceCount, 1);
+    assert.strictEqual(messages[2].searchCatalog.version, 2);
+    assert.deepStrictEqual(messages[2].searchCatalog.openWorkspaces.map(item => item.current), [true]);
+    assert.ok(messages[2].html.includes('Codex Two'));
 
     await controller.refreshNow('refresh');
-    assert.strictEqual(messages.length, 3, 'explicit refresh messages must not be suppressed by watcher dedupe');
+    assert.strictEqual(messages.length, 4, 'explicit refresh messages must not be suppressed by watcher dedupe');
 }
 
 function extractFunctionBody(source, functionName) {
@@ -7739,6 +7688,14 @@ function runAiSessionProviderMaxFilesChecks() {
 }
 
 function runProviderChecks() {
+    const scope = {
+        workspaceNavigationIdentity: 'navigation',
+        workspaceScopeIdentity: 'scope',
+        workspaceRootHostPaths: ['/work/app'],
+        primaryRootId: 'root-app',
+        primaryCwd: '/work/app',
+        additionalDirectories: [],
+    };
     assert.deepStrictEqual(providers.AI_SESSION_PROVIDER_IDS, ['codex', 'kimi', 'claude']);
     assert.strictEqual(providers.getAiSessionProviderLabel('codex'), 'Codex');
     assert.strictEqual(providers.getAiSessionProviderLabel('kimi'), 'Kimi');
@@ -7752,11 +7709,11 @@ function runProviderChecks() {
     assert.deepStrictEqual(providers.getAiSessionProviderDefinition('kimi').terminalCwdFields, ['workDir', 'cwd']);
     assert.deepStrictEqual(providers.getAiSessionProviderDefinition('claude').terminalCwdFields, ['workDir', 'cwd']);
     assert.strictEqual(
-        providers.getAiSessionProviderDefinition('codex').buildNewSessionCommand('/work/app', 'Ignored Title', null),
+        providers.getAiSessionProviderDefinition('codex').buildNewSessionCommand(scope, 'Ignored Title', null),
         "codex --cd '/work/app'"
     );
     assert.strictEqual(
-        providers.getAiSessionProviderDefinition('claude').buildNewSessionCommand('/work/app', 'Useful Title', null),
+        providers.getAiSessionProviderDefinition('claude').buildNewSessionCommand(scope, 'Useful Title', null),
         "cd '/work/app' && claude --name 'Useful Title'"
     );
 }
@@ -7890,8 +7847,103 @@ function runProviderLifecycleServiceChecks() {
 }
 
 function runCommandBuilderChecks() {
+    const scope = Object.freeze({
+        workspaceNavigationIdentity: 'workspace-navigation',
+        workspaceScopeIdentity: 'workspace-scope',
+        workspaceRootHostPaths: Object.freeze(['/work/web', '/work/api', '/work/文档']),
+        primaryRootId: 'root-web',
+        primaryCwd: '/work/web',
+        additionalDirectories: Object.freeze(['/work/api', '/work/文档']),
+    });
+    const hostileScope = Object.freeze({
+        workspaceNavigationIdentity: 'hostile-navigation',
+        workspaceScopeIdentity: 'hostile-scope',
+        workspaceRootHostPaths: Object.freeze([
+            '/work/space dir',
+            '/work/"quoted"',
+            "/work/owner's $HOME; & docs 文档",
+            'C:\\Repo\\api',
+        ]),
+        primaryRootId: 'root-space',
+        primaryCwd: '/work/space dir',
+        additionalDirectories: Object.freeze([
+            '/work/"quoted"',
+            "/work/owner's $HOME; & docs 文档",
+            'C:\\Repo\\api',
+        ]),
+    });
+    const whitespaceScope = Object.freeze({
+        workspaceNavigationIdentity: 'whitespace-navigation',
+        workspaceScopeIdentity: 'whitespace-scope',
+        workspaceRootHostPaths: Object.freeze(['/work/repo ', '/work/ api']),
+        primaryRootId: 'root-trailing-space',
+        primaryCwd: '/work/repo ',
+        additionalDirectories: Object.freeze(['/work/ api']),
+    });
+    const marker = '/tmp/provider.done';
+    assert.deepStrictEqual(commands.buildCodexNewSessionLaunchSpec(scope, 'fix tests', marker), {
+        executable: 'codex',
+        args: ['--cd', '/work/web', '--add-dir', '/work/api', '--add-dir', '/work/文档', 'fix tests'],
+        markerPath: marker,
+        windowsDirectShell: 'powershell',
+    });
+    assert.deepStrictEqual(commands.buildCodexResumeLaunchSpec('c1', scope, marker), {
+        executable: 'codex',
+        args: ['resume', '--cd', '/work/web', '--add-dir', '/work/api', '--add-dir', '/work/文档', 'c1'],
+        markerPath: marker,
+        windowsDirectShell: 'current',
+    });
+    assert.deepStrictEqual(commands.buildKimiNewSessionLaunchSpec(scope, 'fix tests', marker), {
+        executable: 'kimi',
+        args: ['--work-dir', '/work/web', '--add-dir', '/work/api', '--add-dir', '/work/文档', '--prompt', 'fix tests'],
+        markerPath: marker,
+        windowsDirectShell: 'powershell',
+    });
+    assert.deepStrictEqual(commands.buildKimiResumeLaunchSpec('k1', scope, marker).args, [
+        '--work-dir', '/work/web', '--add-dir', '/work/api', '--add-dir', '/work/文档', '--resume', 'k1',
+    ]);
+    assert.deepStrictEqual(commands.buildClaudeNewSessionLaunchSpec(scope, 'fix tests', marker), {
+        executable: 'claude',
+        args: ['--add-dir', '/work/api', '/work/文档', '--name', 'fix tests'],
+        cwd: '/work/web',
+        markerPath: marker,
+        windowsDirectShell: 'powershell',
+    });
+    assert.deepStrictEqual(commands.buildClaudeResumeLaunchSpec('c1', scope, marker), {
+        executable: 'claude',
+        args: ['--add-dir', '/work/api', '/work/文档', '--resume', 'c1'],
+        cwd: '/work/web', markerPath: marker, windowsDirectShell: 'current',
+    });
     assert.deepStrictEqual(
-        commands.buildClaudeNewSessionLaunchSpec('/work/app', "Useful; 'Title'", '/tmp/claude.done'),
+        commands.buildCodexNewSessionLaunchSpec(hostileScope, null, null).args,
+        [
+            '--cd', '/work/space dir',
+            '--add-dir', '/work/"quoted"',
+            '--add-dir', "/work/owner's $HOME; & docs 文档",
+            '--add-dir', 'C:\\Repo\\api',
+        ],
+        'launch specs preserve whitespace, quotes, Unicode, metacharacters, and Windows separators before serialization'
+    );
+    assert.deepStrictEqual(
+        commands.buildCodexNewSessionLaunchSpec(whitespaceScope, null, null).args,
+        ['--cd', '/work/repo ', '--add-dir', '/work/ api'],
+    );
+    assert.deepStrictEqual(
+        commands.buildKimiNewSessionLaunchSpec(whitespaceScope, null, null).args,
+        ['--work-dir', '/work/repo ', '--add-dir', '/work/ api'],
+    );
+    assert.deepStrictEqual(
+        commands.buildClaudeNewSessionLaunchSpec(whitespaceScope, null, null),
+        {
+            executable: 'claude',
+            args: ['--add-dir', '/work/ api'],
+            cwd: '/work/repo ',
+            markerPath: null,
+            windowsDirectShell: 'powershell',
+        },
+    );
+    assert.deepStrictEqual(
+        commands.buildClaudeNewSessionLaunchSpec({ ...scope, primaryCwd: '/work/app', additionalDirectories: [] }, "Useful; 'Title'", '/tmp/claude.done'),
         {
             executable: 'claude',
             args: ['--name', "Useful; 'Title'"],
@@ -7902,41 +7954,92 @@ function runCommandBuilderChecks() {
     );
     assert.strictEqual(
         launchSpec.serializeDirectLaunchCommand(
-            commands.buildKimiNewSessionLaunchSpec('/work/app', "owner's task", null),
+            commands.buildKimiNewSessionLaunchSpec({ ...scope, primaryCwd: '/work/app', additionalDirectories: [] }, "owner's task", null),
             'linux'
         ),
         "kimi --work-dir '/work/app' --prompt 'owner'\\''s task'"
     );
     assert.strictEqual(
-        commands.buildCodexResumeCommand('abc123', '/work/My App', null, 'linux'),
+        commands.buildCodexResumeCommand('abc123', { ...scope, primaryCwd: '/work/My App', additionalDirectories: [] }, null, 'linux'),
         "codex resume --cd '/work/My App' 'abc123'"
     );
     assert.strictEqual(
-        commands.buildKimiNewSessionCommand('/work/app', "owner's task", null, 'linux'),
+        commands.buildKimiNewSessionCommand({ ...scope, primaryCwd: '/work/app', additionalDirectories: [] }, "owner's task", null, 'linux'),
         "kimi --work-dir '/work/app' --prompt 'owner'\\''s task'"
     );
-    let markedCommand = commands.buildClaudeResumeCommand('session-1', '/work/app', '/tmp/session.done', 'linux');
+    let markedCommand = commands.buildClaudeResumeCommand('session-1', { ...scope, primaryCwd: '/work/app', additionalDirectories: [] }, '/tmp/session.done', 'linux');
     assert.ok(markedCommand.startsWith('sh -lc '));
     assert.ok(markedCommand.includes('claude --resume'));
     assert.ok(markedCommand.includes('rm -f'));
     assert.ok(markedCommand.includes(': >'));
     assert.ok(markedCommand.includes('/tmp/session.done'));
 
-    let markedCodexNewCommand = commands.buildCodexNewSessionCommand('/work/app', null, '/tmp/new-codex.done', 'linux');
+    let markedCodexNewCommand = commands.buildCodexNewSessionCommand({ ...scope, primaryCwd: '/work/app', additionalDirectories: [] }, null, '/tmp/new-codex.done', 'linux');
     assert.ok(markedCodexNewCommand.startsWith('sh -lc '));
     assert.ok(markedCodexNewCommand.includes("codex --cd"));
     assert.ok(markedCodexNewCommand.includes('/tmp/new-codex.done'));
 
-    let windowsCommand = commands.buildClaudeResumeCommand('session-1', 'C:\\Repo', 'C:\\Temp\\session.done', 'win32');
+    let windowsCommand = commands.buildClaudeResumeCommand('session-1', { ...scope, primaryCwd: 'C:\\Repo', additionalDirectories: [] }, 'C:\\Temp\\session.done', 'win32');
     let windowsPayload = decodePowerShellPayload(windowsCommand);
     assert.ok(windowsPayload.includes("Set-Location -LiteralPath 'C:\\Repo'"));
     assert.ok(windowsPayload.includes("Remove-Item -LiteralPath 'C:\\Temp\\session.done'"));
     assert.ok(windowsPayload.includes("New-Item -ItemType File -Force -Path 'C:\\Temp\\session.done'"));
-    let windowsNewCommand = commands.buildCodexNewSessionCommand('C:\\Repo', null, 'C:\\Temp\\new-codex.done', 'win32');
+    let windowsNewCommand = commands.buildCodexNewSessionCommand({ ...scope, primaryCwd: 'C:\\Repo', additionalDirectories: [] }, null, 'C:\\Temp\\new-codex.done', 'win32');
     let windowsNewPayload = decodePowerShellPayload(windowsNewCommand);
     assert.ok(windowsNewPayload.includes("codex --cd 'C:\\Repo'"));
     assert.ok(windowsNewPayload.includes("New-Item -ItemType File -Force -Path 'C:\\Temp\\new-codex.done'"));
     assert.strictEqual(commands.quotePowerShellArg("O'Brien"), "'O''Brien'");
+}
+
+async function runProviderDirectoryCapabilityChecks() {
+    const capability = require('../out/aiSessions/providerDirectoryCapability');
+    const executions = [];
+    const diagnostics = [];
+    const results = {
+        '/resolved/codex': { exitCode: 0, stdout: 'Usage\n  --add-dir <DIR>  Add writable directory', stderr: '' },
+        '/resolved/kimi': { exitCode: 0, stdout: '', stderr: 'Options:\n--add-dir PATH' },
+        '/resolved/claude': { exitCode: 0, stdout: '  --add-dir <directories...>', stderr: '' },
+        '/resolved/legacy': { exitCode: 0, stdout: 'Usage: legacy --work-dir PATH', stderr: '' },
+        '/resolved/nonzero': { exitCode: 2, stdout: '', stderr: 'SECRET stderr from child' },
+        '/resolved/timeout': { exitCode: null, stdout: '', stderr: 'SECRET timeout detail', timedOut: true },
+        '/resolved/large': { exitCode: 0, stdout: `prefix ${'x'.repeat(90_000)} --add-dir SECRET_AFTER_BOUND`, stderr: '' },
+    };
+    const adapter = {
+        resolveExecutable: commandName => commandName === 'missing' ? null : `/resolved/${commandName}`,
+        run: async (executable, args, options) => {
+            executions.push({ executable, args: [...args], options: { ...options } });
+            return results[executable];
+        },
+    };
+    const probe = new capability.ProviderDirectoryCapabilityProbe(adapter, message => diagnostics.push(message));
+    const provider = (id, commandName = id) => ({ id, commandName });
+    const supported = await Promise.all([
+        probe.probe(provider('codex')),
+        probe.probe(provider('codex')),
+        probe.probe(provider('kimi')),
+        probe.probe(provider('claude')),
+    ]);
+    assert.deepStrictEqual(supported.map(result => result.status), [
+        'supported', 'supported', 'supported', 'supported',
+    ]);
+    assert.strictEqual(executions.filter(run => run.executable === '/resolved/codex').length, 1,
+        'concurrent probes execute --help once per resolved executable/provider ID');
+    assert.ok(executions.every(run => (
+        run.args.length === 1 && run.args[0] === '--help'
+        && run.options.timeoutMs > 0
+        && run.options.maxOutputBytes > 0
+        && run.options.maxOutputBytes <= 64 * 1024
+    )), 'every capability probe is a bounded --help execution');
+
+    assert.strictEqual((await probe.probe(provider('legacy'))).status, 'unsupported');
+    assert.strictEqual((await probe.probe(provider('nonzero'))).status, 'unavailable');
+    assert.strictEqual((await probe.probe(provider('timeout'))).status, 'unavailable');
+    assert.strictEqual((await probe.probe(provider('missing'))).status, 'unavailable');
+    assert.strictEqual((await probe.probe(provider('large'))).status, 'unsupported',
+        'help parsing must ignore output beyond the configured byte bound');
+    assert.ok(diagnostics.length >= 3);
+    assert.ok(diagnostics.every(message => !message.includes('SECRET')),
+        'capability diagnostics must not expose child output or executable details');
 }
 
 function runLifecycleParserChecks() {
@@ -8362,7 +8465,7 @@ function runAiSessionExecutionMonitorChecks() {
         token: 'stop-2', phase: 'needsAttention', reason: 'input-required', executionState: 'stopped', occurredAtMs: 1200,
     } }]), ['codex:s1']);
     assert.strictEqual(monitor.getSnapshot()['codex:s1'].state, 'stopped');
-    monitor.evaluate([]);
+    assert.deepStrictEqual(monitor.evaluate([]), ['codex:s1']);
     assert.deepStrictEqual(monitor.getSnapshot(), {});
 }
 
@@ -8397,6 +8500,32 @@ function runAttentionPayloadChecks() {
     assert.strictEqual(partial.sessions.length, 1, 'duplicate owners count as one logical session');
     assert.deepStrictEqual(partial.sessions[0].eventIds, ['e-2'], 'only the exact acknowledged event is removed');
     assert.deepStrictEqual(partial.sessions[0].reasons, ['completed']);
+
+    const multiEventAggregate = {
+        ...partial,
+        aggregateRevision: '3'.repeat(64),
+        sessions: [{
+            ...partial.sessions[0],
+            reasons: ['completed', 'input-required'],
+            eventIds: ['e', 'e-2'],
+        }],
+    };
+    assert.strictEqual(
+        attentionAggregate.filterAcknowledgedAttentionAggregate(
+            multiEventAggregate,
+            new Set(['e'])
+        ),
+        multiEventAggregate,
+        'the local overlay must not partially filter a session when event-to-reason ownership is unavailable'
+    );
+    assert.deepStrictEqual(
+        attentionAggregate.filterAcknowledgedAttentionAggregate(
+            multiEventAggregate,
+            new Set(['e', 'e-2'])
+        ).sessions,
+        [],
+        'the local overlay may hide a session once all of its events are acknowledged'
+    );
 
     const newerAcknowledgedOwner = attentionPayload.validateAttentionOwnerSnapshot({
         ...secondOwner,
@@ -9166,18 +9295,20 @@ function runVsixPackagingChecks() {
 async function main() {
     runPathChecks();
     runAssignmentChecks();
+    await runWorkspaceSessionScopeChecks();
+    runWorkspaceSessionAssignmentChecks();
+    runWorkspaceSessionHydrationChecks();
     runDashboardSearchCatalogChecks();
     runDashboardDiagnosticsChecks();
     runAttentionProjectionChecks();
     runFavoriteProjectOrderChecks();
-    runOpenProjectRuntimeIdentityChecks();
     runWorkspaceHelperChecks();
     runCandidateFilterChecks();
-    runProjectCandidateChecks();
     runSessionPathChecks();
     runPendingTerminalMatcherChecks();
     runTerminalCandidateChecks();
     await runPendingTerminalResolverChecks();
+    await runWorkspacePendingSessionPromotionChecks();
     runScanOptionChecks();
     runTerminalCwdChecks();
     runDisplayChecks();
@@ -9185,20 +9316,17 @@ async function main() {
     await runPinControllerChecks();
     runAliasStoreChecks();
     runAliasControllerChecks();
-    await runProjectStateStoreChecks();
-    runActiveAiSessionProjectionChecks();
+    await runWorkspaceStateStoreChecks();
     runAiSessionProviderAvailabilityChecks();
+    await runWorkspaceCreationDirectoryFirstChecks();
     await runAiSessionCommandControllerChecks();
-    await runAiSessionCreationControllerChecks();
-    await runAiSessionResumeControllerChecks();
-    await runAiSessionTerminalCommandControllerChecks();
-    await runAiSessionRuntimeControllerChecks();
+    await runWorkspaceScopeControllerLaunchChecks();
+    await runWorkspaceLaunchPreflightControllerChecks();
     await runAiSessionAttentionControllerChecks();
     await runAiSessionExecutionControllerChecks();
     await runSidebarStewardViewProviderOrderingChecks();
     await runAiSessionArchiveRuntimeChecks();
-    await runAiSessionProjectHydrationControllerChecks();
-    await runAiSessionProjectHydrationPromotionChecks();
+    await runWorkspaceCardActionControllerIntegrationChecks();
     runKeyChecks();
     runBatchAiSessionArchiveChecks();
     runActiveAiSessionTerminalHighlightChecks();
@@ -9216,8 +9344,6 @@ async function main() {
     runBatchAiSessionWebviewChecks();
     runAiSessionIncrementalRefreshSourceChecks();
     runAiSessionReadCoordinatorChecks();
-    runOpenProjectAiSessionViewModelBuilderChecks();
-    runAiSessionProjectHydrationChecks();
     runAiSessionDashboardControllerChecks();
     runAiSessionDashboardWatcherCoalescingChecks();
     await runAiSessionDashboardUnchangedMessageSkipChecks();
@@ -9231,6 +9357,7 @@ async function main() {
     runProviderChecks();
     runProviderLifecycleServiceChecks();
     runCommandBuilderChecks();
+    await runProviderDirectoryCapabilityChecks();
     runLifecycleParserChecks();
     runIncrementalJsonlLifecycleReaderChecks();
     runAttentionMonitorChecks();

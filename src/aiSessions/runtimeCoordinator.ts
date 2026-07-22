@@ -4,7 +4,9 @@ import type * as vscode from 'vscode';
 import type { AiSessionProviderId } from '../models';
 import type {
     AiSessionCreateRuntimeRequest,
+    AiSessionDurablePendingPromotionCandidate,
     AiSessionExecutableRuntimeBackend,
+    AiSessionPendingPromotionCandidate,
     AiSessionPendingRuntimeSnapshot,
     AiSessionResumeRuntimeRequest,
     AiSessionRuntimeActionResult,
@@ -13,8 +15,14 @@ import type {
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
 import {
+    aiSessionRuntimeIdentitiesEqual,
     AiSessionRuntimeConflictError,
     AiSessionRuntimeLifecycleBlockedError,
+    AiSessionRuntimeTargetChangedError,
+    cloneAiSessionRuntimeIdentity,
+    isValidAiSessionPromotionDisplayName,
+    isValidAiSessionRuntimeIdentity,
+    isValidAiSessionRuntimeIdentityId,
     TmuxRuntimeUnavailableError,
 } from './runtimeTypes';
 
@@ -126,24 +134,39 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         ].map(clonePendingRuntime);
     }
 
+    async getPendingForPromotion(): Promise<AiSessionPendingPromotionCandidate<TTerminal>[]> {
+        const refresh = await this.refreshBackends(true);
+        this.throwRefreshFailure(refresh);
+        const durableTmux = typeof this.dependencies.tmux.listRecoverablePending === 'function'
+            ? await this.dependencies.tmux.listRecoverablePending()
+            : [];
+        return mergePromotionPendingCandidates([
+            ...this.dependencies.direct.getPending(),
+            ...this.dependencies.tmux.getPending(),
+        ], durableTmux);
+    }
+
     getById(
         provider: AiSessionProviderId,
-        sessionId: string
+        sessionId: string,
+        workspaceScopeIdentity: string
     ): AiSessionRuntimeSnapshot<TTerminal> | null {
-        const matches = this.findMatches({ provider, sessionId });
+        const matches = this.findMatches({ provider, sessionId, workspaceScopeIdentity });
         return matches.length === 1 ? cloneRuntime(matches[0]) : null;
     }
 
     getActiveCandidates(
         provider: AiSessionProviderId,
-        sessionId: string
+        sessionId: string,
+        workspaceScopeIdentity: string
     ): AiSessionRuntimeSnapshot<TTerminal>[] {
         const matches = [
             ...this.dependencies.direct.getActive(),
             ...this.dependencies.tmux.getActive(),
         ].filter(runtime => runtime.state !== 'conflict'
             && runtime.identity.provider === provider
-            && runtime.identity.sessionId === sessionId);
+            && runtime.identity.sessionId === sessionId
+            && runtime.identity.workspaceScopeIdentity === workspaceScopeIdentity);
         const conflict = matches.length > 1;
         return matches.map(runtime => ({
             ...cloneRuntime(runtime),
@@ -153,65 +176,103 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
 
     getUnverifiedConflicts(
         provider: AiSessionProviderId,
-        sessionId: string
+        sessionId: string,
+        workspaceScopeIdentity: string
     ): AiSessionRuntimeSnapshot<TTerminal>[] {
         return this.getConflicts().filter(runtime =>
             runtime.identity.provider === provider
             && runtime.identity.sessionId === sessionId
+            && runtime.identity.workspaceScopeIdentity === workspaceScopeIdentity
         ).map(cloneRuntime);
     }
 
     resume(request: AiSessionResumeRuntimeRequest): Promise<AiSessionRuntimeActionResult<TTerminal>> {
         const input = snapshotResumeRequest(request);
-        const key = `resume:${input.identity.provider}:${input.identity.sessionId}`;
-        return this.singleFlight(key, () => this.resumeOnce(input));
+        const key = `resume:${input.identity.workspaceScopeIdentity}:${input.identity.provider}:${input.identity.sessionId}`;
+        return this.singleFlight(key, () => this.resumeOnce(input), 'focused');
     }
 
     create(request: AiSessionCreateRuntimeRequest): Promise<AiSessionRuntimeActionResult<TTerminal>> {
         const input = snapshotCreateRequest(request);
-        const key = `pending:${input.identity.pendingId}`;
+        const key = `pending:${JSON.stringify([
+            input.identity.provider,
+            input.identity.workspaceScopeIdentity,
+            input.identity.workspaceNavigationIdentity,
+            input.identity.workspaceRootHostPaths.slice().sort(),
+            input.identity.cwd,
+            input.identity.pendingId,
+        ])}`;
         return this.singleFlight(key, () => this.createOnce(input));
     }
 
     async promotePending(
-        pendingId: string,
-        sessionId: string
+        identity: AiSessionRuntimeIdentity & { pendingId: string },
+        sessionId: string,
+        sessionName: string
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
+        const pendingIdentity = cloneAiSessionRuntimeIdentity(identity);
         const refresh = await this.refreshBackends(true);
         this.throwRefreshFailure(refresh);
+        const recoverableTmux = typeof this.dependencies.tmux.getRecoverablePending === 'function'
+            ? await this.dependencies.tmux.getRecoverablePending(pendingIdentity)
+            : null;
         const refreshedConflicts = this.getConflicts().filter(runtime =>
-            runtime.identity.pendingId === pendingId);
-        if (refreshedConflicts.length) {
+            samePendingIdentity(runtime.identity, pendingIdentity));
+        if (refreshedConflicts.length && !recoverableTmux) {
             return refreshedConflicts.map(runtime => ({ ...cloneRuntime(runtime), state: 'conflict' }));
         }
         const directMatches = this.dependencies.direct.getPending().filter(runtime =>
-            runtime.identity.pendingId === pendingId);
+            samePendingIdentity(runtime.identity, pendingIdentity));
         const tmuxMatches = this.dependencies.tmux.getPending().filter(runtime =>
-            runtime.identity.pendingId === pendingId);
-        if (directMatches.length + tmuxMatches.length > 1) {
-            return [...directMatches, ...tmuxMatches].map(runtime => ({
+            samePendingIdentity(runtime.identity, pendingIdentity));
+        const routableTmuxMatches = tmuxMatches.length ? tmuxMatches
+            : recoverableTmux ? [recoverableTmux] : [];
+        if (directMatches.length + routableTmuxMatches.length > 1) {
+            return [...directMatches, ...routableTmuxMatches].map(runtime => ({
                 ...cloneRuntime(runtime),
                 state: 'conflict',
             }));
         }
         const backend = directMatches.length === 1
             ? this.dependencies.direct
-            : tmuxMatches.length === 1
+            : routableTmuxMatches.length === 1
                 ? this.dependencies.tmux
                 : null;
         return backend
-            ? (await backend.promotePending(pendingId, sessionId)).map(cloneRuntime)
+            ? (await backend.promotePending(pendingIdentity, sessionId, sessionName)).map(cloneRuntime)
             : [];
     }
 
     async focus(identity: AiSessionRuntimeIdentity): Promise<void> {
         const cached = this.matchesForIdentity(identity);
-        if (cached.length === 1 && cached[0].backend === 'vscode'
-            && cached[0].state !== 'conflict') {
-            await this.dependencies.direct.refresh(true);
-            const directMatches = this.matchesInBackend(this.dependencies.direct, identity);
-            if (directMatches.length === 1 && directMatches[0].state !== 'conflict') {
-                await this.dependencies.direct.focus(cloneRuntime(directMatches[0]));
+        if (cached.length === 1 && cached[0].state !== 'conflict') {
+            if (cached[0].backend === 'vscode') {
+                await this.dependencies.direct.refresh(true);
+                const directMatches = this.matchesInBackend(this.dependencies.direct, identity);
+                if (directMatches.length === 1 && directMatches[0].state !== 'conflict') {
+                    await this.dependencies.direct.focus(cloneRuntime(directMatches[0]));
+                }
+                return;
+            }
+            try {
+                await this.dependencies.tmux.focus(cloneRuntime(cached[0]));
+                return;
+            } catch (error) {
+                if (!(error instanceof AiSessionRuntimeTargetChangedError)) {
+                    throw error;
+                }
+            }
+            await this.refreshForHost(true);
+            const refreshed = this.matchesForIdentity(identity);
+            if (refreshed.length !== 1 || refreshed[0].state === 'conflict') {
+                return;
+            }
+            try {
+                await this.backendFor(refreshed[0]).focus(cloneRuntime(refreshed[0]));
+            } catch (error) {
+                if (!(error instanceof AiSessionRuntimeTargetChangedError)) {
+                    throw error;
+                }
             }
             return;
         }
@@ -220,7 +281,13 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         if (matches.length !== 1 || matches[0].state === 'conflict') {
             return;
         }
-        await this.backendFor(matches[0]).focus(cloneRuntime(matches[0]));
+        try {
+            await this.backendFor(matches[0]).focus(cloneRuntime(matches[0]));
+        } catch (error) {
+            if (!(error instanceof AiSessionRuntimeTargetChangedError)) {
+                throw error;
+            }
+        }
     }
 
     async focusSelected(selected: AiSessionRuntimeSnapshot<TTerminal>): Promise<boolean> {
@@ -270,8 +337,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             throw refresh.directError;
         }
         const lifecycleBlockers = this.getLifecycleBlockers().filter(runtime =>
-            runtime.identity.provider === request.identity.provider
-            && runtime.identity.sessionId === request.identity.sessionId);
+            sameFinalIdentity(runtime.identity, request.identity));
         if (lifecycleBlockers.length) {
             return blockedResult(lifecycleBlockers);
         }
@@ -292,7 +358,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         const configuration = snapshotConfiguration(this.dependencies.getConfiguration());
         const knownHint = this.isTmuxUnavailable(refresh.tmuxError)
             && !!this.dependencies.hasKnownTmuxHint
-            && await this.dependencies.hasKnownTmuxHint({ ...request.identity });
+            && await this.dependencies.hasKnownTmuxHint(cloneAiSessionRuntimeIdentity(request.identity));
         if (knownHint) {
             return this.resumeViaExplicitDirect(request, refresh.tmuxError, true);
         }
@@ -318,7 +384,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
                 throw error;
             }
             const hasKnownHint = !!this.dependencies.hasKnownTmuxHint
-                && await this.dependencies.hasKnownTmuxHint({ ...request.identity });
+                && await this.dependencies.hasKnownTmuxHint(cloneAiSessionRuntimeIdentity(request.identity));
             return this.resumeViaExplicitDirect(request, error, hasKnownHint);
         }
     }
@@ -332,9 +398,9 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         }
         const existing: AiSessionRuntimeSnapshot<TTerminal>[] = [
             ...this.getPending().filter(runtime =>
-                runtime.identity.pendingId === request.identity.pendingId),
+                samePendingIdentity(runtime.identity, request.identity)),
             ...this.getConflicts().filter(runtime =>
-                runtime.identity.pendingId === request.identity.pendingId),
+                samePendingIdentity(runtime.identity, request.identity)),
         ];
         if (existing.length > 1 || existing.some(runtime => runtime.state === 'conflict')) {
             return conflictResult(existing);
@@ -389,7 +455,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         }
         const runtime = await this.dependencies.direct.ensureResume(request);
         if (knownHint && this.dependencies.clearKnownTmuxHint) {
-            await this.dependencies.clearKnownTmuxHint({ ...request.identity });
+            await this.dependencies.clearKnownTmuxHint(cloneAiSessionRuntimeIdentity(request.identity));
         }
         return { status: 'started', runtime: cloneRuntime(runtime) };
     }
@@ -434,7 +500,10 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         }
     }
 
-    private findMatches(identity: Pick<AiSessionRuntimeIdentity, 'provider' | 'sessionId'>): AiSessionRuntimeSnapshot<TTerminal>[] {
+    private findMatches(
+        identity: Pick<AiSessionRuntimeIdentity, 'provider' | 'sessionId'>
+            & Partial<Pick<AiSessionRuntimeIdentity, 'workspaceScopeIdentity'>>
+    ): AiSessionRuntimeSnapshot<TTerminal>[] {
         if (!identity?.provider || !identity.sessionId) {
             return [];
         }
@@ -443,7 +512,9 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             ...this.dependencies.tmux.getActive(),
             ...this.getConflicts().filter(runtime => Boolean(runtime.identity.sessionId)),
         ].filter(runtime => runtime.identity.provider === identity.provider
-            && runtime.identity.sessionId === identity.sessionId);
+            && runtime.identity.sessionId === identity.sessionId
+            && (identity.workspaceScopeIdentity === undefined
+                || runtime.identity.workspaceScopeIdentity === identity.workspaceScopeIdentity));
     }
 
     private matchesForIdentity(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot<TTerminal>[] {
@@ -462,8 +533,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
     ): AiSessionRuntimeSnapshot<TTerminal>[] {
         if (identity?.sessionId) {
             return backend.getActive().filter(runtime =>
-                runtime.identity.provider === identity.provider
-                && runtime.identity.sessionId === identity.sessionId);
+                sameFinalIdentity(runtime.identity, identity));
         }
         return identity?.pendingId
             ? backend.getPending().filter(runtime => samePendingIdentity(runtime.identity, identity))
@@ -480,9 +550,11 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
 
     private singleFlight(
         key: string,
-        operation: () => Promise<AiSessionRuntimeActionResult<TTerminal>>
+        operation: () => Promise<AiSessionRuntimeActionResult<TTerminal>>,
+        joinedStartedStatus?: 'focused'
     ): Promise<AiSessionRuntimeActionResult<TTerminal>> {
         let promise = this.inFlight.get(key);
+        const joined = promise !== undefined;
         if (!promise) {
             promise = Promise.resolve().then(operation);
             this.inFlight.set(key, promise);
@@ -491,7 +563,13 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
                 () => this.releaseFlight(key, promise)
             );
         }
-        return promise.then(cloneActionResult);
+        return promise.then(result => {
+            const cloned = cloneActionResult(result);
+            if (joined && joinedStartedStatus && cloned.status === 'started') {
+                cloned.status = joinedStartedStatus;
+            }
+            return cloned;
+        });
     }
 
     private releaseFlight(key: string, promise: Promise<AiSessionRuntimeActionResult<TTerminal>>): void {
@@ -512,7 +590,8 @@ function snapshotConfiguration(configuration: AiSessionRuntimeConfiguration): Ai
 function snapshotResumeRequest(request: AiSessionResumeRuntimeRequest): AiSessionResumeRuntimeRequest {
     return {
         ...request,
-        identity: { ...request.identity },
+        identity: cloneAiSessionRuntimeIdentity(request.identity),
+        directoryScope: cloneDirectoryScope(request.directoryScope),
         launch: { ...request.launch, args: [...request.launch.args] },
     };
 }
@@ -520,7 +599,8 @@ function snapshotResumeRequest(request: AiSessionResumeRuntimeRequest): AiSessio
 function snapshotCreateRequest(request: AiSessionCreateRuntimeRequest): AiSessionCreateRuntimeRequest {
     return {
         ...request,
-        identity: { ...request.identity },
+        identity: cloneAiSessionRuntimeIdentity(request.identity),
+        directoryScope: cloneDirectoryScope(request.directoryScope),
         excludedSessionIds: [...request.excludedSessionIds],
         launch: { ...request.launch, args: [...request.launch.args] },
     };
@@ -529,7 +609,7 @@ function snapshotCreateRequest(request: AiSessionCreateRuntimeRequest): AiSessio
 function cloneRuntime<TTerminal>(runtime: AiSessionRuntimeSnapshot<TTerminal>): AiSessionRuntimeSnapshot<TTerminal> {
     return {
         ...runtime,
-        identity: { ...runtime.identity },
+        identity: cloneAiSessionRuntimeIdentity(runtime.identity),
         ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
     };
 }
@@ -544,6 +624,90 @@ function clonePendingRuntime<TTerminal>(
         excludedSessionIds: [...runtime.excludedSessionIds],
         ...(runtime.title === undefined ? {} : { title: runtime.title }),
     };
+}
+
+function mergePromotionPendingCandidates<TTerminal>(
+    ordinary: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[],
+    durable: readonly AiSessionDurablePendingPromotionCandidate<TTerminal>[]
+): AiSessionPendingPromotionCandidate<TTerminal>[] {
+    const merged = new Map<string, AiSessionPendingPromotionCandidate<TTerminal>>();
+    if (durable.some(candidate => candidate?.backend !== 'tmux'
+        || !isValidAiSessionPromotionDisplayName(candidate.promotionRecoveryDisplayName)
+        || !isValidAiSessionRuntimeIdentityId(candidate.recoverySessionId))) {
+        throw new Error('A durable pending promotion snapshot is invalid.');
+    }
+    for (const candidate of [...ordinary.map(stripPromotionRecoverySnapshot), ...durable]) {
+        if (!candidate || candidate.state !== 'pending'
+            || (candidate.backend !== 'vscode' && candidate.backend !== 'tmux')
+            || !isValidAiSessionRuntimeIdentity(candidate.identity)
+            || !candidate.identity.pendingId || candidate.identity.sessionId !== undefined
+            || typeof candidate.createdAt !== 'string'
+            || !Number.isFinite(Date.parse(candidate.createdAt))
+            || !Array.isArray(candidate.excludedSessionIds)
+            || (candidate.promotionRecoveryDisplayName !== undefined
+                && !isValidAiSessionPromotionDisplayName(
+                    candidate.promotionRecoveryDisplayName
+                ))
+            || (candidate.recoverySessionId !== undefined
+                && !isValidAiSessionRuntimeIdentityId(candidate.recoverySessionId))) {
+            throw new Error('A pending runtime promotion candidate is invalid.');
+        }
+        const key = `${candidate.backend}:${JSON.stringify([
+            candidate.identity.provider,
+            candidate.identity.workspaceScopeIdentity,
+            candidate.identity.workspaceNavigationIdentity,
+            candidate.identity.workspaceRootHostPaths.slice().sort(),
+            candidate.identity.cwd,
+            candidate.identity.pendingId,
+        ])}`;
+        const existing = merged.get(key);
+        if (existing && !promotionPendingCandidatesEqual(existing, candidate)) {
+            throw new Error('Multiple pending promotion candidates disagree within one backend.');
+        }
+        if (existing && candidate.promotionRecoveryDisplayName !== undefined
+            && candidate.recoverySessionId !== undefined) {
+            merged.set(key, {
+                ...clonePendingRuntime(existing),
+                promotionRecoveryDisplayName: candidate.promotionRecoveryDisplayName,
+                recoverySessionId: candidate.recoverySessionId,
+            });
+        } else if (!existing) {
+            merged.set(key, clonePendingRuntime(candidate));
+        }
+    }
+    return [...merged.values()].map(clonePendingRuntime);
+}
+
+function promotionPendingCandidatesEqual<TTerminal>(
+    left: AiSessionPendingPromotionCandidate<TTerminal>,
+    right: AiSessionPendingPromotionCandidate<TTerminal>
+): boolean {
+    return samePendingIdentity(left.identity, right.identity)
+        && left.backend === right.backend
+        && left.createdAt === right.createdAt
+        && left.projectName === right.projectName
+        && left.title === right.title
+        && (left.promotionRecoveryDisplayName === undefined
+            || right.promotionRecoveryDisplayName === undefined
+            || left.promotionRecoveryDisplayName === right.promotionRecoveryDisplayName)
+        && (left.recoverySessionId === undefined
+            || right.recoverySessionId === undefined
+            || left.recoverySessionId === right.recoverySessionId)
+        && left.excludedSessionIds.length === right.excludedSessionIds.length
+        && left.excludedSessionIds.every((value, index) => value === right.excludedSessionIds[index])
+        && ((!left.tmux && !right.tmux) || (!!left.tmux && !!right.tmux
+            && left.tmux.layout === right.tmux.layout
+            && left.tmux.sessionName === right.tmux.sessionName
+            && left.tmux.windowName === right.tmux.windowName));
+}
+
+function stripPromotionRecoverySnapshot<TTerminal>(
+    runtime: AiSessionPendingRuntimeSnapshot<TTerminal>
+): AiSessionPendingPromotionCandidate<TTerminal> {
+    const candidate = clonePendingRuntime(runtime) as AiSessionPendingPromotionCandidate<TTerminal>;
+    delete candidate.promotionRecoveryDisplayName;
+    delete candidate.recoverySessionId;
+    return candidate;
 }
 
 function cloneActionResult<TTerminal>(
@@ -589,7 +753,9 @@ function blockedResult<TTerminal>(
 }
 
 function finalIdentityKey(identity: AiSessionRuntimeIdentity): string {
-    return identity.sessionId ? `${identity.provider}:${identity.sessionId}` : '';
+    return identity.sessionId
+        ? `${identity.workspaceScopeIdentity}:${identity.provider}:${identity.sessionId}`
+        : '';
 }
 
 function countFinalIdentities<TTerminal>(
@@ -606,8 +772,13 @@ function countFinalIdentities<TTerminal>(
 }
 
 function samePendingIdentity(left: AiSessionRuntimeIdentity, right: AiSessionRuntimeIdentity): boolean {
-    return !!left.pendingId && left.pendingId === right.pendingId
-        && left.provider === right.provider;
+    return !!left.pendingId && !!right.pendingId && sameFullIdentity(left, right);
+}
+
+function sameFinalIdentity(left: AiSessionRuntimeIdentity, right: AiSessionRuntimeIdentity): boolean {
+    return !!left.sessionId && left.sessionId === right.sessionId
+        && left.provider === right.provider
+        && left.workspaceScopeIdentity === right.workspaceScopeIdentity;
 }
 
 function selectedRuntimeMatches<TTerminal>(
@@ -630,9 +801,13 @@ function selectedRuntimeMatches<TTerminal>(
 }
 
 function sameFullIdentity(left: AiSessionRuntimeIdentity, right: AiSessionRuntimeIdentity): boolean {
-    return left.provider === right.provider
-        && left.projectKey === right.projectKey
-        && left.cwd === right.cwd
-        && left.sessionId === right.sessionId
-        && left.pendingId === right.pendingId;
+    return aiSessionRuntimeIdentitiesEqual(left, right);
+}
+
+function cloneDirectoryScope(scope: AiSessionResumeRuntimeRequest['directoryScope']): AiSessionResumeRuntimeRequest['directoryScope'] {
+    return {
+        ...scope,
+        workspaceRootHostPaths: [...scope.workspaceRootHostPaths],
+        additionalDirectories: [...scope.additionalDirectories],
+    };
 }

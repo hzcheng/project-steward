@@ -1670,6 +1670,10 @@ body .project {
     body.steward-sidebar .steward-item-accent {
         transition: none;
     }
+
+    body.steward-sidebar .project .codex-sessions {
+        transition: none !important;
+    }
 }
 
 @media (max-width: 240px) {
@@ -1869,6 +1873,11 @@ body.steward-sidebar {
     }
 
     .group {
+        box-sizing: border-box;
+        grid-template-columns: minmax(0, 1fr);
+        min-width: 0;
+        width: 100%;
+        max-width: 100%;
         overflow: visible;
         margin-right: 0;
         margin-top: 12px;
@@ -1917,6 +1926,10 @@ body.steward-sidebar {
 
         .group-list {
             display: block;
+            box-sizing: border-box;
+            min-width: 0;
+            width: 100%;
+            max-width: 100%;
             padding-top: 7px;
         }
 
@@ -1928,8 +1941,12 @@ body.steward-sidebar {
 
     .project-container {
         display: block;
+        box-sizing: border-box;
+        min-width: 0;
         width: var(--column-width);
+        max-width: 100%;
         margin-left: 0;
+        padding: 0 2px;
 
         &.slim {
             width: var(--column-width);
@@ -1939,9 +1956,11 @@ body.steward-sidebar {
     .steward-item-card {
         position: relative;
         box-sizing: border-box;
-        width: calc(100% - 4px);
+        min-width: 0;
+        width: 100%;
+        max-width: 100%;
         height: 58px;
-        margin: 0 2px 7px 2px;
+        margin: 0 0 7px;
         padding: 8px 10px 8px 15px;
         border: 1px solid var(--vscode-panel-border);
         border-radius: 18px;
@@ -1995,6 +2014,11 @@ body.steward-sidebar {
             opacity: .75;
         }
 
+        &[data-current-workspace] {
+            height: auto;
+            min-height: 58px;
+        }
+
         &.expanded:hover,
         &.expanded:focus-within,
         &.editing:hover,
@@ -2016,8 +2040,7 @@ body.steward-sidebar {
             }
         }
 
-        &.selected,
-        &[data-current-workspace] {
+        &.selected {
             background: var(
                 --vscode-list-inactiveSelectionBackground,
                 var(--vscode-sideBarSectionHeader-background, var(--vscode-sideBar-background))
@@ -2030,9 +2053,7 @@ body.steward-sidebar {
         }
 
         &.selected:hover,
-        &.selected:focus-within,
-        &[data-current-workspace]:hover,
-        &[data-current-workspace]:focus-within {
+        &.selected:focus-within {
             border-color: var(--vscode-focusBorder);
             box-shadow:
                 inset 0 1px 0 rgba(255, 255, 255, 0.08),
@@ -2049,9 +2070,10 @@ body.steward-sidebar {
         width: 4px;
         height: auto;
         border-radius: 999px;
+        background: var(--project-color, transparent);
         opacity: .9;
         pointer-events: none;
-        box-shadow: 0 0 12px var(--project-color, currentColor);
+        box-shadow: 0 0 12px var(--project-color, transparent);
         transition: top $defaultTransition, bottom $defaultTransition, opacity $defaultTransition;
     }
 
@@ -2105,7 +2127,7 @@ body.steward-sidebar {
             }
         }
 
-        &[data-open-project][data-has-save-action] .project-save-badge {
+        &[data-current-workspace][data-has-save-action] .project-save-badge {
             top: 34px;
             right: 10px;
             bottom: auto;
@@ -2327,12 +2349,14 @@ body.steward-sidebar {
             -webkit-line-clamp: 1;
         }
 
-        &[data-open-project] {
+        &[data-current-workspace][data-has-ai-session-badge] {
             .fitty-container,
             .project-description {
                 width: calc(100% - 60px);
             }
+        }
 
+        &[data-current-workspace] {
             .project-codex-badge {
                 position: absolute;
                 right: 10px;
@@ -2378,7 +2402,14 @@ body.steward-sidebar {
                 padding-bottom: 9px;
 
                 .codex-sessions {
-                    display: block;
+                    max-height: 1000px;
+                    margin-top: 8px;
+                    padding-top: 7px;
+                    border-top-color: var(--vscode-panel-border);
+                    opacity: 1;
+                    visibility: visible;
+                    pointer-events: auto;
+                    transition-delay: 0s;
                 }
             }
 
@@ -2389,11 +2420,53 @@ body.steward-sidebar {
             }
         }
 
+        &[data-workspace-navigation][data-has-ai-session-badge] {
+            .fitty-container,
+            .project-description {
+                width: calc(100% - 60px);
+            }
+
+            .project-codex-badge {
+                position: absolute;
+                right: 10px;
+                top: 8px;
+                z-index: 40;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 1px 6px;
+                border: 1px solid var(--vscode-panel-border);
+                border-radius: 999px;
+                color: var(--vscode-descriptionForeground);
+                background: var(--vscode-sideBar-background);
+                font-size: 9px;
+                font-weight: 650;
+                line-height: 1.35;
+
+                .ai-session-active-count {
+                    color: var(--vscode-focusBorder);
+                }
+            }
+        }
+
         .codex-sessions {
+            display: block;
             width: 100%;
-            margin-top: 8px;
-            padding-top: 7px;
-            border-top: 1px solid var(--vscode-panel-border);
+            max-height: 0;
+            margin-top: 0;
+            padding-top: 0;
+            overflow: hidden;
+            border-top: 1px solid transparent;
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            transition:
+                max-height 220ms ease,
+                opacity 160ms ease,
+                margin-top 220ms ease,
+                padding-top 220ms ease,
+                border-color 160ms ease,
+                visibility 0s linear 220ms;
         }
 
         .ai-session-module-header {
@@ -2402,6 +2475,14 @@ body.steward-sidebar {
             justify-content: space-between;
             gap: 8px;
             min-height: 24px;
+        }
+
+        .ai-session-create-actions {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            flex: 0 0 auto;
         }
 
         .ai-session-module-title {
@@ -3108,6 +3189,7 @@ body.steward-sidebar {
         }
 
         .ai-session-runtime-badge,
+        .ai-session-root-chip,
         .ai-session-stale-status {
             display: inline-flex;
             align-items: center;
@@ -3127,6 +3209,15 @@ body.steward-sidebar {
             font-weight: 600;
             text-transform: none;
             opacity: .8;
+        }
+
+        .ai-session-root-chip {
+            flex: 0 1 auto;
+            max-width: 45%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            text-transform: none;
         }
 
         .codex-sessions-empty {
@@ -3415,49 +3506,83 @@ body.steward-sidebar .project .ai-session-attention-indicator {
 }
 
 @media (max-width: 280px) {
-    body.steward-sidebar .project {
-        .project-codex-badge {
-            right: 7px;
-            padding-right: 4px;
-            padding-left: 4px;
-        }
+    body.steward-sidebar {
+        overflow-x: hidden;
 
-        .ai-session-total-count {
-            font-size: 0;
+        .project {
+            min-width: 0;
+            max-width: 100%;
+            overflow-x: hidden;
 
-            &::before {
-                content: "AI";
-                font-size: 8px;
+            .project-codex-badge {
+                right: 7px;
+                padding-right: 4px;
+                padding-left: 4px;
             }
-        }
 
-        .ai-session-create-button {
-            min-width: 48px;
-            padding-right: 7px;
-            padding-left: 7px;
-        }
+            .ai-session-total-count {
+                font-size: 0;
 
-        .codex-session-row {
-            .ai-session-primary-action {
-                grid-template-columns: 22px minmax(0, 1fr);
-                gap: 5px;
-                padding-right: 36px;
-                padding-left: 6px;
+                &::before {
+                    content: "AI";
+                    font-size: 8px;
+                }
             }
-        }
 
-        .codex-session-icon {
-            width: 21px;
-            height: 21px;
-
-            svg {
-                width: 14px;
-                height: 14px;
+            .project-title-row,
+            .project-description,
+            .ai-session-module-header,
+            .ai-session-module-title,
+            .ai-session-create-actions,
+            .ai-session-batch-actions,
+            .ai-session-batch-selection-actions,
+            .ai-session-batch-submit-actions,
+            .ai-session-primary-action,
+            .codex-session-text,
+            .codex-session-name,
+            .codex-session-meta {
+                min-width: 0;
             }
-        }
 
-        .codex-session-meta {
-            max-width: calc(100vw - 112px);
+            .project-description,
+            .ai-session-module-title,
+            .codex-session-name,
+            .codex-session-meta {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .ai-session-create-button {
+                min-width: 48px;
+                padding-right: 7px;
+                padding-left: 7px;
+            }
+
+            .codex-session-row {
+                min-width: 0;
+
+                .ai-session-primary-action {
+                    grid-template-columns: 22px minmax(0, 1fr);
+                    gap: 5px;
+                    padding-right: 36px;
+                    padding-left: 6px;
+                }
+            }
+
+            .codex-session-icon {
+                width: 21px;
+                height: 21px;
+
+                svg {
+                    width: 14px;
+                    height: 14px;
+                }
+            }
+
+            .codex-session-meta {
+                max-width: calc(100vw - 112px);
+            }
         }
     }
 }
@@ -3465,6 +3590,7 @@ body.steward-sidebar .project .ai-session-attention-indicator {
 @media (prefers-reduced-motion: reduce) {
     .codex-session-row,
     .ai-session-primary-action,
+    .codex-sessions,
     .project-codex-badge,
     .ai-session-attention-indicator,
     .project-session-fx,

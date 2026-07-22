@@ -49,7 +49,7 @@ function selectAiSessionTabDom(projectDiv, tab) {
 function restoreAiSessionTabsFromState(root, vscodeApi) {
     if (!root || typeof root.querySelectorAll !== 'function') return;
     var tabs = readAiSessionTabState(vscodeApi);
-    root.querySelectorAll('.project[data-open-project][data-id]').forEach(projectDiv => {
+    root.querySelectorAll('.workspace-card[data-current-workspace][data-id]').forEach(projectDiv => {
         var projectId = projectDiv.getAttribute('data-id');
         if (Object.prototype.hasOwnProperty.call(tabs, projectId)) {
             selectAiSessionTabDom(projectDiv, tabs[projectId]);
@@ -125,28 +125,94 @@ function restoreAiSessionListScroll(list, requestedScrollTop) {
     list.scrollTop = Math.min(scrollTop, maxScrollTop);
 }
 
-function applyOpenProjectsUpdate(message) {
+function getWorkspaceUpdateDomState(root) {
+    var currentGroup = root.matches?.('.open-current-workspace-group')
+        ? root
+        : root.querySelector('.open-current-workspace-group');
+    return {
+        currentWorkspaceCount: currentGroup
+            ? currentGroup.querySelectorAll('.workspace-card[data-workspace-scope-identity]').length
+            : 0,
+    };
+}
+
+function isWorkspaceUpdateDomConsistent(message, root) {
+    if (message.currentWorkspaceCount !== 0 && message.currentWorkspaceCount !== 1) {
+        return false;
+    }
+    return getWorkspaceUpdateDomState(root).currentWorkspaceCount === message.currentWorkspaceCount;
+}
+
+function applyWorkspaceUpdate(message) {
     if (!message
-        || message.type !== 'open-projects-updated'
-        || message.version !== 1
-        || typeof message.semanticRevision !== 'string'
-        || !message.semanticRevision
-        || !Number.isSafeInteger(message.projectCount)
-        || message.projectCount < 0
-        || typeof message.html !== 'string'
-        || typeof normalizeDashboardSearchCatalog !== 'function'
-        || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog) {
+        || message.type !== 'workspace-updated'
+        || message.version !== 2
+        || (message.currentWorkspaceCount !== 0 && message.currentWorkspaceCount !== 1)
+        || typeof message.html !== 'string') {
         return false;
     }
 
     var wrapper = document.querySelector('.sticky-groups-wrapper');
-    if (!wrapper) {
+    var currentGroup = wrapper && wrapper.querySelector('.open-current-workspace-group');
+    if (!wrapper || !currentGroup || typeof document.createElement !== 'function') {
+        return false;
+    }
+    var currentCards = Array.from(wrapper.querySelectorAll('.workspace-card[data-current-workspace][data-workspace-scope-identity]'));
+    if (currentCards.some(card => !currentGroup.contains(card))) {
         return false;
     }
 
+    var holder = document.createElement('div');
+    holder.innerHTML = message.html.trim();
+    var replacement = holder.firstElementChild;
+    if (!replacement
+        || holder.children.length !== 1
+        || !replacement.matches('.open-current-workspace-group')
+        || !isWorkspaceUpdateDomConsistent(message, replacement)) {
+        return false;
+    }
+
+    currentGroup.replaceWith(replacement);
+    if (typeof restoreAiSessionTabsFromState === 'function') {
+        restoreAiSessionTabsFromState(replacement, window.vscode);
+    }
+    if (typeof window.__projectStewardSyncCollapseButton === 'function') {
+        window.__projectStewardSyncCollapseButton();
+    }
+    if (typeof window.__projectStewardRevealPendingWorkspaceSession === 'function') {
+        window.__projectStewardRevealPendingWorkspaceSession();
+    }
+    return true;
+}
+
+var lastAppliedOpenWorkspacesSemanticRevision = null;
+
+function applyOpenWorkspacesUpdate(message) {
+    if (!message
+        || message.type !== 'open-workspaces-updated'
+        || message.version !== 2
+        || typeof message.semanticRevision !== 'string'
+        || !message.semanticRevision
+        || (message.currentWorkspaceCount !== 0 && message.currentWorkspaceCount !== 1)
+        || !Number.isSafeInteger(message.navigationWorkspaceCount)
+        || message.navigationWorkspaceCount < 0
+        || (message.otherWindowsStatus !== 'ready'
+            && message.otherWindowsStatus !== 'unavailable'
+            && message.otherWindowsStatus !== 'update-required')
+        || typeof message.html !== 'string'
+        || typeof normalizeDashboardSearchCatalog !== 'function'
+        || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog
+        || message.searchCatalog.version !== 2) {
+        return false;
+    }
+    if (message.semanticRevision === lastAppliedOpenWorkspacesSemanticRevision) {
+        return true;
+    }
+    var wrapper = document.querySelector('.sticky-groups-wrapper');
+    if (!wrapper) return false;
     var previousHtml = wrapper.innerHTML;
     wrapper.innerHTML = message.html;
-    if (!isOpenProjectsUpdateDomConsistent(message)) {
+    if (!isOpenWorkspacesUpdateDomConsistent(message)) {
         wrapper.innerHTML = previousHtml;
         return false;
     }
@@ -159,44 +225,40 @@ function applyOpenProjectsUpdate(message) {
     if (typeof window.__projectStewardSyncCollapseButton === 'function') {
         window.__projectStewardSyncCollapseButton();
     }
+    lastAppliedOpenWorkspacesSemanticRevision = message.semanticRevision;
     return true;
 }
 
-function getOpenProjectsUpdateCatalogCounts(searchCatalog) {
-    var openProjects = searchCatalog && Array.isArray(searchCatalog.openProjects)
-        ? searchCatalog.openProjects
-        : [];
+function getOpenWorkspacesUpdateDomState() {
+    var otherWindowsGroup = document.querySelector(
+        '.sticky-groups-wrapper .open-other-windows-group[data-other-windows-status]'
+    );
     return {
-        projectCount: openProjects.length,
-        navigationProjectCount: openProjects.filter(project => project && project.action !== 'open-current').length,
+        currentWorkspaceCount: document.querySelectorAll(
+            '.sticky-groups-wrapper .workspace-card[data-current-workspace][data-workspace-scope-identity]'
+        ).length,
+        navigationWorkspaceCount: document.querySelectorAll(
+            '.sticky-groups-wrapper .workspace-card[data-other-workspace][data-workspace-navigation-identity]'
+        ).length,
+        hasOtherWindowsGroup: document.querySelectorAll(
+            '.sticky-groups-wrapper .open-other-windows-group'
+        ).length > 0,
+        otherWindowsStatus: otherWindowsGroup
+            ? otherWindowsGroup.getAttribute('data-other-windows-status')
+            : 'ready',
     };
 }
 
-function getOpenProjectsUpdateDomState() {
-    return {
-        projectCount: document.querySelectorAll('.sticky-groups-wrapper .project[data-id]').length,
-        navigationProjectCount: document.querySelectorAll('.sticky-groups-wrapper .project[data-project-navigation][data-id]').length,
-        hasOtherWindowsGroup: document.querySelectorAll('.sticky-groups-wrapper .open-other-windows-group').length > 0,
-    };
-}
-
-function isOpenProjectsUpdateDomConsistent(message) {
-    var expected = getOpenProjectsUpdateCatalogCounts(message.searchCatalog);
-    if (message.projectCount !== expected.projectCount) {
-        return false;
-    }
-    if (!expected.projectCount) {
-        return true;
-    }
-
-    var rendered = getOpenProjectsUpdateDomState();
-    if (rendered.projectCount !== expected.projectCount) {
-        return false;
-    }
-    if (rendered.navigationProjectCount !== expected.navigationProjectCount) {
-        return false;
-    }
-    return expected.navigationProjectCount === 0 || rendered.hasOtherWindowsGroup;
+function isOpenWorkspacesUpdateDomConsistent(message) {
+    var rendered = getOpenWorkspacesUpdateDomState();
+    return rendered.currentWorkspaceCount === message.currentWorkspaceCount
+        && rendered.navigationWorkspaceCount === message.navigationWorkspaceCount
+        && rendered.otherWindowsStatus === message.otherWindowsStatus
+        && ((message.navigationWorkspaceCount === 0 && message.otherWindowsStatus === 'ready')
+            ? !rendered.hasOtherWindowsGroup
+            : rendered.hasOtherWindowsGroup)
+        && message.searchCatalog.openWorkspaces.length
+            === message.currentWorkspaceCount + message.navigationWorkspaceCount;
 }
 
 function getCollapseButtonState(tab, collapsedStates) {
@@ -366,6 +428,7 @@ function initProjects() {
         pending: false,
     };
     var activeAiSessionTerminalState = { provider: null, sessionId: null };
+    var pendingWorkspaceSessionReveal = null;
 
     function enter(projectId, provider) {
         if (batchAiSessionState.pending)
@@ -495,12 +558,15 @@ function initProjects() {
         if (onTriggerProjectAction(e.target, dataId))
             return;
 
-        if (projectDiv.hasAttribute("data-open-project")) {
+        if (projectDiv.hasAttribute("data-current-workspace")) {
+            if (e.target.closest('[data-ai-session-region]'))
+                return;
+
             toggleCodexSessions(projectDiv, dataId);
             return;
         }
 
-        if (projectDiv.hasAttribute("data-project-navigation")) {
+        if (projectDiv.hasAttribute("data-workspace-navigation")) {
             openProject(dataId, ProjectOpenType.Default);
             return;
         }
@@ -612,6 +678,7 @@ function initProjects() {
                 if (terminalRow.hasAttribute('data-session-pending')) {
                     terminalMessage.pendingCreatedAt = terminalRow.getAttribute('data-pending-created-at');
                 } else {
+                    acknowledgeAiSessionRow(terminalRow);
                     terminalMessage.sessionId = terminalRow.getAttribute('data-session-id');
                 }
                 window.vscode.postMessage(terminalMessage);
@@ -874,7 +941,7 @@ function initProjects() {
     function exitAiSessionBatchManagement() {
         var projectId = batchAiSessionState.projectId;
         batchAiSessionManager.exit();
-        syncAiSessionBatchManagementDom(findOpenProjectDiv(projectId));
+        syncAiSessionBatchManagementDom(findCurrentWorkspaceDiv(projectId));
     }
 
     function onInsideGroupClick(e, groupDiv) {
@@ -1175,6 +1242,14 @@ function initProjects() {
         if (!action)
             return false;
 
+        if (action === 'save-current-workspace') {
+            window.vscode.postMessage({
+                type: 'save-current-workspace',
+                projectId,
+            });
+            return true;
+        }
+
         window.vscode.postMessage({
             type: action + '-project',
             projectId,
@@ -1397,6 +1472,7 @@ function initProjects() {
                 if (contextMenuAiSessionActive) break;
                 window.vscode.postMessage({
                     type: getArchiveAiSessionMessageType(contextMenuAiSessionProvider),
+                    projectId: contextMenuAiSessionProjectId,
                     provider: contextMenuAiSessionProvider,
                     sessionId: contextMenuAiSessionId,
                 });
@@ -1539,6 +1615,13 @@ function initProjects() {
             return;
         }
 
+        if (e.target.closest('[data-action="open-bridge-extension"]')) {
+            window.vscode.postMessage({
+                type: 'open-bridge-extension'
+            });
+            return;
+        }
+
         if (e.target.closest('[data-action="add-group"]')) {
             window.vscode.postMessage({
                 type: 'add-group'
@@ -1622,30 +1705,45 @@ function initProjects() {
                 }
             }, 0);
         }
-        if (message && message.type === 'open-projects-updated') {
-            if (!applyOpenProjectsUpdate(message)) {
-                requestFullRefresh('invalid-open-projects-update');
+        if (message && message.type === 'workspace-updated') {
+            if (!applyWorkspaceUpdate(message)) {
+                requestFullRefresh('invalid-workspace-update');
                 return;
             }
             if (batchAiSessionState.projectId) {
-                syncAiSessionBatchManagementDom(findOpenProjectDiv(batchAiSessionState.projectId));
+                syncAiSessionBatchManagementDom(findCurrentWorkspaceDiv(batchAiSessionState.projectId));
             }
             syncActiveAiSessionTerminalDom();
             updateStickyGroupHeaderOffset();
-            var renderedOpenProjectsState = getOpenProjectsUpdateDomState();
+            var renderedWorkspaceState = getWorkspaceUpdateDomState(document);
             window.vscode.postMessage({
-                type: 'open-projects-rendered',
-                semanticRevision: message.semanticRevision,
-                projectCount: message.projectCount,
-                renderedProjectCount: renderedOpenProjectsState.projectCount,
-                renderedNavigationProjectCount: renderedOpenProjectsState.navigationProjectCount,
-                hasOtherWindowsGroup: renderedOpenProjectsState.hasOtherWindowsGroup,
+                type: 'workspace-rendered',
+                version: 2,
+                currentWorkspaceCount: renderedWorkspaceState.currentWorkspaceCount,
             });
             return;
         }
-
+        if (message && message.type === 'open-workspaces-updated') {
+            if (!applyOpenWorkspacesUpdate(message)) {
+                requestFullRefresh('invalid-open-workspaces-update');
+                return;
+            }
+            syncActiveAiSessionTerminalDom();
+            updateStickyGroupHeaderOffset();
+            var renderedOpenWorkspaceState = getOpenWorkspacesUpdateDomState();
+            window.vscode.postMessage({
+                type: 'open-workspaces-rendered',
+                version: 2,
+                semanticRevision: message.semanticRevision,
+                currentWorkspaceCount: renderedOpenWorkspaceState.currentWorkspaceCount,
+                navigationWorkspaceCount: renderedOpenWorkspaceState.navigationWorkspaceCount,
+                hasOtherWindowsGroup: renderedOpenWorkspaceState.hasOtherWindowsGroup,
+                otherWindowsStatus: renderedOpenWorkspaceState.otherWindowsStatus,
+            });
+            return;
+        }
         if (message && message.type === 'ai-session-tab-selection-requested') {
-            var requestedProject = findOpenProjectDiv(message.projectId);
+            var requestedProject = findCurrentWorkspaceDiv(message.projectId);
             if (requestedProject && (message.tab === 'active' || message.tab === 'sessions')) {
                 selectAiSessionTabDom(requestedProject, message.tab);
                 writeAiSessionTabState(window.vscode, message.projectId, message.tab);
@@ -1654,7 +1752,7 @@ function initProjects() {
         }
 
         if (message && message.type === 'ai-session-status-announcement') {
-            var announcementProject = findOpenProjectDiv(message.projectId);
+            var announcementProject = findCurrentWorkspaceDiv(message.projectId);
             var announcement = typeof message.message === 'string' ? message.message.trim().slice(0, 256) : '';
             var announcementRegion = announcementProject && announcementProject.querySelector('[data-ai-session-live-region]');
             if (announcementRegion && announcement) announcementRegion.textContent = announcement;
@@ -1686,16 +1784,11 @@ function initProjects() {
             return;
         }
 
-        if (message && message.type === 'ai-session-attention-projects-updated') {
-            updateAiSessionAttentionProjects(message.projects);
-            return;
-        }
-
         if (message && message.type === 'ai-session-batch-archive-completed') {
             if (message.projectId === batchAiSessionState.projectId
                 && message.provider === batchAiSessionState.provider) {
                 batchAiSessionManager.complete(message.status);
-                syncAiSessionBatchManagementDom(findOpenProjectDiv(message.projectId));
+                syncAiSessionBatchManagementDom(findCurrentWorkspaceDiv(message.projectId));
             }
             return;
         }
@@ -1708,11 +1801,13 @@ function initProjects() {
     }
 
     function applyAiSessionsUpdate(message) {
-        if (message.version !== 1
+        if (message.version !== 2
             || typeof message.sequence !== 'number'
-            || !Array.isArray(message.openProjects)
+            || (message.currentWorkspaceCount !== 0 && message.currentWorkspaceCount !== 1)
+            || typeof message.html !== 'string'
             || typeof normalizeDashboardSearchCatalog !== 'function'
-            || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog) {
+            || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog
+            || message.searchCatalog.version !== 2) {
             requestFullRefresh('unsupported-ai-session-message');
             return;
         }
@@ -1721,39 +1816,38 @@ function initProjects() {
             return;
         }
 
+        if (!applyWorkspaceUpdate({
+            type: 'workspace-updated',
+            version: 2,
+            currentWorkspaceCount: message.currentWorkspaceCount,
+            html: message.html,
+        })) {
+            requestFullRefresh('invalid-ai-session-workspace-update');
+            return;
+        }
+
         latestAiSessionUpdateSequence = message.sequence;
-
-        if (batchAiSessionState.projectId && !findOpenProjectDiv(batchAiSessionState.projectId)) {
-            exitAiSessionBatchManagement();
-        }
-
-        for (var projectUpdate of message.openProjects) {
-            var projectDiv = findOpenProjectDiv(projectUpdate.projectId);
-            if (!projectDiv) {
-                if (projectUpdate.projectId === batchAiSessionState.projectId) {
-                    exitAiSessionBatchManagement();
-                }
-                requestFullRefresh('missing-open-project');
-                return;
-            }
-
-            if (!updateOpenProjectAiSessions(projectDiv, projectUpdate)) {
-                return;
+        if (batchAiSessionState.projectId) {
+            var projectDiv = findCurrentWorkspaceDiv(batchAiSessionState.projectId);
+            if (projectDiv) {
+                syncAiSessionBatchManagementDom(projectDiv);
+            } else {
+                exitAiSessionBatchManagement();
             }
         }
-
+        syncActiveAiSessionTerminalDom();
         updateStickyGroupHeaderOffset();
         if (window.__projectStewardDashboard) {
             window.__projectStewardDashboard.replaceSearchCatalog(message.searchCatalog);
         }
     }
 
-    function findOpenProjectDiv(projectId) {
+    function findCurrentWorkspaceDiv(projectId) {
         if (!projectId) {
             return null;
         }
 
-        var projects = document.querySelectorAll('.project[data-open-project][data-id]');
+        var projects = document.querySelectorAll('.workspace-card[data-current-workspace][data-id]');
         for (var projectDiv of projects) {
             if (projectDiv.getAttribute("data-id") === projectId) {
                 return projectDiv;
@@ -1763,266 +1857,79 @@ function initProjects() {
         return null;
     }
 
-    window.__projectStewardShowCurrentProject = projectId => {
-        var projectDiv = findOpenProjectDiv(projectId);
-        if (!projectDiv) {
+    function findWorkspaceDiv(navigationIdentity) {
+        if (!navigationIdentity) {
+            return null;
+        }
+        var workspaces = document.querySelectorAll('.workspace-card[data-workspace-navigation-identity]');
+        for (var workspaceDiv of workspaces) {
+            if (workspaceDiv.getAttribute('data-workspace-navigation-identity') === navigationIdentity) {
+                return workspaceDiv;
+            }
+        }
+        return null;
+    }
+
+    function focusSearchRevealTarget(target) {
+        target.setAttribute('tabindex', '-1');
+        target.focus();
+        target.scrollIntoView({ block: 'nearest' });
+        target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true });
+    }
+
+    window.__projectStewardRevealWorkspace = navigationIdentity => {
+        var workspaceDiv = findWorkspaceDiv(navigationIdentity);
+        if (!workspaceDiv) {
             return false;
         }
-        if (!projectDiv.hasAttribute('data-codex-expanded')) {
-            toggleCodexSessions(projectDiv, projectId);
-        }
-        projectDiv.setAttribute('tabindex', '-1');
-        projectDiv.focus();
-        projectDiv.scrollIntoView({ block: 'nearest' });
-        projectDiv.addEventListener('blur', () => projectDiv.removeAttribute('tabindex'), { once: true });
+        focusSearchRevealTarget(workspaceDiv);
         return true;
     };
 
-    function updateOpenProjectAiSessions(projectDiv, projectUpdate) {
-        if (typeof projectUpdate.sessionSectionHtml !== 'string') {
-            requestFullRefresh('invalid-ai-session-html');
+    function revealWorkspaceSession(navigationIdentity, provider, sessionId) {
+        if (!isAiSessionProvider(provider) || !sessionId) {
             return false;
         }
-
-        var viewState = captureAiSessionViewState(projectDiv);
-        var storedTabs = readAiSessionTabState(window.vscode);
-        var hasStoredTab = Object.prototype.hasOwnProperty.call(storedTabs, projectUpdate.projectId);
-        var requestedTab = hasStoredTab
-            ? storedTabs[projectUpdate.projectId]
-            : viewState.selectedTab || projectUpdate.defaultTab;
-
-        projectDiv.toggleAttribute("data-codex-expanded", !!projectUpdate.expanded);
-
-        if (typeof projectUpdate.searchText === 'string') {
-            projectDiv.setAttribute("data-name", projectUpdate.searchText);
+        var workspaceDiv = findWorkspaceDiv(navigationIdentity);
+        if (!workspaceDiv) {
+            return false;
         }
+        var workspaceId = workspaceDiv.getAttribute('data-id');
+        if (!workspaceDiv.hasAttribute('data-codex-expanded')) {
+            toggleCodexSessions(workspaceDiv, workspaceId);
+        }
+        selectAiSessionTabDom(workspaceDiv, 'sessions');
+        writeAiSessionTabState(window.vscode, workspaceId, 'sessions');
+        var sessionRow = Array.from(workspaceDiv.querySelectorAll('.codex-session-row[data-session-id][data-session-provider]'))
+            .find(row => row.getAttribute('data-session-provider') === provider
+                && row.getAttribute('data-session-id') === sessionId);
+        if (sessionRow) {
+            pendingWorkspaceSessionReveal = null;
+            focusSearchRevealTarget(sessionRow);
+            return true;
+        }
+        if (getProjectActiveAiSessionProvider(workspaceDiv) !== provider) {
+            pendingWorkspaceSessionReveal = { navigationIdentity, provider, sessionId };
+            selectAiSessionProvider(workspaceId, provider);
+            return true;
+        }
+        pendingWorkspaceSessionReveal = null;
+        focusSearchRevealTarget(workspaceDiv);
+        return false;
+    }
 
-        updateOpenProjectAiSessionBadge(
-            projectDiv,
-            projectUpdate.aiSessionCount || 0,
-            projectUpdate.attentionCount || 0,
-            projectUpdate.activeSessionCount || 0
+    window.__projectStewardRevealWorkspaceSession = revealWorkspaceSession;
+    window.__projectStewardRevealPendingWorkspaceSession = () => {
+        if (!pendingWorkspaceSessionReveal) {
+            return false;
+        }
+        var pending = pendingWorkspaceSessionReveal;
+        return revealWorkspaceSession(
+            pending.navigationIdentity,
+            pending.provider,
+            pending.sessionId
         );
-
-        var sessionSection = projectDiv.querySelector('.codex-sessions');
-        if (sessionSection) {
-            sessionSection.outerHTML = projectUpdate.sessionSectionHtml;
-        } else if (projectUpdate.sessionSectionHtml) {
-            projectDiv.insertAdjacentHTML('beforeend', projectUpdate.sessionSectionHtml);
-        }
-
-        restoreAiSessionViewState(projectDiv, viewState, requestedTab);
-        var nextPendingCount = projectDiv.querySelectorAll('.active-ai-session-row[data-session-pending]').length;
-        var nextActiveCount = projectDiv.querySelectorAll('.active-ai-session-row[data-session-active]').length;
-        if (nextPendingCount < viewState.pendingCount && nextActiveCount > viewState.activeCount) {
-            var liveRegion = projectDiv.querySelector('[data-ai-session-live-region]');
-            if (liveRegion) liveRegion.textContent = 'AI session is ready';
-        }
-
-        if (projectUpdate.projectId === batchAiSessionState.projectId) {
-            var activeProvider = getProjectActiveAiSessionProvider(projectDiv);
-            var remainingIds = Array.from(projectDiv.querySelectorAll('.ai-session-history-panel .codex-session-row[data-session-id]:not([data-session-active])'))
-                .filter(row => (row.getAttribute("data-session-provider") || "codex") === activeProvider)
-                .map(row => row.getAttribute("data-session-id"))
-                .filter(sessionId => !!sessionId);
-            batchAiSessionManager.reconcile(projectUpdate.projectId, activeProvider, remainingIds);
-            syncAiSessionBatchManagementDom(projectDiv);
-        }
-
-        syncActiveAiSessionTerminalDom();
-        animateNewAiSessionAttention(projectDiv);
-
-        return true;
-    }
-
-    function animateNewAiSessionAttention(root) {
-        if (!root) return;
-        window.__projectStewardAttentionEvents = window.__projectStewardAttentionEvents || {};
-        root.querySelectorAll('.codex-session-row[data-ai-session-attention][data-session-event-id]').forEach(row => {
-            var eventId = row.getAttribute('data-session-event-id');
-            if (!eventId || window.__projectStewardAttentionEvents[eventId]) return;
-            window.__projectStewardAttentionEvents[eventId] = true;
-            row.classList.add('attention-animate');
-            var badge = root.closest('.project')?.querySelector('.project-codex-badge .ai-session-attention-count');
-            if (badge) {
-                badge.classList.add('attention-animate');
-                window.setTimeout(() => badge.classList.remove('attention-animate'), 2800);
-            }
-            window.setTimeout(() => row.classList.remove('attention-animate'), 2800);
-        });
-    }
-
-    function updateAiSessionAttentionProjects(projects) {
-        if (!Array.isArray(projects)) {
-            requestFullRefresh('invalid-ai-session-attention-projects');
-            return;
-        }
-
-        window.__projectStewardAttentionEvents = window.__projectStewardAttentionEvents || {};
-        var summaries = {};
-        var animateProjectKeys = {};
-        projects.forEach(project => {
-            if (!project || typeof project.projectKey !== 'string'
-                || typeof project.attentionCount !== 'number' || project.attentionCount < 0
-                || !Array.isArray(project.eventIds) || !Array.isArray(project.sessions)) {
-                return;
-            }
-            summaries[project.projectKey] = project;
-            if (project.eventIds.some(eventId => typeof eventId === 'string' && !window.__projectStewardAttentionEvents[eventId])) {
-                animateProjectKeys[project.projectKey] = true;
-            }
-        });
-        document.querySelectorAll('.project[data-attention-project-key]').forEach(projectDiv => {
-            var projectKey = projectDiv.getAttribute('data-attention-project-key');
-            var summary = summaries[projectKey];
-            var attentionCount = summary ? summary.attentionCount : 0;
-            syncAiSessionAttentionRows(projectDiv, summary ? summary.sessions : []);
-            var badge = projectDiv.querySelector('.project-ai-attention-badge');
-            if (projectDiv.hasAttribute('data-open-project')) {
-                if (badge) badge.remove();
-                var sessionBadge = projectDiv.querySelector('.project-codex-badge');
-                var totalCount = readAiSessionBadgeCount(sessionBadge, 'data-ai-session-total-count');
-                var activeCount = readAiSessionBadgeCount(sessionBadge, 'data-ai-session-active-count');
-                if (sessionBadge || attentionCount) {
-                    updateOpenProjectAiSessionBadge(projectDiv, totalCount, attentionCount, activeCount);
-                    var attentionBadge = projectDiv.querySelector('.project-codex-badge .ai-session-attention-count');
-                    if (attentionBadge && animateProjectKeys[projectKey]) {
-                        attentionBadge.classList.add('attention-animate');
-                        window.setTimeout(() => attentionBadge.classList.remove('attention-animate'), 2800);
-                    }
-                }
-                return;
-            }
-            if (!attentionCount) {
-                if (badge) badge.remove();
-                return;
-            }
-
-            if (!badge) {
-                projectDiv.insertAdjacentHTML('afterbegin', '<span class="project-ai-attention-badge"></span>');
-                badge = projectDiv.querySelector('.project-ai-attention-badge');
-            }
-            badge.textContent = String(attentionCount);
-            badge.setAttribute('title', attentionCount + ' AI session' + (attentionCount === 1 ? ' needs' : 's need') + ' attention');
-            if (animateProjectKeys[projectKey]) {
-                projectDiv.classList.add('attention-animate');
-                badge.classList.add('attention-animate');
-                window.setTimeout(() => {
-                    projectDiv.classList.remove('attention-animate');
-                    badge.classList.remove('attention-animate');
-                }, 2800);
-            }
-        });
-        Object.keys(summaries).forEach(projectKey => summaries[projectKey].eventIds.forEach(eventId => {
-            if (typeof eventId === 'string') window.__projectStewardAttentionEvents[eventId] = true;
-        }));
-    }
-
-    function syncAiSessionAttentionRows(projectDiv, sessions) {
-        if (!projectDiv || typeof projectDiv.querySelectorAll !== 'function') return;
-        var bySessionKey = {};
-        window.__projectStewardAttentionSessionEvents = window.__projectStewardAttentionSessionEvents || {};
-        (sessions || []).forEach(session => {
-            if (session && typeof session.sessionKey === 'string') {
-                var eventIds = Array.isArray(session.eventIds)
-                    ? session.eventIds.filter(eventId => typeof eventId === 'string' && !!eventId)
-                    : (typeof session.eventId === 'string' ? [session.eventId] : []);
-                if (eventIds.length) {
-                    bySessionKey[session.sessionKey] = eventIds.find(eventId => !window.__projectStewardAttentionEvents[eventId]) || eventIds[0];
-                    window.__projectStewardAttentionSessionEvents[session.sessionKey] = eventIds.slice();
-                }
-            }
-        });
-
-        projectDiv.querySelectorAll('.codex-session-row[data-session-id]').forEach(row => {
-            var provider = row.getAttribute('data-session-provider') || 'codex';
-            var sessionId = row.getAttribute('data-session-id') || '';
-            var eventId = bySessionKey[provider + ':' + sessionId];
-            var indicator = row.querySelector('.ai-session-attention-indicator');
-            if (!eventId) {
-                delete window.__projectStewardAttentionSessionEvents[provider + ':' + sessionId];
-                row.removeAttribute('data-ai-session-attention');
-                row.removeAttribute('data-session-event-id');
-                if (indicator) indicator.remove();
-                return;
-            }
-
-            row.setAttribute('data-ai-session-attention', '');
-            row.setAttribute('data-session-event-id', eventId);
-            if (!indicator) {
-                indicator = document.createElement('span');
-                indicator.className = 'ai-session-attention-indicator';
-                indicator.title = 'AI session needs attention';
-                indicator.setAttribute('aria-label', 'AI session needs attention');
-                row.insertBefore(indicator, row.firstChild);
-            }
-            if (!window.__projectStewardAttentionEvents[eventId]) {
-                row.classList.add('attention-animate');
-                window.setTimeout(() => row.classList.remove('attention-animate'), 2800);
-            }
-        });
-    }
-
-    function updateOpenProjectAiSessionBadge(projectDiv, aiSessionCount, attentionCount, activeSessionCount) {
-        var badge = projectDiv.querySelector('.project-codex-badge');
-        if (!aiSessionCount && !attentionCount && !activeSessionCount) {
-            if (badge) {
-                badge.remove();
-            }
-            return;
-        }
-
-        if (!badge) {
-            var sessionSection = projectDiv.querySelector('.codex-sessions');
-            if (sessionSection) {
-                sessionSection.insertAdjacentHTML('beforebegin', '<span class="project-codex-badge" title="AI Sessions"></span>');
-            } else {
-                projectDiv.insertAdjacentHTML('beforeend', '<span class="project-codex-badge" title="AI Sessions"></span>');
-            }
-            badge = projectDiv.querySelector('.project-codex-badge');
-        }
-        if (!badge) return;
-
-        syncAiSessionBadgeCount(badge, '.ai-session-total-count', aiSessionCount,
-            '<span class="ai-session-total-count"></span>', 'AI ' + aiSessionCount,
-            aiSessionCount + ' AI session' + (aiSessionCount === 1 ? '' : 's'));
-        syncAiSessionBadgeCount(badge, '.ai-session-active-count', activeSessionCount,
-            '<span class="ai-session-active-count"></span>', '●' + activeSessionCount,
-            activeSessionCount + ' active AI session' + (activeSessionCount === 1 ? '' : 's'));
-        syncAiSessionBadgeCount(badge, '.ai-session-attention-count', attentionCount,
-            '<b class="ai-session-attention-count"></b>', String(attentionCount),
-            attentionCount + ' AI session' + (attentionCount === 1 ? ' needs' : 's need') + ' attention');
-        var summary = [
-            aiSessionCount ? aiSessionCount + ' AI session' + (aiSessionCount === 1 ? '' : 's') : '',
-            activeSessionCount ? activeSessionCount + ' active AI session' + (activeSessionCount === 1 ? '' : 's') : '',
-            attentionCount ? attentionCount + ' AI session' + (attentionCount === 1 ? ' needs' : 's need') + ' attention' : '',
-        ].filter(Boolean).join(', ');
-        badge.setAttribute('title', summary);
-        badge.setAttribute('aria-label', summary);
-        badge.setAttribute('data-ai-session-total-count', String(aiSessionCount));
-        badge.setAttribute('data-ai-session-active-count', String(activeSessionCount));
-        badge.setAttribute('data-ai-session-attention-count', String(attentionCount));
-    }
-
-    function readAiSessionBadgeCount(badge, attribute) {
-        var count = Number(badge && badge.getAttribute(attribute));
-        return Number.isSafeInteger(count) && count >= 0 ? count : 0;
-    }
-
-    function syncAiSessionBadgeCount(badge, selector, count, html, textValue, ariaLabel) {
-        var element = badge.querySelector(selector);
-        if (!count) {
-            if (element) element.remove();
-            return;
-        }
-        if (!element) {
-            badge.insertAdjacentHTML('beforeend', html);
-            element = badge.querySelector(selector);
-        }
-        if (!element) return;
-        element.textContent = textValue;
-        element.setAttribute('aria-label', ariaLabel);
-    }
+    };
 
     function requestFullRefresh(reason) {
         window.vscode.postMessage({

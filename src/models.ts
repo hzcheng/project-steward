@@ -4,7 +4,8 @@ import * as vscode from 'vscode';
 import type { TodoSearchCatalogItem } from './todos/types';
 import { StorageOption, VSCODE_REMOTE_PREFIX, WSL_DEFAULT_REGEX } from "./constants";
 import type { AiSessionAttentionReason } from './aiSessions/lifecycle';
-import type { ActiveAiSessionViewModel, AiSessionTabId } from './aiSessions/types';
+import type { ActiveAiSessionViewModel, AiSessionTabId, WorkspaceAiSessionViewModel } from './aiSessions/types';
+import type { OpenWorkspaceEnvironment, OpenWorkspaceKind } from './workspaces/types';
 
 export class Group {
     id: string;
@@ -44,10 +45,6 @@ export class Project {
     aiSessionAttentionEventIds?: string[];
     activeAiSessions?: ActiveAiSessionViewModel[];
     activeAiSessionTab?: AiSessionTabId;
-    openProjectCardKind?: 'current' | 'projectNavigation';
-    openProjectSourceInstanceId?: string;
-    openProjectEnvironmentLabel?: string;
-    openProjectActiveSessionCount?: number;
     color: string;
     isGitRepo = false;
 
@@ -81,6 +78,23 @@ export class Project {
     static getRandomId(prepend: string = null) {
         return generateRandomId(prepend);
     }
+}
+
+export interface WorkspaceCardViewModel {
+    id: string;
+    kind: 'current' | 'navigation';
+    workspaceKind: OpenWorkspaceKind;
+    showSaveAction: boolean;
+    runningSessionCount: number;
+    navigationIdentity: string;
+    scopeIdentity: string;
+    name: string;
+    environment: OpenWorkspaceEnvironment;
+    environmentLabel: string;
+    color?: string;
+    roots: Array<{ id: string; name: string; ordinal: number }>;
+    aiSessions?: WorkspaceAiSessionViewModel;
+    attentionCount: number;
 }
 
 export function sanitizeProjectName(name: string) {
@@ -180,8 +194,7 @@ export interface StewardInfos {
     config: vscode.WorkspaceConfiguration;
     otherStorageHasData: boolean;
     favoritesGroupCollapsed?: boolean;
-    openProjects?: Project[];
-    openProjectsGroupCollapsed?: boolean;
+    openWorkspacesGroupCollapsed?: boolean;
     todoSearchItems?: TodoSearchCatalogItem[];
 }
 

@@ -10,10 +10,69 @@ function read(relativePath) {
     return fs.readFileSync(path.join(root, relativePath), 'utf8');
 }
 
+function listSourceFiles(relativeDirectory) {
+    const absoluteDirectory = path.join(root, relativeDirectory);
+    return fs.readdirSync(absoluteDirectory, { withFileTypes: true }).flatMap(entry => {
+        const relativePath = path.join(relativeDirectory, entry.name);
+        return entry.isDirectory()
+            ? listSourceFiles(relativePath)
+            : /\.(?:ts|js|json)$/.test(entry.name) ? [relativePath] : [];
+    });
+}
+
+const productionSources = [
+    ...listSourceFiles('src'),
+    ...listSourceFiles('extensions/attention-ui-bridge/src'),
+    'extensions/attention-ui-bridge/tsconfig.json',
+    'media/webviewDashboardScripts.js',
+    'media/webviewProjectScripts.js',
+    'media/styles.scss',
+    'media/styles.css',
+];
+const forbiddenLiveProjectPatterns = [
+    ['OPEN_PROJECT_PROTOCOL_VERSION', /OPEN_PROJECT_PROTOCOL_VERSION/],
+    ['_projectStewardOpenProjects', /_projectStewardOpenProjects/],
+    ['open-projects/v1', /open-projects\/v1/],
+    ['openProjectCardKind', /openProjectCardKind/],
+    ['data-open-project', /data-open-project/],
+    ['data-project-navigation', /data-project-navigation/],
+    ['findOpenProjectDiv', /findOpenProjectDiv/],
+    ['runtime.identity.projectKey', /runtime\.identity\.projectKey/],
+    ['AiSessionRuntimeIdentity.projectKey', /interface\s+AiSessionRuntimeIdentity[\s\S]{0,600}\bprojectKey\s*:/],
+];
+
+for (const [label, pattern] of forbiddenLiveProjectPatterns) {
+    const matches = productionSources.filter(relativePath => pattern.test(read(relativePath)));
+    assert.deepStrictEqual(matches, [], `${label} remains in production sources: ${matches.join(', ')}`);
+}
+
+for (const legacyPath of [
+    'src/openProjects/bridgeClient.ts',
+    'src/openProjects/dashboardController.ts',
+    'src/openProjects/projection.ts',
+    'src/openProjects/protocol.ts',
+    'src/openProjects/workspaceController.ts',
+    'extensions/attention-ui-bridge/src/openProjectCoordinator.ts',
+    'extensions/attention-ui-bridge/src/openProjectPublication.ts',
+    'extensions/attention-ui-bridge/src/openProjectStore.ts',
+]) {
+    assert.ok(!fs.existsSync(path.join(root, legacyPath)), `legacy live-project module remains: ${legacyPath}`);
+}
+
+for (const relativePath of productionSources.filter(relativePath =>
+    relativePath.startsWith('src/openWorkspaces/') || relativePath.startsWith('src/workspaces/')
+)) {
+    const source = read(relativePath);
+    assert.ok(
+        !/(?:from\s+['"][^'"]*openProjectService['"]|\bgetOpenProjectsFromWorkspace\b|\bProjectOpenController\b)/.test(source)
+            || relativePath.startsWith('src/projects/'),
+        `live workspace source depends on saved-project helpers: ${relativePath}`
+    );
+}
+
 const dashboard = read('src/dashboard.ts');
 const viewProvider = read('src/dashboard/viewProvider.ts');
 const aiSessionController = read('src/aiSessions/dashboardController.ts');
-const openProjectController = read('src/openProjects/dashboardController.ts');
 const terminalService = read('src/aiSessions/terminalService.ts');
 const aiSessionReadCoordinator = read('src/aiSessions/readCoordinator.ts');
 const dashboardDiagnostics = read('src/dashboard/diagnostics.ts');
@@ -36,8 +95,6 @@ const expectedModules = [
     'src/dashboard/startupController.ts',
     'src/dashboard/webviewOptions.ts',
     'src/dashboard/webviewUpdateMessages.ts',
-    'src/openProjects/dashboardController.ts',
-    'src/openProjects/workspaceController.ts',
     'src/projects/addProjectsFromFolderController.ts',
     'src/projects/currentProjectDetails.ts',
     'src/projects/favoriteProjectController.ts',
@@ -62,15 +119,12 @@ const expectedModules = [
     'src/aiSessions/pendingTerminals.ts',
     'src/aiSessions/pinController.ts',
     'src/aiSessions/projectCandidates.ts',
-    'src/aiSessions/projectHydration.ts',
-    'src/aiSessions/projectHydrationController.ts',
-    'src/aiSessions/projectStateStore.ts',
+    'src/aiSessions/workspaceStateStore.ts',
     'src/aiSessions/readCoordinator.ts',
     'src/aiSessions/scanOptions.ts',
     'src/aiSessions/sessionPaths.ts',
     'src/aiSessions/terminalCandidates.ts',
     'src/aiSessions/terminalCwd.ts',
-    'src/aiSessions/viewModels.ts',
 ];
 
 assert.ok(dashboardLines > 0);
@@ -85,16 +139,16 @@ assert.ok(aiSessionReadCoordinator.includes("event: 'ai-session-scan'"));
 assert.ok(aiSessionReadCoordinator.includes('scannedFileCount: result.scannedFiles'));
 assert.ok(aiSessionReadCoordinator.includes('parsedFileCount: result.parsedFiles'));
 assert.ok(aiSessionReadCoordinator.includes('scanBudget: normalizedOptions.maxFiles || null'));
-const projectHydrationController = fs.readFileSync(path.join(root, 'src', 'aiSessions', 'projectHydrationController.ts'), 'utf8');
+const workspaceHydrationController = read('src/workspaces/sessionHydrationController.ts');
 assert.ok(!dashboard.includes("from './aiSessions/scanOptions'"));
-assert.ok(projectHydrationController.includes("from './scanOptions'"));
+assert.ok(workspaceHydrationController.includes("from '../aiSessions/scanOptions'"));
 const dashboardRuntimeController = fs.readFileSync(path.join(root, 'src', 'dashboard', 'runtimeController.ts'), 'utf8');
 assert.ok(dashboard.includes("function refreshStewardViews(reason = 'refresh')"));
 assert.ok(dashboardRuntimeController.includes("event: 'full-refresh'"));
 assert.ok(dashboard.includes('new DashboardDiagnostics({'));
 assert.ok(!dashboard.includes('function logDashboardDiagnostic('));
 assert.ok(!dashboard.includes('function logAiSessionDiagnostic('));
-assert.ok(!dashboard.includes('function logOpenProjectDiagnostic('));
+assert.ok(!dashboard.includes('function logOpenWorkspaceDiagnostic('));
 assert.ok(dashboardDiagnostics.includes('[Dashboard]'));
 assert.ok(!dashboard.includes('AI_SESSION_PROVIDER_IDS'));
 assert.ok(!terminalService.includes('AI_SESSION_PROVIDER_IDS'));
@@ -102,8 +156,6 @@ assert.ok(dashboard.includes('const aiSessionProviders = aiSessionProviderRegist
 assert.strictEqual(providerRegistryCalls, 1);
 assert.ok(aiSessionController.includes('refresh: (reason: string) => void;'));
 assert.ok(aiSessionController.includes("this.options.refresh('ai-session-update-not-delivered');"));
-assert.ok(openProjectController.includes('refresh: (reason: string) => void;'));
-assert.ok(openProjectController.includes("this.options.refresh('open-project-update-not-delivered');"));
 for (const expectedModule of expectedModules) {
     assert.ok(fs.existsSync(path.join(root, expectedModule)), `missing ${expectedModule}`);
 }

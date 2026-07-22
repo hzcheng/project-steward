@@ -12,6 +12,10 @@ import type {
     AiSessionRuntimeSnapshot,
 } from './runtimeTypes';
 import { AiSessionRuntimeLifecycleBlockedError } from './runtimeTypes';
+import {
+    cloneAiSessionRuntimeIdentity,
+    isValidAiSessionPromotionDisplayName,
+} from './runtimeTypes';
 
 interface DirectTerminalEntry<TTerminal> {
     provider: AiSessionProviderId;
@@ -21,6 +25,7 @@ interface DirectTerminalEntry<TTerminal> {
     runStartedAtMs: number;
     cwd?: string;
     released?: boolean;
+    runtimeIdentity?: AiSessionRuntimeIdentity;
 }
 
 interface DirectPendingTerminalEntry<TTerminal> {
@@ -30,7 +35,9 @@ interface DirectPendingTerminalEntry<TTerminal> {
     cwd: string;
     createdAt: string;
     excludedSessionIds: string[];
+    projectName?: string;
     title?: string;
+    runtimeIdentity?: AiSessionRuntimeIdentity;
 }
 
 interface DirectTerminalService<TTerminal> {
@@ -45,6 +52,7 @@ interface DirectTerminalService<TTerminal> {
     createTerminal(options: {
         name: string;
         cwd?: string;
+        runtimeIdentity?: AiSessionRuntimeIdentity;
         env?: Record<string, string>;
         cwdFailureMessage: string;
         cwdWarningMessage: string;
@@ -61,6 +69,7 @@ interface DirectTerminalService<TTerminal> {
         markerPath: string;
         runStartedAtMs: number;
         cwd?: string;
+        runtimeIdentity?: AiSessionRuntimeIdentity;
     }): void;
     trackPending(entry: DirectPendingTerminalEntry<TTerminal>): void;
     replacePendingTerminals(entries: DirectPendingTerminalEntry<TTerminal>[]): void;
@@ -69,18 +78,12 @@ interface DirectTerminalService<TTerminal> {
     handleClosedTerminal(terminal: TTerminal): unknown;
 }
 
-interface DirectRuntimeMetadata {
-    projectKey: string;
-    cwd: string;
-}
-
-interface DirectPendingRuntimeMetadata extends DirectRuntimeMetadata {
-    pendingId: string;
-}
+type DirectRuntimeMetadata = AiSessionRuntimeIdentity & { sessionId: string };
+type DirectPendingRuntimeMetadata = AiSessionRuntimeIdentity & { pendingId: string };
 
 export class DirectTerminalRuntimeBackend<TTerminal = vscode.Terminal>
 implements AiSessionExecutableRuntimeBackend<TTerminal> {
-    private readonly activeMetadata = new Map<string, DirectRuntimeMetadata>();
+    private readonly activeMetadata = new Map<TTerminal, DirectRuntimeMetadata>();
     private readonly pendingMetadata = new Map<TTerminal, DirectPendingRuntimeMetadata>();
 
     constructor(
@@ -95,17 +98,22 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     getActive(): AiSessionRuntimeSnapshot<TTerminal>[] {
         return this.terminalService.getTrackedTerminalEntries()
             .filter(entry => !entry.released && !this.terminalService.isComplete(entry))
-            .map(entry => this.activeSnapshot(entry));
+            .map(entry => this.activeSnapshot(entry))
+            .filter(Boolean) as AiSessionRuntimeSnapshot<TTerminal>[];
     }
 
     getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[] {
-        return this.terminalService.getPendingTerminals().map(entry => this.pendingSnapshot(entry));
+        return this.terminalService.getPendingTerminals()
+            .map(entry => this.pendingSnapshot(entry))
+            .filter(Boolean) as AiSessionPendingRuntimeSnapshot<TTerminal>[];
     }
 
     getLifecycleBlockers(): AiSessionRuntimeSnapshot<TTerminal>[] {
         return this.terminalService.getTrackedTerminalEntries()
             .filter(entry => !entry.released && this.terminalService.isComplete(entry))
-            .map(entry => ({ ...this.activeSnapshot(entry), state: 'completed' }));
+            .map(entry => this.activeSnapshot(entry))
+            .filter(Boolean)
+            .map(entry => ({ ...(entry as AiSessionRuntimeSnapshot<TTerminal>), state: 'completed' }));
     }
 
     find(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot<TTerminal>[] {
@@ -113,19 +121,23 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             return [];
         }
         return this.getActive().filter(runtime => runtime.identity.provider === identity.provider
-            && runtime.identity.sessionId === identity.sessionId);
+            && runtime.identity.sessionId === identity.sessionId
+            && runtime.identity.workspaceScopeIdentity === identity.workspaceScopeIdentity);
     }
 
     async ensureResume(request: AiSessionResumeRuntimeRequest): Promise<AiSessionRuntimeSnapshot<TTerminal>> {
         const input = snapshotResumeRequest(request);
         const blockers = this.getLifecycleBlockers().filter(runtime =>
             runtime.identity.provider === input.identity.provider
-            && runtime.identity.sessionId === input.identity.sessionId);
+            && runtime.identity.sessionId === input.identity.sessionId
+            && runtime.identity.workspaceScopeIdentity === input.identity.workspaceScopeIdentity);
         if (blockers.length) {
             throw new AiSessionRuntimeLifecycleBlockedError(blockers);
         }
         const tracked = this.terminalService.getTrackedTerminalEntries().filter(entry =>
-            entry.provider === input.identity.provider && entry.sessionId === input.identity.sessionId);
+            entry.provider === input.identity.provider && entry.sessionId === input.identity.sessionId
+            && this.getActiveIdentity(entry)?.workspaceScopeIdentity
+                === input.identity.workspaceScopeIdentity);
         if (tracked.length > 1) {
             throw new Error('Multiple Direct Terminal runtimes match this AI session.');
         }
@@ -133,7 +145,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             const existing = tracked[0];
             const completed = existing.released || this.terminalService.isComplete(existing);
             if (!completed) {
-                const runtime = this.activeSnapshot(existing);
+                const runtime = this.activeSnapshot(existing) as AiSessionRuntimeSnapshot<TTerminal>;
                 await this.focus(runtime);
                 return cloneRuntime(runtime);
             }
@@ -156,7 +168,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         });
         this.terminalService.focusTerminal(created.terminal);
         await this.terminalService.sendRuntimeLaunch(created.terminal,
-            launchForCreatedTerminal(input.launch, created.cwdAccepted), {
+            input.launch, {
             deleteMarkerBeforeLaunch: true,
         });
         return this.retrackResume(input, created.terminal);
@@ -172,11 +184,10 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             markerPath: input.launch.markerPath || '',
             runStartedAtMs,
             cwd: input.identity.cwd,
+            runtimeIdentity: cloneAiSessionRuntimeIdentity(input.identity),
         });
-        this.activeMetadata.set(activeKey(input.identity.provider, input.identity.sessionId), {
-            projectKey: input.identity.projectKey,
-            cwd: input.identity.cwd,
-        });
+        this.activeMetadata.set(terminal,
+            cloneAiSessionRuntimeIdentity(input.identity));
         return this.activeSnapshot({
             provider: input.identity.provider,
             sessionId: input.identity.sessionId,
@@ -190,7 +201,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     async ensurePending(request: AiSessionCreateRuntimeRequest): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>> {
         const input = snapshotCreateRequest(request);
         const duplicate = this.getPending().filter(runtime =>
-            runtime.identity.pendingId === input.identity.pendingId);
+            pendingIdentitiesEqual(runtime.identity, input.identity));
         if (duplicate.length === 1) {
             await this.focus(duplicate[0]);
             return clonePendingRuntime(duplicate[0]);
@@ -213,44 +224,56 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             cwd: input.identity.cwd,
             createdAt: input.createdAt,
             excludedSessionIds: input.excludedSessionIds.slice(),
+            projectName: input.projectName,
             ...(input.title === undefined ? {} : { title: input.title }),
+            runtimeIdentity: cloneAiSessionRuntimeIdentity(input.identity),
         };
-        this.pendingMetadata.set(created.terminal, {
-            pendingId: input.identity.pendingId,
-            projectKey: input.identity.projectKey,
-            cwd: input.identity.cwd,
-        });
+        this.pendingMetadata.set(created.terminal, cloneAiSessionRuntimeIdentity(input.identity));
         this.terminalService.trackPending(pending);
         this.terminalService.focusTerminal(created.terminal);
         await this.terminalService.sendRuntimeLaunch(created.terminal,
-            launchForCreatedTerminal(input.launch, created.cwdAccepted), {
+            input.launch, {
             persistPendingBeforeLaunch: true,
         });
         return this.pendingSnapshot(pending);
     }
 
-    async promotePending(pendingId: string, sessionId: string): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
+    async promotePending(
+        identity: AiSessionRuntimeIdentity & { pendingId: string },
+        sessionId: string,
+        sessionName: string
+    ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
+        if (!isValidAiSessionPromotionDisplayName(sessionName)) {
+            return [];
+        }
+        const expectedIdentity = cloneAiSessionRuntimeIdentity(identity);
         const matches = this.terminalService.getPendingTerminals().filter(entry =>
-            this.getPendingIdentity(entry).pendingId === pendingId);
+            pendingIdentitiesEqual(this.getPendingIdentity(entry), expectedIdentity));
         if (matches.length !== 1 || !sessionId) {
             return matches.map(entry => ({ ...this.pendingSnapshot(entry), state: 'conflict' }));
         }
         const pending = matches[0];
-        const metadata = this.getPendingIdentity(pending);
+        const metadata = this.getPendingIdentity(pending) as DirectPendingRuntimeMetadata;
         const runStartedAtMs = Date.parse(pending.createdAt);
         this.terminalService.track(pending.provider, sessionId, {
             terminal: pending.terminal,
             markerPath: pending.markerPath,
             runStartedAtMs: Number.isFinite(runStartedAtMs) ? runStartedAtMs : this.nowMs(),
             cwd: pending.cwd,
+            runtimeIdentity: {
+                ...cloneAiSessionRuntimeIdentity(metadata),
+                pendingId: undefined,
+                sessionId,
+            },
         });
         this.terminalService.replacePendingTerminals(
             this.terminalService.getPendingTerminals().filter(entry => entry.terminal !== pending.terminal)
         );
         this.pendingMetadata.delete(pending.terminal);
-        this.activeMetadata.set(activeKey(pending.provider, sessionId), {
-            projectKey: metadata.projectKey,
-            cwd: metadata.cwd,
+        this.activeMetadata.set(pending.terminal, {
+            ...cloneAiSessionRuntimeIdentity(metadata),
+            pendingId: undefined,
+            sessionId,
         });
         return [this.activeSnapshot({
             provider: pending.provider,
@@ -275,20 +298,18 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     }
 
     handleClosedTerminal(terminal: TTerminal): void {
+        this.activeMetadata.delete(terminal);
         this.pendingMetadata.delete(terminal);
         this.terminalService.handleClosedTerminal(terminal);
     }
 
-    private activeSnapshot(entry: DirectTerminalEntry<TTerminal>): AiSessionRuntimeSnapshot<TTerminal> {
-        const metadata = this.activeMetadata.get(activeKey(entry.provider, entry.sessionId));
-        const cwd = metadata?.cwd || entry.cwd || '';
+    private activeSnapshot(entry: DirectTerminalEntry<TTerminal>): AiSessionRuntimeSnapshot<TTerminal> | null {
+        const identity = this.getActiveIdentity(entry);
+        if (!identity) {
+            return null;
+        }
         return {
-            identity: {
-                provider: entry.provider,
-                projectKey: metadata?.projectKey || cwd,
-                cwd,
-                sessionId: entry.sessionId,
-            },
+            identity: cloneAiSessionRuntimeIdentity(identity),
             backend: 'vscode',
             state: 'active',
             markerPath: entry.markerPath,
@@ -298,15 +319,13 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         };
     }
 
-    private pendingSnapshot(entry: DirectPendingTerminalEntry<TTerminal>): AiSessionPendingRuntimeSnapshot<TTerminal> {
+    private pendingSnapshot(entry: DirectPendingTerminalEntry<TTerminal>): AiSessionPendingRuntimeSnapshot<TTerminal> | null {
         const identity = this.getPendingIdentity(entry);
+        if (!identity) {
+            return null;
+        }
         return {
-            identity: {
-                provider: entry.provider,
-                projectKey: identity.projectKey,
-                cwd: identity.cwd,
-                pendingId: identity.pendingId,
-            },
+            identity: cloneAiSessionRuntimeIdentity(identity),
             backend: 'vscode',
             state: 'pending',
             markerPath: entry.markerPath,
@@ -315,21 +334,39 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             terminal: entry.terminal,
             createdAt: entry.createdAt,
             excludedSessionIds: entry.excludedSessionIds.slice(),
+            ...(entry.projectName === undefined ? {} : { projectName: entry.projectName }),
             ...(entry.title === undefined ? {} : { title: entry.title }),
         };
     }
 
-    private getPendingIdentity(entry: DirectPendingTerminalEntry<TTerminal>): DirectPendingRuntimeMetadata {
-        return this.pendingMetadata.get(entry.terminal) || {
-            pendingId: entry.createdAt,
-            projectKey: entry.cwd,
-            cwd: entry.cwd,
-        };
+    private getActiveIdentity(entry: DirectTerminalEntry<TTerminal>): DirectRuntimeMetadata | null {
+        const identity = this.activeMetadata.get(entry.terminal)
+            || entry.runtimeIdentity;
+        return identity?.sessionId === entry.sessionId && identity.provider === entry.provider
+            ? cloneAiSessionRuntimeIdentity(identity) as DirectRuntimeMetadata
+            : null;
+    }
+
+    private getPendingIdentity(entry: DirectPendingTerminalEntry<TTerminal>): DirectPendingRuntimeMetadata | null {
+        const identity = this.pendingMetadata.get(entry.terminal) || entry.runtimeIdentity;
+        return identity?.pendingId && identity.provider === entry.provider
+            ? cloneAiSessionRuntimeIdentity(identity) as DirectPendingRuntimeMetadata
+            : null;
     }
 }
 
-function activeKey(provider: AiSessionProviderId, sessionId: string): string {
-    return `${provider}:${sessionId}`;
+function pendingIdentitiesEqual(
+    left: AiSessionRuntimeIdentity | null,
+    right: AiSessionRuntimeIdentity
+): boolean {
+    return !!left?.pendingId && !!right?.pendingId
+        && left.pendingId === right.pendingId
+        && left.provider === right.provider
+        && left.workspaceScopeIdentity === right.workspaceScopeIdentity
+        && left.workspaceNavigationIdentity === right.workspaceNavigationIdentity
+        && left.cwd === right.cwd
+        && JSON.stringify(left.workspaceRootHostPaths.slice().sort())
+            === JSON.stringify(right.workspaceRootHostPaths.slice().sort());
 }
 
 function finiteDate(value: string): number {
@@ -340,7 +377,8 @@ function finiteDate(value: string): number {
 function snapshotResumeRequest(request: AiSessionResumeRuntimeRequest): AiSessionResumeRuntimeRequest {
     return {
         ...request,
-        identity: { ...request.identity },
+        identity: cloneAiSessionRuntimeIdentity(request.identity),
+        directoryScope: cloneDirectoryScope(request.directoryScope),
         launch: { ...request.launch, args: [...request.launch.args] },
     };
 }
@@ -348,25 +386,26 @@ function snapshotResumeRequest(request: AiSessionResumeRuntimeRequest): AiSessio
 function snapshotCreateRequest(request: AiSessionCreateRuntimeRequest): AiSessionCreateRuntimeRequest {
     return {
         ...request,
-        identity: { ...request.identity },
+        identity: cloneAiSessionRuntimeIdentity(request.identity),
+        directoryScope: cloneDirectoryScope(request.directoryScope),
         excludedSessionIds: [...request.excludedSessionIds],
         launch: { ...request.launch, args: [...request.launch.args] },
     };
 }
 
-function launchForCreatedTerminal(launch: AiSessionLaunchSpec, cwdAccepted: boolean): AiSessionLaunchSpec {
-    if (cwdAccepted) {
-        return { ...launch, args: [...launch.args] };
-    }
-    const { cwd: _cwd, ...withoutCwd } = launch;
-    return { ...withoutCwd, args: [...launch.args] };
-}
-
 function cloneRuntime<TTerminal>(runtime: AiSessionRuntimeSnapshot<TTerminal>): AiSessionRuntimeSnapshot<TTerminal> {
     return {
         ...runtime,
-        identity: { ...runtime.identity },
+        identity: cloneAiSessionRuntimeIdentity(runtime.identity),
         ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
+    };
+}
+
+function cloneDirectoryScope(scope: AiSessionResumeRuntimeRequest['directoryScope']): AiSessionResumeRuntimeRequest['directoryScope'] {
+    return {
+        ...scope,
+        workspaceRootHostPaths: [...scope.workspaceRootHostPaths],
+        additionalDirectories: [...scope.additionalDirectories],
     };
 }
 

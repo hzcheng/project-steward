@@ -33,7 +33,7 @@ export interface DashboardStartupControllerOptions {
     isExtensionInstalled: (extensionId: string) => boolean;
     migrateDataIfNeeded: () => Promise<DashboardMigrationResult>;
     refreshDashboard: () => unknown;
-    publishOpenProjects: () => void;
+    publishOpenWorkspace: () => void;
     showInformationMessage: (message: string) => unknown;
     showErrorMessage: (message: string) => unknown;
     logError: (message: string, error: unknown) => unknown;
@@ -44,13 +44,14 @@ export interface DashboardStartupControllerOptions {
     reopenNoneValue?: ReopenStewardReason;
     getWorkspaceName: () => string | undefined;
     getVisibleEditorLanguageIds: () => readonly string[];
+    afterProjectMigrationSucceeded?: () => Promise<void>;
 }
 
 export class DashboardStartupController {
     constructor(private readonly options: DashboardStartupControllerOptions) {
     }
 
-    async checkDataMigration(openStewardAfterMigrate = false): Promise<void> {
+    async checkDataMigration(openStewardAfterMigrate = false): Promise<DashboardMigrationResult | null> {
         let migration: DashboardMigrationResult;
         try {
             migration = await this.options.migrateDataIfNeeded();
@@ -58,22 +59,23 @@ export class DashboardStartupController {
             this.options.logError('Failed to migrate Project Steward data.', error);
             const detail = error instanceof Error ? ` ${error.message}` : '';
             this.options.showErrorMessage(`Could not migrate Project Steward data.${detail}`);
-            return;
+            return null;
         }
 
         this.reportComponentError('project', migration.projects);
         this.reportComponentError('TODO', migration.todos);
         if (!migration.projects.migrated && !migration.todos.migrated) {
-            return;
+            return migration;
         }
 
         await this.options.refreshDashboard();
-        this.options.publishOpenProjects();
+        this.options.publishOpenWorkspace();
         this.options.showInformationMessage('Migrated Project Steward projects after changing settings.');
 
         if (openStewardAfterMigrate) {
             this.options.showSteward();
         }
+        return migration;
     }
 
     private reportComponentError(
@@ -90,7 +92,12 @@ export class DashboardStartupController {
 
     async startUp(): Promise<void> {
         this.updateRelevantExtensionInstalls();
-        await this.checkDataMigration();
+        const migration = await this.checkDataMigration();
+        if (migration
+            && !Object.prototype.hasOwnProperty.call(migration.projects, 'error')
+            && this.options.afterProjectMigrationSucceeded) {
+            await this.options.afterProjectMigrationSucceeded();
+        }
         this.options.applyProjectColorToCurrentWindow();
 
         const reopenNoneValue = this.options.reopenNoneValue ?? ReopenStewardReason.None;

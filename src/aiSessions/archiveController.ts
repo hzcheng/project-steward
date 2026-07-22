@@ -1,6 +1,7 @@
 'use strict';
 
-import type { AiSessionProviderId, CodexSession, Project } from '../models';
+import type { AiSessionProviderId, CodexSession } from '../models';
+import type { WorkspaceAiSessionActionTarget } from './types';
 import {
     archiveBatchAiSessionItem,
     executeBatchAiSessionArchiveRequest,
@@ -16,6 +17,7 @@ import {
 export interface AiSessionArchiveRuntimeEntry {
     state: 'pending' | 'active' | 'completed' | 'stopped' | 'conflict';
     markerPath: string;
+    identity: { workspaceScopeIdentity: string };
 }
 
 export interface AiSessionArchiveProvider {
@@ -29,14 +31,17 @@ export interface AiSessionArchiveControllerOptions<TRuntime extends AiSessionArc
     isProviderId: (value: string) => value is AiSessionProviderId;
     getProvider: (providerId: AiSessionProviderId) => AiSessionArchiveProvider;
     getProviderLabel: (providerId: AiSessionProviderId) => string;
-    getOpenProjects: () => Project[];
-    getProjectSessions: (project: Project, providerId: AiSessionProviderId) => CodexSession[];
+    getWorkspaceTarget: (cardId: string) => WorkspaceAiSessionActionTarget | null;
     getRuntimeById: (providerId: AiSessionProviderId, sessionId: string) => TRuntime | null;
     refreshRuntimeGuard?: (providerId?: AiSessionProviderId, sessionId?: string) => Promise<void>;
     isRuntimeComplete: (runtime: TRuntime) => boolean;
     focusRuntime: (runtime: TRuntime) => unknown;
     deleteRuntimeMarker: (runtime: TRuntime) => void;
-    untrackRuntime: (providerId: AiSessionProviderId, sessionId: string) => void;
+    untrackRuntime: (
+        providerId: AiSessionProviderId,
+        sessionId: string,
+        workspaceScopeIdentity: string
+    ) => void;
     deletePin: (providerId: AiSessionProviderId, sessionId: string) => void;
     deleteAlias: (providerId: AiSessionProviderId, sessionId: string) => void;
     confirmSingleArchive: (providerLabel: string) => Thenable<string | undefined>;
@@ -55,13 +60,24 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
     constructor(private readonly options: AiSessionArchiveControllerOptions<TRuntime>) {
     }
 
-    async archiveSession(providerId: AiSessionProviderId | null, sessionId: string): Promise<void> {
-        if (!providerId || !sessionId) {
+    async archiveSession(
+        projectId: string,
+        providerId: AiSessionProviderId | null,
+        sessionId: string
+    ): Promise<void> {
+        if (!projectId || !providerId || !this.options.isProviderId(providerId) || !sessionId) {
+            return;
+        }
+        const authorization = this.resolveSingleArchiveAuthorization(projectId, providerId, sessionId);
+        if (!authorization) {
             return;
         }
 
         const sessionProvider = this.options.getProvider(providerId);
         if (!await this.refreshRuntimeGuard(providerId, sessionId)) {
+            return;
+        }
+        if (!this.isSingleArchiveAuthorizationCurrent(authorization, projectId, providerId, sessionId)) {
             return;
         }
         let runtime = this.options.getRuntimeById(providerId, sessionId);
@@ -77,8 +93,14 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
         if (!await this.refreshRuntimeGuard(providerId, sessionId)) {
             return;
         }
+        if (!this.isSingleArchiveAuthorizationCurrent(authorization, projectId, providerId, sessionId)) {
+            return;
+        }
         runtime = this.options.getRuntimeById(providerId, sessionId);
         if (await this.blockActiveRuntime(sessionProvider.label, runtime, sessionId)) {
+            return;
+        }
+        if (!this.isSingleArchiveAuthorizationCurrent(authorization, projectId, providerId, sessionId)) {
             return;
         }
 
@@ -107,6 +129,40 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
         this.options.refresh();
     }
 
+    private resolveSingleArchiveAuthorization(
+        projectId: string,
+        providerId: AiSessionProviderId,
+        sessionId: string
+    ): SingleArchiveAuthorization | null {
+        const target = this.options.getWorkspaceTarget(projectId);
+        if (!target
+            || target.cardId !== projectId
+            || target.sessions.workspaceScopeIdentity !== target.workspace.scopeIdentity
+            || target.sessions.workspaceNavigationIdentity !== target.workspace.navigationIdentity
+            || !(target.sessions.sessionsByProvider[providerId] || [])
+                .some(session => session.id === sessionId)) {
+            return null;
+        }
+        return {
+            projectId,
+            workspaceScopeIdentity: target.workspace.scopeIdentity,
+            workspaceNavigationIdentity: target.workspace.navigationIdentity,
+        };
+    }
+
+    private isSingleArchiveAuthorizationCurrent(
+        authorization: SingleArchiveAuthorization,
+        projectId: string,
+        providerId: AiSessionProviderId,
+        sessionId: string
+    ): boolean {
+        const current = this.resolveSingleArchiveAuthorization(projectId, providerId, sessionId);
+        return !!current
+            && current.projectId === authorization.projectId
+            && current.workspaceScopeIdentity === authorization.workspaceScopeIdentity
+            && current.workspaceNavigationIdentity === authorization.workspaceNavigationIdentity;
+    }
+
     archiveSessionItem(
         providerId: AiSessionProviderId,
         sessionId: string
@@ -122,7 +178,13 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
                     this.options.deleteRuntimeMarker(runtime);
                 }
             },
-            untrackTerminal: () => this.options.untrackRuntime(providerId, sessionId),
+            untrackTerminal: () => {
+                if (runtime) {
+                    this.options.untrackRuntime(
+                        providerId, sessionId, runtime.identity.workspaceScopeIdentity
+                    );
+                }
+            },
             deletePin: () => this.options.deletePin(providerId, sessionId),
             deleteAlias: () => this.options.deleteAlias(providerId, sessionId),
         });
@@ -133,16 +195,31 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
         if (!await this.refreshRuntimeGuard()) {
             return;
         }
+        const getWorkspaceSessions = (): CodexSession[] | null => {
+            const target = this.options.getWorkspaceTarget?.(projectId);
+            if (!target || !validProviderId || target.sessions.activeProvider !== validProviderId) {
+                return null;
+            }
+            return (target.sessions.sessionsByProvider[validProviderId] || []).slice();
+        };
         await executeBatchAiSessionArchiveRequest({ projectId, provider: providerId, sessionIds }, {
-            resolveProject: requestedProjectId => validProviderId
-                ? this.options.getOpenProjects().find(candidate => candidate.id === requestedProjectId)
-                : null,
-            getProjectSessions: project => validProviderId ? this.options.getProjectSessions(project as Project, validProviderId) : [],
+            resolveProject: requestedProjectId => {
+                const workspaceSessions = getWorkspaceSessions();
+                if (workspaceSessions) {
+                    return { id: requestedProjectId, activeAiSessionProvider: validProviderId };
+                }
+                return null;
+            },
+            getProjectSessions: project => {
+                const workspaceSessions = getWorkspaceSessions();
+                return workspaceSessions || [];
+            },
             resolveCurrentSessions: () => {
-                const currentProject = this.options.getOpenProjects().find(candidate => candidate.id === projectId);
-                return currentProject && validProviderId && currentProject.activeAiSessionProvider === validProviderId
-                    ? this.options.getProjectSessions(currentProject, validProviderId)
-                    : [];
+                const workspaceSessions = getWorkspaceSessions();
+                if (workspaceSessions) {
+                    return workspaceSessions;
+                }
+                return [];
             },
             archiveSession: sessionId => validProviderId ? this.archiveSessionItem(validProviderId, sessionId) : 'failed',
             confirm: async confirmation => {
@@ -262,4 +339,10 @@ export class AiSessionArchiveController<TRuntime extends AiSessionArchiveRuntime
             this.options.appendLine(`[Batch Archive] ${label} archive failed: ${formatBatchAiSessionIdForLog(sessionId)}`);
         }
     }
+}
+
+interface SingleArchiveAuthorization {
+    projectId: string;
+    workspaceScopeIdentity: string;
+    workspaceNavigationIdentity: string;
 }
