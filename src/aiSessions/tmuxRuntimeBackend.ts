@@ -106,6 +106,7 @@ export interface TmuxRuntimeBackendDependencies<TTerminal> {
 export class TmuxRuntimeBackend<TTerminal = vscode.Terminal>
 implements AiSessionExecutableRuntimeBackend<TTerminal> {
     private readonly attaches = new Map<string, AttachEntry<TTerminal>>();
+    private attachRestoreQueue: Promise<void> = Promise.resolve();
 
     constructor(private readonly dependencies: TmuxRuntimeBackendDependencies<TTerminal>) { }
 
@@ -640,6 +641,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!runtime || runtime.backend !== 'tmux' || !runtime.tmux) {
             return;
         }
+        await this.attachRestoreQueue;
         await this.verifyFocusTarget(runtime);
         await this.attachAndFocus(runtime, this.getAttachTerminalName(runtime));
     }
@@ -746,7 +748,15 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             ) !== null;
     }
 
-    async restoreAttachTerminals(terminals: readonly TTerminal[]): Promise<void> {
+    restoreAttachTerminals(terminals: readonly TTerminal[]): Promise<void> {
+        const restore = this.attachRestoreQueue.then(
+            () => this.restoreAttachTerminalsOnce(terminals)
+        );
+        this.attachRestoreQueue = restore.catch(() => undefined);
+        return restore;
+    }
+
+    private async restoreAttachTerminalsOnce(terminals: readonly TTerminal[]): Promise<void> {
         await this.dependencies.discovery.refresh(true);
         for (const terminal of terminals || []) {
             const attach = attachTerminal(terminal);

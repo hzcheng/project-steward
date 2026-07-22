@@ -7048,6 +7048,39 @@ async function runTmuxBackendChecks() {
     concurrentRestoreBackend.handleClosedTerminal(restoredTerminal);
     await restoreHarness.attachStore.flush();
 
+    const racingProcessId = restoredProcessId + 1;
+    const racingProcessIdDeferred = deferred();
+    const racingTerminal = {
+        ...restoredTerminal,
+        processId: racingProcessIdDeferred.promise,
+        shown: false,
+        disposed: false,
+    };
+    restoreHarness.attachBindings.set(restoredProcessId, persistedBinding);
+    restoreHarness.attachRecoveries.set(recoveryToken, {
+        processId: restoredProcessId, binding: persistedBinding,
+    });
+    const racingRestoreBackend = new backendModule.TmuxRuntimeBackend(
+        restoreHarness.dependencies
+    );
+    const racingRestore = racingRestoreBackend.restoreAttachTerminals([racingTerminal]);
+    await new Promise(resolve => setImmediate(resolve));
+    const createCountBeforeRacingFocus = restoreHarness.operations
+        .filter(item => item.type === 'create-terminal').length;
+    const racingFocus = racingRestoreBackend.focus(
+        racingRestoreBackend.find(restorable.identity)[0]
+    );
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(restoreHarness.operations
+        .filter(item => item.type === 'create-terminal').length, createCountBeforeRacingFocus,
+    'focusing during reload recovery must wait instead of opening a duplicate tmux terminal');
+    racingProcessIdDeferred.resolve(racingProcessId);
+    await Promise.all([racingRestore, racingFocus]);
+    assert.strictEqual(racingTerminal.shown, true,
+        'focusing during reload recovery must reveal the recovered terminal');
+    racingRestoreBackend.handleClosedTerminal(racingTerminal);
+    await restoreHarness.attachStore.flush();
+
     const reusedPidTerminal = {
         ...restoredTerminal,
         name: 'Unrelated shell',
