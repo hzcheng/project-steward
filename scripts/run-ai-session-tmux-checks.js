@@ -1559,11 +1559,22 @@ async function runTmuxStoreChecks() {
             }
             return operation();
         });
+        let blockNextReconcileOperation = false;
+        const reconcileLockEntered = deferred();
+        const releaseReconcileLock = deferred();
+        const controlledReconcileLock = operation => sharedFinalLock(async () => {
+            if (blockNextReconcileOperation) {
+                blockNextReconcileOperation = false;
+                reconcileLockEntered.resolve();
+                await releaseReconcileLock.promise;
+            }
+            return operation();
+        });
         const crossHostA = new runtimeStoreModule.TmuxRuntimeBindingStore(
             crossHostRecords, () => now, controlledTransitionLock
         );
         const crossHostB = new runtimeStoreModule.TmuxRuntimeBindingStore(
-            crossHostRecords, () => now, sharedFinalLock
+            crossHostRecords, () => now, controlledReconcileLock
         );
         const crossOld = known('cross-host', now - 200);
         const crossNew = known('cross-host', now);
@@ -1590,11 +1601,16 @@ async function runTmuxStoreChecks() {
             await crossHostA.getInactive('codex', 'cross-host')
         );
         await crossHostA.setKnown(crossOld);
+        blockNextReconcileOperation = true;
+        const reconcileBeforeTransition = crossHostB.reconcileKnown([crossRuntime]);
+        await reconcileLockEntered.promise;
+        const staleTransitionOperation = crossHostA.transitionKnownToInactive(
+            inactive('cross-host', 'stopped', now), crossOld.lastSeenAtMs
+        );
+        releaseReconcileLock.resolve();
         const [_, staleCrossTransition] = await Promise.all([
-            crossHostB.reconcileKnown([crossRuntime]),
-            crossHostA.transitionKnownToInactive(
-                inactive('cross-host', 'stopped', now), crossOld.lastSeenAtMs
-            ),
+            reconcileBeforeTransition,
+            staleTransitionOperation,
         ]);
         assert.strictEqual(staleCrossTransition, false);
         assert.deepStrictEqual(await crossHostA.getKnown('codex', 'cross-host'), {
