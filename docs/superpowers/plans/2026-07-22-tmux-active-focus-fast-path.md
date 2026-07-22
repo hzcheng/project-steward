@@ -522,4 +522,3 @@ Expected: `hzcheng.project-steward@2.1.3` is installed and `hzcheng.project-stew
 git add docs/superpowers/reports
 git commit -m "docs: verify tmux focus fast path"
 ```
-
