@@ -6,10 +6,49 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/projects/projectPathUtils.test.js"
     ],
     "evidence": [
-      "scripts/run-ai-session-safety-checks.js"
+      "src/projects/projectPathUtils.ts"
+    ]
+  },
+  {
+    "id": "PROJECT-PATH-002",
+    "domain": "project",
+    "title": "Path match score behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/projects/projectPathUtils.test.js"
+    ],
+    "evidence": [
+      "src/projects/projectPathUtils.ts"
+    ]
+  },
+  {
+    "id": "PROJECT-PATH-003",
+    "domain": "project",
+    "title": "Remote authority normalization behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/projects/projectPathUtils.test.js"
+    ],
+    "evidence": [
+      "src/projects/projectPathUtils.ts"
+    ]
+  },
+  {
+    "id": "PROJECT-PATH-004",
+    "domain": "project",
+    "title": "Remote authority encoding behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/projects/projectPathUtils.test.js"
+    ],
+    "evidence": [
+      "src/projects/projectPathUtils.ts"
     ]
   },
   {
@@ -1261,6 +1300,84 @@
     ]
   },
   {
+    "id": "OPEN-PROTOCOL-001",
+    "domain": "open-project",
+    "title": "Open project publication round-trip behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openProjects/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-PROTOCOL-002",
+    "domain": "open-project",
+    "title": "Open project protocol exact-key behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openProjects/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-PROTOCOL-003",
+    "domain": "open-project",
+    "title": "Open project protocol duplicate-instance behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openProjects/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-PROTOCOL-004",
+    "domain": "open-project",
+    "title": "Open project protocol record-limit behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openProjects/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-PROTOCOL-005",
+    "domain": "open-project",
+    "title": "Open project semantic revision stability behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openProjects/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-PROTOCOL-006",
+    "domain": "open-project",
+    "title": "Open project semantic revision registration-order behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openProjects/protocol.ts"
+    ]
+  },
+  {
     "id": "ATTENTION-REMOTE-ATTENTION-IDENTITY-001",
     "domain": "attention",
     "title": "Remote Attention Identity behavior",
@@ -1956,10 +2073,10 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/integration/dashboard/messageRouter.test.js"
     ],
     "evidence": [
-      "scripts/run-dashboard-webview-checks.js"
+      "src/dashboard/messageRouter.ts"
     ]
   }
 ]
