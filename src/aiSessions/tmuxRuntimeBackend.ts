@@ -183,6 +183,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             cwd: identity.cwd,
             createdAt: request.createdAt,
             excludedSessionIds: request.excludedSessionIds,
+            projectName: request.projectName,
             ...(request.title === undefined ? {} : { title: request.title }),
             acceptedAtMs: Date.parse(request.createdAt),
             layout,
@@ -239,7 +240,8 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
 
     async promotePending(
         identity: AiSessionRuntimeIdentity & { pendingId: string },
-        sessionId: string
+        sessionId: string,
+        _sessionName: string
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
         const pendingIdentityValue = pendingIdentity(identity);
         if (!isValidAiSessionRuntimeIdentity(pendingIdentityValue) || !isIdentityField(sessionId)) {
@@ -1245,11 +1247,14 @@ function snapshotResumeRequest(request: AiSessionResumeRuntimeRequest): AiSessio
     }
     const identity = snapshotResumeIdentity(request.identity);
     const projectName = snapshotRequiredString(request.projectName, 'The tmux runtime request');
+    const sessionName = snapshotOptionalString(request.sessionName, 'The tmux runtime request')
+        || identity.sessionId;
     const terminalName = snapshotRequiredString(request.terminalName, 'The tmux runtime request');
     const launch = snapshotLaunch(request.launch);
     return {
         identity,
         projectName,
+        sessionName,
         terminalName,
         launch,
         directoryScope: request.directoryScope,
@@ -1661,6 +1666,7 @@ function pendingSnapshotFromBinding(binding: TmuxPendingRuntimeBinding): AiSessi
         tmux: { ...binding.locator },
         createdAt: binding.createdAt,
         excludedSessionIds: [...binding.excludedSessionIds],
+        ...(binding.projectName === undefined ? {} : { projectName: binding.projectName }),
         ...(binding.title === undefined ? {} : { title: binding.title }),
     };
 }
@@ -1672,7 +1678,8 @@ function pendingBindingsEqual(left: TmuxPendingRuntimeBinding, right: TmuxPendin
         && JSON.stringify(left.workspaceRootHostPaths.slice().sort())
             === JSON.stringify(right.workspaceRootHostPaths.slice().sort())
         && left.cwd === right.cwd
-        && left.createdAt === right.createdAt && left.title === right.title
+        && left.createdAt === right.createdAt && left.projectName === right.projectName
+        && left.title === right.title
         && left.acceptedAtMs === right.acceptedAtMs && left.layout === right.layout
         && locatorsEqual(left.locator, right.locator)
         && left.excludedSessionIds.length === right.excludedSessionIds.length

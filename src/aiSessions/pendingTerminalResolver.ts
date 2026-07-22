@@ -21,7 +21,8 @@ type AiSessionPendingRuntimeProvider = Pick<
 export interface PendingAiSessionRuntimeCoordinator<TTerminal = unknown> {
     promotePending(
         identity: AiSessionPendingRuntimeSnapshot<TTerminal>['identity'] & { pendingId: string },
-        sessionId: string
+        sessionId: string,
+        sessionName: string
     ): AiSessionRuntimeSnapshot<TTerminal>[] | Promise<AiSessionRuntimeSnapshot<TTerminal>[]>;
 }
 
@@ -129,7 +130,12 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
         try {
             const pendingSettlement = options.settlePending
                 ? options.settlePending(pendingRuntime, session.id)
-                : settlePendingAiSessionPromotion(options, pendingRuntime, session.id);
+                : settlePendingAiSessionPromotion(
+                    options,
+                    pendingRuntime,
+                    session.id,
+                    pendingRuntime.title?.trim() || session.name || session.id
+                );
             settlement = isPromiseLike(pendingSettlement) ? await pendingSettlement : pendingSettlement;
         } catch (_error) {
             result.failures.push({ ...promotionIdentity, reason: 'promotion-error' });
@@ -164,11 +170,13 @@ function getPendingIdentityKey<TTerminal>(runtime: AiSessionPendingRuntimeSnapsh
 function settlePendingAiSessionPromotion<TTerminal>(
     options: ResolvePendingAiSessionTerminalsOptions<TTerminal>,
     pendingRuntime: AiSessionPendingRuntimeSnapshot<TTerminal>,
-    sessionId: string
+    sessionId: string,
+    sessionName: string
 ): PendingAiSessionPromotionSettlement | Promise<PendingAiSessionPromotionSettlement> {
     const promotion = options.runtimeCoordinator.promotePending(
         cloneAiSessionRuntimeIdentity(pendingRuntime.identity) as typeof pendingRuntime.identity & { pendingId: string },
-        sessionId
+        sessionId,
+        sessionName
     );
     const settle = (runtimes: unknown): PendingAiSessionPromotionSettlement => {
         const failureReason = getPendingAiSessionPromotionFailureReason(

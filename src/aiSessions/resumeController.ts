@@ -155,6 +155,7 @@ export class AiSessionResumeController<
                 cwd,
             },
             projectName: target.name || 'AI Session',
+            sessionName: session.name || session.id,
             terminalName: options.getTerminalName(providerId, session),
             launch,
             directoryScope,

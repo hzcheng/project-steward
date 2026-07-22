@@ -375,6 +375,8 @@ export class TmuxRuntimeDiscovery {
                     tmux: { ...actual },
                     createdAt: pendingBinding.createdAt,
                     excludedSessionIds: [...pendingBinding.excludedSessionIds],
+                    ...(pendingBinding.projectName === undefined
+                        ? {} : { projectName: pendingBinding.projectName }),
                     ...(pendingBinding.title === undefined ? {} : { title: pendingBinding.title }),
                 };
                 pendingByKey.set(runtimeProjectionKey(snapshot), snapshot);

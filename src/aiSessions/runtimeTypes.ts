@@ -250,6 +250,7 @@ export interface AiSessionPendingRuntimeSnapshot<TTerminal = unknown> extends Ai
     state: 'pending';
     createdAt: string;
     excludedSessionIds: string[];
+    projectName?: string;
     title?: string;
 }
 
@@ -273,6 +274,7 @@ export interface AiSessionRuntimeBackend<TTerminal = unknown> {
 export interface AiSessionResumeRuntimeRequest {
     identity: AiSessionRuntimeIdentity & { sessionId: string };
     projectName: string;
+    sessionName: string;
     terminalName: string;
     launch: AiSessionLaunchSpec;
     directoryScope: AiSessionDirectoryScope;
@@ -307,6 +309,7 @@ export interface AiSessionExecutableRuntimeBackend<TTerminal = unknown> extends 
     ): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>>;
     promotePending(
         identity: AiSessionRuntimeIdentity & { pendingId: string },
-        sessionId: string
+        sessionId: string,
+        sessionName: string
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]>;
 }

@@ -190,7 +190,8 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
 
     async promotePending(
         identity: AiSessionRuntimeIdentity & { pendingId: string },
-        sessionId: string
+        sessionId: string,
+        sessionName: string
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
         const pendingIdentity = cloneAiSessionRuntimeIdentity(identity);
         const refresh = await this.refreshBackends(true);
@@ -216,7 +217,7 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
                 ? this.dependencies.tmux
                 : null;
         return backend
-            ? (await backend.promotePending(pendingIdentity, sessionId)).map(cloneRuntime)
+            ? (await backend.promotePending(pendingIdentity, sessionId, sessionName)).map(cloneRuntime)
             : [];
     }
 

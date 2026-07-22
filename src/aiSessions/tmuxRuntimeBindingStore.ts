@@ -45,6 +45,7 @@ export interface TmuxPendingRuntimeBinding {
     cwd: string;
     createdAt: string;
     excludedSessionIds: string[];
+    projectName?: string;
     title?: string;
     acceptedAtMs: number;
     layout: AiSessionTmuxLayout;
@@ -784,7 +785,7 @@ function validatePendingRecord(value: unknown): TmuxPendingRuntimeBinding | null
         'version', 'state', 'pendingId', 'provider', 'workspaceScopeIdentity',
         'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'createdAt',
         'excludedSessionIds', 'acceptedAtMs', 'layout', 'locator',
-    ], ['title'])
+    ], ['projectName', 'title'])
         || record.version !== RECORD_VERSION || record.state !== 'pending'
         || !identity
         || !isDateString(record.createdAt) || !isLayout(record.layout) || !locator
@@ -792,6 +793,7 @@ function validatePendingRecord(value: unknown): TmuxPendingRuntimeBinding | null
         || record.excludedSessionIds.length > MAX_EXCLUDED_SESSION_IDS
         || record.excludedSessionIds.some(id => !isBoundedString(id, MAX_ID_LENGTH))
         || !isFiniteNonNegative(record.acceptedAtMs)
+        || (record.projectName !== undefined && !isDisplayName(record.projectName))
         || (record.title !== undefined && !isOptionalTitle(record.title))) {
         return null;
     }
@@ -802,6 +804,7 @@ function validatePendingRecord(value: unknown): TmuxPendingRuntimeBinding | null
         ...bindingIdentityFields(identity),
         createdAt: record.createdAt,
         excludedSessionIds: [...record.excludedSessionIds] as string[],
+        ...(record.projectName === undefined ? {} : { projectName: record.projectName as string }),
         ...(record.title === undefined ? {} : { title: record.title as string }),
         acceptedAtMs: record.acceptedAtMs,
         layout: record.layout,
@@ -1350,6 +1353,10 @@ function isBoundedString(value: unknown, maxLength: number): value is string {
 
 function isOptionalTitle(value: unknown): value is string {
     return typeof value === 'string' && value.length <= MAX_TITLE_LENGTH && !CONTROL_CHARACTERS.test(value);
+}
+
+function isDisplayName(value: unknown): value is string {
+    return typeof value === 'string' && value.length <= MAX_PATH_LENGTH && !CONTROL_CHARACTERS.test(value);
 }
 
 function isDateString(value: unknown): value is string {

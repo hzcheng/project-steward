@@ -4867,7 +4867,7 @@ async function runTmuxBackendChecks() {
     }
     const concurrentBackend = new backendModule.TmuxRuntimeBackend(concurrentGlobalHarness.dependencies);
     const promotedScopedPending = await concurrentBackend.promotePending(
-        concurrentGlobalRequests[0].identity, 'concurrent-final-a'
+        concurrentGlobalRequests[0].identity, 'concurrent-final-a', 'Concurrent Final A'
     );
     assert.strictEqual(promotedScopedPending.length, 1);
     assert.strictEqual(promotedScopedPending[0].identity.workspaceScopeIdentity, 'concurrent-global-a');
@@ -4886,13 +4886,17 @@ async function runTmuxBackendChecks() {
         launch: { executable: 'claude', args: ['--name', 'New work'], markerPath: '/tmp/pending' },
     };
     const pendingRuntime = await pendingBackend.ensurePending(pendingRequest, 'session');
+    assert.strictEqual(pendingRuntime.projectName, 'App');
     const pendingSessionReadIndex = pendingHarness.operations.findIndex(item => item.type === 'get-session-options');
     const pendingWindowReadIndex = pendingHarness.operations.findIndex(item => item.type === 'get-window-options');
     const pendingStoreIndex = pendingHarness.operations.findIndex(item => item.type === 'store-pending');
     assert.ok(pendingSessionReadIndex >= 0 && pendingSessionReadIndex < pendingStoreIndex);
     assert.ok(pendingWindowReadIndex >= 0 && pendingWindowReadIndex < pendingStoreIndex);
     assert.strictEqual(pendingBackend.getPending().length, 1);
-    const promoted = await pendingBackend.promotePending(pendingRequest.identity, 'final-1');
+    assert.strictEqual(pendingBackend.getPending()[0].projectName, 'App');
+    const promoted = await pendingBackend.promotePending(
+        pendingRequest.identity, 'final-1', 'New work'
+    );
     assert.strictEqual(promoted.length, 1);
     assert.strictEqual(promoted[0].identity.sessionId, 'final-1');
     assert.strictEqual(pendingHarness.pending.size, 0);
@@ -4957,8 +4961,13 @@ async function runTmuxBackendChecks() {
         /ambiguous|request/i
     );
     const recoveredPendingRuntime = await new backendModule.TmuxRuntimeBackend(pendingRecoveryHarness.dependencies)
-        .ensurePending(pendingRecoveryRequest, 'session');
+        .ensurePending({
+            ...pendingRecoveryRequest,
+            projectName: 'Renamed Workspace Card',
+        }, 'session');
     assert.strictEqual(recoveredPendingRuntime.identity.pendingId, 'recover-pending');
+    assert.strictEqual(recoveredPendingRuntime.projectName, 'Renamed Workspace Card',
+        'display-only project context must not change ambiguous creation recovery matching');
     assert.strictEqual(pendingRecoveryHarness.pending.size, 1);
     assert.strictEqual(pendingRecoveryHarness.ambiguous.size, 0);
     assert.strictEqual(pendingRecoveryHarness.operations.filter(item => item.type === 'new-session').length, 1);
@@ -4978,7 +4987,9 @@ async function runTmuxBackendChecks() {
         .identity.pendingId, 'project-pending');
     const deferredPromotionQuery = projectPromotionHarness.deferNextActiveWindow();
     const stalePromotionSync = projectPromotionBackend.syncFocusedRuntime(projectPromotionTerminal);
-    const projectPromoted = await projectPromotionBackend.promotePending(projectPending.identity, 'project-final');
+    const projectPromoted = await projectPromotionBackend.promotePending(
+        projectPending.identity, 'project-final', 'Project Final'
+    );
     deferredPromotionQuery.resolve();
     assert.deepStrictEqual(await stalePromotionSync, {
         monitored: true, changed: false, identity: { ...projectPromoted[0].identity },
@@ -5010,7 +5021,9 @@ async function runTmuxBackendChecks() {
         const recoveryBackend = new backendModule.TmuxRuntimeBackend(recoveryHarness.dependencies);
         await recoveryBackend.ensurePending(recoveryRequest, recoveryLayout);
         await assert.rejects(recoveryBackend.promotePending(
-            recoveryRequest.identity, `promotion-recovery-final-${recoveryLayout}`
+            recoveryRequest.identity,
+            `promotion-recovery-final-${recoveryLayout}`,
+            'Recover promotion'
         ), /consumed persistence failed/);
         assert.strictEqual(recoveryHarness.promoting.size, 1);
         assert.strictEqual(recoveryHarness.pending.size, 1);
@@ -5027,7 +5040,11 @@ async function runTmuxBackendChecks() {
         const availabilityBeforeRecoveredPromotion = recoveryHarness.operations.filter(item =>
             item.type === 'availability').length;
         const recoveredPromotion = await new backendModule.TmuxRuntimeBackend(recoveryHarness.dependencies)
-            .promotePending(recoveryRequest.identity, `promotion-recovery-final-${recoveryLayout}`);
+            .promotePending(
+                recoveryRequest.identity,
+                `promotion-recovery-final-${recoveryLayout}`,
+                'Recover promotion'
+            );
         assert.strictEqual(recoveredPromotion.length, 1);
         assert.strictEqual(recoveryHarness.operations.filter(item =>
             item.type === 'availability').length, availabilityBeforeRecoveredPromotion + 1);
@@ -5059,7 +5076,8 @@ async function runTmuxBackendChecks() {
         await ambiguousPromotionBackend.ensurePending(ambiguousPromotionRequest, ambiguousPromotionLayout);
         await assert.rejects(ambiguousPromotionBackend.promotePending(
             ambiguousPromotionRequest.identity,
-            `ambiguous-promotion-final-${ambiguousPromotionLayout}`
+            `ambiguous-promotion-final-${ambiguousPromotionLayout}`,
+            'Ambiguous promotion'
         ), /timeout/);
         assert.strictEqual(ambiguousPromotionHarness.promoting.size, 1);
         assert.strictEqual(ambiguousPromotionHarness.pending.size, 1);
@@ -5067,7 +5085,8 @@ async function runTmuxBackendChecks() {
             ambiguousPromotionHarness.dependencies
         ).promotePending(
             ambiguousPromotionRequest.identity,
-            `ambiguous-promotion-final-${ambiguousPromotionLayout}`
+            `ambiguous-promotion-final-${ambiguousPromotionLayout}`,
+            'Ambiguous promotion'
         );
         assert.strictEqual(recoveredAmbiguousPromotion.length, 1);
         assert.strictEqual(ambiguousPromotionHarness.promoting.size, 0);
@@ -5101,7 +5120,7 @@ async function runTmuxBackendChecks() {
             const createsBeforePromotion = transitionHarness.operations.filter(item =>
                 item.type === 'new-session' || item.type === 'new-window').length;
             await assert.rejects(transitionBackend.promotePending(
-                transitionRequest.identity, finalSessionId
+                transitionRequest.identity, finalSessionId, 'Transition'
             ), transitionFailure === 'mid-final-write'
                 ? /final metadata identity write failed/
                 : /promotion pending clear failed/);
@@ -5114,7 +5133,7 @@ async function runTmuxBackendChecks() {
                 assert.strictEqual(transitionRow.metadata.sessionId, finalSessionId);
             }
             const recoveredTransition = await new backendModule.TmuxRuntimeBackend(transitionHarness.dependencies)
-                .promotePending(transitionRequest.identity, finalSessionId);
+                .promotePending(transitionRequest.identity, finalSessionId, 'Transition');
             assert.strictEqual(recoveredTransition.length, 1);
             assert.strictEqual(transitionHarness.promoting.size, 0);
             assert.strictEqual(transitionHarness.pending.size, 0);
@@ -5147,7 +5166,7 @@ async function runTmuxBackendChecks() {
         const expiredIntentBackend = new backendModule.TmuxRuntimeBackend(expiredIntentHarness.dependencies);
         await expiredIntentBackend.ensurePending(expiredIntentRequest, expiredIntentLayout);
         await assert.rejects(expiredIntentBackend.promotePending(
-            expiredIntentRequest.identity, expiredIntentFinalId
+            expiredIntentRequest.identity, expiredIntentFinalId, 'Expired intent'
         ), /consumed persistence failed/);
         assert.ok(Array.from(expiredIntentHarness.promoting.values())[0].pendingBinding);
         movingNowMs = acceptedNowMs + (24 * 60 * 60 * 1000) + 1;
@@ -5161,7 +5180,7 @@ async function runTmuxBackendChecks() {
         assert.strictEqual(expiredIntentHarness.operations.filter(item =>
             item.type === 'new-session' || item.type === 'new-window').length, expiredEnsureCreateCount);
         const expiredIntentRecovered = await new backendModule.TmuxRuntimeBackend(expiredIntentHarness.dependencies)
-            .promotePending(expiredIntentRequest.identity, expiredIntentFinalId);
+            .promotePending(expiredIntentRequest.identity, expiredIntentFinalId, 'Expired intent');
         assert.strictEqual(expiredIntentRecovered.length, 1);
         assert.strictEqual(expiredIntentHarness.promoting.size, 0);
         assert.strictEqual(expiredIntentHarness.pending.size, 0);
@@ -5191,7 +5210,7 @@ async function runTmuxBackendChecks() {
         const occupiedExpiredBackend = new backendModule.TmuxRuntimeBackend(occupiedExpiredHarness.dependencies);
         await occupiedExpiredBackend.ensurePending(occupiedExpiredRequest, occupiedExpiredLayout);
         await assert.rejects(occupiedExpiredBackend.promotePending(
-            occupiedExpiredRequest.identity, occupiedExpiredFinalId
+            occupiedExpiredRequest.identity, occupiedExpiredFinalId, 'Occupied expired intent'
         ), /consumed persistence failed/);
         const occupiedExpiredIntent = Array.from(occupiedExpiredHarness.promoting.values())[0];
         const renamedRow = occupiedExpiredHarness.windows.find(row =>
@@ -5245,7 +5264,9 @@ async function runTmuxBackendChecks() {
         const mutationsBeforeOccupiedRetry = promotionMutations();
         const occupiedExpiredResult = await new backendModule.TmuxRuntimeBackend(
             occupiedExpiredHarness.dependencies
-        ).promotePending(occupiedExpiredRequest.identity, occupiedExpiredFinalId);
+        ).promotePending(
+            occupiedExpiredRequest.identity, occupiedExpiredFinalId, 'Occupied expired intent'
+        );
         assert.strictEqual(occupiedExpiredResult.length, 1);
         assert.strictEqual(occupiedExpiredResult[0].state, 'conflict');
         assert.strictEqual(occupiedExpiredResult[0].identity.pendingId,
@@ -5282,7 +5303,7 @@ async function runTmuxBackendChecks() {
         await delayedBackend.ensurePending(delayedRequest, delayedLayout);
         gatePromotion = true;
         const promotionPromise = delayedBackend.promotePending(
-            delayedIdentity, `delayed-final-${delayedLayout}`
+            delayedIdentity, `delayed-final-${delayedLayout}`, 'Delayed final'
         );
         await pendingLockEntered.promise;
         const queuedBeforeEnsure = delayedHarness.operations.filter(item =>
@@ -5311,7 +5332,9 @@ async function runTmuxBackendChecks() {
         launch: { executable: 'kimi', args: ['new'] },
     };
     await failedPromotionBackend.ensurePending(failedPromotionRequest, 'session');
-    await assert.rejects(failedPromotionBackend.promotePending(failedPromotionRequest.identity, 'failed-final'),
+    await assert.rejects(failedPromotionBackend.promotePending(
+        failedPromotionRequest.identity, 'failed-final', 'Failed final'
+    ),
         /rename session failed/);
     assert.strictEqual(failedPromotionHarness.consumed.size, 0);
     assert.strictEqual(failedPromotionHarness.pending.size, 1);
@@ -5337,7 +5360,7 @@ async function runTmuxBackendChecks() {
         sessionMetadata: {}, windowMetadata: {}, metadata: {},
     });
     const unknownPromotionResult = await unknownPromotionBackend.promotePending(
-        unknownPromotionRequest.identity, 'unknown-final'
+        unknownPromotionRequest.identity, 'unknown-final', 'Unknown final'
     );
     assert.strictEqual(unknownPromotionResult.length, 1);
     assert.strictEqual(unknownPromotionResult[0].state, 'conflict');
@@ -5358,7 +5381,9 @@ async function runTmuxBackendChecks() {
         launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/pending-collision' },
     };
     await collisionBackend.ensurePending(collisionPendingRequest, 'project');
-    const collisionResult = await collisionBackend.promotePending(collisionPendingRequest.identity, 'final');
+    const collisionResult = await collisionBackend.promotePending(
+        collisionPendingRequest.identity, 'final', 'Collision final'
+    );
     assert.strictEqual(collisionResult.length, 2);
     assert.ok(collisionResult.every(runtime => runtime.state === 'conflict'));
     assert.strictEqual(collisionHarness.operations.filter(item => item.type === 'rename-window').length, 0);
@@ -5628,6 +5653,7 @@ function fakeResumeRequest(sessionId) {
     return {
         identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId },
         projectName: 'App',
+        sessionName: `Session ${sessionId}`,
         terminalName: 'Codex: App',
         launch: { executable: 'codex', args: ['resume', sessionId], markerPath: '/tmp/m' },
         directoryScope: createDirectoryScope('/work'),
@@ -5743,8 +5769,8 @@ function createFakeRuntimeBackend(backend, options = {}) {
         fake.pending.push(runtime);
         return runtime;
     };
-    fake.promotePending = async (identity, sessionId) => {
-        fake.promoted.push({ identity: { ...identity }, sessionId });
+    fake.promotePending = async (identity, sessionId, sessionName) => {
+        fake.promoted.push({ identity: { ...identity }, sessionId, sessionName });
         return [{ ...fakeRuntime(backend, sessionId), identity: { ...identity, pendingId: undefined, sessionId } }];
     };
     fake.handleClosedTerminal = terminal => { fake.closed.push(terminal); };
@@ -5764,7 +5790,8 @@ async function runDirectBackendChecks() {
     }];
     const pending = [{
         provider: 'codex', terminal: terminalPending, markerPath: '/tmp/pending', cwd: '/work',
-        createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: ['old'], title: 'New work',
+        createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: ['old'],
+        projectName: 'Existing Workspace Card', title: 'New work',
         runtimeIdentity: {
             provider: 'codex', workspaceScopeIdentity: '/work', workspaceNavigationIdentity: 'nav-1',
             workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: '2026-07-18T10:00:00.000Z',
@@ -5825,6 +5852,7 @@ async function runDirectBackendChecks() {
     projected[0].identity.sessionId = 'mutated';
     assert.strictEqual(backend.getActive()[0].identity.sessionId, 'existing');
     assert.strictEqual(backend.getPending()[0].identity.pendingId, '2026-07-18T10:00:00.000Z');
+    assert.strictEqual(backend.getPending()[0].projectName, 'Existing Workspace Card');
 
     const resumed = await backend.ensureResume(fakeResumeRequest('fresh'));
     assert.strictEqual(resumed.backend, 'vscode');
@@ -5889,12 +5917,16 @@ async function runDirectBackendChecks() {
 
     const created = await backend.ensurePending(fakeCreateRequest('pending-1'));
     assert.strictEqual(created.identity.pendingId, 'pending-1');
+    assert.strictEqual(created.projectName, 'App');
     assert.strictEqual(operations.filter(item => item.type === 'track-pending').length, 2);
     assert.deepStrictEqual(operations.filter(item => item.type === 'launch').pop().options, {
         persistPendingBeforeLaunch: true,
     });
-    const promoted = await backend.promotePending(created.identity, 'new-session');
+    const promoted = await backend.promotePending(
+        created.identity, 'new-session', 'Readable Direct Session'
+    );
     assert.strictEqual(promoted[0].identity.sessionId, 'new-session');
+    assert.strictEqual(promoted[0].terminal, created.terminal);
     assert.strictEqual(backend.getPending().some(item => item.identity.pendingId === 'pending-1'), false);
 
     await backend.focus(promoted[0]);
@@ -6691,7 +6723,9 @@ async function runRuntimeCoordinatorChecks() {
             hasLiveTmuxOwnership: async () => false,
         });
         await assert.rejects(
-            promoteCoordinator.promotePending(promoteDirect.pending[0].identity, 'must-not-promote'),
+            promoteCoordinator.promotePending(
+                promoteDirect.pending[0].identity, 'must-not-promote', 'Must not promote'
+            ),
             error => error === promoteRefreshError
         );
         assert.deepStrictEqual(promoteDirect.promoted, [],
@@ -6833,12 +6867,18 @@ async function runRuntimeCoordinatorChecks() {
     await routed.focus({ provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-conflict' });
     assert.strictEqual(routedDirect.focusCalls.length, 0);
     assert.strictEqual(routedTmux.focusCalls.length, 2);
-    const promotedPending = await routed.promotePending(routedTmux.pending[0].identity, 'promoted-route');
+    const promotedPending = await routed.promotePending(
+        routedTmux.pending[0].identity, 'promoted-route', 'Readable Promoted Session'
+    );
     assert.strictEqual(promotedPending[0].identity.sessionId, 'promoted-route');
     assert.deepStrictEqual(routedTmux.promoted, [{
-        identity: routedTmux.pending[0].identity, sessionId: 'promoted-route',
+        identity: routedTmux.pending[0].identity,
+        sessionId: 'promoted-route',
+        sessionName: 'Readable Promoted Session',
     }]);
-    const conflictedPromotion = await routed.promotePending(routedTmux.pending[1].identity, 'never-promoted');
+    const conflictedPromotion = await routed.promotePending(
+        routedTmux.pending[1].identity, 'never-promoted', 'Never promoted'
+    );
     assert.strictEqual(conflictedPromotion.length, 2);
     assert.ok(conflictedPromotion.every(runtime => runtime.state === 'conflict'));
     assert.strictEqual(routedDirect.promoted.length, 0);

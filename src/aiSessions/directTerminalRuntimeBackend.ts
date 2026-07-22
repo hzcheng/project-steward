@@ -34,6 +34,7 @@ interface DirectPendingTerminalEntry<TTerminal> {
     cwd: string;
     createdAt: string;
     excludedSessionIds: string[];
+    projectName?: string;
     title?: string;
     runtimeIdentity?: AiSessionRuntimeIdentity;
 }
@@ -222,6 +223,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             cwd: input.identity.cwd,
             createdAt: input.createdAt,
             excludedSessionIds: input.excludedSessionIds.slice(),
+            projectName: input.projectName,
             ...(input.title === undefined ? {} : { title: input.title }),
             runtimeIdentity: cloneAiSessionRuntimeIdentity(input.identity),
         };
@@ -237,7 +239,8 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
 
     async promotePending(
         identity: AiSessionRuntimeIdentity & { pendingId: string },
-        sessionId: string
+        sessionId: string,
+        _sessionName: string
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
         const expectedIdentity = cloneAiSessionRuntimeIdentity(identity);
         const matches = this.terminalService.getPendingTerminals().filter(entry =>
@@ -327,6 +330,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             terminal: entry.terminal,
             createdAt: entry.createdAt,
             excludedSessionIds: entry.excludedSessionIds.slice(),
+            ...(entry.projectName === undefined ? {} : { projectName: entry.projectName }),
             ...(entry.title === undefined ? {} : { title: entry.title }),
         };
     }

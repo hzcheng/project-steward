@@ -1224,6 +1224,7 @@ async function runPendingTerminalResolverChecks() {
                     available: true, scannedFiles: 3, parsedFiles: 3,
                     sessions: pendingRuntimes.map((runtime, index) => ({
                         id: `session-${index}`,
+                        name: 'Provider generated title',
                         cwd: runtime.identity.cwd,
                         updatedAt: new Date(Date.parse(runtime.createdAt) + 1000).toISOString(),
                     })),
@@ -1237,21 +1238,42 @@ async function runPendingTerminalResolverChecks() {
         };
     }
 
-    const validPending = pending('pending-valid', '/work/valid', '2026-07-15T10:00:00Z', 'Created Alias');
+    const validPending = pending(
+        'pending-valid', '/work/valid', '2026-07-15T10:00:00Z', 'Investigate replication'
+    );
     const validAliases = [];
+    const promotionCalls = [];
     let validSyncs = 0;
     const validResult = await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
-        resolverOptions([validPending], async (_pendingId, sessionId) => [
-            finalRuntime(validPending, sessionId),
-        ], validAliases, () => { validSyncs++; })
+        resolverOptions([validPending], async (identity, sessionId, sessionName) => {
+            promotionCalls.push({ identity, sessionId, sessionName });
+            return [finalRuntime(validPending, sessionId)];
+        }, validAliases, () => { validSyncs++; })
     );
     assert.deepStrictEqual(validResult, {
         attempted: 1,
         promoted: [{ pendingId: 'pending-valid', provider: 'codex', sessionId: 'session-0' }],
         failures: [],
     });
-    assert.deepStrictEqual(validAliases, [['codex', 'session-0', 'Created Alias']]);
+    assert.deepStrictEqual(promotionCalls[0], {
+        identity: validPending.identity,
+        sessionId: 'session-0',
+        sessionName: 'Investigate replication',
+    });
+    assert.deepStrictEqual(validAliases, [['codex', 'session-0', 'Investigate replication']]);
     assert.strictEqual(validSyncs, 1);
+
+    const fallbackPending = pending(
+        'pending-fallback', '/work/fallback', '2026-07-15T10:00:00Z', ''
+    );
+    const fallbackPromotionCalls = [];
+    await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(
+        resolverOptions([fallbackPending], async (identity, sessionId, sessionName) => {
+            fallbackPromotionCalls.push({ identity, sessionId, sessionName });
+            return [finalRuntime(fallbackPending, sessionId)];
+        }, [], () => undefined)
+    );
+    assert.strictEqual(fallbackPromotionCalls[0].sessionName, 'Provider generated title');
 
     const duplicatePending = { ...validPending, identity: { ...validPending.identity } };
     const duplicateCases = [{
@@ -3280,7 +3302,7 @@ async function runWorkspaceCardActionControllerIntegrationChecks() {
             { id: 'root-api', name: 'API', uri: 'file:///work/api', hostPath: '/work/api', ordinal: 1 },
         ],
     };
-    const session = { id: 'session-card', name: 'Card Session', cwd: '/work/api' };
+    const session = { id: 'session-id', name: 'Readable Session Alias', cwd: '/work/api' };
     const target = {
         cardId: '__currentWorkspace-card', workspace,
         sessions: {
@@ -3338,7 +3360,8 @@ async function runWorkspaceCardActionControllerIntegrationChecks() {
             commandController.resolveWorkspaceDirectoryScope(resolved.workspace, providerId, undefined, rootId),
         runtimeCoordinator: { create: async request => { createRequests.push(request); return { status: 'started', runtime: {} }; },
             getActive: () => [], getPending: () => [] },
-        createPendingId: () => 'pending-workspace-card', showInputBox: async () => '',
+        createPendingId: () => 'pending-workspace-card',
+        showInputBox: async () => 'Investigate replication',
         showActiveTab: async () => undefined, announceStatus: async () => undefined,
         showWarningMessage: async () => undefined, refresh: () => undefined,
         getExistingSessionIdsForCwd: () => [], getPendingMarkerPath: () => '/tmp/card.marker',
@@ -3346,7 +3369,8 @@ async function runWorkspaceCardActionControllerIntegrationChecks() {
     });
     await creation.createSession(target.cardId);
     assert.strictEqual(createRequests[0].identity.workspaceScopeIdentity, workspace.scopeIdentity);
-    assert.strictEqual(createRequests[0].projectName, workspace.displayName);
+    assert.strictEqual(createRequests[0].projectName, 'Workspace Card');
+    assert.strictEqual(createRequests[0].title, 'Investigate replication');
 
     const resumeRequests = [];
     const resume = new AiSessionResumeController({
@@ -3365,7 +3389,9 @@ async function runWorkspaceCardActionControllerIntegrationChecks() {
     });
     await resume.resumeProjectSession(target.cardId, 'codex', session.id);
     assert.strictEqual(resumeRequests[0].identity.workspaceScopeIdentity, workspace.scopeIdentity);
-    assert.strictEqual(resumeRequests[0].projectName, workspace.displayName);
+    assert.strictEqual(resumeRequests[0].projectName, 'Workspace Card');
+    assert.strictEqual(resumeRequests[0].sessionName, 'Readable Session Alias');
+    assert.strictEqual(resumeRequests[0].identity.sessionId, 'session-id');
 
     const focused = [];
     const runtime = { identity: createTestAiSessionRuntimeIdentity('codex', '/work/api', {
