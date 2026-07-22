@@ -161,6 +161,17 @@ for (const [providerId, sessionsKey] of [
     test(`ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 [${providerId}] retains unread completion through runtime handoff until acknowledgement`, async () => {
         let runtime = { state: 'completed', runStartedAtMs: 900 };
         const publications = [];
+        const runtimeLookups = [];
+        const getRuntimeById = (lookupProviderId, lookupSessionId) => {
+            runtimeLookups.push([lookupProviderId, lookupSessionId]);
+            return lookupProviderId === providerId && lookupSessionId === 'session'
+                ? runtime
+                : null;
+        };
+        const wrongProviderId = providerId === 'codex' ? 'kimi' : 'codex';
+        assert.equal(getRuntimeById(wrongProviderId, 'session'), null,
+            'the runtime fixture must reject a different provider identity');
+        runtimeLookups.length = 0;
         const project = {
             id: 'project', path: '/fixtures/project',
             codexSessions: [], kimiSessions: [], claudeSessions: [],
@@ -178,7 +189,7 @@ for (const [providerId, sessionsKey] of [
                 id: 'claude', projectSessionsKey: 'claudeSessions', service: { getLifecycleSignals: () => ({}) },
             }],
             getProjectKey: value => attentionProject.getAttentionProjectKey(value.path),
-            getRuntimeById: () => runtime,
+            getRuntimeById,
             isRuntimeComplete: value => value.state === 'completed',
             publish: async items => { publications.push(items.map(item => ({ ...item }))); return true; },
             scheduleRefresh: () => undefined,
@@ -189,12 +200,17 @@ for (const [providerId, sessionsKey] of [
         const first = await controller.evaluate();
         const eventId = publications[0][0].eventId;
         assert.deepEqual(first.eventIdsBySession[`${providerId}:session`], [eventId]);
+        assert.deepEqual(runtimeLookups, [[providerId, 'session']]);
+        runtimeLookups.length = 0;
         runtime = null;
         await controller.evaluate();
         assert.deepEqual(publications[1].map(item => item.eventId), [eventId]);
+        assert.deepEqual(runtimeLookups, [[providerId, 'session']]);
+        runtimeLookups.length = 0;
         controller.acknowledge([eventId]);
         await controller.evaluate();
         assert.deepEqual(publications[2], []);
+        assert.deepEqual(runtimeLookups, [[providerId, 'session']]);
     });
 }
 

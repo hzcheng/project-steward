@@ -271,7 +271,7 @@
         "vscode:prepublish": "webpack --mode production && npx gulp --production",
         "webpack": "webpack --mode development",
         "webpack-dev": "webpack --mode development --watch",
-        "test-compile": "tsc -p ./",
+        "test-compile": "tsc -p ./ && npm run attention:bridge:compile",
         "test:unit": "npm run test-compile && node --test 'tests/unit/**/*.test.js'",
         "test:contract": "npm run test-compile && npm run attention:bridge:compile && node --test --test-concurrency=1 'tests/contract/**/*.test.js'",
         "test:integration": "npm run test-compile && npm run attention:bridge:compile && node --test --test-concurrency=1 'tests/integration/**/*.test.js'",

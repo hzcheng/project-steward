@@ -5,6 +5,7 @@ const Module = require('node:module');
 const path = require('node:path');
 const test = require('node:test');
 const { createFakeClock } = require('./fakeClock');
+const { makeTempDirectory } = require('./tempDirectory');
 const { DirectTerminalRuntimeBackend } = require('../../out/aiSessions/directTerminalRuntimeBackend');
 const { TmuxRuntimeBackend } = require('../../out/aiSessions/tmuxRuntimeBackend');
 const { TmuxRuntimeDiscovery } = require('../../out/aiSessions/tmuxRuntimeDiscovery');
@@ -12,6 +13,14 @@ const { ProjectTmuxLayout, SessionTmuxLayout } = require('../../out/aiSessions/t
 const { TmuxClientError } = require('../../out/aiSessions/tmuxClient');
 
 const FIXED_NOW = Date.parse('2026-07-18T10:00:00.000Z');
+
+function createRuntimeFilesystemFixture(testContext, prefix = 'project-steward-runtime-contract-') {
+    const root = makeTempDirectory(testContext, prefix);
+    return {
+        root,
+        resolve: (...segments) => path.join(root, ...segments),
+    };
+}
 
 function createDeferred() {
     let resolve;
@@ -844,6 +853,7 @@ module.exports = {
     createFakeScheduler,
     createFakeTerminalFactory,
     createFakeTmuxRunner,
+    createRuntimeFilesystemFixture,
     createSyntheticTmuxStore,
     createTmuxRuntimeHarness,
     defineRuntimeContract,
