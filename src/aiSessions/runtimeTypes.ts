@@ -49,6 +49,14 @@ export class TmuxRuntimeUnavailableError extends Error {
     }
 }
 
+export class AiSessionRuntimeTargetChangedError extends Error {
+    constructor() {
+        super('The AI session runtime target changed.');
+        this.name = 'AiSessionRuntimeTargetChangedError';
+        Object.setPrototypeOf(this, AiSessionRuntimeTargetChangedError.prototype);
+    }
+}
+
 export interface AiSessionRuntimeIdentity {
     provider: AiSessionProviderId;
     workspaceScopeIdentity: string;

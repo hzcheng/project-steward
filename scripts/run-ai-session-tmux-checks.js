@@ -128,6 +128,7 @@ function createTmuxBackendHarness(options = {}) {
     let failConfigureWindowTimeoutCount = options.failConfigureWindowTimeoutCount || 0;
     let activeWindowError = null;
     let activeWindowDeferred = null;
+    let targetWindowOverride;
     let promotionRenameOccurred = false;
 
     function syncMetadata(row) {
@@ -297,6 +298,23 @@ function createTmuxBackendHarness(options = {}) {
                 await pendingResult.promise;
             }
             return result;
+        },
+        getTargetWindow: async locator => {
+            operations.push({ type: 'get-target-window', locator: { ...locator } });
+            if (targetWindowOverride !== undefined) {
+                return targetWindowOverride === null ? null : {
+                    ...targetWindowOverride,
+                    metadata: { ...targetWindowOverride.metadata },
+                };
+            }
+            const row = windows.find(candidate => candidate.sessionName === locator.sessionName
+                && (!locator.windowName || candidate.windowName === locator.windowName));
+            return row ? {
+                sessionName: row.sessionName,
+                windowName: row.windowName,
+                windowId: row.windowId,
+                metadata: { ...row.metadata },
+            } : null;
         },
         hasSession: async name => {
             const exists = windows.some(item => item.sessionName === name);
@@ -513,6 +531,7 @@ function createTmuxBackendHarness(options = {}) {
         failNextAttach() { failAttachCount++; },
         failNextShow() { failShowCount++; },
         failNextActiveWindow(error) { activeWindowError = error; },
+        setTargetWindow(value) { targetWindowOverride = value; },
         deferNextActiveWindow() {
             activeWindowDeferred = deferred();
             return activeWindowDeferred;
@@ -3898,9 +3917,45 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(firstProject.terminal, projectHarness.terminals[0]);
     assert.strictEqual(secondProject.terminal, projectHarness.terminals[0]);
     assert.strictEqual(projectBackend.getActive().length, 2);
+    const verifiedFocusStart = projectHarness.operations.length;
     await projectBackend.focus(firstProject);
+    const verifiedFocusOperations = projectHarness.operations.slice(verifiedFocusStart);
+    assert.ok(verifiedFocusOperations.findIndex(item => item.type === 'get-target-window')
+        < verifiedFocusOperations.findIndex(item => item.type === 'select-window'),
+    'tmux ownership must be live-verified before selecting the target');
     assert.deepStrictEqual(projectHarness.operations.filter(item => item.type === 'select-window').slice(-1)[0].locator,
         firstProject.tmux);
+
+    const validTargetMetadata = {
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'pk',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
+        provider: 'codex', sessionId: 's1', createdAt: '2026-07-18T10:00:00.000Z', marker: '/tmp/m1',
+    };
+    const validTargetWindow = {
+        sessionName: firstProject.tmux.sessionName,
+        windowName: firstProject.tmux.windowName,
+        windowId: '@777',
+        metadata: validTargetMetadata,
+    };
+    for (const target of [
+        null,
+        { ...validTargetWindow, metadata: { ...validTargetMetadata, workspaceScopeIdentity: 'other' } },
+        { ...validTargetWindow, metadata: { ...validTargetMetadata, provider: 'kimi' } },
+        { ...validTargetWindow, metadata: { ...validTargetMetadata, sessionId: 'other' } },
+        { ...validTargetWindow, windowName: 'other-window' },
+        { ...validTargetWindow, metadata: { managed: '1', version: '2', layout: 'project' } },
+    ]) {
+        projectHarness.setTargetWindow(target);
+        const selectCount = projectHarness.operations.filter(item => item.type === 'select-window').length;
+        const terminalCount = projectHarness.terminals.length;
+        await assert.rejects(projectBackend.focus(firstProject), error =>
+            error && error.name === 'AiSessionRuntimeTargetChangedError');
+        assert.strictEqual(projectHarness.operations.filter(item => item.type === 'select-window').length,
+            selectCount, 'a changed target must not be selected');
+        assert.strictEqual(projectHarness.terminals.length, terminalCount,
+            'a changed target must not create an attach terminal');
+    }
+    projectHarness.setTargetWindow(undefined);
     await projectBackend.detach(firstProject);
     assert.strictEqual(projectHarness.terminals[0].disposed, true);
     assert.strictEqual(projectBackend.getActive().length, 2);

@@ -18,11 +18,17 @@ import {
     aiSessionRuntimeIdentitiesEqual,
     AiSessionRuntimeConflictError,
     AiSessionRuntimeLifecycleBlockedError,
+    AiSessionRuntimeTargetChangedError,
     cloneAiSessionRuntimeIdentity,
     isValidAiSessionRuntimeIdentity,
     TmuxRuntimeUnavailableError,
 } from './runtimeTypes';
-import { getTmuxRuntimeKey, ProjectTmuxLayout, SessionTmuxLayout } from './tmuxLayout';
+import {
+    getTmuxRuntimeKey,
+    parseManagedTmuxMetadata,
+    ProjectTmuxLayout,
+    SessionTmuxLayout,
+} from './tmuxLayout';
 import { TmuxAttachBinding, TmuxAttachBindingStore } from './tmuxAttachBindingStore';
 import { TmuxClient, TmuxClientError } from './tmuxClient';
 import {
@@ -478,7 +484,25 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!runtime || runtime.backend !== 'tmux' || !runtime.tmux) {
             return;
         }
+        await this.verifyFocusTarget(runtime);
         await this.attachAndFocus(runtime, this.getAttachTerminalName(runtime));
+    }
+
+    private async verifyFocusTarget(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void> {
+        if (!runtime.tmux) {
+            throw new AiSessionRuntimeTargetChangedError();
+        }
+        const target = await this.dependencies.client.getTargetWindow(runtime.tmux);
+        const metadata = target ? parseManagedTmuxMetadata(target.metadata) : null;
+        const actualLocator: AiSessionTmuxLocator | null = target && metadata ? {
+            layout: metadata.layout,
+            sessionName: target.sessionName,
+            ...(metadata.layout === 'project' ? { windowName: target.windowName } : {}),
+        } : null;
+        if (!metadata || !actualLocator || !locatorsEqual(actualLocator, runtime.tmux)
+            || !aiSessionRuntimeIdentitiesEqual(metadata, runtime.identity)) {
+            throw new AiSessionRuntimeTargetChangedError();
+        }
     }
 
     getFocusedRuntime(terminal: TTerminal | null | undefined): AiSessionRuntimeSnapshot<TTerminal> | null {
