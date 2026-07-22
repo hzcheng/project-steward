@@ -287,6 +287,7 @@ function providerFixture(root, name, payload, fixtureRegistry) {
         invocationId,
         markerPath,
         payload,
+        launchState: { phase: 'planned' },
         launch: {
             executable: process.execPath,
             args: ['-e', program, pidPath, stopPath, invocationLogPath, invocationId, payload],
@@ -295,6 +296,16 @@ function providerFixture(root, name, payload, fixtureRegistry) {
     };
     fixtureRegistry.push(fixture);
     return fixture;
+}
+
+async function runTrackedProviderLaunch(fixture, operation) {
+    if (!fixture || !fixture.launchState || fixture.launchState.phase !== 'planned') {
+        throw new Error('Provider fixture launch state was invalid before dispatch.');
+    }
+    fixture.launchState.phase = 'launching';
+    const result = await operation();
+    fixture.launchState.phase = 'launched';
+    return result;
 }
 
 function readProviderInvocations(invocationLogPath) {
@@ -375,12 +386,18 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
         'claude', projectKey, cwd, 'session-two.special:$', fixtures.projectTwo,
         'Project Steward: Smoke Project [tmux]'
     );
-    const [projectOne, concurrentProjectOne] = await Promise.all([
-        contextA.backend.ensureResume(projectOneRequest, 'project'),
-        contextB.backend.ensureResume(projectOneRequest, 'project'),
-    ]);
+    const [projectOne, concurrentProjectOne] = await runTrackedProviderLaunch(
+        fixtures.projectOne,
+        () => Promise.all([
+            contextA.backend.ensureResume(projectOneRequest, 'project'),
+            contextB.backend.ensureResume(projectOneRequest, 'project'),
+        ])
+    );
     assert.deepStrictEqual(projectOne.tmux, concurrentProjectOne.tmux);
-    const projectTwo = await contextA.backend.ensureResume(projectTwoRequest, 'project');
+    const projectTwo = await runTrackedProviderLaunch(
+        fixtures.projectTwo,
+        () => contextA.backend.ensureResume(projectTwoRequest, 'project')
+    );
 
     await waitFor(() => Object.values(fixtures).slice(0, 2)
         .every(fixture => fs.existsSync(fixture.pidPath)), 'project providers to start');
@@ -440,8 +457,14 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
         'codex', 'session-layout-project', cwd, 'codex:isolated.two', fixtures.sessionTwo,
         'Codex: isolated two [tmux]'
     );
-    const sessionOne = await contextA.backend.ensureResume(sessionOneRequest, 'session');
-    const sessionTwo = await contextA.backend.ensureResume(sessionTwoRequest, 'session');
+    const sessionOne = await runTrackedProviderLaunch(
+        fixtures.sessionOne,
+        () => contextA.backend.ensureResume(sessionOneRequest, 'session')
+    );
+    const sessionTwo = await runTrackedProviderLaunch(
+        fixtures.sessionTwo,
+        () => contextA.backend.ensureResume(sessionTwoRequest, 'session')
+    );
     await waitFor(() => fs.existsSync(fixtures.sessionOne.pidPath)
         && fs.existsSync(fixtures.sessionTwo.pidPath), 'session-layout providers to start');
     rows = await client.listWindows();
@@ -461,15 +484,16 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
 
     const pendingId = "pending:create ' ;$";
     const pendingCreatedAt = new Date().toISOString();
-    const pending = await contextA.backend.ensurePending({
-        identity: { provider: 'claude', projectKey, cwd, pendingId },
-        projectName: 'Smoke Project',
-        terminalName: 'Project Steward: Smoke Project [tmux]',
-        createdAt: pendingCreatedAt,
-        excludedSessionIds: ['existing:one', 'existing:two'],
-        title: "Title with 'quotes' ; $HOME",
-        launch: { ...fixtures.pending.launch, cwd },
-    }, 'project');
+    const pending = await runTrackedProviderLaunch(fixtures.pending, () =>
+        contextA.backend.ensurePending({
+            identity: { provider: 'claude', projectKey, cwd, pendingId },
+            projectName: 'Smoke Project',
+            terminalName: 'Project Steward: Smoke Project [tmux]',
+            createdAt: pendingCreatedAt,
+            excludedSessionIds: ['existing:one', 'existing:two'],
+            title: "Title with 'quotes' ; $HOME",
+            launch: { ...fixtures.pending.launch, cwd },
+        }, 'project'));
     await waitFor(() => fs.existsSync(fixtures.pending.pidPath), 'pending provider to start');
     const invocationRecords = readProviderInvocations(fixtures.projectOne.invocationLogPath);
     assert.strictEqual(invocationRecords.length, Object.keys(fixtures).length,
@@ -727,21 +751,37 @@ function writeProviderStopFiles(fixtures, dependencies = {}) {
 
 function stopAndVerifyProviderFixtures(fixtures, dependencies = {}) {
     const errors = [];
+    const fixturesRequiringVerification = [];
+    for (const fixture of fixtures) {
+        const phase = fixture.launchState ? fixture.launchState.phase : 'launched';
+        if (phase === 'planned') {
+            fixture.launchState.phase = 'verified-unlaunched';
+        } else if (phase !== 'verified-unlaunched' && phase !== 'verified-stopped') {
+            fixturesRequiringVerification.push(fixture);
+        }
+    }
     try {
-        writeProviderStopFiles(fixtures, dependencies);
+        writeProviderStopFiles(fixturesRequiringVerification, dependencies);
     } catch (error) {
         errors.push(error);
     }
     let pids = [];
+    let evidenceVerified = false;
     try {
-        const evidence = inspectTrackedProviderPidEvidence(fixtures, dependencies);
+        const evidence = inspectTrackedProviderPidEvidence(fixturesRequiringVerification, dependencies);
         pids = evidence.pids;
         errors.push(...evidence.errors);
+        evidenceVerified = evidence.errors.length === 0;
     } catch (error) {
         errors.push(new Error('Provider process evidence could not be read.'));
     }
     try {
         waitForTrackedProviderExit(pids, dependencies);
+        if (evidenceVerified) {
+            for (const fixture of fixturesRequiringVerification) {
+                if (fixture.launchState) fixture.launchState.phase = 'verified-stopped';
+            }
+        }
     } catch (error) {
         errors.push(error);
     }
@@ -870,6 +910,7 @@ module.exports = {
     killIsolatedServer,
     removeOwnedTemporaryRoot,
     reportSmokeOutcome,
+    runTrackedProviderLaunch,
     runBestEffortCleanup,
     stopAndVerifyProviderFixtures,
     waitForTrackedProviderExit,

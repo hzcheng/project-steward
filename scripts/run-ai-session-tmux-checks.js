@@ -7898,6 +7898,115 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
     });
     assert.deepStrictEqual(completeEvidenceProbes.sort(), [201, 202],
         'complete per-fixture evidence must verify every provider and succeed');
+
+    const plannedFixture = {
+        invocationId: 'planned-fixture', pidPath: '/private/planned.pid',
+        invocationLogPath: '/private/planned.jsonl', stopPath: '/private/planned.stop',
+        launchState: { phase: 'planned' },
+    };
+    const trackedSuccessFixture = { launchState: { phase: 'planned' } };
+    assert.strictEqual(await smokeHarness.runTrackedProviderLaunch(
+        trackedSuccessFixture, async () => 'launched-result'
+    ), 'launched-result');
+    assert.strictEqual(trackedSuccessFixture.launchState.phase, 'launched',
+        'a completed launch dispatch must require provider exit evidence during cleanup');
+    const trackedFailureFixture = { launchState: { phase: 'planned' } };
+    await assert.rejects(smokeHarness.runTrackedProviderLaunch(
+        trackedFailureFixture,
+        async () => { throw new Error('simulated first provider launch failure'); }
+    ), /simulated first provider launch failure/);
+    assert.strictEqual(trackedFailureFixture.launchState.phase, 'launching',
+        'a failed launch dispatch must remain ambiguous until PID evidence resolves it');
+    const launchedFixture = {
+        invocationId: 'launched-fixture', pidPath: '/private/launched.pid',
+        invocationLogPath: '/private/launched.jsonl', stopPath: '/private/launched.stop',
+        launchState: { phase: 'launched' },
+    };
+    const mixedStopWrites = [];
+    const mixedEvidenceReads = [];
+    const mixedProbes = [];
+    smokeHarness.stopAndVerifyProviderFixtures([launchedFixture, plannedFixture], {
+        writeStop: stopPath => mixedStopWrites.push(stopPath),
+        readInvocations: logPath => {
+            mixedEvidenceReads.push(logPath);
+            return logPath === launchedFixture.invocationLogPath
+                ? [{ invocationId: launchedFixture.invocationId, pid: 301 }]
+                : [];
+        },
+        readFallbackPid: () => null,
+        probe: pid => {
+            mixedProbes.push(pid);
+            const error = new Error('gone');
+            error.code = 'ESRCH';
+            throw error;
+        },
+    });
+    assert.deepStrictEqual(mixedStopWrites, [launchedFixture.stopPath],
+        'cleanup must not write stop files for fixtures verified as never launched');
+    assert.deepStrictEqual(mixedEvidenceReads, [launchedFixture.invocationLogPath],
+        'cleanup must not demand PID evidence for fixtures verified as never launched');
+    assert.deepStrictEqual(mixedProbes, [301],
+        'cleanup must still verify every provider that was actually launched');
+    assert.strictEqual(launchedFixture.launchState.phase, 'verified-stopped');
+    assert.strictEqual(plannedFixture.launchState.phase, 'verified-unlaunched');
+
+    const ambiguousFixture = {
+        invocationId: 'ambiguous-fixture', pidPath: '/private/ambiguous.pid',
+        invocationLogPath: '/private/ambiguous.jsonl', stopPath: '/private/ambiguous.stop',
+        launchState: { phase: 'launching' },
+    };
+    assert.throws(() => smokeHarness.stopAndVerifyProviderFixtures([ambiguousFixture], {
+        writeStop: () => undefined,
+        readInvocations: () => [],
+        readFallbackPid: () => null,
+        probe: () => { throw new Error('missing evidence must not probe'); },
+    }), error => error && error.name === 'CleanupAggregateError',
+    'an ambiguous launch boundary without PID evidence must retain the fixture root');
+    assert.strictEqual(ambiguousFixture.launchState.phase, 'launching',
+        'failed evidence verification must preserve the ambiguous launch state for retry');
+
+    const earlyFailureRoot = smokeHarness.createOwnedTemporaryRoot(
+        'project-steward-tmux-smoke-'
+    );
+    const earlyFailureFixtures = [
+        { stopPath: '/private/early-one.stop', launchState: { phase: 'planned' } },
+        { stopPath: '/private/early-two.stop', launchState: { phase: 'planned' } },
+    ];
+    let earlyFailureRootRemoved = false;
+    try {
+        await smokeHarness.runBestEffortCleanup({
+            captureSocket: async () => null,
+            killServer: async () => undefined,
+            verifyStopped: async () => undefined,
+            removeSocket: async () => undefined,
+            terminateProviders: async () => smokeHarness.stopAndVerifyProviderFixtures(
+                earlyFailureFixtures,
+                {
+                    writeStop: () => { throw new Error('unlaunched fixture must not be stopped'); },
+                    readInvocations: () => { throw new Error('unlaunched fixture needs no evidence'); },
+                    readFallbackPid: () => { throw new Error('unlaunched fixture needs no evidence'); },
+                    probe: () => { throw new Error('unlaunched fixture must not be probed'); },
+                }
+            ),
+            removeFixtures: async (serverStopped, providersStopped) => {
+                assert.deepStrictEqual([serverStopped, providersStopped], [true, true]);
+                smokeHarness.removeOwnedTemporaryRoot(earlyFailureRoot);
+                earlyFailureRootRemoved = true;
+            },
+        });
+        const simulatedPrimaryFailure = new Error('simulated primary launch failure');
+        assert.throws(
+            () => smokeHarness.reportSmokeOutcome(simulatedPrimaryFailure, null),
+            error => error === simulatedPrimaryFailure,
+            'successful cleanup must not hide the original launch failure'
+        );
+    } finally {
+        if (!earlyFailureRootRemoved) smokeHarness.removeOwnedTemporaryRoot(earlyFailureRoot);
+    }
+    assert.strictEqual(fs.existsSync(earlyFailureRoot.path), false,
+        'an early launch failure must remove roots when all fixtures are verified unlaunched');
+    assert.ok(earlyFailureFixtures.every(fixture =>
+        fixture.launchState.phase === 'verified-unlaunched'));
 }
 
 async function main() {
