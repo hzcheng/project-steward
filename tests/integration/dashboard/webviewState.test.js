@@ -255,7 +255,7 @@ test('WEBVIEW-WEBVIEW-OPTIONS-001 enables scripts and limits local resources to 
     });
 });
 
-test('WEBVIEW-CURRENT-WORKSPACE-RENDERING-001 distinguishes current and navigation OPEN cards', () => {
+test('WEBVIEW-CURRENT-WORKSPACE-RENDERING-001 WEBVIEW-DISPLAY-001 distinguishes current and navigation OPEN cards', () => {
     const config = { get: (_key, fallback) => fallback };
     const html = webviewModules.content.getOpenProjectsGroupContent([
         {
@@ -277,6 +277,36 @@ test('WEBVIEW-CURRENT-WORKSPACE-RENDERING-001 distinguishes current and navigati
     assert.match(navigationTag, /data-readonly-project/);
     assert.equal((html.match(/class="codex-sessions"/g) || []).length, 1);
     assert.equal(html.includes('Leaked'), false);
+});
+
+test('RUNTIME-TMUX-WEBVIEW-EXPERIENCE-001 renders semantic tmux, direct, stale, attached, and conflict controls', () => {
+    const base = {
+        id: 'p', name: 'App', path: '/work/app', activeAiSessionTab: 'active',
+        codexSessions: [{ id: 's1', name: 'One', active: true }], kimiSessions: [], claudeSessions: [],
+    };
+    const runtime = {
+        key: 'codex:s1', provider: 'codex', sessionId: 's1', name: 'One', executionState: 'running',
+        status: 'running', focused: false, needsAttention: false, pending: false,
+        backend: 'tmux', tmuxLayout: 'project', attached: false, stale: true,
+    };
+    const tmuxRow = webviewModules.content.getAiSessionsDiv({ ...base, activeAiSessions: [runtime] });
+    assert.match(tmuxRow, /data-session-backend="tmux"/);
+    assert.match(tmuxRow, /data-tmux-layout="project"/);
+    assert.match(tmuxRow, /data-session-attached="false"/);
+    assert.match(tmuxRow, /data-action="detach-ai-session-terminal"/);
+    assert.match(tmuxRow, /Runtime status is stale/);
+
+    const directRow = webviewModules.content.getAiSessionsDiv({ ...base, activeAiSessions: [{
+        ...runtime, backend: 'vscode', tmuxLayout: undefined, attached: true, stale: false,
+    }] });
+    assert.match(directRow, /data-action="close-ai-session-terminal"/);
+    assert.doesNotMatch(directRow, /data-action="detach-ai-session-terminal"/);
+
+    const conflictRow = webviewModules.content.getAiSessionsDiv({ ...base, activeAiSessions: [{
+        ...runtime, status: 'conflict', conflict: true, stale: false,
+    }] });
+    assert.match(conflictRow, /Runtime conflict/);
+    assert.doesNotMatch(conflictRow, /data-action="(?:close|detach)-ai-session-terminal"/);
 });
 
 test('WEBVIEW-FAVORITE-RENDERING-001 renders favorites in explicit order before saved groups', () => {
@@ -320,7 +350,7 @@ test('WEBVIEW-WEBVIEW-CONTENT-001 renders OPEN PROJECTS and lazy PROJECTS TODO t
     assert.match(html, /data-id="current"/);
 });
 
-test('WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001 preserves OPEN PROJECTS and TODO mounted tab state', () => {
+test('WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001 SESSION-CONTROLLER-001 preserves OPEN PROJECTS and TODO mounted tab state', () => {
     const harness = createDashboardHarness();
     harness.context.window.scrollY = 12;
     harness.controller.activateTab('projects');

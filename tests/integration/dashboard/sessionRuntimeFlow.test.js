@@ -23,7 +23,7 @@ test('PROJECT-TERMINAL-CANDIDATE-001 reads provider sessions through the termina
     assert.deepEqual(calls, [{ providerId: 'kimi', options: { reason: 'terminal-candidates' } }]);
 });
 
-test('PROJECT-ACTIVE-AI-SESSION-PROJECTION-001 projects Direct, tmux, pending, attention, conflict, and stale runtime state', () => {
+test('PROJECT-ACTIVE-AI-SESSION-PROJECTION-001 OPEN-OPEN-PROJECT-AI-SESSION-VIEW-MODEL-BUILDER-001 RUNTIME-RUNTIME-PROJECTION-001 projects Direct, tmux, pending, attention, conflict, and stale runtime state', () => {
     const projects = [{
         id: 'app', path: '/fixtures/app',
         codexSessions: [{ id: 'direct', name: 'Direct' }],

@@ -10,6 +10,12 @@ const ALLOWED_DOMAINS = new Set([
 ]);
 const ALLOWED_PRIORITIES = new Set(['P0', 'P1', 'P2']);
 const ALLOWED_STATUSES = new Set(['automated', 'scheduled', 'manual']);
+const LEGACY_COMPATIBILITY_OWNERS = new Set([
+    'scripts/run-ai-session-safety-checks.js',
+    'scripts/run-ai-session-tmux-checks.js',
+    'scripts/run-dashboard-webview-checks.js',
+    'scripts/run-open-project-safety-checks.js',
+]);
 
 function loadBehaviorCatalog(filePath) {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -68,6 +74,9 @@ function validateBehaviorCatalog(entries, options) {
                 if (path.isAbsolute(owner) || relativeOwnerPath.startsWith('..') || path.isAbsolute(relativeOwnerPath)) {
                     errors.push(`${label} owner path must be repository-relative: ${owner}`);
                     continue;
+                }
+                if (entry.status === 'automated' && LEGACY_COMPATIBILITY_OWNERS.has(owner)) {
+                    errors.push(`${label} legacy compatibility script cannot own automated behavior: ${owner}`);
                 }
                 let ownerStats;
                 try {

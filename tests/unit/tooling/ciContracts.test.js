@@ -80,7 +80,7 @@ test('RELEASE-VSIX-PACKAGING-001 requires npm caching in the Windows job itself'
     );
 });
 
-test('RUNTIME-TMUX-SMOKE-HARNESS-SAFETY-001 requires the developer wrapper to invoke its no-compile runner', () => {
+test('RUNTIME-TMUX-SMOKE-HARNESS-SAFETY-001 RELEASE-VSIX-PACKAGING-001 requires developer and release gates to keep their public runners', () => {
     assert.throws(() => validateSafetyScripts({
         'test:safety': 'npm run test-compile',
         'test:safety:run': 'node scripts/run-ai-session-tmux-checks.js',

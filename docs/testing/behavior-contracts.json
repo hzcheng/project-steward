@@ -58,7 +58,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -123,7 +123,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/openProjects/projection.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -150,7 +150,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -163,7 +163,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -176,7 +176,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -189,7 +189,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -215,7 +215,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -228,7 +228,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -241,7 +241,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -254,7 +254,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -280,7 +280,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/controllerBoundaries.test.js",
+      "tests/contract/errors/failureMapping.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -306,7 +307,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/controllerBoundaries.test.js",
+      "tests/contract/errors/failureMapping.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -345,7 +347,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/controllerBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -358,7 +360,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/sessionControllers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -371,7 +373,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -384,7 +386,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/sessionControllers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -397,7 +399,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/sessionControllers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -410,7 +412,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/runtimeCoordinator.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -437,7 +439,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/sessionControllers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -463,7 +465,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/archiveAndHydration.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -476,7 +478,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/archiveAndHydration.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -489,7 +491,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/archiveAndHydration.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -502,7 +504,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -528,7 +530,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/tmuxDiscovery.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -541,7 +543,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/terminalService.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -568,7 +570,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/persistence/stores.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -581,7 +583,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/archiveAndHydration.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -594,7 +596,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/archiveAndHydration.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -620,7 +622,6 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js",
       "tests/unit/tooling/ciContracts.test.js"
     ],
     "evidence": [
@@ -660,7 +661,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/attention.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -712,7 +713,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/controllerBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -725,7 +726,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/integration/dashboard/sessionRuntimeFlow.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -738,7 +739,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/archiveAndHydration.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -790,7 +791,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/controllerBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -803,7 +804,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/providers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -816,7 +817,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/providers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -829,7 +830,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/providers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -842,7 +843,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/providers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -855,7 +856,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/providers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -935,7 +936,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/providers.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -961,7 +962,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/controllerBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -1054,7 +1055,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js"
+      "tests/contract/aiSessions/attention.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -1093,7 +1094,6 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-safety-checks.js",
       "tests/unit/tooling/ciContracts.test.js"
     ],
     "evidence": [
@@ -1107,7 +1107,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-tmux-checks.js"
+      "tests/contract/aiSessions/runtimeBackends.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1120,7 +1120,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-tmux-checks.js"
+      "tests/contract/aiSessions/runtimeBackends.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1133,7 +1133,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-tmux-checks.js"
+      "tests/contract/aiSessions/runtimeBackends.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1146,7 +1146,8 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-tmux-checks.js"
+      "tests/contract/aiSessions/runtimeBackends.test.js",
+      "tests/contract/errors/failureMapping.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1225,7 +1226,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-tmux-checks.js"
+      "tests/integration/dashboard/sessionRuntimeFlow.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1238,7 +1239,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-tmux-checks.js"
+      "tests/contract/aiSessions/runtimeCoordinator.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1251,7 +1252,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-tmux-checks.js"
+      "tests/contract/aiSessions/runtimeBackends.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1264,7 +1265,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-tmux-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1277,7 +1278,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-tmux-checks.js"
+      "tests/contract/aiSessions/tmuxSmokeHarness.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-checks.js"
@@ -1290,7 +1291,7 @@
     "priority": "P0",
     "status": "automated",
     "owners": [
-      "scripts/run-ai-session-tmux-checks.js"
+      "tests/contract/aiSessions/tmuxSmokeHarness.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-tmux-smoke-checks.js"
@@ -1697,7 +1698,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/dashboardBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1710,7 +1711,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/dashboardBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -1997,7 +1998,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/dashboardBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -2036,7 +2037,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/dashboardBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -2049,7 +2050,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/contract/dashboardBoundaries.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
@@ -2062,7 +2063,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "scripts/run-dashboard-webview-checks.js"
+      "tests/integration/dashboard/webviewState.test.js"
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"

@@ -99,3 +99,15 @@ test('CATALOG-INTEGRITY-008 rejects manual owner directories without throwing', 
     });
     assert.ok(errors.some(error => error.includes(`owner path must be a regular file: ${owner}`)));
 });
+
+test('CATALOG-INTEGRITY-009 rejects legacy compatibility scripts as automated owners', t => {
+    const root = createRoot(t);
+    const legacyOwner = 'scripts/run-ai-session-safety-checks.js';
+    const legacyPath = path.join(root, legacyOwner);
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+    fs.writeFileSync(legacyPath, '// PROJECT-PATH-001\n');
+    const errors = validateBehaviorCatalog([automatedEntry({ owners: [legacyOwner] })], {
+        repositoryRoot: root,
+    });
+    assert.ok(errors.some(error => error.includes(`legacy compatibility script cannot own automated behavior: ${legacyOwner}`)));
+});

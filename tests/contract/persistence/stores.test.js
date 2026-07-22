@@ -160,7 +160,7 @@ test('TODO-TODO-STORE-001 preserves unversioned V1 data while dropping duplicate
     assert.throws(() => normalizeTodoData({ version: 2 }), /Unsupported TODO data version/);
 });
 
-test('PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001 accepts legacy bound records and rejects missing or oversized fields', async () => {
+test('PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001 PERSIST-AI-SESSION-TERMINAL-PERSISTENCE-001 accepts legacy bound records and rejects missing or oversized fields', async () => {
     const processId = 42001;
     const legacyProcessId = 42002;
     const missingProcessId = 42003;

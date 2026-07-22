@@ -13,7 +13,7 @@ const {
     findTmuxCollisionRuntime,
 } = require('../../../out/aiSessions/tmuxRuntimeDiscovery');
 
-test('RUNTIME-TMUX-DISCOVERY-001 caches, force-refreshes, and defensively projects managed rows', async () => {
+test('RUNTIME-TMUX-DISCOVERY-001 RUNTIME-TMUX-FOCUSED-RUNTIME-MONITOR-001 caches, force-refreshes, and defensively projects managed rows', async () => {
     let nowMs = 1000;
     let lists = 0;
     const row = makeTmuxDiscoveryRow({ sessionId: 'session-one' });

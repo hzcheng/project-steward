@@ -22,7 +22,7 @@ function createCoordinator(direct, tmux, overrides = {}) {
     });
 }
 
-test('RUNTIME-RUNTIME-COORDINATOR-001 single-flights concurrent resume and create requests', async () => {
+test('RUNTIME-RUNTIME-COORDINATOR-001 RUNTIME-AI-SESSION-RUNTIME-CONTROLLER-001 RUNTIME-RUNTIME-CONTROLLER-001 single-flights concurrent resume and create requests', async () => {
     const resumeGate = createDeferred();
     const pendingGate = createDeferred();
     const direct = createFakeRuntimeBackend('vscode');
