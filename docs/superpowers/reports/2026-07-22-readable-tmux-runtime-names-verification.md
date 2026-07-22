@@ -4,7 +4,7 @@ Date: 2026-07-22
 
 Status: **PASS**
 
-Baseline under verification: `140eeddbd147db009da638cc07c0d30e155e87c7`
+Final baseline under verification: `f34bdb62c7459e415b11b63d8df1f964fe48d9d7`
 
 The verification ran in the pinned VS Code Dev Container host. `REMOTE_CONTAINERS=true`, and the only CLI used for installation was:
 
@@ -24,6 +24,11 @@ That CLI reports VS Code `1.127.0`, commit `4fe60c8b1cdac1c4c174f2fb180d0d758272
 | `npm run test:tmux:smoke` | 0 | `AI session tmux smoke checks passed.` |
 | `npm run test:architecture-baseline` | 0 | JSON baseline emitted with `dashboardLines: 2012`, `refreshCalls: 2`, `webviewHtmlAssignments: 3`, `providerRegistryCalls: 1`, and providers `codex`, `kimi`, `claude`. |
 | `npm run test:release-packaging` | 0 | `Release packaging checks passed.` |
+
+After final cross-task review fixed exact durable-session recovery and fail-closed
+project-container ownership, all six commands above were rerun from the final baseline in
+one fresh `set -e` gate. Every command again exited 0 with the recorded pass output before
+the main VSIX was repackaged and reinstalled.
 
 The first real tmux smoke attempt exited 1 at the pending-promotion assertion (`0 !== 1`). Root-cause tracing found that the smoke harness still called the now-three-argument `TmuxRuntimeBackend.promotePending(identity, sessionId, sessionName)` contract with two arguments. Production validation therefore correctly rejected the missing display name before a rename was attempted. The validation harness was minimally updated to pass its already-declared title, then the full smoke command was rerun fresh and exited 0 with the pass message above. No production source was changed during final verification.
 
@@ -75,7 +80,7 @@ The harness stopped its provider fixtures, killed only its isolated tmux server,
 | Field | Verified value |
 | --- | --- |
 | Absolute artifact | `/home/hzcheng/projects/repos/vscode-dashboard/.worktrees/feat-workspace-support/artifacts/project-steward-2.1.3.vsix` |
-| SHA-256 | `081794f05b44781742c14369e5ee8e806b3926816496f2444fecd293e2a65114` |
+| SHA-256 | `2d03d5dfc3f6adb695a50a21add1a556e8e8bf312b2eda3f6eaaa8fbf83a9f35` |
 | Extension ID | `hzcheng.project-steward` |
 | Version | `2.1.3` |
 | VSIX manifest identity | `Id="project-steward" Version="2.1.3" Publisher="hzcheng"` |
