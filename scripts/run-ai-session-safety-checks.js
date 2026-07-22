@@ -1277,6 +1277,20 @@ async function runPendingTerminalResolverChecks() {
     );
     assert.strictEqual(fallbackPromotionCalls[0].sessionName, 'Provider generated title');
 
+    for (const invalidProviderName of ['   ', 'bad\nname', 'x'.repeat(201)]) {
+        const invalidNameCalls = [];
+        const invalidNameOptions = resolverOptions(
+            [fallbackPending], async (identity, sessionId, sessionName) => {
+                invalidNameCalls.push({ identity, sessionId, sessionName });
+                return [finalRuntime(fallbackPending, sessionId)];
+            }, [], () => undefined
+        );
+        invalidNameOptions.sessionResults.codex.sessions[0].name = invalidProviderName;
+        await aiSessionPendingTerminalResolver.resolvePendingAiSessionTerminals(invalidNameOptions);
+        assert.strictEqual(invalidNameCalls[0].sessionName, 'session-0',
+            'invalid provider display names must fall back to the provider session ID');
+    }
+
     const duplicatePending = { ...validPending, identity: { ...validPending.identity } };
     const duplicateCases = [{
         reason: null,

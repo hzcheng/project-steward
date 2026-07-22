@@ -176,7 +176,7 @@ async function runShapeLifecycle(shape, index) {
         : index % 3 === 1 ? 'Resolved session name' : 'session-final';
     if (index % 3 !== 0) {
         pending[0].title = '';
-        results.codex.sessions[0].name = index % 3 === 1 ? 'Resolved session name' : '';
+        results.codex.sessions[0].name = index % 3 === 1 ? 'Resolved session name' : 'x'.repeat(201);
     }
     let active = [];
     let execution = {};

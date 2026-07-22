@@ -14,6 +14,7 @@ import type {
 import {
     cloneAiSessionRuntimeIdentity,
     getAiSessionRuntimeRootSnapshotKey,
+    isValidAiSessionPromotionDisplayName,
     isValidAiSessionRuntimeIdentity,
 } from './runtimeTypes';
 
@@ -96,6 +97,7 @@ export interface TmuxConsumedPendingBinding {
     workspaceRootHostPaths: string[];
     cwd: string;
     finalSessionId: string;
+    finalSessionName?: string;
     layout: AiSessionTmuxLayout;
     finalLocator: AiSessionTmuxLocator;
     consumedAtMs: number;
@@ -302,7 +304,7 @@ export class TmuxRuntimeBindingStore {
     }
 
     setConsumed(record: TmuxConsumedPendingBinding): Promise<boolean> {
-        const validated = validateConsumedRecord(record);
+        const validated = validateConsumedRecord(record, true);
         if (!validated) {
             return Promise.reject(new Error('The consumed tmux binding is invalid.'));
         }
@@ -838,20 +840,28 @@ function validatePersistedPendingRecord(
         : null;
 }
 
-function validateConsumedRecord(value: unknown): TmuxConsumedPendingBinding | null {
+function validateConsumedRecord(
+    value: unknown,
+    requireFinalSessionName: boolean = false
+): TmuxConsumedPendingBinding | null {
     if (!isObject(value)) {
         return null;
     }
     const record = value as Record<string, unknown>;
     const locator = validateLocator(record.finalLocator);
     const identity = validateBindingIdentity(record, { pendingId: record.pendingId });
-    if (!hasExactKeys(record, [
+    const legacyKeys = [
         'version', 'state', 'pendingId', 'provider', 'workspaceScopeIdentity',
         'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'finalSessionId',
         'layout', 'finalLocator', 'consumedAtMs',
-    ]) || record.version !== RECORD_VERSION || record.state !== 'consumed'
+    ];
+    const hasFinalSessionName = Object.prototype.hasOwnProperty.call(record, 'finalSessionName');
+    if (!(hasExactKeys(record, [...legacyKeys, 'finalSessionName'])
+            || (!requireFinalSessionName && hasExactKeys(record, legacyKeys)))
+        || record.version !== RECORD_VERSION || record.state !== 'consumed'
         || !identity
         || !isBoundedString(record.finalSessionId, MAX_ID_LENGTH)
+        || (hasFinalSessionName && !isRequiredDisplayName(record.finalSessionName))
         || !isLayout(record.layout) || !locator || locator.layout !== record.layout
         || !isFiniteNonNegative(record.consumedAtMs)) {
         return null;
@@ -862,6 +872,7 @@ function validateConsumedRecord(value: unknown): TmuxConsumedPendingBinding | nu
         pendingId: identity.pendingId as string,
         ...bindingIdentityFields(identity),
         finalSessionId: record.finalSessionId,
+        ...(hasFinalSessionName ? { finalSessionName: record.finalSessionName as string } : {}),
         layout: record.layout,
         finalLocator: locator,
         consumedAtMs: record.consumedAtMs,
@@ -1368,8 +1379,7 @@ function isOptionalTitle(value: unknown): value is string {
 }
 
 function isRequiredDisplayName(value: unknown): value is string {
-    return typeof value === 'string' && value.trim().length > 0
-        && value.length <= MAX_TITLE_LENGTH && !CONTROL_CHARACTERS.test(value);
+    return isValidAiSessionPromotionDisplayName(value);
 }
 
 function isDateString(value: unknown): value is string {

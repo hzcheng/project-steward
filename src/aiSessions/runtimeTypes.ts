@@ -13,6 +13,7 @@ const MAX_RUNTIME_IDENTITY_ID_LENGTH = 512;
 const MAX_RUNTIME_NAVIGATION_IDENTITY_LENGTH = 4096;
 const MAX_RUNTIME_ROOTS = 1000;
 const MAX_RUNTIME_PATH_LENGTH = 4096;
+const MAX_RUNTIME_DISPLAY_NAME_LENGTH = 200;
 const SAFE_RUNTIME_IDENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
@@ -21,6 +22,11 @@ export function isValidAiSessionRuntimeIdentityId(value: unknown): value is stri
         && value.length > 0
         && value.length <= MAX_RUNTIME_IDENTITY_ID_LENGTH
         && SAFE_RUNTIME_IDENTITY_ID.test(value);
+}
+
+export function isValidAiSessionPromotionDisplayName(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0
+        && value.length <= MAX_RUNTIME_DISPLAY_NAME_LENGTH && !CONTROL_CHARACTERS.test(value);
 }
 
 export type AiSessionRuntimeBackendId = 'vscode' | 'tmux';
@@ -299,6 +305,9 @@ export interface AiSessionRuntimeActionResult<TTerminal = unknown> {
 }
 
 export interface AiSessionExecutableRuntimeBackend<TTerminal = unknown> extends AiSessionRuntimeBackend<TTerminal> {
+    getRecoverablePending?(
+        identity: AiSessionRuntimeIdentity & { pendingId: string }
+    ): Promise<AiSessionPendingRuntimeSnapshot<TTerminal> | null>;
     ensureResume(
         request: AiSessionResumeRuntimeRequest,
         layout?: AiSessionTmuxLayout

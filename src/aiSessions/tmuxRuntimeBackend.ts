@@ -20,6 +20,7 @@ import {
     AiSessionRuntimeLifecycleBlockedError,
     AiSessionRuntimeTargetChangedError,
     cloneAiSessionRuntimeIdentity,
+    isValidAiSessionPromotionDisplayName,
     isValidAiSessionRuntimeIdentity,
     TmuxRuntimeUnavailableError,
 } from './runtimeTypes';
@@ -132,6 +133,23 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
 
     find(identity: AiSessionRuntimeIdentity): AiSessionRuntimeSnapshot<TTerminal>[] {
         return this.dependencies.discovery.find(identity).map(runtime => this.withAttach(runtime));
+    }
+
+    async getRecoverablePending(
+        identity: AiSessionRuntimeIdentity & { pendingId: string }
+    ): Promise<AiSessionPendingRuntimeSnapshot<TTerminal> | null> {
+        const pendingIdentityValue = pendingIdentity(identity);
+        if (!isValidAiSessionRuntimeIdentity(pendingIdentityValue)) {
+            return null;
+        }
+        const intent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
+        const pendingBinding = await this.dependencies.runtimeStore.getPending(pendingIdentityValue);
+        const consumed = intent ? null
+            : await this.dependencies.runtimeStore.getConsumed(pendingIdentityValue);
+        const binding = intent?.pendingBinding || (consumed ? pendingBinding : null);
+        return binding && pendingLifecycleIdentityMatches(binding, pendingIdentityValue)
+            ? pendingSnapshotFromBinding(binding) as AiSessionPendingRuntimeSnapshot<TTerminal>
+            : null;
     }
 
     async ensureResume(
@@ -267,7 +285,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
         const pendingIdentityValue = pendingIdentity(identity);
         if (!isValidAiSessionRuntimeIdentity(pendingIdentityValue) || !isIdentityField(sessionId)
-            || !isPromotionDisplayName(sessionName)) {
+            || !isValidAiSessionPromotionDisplayName(sessionName)) {
             return [];
         }
         return this.dependencies.withCreationLock<AiSessionRuntimeSnapshot<TTerminal>[]>(
@@ -354,21 +372,24 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                     const consumed = await this.dependencies.runtimeStore.getConsumed(pendingIdentityValue);
                     if (consumed) {
                         if (consumed.finalSessionId !== sessionId
+                            || consumed.finalSessionName !== sessionName
                             || !locatorsEqual(consumed.finalLocator, finalLocator)) {
                             throw new Error('The pending tmux runtime was consumed by a different promotion.');
                         }
-                        await this.dependencies.runtimeStore.removePromoting(pendingIdentityValue);
-                        await this.dependencies.runtimeStore.removePending(pendingIdentityValue);
                         const completed = this.findVerified(finalIdentityValue, finalLocator);
-                        return completed ? [this.withAttach(completed)] : [];
+                        if (!completed) {
+                            return [];
+                        }
+                        await this.finishPromotionCleanup(pendingSnapshot, completed, pendingIdentityValue);
+                        return [this.withAttach(completed)];
                     }
                     const compatible = this.findVerified(finalIdentityValue, finalLocator);
                     if (compatible) {
                         if (!intent) {
                             return [this.withAttach(asConflict(compatible)), this.withAttach(asConflict(pendingSnapshot))];
                         }
-                        return this.completePromotion(pendingSnapshot, finalIdentityValue, finalLocator,
-                            compatible, pendingIdentityValue);
+                        return this.completePromotion(pendingSnapshot, finalIdentityValue, sessionName,
+                            finalLocator, compatible, pendingIdentityValue);
                     }
                     const differentlyNamedFinal = this.findVerified(finalIdentityValue);
                     if (differentlyNamedFinal) {
@@ -384,7 +405,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                         });
                         await this.dependencies.client.clearPendingMetadata(finalLocator);
                         return this.verifyAndCompletePromotion(pendingSnapshot, finalIdentityValue,
-                            finalLocator, pendingIdentityValue);
+                            sessionName, finalLocator, pendingIdentityValue);
                     }
                     if (intent && await this.sessionPromotionPartiallyRenamed(intent)) {
                         const sourceWindow = intent.sourceLocator.windowName || SESSION_WINDOW;
@@ -408,7 +429,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                             }
                         }
                         return this.verifyAndCompletePromotion(pendingSnapshot, finalIdentityValue,
-                            finalLocator, pendingIdentityValue);
+                            sessionName, finalLocator, pendingIdentityValue);
                     }
                     const sourcePendingVerified = !!currentPending || !!(intent
                         && await this.pendingMetadataMatches(pendingIdentityValue,
@@ -446,7 +467,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                         }
                     }
                     return this.verifyAndCompletePromotion(pendingSnapshot, finalIdentityValue,
-                        finalLocator, pendingIdentityValue);
+                        sessionName, finalLocator, pendingIdentityValue);
                 }
             );
         });
@@ -556,6 +577,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     private async verifyAndCompletePromotion(
         pending: AiSessionRuntimeSnapshot,
         identity: AiSessionRuntimeIdentity,
+        finalSessionName: string,
         finalLocator: AiSessionTmuxLocator,
         pendingIdentityValue: AiSessionRuntimeIdentity
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
@@ -564,23 +586,34 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!promoted) {
             throw new Error('The promoted tmux runtime could not be verified.');
         }
-        return this.completePromotion(pending, identity, finalLocator, promoted, pendingIdentityValue);
+        return this.completePromotion(
+            pending, identity, finalSessionName, finalLocator, promoted, pendingIdentityValue
+        );
     }
 
     private async completePromotion(
         pending: AiSessionRuntimeSnapshot,
         identity: AiSessionRuntimeIdentity,
+        finalSessionName: string,
         finalLocator: AiSessionTmuxLocator,
         promoted: AiSessionRuntimeSnapshot,
         pendingIdentityValue: AiSessionRuntimeIdentity
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
         await this.persistKnown(identity, finalLocator, promoted);
-        await this.persistConsumed(pending, identity, finalLocator);
-        await this.dependencies.runtimeStore.removePromoting(pendingIdentityValue);
+        await this.persistConsumed(pending, identity, finalSessionName, finalLocator);
+        await this.finishPromotionCleanup(pending, promoted, pendingIdentityValue);
+        return [this.withAttach(promoted)];
+    }
+
+    private async finishPromotionCleanup(
+        pending: AiSessionRuntimeSnapshot,
+        promoted: AiSessionRuntimeSnapshot,
+        pendingIdentityValue: AiSessionRuntimeIdentity
+    ): Promise<void> {
+        await this.migrateAttach(pending, promoted);
         await this.dependencies.runtimeStore.removePending(pendingIdentityValue);
         await this.dependencies.discovery.refresh(true);
-        await this.migrateAttach(pending, promoted);
-        return [this.withAttach(promoted)];
+        await this.dependencies.runtimeStore.removePromoting(pendingIdentityValue);
     }
 
     async focus(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void> {
@@ -692,10 +725,49 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             if (processId === null) {
                 continue;
             }
-            const binding = this.dependencies.attachStore.get(processId);
-            const runtime = binding && terminalTitleMatches(attach.name, binding)
+            let binding = this.dependencies.attachStore.get(processId);
+            let runtime = binding && terminalTitleMatches(attach.name, binding)
                 ? this.runtimeForBinding(binding)
                 : undefined;
+            if (binding?.pendingId && terminalTitleMatches(attach.name, binding) && !runtime) {
+                const pendingIdentityValue: AiSessionRuntimeIdentity = {
+                    provider: binding.provider,
+                    workspaceScopeIdentity: binding.workspaceScopeIdentity,
+                    workspaceNavigationIdentity: binding.workspaceNavigationIdentity,
+                    workspaceRootHostPaths: [...binding.workspaceRootHostPaths],
+                    cwd: binding.cwd,
+                    pendingId: binding.pendingId,
+                };
+                const consumed = await this.dependencies.runtimeStore.getConsumed(pendingIdentityValue);
+                if (consumed) {
+                    const finalIdentityValue: AiSessionRuntimeIdentity = {
+                        ...pendingIdentityValue,
+                        pendingId: undefined,
+                        sessionId: consumed.finalSessionId,
+                    };
+                    const promoted = this.findVerified(finalIdentityValue, consumed.finalLocator);
+                    if (promoted) {
+                        binding = attachBinding(promoted, binding.terminalNamePrefix);
+                        this.dependencies.attachStore.set(processId, binding);
+                        runtime = promoted;
+                    } else {
+                        continue;
+                    }
+                } else {
+                    const intent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
+                    const intentPending = intent ? pendingSnapshotFromBinding(intent.pendingBinding) : null;
+                    if (intentPending && bindingTargetsRuntime(binding, intentPending)) {
+                        const key = registryKey(intentPending);
+                        if (!this.attaches.has(key)) {
+                            this.attaches.set(key, {
+                                terminal, binding, focusedBinding: binding,
+                                focusEpoch: 0, explicitSelections: 0,
+                            });
+                        }
+                        continue;
+                    }
+                }
+            }
             if (!binding || !runtime || this.attaches.has(registryKey(runtime))) {
                 this.dependencies.attachStore.remove(processId);
                 continue;
@@ -1089,6 +1161,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     private async persistConsumed(
         pending: AiSessionRuntimeSnapshot,
         finalIdentityValue: AiSessionRuntimeIdentity,
+        finalSessionName: string,
         finalLocator: AiSessionTmuxLocator
     ): Promise<void> {
         if (!pending.identity.pendingId || !finalIdentityValue.sessionId) {
@@ -1104,6 +1177,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             workspaceRootHostPaths: [...pending.identity.workspaceRootHostPaths],
             cwd: pending.identity.cwd,
             finalSessionId: finalIdentityValue.sessionId,
+            finalSessionName,
             layout: finalLocator.layout,
             finalLocator: { ...finalLocator },
             consumedAtMs: this.dependencies.nowMs(),
@@ -1391,11 +1465,6 @@ function getRestoredAttachTerminalName(runtime: AiSessionRuntimeSnapshot): strin
 
 function isSafeAttachTerminalName(value: unknown): value is string {
     return typeof value === 'string' && value.length > 0 && value.length <= 200
-        && !LOCAL_CONTROL_CHARACTERS.test(value);
-}
-
-function isPromotionDisplayName(value: unknown): value is string {
-    return typeof value === 'string' && value.trim().length > 0 && value.length <= 200
         && !LOCAL_CONTROL_CHARACTERS.test(value);
 }
 

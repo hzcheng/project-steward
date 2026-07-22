@@ -196,24 +196,29 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
         const pendingIdentity = cloneAiSessionRuntimeIdentity(identity);
         const refresh = await this.refreshBackends(true);
         this.throwRefreshFailure(refresh);
+        const recoverableTmux = typeof this.dependencies.tmux.getRecoverablePending === 'function'
+            ? await this.dependencies.tmux.getRecoverablePending(pendingIdentity)
+            : null;
         const refreshedConflicts = this.getConflicts().filter(runtime =>
             samePendingIdentity(runtime.identity, pendingIdentity));
-        if (refreshedConflicts.length) {
+        if (refreshedConflicts.length && !recoverableTmux) {
             return refreshedConflicts.map(runtime => ({ ...cloneRuntime(runtime), state: 'conflict' }));
         }
         const directMatches = this.dependencies.direct.getPending().filter(runtime =>
             samePendingIdentity(runtime.identity, pendingIdentity));
         const tmuxMatches = this.dependencies.tmux.getPending().filter(runtime =>
             samePendingIdentity(runtime.identity, pendingIdentity));
-        if (directMatches.length + tmuxMatches.length > 1) {
-            return [...directMatches, ...tmuxMatches].map(runtime => ({
+        const routableTmuxMatches = tmuxMatches.length ? tmuxMatches
+            : recoverableTmux ? [recoverableTmux] : [];
+        if (directMatches.length + routableTmuxMatches.length > 1) {
+            return [...directMatches, ...routableTmuxMatches].map(runtime => ({
                 ...cloneRuntime(runtime),
                 state: 'conflict',
             }));
         }
         const backend = directMatches.length === 1
             ? this.dependencies.direct
-            : tmuxMatches.length === 1
+            : routableTmuxMatches.length === 1
                 ? this.dependencies.tmux
                 : null;
         return backend

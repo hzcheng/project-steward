@@ -9,6 +9,7 @@ import type {
 import {
     aiSessionRuntimeIdentitiesEqual,
     cloneAiSessionRuntimeIdentity,
+    isValidAiSessionPromotionDisplayName,
     isValidAiSessionRuntimeIdentity,
 } from './runtimeTypes';
 import type { AiSessionProviderDefinition, AiSessionReadResult } from './types';
@@ -134,7 +135,7 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
                     options,
                     pendingRuntime,
                     session.id,
-                    pendingRuntime.title?.trim() || session.name || session.id
+                    getPromotionDisplayName(pendingRuntime.title, session.name, session.id)
                 );
             settlement = isPromiseLike(pendingSettlement) ? await pendingSettlement : pendingSettlement;
         } catch (_error) {
@@ -154,6 +155,20 @@ export async function resolvePendingAiSessionTerminals<TTerminal = unknown>(
         options.syncActiveRuntime();
     }
     return result;
+}
+
+function getPromotionDisplayName(
+    pendingTitle: unknown,
+    resolvedSessionName: unknown,
+    sessionId: string
+): string {
+    const normalizedTitle = typeof pendingTitle === 'string' ? pendingTitle.trim() : '';
+    if (isValidAiSessionPromotionDisplayName(normalizedTitle)) {
+        return normalizedTitle;
+    }
+    return isValidAiSessionPromotionDisplayName(resolvedSessionName)
+        ? resolvedSessionName
+        : sessionId;
 }
 
 function getPendingIdentityKey<TTerminal>(runtime: AiSessionPendingRuntimeSnapshot<TTerminal>): string {
