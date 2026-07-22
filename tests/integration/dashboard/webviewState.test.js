@@ -390,7 +390,7 @@ test('TODO-TODO-SEARCH-RESULT-RENDERING-001 search reveal requests host data the
     assert.equal(harness.context.document.activeElement, todoItem);
 });
 
-function createProjectVm({ querySelector, querySelectorAll, activeElement } = {}) {
+function createProjectVm({ querySelector, querySelectorAll, activeElement, source = projectSource } = {}) {
     const documentListeners = {};
     const windowListeners = {};
     const messages = [];
@@ -437,11 +437,27 @@ function createProjectVm({ querySelector, querySelectorAll, activeElement } = {}
             },
         },
     };
-    vm.runInNewContext(projectSource, context);
+    vm.runInNewContext(source, context);
     context.initProjects();
     messages.length = 0;
     return { context, documentListeners, windowListeners, messages, replacedCatalogs, getWebviewState: () => webviewState };
 }
+
+function assertCollapseButtonBehavior(context) {
+    assert.deepEqual(toPlain(context.getCollapseButtonState('open', [])), {
+        disabled: true, collapsed: false, title: 'No other windows to collapse',
+    });
+    assert.equal(context.getCollapseButtonState('open', [false]).title, 'Collapse Other Windows');
+    assert.equal(context.getCollapseButtonState('open', [true]).title, 'Expand Other Windows');
+    assert.equal(context.getCollapseButtonState('projects', [false, true]).title, 'Collapse All Groups');
+    assert.equal(context.getCollapseButtonState('todo', [true, true]).title, 'Expand TODO Groups');
+}
+
+test('WEBVIEW-COLLAPSE-BUTTON-STATE-001 exposes disabled and exact action labels for each dashboard tab', () => {
+    assertCollapseButtonBehavior(createProjectVm().context);
+    const mutated = projectSource.replace('No other windows to collapse', 'Nothing to collapse');
+    assert.throws(() => assertCollapseButtonBehavior(createProjectVm({ source: mutated }).context));
+});
 
 test('WEBVIEW-BATCH-AI-SESSION-WEBVIEW-001 rejects stale AI session update sequences', () => {
     const harness = createProjectVm();

@@ -76,32 +76,44 @@ test('ARCH-RELEASE-IDENTITY-001 reports the ID and release risk for malformed me
     );
 });
 
+test('architecture guard runner rejects unknown guard IDs', () => {
+    assert.throws(
+        () => validateArchitectureGuards(repositoryRoot, { ids: ['ARCH-UNKNOWN-001'] }),
+        /unknown architecture guard ARCH-UNKNOWN-001/
+    );
+});
+
 for (const mutation of [
     {
         id: 'ARCH-AI-SESSION-SCAN-BOUNDARY-001',
         file: 'src/dashboard.ts',
         mutate: source => source.replace('AI_SESSION_INCREMENTAL_SCAN_MAX_FILES = 2000',
-            'AI_SESSION_INCREMENTAL_SCAN_MAX_FILES = 0'),
+            'AI_SESSION_INCREMENTAL_SCAN_MAX_FILES = 0')
+            + '\nconst OLD_AI_SESSION_INCREMENTAL_SCAN_MAX_FILES = 2000;\n',
     },
     {
         id: 'ARCH-AI-SESSION-INCREMENTAL-REFRESH-SOURCE-001',
         file: 'src/aiSessions/dashboardController.ts',
-        mutate: source => source.replace("scheduleRefresh('watcher')", "options.refresh('watcher')"),
+        mutate: source => source.replace("this.scheduleRefresh('watcher')", "this.options.refresh('watcher')")
+            + "\n// this.scheduleRefresh('watcher')\n",
     },
     {
         id: 'ARCH-AI-SESSION-FALLBACK-REASON-001',
         file: 'src/dashboard.ts',
-        mutate: source => source.replace("'sync-focused-runtime'", "'sync-runtime'"),
+        mutate: source => source.replace("'sync-focused-runtime'", "'sync-runtime'")
+            + "\n// 'sync-focused-runtime'\n",
     },
     {
         id: 'ARCH-PROVIDER-REGISTRY-COMPLETENESS-001',
         file: 'src/aiSessions/providers.ts',
-        mutate: source => source.replace("['codex', 'kimi', 'claude']", "['codex', 'kimi']"),
+        mutate: source => source.replace("['codex', 'kimi', 'claude']", "['codex', 'kimi']")
+            + "\nconst OLD_AI_SESSION_PROVIDER_IDS = ['codex', 'kimi', 'claude'];\n",
     },
     {
         id: 'ARCH-PROTOCOL-001',
         file: 'src/openProjects/protocol.ts',
-        mutate: source => source.replace('OPEN_PROJECT_PROTOCOL_VERSION = 1', 'OPEN_PROJECT_PROTOCOL_VERSION = 2'),
+        mutate: source => source.replace('OPEN_PROJECT_PROTOCOL_VERSION = 1', 'OPEN_PROJECT_PROTOCOL_VERSION = 2')
+            + '\nconst OLD_OPEN_PROJECT_PROTOCOL_VERSION = 1;\n',
     },
     {
         id: 'ARCH-RELEASE-IDENTITY-001',

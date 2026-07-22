@@ -5,8 +5,6 @@ const fs = require('fs');
 const Module = require('module');
 const path = require('path');
 const vm = require('vm');
-const CleanCSS = require('clean-css');
-const sass = require('sass');
 const dashboardErrorContent = require('../out/dashboard/errorContent');
 const dashboardConfiguration = require('../out/dashboard/configuration');
 const dashboardStartup = require('../out/dashboard/startup');
@@ -35,13 +33,6 @@ const root = path.join(__dirname, '..');
 const dashboardScriptPath = path.join(root, 'src', 'webview', 'webviewDashboardScripts.js');
 const projectScriptPath = path.join(root, 'src', 'webview', 'webviewProjectScripts.js');
 const extensionHostPath = path.join(root, 'src', 'dashboard.ts');
-
-function compileDashboardStyles(source) {
-    return sass.compileString(source, {
-        loadPaths: [path.join(root, 'media'), path.join(root, 'node_modules')],
-        style: 'expanded',
-    }).css;
-}
 
 function extractFunctionBody(source, functionName) {
     const start = source.indexOf(`function ${functionName}(`);
@@ -91,101 +82,6 @@ function extractHtmlElementBody(source, openingTag) {
         }
     }
     throw new Error(`Unterminated HTML element ${openingTag}`);
-}
-
-function extractCssRule(source, selector) {
-    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const match = source.match(new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{`, 'm'));
-    assert.ok(match, `Missing CSS rule ${selector}`);
-    const start = match.index + match[0].lastIndexOf(selector);
-    const braceStart = source.indexOf('{', start);
-    let depth = 0;
-    for (let index = braceStart; index < source.length; index += 1) {
-        if (source[index] === '{') depth += 1;
-        if (source[index] === '}') depth -= 1;
-        if (depth === 0) return source.slice(braceStart + 1, index);
-    }
-    throw new Error(`Unterminated CSS rule ${selector}`);
-}
-
-function extractCssRules(source, selector) {
-    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const selectorPattern = new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{`, 'gm');
-    const rules = [];
-    let match;
-    while ((match = selectorPattern.exec(source))) {
-        const braceStart = source.indexOf('{', match.index);
-        let depth = 0;
-        for (let index = braceStart; index < source.length; index += 1) {
-            if (source[index] === '{') depth += 1;
-            if (source[index] === '}') depth -= 1;
-            if (depth === 0) {
-                rules.push(source.slice(braceStart + 1, index));
-                selectorPattern.lastIndex = index + 1;
-                break;
-            }
-        }
-    }
-    assert.ok(rules.length > 0, `Missing CSS rules ${selector}`);
-    return rules;
-}
-
-function extractCssRulesContainingSelector(source, selector) {
-    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const selectorPattern = new RegExp(`(^|\\n)[^{}]*${escapedSelector}(?![\\w-])[^{}]*\\{`, 'gm');
-    const rules = [];
-    let match;
-    while ((match = selectorPattern.exec(source))) {
-        const braceStart = source.indexOf('{', match.index);
-        let depth = 0;
-        for (let index = braceStart; index < source.length; index += 1) {
-            if (source[index] === '{') depth += 1;
-            if (source[index] === '}') depth -= 1;
-            if (depth === 0) {
-                rules.push(source.slice(braceStart + 1, index));
-                selectorPattern.lastIndex = index + 1;
-                break;
-            }
-        }
-    }
-    assert.ok(rules.length > 0, `Missing CSS rules containing ${selector}`);
-    return rules;
-}
-
-function extractCompiledCssRulesContainingSelector(source, selector) {
-    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const selectorPattern = new RegExp(`${escapedSelector}(?![\\w-])`);
-    const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
-    const rules = [];
-    let match;
-    while ((match = rulePattern.exec(source))) {
-        const selectors = match[1].split(',').map(value => value.trim()).filter(Boolean);
-        if (selectors.some(value => selectorPattern.test(value))) {
-            rules.push({ selectors, body: match[2] });
-        }
-    }
-    assert.ok(rules.length > 0, `Missing compiled CSS rules containing ${selector}`);
-    return rules;
-}
-
-function cssRuleIncludesDeclaration(rule, declaration) {
-    const escapedDeclaration = declaration.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(^|[;{}\\n])\\s*${escapedDeclaration}`).test(rule);
-}
-
-function cssRuleIncludesTopLevelDeclaration(rule, declaration) {
-    let depth = 0;
-    let topLevelRule = '';
-    for (const character of rule) {
-        if (character === '{') {
-            depth += 1;
-        } else if (character === '}') {
-            depth -= 1;
-        } else if (depth === 0) {
-            topLevelRule += character;
-        }
-    }
-    return cssRuleIncludesDeclaration(topLevelRule, declaration);
 }
 
 function makeDashboardCatalog() {

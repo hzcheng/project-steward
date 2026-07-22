@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const ts = require('typescript');
 
 function fail(id, risk, detail) {
     throw new assert.AssertionError({ message: `${id} risk: ${risk}; ${detail}` });
@@ -13,12 +14,6 @@ function read(root, relativePath, id, risk) {
         return fs.readFileSync(path.join(root, relativePath), 'utf8');
     } catch (error) {
         fail(id, risk, `cannot inspect ${relativePath}: ${error.message}`);
-    }
-}
-
-function requirePattern(source, pattern, id, risk, detail) {
-    if (!pattern.test(source)) {
-        fail(id, risk, detail);
     }
 }
 
@@ -33,27 +28,100 @@ function readJson(root, relativePath, id, risk) {
     }
 }
 
+function parseTypescript(root, relativePath, id, risk) {
+    const source = read(root, relativePath, id, risk);
+    const sourceFile = ts.createSourceFile(relativePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    if (sourceFile.parseDiagnostics.length) {
+        fail(id, risk, `${relativePath} must parse as TypeScript`);
+    }
+    return sourceFile;
+}
+
+function walk(node, visit) {
+    visit(node);
+    ts.forEachChild(node, child => walk(child, visit));
+}
+
+function findVariable(sourceFile, name, id, risk) {
+    const matches = [];
+    walk(sourceFile, node => {
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) {
+            matches.push(node);
+        }
+    });
+    if (matches.length !== 1) {
+        fail(id, risk, `${name} must have exactly one real declaration`);
+    }
+    return matches[0];
+}
+
+function numericInitializer(sourceFile, name, id, risk) {
+    const declaration = findVariable(sourceFile, name, id, risk);
+    if (!declaration.initializer || !ts.isNumericLiteral(declaration.initializer)) {
+        fail(id, risk, `${name} must use a numeric literal initializer`);
+    }
+    return Number(declaration.initializer.text);
+}
+
+function stringArrayInitializer(sourceFile, name, id, risk) {
+    const declaration = findVariable(sourceFile, name, id, risk);
+    if (!declaration.initializer || !ts.isArrayLiteralExpression(declaration.initializer)
+        || declaration.initializer.elements.some(element => !ts.isStringLiteral(element))) {
+        fail(id, risk, `${name} must use a string-literal array initializer`);
+    }
+    return declaration.initializer.elements.map(element => element.text);
+}
+
+function callArguments(sourceFile, calleeText) {
+    const calls = [];
+    walk(sourceFile, node => {
+        if (ts.isCallExpression(node) && node.expression.getText(sourceFile) === calleeText) {
+            calls.push(node.arguments);
+        }
+    });
+    return calls;
+}
+
+function stringArgument(argument) {
+    return argument && (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument))
+        ? argument.text
+        : undefined;
+}
+
 const guards = {
     // ARCH-AI-SESSION-SCAN-BOUNDARY-001
     'ARCH-AI-SESSION-SCAN-BOUNDARY-001'(root) {
         const risk = 'unbounded provider scans can block the extension host';
-        const dashboard = read(root, 'src/dashboard.ts', this.id, risk);
-        const hydration = read(root, 'src/aiSessions/projectHydrationController.ts', this.id, risk);
-        requirePattern(dashboard, /AI_SESSION_INCREMENTAL_SCAN_MAX_FILES\s*=\s*[1-9][0-9]*/, this.id, risk,
-            'incremental scans must keep a positive finite file budget');
-        requirePattern(hydration, /getAiSessionScanMaxFiles\(reason, this\.options\.incrementalScanMaxFiles\)/,
-            this.id, risk, 'project hydration must apply the bounded scan policy');
-        requirePattern(hydration, /readCoordinator\.getResults\(\{ candidatePaths, reason, maxFiles \}\)/,
-            this.id, risk, 'the scan budget must reach every provider through the read coordinator');
+        const dashboard = parseTypescript(root, 'src/dashboard.ts', this.id, risk);
+        const hydration = parseTypescript(root, 'src/aiSessions/projectHydrationController.ts', this.id, risk);
+        if (numericInitializer(dashboard, 'AI_SESSION_INCREMENTAL_SCAN_MAX_FILES', this.id, risk) <= 0) {
+            fail(this.id, risk, 'incremental scans must keep a positive finite file budget');
+        }
+        const policyCalls = callArguments(hydration, 'getAiSessionScanMaxFiles');
+        if (policyCalls.length !== 1 || policyCalls[0].map(argument => argument.getText(hydration)).join(',')
+            !== 'reason,this.options.incrementalScanMaxFiles') {
+            fail(this.id, risk, 'project hydration must apply the bounded scan policy exactly once');
+        }
+        const readCalls = callArguments(hydration, 'this.options.readCoordinator.getResults');
+        if (readCalls.length !== 1 || readCalls[0].length !== 1
+            || !ts.isObjectLiteralExpression(readCalls[0][0])
+            || readCalls[0][0].properties.map(property => property.getText(hydration)).join(',')
+                !== 'candidatePaths,reason,maxFiles') {
+            fail(this.id, risk, 'the scan budget must reach every provider through the read coordinator');
+        }
     },
 
     // ARCH-AI-SESSION-INCREMENTAL-REFRESH-SOURCE-001
     'ARCH-AI-SESSION-INCREMENTAL-REFRESH-SOURCE-001'(root) {
         const risk = 'high-frequency watcher updates can trigger expensive full dashboard refreshes';
-        const controller = read(root, 'src/aiSessions/dashboardController.ts', this.id, risk);
-        requirePattern(controller, /scheduleRefresh\('watcher'\)/, this.id, risk,
-            'provider watchers must use the coalesced incremental refresh path');
-        const fallbackReasons = [...controller.matchAll(/this\.options\.refresh\('([^']+)'\)/g)].map(match => match[1]);
+        const controller = parseTypescript(root, 'src/aiSessions/dashboardController.ts', this.id, risk);
+        const watcherCalls = callArguments(controller, 'this.scheduleRefresh')
+            .filter(args => stringArgument(args[0]) === 'watcher');
+        if (watcherCalls.length !== 1) {
+            fail(this.id, risk, 'provider watchers must use the coalesced incremental refresh path exactly once');
+        }
+        const fallbackReasons = callArguments(controller, 'this.options.refresh')
+            .map(args => stringArgument(args[0]));
         const expected = [
             'ai-session-update-not-delivered',
             'ai-session-update-post-error',
@@ -67,52 +135,84 @@ const guards = {
     // ARCH-AI-SESSION-FALLBACK-REASON-001
     'ARCH-AI-SESSION-FALLBACK-REASON-001'(root) {
         const risk = 'anonymous fallbacks hide the regression path and defeat diagnostics';
-        const dashboard = read(root, 'src/dashboard.ts', this.id, risk);
-        for (const reason of [
-            'evaluate-attention-closed-terminal',
-            'sync-focused-runtime',
-            "`${fallback.operation}-fallback`",
-        ]) {
-            if (!dashboard.includes(reason)) {
-                fail(this.id, risk, `missing explicit fallback reason ${reason}`);
-            }
+        const dashboard = parseTypescript(root, 'src/dashboard.ts', this.id, risk);
+        const lifecycleReasons = callArguments(dashboard, 'runSafeAiSessionRuntimeLifecycleTask')
+            .map(args => stringArgument(args[0]));
+        if (!lifecycleReasons.includes('evaluate-attention-closed-terminal')) {
+            fail(this.id, risk, 'terminal-close attention fallback must have an explicit diagnostic reason');
+        }
+        const runtimeFailureArguments = callArguments(dashboard, 'logAiSessionRuntimeFailure');
+        if (!runtimeFailureArguments.some(args => stringArgument(args[0]) === 'sync-focused-runtime')) {
+            fail(this.id, risk, 'focused-runtime fallback must have an explicit diagnostic reason');
+        }
+        if (!runtimeFailureArguments.some(args => ts.isTemplateExpression(args[0])
+            && args[0].getText(dashboard) === '`${fallback.operation}-fallback`')) {
+            fail(this.id, risk, 'tmux choice fallback must derive its reason from the failing operation');
         }
     },
 
     // ARCH-PROVIDER-REGISTRY-COMPLETENESS-001
     'ARCH-PROVIDER-REGISTRY-COMPLETENESS-001'(root) {
         const risk = 'an incomplete provider registry silently drops a supported provider';
-        const providers = read(root, 'src/aiSessions/providers.ts', this.id, risk);
-        requirePattern(providers, /AI_SESSION_PROVIDER_IDS[^=]*=\s*\['codex', 'kimi', 'claude'\]/,
-            this.id, risk, 'the supported provider ID list must remain complete and ordered');
-        for (const provider of ['codex', 'kimi', 'claude']) {
-            requirePattern(providers, new RegExp(`\\n\\s*${provider}:\\s*\\{[\\s\\S]*?id:\\s*'${provider}'`),
-                this.id, risk, `provider definition ${provider} is missing or mismatched`);
+        const providers = parseTypescript(root, 'src/aiSessions/providers.ts', this.id, risk);
+        const expected = ['codex', 'kimi', 'claude'];
+        if (stringArrayInitializer(providers, 'AI_SESSION_PROVIDER_IDS', this.id, risk).join(',') !== expected.join(',')) {
+            fail(this.id, risk, 'the supported provider ID list must remain complete and ordered');
         }
-        requirePattern(providers, /AI_SESSION_PROVIDER_IDS\.map\(id => \(\{[\s\S]*?service: services\[id\]/,
-            this.id, risk, 'registry construction must cover every declared provider and service');
+        const definitions = findVariable(providers, 'AI_SESSION_PROVIDER_DEFINITIONS', this.id, risk).initializer;
+        if (!definitions || !ts.isObjectLiteralExpression(definitions)) {
+            fail(this.id, risk, 'provider definitions must be an object literal');
+        }
+        const actualDefinitions = definitions.properties.map(property => {
+            if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)
+                || !ts.isObjectLiteralExpression(property.initializer)) return null;
+            const idProperty = property.initializer.properties.find(candidate =>
+                ts.isPropertyAssignment(candidate) && candidate.name.getText(providers) === 'id');
+            return idProperty && ts.isPropertyAssignment(idProperty) && ts.isStringLiteral(idProperty.initializer)
+                ? `${property.name.text}:${idProperty.initializer.text}` : null;
+        });
+        if (actualDefinitions.join(',') !== expected.map(id => `${id}:${id}`).join(',')) {
+            fail(this.id, risk, 'provider definitions must match every supported provider exactly');
+        }
+        const registryMaps = callArguments(providers, 'AI_SESSION_PROVIDER_IDS.map');
+        if (registryMaps.length !== 1 || !registryMaps[0][0]
+            || !registryMaps[0][0].getText(providers).includes('service: services[id]')) {
+            fail(this.id, risk, 'registry construction must cover every declared provider and service');
+        }
     },
 
     // ARCH-PROTOCOL-001
     'ARCH-PROTOCOL-001'(root) {
         const risk = 'protocol drift breaks compatibility between workspace and UI extension hosts';
-        const openProtocol = read(root, 'src/openProjects/protocol.ts', this.id, risk);
-        const attentionProtocol = read(root, 'src/aiSessions/attentionPayload.ts', this.id, risk);
-        const attentionClient = read(root, 'src/aiSessions/attentionBridgeClient.ts', this.id, risk);
-        const bridgeCoordinator = read(root, 'extensions/attention-ui-bridge/src/openProjectCoordinator.ts', this.id, risk);
-        const bridgeExtension = read(root, 'extensions/attention-ui-bridge/src/extension.ts', this.id, risk);
-        requirePattern(openProtocol, /OPEN_PROJECT_PROTOCOL_VERSION\s*=\s*1\s*;/, this.id, risk,
-            'open-project protocol version must remain 1 until an explicit migration exists');
-        requirePattern(attentionProtocol, /ATTENTION_PAYLOAD_VERSION\s*=\s*1\s*;/, this.id, risk,
-            'attention payload version must remain 1 until an explicit migration exists');
-        requirePattern(attentionProtocol, /record\.protocolVersion !== 1/, this.id, risk,
-            'attention handshake validation must remain on protocol version 1');
-        requirePattern(attentionClient, /protocolVersion:\s*1/, this.id, risk,
-            'the workspace attention client must emit protocol version 1');
-        requirePattern(bridgeCoordinator, /OPEN_PROJECT_PROTOCOL_VERSION/, this.id, risk,
-            'the UI Bridge must consume the shared open-project protocol version');
-        requirePattern(bridgeExtension, /protocolVersion:\s*1/, this.id, risk,
-            'the UI Bridge attention endpoint must emit protocol version 1');
+        const openProtocol = parseTypescript(root, 'src/openProjects/protocol.ts', this.id, risk);
+        const attentionProtocol = parseTypescript(root, 'src/aiSessions/attentionPayload.ts', this.id, risk);
+        if (numericInitializer(openProtocol, 'OPEN_PROJECT_PROTOCOL_VERSION', this.id, risk) !== 1) {
+            fail(this.id, risk, 'open-project protocol version must remain 1 until an explicit migration exists');
+        }
+        if (numericInitializer(attentionProtocol, 'ATTENTION_PAYLOAD_VERSION', this.id, risk) !== 1) {
+            fail(this.id, risk, 'attention payload version must remain 1 until an explicit migration exists');
+        }
+        for (const relativePath of [
+            'src/aiSessions/attentionBridgeClient.ts',
+            'extensions/attention-ui-bridge/src/extension.ts',
+        ]) {
+            const sourceFile = parseTypescript(root, relativePath, this.id, risk);
+            let protocolOne = false;
+            walk(sourceFile, node => {
+                if (ts.isPropertyAssignment(node) && node.name.getText(sourceFile) === 'protocolVersion'
+                    && ts.isNumericLiteral(node.initializer) && node.initializer.text === '1') protocolOne = true;
+            });
+            if (!protocolOne) fail(this.id, risk, `${relativePath} must emit protocol version 1`);
+        }
+        const bridgeCoordinator = parseTypescript(root,
+            'extensions/attention-ui-bridge/src/openProjectCoordinator.ts', this.id, risk);
+        let sharedVersionReferences = 0;
+        walk(bridgeCoordinator, node => {
+            if (ts.isIdentifier(node) && node.text === 'OPEN_PROJECT_PROTOCOL_VERSION') sharedVersionReferences += 1;
+        });
+        if (sharedVersionReferences < 2) {
+            fail(this.id, risk, 'the UI Bridge must import and consume the shared open-project protocol version');
+        }
     },
 
     // ARCH-RELEASE-IDENTITY-001

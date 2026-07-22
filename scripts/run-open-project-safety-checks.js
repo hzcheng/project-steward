@@ -13,7 +13,6 @@ Module._load = function (request, parent, isMain) {
     }
     return originalModuleLoad.call(this, request, parent, isMain);
 };
-const protocol = require('../out/openProjects/protocol');
 const projection = require('../out/openProjects/projection');
 const attentionProject = require('../out/aiSessions/attentionProject');
 const { default: OpenProjectBridgeClient } = require('../out/openProjects/bridgeClient');
@@ -27,7 +26,6 @@ const { ProjectPromptController } = require('../out/projects/projectPromptContro
 const { DashboardStartupController } = require('../out/dashboard/startupController');
 const models = require('../out/models');
 const { OpenProjectStore } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectStore');
-const { OpenProjectCoordinator } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectCoordinator');
 const { replaceOpenProjectPublicationUris } = require('../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectPublication');
 Module._load = originalModuleLoad;
 

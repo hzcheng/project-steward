@@ -2163,6 +2163,85 @@
     ]
   },
   {
+    "id": "WEBVIEW-STYLES-ARTIFACT-001",
+    "domain": "webview",
+    "title": "Committed dashboard CSS matches its SCSS source",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss",
+      "media/styles.css"
+    ]
+  },
+  {
+    "id": "WEBVIEW-REDUCED-MOTION-001",
+    "domain": "webview",
+    "title": "Reduced-motion mode disables dashboard and session motion",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "TODO-KEYBOARD-FOCUS-001",
+    "domain": "todo",
+    "title": "TODO hidden controls retain a visible keyboard focus ring",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "TODO-RESPONSIVE-LAYOUT-001",
+    "domain": "todo",
+    "title": "TODO cards ellipsize, scroll, and reveal editing content",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "WEBVIEW-COLLAPSE-BUTTON-STATE-001",
+    "domain": "webview",
+    "title": "Dashboard collapse controls expose exact disabled and action states",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewProjectScripts.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-TERMINAL-CLOSE-WIRING-001",
+    "domain": "attention",
+    "title": "Production terminal close wiring preserves unread attention",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/terminalCloseWiring.test.js"
+    ],
+    "evidence": [
+      "src/dashboard.ts"
+    ]
+  },
+  {
     "id": "WEBVIEW-DASHBOARD-MESSAGE-ROUTER-001",
     "domain": "webview",
     "title": "Dashboard Message Router behavior",
