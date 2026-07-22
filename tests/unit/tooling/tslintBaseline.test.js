@@ -99,7 +99,10 @@ test('TSLINT-BASELINE-008 removes the temporary baseline when replacement fails'
     fs.mkdirSync(ciDirectory);
 
     assert.throws(() => writeBaselineAtomically(baselinePath, {}, {
+        closeSync: fs.closeSync,
+        fsyncSync: fs.fsyncSync,
         mkdirSync: fs.mkdirSync,
+        openSync: fs.openSync,
         renameSync: () => { throw new Error('replace failed'); },
         unlinkSync: fs.unlinkSync,
         writeFileSync: fs.writeFileSync,

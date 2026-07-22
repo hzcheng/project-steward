@@ -9,6 +9,8 @@ const checkerPath = path.resolve(__dirname, '../../../scripts/check-coverage-bas
 const {
     compareCoverageBaseline,
     readCoverageTotals,
+    validateCoverageBaseline,
+    writeCoverageBaseline,
 } = require(checkerPath);
 
 function coverageSummary(metrics) {
@@ -75,7 +77,44 @@ test('COVERAGE-BASELINE-006 rejects coverage summaries without total', () => {
     assert.throws(() => readCoverageTotals({}), /coverage summary must include a total entry/);
 });
 
-test('COVERAGE-BASELINE-007 prevents CI from writing a coverage baseline', () => {
+for (const metric of Object.keys(baseline)) {
+    test(`COVERAGE-BASELINE-007 rejects a stored baseline without a numeric ${metric} metric`, () => {
+        const missing = { ...baseline };
+        delete missing[metric];
+
+        for (const invalidBaseline of [
+            missing,
+            { ...baseline, [metric]: null },
+            { ...baseline, [metric]: '80' },
+            { ...baseline, [metric]: Infinity },
+            { ...baseline, [metric]: NaN },
+        ]) {
+            assert.throws(
+                () => validateCoverageBaseline(invalidBaseline),
+                new RegExp(`${metric} baseline coverage percentage must be a finite number`)
+            );
+        }
+    });
+}
+
+test('COVERAGE-BASELINE-008 writes baselines atomically through the shared JSON helper', () => {
+    const operations = [];
+    const fileSystem = {
+        closeSync: () => operations.push('close'),
+        fsyncSync: () => operations.push('fsync'),
+        mkdirSync: () => operations.push('mkdir'),
+        openSync: () => 7,
+        renameSync: () => operations.push('rename'),
+        unlinkSync: () => operations.push('unlink'),
+        writeFileSync: () => operations.push('write'),
+    };
+
+    writeCoverageBaseline('/repository/.ci/coverage-baseline.json', baseline, fileSystem);
+
+    assert.deepEqual(operations, ['mkdir', 'write', 'fsync', 'close', 'rename']);
+});
+
+test('COVERAGE-BASELINE-009 prevents CI from writing a coverage baseline', () => {
     const result = childProcess.spawnSync(process.execPath, [checkerPath, '--write-baseline'], {
         cwd: path.resolve(__dirname, '../../..'),
         encoding: 'utf8',

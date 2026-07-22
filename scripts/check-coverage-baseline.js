@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { writeJsonFileAtomically } = require('./lib/jsonFile');
 
 const COVERAGE_METRICS = ['lines', 'branches', 'functions', 'statements'];
 
@@ -28,6 +29,18 @@ function readCoverageTotals(summary) {
     return totals;
 }
 
+function validateCoverageBaseline(baseline) {
+    if (!baseline || typeof baseline !== 'object' || Array.isArray(baseline)) {
+        throw new Error('coverage baseline must be an object');
+    }
+    for (const metric of COVERAGE_METRICS) {
+        if (typeof baseline[metric] !== 'number' || !Number.isFinite(baseline[metric])) {
+            throw new Error(`${metric} baseline coverage percentage must be a finite number`);
+        }
+    }
+    return baseline;
+}
+
 function compareCoverageBaseline(baseline, current) {
     const decreases = [];
     for (const metric of COVERAGE_METRICS) {
@@ -40,8 +53,8 @@ function compareCoverageBaseline(baseline, current) {
     return decreases;
 }
 
-function writeCoverageBaseline(baselinePath, current) {
-    fs.writeFileSync(baselinePath, `${JSON.stringify(current, null, 2)}\n`, 'utf8');
+function writeCoverageBaseline(baselinePath, current, fileSystem = fs) {
+    writeJsonFileAtomically(baselinePath, current, fileSystem);
 }
 
 function main() {
@@ -61,7 +74,7 @@ function main() {
         return;
     }
 
-    const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
+    const baseline = validateCoverageBaseline(JSON.parse(fs.readFileSync(baselinePath, 'utf8')));
     const decreases = compareCoverageBaseline(baseline, current);
     if (decreases.length > 0) {
         for (const decrease of decreases) {
@@ -85,4 +98,6 @@ if (require.main === module) {
 module.exports = {
     compareCoverageBaseline,
     readCoverageTotals,
+    validateCoverageBaseline,
+    writeCoverageBaseline,
 };

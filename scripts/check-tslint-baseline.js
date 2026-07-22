@@ -3,6 +3,7 @@
 const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { writeJsonFileAtomically } = require('./lib/jsonFile');
 
 function toRepositoryPath(fileName, root) {
     return path.relative(root, fileName).split(path.sep).join('/');
@@ -72,24 +73,7 @@ function runTslint(root) {
 }
 
 function writeBaselineAtomically(baselinePath, baseline, fileSystem = fs) {
-    const contents = `${JSON.stringify(baseline, null, 2)}\n`;
-    const directory = path.dirname(baselinePath);
-    const temporaryPath = path.join(
-        directory,
-        `.${path.basename(baselinePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
-    );
-    fileSystem.mkdirSync(directory, { recursive: true });
-    try {
-        fileSystem.writeFileSync(temporaryPath, contents);
-        fileSystem.renameSync(temporaryPath, baselinePath);
-    } catch (error) {
-        try {
-            fileSystem.unlinkSync(temporaryPath);
-        } catch (cleanupError) {
-            // The temporary file may not have been created.
-        }
-        throw error;
-    }
+    writeJsonFileAtomically(baselinePath, baseline, fileSystem);
 }
 
 function main() {
