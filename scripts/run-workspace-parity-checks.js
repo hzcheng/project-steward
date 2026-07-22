@@ -191,6 +191,7 @@ async function runShapeLifecycle(shape, index) {
 
     const runtimeCoordinator = {
         getPending: () => pending,
+        getPendingForPromotion: async () => pending,
         getActive: () => active,
         promotePending: async (_identity, sessionId, sessionName) => {
             promotionCount++;

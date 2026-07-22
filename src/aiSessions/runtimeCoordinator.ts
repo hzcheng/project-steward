@@ -18,6 +18,7 @@ import {
     AiSessionRuntimeLifecycleBlockedError,
     AiSessionRuntimeTargetChangedError,
     cloneAiSessionRuntimeIdentity,
+    isValidAiSessionRuntimeIdentity,
     TmuxRuntimeUnavailableError,
 } from './runtimeTypes';
 
@@ -127,6 +128,19 @@ export class AiSessionRuntimeCoordinator<TTerminal = vscode.Terminal> {
             ...this.dependencies.direct.getPending(),
             ...this.dependencies.tmux.getPending(),
         ].map(clonePendingRuntime);
+    }
+
+    async getPendingForPromotion(): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>[]> {
+        const refresh = await this.refreshBackends(true);
+        this.throwRefreshFailure(refresh);
+        const durableTmux = typeof this.dependencies.tmux.listRecoverablePending === 'function'
+            ? await this.dependencies.tmux.listRecoverablePending()
+            : [];
+        return mergePromotionPendingCandidates([
+            ...this.dependencies.direct.getPending(),
+            ...this.dependencies.tmux.getPending(),
+            ...durableTmux,
+        ]);
     }
 
     getById(
@@ -607,6 +621,56 @@ function clonePendingRuntime<TTerminal>(
         excludedSessionIds: [...runtime.excludedSessionIds],
         ...(runtime.title === undefined ? {} : { title: runtime.title }),
     };
+}
+
+function mergePromotionPendingCandidates<TTerminal>(
+    candidates: readonly AiSessionPendingRuntimeSnapshot<TTerminal>[]
+): AiSessionPendingRuntimeSnapshot<TTerminal>[] {
+    const merged = new Map<string, AiSessionPendingRuntimeSnapshot<TTerminal>>();
+    for (const candidate of candidates) {
+        if (!candidate || candidate.state !== 'pending'
+            || (candidate.backend !== 'vscode' && candidate.backend !== 'tmux')
+            || !isValidAiSessionRuntimeIdentity(candidate.identity)
+            || !candidate.identity.pendingId || candidate.identity.sessionId !== undefined
+            || typeof candidate.createdAt !== 'string'
+            || !Number.isFinite(Date.parse(candidate.createdAt))
+            || !Array.isArray(candidate.excludedSessionIds)) {
+            throw new Error('A pending runtime promotion candidate is invalid.');
+        }
+        const key = `${candidate.backend}:${JSON.stringify([
+            candidate.identity.provider,
+            candidate.identity.workspaceScopeIdentity,
+            candidate.identity.workspaceNavigationIdentity,
+            candidate.identity.workspaceRootHostPaths.slice().sort(),
+            candidate.identity.cwd,
+            candidate.identity.pendingId,
+        ])}`;
+        const existing = merged.get(key);
+        if (existing && !promotionPendingCandidatesEqual(existing, candidate)) {
+            throw new Error('Multiple pending promotion candidates disagree within one backend.');
+        }
+        if (!existing) {
+            merged.set(key, clonePendingRuntime(candidate));
+        }
+    }
+    return [...merged.values()].map(clonePendingRuntime);
+}
+
+function promotionPendingCandidatesEqual<TTerminal>(
+    left: AiSessionPendingRuntimeSnapshot<TTerminal>,
+    right: AiSessionPendingRuntimeSnapshot<TTerminal>
+): boolean {
+    return samePendingIdentity(left.identity, right.identity)
+        && left.backend === right.backend
+        && left.createdAt === right.createdAt
+        && left.projectName === right.projectName
+        && left.title === right.title
+        && left.excludedSessionIds.length === right.excludedSessionIds.length
+        && left.excludedSessionIds.every((value, index) => value === right.excludedSessionIds[index])
+        && ((!left.tmux && !right.tmux) || (!!left.tmux && !!right.tmux
+            && left.tmux.layout === right.tmux.layout
+            && left.tmux.sessionName === right.tmux.sessionName
+            && left.tmux.windowName === right.tmux.windowName));
 }
 
 function cloneActionResult<TTerminal>(

@@ -305,6 +305,7 @@ export interface AiSessionRuntimeActionResult<TTerminal = unknown> {
 }
 
 export interface AiSessionExecutableRuntimeBackend<TTerminal = unknown> extends AiSessionRuntimeBackend<TTerminal> {
+    listRecoverablePending?(): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>[]>;
     getRecoverablePending?(
         identity: AiSessionRuntimeIdentity & { pendingId: string }
     ): Promise<AiSessionPendingRuntimeSnapshot<TTerminal> | null>;

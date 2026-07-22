@@ -26,6 +26,7 @@ interface WorkspacePromotionRuntimeCoordinator<TTerminal>
 extends PendingAiSessionRuntimeCoordinator<TTerminal> {
     getActive(): AiSessionRuntimeSnapshot<TTerminal>[];
     getPending(): AiSessionPendingRuntimeSnapshot<TTerminal>[];
+    getPendingForPromotion(): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>[]>;
 }
 
 interface PromotionRequest {
@@ -91,7 +92,7 @@ export class WorkspacePendingSessionPromotionController<TTerminal = unknown> {
     }
 
     private async promoteOnce(request: PromotionRequest): Promise<void> {
-        const pendingRuntimes = this.options.runtimeCoordinator.getPending()
+        const pendingRuntimes = (await this.options.runtimeCoordinator.getPendingForPromotion())
             .filter(runtime => runtime.identity.workspaceScopeIdentity
                 === request.workspace.scopeIdentity);
         if (!pendingRuntimes.length) {

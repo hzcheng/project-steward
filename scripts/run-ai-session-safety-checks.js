@@ -1498,6 +1498,7 @@ async function runWorkspacePendingSessionPromotionChecks() {
             getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
             runtimeCoordinator: {
                 getPending: () => pending,
+                getPendingForPromotion: async () => pending,
                 getActive: () => active,
                 promotePending: async (identity, sessionId) => {
                     promotions.push([identity.pendingId, sessionId]);
@@ -1534,6 +1535,7 @@ async function runWorkspacePendingSessionPromotionChecks() {
             getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
             runtimeCoordinator: {
                 getPending: () => pending,
+                getPendingForPromotion: async () => pending,
                 getActive: () => active,
                 promotePending: async () => {
                     attempts++;
@@ -1562,18 +1564,23 @@ async function runWorkspacePendingSessionPromotionChecks() {
         const pendingRuntime = makePending();
         let pending = [pendingRuntime];
         let active = [];
-        let releasePromotion;
-        const promotionGate = new Promise(resolve => { releasePromotion = resolve; });
+        let releaseEnumeration;
+        const enumerationGate = new Promise(resolve => { releaseEnumeration = resolve; });
+        let enumerationAttempts = 0;
         let attempts = 0;
         const controller = new WorkspacePendingSessionPromotionController({
             providers: providersForPromotion,
             getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
             runtimeCoordinator: {
                 getPending: () => pending,
+                getPendingForPromotion: async () => {
+                    enumerationAttempts++;
+                    if (enumerationAttempts === 1) await enumerationGate;
+                    return pending;
+                },
                 getActive: () => active,
                 promotePending: async () => {
                     attempts++;
-                    await promotionGate;
                     const final = makeFinal(pendingRuntime);
                     pending = [];
                     active = [final];
@@ -1588,15 +1595,62 @@ async function runWorkspacePendingSessionPromotionChecks() {
 
         const first = controller.promote(workspace, sessionResults, 'first');
         const second = controller.promote(workspace, sessionResults, 'second');
-        releasePromotion();
+        releaseEnumeration();
         await Promise.all([first, second]);
         assert.strictEqual(attempts, 1,
             'concurrent hydration must not promote one pending identity twice');
+        assert.strictEqual(enumerationAttempts, 2,
+            'a queued refresh must re-enumerate after the in-flight promotion settles');
+    }
+
+    async function runEnumerationRetryCase() {
+        const pendingRuntime = makePending();
+        let pending = [pendingRuntime];
+        let active = [];
+        let enumerationAttempts = 0;
+        let promotionAttempts = 0;
+        const diagnostics = [];
+        const controller = new WorkspacePendingSessionPromotionController({
+            providers: providersForPromotion,
+            getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
+            runtimeCoordinator: {
+                getPending: () => pending,
+                getPendingForPromotion: async () => {
+                    enumerationAttempts++;
+                    if (enumerationAttempts === 1) {
+                        throw new Error('durable promotion enumeration failed');
+                    }
+                    return pending;
+                },
+                getActive: () => active,
+                promotePending: async () => {
+                    promotionAttempts++;
+                    const final = makeFinal(pendingRuntime);
+                    pending = [];
+                    active = [final];
+                    return [final];
+                },
+            },
+            setAlias: () => undefined,
+            syncActiveRuntime: () => undefined,
+            evaluateExecution: () => undefined,
+            scheduleRefresh: () => undefined,
+            logDiagnostic: diagnostic => diagnostics.push(diagnostic),
+        });
+
+        await controller.promote(workspace, sessionResults, 'failed-enumeration');
+        assert.strictEqual(promotionAttempts, 0,
+            'a refresh or durable-list error must fail closed before promotion dispatch');
+        await controller.promote(workspace, sessionResults, 'retry-enumeration');
+        assert.strictEqual(promotionAttempts, 1);
+        assert.strictEqual(enumerationAttempts, 2);
+        assert.strictEqual(diagnostics[0].event, 'workspace-ai-session-promotion-failed');
     }
 
     await runSuccessCase();
     await runRetryCase();
     await runConcurrentCase();
+    await runEnumerationRetryCase();
 }
 
 function runScanOptionChecks() {

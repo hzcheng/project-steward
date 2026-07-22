@@ -135,6 +135,12 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         return this.dependencies.discovery.find(identity).map(runtime => this.withAttach(runtime));
     }
 
+    async listRecoverablePending(): Promise<AiSessionPendingRuntimeSnapshot<TTerminal>[]> {
+        const bindings = await this.dependencies.runtimeStore.listRecoverablePending();
+        return bindings.map(binding =>
+            pendingSnapshotFromBinding(binding) as AiSessionPendingRuntimeSnapshot<TTerminal>);
+    }
+
     async getRecoverablePending(
         identity: AiSessionRuntimeIdentity & { pendingId: string }
     ): Promise<AiSessionPendingRuntimeSnapshot<TTerminal> | null> {
@@ -142,14 +148,12 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!isValidAiSessionRuntimeIdentity(pendingIdentityValue)) {
             return null;
         }
-        const intent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
-        const pendingBinding = await this.dependencies.runtimeStore.getPending(pendingIdentityValue);
-        const consumed = intent ? null
-            : await this.dependencies.runtimeStore.getConsumed(pendingIdentityValue);
-        const binding = intent?.pendingBinding || (consumed ? pendingBinding : null);
-        return binding && pendingLifecycleIdentityMatches(binding, pendingIdentityValue)
-            ? pendingSnapshotFromBinding(binding) as AiSessionPendingRuntimeSnapshot<TTerminal>
-            : null;
+        const matches = (await this.listRecoverablePending()).filter(runtime =>
+            aiSessionRuntimeIdentitiesEqual(runtime.identity, pendingIdentityValue));
+        if (matches.length > 1) {
+            throw new Error('Multiple durable tmux promotions target one pending runtime.');
+        }
+        return matches[0] || null;
     }
 
     async ensureResume(
@@ -751,6 +755,23 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                         this.dependencies.attachStore.set(processId, binding);
                         runtime = promoted;
                     } else {
+                        const intent = await this.dependencies.runtimeStore.getPromoting(
+                            pendingIdentityValue
+                        );
+                        const intentPending = intent
+                            && consumedMatchesPromotionIntent(consumed, intent)
+                            ? pendingSnapshotFromBinding(intent.pendingBinding) : null;
+                        if (intentPending && bindingTargetsRuntime(binding, intentPending)) {
+                            const key = registryKey(intentPending);
+                            if (!this.attaches.has(key)) {
+                                this.attaches.set(key, {
+                                    terminal, binding, focusedBinding: binding,
+                                    focusEpoch: 0, explicitSelections: 0,
+                                });
+                            }
+                        } else {
+                            this.dependencies.attachStore.remove(processId);
+                        }
                         continue;
                     }
                 } else {
@@ -2010,6 +2031,18 @@ function promotionIntentsMatch(
         && locatorsEqual(left.sourceLocator, right.sourceLocator)
         && locatorsEqual(left.finalLocator, right.finalLocator)
         && left.requestFingerprint === right.requestFingerprint;
+}
+
+function consumedMatchesPromotionIntent(
+    consumed: TmuxConsumedPendingBinding,
+    intent: TmuxPromotingRuntimeBinding
+): boolean {
+    return consumed.finalSessionName !== undefined
+        && pendingLifecycleIdentityMatches(consumed, intent)
+        && consumed.finalSessionId === intent.finalSessionId
+        && consumed.finalSessionName === intent.finalSessionName
+        && consumed.layout === intent.layout
+        && locatorsEqual(consumed.finalLocator, intent.finalLocator);
 }
 
 type PendingAmbiguousRuntimeBinding = TmuxAmbiguousRuntimeBinding & {

@@ -20,6 +20,9 @@ const directBackendModule = require('../out/aiSessions/directTerminalRuntimeBack
 const coordinatorModule = require('../out/aiSessions/runtimeCoordinator');
 const runtimeTypesModule = require('../out/aiSessions/runtimeTypes');
 const tmuxBackendModule = require('../out/aiSessions/tmuxRuntimeBackend');
+const WorkspacePendingSessionPromotionController = require(
+    '../out/workspaces/pendingSessionPromotionController'
+).WorkspacePendingSessionPromotionController;
 const CreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
 const ResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const TerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
@@ -172,6 +175,21 @@ function createTmuxBackendHarness(options = {}) {
         listPending: async () => Array.from(pending.values()).filter(record =>
             !options.enforcePendingTtl
             || (dependencies.nowMs() - record.acceptedAtMs < 24 * 60 * 60 * 1000)),
+        listRecoverablePending: async () => {
+            const records = [];
+            const durableKeys = new Set([...promoting.keys(), ...consumed.keys()]);
+            for (const key of durableKeys) {
+                const intent = promoting.get(key);
+                const tombstone = consumed.get(key);
+                const livePending = pending.get(key);
+                if (intent) {
+                    records.push(intent.pendingBinding);
+                } else if (tombstone?.finalSessionName && livePending) {
+                    records.push(livePending);
+                }
+            }
+            return records;
+        },
         getPending: async identity => {
             const record = pending.get(ambiguousKey(identity)) || null;
             return record && options.enforcePendingTtl
@@ -584,6 +602,76 @@ function createRestartedRuntime(harness) {
         chooseTmuxFallback: async () => 'cancel',
     });
     return { coordinator, tmux };
+}
+
+function createPersistedAttachState() {
+    const values = new Map();
+    return {
+        values,
+        state: {
+            get: (key, fallback) => values.has(key)
+                ? JSON.parse(JSON.stringify(values.get(key))) : fallback,
+            update: async (key, value) => {
+                if (value === undefined) {
+                    values.delete(key);
+                } else {
+                    values.set(key, JSON.parse(JSON.stringify(value)));
+                }
+            },
+        },
+    };
+}
+
+function clonePersistedAttachState(source) {
+    const clone = createPersistedAttachState();
+    for (const [key, value] of source.values) {
+        clone.values.set(key, JSON.parse(JSON.stringify(value)));
+    }
+    return clone;
+}
+
+function createFreshPersistedRuntime(harness, runtimeRoot, attachState) {
+    const runtimeStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+        runtimeRoot, harness.dependencies.nowMs
+    );
+    const attachStore = new attachStoreModule.TmuxAttachBindingStore(attachState.state);
+    const discovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: harness.client,
+        bindingStore: runtimeStore,
+        markerIsCurrent: () => false,
+        nowMs: harness.dependencies.nowMs,
+        cacheTtlMs: 0,
+    });
+    const dependencies = {
+        ...harness.dependencies,
+        runtimeStore,
+        attachStore,
+        discovery,
+    };
+    const tmux = new tmuxBackendModule.TmuxRuntimeBackend(dependencies);
+    const direct = createFakeRuntimeBackend('vscode');
+    const coordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct,
+        tmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    return { attachStore, coordinator, dependencies, direct, discovery, runtimeStore, tmux };
+}
+
+function createPromotionController(runtimeCoordinator) {
+    return new WorkspacePendingSessionPromotionController({
+        providers: [{
+            id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions',
+            terminalCwdFields: ['cwd'],
+        }],
+        getSessionKey: (provider, sessionId) => `${provider}:${sessionId}`,
+        runtimeCoordinator,
+        setAlias: () => undefined,
+        syncActiveRuntime: () => undefined,
+        evaluateExecution: () => undefined,
+        scheduleRefresh: () => undefined,
+    });
 }
 
 function runtimeRecordFilename(record) {
@@ -3641,6 +3729,8 @@ async function runTmuxStoreChecks() {
             provider: 'codex', workspaceScopeIdentity: 'other', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         }), null);
         await store.setPending(promotingRecord.pendingBinding);
+        assert.deepStrictEqual((await store.listRecoverablePending()).map(record => record.pendingId),
+            ['p-promoting'], 'a strict durable intent must enumerate its exact pending snapshot');
         const expiredPromotionStore = new runtimeStoreModule.TmuxRuntimeBindingStore(root,
             () => now + (24 * 60 * 60 * 1000) + 1);
         assert.strictEqual(await expiredPromotionStore.getPending(
@@ -3649,6 +3739,44 @@ async function runTmuxStoreChecks() {
         assert.deepStrictEqual(await expiredPromotionStore.getPromoting(pendingIdentity(
             promotingRecord
         )), promotingRecord);
+        assert.deepStrictEqual((await expiredPromotionStore.listRecoverablePending())
+            .map(record => record.pendingId), ['p-promoting'],
+        'the intent snapshot must remain authoritative after the live pending record expires');
+
+        const inconsistentDurableRoot = path.join(root, 'inconsistent-durable');
+        const inconsistentDurableStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            inconsistentDurableRoot, () => now
+        );
+        await inconsistentDurableStore.setPromoting(promotingRecord);
+        await inconsistentDurableStore.setConsumed({
+            version: 2, state: 'consumed',
+            provider: promotingRecord.provider,
+            workspaceScopeIdentity: promotingRecord.workspaceScopeIdentity,
+            workspaceNavigationIdentity: promotingRecord.workspaceNavigationIdentity,
+            workspaceRootHostPaths: [...promotingRecord.workspaceRootHostPaths],
+            cwd: promotingRecord.cwd, pendingId: promotingRecord.pendingId,
+            finalSessionId: 'different-final', finalSessionName: 'Different final',
+            layout: promotingRecord.layout,
+            finalLocator: {
+                ...promotingRecord.finalLocator,
+                windowName: 'ai-codex-different-final',
+            },
+            consumedAtMs: now,
+        });
+        await assert.rejects(inconsistentDurableStore.listRecoverablePending(),
+            /disagree on the final runtime/,
+        'multiple durable records for one identity must fail closed when they disagree');
+
+        const invalidDurableRoot = path.join(root, 'invalid-durable');
+        fs.mkdirSync(invalidDurableRoot);
+        fs.writeFileSync(path.join(invalidDurableRoot, `promoting-${'a'.repeat(64)}.json`),
+            JSON.stringify({ version: 2, state: 'promoting' }));
+        const invalidDurableStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            invalidDurableRoot, () => now
+        );
+        await assert.rejects(invalidDurableStore.listRecoverablePending(),
+            /durable tmux promoting record is invalid/,
+        'invalid strict durable records must fail the entire promotion enumeration');
         await store.removePending(pendingIdentity(promotingRecord.pendingBinding));
         await assert.rejects(store.setPromoting({
             ...promotingRecord,
@@ -3680,6 +3808,10 @@ async function runTmuxStoreChecks() {
         assert.deepStrictEqual(await restartedStore.getPromoting(pendingIdentity(
             conflictingPromoting
         )), conflictingPromoting);
+        assert.deepStrictEqual((await store.listRecoverablePending()).map(record =>
+            `${record.workspaceScopeIdentity}:${record.pendingId}`).sort(), [
+            'other-project:p-promoting', 'pk:p-promoting',
+        ], 'multiple strict durable identities must enumerate independently');
         await store.removePromoting({
             provider: 'codex', workspaceScopeIdentity: 'other-project', workspaceNavigationIdentity: 'nav-other', workspaceRootHostPaths: ['/other'], cwd: '/other', pendingId: 'p-promoting',
         });
@@ -5830,6 +5962,151 @@ async function runTmuxBackendChecks() {
         }
     }
 
+    for (const productRecoveryCase of [{
+        label: 'partial-rename', layout: 'session',
+        harnessOptions: { failRenameWindowCount: 1 }, failure: /rename window failed/,
+    }, {
+        label: 'fully-renamed', layout: 'session',
+        harnessOptions: { ambiguousRenameWindowCount: 1 }, failure: /timeout/,
+    }, {
+        label: 'metadata-transition', layout: 'session',
+        harnessOptions: { failFinalMetadataIdentityWriteCount: 1 },
+        failure: /final metadata identity write failed/,
+    }]) {
+        const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(),
+            `project-steward-product-promotion-${productRecoveryCase.label}-`));
+        try {
+            const harness = createTmuxBackendHarness(productRecoveryCase.harnessOptions);
+            const attachState = createPersistedAttachState();
+            const initial = createFreshPersistedRuntime(harness, runtimeRoot, attachState);
+            const request = {
+                identity: {
+                    provider: 'codex',
+                    workspaceScopeIdentity: `product-recovery-${productRecoveryCase.label}`,
+                    workspaceNavigationIdentity: `nav-product-recovery-${productRecoveryCase.label}`,
+                    workspaceRootHostPaths: ['/work'], cwd: '/work',
+                    pendingId: `product-recovery-pending-${productRecoveryCase.label}`,
+                },
+                projectName: 'Product Recovery', terminalName: 'Codex: Product recovery',
+                createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
+                title: 'Product recovery',
+                launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/product-recovery' },
+            };
+            const finalSessionId = `product-recovery-final-${productRecoveryCase.label}`;
+            const pendingRuntime = await initial.tmux.ensurePending(request, productRecoveryCase.layout);
+            const providerDispatches = harness.operations.filter(operation =>
+                operation.type === 'new-session' || operation.type === 'new-window').length;
+            await assert.rejects(initial.tmux.promotePending(
+                request.identity, finalSessionId, 'Product recovery'
+            ), productRecoveryCase.failure);
+            assert.ok(await initial.runtimeStore.getPromoting(request.identity));
+            await initial.attachStore.flush();
+
+            const restartedAttachState = clonePersistedAttachState(attachState);
+            const restarted = createFreshPersistedRuntime(
+                harness, runtimeRoot, restartedAttachState
+            );
+            await restarted.tmux.restoreAttachTerminals([pendingRuntime.terminal]);
+            const controller = createPromotionController(restarted.coordinator);
+            await controller.promote({
+                scopeIdentity: request.identity.workspaceScopeIdentity,
+                navigationIdentity: request.identity.workspaceNavigationIdentity,
+            }, {
+                codex: {
+                    available: true, scannedFiles: 1, parsedFiles: 1,
+                    sessions: [{
+                        id: finalSessionId, name: 'Product recovery', cwd: '/work',
+                        updatedAt: '2026-07-18T10:00:01.000Z',
+                    }],
+                },
+            }, `restart-${productRecoveryCase.label}`);
+
+            const consumed = await restarted.runtimeStore.getConsumed(request.identity);
+            assert.ok(consumed,
+                'the real workspace promotion controller must enumerate durable recovery candidates');
+            assert.strictEqual(await restarted.runtimeStore.getPromoting(request.identity), null);
+            assert.strictEqual(await restarted.runtimeStore.getPending(request.identity), null);
+            assert.strictEqual(harness.operations.filter(operation =>
+                operation.type === 'new-session' || operation.type === 'new-window').length,
+            providerDispatches, 'product-entry recovery must not redispatch the provider command');
+            const restoredAttach = restarted.attachStore.get(await pendingRuntime.terminal.processId);
+            assert.strictEqual(restoredAttach.sessionId, finalSessionId);
+            assert.deepStrictEqual({
+                layout: restoredAttach.layout,
+                sessionName: restoredAttach.sessionName,
+                windowName: restoredAttach.windowName,
+            }, consumed.finalLocator);
+        } finally {
+            fs.rmSync(runtimeRoot, { recursive: true, force: true });
+        }
+    }
+
+    {
+        const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(),
+            'project-steward-stale-consumed-attach-'));
+        try {
+            const harness = createTmuxBackendHarness();
+            const attachState = createPersistedAttachState();
+            const initial = createFreshPersistedRuntime(harness, runtimeRoot, attachState);
+            const request = {
+                identity: {
+                    provider: 'codex', workspaceScopeIdentity: 'stale-consumed-attach',
+                    workspaceNavigationIdentity: 'nav-stale-consumed-attach',
+                    workspaceRootHostPaths: ['/work'], cwd: '/work',
+                    pendingId: 'stale-consumed-attach-pending',
+                },
+                projectName: 'Stale Attach', terminalName: 'Codex: Stale attach',
+                createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [], title: 'Stale attach',
+                launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/stale-attach' },
+            };
+            const pendingRuntime = await initial.tmux.ensurePending(request, 'session');
+            const pendingBinding = await initial.runtimeStore.getPending(request.identity);
+            const absentFinalLocator = tmuxNaming.buildReadableTmuxLocator({
+                ...request.identity, pendingId: undefined, sessionId: 'stale-attach-final',
+            }, 'session', { projectName: request.projectName, sessionName: 'Stale attach' });
+            await initial.runtimeStore.setConsumed({
+                version: 2, state: 'consumed', ...request.identity,
+                finalSessionId: 'stale-attach-final', finalSessionName: 'Stale attach',
+                layout: 'session', finalLocator: absentFinalLocator,
+                consumedAtMs: harness.dependencies.nowMs(),
+            });
+            harness.windows.length = 0;
+            await initial.attachStore.flush();
+
+            const restartedAttachState = clonePersistedAttachState(attachState);
+            const restarted = createFreshPersistedRuntime(
+                harness, runtimeRoot, restartedAttachState
+            );
+            await restarted.tmux.restoreAttachTerminals([pendingRuntime.terminal]);
+            assert.strictEqual(restarted.attachStore.get(await pendingRuntime.terminal.processId), null,
+                'a consumed pending attach without its exact final runtime must be deleted on reload');
+            assert.ok(pendingBinding);
+            harness.windows.push({
+                sessionName: absentFinalLocator.sessionName,
+                windowName: absentFinalLocator.windowName,
+                windowId: '@stale-final', active: false,
+                sessionMetadata: {
+                    managed: '1', version: '2', layout: 'session',
+                    workspaceScopeIdentity: request.identity.workspaceScopeIdentity,
+                    workspaceNavigationIdentity: request.identity.workspaceNavigationIdentity,
+                    workspaceRootHostPaths: JSON.stringify(request.identity.workspaceRootHostPaths),
+                    cwd: request.identity.cwd, provider: request.identity.provider,
+                    sessionId: 'stale-attach-final', createdAt: request.createdAt,
+                    marker: request.launch.markerPath,
+                },
+                windowMetadata: { managed: '1', version: '2', layout: 'session' },
+                metadata: {},
+            });
+            const secondRestart = createFreshPersistedRuntime(harness, runtimeRoot,
+                clonePersistedAttachState(restartedAttachState));
+            await secondRestart.tmux.restoreAttachTerminals([pendingRuntime.terminal]);
+            assert.strictEqual(secondRestart.tmux.getFocusedRuntime(pendingRuntime.terminal), null,
+                'a later runtime with the same identity must not reclaim a deleted stale terminal binding');
+        } finally {
+            fs.rmSync(runtimeRoot, { recursive: true, force: true });
+        }
+    }
+
     for (const crashLayout of ['session', 'project']) {
         for (const crashFailure of [{
             option: 'failRemovePendingAfterConsumedCount',
@@ -6473,6 +6750,7 @@ function createFakeRuntimeBackend(backend, options = {}) {
         pending: [],
         conflicts: [],
         lifecycleBlockers: [],
+        recoverablePending: [],
         refreshCalls: [],
         ensureResumeCalls: 0,
         ensureResumeRequests: [],
@@ -6495,6 +6773,11 @@ function createFakeRuntimeBackend(backend, options = {}) {
         ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
     }));
     fake.getPending = () => fake.pending.map(runtime => ({
+        ...runtime,
+        identity: { ...runtime.identity },
+        excludedSessionIds: runtime.excludedSessionIds.slice(),
+    }));
+    fake.listRecoverablePending = async () => fake.recoverablePending.map(runtime => ({
         ...runtime,
         identity: { ...runtime.identity },
         excludedSessionIds: runtime.excludedSessionIds.slice(),
@@ -7686,6 +7969,11 @@ async function runRuntimeCoordinatorChecks() {
         state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
     };
     durableConflictDirect.pending.push(durableConflictPending);
+    durableConflictTmux.recoverablePending.push({
+        ...durableConflictPending,
+        backend: 'tmux',
+        identity: { ...durableConflictPending.identity },
+    });
     durableConflictTmux.getRecoverablePending = async () => ({
         ...durableConflictPending,
         backend: 'tmux',
@@ -7697,6 +7985,24 @@ async function runRuntimeCoordinatorChecks() {
         getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
         chooseTmuxFallback: async () => 'cancel',
     });
+    const durablePromotionCandidates = await durableConflictCoordinator.getPendingForPromotion();
+    assert.strictEqual(durablePromotionCandidates.length, 2,
+        'promotion enumeration must preserve cross-backend identity conflicts');
+    await createPromotionController(durableConflictCoordinator).promote({
+        scopeIdentity: durableConflictPending.identity.workspaceScopeIdentity,
+        navigationIdentity: durableConflictPending.identity.workspaceNavigationIdentity,
+    }, {
+        codex: {
+            available: true, scannedFiles: 1, parsedFiles: 1,
+            sessions: [{
+                id: 'durable-conflict-final', name: 'Durable conflict', cwd: '/work',
+                updatedAt: '2026-07-18T10:00:01.000Z',
+            }],
+        },
+    }, 'durable-conflict');
+    assert.strictEqual(durableConflictDirect.promoted.length, 0);
+    assert.strictEqual(durableConflictTmux.promoted.length, 0,
+        'the product promotion entry point must not choose between backend conflicts');
     const durableConflictResult = await durableConflictCoordinator.promotePending(
         durableConflictPending.identity, 'durable-conflict-final', 'Durable conflict'
     );

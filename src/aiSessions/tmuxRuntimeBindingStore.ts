@@ -174,6 +174,10 @@ export class TmuxRuntimeBindingStore {
         return this.serialize(() => this.listPendingUnlocked());
     }
 
+    listRecoverablePending(): Promise<TmuxPendingRuntimeBinding[]> {
+        return this.serialize(() => this.listRecoverablePendingUnlocked());
+    }
+
     listKnown(): Promise<TmuxKnownRuntimeBinding[]> {
         return this.serializeFinal(() => this.listKnownUnlocked(true));
     }
@@ -561,6 +565,75 @@ export class TmuxRuntimeBindingStore {
         records.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt)
             || left.pendingId.localeCompare(right.pendingId));
         return records.map(clonePending);
+    }
+
+    private async listRecoverablePendingUnlocked(): Promise<TmuxPendingRuntimeBinding[]> {
+        const pending = new Map<string, TmuxPendingRuntimeBinding>();
+        const promoting = new Map<string, TmuxPromotingRuntimeBinding>();
+        const consumed = new Map<string, TmuxConsumedPendingBinding>();
+        const now = this.now();
+        if (!Number.isFinite(now)) {
+            throw new Error('The tmux promotion record clock is invalid.');
+        }
+        for (const filePath of await listJsonFiles(this.root)) {
+            const name = path.basename(filePath);
+            if (name.startsWith('pending-')) {
+                const record = validatePersistedPendingRecord(
+                    await readJsonRegularFile(filePath), now
+                );
+                if (record && isCanonicalRecordPath(filePath, record)) {
+                    pending.set(pendingLifecycleRecordKey(record), record);
+                }
+                continue;
+            }
+            if (name.startsWith('promoting-')) {
+                const record = validatePromotingRecord(await readJsonRegularFile(filePath));
+                if (!record || !isCanonicalRecordPath(filePath, record)) {
+                    throw new Error('A durable tmux promoting record is invalid.');
+                }
+                const key = pendingLifecycleRecordKey(record);
+                if (promoting.has(key)) {
+                    throw new Error('Multiple durable tmux promoting records target one pending runtime.');
+                }
+                promoting.set(key, record);
+                continue;
+            }
+            if (name.startsWith('consumed-')) {
+                const record = validateConsumedRecord(await readJsonRegularFile(filePath));
+                if (!record || !isCanonicalRecordPath(filePath, record)) {
+                    throw new Error('A durable tmux consumed record is invalid.');
+                }
+                const key = pendingLifecycleRecordKey(record);
+                if (consumed.has(key)) {
+                    throw new Error('Multiple durable tmux consumed records target one pending runtime.');
+                }
+                consumed.set(key, record);
+            }
+        }
+
+        const result: TmuxPendingRuntimeBinding[] = [];
+        const keys = new Set([...promoting.keys(), ...consumed.keys()]);
+        for (const key of keys) {
+            const intent = promoting.get(key);
+            const tombstone = consumed.get(key);
+            const livePending = pending.get(key);
+            if (intent) {
+                if (livePending && !pendingBindingsEqual(intent.pendingBinding, livePending)) {
+                    throw new Error('A durable tmux promotion conflicts with its pending record.');
+                }
+                if (tombstone && !consumedMatchesPromoting(tombstone, intent)) {
+                    throw new Error('Durable tmux promotion records disagree on the final runtime.');
+                }
+                result.push(clonePending(intent.pendingBinding));
+                continue;
+            }
+            if (tombstone?.finalSessionName && livePending) {
+                result.push(clonePending(livePending));
+            }
+        }
+        result.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt)
+            || left.pendingId.localeCompare(right.pendingId));
+        return result;
     }
 
     private async listKnownUnlocked(pruneToCap: boolean): Promise<TmuxKnownRuntimeBinding[]> {
@@ -1108,6 +1181,43 @@ function hasExactKeys(
 function locatorsEqual(left: AiSessionTmuxLocator, right: AiSessionTmuxLocator): boolean {
     return left.layout === right.layout && left.sessionName === right.sessionName
         && left.windowName === right.windowName;
+}
+
+function pendingLifecycleRecordKey(record: {
+    provider: AiSessionProviderId;
+    workspaceScopeIdentity: string;
+    workspaceNavigationIdentity: string;
+    workspaceRootHostPaths: string[];
+    cwd: string;
+    pendingId: string;
+}): string {
+    return JSON.stringify(pendingRecordIdentityParts(record));
+}
+
+function pendingBindingsEqual(
+    left: TmuxPendingRuntimeBinding,
+    right: TmuxPendingRuntimeBinding
+): boolean {
+    return pendingLifecycleRecordKey(left) === pendingLifecycleRecordKey(right)
+        && left.createdAt === right.createdAt
+        && left.acceptedAtMs === right.acceptedAtMs
+        && left.projectName === right.projectName
+        && left.title === right.title
+        && left.layout === right.layout
+        && locatorsEqual(left.locator, right.locator)
+        && left.excludedSessionIds.length === right.excludedSessionIds.length
+        && left.excludedSessionIds.every((value, index) => value === right.excludedSessionIds[index]);
+}
+
+function consumedMatchesPromoting(
+    consumed: TmuxConsumedPendingBinding,
+    promoting: TmuxPromotingRuntimeBinding
+): boolean {
+    return consumed.finalSessionName !== undefined
+        && consumed.finalSessionId === promoting.finalSessionId
+        && consumed.finalSessionName === promoting.finalSessionName
+        && consumed.layout === promoting.layout
+        && locatorsEqual(consumed.finalLocator, promoting.finalLocator);
 }
 
 function inactiveBindingsMatchRun(
