@@ -5445,6 +5445,7 @@ function fakeUnavailableError() {
 
 function createFakeRuntimeBackend(backend, options = {}) {
     let remainingEnsureErrors = options.ensureErrorCount || 0;
+    const focusErrors = [...(options.focusErrors || [])];
     const fake = {
         backend,
         active: [],
@@ -5456,6 +5457,7 @@ function createFakeRuntimeBackend(backend, options = {}) {
         ensureResumeRequests: [],
         ensureResumeLayouts: [],
         ensurePendingCalls: 0,
+        focusAttempts: [],
         focusCalls: [],
         detachCalls: [],
         closed: [],
@@ -5490,7 +5492,11 @@ function createFakeRuntimeBackend(backend, options = {}) {
         item.identity.provider === identity.provider
         && item.identity.workspaceScopeIdentity === identity.workspaceScopeIdentity
         && item.identity.sessionId === identity.sessionId);
-    fake.focus = async runtime => { fake.focusCalls.push(runtime); };
+    fake.focus = async runtime => {
+        fake.focusAttempts.push(runtime);
+        if (focusErrors.length) throw focusErrors.shift();
+        fake.focusCalls.push(runtime);
+    };
     fake.detach = async runtime => { fake.detachCalls.push(runtime); };
     fake.ensureResume = async (request, layout) => {
         fake.ensureResumeCalls++;
@@ -5956,6 +5962,9 @@ async function runRuntimeCoordinatorChecks() {
     for (const operation of ['focus', 'detach']) {
         let firstRefresh = true;
         const guardedTmux = createFakeRuntimeBackend('tmux', {
+            ...(operation === 'focus' ? {
+                focusErrors: [new runtimeTypesModule.AiSessionRuntimeTargetChangedError()],
+            } : {}),
             onRefresh: backend => {
                 if (firstRefresh) {
                     firstRefresh = false;
@@ -6478,6 +6487,108 @@ async function runRuntimeCoordinatorChecks() {
         assert.deepStrictEqual(promoteDirect.promoted, [],
             'promotion must fail closed when either forced refresh outcome is not safe');
     }
+
+    const fastDirect = createFakeRuntimeBackend('vscode');
+    const fastTmux = createFakeRuntimeBackend('tmux');
+    fastTmux.active.push(fakeRuntime('tmux', 'fast-focus'));
+    const fastCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastDirect,
+        tmux: fastTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await fastCoordinator.focus(fakeResumeRequest('fast-focus').identity);
+    assert.deepStrictEqual(fastDirect.refreshCalls, [],
+        'healthy tmux focus must not refresh Direct Terminal discovery');
+    assert.deepStrictEqual(fastTmux.refreshCalls, [],
+        'healthy tmux focus must not refresh global tmux discovery');
+    assert.strictEqual(fastTmux.focusCalls.length, 1);
+
+    const changedTargetError = () => new runtimeTypesModule.AiSessionRuntimeTargetChangedError();
+    const fastPathRetryDirect = createFakeRuntimeBackend('vscode');
+    const fastPathRetryTmux = createFakeRuntimeBackend('tmux', { focusErrors: [changedTargetError()] });
+    fastPathRetryTmux.active.push(fakeRuntime('tmux', 'retry-focus'));
+    const fastPathRetryCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastPathRetryDirect,
+        tmux: fastPathRetryTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await fastPathRetryCoordinator.focus(fakeResumeRequest('retry-focus').identity);
+    assert.deepStrictEqual(fastPathRetryDirect.refreshCalls, [true]);
+    assert.deepStrictEqual(fastPathRetryTmux.refreshCalls, [true]);
+    assert.strictEqual(fastPathRetryTmux.focusAttempts.length, 2,
+        'one changed target must reconcile and retry exactly once');
+    assert.strictEqual(fastPathRetryTmux.focusCalls.length, 1);
+
+    const fastPathMissingDirect = createFakeRuntimeBackend('vscode');
+    const fastPathMissingTmux = createFakeRuntimeBackend('tmux', {
+        focusErrors: [changedTargetError()],
+        onRefresh: fake => { fake.active = []; },
+    });
+    fastPathMissingTmux.active.push(fakeRuntime('tmux', 'missing-after-refresh'));
+    const fastPathMissingCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastPathMissingDirect,
+        tmux: fastPathMissingTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await fastPathMissingCoordinator.focus(fakeResumeRequest('missing-after-refresh').identity);
+    assert.strictEqual(fastPathMissingTmux.focusAttempts.length, 1,
+        'a target removed by reconciliation must not be retried');
+    assert.strictEqual(fastPathMissingTmux.focusCalls.length, 0);
+
+    const fastPathDuplicateDirect = createFakeRuntimeBackend('vscode', {
+        onRefresh: fake => { fake.active.push(fakeRuntime('vscode', 'duplicate-after-refresh')); },
+    });
+    const fastPathDuplicateTmux = createFakeRuntimeBackend('tmux', {
+        focusErrors: [changedTargetError()],
+    });
+    fastPathDuplicateTmux.active.push(fakeRuntime('tmux', 'duplicate-after-refresh'));
+    const fastPathDuplicateCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastPathDuplicateDirect,
+        tmux: fastPathDuplicateTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await fastPathDuplicateCoordinator.focus(fakeResumeRequest('duplicate-after-refresh').identity);
+    assert.strictEqual(fastPathDuplicateTmux.focusAttempts.length, 1,
+        'a cross-backend duplicate discovered during reconciliation must not be focused');
+    assert.strictEqual(fastPathDuplicateTmux.focusCalls.length, 0);
+    assert.strictEqual(fastPathDuplicateDirect.focusCalls.length, 0);
+
+    const fastPathRepeatedDirect = createFakeRuntimeBackend('vscode');
+    const fastPathRepeatedTmux = createFakeRuntimeBackend('tmux', {
+        focusErrors: [changedTargetError(), changedTargetError()],
+    });
+    fastPathRepeatedTmux.active.push(fakeRuntime('tmux', 'repeated-change'));
+    const fastPathRepeatedCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastPathRepeatedDirect,
+        tmux: fastPathRepeatedTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await fastPathRepeatedCoordinator.focus(fakeResumeRequest('repeated-change').identity);
+    assert.strictEqual(fastPathRepeatedTmux.focusAttempts.length, 2,
+        'a second target change must stop without an unbounded retry loop');
+    assert.strictEqual(fastPathRepeatedTmux.focusCalls.length, 0);
+    assert.deepStrictEqual(fastPathRepeatedTmux.refreshCalls, [true]);
+
+    const operationalError = new Error('focus operation failed');
+    const fastPathFailedDirect = createFakeRuntimeBackend('vscode');
+    const fastPathFailedTmux = createFakeRuntimeBackend('tmux', { focusErrors: [operationalError] });
+    fastPathFailedTmux.active.push(fakeRuntime('tmux', 'operational-failure'));
+    const fastPathFailedCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastPathFailedDirect,
+        tmux: fastPathFailedTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await assert.rejects(fastPathFailedCoordinator.focus(fakeResumeRequest('operational-failure').identity),
+        error => error === operationalError);
+    assert.deepStrictEqual(fastPathFailedDirect.refreshCalls, []);
+    assert.deepStrictEqual(fastPathFailedTmux.refreshCalls, [],
+        'operational failures must not be mistaken for stale-target recovery');
 
     const routedDirect = createFakeRuntimeBackend('vscode');
     const routedTmux = createFakeRuntimeBackend('tmux');
