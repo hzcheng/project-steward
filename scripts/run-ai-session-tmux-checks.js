@@ -1209,6 +1209,23 @@ async function runTmuxClientChecks() {
     assert.deepStrictEqual(await client.checkAvailability(), { available: true, version: '3.2a' });
     assert.strictEqual(calls.filter(call => call.args[0] === '-V').length, 1);
     assert.deepStrictEqual(await client.listWindows(), []);
+
+    const emptyServerClient = new tmuxClientModule.TmuxClient('/opt/bin/tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') {
+                return { exitCode: 0, stdout: 'tmux 3.2a\n', stderr: '' };
+            }
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: `${requiredCommands.join('\n')}\n`, stderr: '' };
+            }
+            if (args[0] === 'list-windows') {
+                return { exitCode: 1, stdout: '', stderr: 'no current target\n' };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    });
+    assert.deepStrictEqual(await emptyServerClient.listWindows(), [],
+        'an empty tmux server with no current target must discover zero windows');
     await client.selectWindow({
         layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-b',
     });

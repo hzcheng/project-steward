@@ -745,9 +745,12 @@ function isTargetField(value: string): boolean {
 }
 
 function isNoServerResult(result: TmuxCommandResult): boolean {
-    return result.exitCode === 1
-        && result.stdout === ''
-        && /^no server running on \S.*$/.test(result.stderr.trim());
+    if (result.exitCode !== 1 || result.stdout !== '') {
+        return false;
+    }
+    const stderr = result.stderr.trim();
+    return /^no server running on \S.*$/.test(stderr)
+        || stderr === 'no current target';
 }
 
 function isMissingSessionResult(result: TmuxCommandResult): boolean {
