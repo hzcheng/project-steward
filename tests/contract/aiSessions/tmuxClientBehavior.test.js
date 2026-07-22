@@ -262,6 +262,13 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
 });
 
 test('RUNTIME-TMUX-CLIENT-001 rejects malformed runner results and sanitizes forged error objects', async () => {
+    const missingSession = new TmuxClient('tmux', {
+        run: async (_file, args) => availabilityResult(args) || {
+            exitCode: 1, stdout: '', stderr: "can't find session: absent",
+        },
+    });
+    assert.equal(await missingSession.hasSession('absent'), false);
+
     const malformedCategory = 'category=do-not-report';
     const malformed = new TmuxClient('tmux', {
         run: async (_file, args) => availabilityResult(args) || {
@@ -298,4 +305,82 @@ test('RUNTIME-TMUX-CLIENT-001 rejects malformed runner results and sanitizes for
         for (const secret of Object.values(forgedSecrets)) assert.equal(publicError.includes(secret), false);
         return true;
     });
+
+    for (const rejected of [
+        {
+            secret: 'rejected-code-getter-secret',
+            value: new Proxy({}, {
+                get: (_target, property) => {
+                    if (property === 'code') throw new Error('rejected-code-getter-secret');
+                    return undefined;
+                },
+            }),
+        },
+        {
+            secret: 'rejected-killed-getter-secret',
+            value: Object.defineProperties({}, {
+                code: { value: 'UNKNOWN', enumerable: true },
+                killed: {
+                    enumerable: true,
+                    get: () => { throw new Error('rejected-killed-getter-secret'); },
+                },
+            }),
+        },
+    ]) {
+        const client = new TmuxClient('tmux', {
+            run: async (_file, args) => {
+                const available = availabilityResult(args);
+                if (available) return available;
+                throw rejected.value;
+            },
+        });
+        await assert.rejects(client.hasSession('s'), error => {
+            assert.ok(error instanceof TmuxClientError);
+            assert.notEqual(error, rejected.value);
+            assert.equal(error.operation, 'has-session');
+            assert.equal(error.category, 'unsupported');
+            const publicError = `${error.name} ${error.message} ${error.stack} ${JSON.stringify(error)}`;
+            assert.equal(publicError.includes(rejected.secret), false);
+            return true;
+        });
+    }
+
+    const fulfilledSecrets = {
+        message: 'fulfilled-getter-message-secret', operation: 'fulfilled-getter-operation-secret',
+        category: 'fulfilled-getter-category-secret',
+    };
+    const fulfilledError = new TmuxClientError(fulfilledSecrets.operation, fulfilledSecrets.category);
+    fulfilledError.message = fulfilledSecrets.message;
+    const fulfilledProxy = new Proxy({}, {
+        get: (_target, property) => {
+            if (property === 'exitCode') throw fulfilledError;
+            return '';
+        },
+    });
+    const fulfilledClient = new TmuxClient('tmux', {
+        run: async (_file, args) => availabilityResult(args) || fulfilledProxy,
+    });
+    await assert.rejects(fulfilledClient.hasSession('s'), error => {
+        assert.ok(error instanceof TmuxClientError);
+        assert.notEqual(error, fulfilledError);
+        assert.equal(error.operation, 'has-session');
+        assert.equal(error.category, 'invalid-output');
+        const publicError = `${error.name} ${error.message} ${error.stack} ${JSON.stringify(error)}`;
+        for (const secret of Object.values(fulfilledSecrets)) assert.equal(publicError.includes(secret), false);
+        return true;
+    });
+
+    const availabilitySecret = 'availability-getter-secret';
+    const availabilityProxy = new TmuxClient('tmux', {
+        run: async () => new Proxy({}, {
+            get: () => { throw new Error(availabilitySecret); },
+        }),
+    });
+    const availability = await availabilityProxy.checkAvailability();
+    assert.deepEqual(availability, {
+        available: false,
+        category: 'command-failed',
+        message: 'The configured tmux could not complete an availability check.',
+    });
+    assert.equal(JSON.stringify(availability).includes(availabilitySecret), false);
 });

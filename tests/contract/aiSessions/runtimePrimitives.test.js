@@ -118,6 +118,8 @@ test('RUNTIME-LAUNCH-SPEC-001 preserves argv boundaries and renders hostile valu
         assert.equal(hostileCommand.includes('Set-Content'), false);
         const hostilePayload = decodePowerShellPayload(hostileCommand);
         assert.ok(hostilePayload.includes("'Prompt \"quoted\"; Set-Content C:\\tmp\\pwned 1; #'"));
+        assert.ok(hostilePayload.includes("Remove-Item -LiteralPath 'C:\\tmp\\done'"));
+        assert.ok(hostilePayload.includes("New-Item -ItemType File -Force -Path 'C:\\tmp\\done'"));
         assert.ok(hostileSpec.cwd
             ? hostilePayload.includes("Set-Location -LiteralPath 'C:\\work\\O''Brien'")
             : hostilePayload.includes("'C:\\work\\O''Brien'"));
