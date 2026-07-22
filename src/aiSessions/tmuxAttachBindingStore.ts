@@ -126,7 +126,7 @@ function validateRecord(value: unknown): TmuxAttachBinding | null {
             'version', 'layout', 'workspaceScopeIdentity', 'workspaceNavigationIdentity',
             'workspaceRootHostPaths', 'cwd', 'sessionName', 'provider',
             record.sessionId === undefined ? 'pendingId' : 'sessionId', 'terminalNamePrefix',
-            ...(record.layout === 'project' ? ['windowName'] : []),
+            ...(record.layout === 'project' || record.windowName !== undefined ? ['windowName'] : []),
         ])
         || !isBoundedString(record.sessionName, MAX_ID_LENGTH)
         || !isBoundedString(record.terminalNamePrefix, MAX_TITLE_LENGTH)
@@ -145,11 +145,8 @@ function validateRecord(value: unknown): TmuxAttachBinding | null {
     if (!isValidAiSessionRuntimeIdentity(identity)) {
         return null;
     }
-    if (record.layout === 'project' && record.windowName !== undefined
+    if (record.windowName !== undefined
         && !isBoundedString(record.windowName, MAX_ID_LENGTH)) {
-        return null;
-    }
-    if (record.layout === 'session' && record.windowName !== undefined) {
         return null;
     }
     return {

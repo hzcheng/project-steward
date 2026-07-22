@@ -15,6 +15,7 @@ import {
     SessionTmuxLayout,
     parseManagedTmuxMetadata,
 } from './tmuxLayout';
+import { tmuxLocatorMatchesIdentity } from './tmuxNaming';
 import {
     aiSessionRuntimeIdentitiesEqual,
     cloneAiSessionRuntimeIdentity,
@@ -319,6 +320,7 @@ export class TmuxRuntimeDiscovery {
         const activeByKey = new Map<string, AiSessionRuntimeSnapshot>();
         const pendingByKey = new Map<string, AiSessionPendingRuntimeSnapshot>();
         const diagnosticsByKey = new Map<string, AiSessionTmuxDiscoveryDiagnostic>();
+        const diagnosticIdentityKeys = new Set<string>();
         const collisionIdentityKeys = new Set<string>();
         const actualLocatorsByIdentity = new Map<string, Set<string>>();
 
@@ -348,8 +350,18 @@ export class TmuxRuntimeDiscovery {
             actualLocatorsByIdentity.set(parsedIdentityKey, actualLocators);
             if (actualLocators.size > 1) {
                 collisionIdentityKeys.add(parsedIdentityKey);
+                if (!diagnosticIdentityKeys.has(parsedIdentityKey)) {
+                    const diagnostic: AiSessionTmuxDiscoveryDiagnostic = {
+                        kind: 'tmux-locator-collision',
+                        identity,
+                        actual,
+                        expected,
+                    };
+                    diagnosticsByKey.set(diagnosticKey(diagnostic), diagnostic);
+                    diagnosticIdentityKeys.add(parsedIdentityKey);
+                }
             }
-            if (!locatorsEqual(actual, expected)) {
+            if (!tmuxLocatorMatchesIdentity(actual, identity)) {
                 collisionIdentityKeys.add(parsedIdentityKey);
                 const diagnostic: AiSessionTmuxDiscoveryDiagnostic = {
                     kind: 'tmux-locator-collision',
@@ -358,6 +370,7 @@ export class TmuxRuntimeDiscovery {
                     expected,
                 };
                 diagnosticsByKey.set(diagnosticKey(diagnostic), diagnostic);
+                diagnosticIdentityKeys.add(parsedIdentityKey);
                 continue;
             }
 
@@ -705,7 +718,11 @@ function actualLocator(
         return null;
     }
     if (layout === 'session') {
-        return { layout, sessionName: row.sessionName };
+        return row.windowName === 'ai-session'
+            ? { layout, sessionName: row.sessionName }
+            : typeof row.windowName === 'string' && !!row.windowName
+                ? { layout, sessionName: row.sessionName, windowName: row.windowName }
+                : null;
     }
     return typeof row.windowName === 'string' && !!row.windowName
         ? { layout, sessionName: row.sessionName, windowName: row.windowName }

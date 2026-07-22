@@ -402,7 +402,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             );
             const windowName = intent.finalLocator.layout === 'project'
                 ? intent.finalLocator.windowName
-                : SESSION_WINDOW;
+                : intent.finalLocator.windowName || SESSION_WINDOW;
             if (!windowName) {
                 return false;
             }
@@ -499,7 +499,8 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         const actualLocator: AiSessionTmuxLocator | null = target && metadata ? {
             layout: metadata.layout,
             sessionName: target.sessionName,
-            ...(metadata.layout === 'project' ? { windowName: target.windowName } : {}),
+            ...(metadata.layout === 'project' || runtime.tmux.windowName
+                ? { windowName: target.windowName } : {}),
         } : null;
         if (!metadata || !actualLocator || !locatorsEqual(actualLocator, runtime.tmux)
             || !aiSessionRuntimeIdentitiesEqual(metadata, runtime.identity)) {
@@ -762,7 +763,8 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             return;
         }
         await this.dependencies.client.setSessionOptions(locator.sessionName, full);
-        await this.dependencies.client.setWindowOptions(locator.sessionName, SESSION_WINDOW,
+        await this.dependencies.client.setWindowOptions(locator.sessionName,
+            locator.windowName || SESSION_WINDOW,
             sessionWindowMetadata());
     }
 
@@ -782,7 +784,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         markerPath: string
     ): Promise<void> {
         const sessionOptions = await this.dependencies.client.getSessionOptions(locator.sessionName);
-        const windowName = locator.layout === 'project' ? locator.windowName : SESSION_WINDOW;
+        const windowName = locator.layout === 'project'
+            ? locator.windowName
+            : locator.windowName || SESSION_WINDOW;
         if (!windowName) {
             throw new Error('The pending tmux metadata could not be verified.');
         }
@@ -1112,6 +1116,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         return runtimes.find(runtime => runtime.tmux?.layout === 'session'
             && runtime.identity.workspaceScopeIdentity === binding.workspaceScopeIdentity
             && runtime.tmux.sessionName === binding.sessionName
+            && (!binding.windowName || runtime.tmux.windowName === binding.windowName)
             && (!binding.provider || runtime.identity.provider === binding.provider)
             && (!binding.sessionId || runtime.identity.sessionId === binding.sessionId));
     }
@@ -1218,7 +1223,8 @@ function bindingTargetsRuntime(
         return binding.windowName === runtime.tmux.windowName;
     }
     return (!binding.provider || binding.provider === runtime.identity.provider)
-        && (!binding.sessionId || binding.sessionId === runtime.identity.sessionId);
+        && (!binding.sessionId || binding.sessionId === runtime.identity.sessionId)
+        && (!binding.windowName || binding.windowName === runtime.tmux.windowName);
 }
 
 function getRestoredAttachTerminalName(runtime: AiSessionRuntimeSnapshot): string {
@@ -1566,7 +1572,7 @@ function attachBinding(runtime: AiSessionRuntimeSnapshot, terminalName: string):
         workspaceRootHostPaths: [...runtime.identity.workspaceRootHostPaths],
         cwd: runtime.identity.cwd,
         sessionName: runtime.tmux.sessionName,
-        ...(runtime.tmux.layout === 'project' && runtime.tmux.windowName
+        ...(runtime.tmux.windowName
             ? { windowName: runtime.tmux.windowName }
             : {}),
         provider: runtime.identity.provider,

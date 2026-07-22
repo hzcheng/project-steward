@@ -1058,9 +1058,12 @@ function validateLocator(value: unknown): AiSessionTmuxLocator | null {
         return null;
     }
     const record = value as Record<string, unknown>;
+    const hasValidKeys = record.layout === 'project'
+        ? hasExactKeys(record, ['layout', 'sessionName', 'windowName'])
+        : hasExactKeys(record, ['layout', 'sessionName'])
+            || hasExactKeys(record, ['layout', 'sessionName', 'windowName']);
     if (!isLayout(record.layout) || !isBoundedString(record.sessionName, MAX_ID_LENGTH)
-        || !hasExactKeys(record, record.layout === 'project'
-            ? ['layout', 'sessionName', 'windowName'] : ['layout', 'sessionName'])) {
+        || !hasValidKeys) {
         return null;
     }
     if (record.layout === 'project') {
@@ -1068,9 +1071,11 @@ function validateLocator(value: unknown): AiSessionTmuxLocator | null {
             ? { layout: 'project', sessionName: record.sessionName, windowName: record.windowName }
             : null;
     }
-    return record.windowName === undefined
+    return hasExactKeys(record, ['layout', 'sessionName'])
         ? { layout: 'session', sessionName: record.sessionName }
-        : null;
+        : isBoundedString(record.windowName, MAX_ID_LENGTH)
+            ? { layout: 'session', sessionName: record.sessionName, windowName: record.windowName }
+            : null;
 }
 
 function hasExactKeys(

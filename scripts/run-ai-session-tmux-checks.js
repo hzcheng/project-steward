@@ -2126,12 +2126,12 @@ async function runTmuxDiscoveryChecks() {
     const sessionDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [
             {
-                ...sessionLocator, windowName: 'shell', windowId: '@6', active: false,
+                ...sessionLocator, windowName: 'ai-session', windowId: '@6', active: false,
                 sessionMetadata, windowMetadata: sessionWindowMetadata,
                 metadata: { ...sessionMetadata, ...sessionWindowMetadata },
             },
             {
-                ...sessionLocator, windowName: 'logs', windowId: '@7', active: true,
+                ...sessionLocator, windowName: 'ai-session', windowId: '@7', active: true,
                 sessionMetadata, windowMetadata: sessionWindowMetadata,
                 metadata: { ...sessionMetadata, ...sessionWindowMetadata },
             },
@@ -2145,6 +2145,133 @@ async function runTmuxDiscoveryChecks() {
     await sessionDiscovery.refresh();
     assert.strictEqual(sessionDiscovery.getActive().length, 1);
     assert.strictEqual(sessionDiscovery.getActive()[0].attached, false);
+    assert.deepStrictEqual(sessionDiscovery.getActive()[0].tmux, sessionLocator,
+        'legacy session-layout discovery must retain its locator without windowName');
+
+    const readableProjectIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'readable-project',
+        workspaceNavigationIdentity: 'nav-readable-project', workspaceRootHostPaths: ['/work/readable'],
+        cwd: '/work/readable', sessionId: 'readable-project-session',
+    };
+    const readableSessionIdentity = {
+        provider: 'claude', workspaceScopeIdentity: 'readable-session',
+        workspaceNavigationIdentity: 'nav-readable-session', workspaceRootHostPaths: ['/work/readable-session'],
+        cwd: '/work/readable-session', sessionId: 'readable-session-id',
+    };
+    const readableProjectLocator = tmuxNaming.buildReadableTmuxLocator(
+        readableProjectIdentity, 'project', { projectName: 'RedDB', sessionName: 'Repair replication' }
+    );
+    const readableSessionLocator = tmuxNaming.buildReadableTmuxLocator(
+        readableSessionIdentity, 'session', { projectName: 'RedDB', sessionName: 'Repair replication' }
+    );
+    const wrongReadableIdentity = {
+        provider: 'kimi', workspaceScopeIdentity: 'wrong-readable',
+        workspaceNavigationIdentity: 'nav-wrong-readable', workspaceRootHostPaths: ['/work/wrong-readable'],
+        cwd: '/work/wrong-readable', sessionId: 'wrong-readable-session',
+    };
+    const wrongReadableExpected = new tmuxLayout.ProjectTmuxLayout().getLocator(wrongReadableIdentity);
+    const wrongReadableBuilt = tmuxNaming.buildReadableTmuxLocator(
+        wrongReadableIdentity, 'project', { projectName: 'RedDB', sessionName: 'Wrong suffix' }
+    );
+    const wrongReadableActual = {
+        ...wrongReadableBuilt,
+        windowName: wrongReadableBuilt.windowName.replace(/[0-9a-f]$/, value => value === '0' ? '1' : '0'),
+    };
+    const wrongReadableSessionIdentity = {
+        provider: 'claude', workspaceScopeIdentity: 'wrong-readable-session',
+        workspaceNavigationIdentity: 'nav-wrong-readable-session',
+        workspaceRootHostPaths: ['/work/wrong-readable-session'], cwd: '/work/wrong-readable-session',
+        sessionId: 'wrong-readable-session-id',
+    };
+    const wrongReadableSessionExpected = new tmuxLayout.SessionTmuxLayout()
+        .getLocator(wrongReadableSessionIdentity);
+    const wrongReadableSessionBuilt = tmuxNaming.buildReadableTmuxLocator(
+        wrongReadableSessionIdentity, 'session', { projectName: 'RedDB', sessionName: 'Wrong suffix' }
+    );
+    const wrongReadableSessionActual = {
+        ...wrongReadableSessionBuilt,
+        sessionName: wrongReadableSessionBuilt.sessionName.replace(
+            /[0-9a-f]$/, value => value === '0' ? '1' : '0'
+        ),
+    };
+    const duplicateReadableIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'duplicate-readable',
+        workspaceNavigationIdentity: 'nav-duplicate-readable', workspaceRootHostPaths: ['/work/duplicate'],
+        cwd: '/work/duplicate', sessionId: 'duplicate-readable-session',
+    };
+    const duplicateReadableLocators = [
+        tmuxNaming.buildReadableTmuxLocator(duplicateReadableIdentity, 'project', {
+            projectName: 'RedDB', sessionName: 'Repair replication',
+        }),
+        tmuxNaming.buildReadableTmuxLocator(duplicateReadableIdentity, 'project', {
+            projectName: 'BlueDB', sessionName: 'Repair replication',
+        }),
+    ];
+    const readableRow = (identity, locator, windowId) => {
+        const full = {
+            managed: '1', version: '2', layout: locator.layout,
+            workspaceScopeIdentity: identity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: JSON.stringify(identity.workspaceRootHostPaths), cwd: identity.cwd,
+            provider: identity.provider, sessionId: identity.sessionId,
+            createdAt: '2026-07-18T10:00:00Z',
+        };
+        const ownership = locator.layout === 'project'
+            ? {
+                managed: '1', version: '2', layout: 'project',
+                workspaceScopeIdentity: identity.workspaceScopeIdentity,
+            }
+            : { managed: '1', version: '2', layout: 'session' };
+        return {
+            ...locator, windowId, active: false,
+            sessionMetadata: locator.layout === 'project' ? ownership : full,
+            windowMetadata: locator.layout === 'project' ? full : ownership,
+            metadata: { ...ownership, ...full },
+        };
+    };
+    const readableDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [
+            finalRow,
+            readableRow(sessionIdentity, { ...sessionLocator, windowName: 'ai-session' }, '@legacy-session'),
+            readableRow(readableProjectIdentity, readableProjectLocator, '@readable-project'),
+            readableRow(readableSessionIdentity, readableSessionLocator, '@readable-session'),
+            readableRow(wrongReadableIdentity, wrongReadableActual, '@wrong-readable'),
+            readableRow(wrongReadableSessionIdentity, wrongReadableSessionActual,
+                '@wrong-readable-session'),
+            ...duplicateReadableLocators.map((locator, index) =>
+                readableRow(duplicateReadableIdentity, locator, `@duplicate-readable-${index}`)),
+        ] },
+        bindingStore: {
+            listPending: async () => [], listKnown: async () => [],
+            reconcileKnown: async () => undefined,
+        },
+        markerIsCurrent: () => false,
+    });
+    await readableDiscovery.refresh();
+    assert.deepStrictEqual(
+        readableDiscovery.getActive().map(runtime => runtime.tmux),
+        [finalLocator, sessionLocator, readableProjectLocator, readableSessionLocator],
+        'discovery must preserve legacy locators and exact readable project/session actual locators'
+    );
+    assert.deepStrictEqual(readableDiscovery.find(duplicateReadableIdentity), [],
+        'multiple readable actual locators for one identity must fail closed');
+    assert.deepStrictEqual(readableDiscovery.getDiagnostics().find(diagnostic =>
+        diagnostic.identity.sessionId === wrongReadableIdentity.sessionId), {
+        kind: 'tmux-locator-collision', identity: wrongReadableIdentity,
+        actual: wrongReadableActual, expected: wrongReadableExpected,
+    }, 'a readable locator with the wrong identity suffix must remain a collision diagnostic');
+    assert.deepStrictEqual(readableDiscovery.getDiagnostics().find(diagnostic =>
+        diagnostic.identity.sessionId === wrongReadableSessionIdentity.sessionId), {
+        kind: 'tmux-locator-collision', identity: wrongReadableSessionIdentity,
+        actual: wrongReadableSessionActual, expected: wrongReadableSessionExpected,
+    }, 'a readable session locator with a wrong suffix must remain a collision diagnostic');
+    assert.deepStrictEqual(
+        discoveryModule.getTmuxCollisionRuntimes(readableDiscovery.getDiagnostics())
+            .filter(runtime => runtime.identity.sessionId === duplicateReadableIdentity.sessionId)
+            .map(runtime => runtime.identity),
+        [duplicateReadableIdentity],
+        'multiple valid actual locators must produce one conflict identity'
+    );
 
     const wrongScopeDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [
@@ -2699,6 +2826,39 @@ async function runTmuxStoreChecks() {
             lastSeenAtMs,
             ...overrides,
         });
+        const legacySessionPending = pending('legacy-session-locator', '2026-07-18T09:59:00Z', {
+            layout: 'session',
+            locator: { layout: 'session', sessionName: 'project-steward-pending-codex-legacy' },
+        });
+        const readableSessionPending = pending('readable-session-locator', '2026-07-18T09:59:01Z', {
+            layout: 'session',
+            locator: {
+                layout: 'session', sessionName: 'ps-RedDB-Repair-replication-12345678',
+                windowName: 'codex-Repair-replication-12345678',
+            },
+        });
+        assert.deepStrictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            legacySessionPending, now
+        ), legacySessionPending, 'runtime binding validation must retain legacy session locators');
+        assert.deepStrictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            readableSessionPending, now
+        ), readableSessionPending, 'runtime binding validation must retain session locator windowName');
+        assert.strictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding({
+            ...legacySessionPending,
+            locator: { ...legacySessionPending.locator, windowName: undefined },
+        }, now), null, 'session locators must reject an explicit undefined windowName key');
+        assert.strictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding({
+            ...readableSessionPending,
+            locator: { ...readableSessionPending.locator, unexpected: true },
+        }, now), null, 'session locators must reject keys outside both accepted families');
+        await store.setPending(legacySessionPending);
+        await store.setPending(readableSessionPending);
+        assert.deepStrictEqual(await store.getPending(pendingIdentity(legacySessionPending)),
+            legacySessionPending);
+        assert.deepStrictEqual(await store.getPending(pendingIdentity(readableSessionPending)),
+            readableSessionPending, 'runtime binding persistence must round-trip session windowName');
+        await store.removePending(pendingIdentity(legacySessionPending));
+        await store.removePending(pendingIdentity(readableSessionPending));
         const missingAcceptedAt = pending('missing-accepted', '2026-07-18T09:59:00Z');
         delete missingAcceptedAt.acceptedAtMs;
         assert.strictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
@@ -3738,11 +3898,28 @@ async function runTmuxStoreChecks() {
         await attach.flush();
         assert.deepStrictEqual(attach.get(41), binding);
         assert.deepStrictEqual([...state.keys()], ['aiSessionTmuxAttachProcessBinding.v2.41']);
+        const legacySessionAttachBinding = { ...binding, layout: 'session' };
+        delete legacySessionAttachBinding.windowName;
+        legacySessionAttachBinding.sessionName = 'project-steward-s-codex-legacy';
+        const readableSessionAttachBinding = {
+            ...legacySessionAttachBinding,
+            sessionName: 'ps-RedDB-Repair-replication-12345678',
+            windowName: 'codex-Repair-replication-12345678',
+        };
+        attach.set(Promise.resolve(42), legacySessionAttachBinding);
+        attach.set(Promise.resolve(43), readableSessionAttachBinding);
+        await attach.flush();
+        assert.deepStrictEqual(attach.get(42), legacySessionAttachBinding,
+            'attach persistence must retain legacy session bindings without windowName');
+        assert.deepStrictEqual(attach.get(43), readableSessionAttachBinding,
+            'attach persistence must round-trip session binding windowName');
         for (const [processId, invalid] of [
             [46, { ...binding, pendingId: 'also-pending' }],
             [47, { ...binding, projectKey: 'legacy' }],
             [48, { ...binding, unexpected: true }],
             [49, (() => { const value = { ...binding }; delete value.cwd; return value; })()],
+            [52, { ...legacySessionAttachBinding, windowName: undefined }],
+            [53, { ...readableSessionAttachBinding, unexpected: true }],
         ]) {
             state.set(`aiSessionTmuxAttachProcessBinding.v2.${processId}`, invalid);
             assert.strictEqual(attach.get(processId), null,
@@ -3761,11 +3938,13 @@ async function runTmuxStoreChecks() {
         assert.strictEqual(attach.get(44), null);
         attach.remove(Promise.resolve(44));
         attach.set(Promise.resolve(0), binding);
-        attach.set(Promise.resolve(42), { ...binding, layout: 'session' });
-        attach.set(Promise.resolve(43), { ...binding, windowName: undefined, terminalNamePrefix: '' });
+        attach.set(Promise.resolve(50), { ...binding, layout: 'session', windowName: '' });
+        attach.set(Promise.resolve(51), { ...binding, windowName: undefined, terminalNamePrefix: '' });
         await attach.flush();
-        assert.strictEqual(state.size, 1);
+        assert.strictEqual(state.size, 3);
         attach.remove(Promise.resolve(41));
+        attach.remove(Promise.resolve(42));
+        attach.remove(Promise.resolve(43));
         await attach.flush();
         assert.strictEqual(state.size, 0);
 
@@ -4165,6 +4344,133 @@ async function runTmuxBackendChecks() {
         assert.strictEqual(projectHarness.terminals.length, terminalCount,
             'a changed target must not create an attach terminal');
     }
+
+    const readableFocusIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'readable-focus',
+        workspaceNavigationIdentity: 'nav-readable-focus', workspaceRootHostPaths: ['/work/readable-focus'],
+        cwd: '/work/readable-focus', sessionId: 'readable-focus-session',
+    };
+    const readableFocusLocator = tmuxNaming.buildReadableTmuxLocator(
+        readableFocusIdentity, 'session', { projectName: 'RedDB', sessionName: 'Repair replication' }
+    );
+    const readableFocusMetadata = {
+        managed: '1', version: '2', layout: 'session',
+        workspaceScopeIdentity: readableFocusIdentity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: readableFocusIdentity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: JSON.stringify(readableFocusIdentity.workspaceRootHostPaths),
+        cwd: readableFocusIdentity.cwd, provider: readableFocusIdentity.provider,
+        sessionId: readableFocusIdentity.sessionId, createdAt: '2026-07-18T10:00:00.000Z',
+    };
+    const readableFocusRuntime = {
+        identity: readableFocusIdentity, backend: 'tmux', state: 'active', markerPath: '',
+        runStartedAtMs: Date.parse(readableFocusMetadata.createdAt), attached: false,
+        tmux: readableFocusLocator,
+    };
+    const readableFocusHarness = createTmuxBackendHarness();
+    const readableFocusBackend = new backendModule.TmuxRuntimeBackend(readableFocusHarness.dependencies);
+    readableFocusHarness.setTargetWindow({
+        sessionName: readableFocusLocator.sessionName,
+        windowName: readableFocusLocator.windowName,
+        windowId: '@readable-focus', metadata: readableFocusMetadata,
+    });
+    await readableFocusBackend.focus(readableFocusRuntime);
+    const readableFocusBinding = readableFocusHarness.attachBindings.get(
+        await readableFocusHarness.terminals[0].processId
+    );
+    assert.strictEqual(readableFocusBinding.windowName, readableFocusLocator.windowName,
+        'session attach bindings must preserve the discovered readable windowName');
+    readableFocusHarness.setTargetWindow({
+        sessionName: readableFocusLocator.sessionName,
+        windowName: 'other-window', windowId: '@changed-readable-focus',
+        metadata: readableFocusMetadata,
+    });
+    await assert.rejects(readableFocusBackend.focus(readableFocusRuntime), error =>
+        error && error.name === 'AiSessionRuntimeTargetChangedError',
+    'readable session target verification must compare the actual windowName');
+
+    const legacyFocusIdentity = {
+        ...readableFocusIdentity, workspaceScopeIdentity: 'legacy-focus',
+        workspaceNavigationIdentity: 'nav-legacy-focus', sessionId: 'legacy-focus-session',
+    };
+    const legacyFocusLocator = new tmuxLayout.SessionTmuxLayout().getLocator(legacyFocusIdentity);
+    const legacyFocusHarness = createTmuxBackendHarness();
+    const legacyFocusBackend = new backendModule.TmuxRuntimeBackend(legacyFocusHarness.dependencies);
+    legacyFocusHarness.setTargetWindow({
+        sessionName: legacyFocusLocator.sessionName, windowName: 'renamed-legacy-window',
+        windowId: '@legacy-focus', metadata: {
+            ...readableFocusMetadata,
+            workspaceScopeIdentity: legacyFocusIdentity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: legacyFocusIdentity.workspaceNavigationIdentity,
+            sessionId: legacyFocusIdentity.sessionId,
+        },
+    });
+    await legacyFocusBackend.focus({
+        ...readableFocusRuntime, identity: legacyFocusIdentity, tmux: legacyFocusLocator,
+    });
+
+    for (const [label, identity, locator, expectedWindowName] of [
+        ['readable', readableFocusIdentity, readableFocusLocator, readableFocusLocator.windowName],
+        ['legacy', legacyFocusIdentity, legacyFocusLocator, 'ai-session'],
+    ]) {
+        const metadataHarness = createTmuxBackendHarness();
+        metadataHarness.windows.push({
+            sessionName: locator.sessionName, windowName: expectedWindowName,
+            windowId: `@metadata-${label}`, active: false,
+            sessionMetadata: {}, windowMetadata: {}, metadata: {},
+        });
+        const metadataBackend = new backendModule.TmuxRuntimeBackend(metadataHarness.dependencies);
+        await metadataBackend.writePendingMetadata(
+            identity, locator, '2026-07-18T10:00:00.000Z', ''
+        );
+        await metadataBackend.verifyPendingMetadata(
+            identity, locator, '2026-07-18T10:00:00.000Z', ''
+        );
+        assert.ok(metadataHarness.operations.some(operation =>
+            operation.type === 'window-options' && operation.windowName === expectedWindowName),
+        `${label} session metadata writes must use the locator window fallback`);
+        assert.ok(metadataHarness.operations.some(operation =>
+            operation.type === 'get-window-options' && operation.windowName === expectedWindowName),
+        `${label} session metadata reads must use the locator window fallback`);
+    }
+    const transitionPendingIdentity = {
+        provider: 'kimi', workspaceScopeIdentity: 'readable-transition',
+        workspaceNavigationIdentity: 'nav-readable-transition',
+        workspaceRootHostPaths: ['/work/readable-transition'], cwd: '/work/readable-transition',
+        pendingId: 'readable-transition-pending',
+    };
+    const transitionFinalIdentity = {
+        ...transitionPendingIdentity, pendingId: undefined, sessionId: 'readable-transition-final',
+    };
+    const transitionFinalLocator = tmuxNaming.buildReadableTmuxLocator(
+        transitionFinalIdentity, 'session', { projectName: 'RedDB', sessionName: 'Transition' }
+    );
+    const transitionHarness = createTmuxBackendHarness();
+    transitionHarness.windows.push({
+        sessionName: transitionFinalLocator.sessionName,
+        windowName: transitionFinalLocator.windowName,
+        windowId: '@readable-transition', active: false,
+        sessionMetadata: {
+            managed: '1', version: '2', layout: 'session',
+            workspaceScopeIdentity: transitionFinalIdentity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: transitionFinalIdentity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: JSON.stringify(transitionFinalIdentity.workspaceRootHostPaths),
+            cwd: transitionFinalIdentity.cwd, provider: transitionFinalIdentity.provider,
+            sessionId: transitionFinalIdentity.sessionId, createdAt: '2026-07-18T10:00:00.000Z',
+        },
+        windowMetadata: { managed: '1', version: '2', layout: 'session' },
+        metadata: {},
+    });
+    const transitionBackend = new backendModule.TmuxRuntimeBackend(transitionHarness.dependencies);
+    assert.strictEqual(await transitionBackend.promotionTransitionMatches({
+        version: 2, state: 'promoting', ...transitionPendingIdentity,
+        createdAt: '2026-07-18T10:00:00.000Z', markerPath: '',
+        finalSessionId: transitionFinalIdentity.sessionId, layout: 'session',
+        finalLocator: transitionFinalLocator,
+    }, transitionFinalIdentity), true);
+    assert.ok(transitionHarness.operations.some(operation =>
+        operation.type === 'get-window-options'
+        && operation.windowName === transitionFinalLocator.windowName),
+    'session promotion metadata reads must use the actual locator windowName');
     projectHarness.setTargetWindow(undefined);
     await projectBackend.detach(firstProject);
     assert.strictEqual(projectHarness.terminals[0].disposed, true);
