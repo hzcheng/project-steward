@@ -294,6 +294,7 @@
         "attention:package": "npm run spike:attention:test && npm run spike:attention:bundle && npm run attention:bridge:bundle && node scripts/package-attention-extensions.js",
         "spike:attention:package": "npm run attention:package",
         "lint": "tslint -p ./",
+        "lint:ci": "node scripts/check-tslint-baseline.js",
         "install-local": "./scripts/build-test-package-install.sh",
         "publish-marketplace": "./scripts/publish-marketplace.sh"
     },
