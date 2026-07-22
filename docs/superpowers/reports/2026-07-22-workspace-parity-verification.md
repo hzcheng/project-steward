@@ -118,4 +118,3 @@ Additional checks:
   indicator.
 - [ ] Clicking the matching Session clears the indicator in CURRENT WORKSPACE
   and OTHER WINDOWS after aggregate synchronization.
-
