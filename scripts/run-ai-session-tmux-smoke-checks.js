@@ -21,11 +21,63 @@ const WAIT_TIMEOUT_MS = 8_000;
 const POLL_INTERVAL_MS = 25;
 const PROVIDER_EXIT_TIMEOUT_MS = 2_000;
 const FINAL_RECORD_LOCK_KEY = 'runtime-binding-final-records';
+const OWNED_TEMP_PREFIXES = new Set([
+    'project-steward-tmux-smoke-',
+    'project-steward-tmux-server-',
+]);
+const ownedTemporaryRootToken = Symbol('ownedTemporaryRoot');
 const configuredTmuxPath = process.env.PROJECT_STEWARD_TMUX_PATH || 'tmux';
 const serverName = `project-steward-test-${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
 const isolatedPrefix = ['-L', serverName, '-f', '/dev/null'];
 const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
 let tmuxTempRoot = null;
+
+function createOwnedTemporaryRoot(prefix) {
+    if (!OWNED_TEMP_PREFIXES.has(prefix)) {
+        throw new Error('Refusing to create an unexpected smoke temporary root.');
+    }
+    const parentPath = fs.realpathSync(os.tmpdir());
+    const rootPath = fs.mkdtempSync(path.join(parentPath, prefix));
+    const stat = fs.lstatSync(rootPath);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error('The created smoke temporary root was not a real directory.');
+    }
+    return Object.freeze({
+        [ownedTemporaryRootToken]: true,
+        path: rootPath,
+        parentPath,
+        prefix,
+        device: stat.dev,
+        inode: stat.ino,
+    });
+}
+
+function validateOwnedTemporaryRoot(ownership) {
+    if (!ownership || ownership[ownedTemporaryRootToken] !== true) {
+        throw new Error('Cleanup requires a validated owned temporary root.');
+    }
+    if (!OWNED_TEMP_PREFIXES.has(ownership.prefix)
+        || !path.isAbsolute(ownership.path)
+        || path.dirname(ownership.path) !== ownership.parentPath
+        || fs.realpathSync(os.tmpdir()) !== ownership.parentPath
+        || !path.basename(ownership.path).startsWith(ownership.prefix)) {
+        throw new Error('The owned temporary root failed path validation.');
+    }
+    const stat = fs.lstatSync(ownership.path);
+    if (!stat.isDirectory() || stat.isSymbolicLink()
+        || fs.realpathSync(ownership.path) !== ownership.path
+        || stat.dev !== ownership.device || stat.ino !== ownership.inode) {
+        throw new Error('The owned temporary root identity changed before cleanup.');
+    }
+    return ownership.path;
+}
+
+function removeOwnedTemporaryRoot(ownership) {
+    const ownedPath = validateOwnedTemporaryRoot(ownership);
+    fs.rmSync(ownedPath, { recursive: true, force: true });
+    assert.strictEqual(fs.existsSync(ownedPath), false,
+        'the validated owned temporary root must be absent after cleanup');
+}
 
 class CleanupAggregateError extends Error {
     constructor(errors, message) {
@@ -629,15 +681,15 @@ function stopAndVerifyProviderFixtures(fixtures, dependencies = {}) {
     }
 }
 
-function removeFixtureRoots(root, isolatedRoot, serverStopped, providersStopped) {
+function removeFixtureRoots(rootOwnership, isolatedRootOwnership, serverStopped, providersStopped) {
     const errors = [];
     const fixtureRoots = [
-        ...(providersStopped ? [root] : []),
-        ...(serverStopped ? [isolatedRoot] : []),
+        ...(providersStopped && rootOwnership ? [rootOwnership] : []),
+        ...(serverStopped && isolatedRootOwnership ? [isolatedRootOwnership] : []),
     ];
     for (const fixtureRoot of fixtureRoots) {
         try {
-            fs.rmSync(fixtureRoot, { recursive: true, force: true });
+            removeOwnedTemporaryRoot(fixtureRoot);
         } catch (error) {
             errors.push(error);
         }
@@ -691,17 +743,29 @@ async function runBestEffortCleanup(stages) {
     }
 }
 
+function reportSmokeOutcome(primaryError, cleanupError) {
+    if (primaryError && cleanupError) {
+        throw new CleanupAggregateError([primaryError, cleanupError],
+            'The tmux smoke test and cleanup both failed.');
+    }
+    if (primaryError) throw primaryError;
+    if (cleanupError) throw cleanupError;
+}
+
 async function main() {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-tmux-smoke-'));
-    tmuxTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-tmux-server-'));
-    const ownedTmuxTempRoot = tmuxTempRoot;
+    let rootOwnership = null;
+    let tmuxTempRootOwnership = null;
     const fixtures = [];
-    const runner = new IsolatedSyncTmuxRunner();
-    const client = new TmuxClient(configuredTmuxPath, runner);
     let primaryError = null;
     let cleanupError = null;
     try {
         try {
+            rootOwnership = createOwnedTemporaryRoot('project-steward-tmux-smoke-');
+            tmuxTempRootOwnership = createOwnedTemporaryRoot('project-steward-tmux-server-');
+            const root = rootOwnership.path;
+            tmuxTempRoot = tmuxTempRootOwnership.path;
+            const runner = new IsolatedSyncTmuxRunner();
+            const client = new TmuxClient(configuredTmuxPath, runner);
             const availability = await client.checkAvailability();
             assert.ok(availability.available, availability.message);
             await runSmoke(root, runner, client, fixtures);
@@ -710,33 +774,32 @@ async function main() {
         }
     } finally {
         try {
+            const tmuxRootWasCreated = Boolean(tmuxTempRootOwnership);
             await runBestEffortCleanup({
-                captureSocket: captureIsolatedSocketPath,
-                killServer: killIsolatedServer,
-                verifyStopped: assertIsolatedServerStopped,
-                removeSocket: removeOwnStaleSocket,
+                captureSocket: tmuxRootWasCreated ? captureIsolatedSocketPath : () => null,
+                killServer: tmuxRootWasCreated ? killIsolatedServer : () => undefined,
+                verifyStopped: tmuxRootWasCreated ? assertIsolatedServerStopped : () => undefined,
+                removeSocket: tmuxRootWasCreated ? removeOwnStaleSocket : () => undefined,
                 terminateProviders: () => stopAndVerifyProviderFixtures(fixtures),
                 removeFixtures: (serverStopped, providersStopped) => removeFixtureRoots(
-                    root, ownedTmuxTempRoot, serverStopped, providersStopped
+                    rootOwnership, tmuxTempRootOwnership, serverStopped, providersStopped
                 ),
             });
         } catch (error) {
             cleanupError = error;
         }
     }
-    if (primaryError && cleanupError) {
-        throw new CleanupAggregateError([primaryError, cleanupError],
-            'The tmux smoke test and cleanup both failed.');
-    }
-    if (primaryError) throw primaryError;
-    if (cleanupError) throw cleanupError;
-    console.log('AI session tmux smoke checks passed.');
+    reportSmokeOutcome(primaryError, cleanupError);
+    console.log(`AI session tmux smoke checks passed (${serverName}).`);
 }
 
 module.exports = {
     assertIsolatedServerStopped,
     collectTrackedProviderPids,
+    createOwnedTemporaryRoot,
     killIsolatedServer,
+    removeOwnedTemporaryRoot,
+    reportSmokeOutcome,
     runBestEffortCleanup,
     stopAndVerifyProviderFixtures,
     waitForTrackedProviderExit,

@@ -56,7 +56,7 @@ function findStep(job, predicate) {
     return job.steps.find(predicate);
 }
 
-function validateJob(jobs, jobId, expectedRunner, expectedGate) {
+function validateJob(jobs, jobId, expectedRunner, expectedGate, prerequisiteCommands = []) {
     const job = jobs[jobId];
     assert.ok(isMapping(job), `GitHub verification workflow must define ${jobId}`);
     assert.equal(job.name, jobId, `${jobId} must expose the stable check name ${jobId}`);
@@ -74,6 +74,10 @@ function validateJob(jobs, jobId, expectedRunner, expectedGate) {
     assert.equal(setupNode.with.cache, 'npm', `${jobId} setup-node step must cache npm`);
     assert.ok(findStep(job, step => isMapping(step) && step.run === 'npm ci'),
         `${jobId} must run npm ci`);
+    for (const command of prerequisiteCommands) {
+        assert.ok(findStep(job, step => isMapping(step) && step.run === command),
+            `${jobId} must run ${command}`);
+    }
     assert.ok(findStep(job, step => isMapping(step) && step.run === expectedGate),
         `${jobId} must run ${expectedGate}`);
 }
@@ -92,6 +96,8 @@ function validateVerifyWorkflow(verifyWorkflow) {
     assert.ok(isMapping(workflow.jobs), 'GitHub verification workflow jobs must be a mapping');
     validateJob(workflow.jobs, 'quality-linux', 'ubuntu-latest', 'npm run test:ci:linux');
     validateJob(workflow.jobs, 'platform-windows', 'windows-latest', 'npm run test:ci:windows');
+    validateJob(workflow.jobs, 'tmux-smoke-linux', 'ubuntu-latest',
+        'npm run test:tmux:smoke', ['sudo apt-get install -y tmux']);
     assert.equal(containsKey(workflow, 'continue-on-error'), false,
         'GitHub verification workflow must not define continue-on-error');
 }

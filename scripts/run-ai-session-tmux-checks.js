@@ -7416,6 +7416,7 @@ function runTmuxWebviewExperienceChecks() {
 }
 
 // RUNTIME-REAL-TMUX-SMOKE-HARNESS-SOURCE-001
+// RUNTIME-REAL-TMUX-SMOKE-CLEANUP-001
 async function runRealTmuxSmokeHarnessSourceChecks() {
     const smokePath = path.join(__dirname, 'run-ai-session-tmux-smoke-checks.js');
     assert.ok(fs.existsSync(smokePath), 'the isolated real tmux smoke harness must exist');
@@ -7452,6 +7453,52 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
     assert.strictEqual(/\bspawn(?:Sync)?\s*\(/.test(source), false);
 
     const smokeHarness = require(smokePath);
+    const primaryFailure = new Error('primary smoke failure');
+    const cleanupFailure = new Error('cleanup smoke failure');
+    assert.throws(
+        () => smokeHarness.reportSmokeOutcome(primaryFailure, cleanupFailure),
+        error => error && error.name === 'CleanupAggregateError'
+            && error.errors[0] === primaryFailure
+            && error.errors[1] === cleanupFailure,
+        'a primary failure and cleanup failure must both remain observable'
+    );
+    const ownedFixtureRoot = smokeHarness.createOwnedTemporaryRoot(
+        'project-steward-tmux-smoke-'
+    );
+    assert.ok(fs.existsSync(ownedFixtureRoot.path));
+    smokeHarness.removeOwnedTemporaryRoot(ownedFixtureRoot);
+    assert.strictEqual(fs.existsSync(ownedFixtureRoot.path), false,
+        'cleanup may remove the exact temporary root identity created by the harness');
+
+    const foreignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-foreign-'));
+    try {
+        assert.throws(
+            () => smokeHarness.removeOwnedTemporaryRoot(foreignRoot),
+            /validated owned temporary root/
+        );
+        assert.ok(fs.existsSync(foreignRoot),
+            'cleanup must refuse an unowned string path without deleting it');
+    } finally {
+        fs.rmSync(foreignRoot, { recursive: true, force: true });
+    }
+
+    const replacedRoot = smokeHarness.createOwnedTemporaryRoot(
+        'project-steward-tmux-server-'
+    );
+    const movedRoot = `${replacedRoot.path}-original`;
+    fs.renameSync(replacedRoot.path, movedRoot);
+    fs.mkdirSync(replacedRoot.path);
+    try {
+        assert.throws(
+            () => smokeHarness.removeOwnedTemporaryRoot(replacedRoot),
+            /identity changed/
+        );
+        assert.ok(fs.existsSync(replacedRoot.path));
+        assert.ok(fs.existsSync(movedRoot));
+    } finally {
+        fs.rmSync(replacedRoot.path, { recursive: true, force: true });
+        fs.rmSync(movedRoot, { recursive: true, force: true });
+    }
     const cleanupStages = [
         'captureSocket', 'killServer', 'verifyStopped',
         'removeSocket', 'terminateProviders', 'removeFixtures',

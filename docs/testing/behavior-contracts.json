@@ -1284,6 +1284,33 @@
     ]
   },
   {
+    "id": "RUNTIME-REAL-TMUX-SMOKE-CLEANUP-001",
+    "domain": "runtime",
+    "title": "Real tmux smoke owns and verifies every cleanup target",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-smoke-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-REAL-TMUX-CI-GATE-001",
+    "domain": "runtime",
+    "title": "Pull requests run the isolated real tmux smoke gate",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/tooling/ciContracts.test.js"
+    ],
+    "evidence": [
+      ".github/workflows/verify.yml",
+      "scripts/lib/ciContracts.js"
+    ]
+  },
+  {
     "id": "ARCH-PROTOCOL-001",
     "domain": "architecture",
     "title": "Protocol behavior",
