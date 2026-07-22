@@ -22,12 +22,18 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+
   release:
     name: Build and release VSIX
+    needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout

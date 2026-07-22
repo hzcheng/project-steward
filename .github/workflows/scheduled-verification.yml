@@ -1,0 +1,35 @@
+name: Scheduled verification
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scheduled-macos:
+    name: scheduled-macos
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Compile extensions
+        run: npm run test-compile
+      - name: Validate behavior ownership
+        run: npm run test:behavior-contracts
+      - name: Run deterministic tests
+        run: npm run test:deterministic:run
+      - name: Enforce lint warning baseline
+        run: npm run lint:ci
+      - name: Verify release packaging contracts
+        run: npm run test:release-packaging

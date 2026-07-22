@@ -2118,5 +2118,117 @@
     "evidence": [
       "src/dashboard/messageRouter.ts"
     ]
+  },
+  {
+    "id": "OPEN-MULTI-WINDOW-001",
+    "domain": "open-project",
+    "title": "Two local windows aggregate and focus their existing project windows",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires two interactive VS Code UI windows and observable operating-system focus changes."
+  },
+  {
+    "id": "OPEN-SAME-WORKSPACE-WINDOWS-001",
+    "domain": "open-project",
+    "title": "Two windows for the same workspace retain distinct live identities",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires two interactive VS Code windows for one workspace and human confirmation of focus identity."
+  },
+  {
+    "id": "OPEN-REMOTE-SSH-MANUAL-001",
+    "domain": "open-project",
+    "title": "Remote SSH publications preserve authority and recover after reconnect",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires a separately provisioned SSH host and interactive local and remote extension hosts."
+  },
+  {
+    "id": "OPEN-REMOTE-WSL-MANUAL-001",
+    "domain": "open-project",
+    "title": "WSL publications preserve Linux path and remote authority identity",
+    "priority": "P1",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires a Windows host with WSL and interactive UI/remote extension-host placement."
+  },
+  {
+    "id": "OPEN-DEV-CONTAINER-MANUAL-001",
+    "domain": "open-project",
+    "title": "Dev Container publications follow rebuild and stop lifecycle",
+    "priority": "P1",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires a container runtime, interactive VS Code UI, and a real Dev Container lifecycle."
+  },
+  {
+    "id": "ATTENTION-UI-VISUAL-001",
+    "domain": "attention",
+    "title": "Attention lifecycle remains visually distinct and accessible",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Color, contrast, animation, and theme presentation require human visual review in the VS Code UI."
+  },
+  {
+    "id": "SESSION-TERMINAL-FOCUS-MANUAL-001",
+    "domain": "session",
+    "title": "Selecting a session focuses only its intended live terminal",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires interactive VS Code terminal focus observation across multiple live terminals."
+  },
+  {
+    "id": "RUNTIME-SLEEP-DISCONNECT-RECOVERY-001",
+    "domain": "runtime",
+    "title": "Sleep and remote disconnect recover without duplicate or stale runtime state",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires real operating-system sleep and remote transport interruption outside deterministic CI control."
   }
 ]
