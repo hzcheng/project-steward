@@ -81,6 +81,11 @@ function createPending(workspace) {
         createdAt: '2026-07-22T10:00:00.000Z',
         excludedSessionIds: [],
         title: 'Parity session',
+        tmux: {
+            layout: 'session',
+            sessionName: 'ps-Parity-session-12345678',
+            windowName: 'codex-Parity-session-12345678',
+        },
     };
 }
 
@@ -166,6 +171,13 @@ async function runShapeLifecycle(shape, index) {
     }];
     const results = providerResults(workspace);
     let pending = [createPending(workspace)];
+    const expectedPromotionName = index % 3 === 0
+        ? 'Parity session'
+        : index % 3 === 1 ? 'Resolved session name' : 'session-final';
+    if (index % 3 !== 0) {
+        pending[0].title = '';
+        results.codex.sessions[0].name = index % 3 === 1 ? 'Resolved session name' : '';
+    }
     let active = [];
     let execution = {};
     let attention = completionAggregate(workspace, '0', false);
@@ -174,13 +186,17 @@ async function runShapeLifecycle(shape, index) {
     let evaluationCount = 0;
     const refreshReasons = [];
     const aliases = [];
+    const setAlias = (providerId, sessionId, alias) =>
+        aliases.push([providerId, sessionId, alias]);
 
     const runtimeCoordinator = {
         getPending: () => pending,
         getActive: () => active,
-        promotePending: async (_identity, sessionId) => {
+        promotePending: async (_identity, sessionId, sessionName) => {
             promotionCount++;
             assert.strictEqual(sessionId, 'session-final');
+            assert.strictEqual(sessionName, expectedPromotionName,
+                'promotion must snapshot pending title, resolved name, or provider ID fallback');
             const final = promoteRuntime(pending[0]);
             pending = [];
             active = [final];
@@ -191,8 +207,7 @@ async function runShapeLifecycle(shape, index) {
         providers,
         getSessionKey: (providerId, sessionId) => providerId + ':' + sessionId,
         runtimeCoordinator,
-        setAlias: (providerId, sessionId, alias) =>
-            aliases.push([providerId, sessionId, alias]),
+        setAlias,
         syncActiveRuntime: () => { syncCount++; },
         evaluateExecution: () => { evaluationCount++; },
         scheduleRefresh: reason => refreshReasons.push(reason),
@@ -225,7 +240,11 @@ async function runShapeLifecycle(shape, index) {
     assert.strictEqual(syncCount, 1);
     assert.strictEqual(evaluationCount, 1);
     assert.deepStrictEqual(refreshReasons, ['pending-promotion']);
-    assert.deepStrictEqual(aliases, [['codex', 'session-final', 'Parity session']]);
+    assert.deepStrictEqual(aliases, [['codex', 'session-final', index % 3 === 0 ? 'Parity session' : '']]);
+    const activeLocator = { ...active[0].tmux };
+    setAlias('codex', 'session-final', 'Later alias');
+    assert.deepStrictEqual(active[0].tmux, activeLocator,
+        'later alias updates must not rename an active runtime locator snapshot');
 
     execution = {
         'codex:session-final': {

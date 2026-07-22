@@ -263,10 +263,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     async promotePending(
         identity: AiSessionRuntimeIdentity & { pendingId: string },
         sessionId: string,
-        _sessionName: string
+        sessionName: string
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
         const pendingIdentityValue = pendingIdentity(identity);
-        if (!isValidAiSessionRuntimeIdentity(pendingIdentityValue) || !isIdentityField(sessionId)) {
+        if (!isValidAiSessionRuntimeIdentity(pendingIdentityValue) || !isIdentityField(sessionId)
+            || !isPromotionDisplayName(sessionName)) {
             return [];
         }
         return this.dependencies.withCreationLock<AiSessionRuntimeSnapshot<TTerminal>[]>(
@@ -326,7 +327,13 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 cwd: currentBinding.cwd,
                 sessionId,
             };
-            const finalLocator = getFinalLocator(finalIdentityValue, currentBinding.layout);
+            const preferredFinal = buildReadableTmuxLocator(finalIdentityValue, currentBinding.layout, {
+                projectName: currentBinding.projectName || 'workspace',
+                sessionName,
+            });
+            const finalLocator: AiSessionTmuxLocator = currentBinding.layout === 'project'
+                ? { ...preferredFinal, sessionName: currentBinding.locator.sessionName }
+                : preferredFinal;
             const finalLockKey = getTmuxRuntimeKey(finalIdentityValue);
             return this.dependencies.withCreationLock<AiSessionRuntimeSnapshot<TTerminal>[]>(
                 finalLockKey,
@@ -340,7 +347,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                     const expectedIntent = promotionIntent(currentBinding, {
                         ...pendingSnapshot,
                         markerPath: intent?.markerPath ?? pendingSnapshot.markerPath,
-                    }, finalIdentityValue, finalLocator, this.dependencies.nowMs());
+                    }, finalIdentityValue, sessionName, finalLocator, this.dependencies.nowMs());
                     if (intent && !promotionIntentsMatch(intent, expectedIntent)) {
                         throw new Error('The pending tmux runtime has a conflicting promotion in progress.');
                     }
@@ -363,12 +370,43 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                         return this.completePromotion(pendingSnapshot, finalIdentityValue, finalLocator,
                             compatible, pendingIdentityValue);
                     }
+                    const differentlyNamedFinal = this.findVerified(finalIdentityValue);
+                    if (differentlyNamedFinal) {
+                        return [
+                            this.withAttach(asConflict(differentlyNamedFinal)),
+                            this.withAttach(asConflict(pendingSnapshot)),
+                        ];
+                    }
                     if (intent && await this.promotionTransitionMatches(intent, finalIdentityValue)) {
                         await this.writeFinalMetadata(finalIdentityValue, finalLocator, {
                             createdAt: intent.createdAt,
                             markerPath: intent.markerPath,
                         });
                         await this.dependencies.client.clearPendingMetadata(finalLocator);
+                        return this.verifyAndCompletePromotion(pendingSnapshot, finalIdentityValue,
+                            finalLocator, pendingIdentityValue);
+                    }
+                    if (intent && await this.sessionPromotionPartiallyRenamed(intent)) {
+                        const sourceWindow = intent.sourceLocator.windowName || SESSION_WINDOW;
+                        const finalWindow = intent.finalLocator.windowName;
+                        if (!finalWindow) {
+                            throw new Error('The pending tmux promotion state is ambiguous; no mutation was attempted.');
+                        }
+                        try {
+                            await this.dependencies.client.renameWindow(
+                                intent.finalLocator.sessionName, sourceWindow, finalWindow
+                            );
+                            await this.writeFinalMetadata(finalIdentityValue, finalLocator, {
+                                createdAt: intent.createdAt,
+                                markerPath: intent.markerPath,
+                            });
+                            await this.dependencies.client.clearPendingMetadata(finalLocator);
+                        } catch (error) {
+                            await this.dependencies.discovery.refresh(true);
+                            if (!this.findVerified(finalIdentityValue, finalLocator)) {
+                                throw error;
+                            }
+                        }
                         return this.verifyAndCompletePromotion(pendingSnapshot, finalIdentityValue,
                             finalLocator, pendingIdentityValue);
                     }
@@ -455,6 +493,47 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             return recordsEqual(baseOptions, expectedBase)
                 && [pendingMetadata, finalMetadata, bothMetadata]
                     .some(expected => recordsEqual(identityOptions, expected));
+        } catch (_error) {
+            return false;
+        }
+    }
+
+    private async sessionPromotionPartiallyRenamed(
+        intent: TmuxPromotingRuntimeBinding
+    ): Promise<boolean> {
+        if (intent.layout !== 'session') {
+            return false;
+        }
+        const sourceWindow = intent.sourceLocator.windowName || SESSION_WINDOW;
+        const finalWindow = intent.finalLocator.windowName;
+        if (!finalWindow || sourceWindow === finalWindow) {
+            return false;
+        }
+        try {
+            const rows = await this.dependencies.client.listWindows();
+            const finalSessionRows = rows.filter(row =>
+                row.sessionName === intent.finalLocator.sessionName);
+            if (finalSessionRows.length !== 1 || finalSessionRows[0].windowName !== sourceWindow
+                || rows.some(row => row.sessionName === intent.sourceLocator.sessionName)) {
+                return false;
+            }
+            const sessionOptions = await this.dependencies.client.getSessionOptions(
+                intent.finalLocator.sessionName
+            );
+            const windowOptions = await this.dependencies.client.getWindowOptions(
+                intent.finalLocator.sessionName, sourceWindow
+            );
+            const pendingIdentityValue: AiSessionRuntimeIdentity = {
+                provider: intent.provider,
+                workspaceScopeIdentity: intent.workspaceScopeIdentity,
+                workspaceNavigationIdentity: intent.workspaceNavigationIdentity,
+                workspaceRootHostPaths: [...intent.workspaceRootHostPaths],
+                cwd: intent.cwd,
+                pendingId: intent.pendingId,
+            };
+            return recordsEqual(sessionOptions, fullMetadata(
+                pendingIdentityValue, intent.layout, intent.createdAt, intent.markerPath
+            )) && recordsEqual(windowOptions, sessionWindowMetadata());
         } catch (_error) {
             return false;
         }
@@ -1202,6 +1281,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             return;
         }
         await this.dependencies.client.renameSession(from.sessionName, to.sessionName);
+        const sourceWindow = from.windowName || SESSION_WINDOW;
+        if (!to.windowName) {
+            throw new Error('A session tmux promotion requires a final managed window name.');
+        }
+        await this.dependencies.client.renameWindow(to.sessionName, sourceWindow, to.windowName);
     }
 
     private async migrateAttach(
@@ -1307,6 +1391,11 @@ function getRestoredAttachTerminalName(runtime: AiSessionRuntimeSnapshot): strin
 
 function isSafeAttachTerminalName(value: unknown): value is string {
     return typeof value === 'string' && value.length > 0 && value.length <= 200
+        && !LOCAL_CONTROL_CHARACTERS.test(value);
+}
+
+function isPromotionDisplayName(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0 && value.length <= 200
         && !LOCAL_CONTROL_CHARACTERS.test(value);
 }
 
@@ -1762,13 +1851,16 @@ function promotionIntent(
     binding: TmuxPendingRuntimeBinding,
     pending: AiSessionRuntimeSnapshot,
     finalIdentityValue: AiSessionRuntimeIdentity,
+    finalSessionName: string,
     finalLocator: AiSessionTmuxLocator,
     recordedAtMs: number
 ): TmuxPromotingRuntimeBinding {
     if (!finalIdentityValue.sessionId) {
         throw new Error('A promotion intent requires a final session ID.');
     }
-    const requestFingerprint = promotionRequestFingerprint(binding, pending.markerPath);
+    const requestFingerprint = promotionRequestFingerprint(
+        binding, pending.markerPath, finalSessionName, finalLocator
+    );
     return {
         version: 2,
         state: 'promoting',
@@ -1787,6 +1879,7 @@ function promotionIntent(
             locator: { ...binding.locator },
         },
         finalSessionId: finalIdentityValue.sessionId,
+        finalSessionName,
         layout: binding.layout,
         sourceLocator: { ...binding.locator },
         finalLocator: { ...finalLocator },
@@ -1795,7 +1888,12 @@ function promotionIntent(
     };
 }
 
-function promotionRequestFingerprint(binding: TmuxPendingRuntimeBinding, markerPath: string): string {
+function promotionRequestFingerprint(
+    binding: TmuxPendingRuntimeBinding,
+    markerPath: string,
+    finalSessionName: string,
+    finalLocator: AiSessionTmuxLocator
+): string {
     return createHash('sha256').update(JSON.stringify([
         2,
         binding.provider,
@@ -1811,6 +1909,8 @@ function promotionRequestFingerprint(binding: TmuxPendingRuntimeBinding, markerP
         binding.layout,
         binding.locator,
         markerPath,
+        finalSessionName,
+        finalLocator,
     ]), 'utf8').digest('hex');
 }
 
@@ -1819,7 +1919,9 @@ function promotionIntentMatchesLiveBinding(
     binding: TmuxPendingRuntimeBinding
 ): boolean {
     return pendingBindingsEqual(intent.pendingBinding, binding)
-        && intent.requestFingerprint === promotionRequestFingerprint(binding, intent.markerPath);
+        && intent.requestFingerprint === promotionRequestFingerprint(
+            binding, intent.markerPath, intent.finalSessionName, intent.finalLocator
+        );
 }
 
 function promotionIntentsMatch(
@@ -1834,7 +1936,8 @@ function promotionIntentsMatch(
         && left.cwd === right.cwd
         && left.createdAt === right.createdAt && left.markerPath === right.markerPath
         && pendingBindingsEqual(left.pendingBinding, right.pendingBinding)
-        && left.finalSessionId === right.finalSessionId && left.layout === right.layout
+        && left.finalSessionId === right.finalSessionId
+        && left.finalSessionName === right.finalSessionName && left.layout === right.layout
         && locatorsEqual(left.sourceLocator, right.sourceLocator)
         && locatorsEqual(left.finalLocator, right.finalLocator)
         && left.requestFingerprint === right.requestFingerprint;

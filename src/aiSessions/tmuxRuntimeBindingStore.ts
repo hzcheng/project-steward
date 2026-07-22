@@ -114,6 +114,7 @@ export interface TmuxPromotingRuntimeBinding {
     markerPath: string;
     pendingBinding: TmuxPendingRuntimeBinding;
     finalSessionId: string;
+    finalSessionName: string;
     layout: AiSessionTmuxLayout;
     sourceLocator: AiSessionTmuxLocator;
     finalLocator: AiSessionTmuxLocator;
@@ -880,12 +881,13 @@ function validatePromotingRecord(value: unknown): TmuxPromotingRuntimeBinding | 
         'version', 'state', 'pendingId', 'provider', 'workspaceScopeIdentity',
         'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'createdAt',
         'markerPath', 'pendingBinding', 'finalSessionId', 'layout', 'sourceLocator',
-        'finalLocator', 'requestFingerprint', 'recordedAtMs',
+        'finalSessionName', 'finalLocator', 'requestFingerprint', 'recordedAtMs',
     ]) || record.version !== RECORD_VERSION || record.state !== 'promoting'
         || !identity
         || !isDateString(record.createdAt)
         || (record.markerPath !== '' && !isBoundedString(record.markerPath, MAX_PATH_LENGTH))
-        || !isBoundedString(record.finalSessionId, MAX_ID_LENGTH) || !isLayout(record.layout)
+        || !isBoundedString(record.finalSessionId, MAX_ID_LENGTH)
+        || !isRequiredDisplayName(record.finalSessionName) || !isLayout(record.layout)
         || !sourceLocator || sourceLocator.layout !== record.layout
         || !finalLocator || finalLocator.layout !== record.layout
         || (record.layout === 'project' && sourceLocator.sessionName !== finalLocator.sessionName)
@@ -907,6 +909,7 @@ function validatePromotingRecord(value: unknown): TmuxPromotingRuntimeBinding | 
         markerPath: record.markerPath,
         pendingBinding,
         finalSessionId: record.finalSessionId,
+        finalSessionName: record.finalSessionName,
         layout: record.layout,
         sourceLocator,
         finalLocator,
@@ -1362,6 +1365,11 @@ function isBoundedString(value: unknown, maxLength: number): value is string {
 
 function isOptionalTitle(value: unknown): value is string {
     return typeof value === 'string' && value.length <= MAX_TITLE_LENGTH && !CONTROL_CHARACTERS.test(value);
+}
+
+function isRequiredDisplayName(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0
+        && value.length <= MAX_TITLE_LENGTH && !CONTROL_CHARACTERS.test(value);
 }
 
 function isDateString(value: unknown): value is string {

@@ -16,6 +16,9 @@ import {
     cloneAiSessionRuntimeIdentity,
 } from './runtimeTypes';
 
+const MAX_DISPLAY_NAME_LENGTH = 200;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
 interface DirectTerminalEntry<TTerminal> {
     provider: AiSessionProviderId;
     sessionId: string;
@@ -240,8 +243,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     async promotePending(
         identity: AiSessionRuntimeIdentity & { pendingId: string },
         sessionId: string,
-        _sessionName: string
+        sessionName: string
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
+        if (!isPromotionDisplayName(sessionName)) {
+            return [];
+        }
         const expectedIdentity = cloneAiSessionRuntimeIdentity(identity);
         const matches = this.terminalService.getPendingTerminals().filter(entry =>
             pendingIdentitiesEqual(this.getPendingIdentity(entry), expectedIdentity));
@@ -349,6 +355,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             ? cloneAiSessionRuntimeIdentity(identity) as DirectPendingRuntimeMetadata
             : null;
     }
+}
+
+function isPromotionDisplayName(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0
+        && value.length <= MAX_DISPLAY_NAME_LENGTH && !CONTROL_CHARACTERS.test(value);
 }
 
 function pendingIdentitiesEqual(

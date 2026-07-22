@@ -3552,6 +3552,7 @@ async function runTmuxStoreChecks() {
             createdAt: '2026-07-18T09:59:00Z',
             markerPath: '/tmp/promoting',
             finalSessionId: 's-promoting',
+            finalSessionName: 'Repair replication',
             layout: 'project',
             sourceLocator: {
                 layout: 'project', sessionName: 'project-steward-p-a', windowName: 'pending-codex-p-promoting',
@@ -5383,16 +5384,35 @@ async function runTmuxBackendChecks() {
         item.type === 'new-session').length, 1,
     'display-only card changes must not redispatch an ambiguous provider request');
 
+    const renameCountBeforeInvalidPromotion = pendingHarness.operations.filter(item =>
+        item.type === 'rename-session' || item.type === 'rename-window').length;
+    assert.deepStrictEqual(await pendingBackend.promotePending(
+        pendingRequest.identity, 'final-1', ''
+    ), []);
+    assert.strictEqual(pendingHarness.operations.filter(item =>
+        item.type === 'rename-session' || item.type === 'rename-window').length,
+    renameCountBeforeInvalidPromotion);
     const promoted = await pendingBackend.promotePending(
         pendingRequest.identity, 'final-1', 'New work'
     );
     assert.strictEqual(promoted.length, 1);
     assert.strictEqual(promoted[0].identity.sessionId, 'final-1');
+    assert.match(promoted[0].tmux.sessionName,
+        /^ps-RedDB-DTS-Dual-Active-New-work-[0-9a-f]{8}$/);
+    assert.match(promoted[0].tmux.windowName, /^claude-New-work-[0-9a-f]{8}$/);
     assert.strictEqual(pendingHarness.pending.size, 0);
     assert.strictEqual(pendingHarness.consumed.size, 1);
     assert.ok(pendingHarness.known.has('claude:final-1'));
+    assert.deepStrictEqual(pendingHarness.known.get('claude:final-1').locator, promoted[0].tmux);
+    assert.deepStrictEqual(Array.from(pendingHarness.consumed.values())[0].finalLocator,
+        promoted[0].tmux);
+    const promotedAttachBinding = pendingHarness.attachBindings.get(await pendingRuntime.terminal.processId);
+    assert.strictEqual(promotedAttachBinding.sessionName, promoted[0].tmux.sessionName);
+    assert.strictEqual(promotedAttachBinding.windowName, promoted[0].tmux.windowName);
+    assert.strictEqual(promotedAttachBinding.sessionId, 'final-1');
     assert.strictEqual(pendingHarness.operations.filter(item => item.type === 'clear-pending').length, 1);
     assert.strictEqual(pendingHarness.operations.filter(item => item.type === 'rename-session').length, 1);
+    assert.strictEqual(pendingHarness.operations.filter(item => item.type === 'rename-window').length, 1);
     assert.strictEqual(pendingHarness.operations.filter(item => item.type === 'new-session').length, 1);
     assert.ok(pendingHarness.operations.findIndex(item => item.type === 'store-promoting')
         < pendingHarness.operations.findIndex(item => item.type === 'rename-session'));
@@ -5494,11 +5514,19 @@ async function runTmuxBackendChecks() {
         .windowName, projectPromoted[0].tmux.windowName);
     assert.strictEqual(projectPromoted.length, 1);
     assert.strictEqual(projectPromoted[0].identity.sessionId, 'project-final');
+    assert.strictEqual(projectPromoted[0].tmux.sessionName, projectPending.tmux.sessionName,
+        'project promotion must retain its creation-time project container');
+    assert.match(projectPromoted[0].tmux.windowName,
+        /^kimi-Project-Final-[0-9a-f]{8}$/);
     assert.strictEqual(projectPromotionHarness.operations.filter(item => item.type === 'rename-window').length, 1);
+    assert.strictEqual(projectPromotionHarness.operations.filter(item => item.type === 'rename-session').length, 0);
     assert.strictEqual(projectPromotionHarness.operations.filter(item => item.type === 'clear-pending').length, 1);
     assert.strictEqual(projectPromotionHarness.pending.size, 0);
     assert.strictEqual(projectPromotionHarness.consumed.size, 1);
-    assert.notStrictEqual(projectPromoted[0].tmux.windowName, projectPending.tmux.windowName);
+    assert.deepStrictEqual(projectPromotionHarness.known.get('kimi:project-final').locator,
+        projectPromoted[0].tmux);
+    assert.deepStrictEqual(Array.from(projectPromotionHarness.consumed.values())[0].finalLocator,
+        projectPromoted[0].tmux);
 
     for (const recoveryLayout of ['session', 'project']) {
         const recoveryHarness = createTmuxBackendHarness({ failSetConsumedCount: 1 });
@@ -5521,6 +5549,16 @@ async function runTmuxBackendChecks() {
         assert.strictEqual(recoveryHarness.promoting.size, 1);
         assert.strictEqual(recoveryHarness.pending.size, 1);
         assert.strictEqual(recoveryHarness.consumed.size, 0);
+        const recoveryIntent = Array.from(recoveryHarness.promoting.values())[0];
+        assert.strictEqual(recoveryIntent.finalSessionName, 'Recover promotion');
+        assert.deepStrictEqual(recoveryIntent.finalLocator,
+            tmuxNaming.buildReadableTmuxLocator({
+                ...recoveryRequest.identity,
+                pendingId: undefined,
+                sessionId: `promotion-recovery-final-${recoveryLayout}`,
+            }, recoveryLayout, {
+                projectName: 'App', sessionName: 'Recover promotion',
+            }));
         const createCountBeforeBlockedEnsure = recoveryHarness.operations.filter(item =>
             item.type === 'new-session' || item.type === 'new-window').length;
         await assert.rejects(
@@ -5545,7 +5583,11 @@ async function runTmuxBackendChecks() {
         assert.strictEqual(recoveryHarness.pending.size, 0);
         assert.strictEqual(recoveryHarness.consumed.size, 1);
         assert.strictEqual(recoveryHarness.operations.filter(item =>
-            item.type === 'rename-session' || item.type === 'rename-window').length, 1);
+            item.type === 'rename-session' || item.type === 'rename-window').length,
+        recoveryLayout === 'session' ? 2 : 1);
+        assert.strictEqual(recoveryHarness.operations.filter(item =>
+            item.type === 'new-session' || item.type === 'new-window').length,
+        createCountBeforeBlockedEnsure);
     }
 
     for (const ambiguousPromotionLayout of ['session', 'project']) {
@@ -5586,8 +5628,88 @@ async function runTmuxBackendChecks() {
         assert.strictEqual(ambiguousPromotionHarness.pending.size, 0);
         assert.strictEqual(ambiguousPromotionHarness.consumed.size, 1);
         assert.strictEqual(ambiguousPromotionHarness.operations.filter(item =>
-            item.type === 'rename-session' || item.type === 'rename-window').length, 1);
+            item.type === 'rename-session' || item.type === 'rename-window').length,
+        ambiguousPromotionLayout === 'session' ? 2 : 1);
     }
+
+    const fullyRenamedHarness = createTmuxBackendHarness({ ambiguousRenameWindowCount: 1 });
+    const fullyRenamedRequest = {
+        identity: {
+            provider: 'claude', workspaceScopeIdentity: 'fully-renamed-promotion',
+            workspaceNavigationIdentity: 'nav-fully-renamed-promotion',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'fully-renamed-pending',
+        },
+        projectName: 'RedDB', terminalName: 'Claude: Fully renamed promotion',
+        createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [], title: 'Investigate replication',
+        launch: { executable: 'claude', args: ['new'], markerPath: '/tmp/fully-renamed' },
+    };
+    const fullyRenamedBackend = new backendModule.TmuxRuntimeBackend(fullyRenamedHarness.dependencies);
+    await fullyRenamedBackend.ensurePending(fullyRenamedRequest, 'session');
+    const fullyRenamedCreates = fullyRenamedHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length;
+    await assert.rejects(fullyRenamedBackend.promotePending(
+        fullyRenamedRequest.identity, 'fully-renamed-final', 'Investigate replication'
+    ), /timeout/);
+    const fullyRenamedIntent = Array.from(fullyRenamedHarness.promoting.values())[0];
+    assert.ok(fullyRenamedHarness.windows.some(row =>
+        row.sessionName === fullyRenamedIntent.finalLocator.sessionName
+        && row.windowName === fullyRenamedIntent.finalLocator.windowName),
+    'an ambiguous second rename must leave an exact fully-renamed state for recovery');
+    const fullyRenamedRecovered = await new backendModule.TmuxRuntimeBackend(
+        fullyRenamedHarness.dependencies
+    ).promotePending(fullyRenamedRequest.identity, 'fully-renamed-final', 'Investigate replication');
+    assert.deepStrictEqual(fullyRenamedRecovered[0].tmux, fullyRenamedIntent.finalLocator);
+    assert.strictEqual(fullyRenamedHarness.operations.filter(item =>
+        item.type === 'rename-session' || item.type === 'rename-window').length, 2);
+    assert.strictEqual(fullyRenamedHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length, fullyRenamedCreates);
+
+    const partialRenameHarness = createTmuxBackendHarness({ failRenameWindowCount: 1 });
+    const partialRenameRequest = {
+        identity: {
+            provider: 'codex', workspaceScopeIdentity: 'partial-readable-promotion',
+            workspaceNavigationIdentity: 'nav-partial-readable-promotion',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'partial-readable-pending',
+        },
+        projectName: 'RedDB', terminalName: 'Codex: Partial readable promotion',
+        createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [], title: 'Repair replication',
+        launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/partial-readable' },
+    };
+    const partialRenameBackend = new backendModule.TmuxRuntimeBackend(partialRenameHarness.dependencies);
+    await partialRenameBackend.ensurePending(partialRenameRequest, 'session');
+    const partialRenameCreates = partialRenameHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length;
+    await assert.rejects(partialRenameBackend.promotePending(
+        partialRenameRequest.identity, 'partial-readable-final', 'Repair replication'
+    ), /rename window failed/);
+    const partialIntent = Array.from(partialRenameHarness.promoting.values())[0];
+    assert.strictEqual(partialIntent.finalSessionName, 'Repair replication');
+    assert.ok(partialRenameHarness.windows.some(row =>
+        row.sessionName === partialIntent.finalLocator.sessionName
+        && row.windowName === partialIntent.sourceLocator.windowName),
+    'a failed second rename must retain the exact final-session/source-window intermediate state');
+    const partialMutationsBeforeMismatch = partialRenameHarness.operations.filter(item =>
+        item.type === 'rename-session' || item.type === 'rename-window'
+        || item.type === 'session-options' || item.type === 'window-options'
+        || item.type === 'clear-pending').length;
+    await assert.rejects(new backendModule.TmuxRuntimeBackend(partialRenameHarness.dependencies)
+        .promotePending(partialRenameRequest.identity, 'partial-readable-final', 'Different display name'),
+    /conflicting promotion/i);
+    assert.strictEqual(partialRenameHarness.operations.filter(item =>
+        item.type === 'rename-session' || item.type === 'rename-window'
+        || item.type === 'session-options' || item.type === 'window-options'
+        || item.type === 'clear-pending').length, partialMutationsBeforeMismatch,
+    'a replay with a different display name must fail closed before any mutation');
+    const partialRecovered = await new backendModule.TmuxRuntimeBackend(
+        partialRenameHarness.dependencies
+    ).promotePending(partialRenameRequest.identity, 'partial-readable-final', 'Repair replication');
+    assert.deepStrictEqual(partialRecovered[0].tmux, partialIntent.finalLocator);
+    assert.strictEqual(partialRenameHarness.operations.filter(item => item.type === 'rename-session').length, 1,
+        'partial recovery must not rename the already-final session again');
+    assert.strictEqual(partialRenameHarness.operations.filter(item => item.type === 'rename-window').length, 2);
+    assert.strictEqual(partialRenameHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length, partialRenameCreates,
+    'partial recovery must never redispatch the provider command');
 
     for (const transitionLayout of ['session', 'project']) {
         for (const transitionFailure of ['mid-final-write', 'before-pending-clear']) {
@@ -5632,7 +5754,8 @@ async function runTmuxBackendChecks() {
             assert.strictEqual(transitionHarness.pending.size, 0);
             assert.strictEqual(transitionHarness.consumed.size, 1);
             assert.strictEqual(transitionHarness.operations.filter(item =>
-                item.type === 'rename-session' || item.type === 'rename-window').length, 1);
+                item.type === 'rename-session' || item.type === 'rename-window').length,
+            transitionLayout === 'session' ? 2 : 1);
             assert.strictEqual(transitionHarness.operations.filter(item =>
                 item.type === 'new-session' || item.type === 'new-window').length, createsBeforePromotion);
         }
@@ -5679,7 +5802,8 @@ async function runTmuxBackendChecks() {
         assert.strictEqual(expiredIntentHarness.pending.size, 0);
         assert.strictEqual(expiredIntentHarness.consumed.size, 1);
         assert.strictEqual(expiredIntentHarness.operations.filter(item =>
-            item.type === 'rename-session' || item.type === 'rename-window').length, 1);
+            item.type === 'rename-session' || item.type === 'rename-window').length,
+        expiredIntentLayout === 'session' ? 2 : 1);
     }
 
     for (const occupiedExpiredLayout of ['session', 'project']) {
@@ -5728,6 +5852,7 @@ async function runTmuxBackendChecks() {
                 marker: occupiedExpiredIntent.markerPath,
             };
         } else {
+            renamedRow.windowName = occupiedExpiredIntent.sourceLocator.windowName || 'ai-session';
             renamedRow.sessionMetadata = {
                 managed: '1', version: '2', layout: 'session', provider: occupiedExpiredIntent.provider,
                 workspaceScopeIdentity: occupiedExpiredIntent.workspaceScopeIdentity,
@@ -5825,6 +5950,8 @@ async function runTmuxBackendChecks() {
         launch: { executable: 'kimi', args: ['new'] },
     };
     await failedPromotionBackend.ensurePending(failedPromotionRequest, 'session');
+    const failedPromotionCreates = failedPromotionHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length;
     await assert.rejects(failedPromotionBackend.promotePending(
         failedPromotionRequest.identity, 'failed-final', 'Failed final'
     ),
@@ -5832,6 +5959,18 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(failedPromotionHarness.consumed.size, 0);
     assert.strictEqual(failedPromotionHarness.pending.size, 1);
     assert.strictEqual(failedPromotionHarness.promoting.size, 0);
+    const retriedFailedPromotion = await new backendModule.TmuxRuntimeBackend(
+        failedPromotionHarness.dependencies
+    ).promotePending(failedPromotionRequest.identity, 'failed-final', 'Failed final');
+    assert.match(retriedFailedPromotion[0].tmux.sessionName,
+        /^ps-App-Failed-final-[0-9a-f]{8}$/);
+    assert.match(retriedFailedPromotion[0].tmux.windowName,
+        /^kimi-Failed-final-[0-9a-f]{8}$/);
+    assert.strictEqual(failedPromotionHarness.operations.filter(item => item.type === 'rename-session').length, 2);
+    assert.strictEqual(failedPromotionHarness.operations.filter(item => item.type === 'rename-window').length, 1);
+    assert.strictEqual(failedPromotionHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length, failedPromotionCreates,
+    'pre-rename recovery must never redispatch the provider command');
 
     const unknownPromotionHarness = createTmuxBackendHarness();
     const unknownPromotionBackend = new backendModule.TmuxRuntimeBackend(unknownPromotionHarness.dependencies);
@@ -5847,7 +5986,9 @@ async function runTmuxBackendChecks() {
     const unknownFinalIdentity = {
         provider: 'codex', workspaceScopeIdentity: 'unknown-promotion', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'unknown-final',
     };
-    const unknownFinalLocator = new tmuxLayout.SessionTmuxLayout().getLocator(unknownFinalIdentity);
+    const unknownFinalLocator = tmuxNaming.buildReadableTmuxLocator(
+        unknownFinalIdentity, 'session', { projectName: 'App', sessionName: 'Unknown final' }
+    );
     unknownPromotionHarness.windows.push({
         ...unknownFinalLocator, windowName: 'shell', windowId: '@unknown-promotion', active: false,
         sessionMetadata: {}, windowMetadata: {}, metadata: {},
@@ -5943,7 +6084,10 @@ async function runTmuxBackendChecks() {
         version: 2, state: 'known', provider: 'codex', sessionId: 's1',
         workspaceScopeIdentity: 'ambiguous', workspaceNavigationIdentity: 'nav-1',
         workspaceRootHostPaths: ['/work'], cwd: '/work', layout: 'session',
-        locator: { layout: 'session', sessionName: recoveredAmbiguousRow.sessionName },
+        locator: {
+            layout: 'session', sessionName: recoveredAmbiguousRow.sessionName,
+            windowName: recoveredAmbiguousRow.windowName,
+        },
         lastSeenAtMs: Date.parse('2026-07-18T10:00:00Z'),
     }, 'ambiguous recovery without createdAt must retain a v2 known hint');
     assert.strictEqual(ambiguousHarness.ambiguous.size, 0);
@@ -5976,7 +6120,10 @@ async function runTmuxBackendChecks() {
         version: 2, state: 'known', provider: 'codex', sessionId: 's2',
         workspaceScopeIdentity: 'ambiguous-lifecycle', workspaceNavigationIdentity: 'nav-1',
         workspaceRootHostPaths: ['/work'], layout: 'session',
-        locator: { layout: 'session', sessionName: recoveredLifecycleRow.sessionName },
+        locator: {
+            layout: 'session', sessionName: recoveredLifecycleRow.sessionName,
+            windowName: recoveredLifecycleRow.windowName,
+        },
         lastSeenAtMs: Date.parse('2026-07-18T10:00:00Z'),
         cwd: '/work', markerPath: '/tmp/a2',
         runStartedAtMs: Date.parse('2026-07-18T09:59:00.000Z'),
@@ -6039,7 +6186,9 @@ async function runTmuxBackendChecks() {
 
     const occupiedHarness = createTmuxBackendHarness();
     const occupiedIdentity = { provider: 'codex', workspaceScopeIdentity: 'occupied', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' };
-    const occupiedLocator = new tmuxLayout.SessionTmuxLayout().getLocator(occupiedIdentity);
+    const occupiedLocator = tmuxNaming.buildReadableTmuxLocator(
+        occupiedIdentity, 'session', { projectName: 'App', sessionName: 's1' }
+    );
     occupiedHarness.windows.push({
         ...occupiedLocator, windowName: 'shell', windowId: '@occupied', active: true,
         sessionMetadata: {}, windowMetadata: {}, metadata: {},
@@ -6061,7 +6210,12 @@ async function runTmuxBackendChecks() {
     const unknownProjectIdentity = {
         provider: 'claude', workspaceScopeIdentity: 'occupied-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'unknown',
     };
-    const unknownProjectLocator = new tmuxLayout.ProjectTmuxLayout().getLocator(unknownProjectIdentity);
+    const unknownProjectLocator = {
+        ...tmuxNaming.buildReadableTmuxLocator(
+            unknownProjectIdentity, 'project', { projectName: 'App', sessionName: 'unknown' }
+        ),
+        sessionName: occupiedProjectBackend.getActive()[0].tmux.sessionName,
+    };
     occupiedProjectHarness.windows.push({
         ...unknownProjectLocator, windowId: '@occupied-project', active: false,
         sessionMetadata: {
@@ -6415,6 +6569,12 @@ async function runDirectBackendChecks() {
     assert.deepStrictEqual(operations.filter(item => item.type === 'launch').pop().options, {
         persistPendingBeforeLaunch: true,
     });
+    for (const invalidDisplayName of ['', 'x'.repeat(201), 'bad\nname']) {
+        assert.deepStrictEqual(await backend.promotePending(
+            created.identity, 'new-session', invalidDisplayName
+        ), [], 'Direct promotion must reject invalid display names without consuming the pending runtime');
+        assert.strictEqual(backend.getPending().some(item => item.identity.pendingId === 'pending-1'), true);
+    }
     const promoted = await backend.promotePending(
         created.identity, 'new-session', 'Readable Direct Session'
     );
