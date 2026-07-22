@@ -449,13 +449,16 @@ export class TmuxClient {
         operation: TmuxOperation,
         baseArgs: string[]
     ): Promise<Record<string, string>> {
-        const values: Record<string, string> = {};
-        for (const key of metadataOptionKeys()) {
+        const entries = await Promise.all(metadataOptionKeys().map(async key => {
             const result = await this.invoke(operation, [...baseArgs, TMUX_METADATA_OPTIONS[key]]);
             if (result.exitCode !== 0) {
                 throw resultError(operation, result);
             }
             const value = parseMetadataOptionValue(result.stdout, operation);
+            return [key, value] as const;
+        }));
+        const values: Record<string, string> = {};
+        for (const [key, value] of entries) {
             if (value !== null) {
                 values[key] = value;
             }

@@ -1193,6 +1193,39 @@ async function runTmuxClientChecks() {
         /metadata option/
     );
 
+    let inFlightOptions = 0;
+    let peakOptions = 0;
+    let failedOption = null;
+    const parallelClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.4\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            if (args[0] === 'show-options') {
+                const option = args[args.length - 1];
+                inFlightOptions++;
+                peakOptions = Math.max(peakOptions, inFlightOptions);
+                await new Promise(resolve => setImmediate(resolve));
+                inFlightOptions--;
+                if (option === failedOption) {
+                    return { exitCode: 2, stdout: 'private stdout', stderr: 'private stderr' };
+                }
+                return { exitCode: 0, stdout: 'value\n', stderr: '' };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    });
+    const parallelMetadata = await parallelClient.getSessionOptions('managed-session');
+    assert.strictEqual(Object.keys(parallelMetadata).length,
+        Object.keys(tmuxLayout.TMUX_METADATA_OPTIONS).length);
+    assert.strictEqual(peakOptions, Object.keys(tmuxLayout.TMUX_METADATA_OPTIONS).length,
+        'one target must read its fixed metadata option set concurrently');
+
+    failedOption = tmuxLayout.TMUX_METADATA_OPTIONS.provider;
+    await assert.rejects(parallelClient.getWindowOptions('managed-session', 'managed-window'), error =>
+        error.operation === 'get-window-options' && error.category === 'nonzero-exit');
+
     await metadataClient.createSession('s', 'w', '/work/space here', 'exec secret-tool --token credential');
     await metadataClient.createWindow('s', 'w2', '/work/space here', 'exec secret-tool --token credential');
     await metadataClient.renameSession('s', 's2');
