@@ -605,7 +605,11 @@ export class TmuxRuntimeBindingStore {
                 continue;
             }
             if (name.startsWith('consumed-')) {
-                const record = validateConsumedRecord(await readJsonRegularFile(filePath));
+                const value = await readJsonRegularFile(filePath);
+                const record = validateConsumedRecord(value);
+                if (!record && isLegacyProjectKeyConsumedRecord(value)) {
+                    continue;
+                }
                 if (!record || !isCanonicalRecordPath(filePath, record)) {
                     throw new Error('A durable tmux consumed record is invalid.');
                 }
@@ -965,6 +969,28 @@ function validateConsumedRecord(
         finalLocator: locator,
         consumedAtMs: record.consumedAtMs,
     };
+}
+
+function isLegacyProjectKeyConsumedRecord(value: unknown): boolean {
+    if (!isObject(value)) {
+        return false;
+    }
+    const record = value as Record<string, unknown>;
+    const locator = validateLocator(record.finalLocator);
+    return hasExactKeys(record, [
+        'version', 'state', 'pendingId', 'provider', 'projectKey', 'cwd',
+        'finalSessionId', 'layout', 'finalLocator', 'consumedAtMs',
+    ])
+        && record.version === 1
+        && record.state === 'consumed'
+        && isBoundedString(record.pendingId, MAX_ID_LENGTH)
+        && isProviderId(record.provider)
+        && isBoundedString(record.projectKey, MAX_ID_LENGTH)
+        && isBoundedString(record.cwd, MAX_PATH_LENGTH)
+        && isBoundedString(record.finalSessionId, MAX_ID_LENGTH)
+        && isLayout(record.layout)
+        && !!locator && locator.layout === record.layout
+        && isFiniteNonNegative(record.consumedAtMs);
 }
 
 function validatePromotingRecord(value: unknown): TmuxPromotingRuntimeBinding | null {

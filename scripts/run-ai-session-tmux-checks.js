@@ -3706,6 +3706,7 @@ async function runTmuxStoreChecks() {
             pendingId: 'legacy-consumed-pending',
             provider: 'codex',
             projectKey: 'legacy-consumed-project',
+            cwd: '/legacy-work',
             finalSessionId: 'legacy-final',
             layout: 'session',
             finalLocator: { layout: 'session', sessionName: 'project-steward-s-codex-legacy-final' },
@@ -3723,9 +3724,25 @@ async function runTmuxStoreChecks() {
             pendingId: 'legacy-consumed-pending',
         };
         assert.strictEqual(await legacyConsumedStore.getConsumed(legacyConsumedIdentity), null);
+        assert.deepStrictEqual(await legacyConsumedStore.listRecoverablePending(), [],
+            'pre-workspace consumed tombstones must not block modern promotion enumeration');
         await assert.rejects(legacyConsumedStore.setConsumed(legacyConsumedRecord),
             /consumed tmux binding is invalid/);
         assert.strictEqual(fs.readFileSync(legacyConsumedPath, 'utf8'), legacyConsumedBytes);
+
+        const invalidModernConsumedRoot = path.join(root, 'invalid-modern-consumed');
+        fs.mkdirSync(invalidModernConsumedRoot);
+        const invalidModernConsumedRecord = { ...legacyConsumedRecord, version: 2 };
+        fs.writeFileSync(path.join(invalidModernConsumedRoot,
+            runtimeRecordFilename(invalidModernConsumedRecord)),
+        `${JSON.stringify(invalidModernConsumedRecord, null, 2)}\n`);
+        await assert.rejects(
+            new runtimeStoreModule.TmuxRuntimeBindingStore(
+                invalidModernConsumedRoot, () => now
+            ).listRecoverablePending(),
+            /durable tmux consumed record is invalid/,
+            'modern malformed consumed records must continue to fail closed'
+        );
 
         const conflictingConsumedRecord = {
             ...consumedRecord,
