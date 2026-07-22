@@ -142,6 +142,7 @@ export type TmuxAmbiguousRuntimeBinding = TmuxAmbiguousRuntimeBindingBase & (
         cwd: string;
         createdAt: string;
         excludedSessionIds: string[];
+        projectName?: string;
         title?: string;
         markerPath?: string;
         requestFingerprint: string;
@@ -793,7 +794,7 @@ function validatePendingRecord(value: unknown): TmuxPendingRuntimeBinding | null
         || record.excludedSessionIds.length > MAX_EXCLUDED_SESSION_IDS
         || record.excludedSessionIds.some(id => !isBoundedString(id, MAX_ID_LENGTH))
         || !isFiniteNonNegative(record.acceptedAtMs)
-        || (record.projectName !== undefined && !isDisplayName(record.projectName))
+        || (record.projectName !== undefined && !isOptionalTitle(record.projectName))
         || (record.title !== undefined && !isOptionalTitle(record.title))) {
         return null;
     }
@@ -933,7 +934,7 @@ function validateAmbiguousRecord(value: unknown): TmuxAmbiguousRuntimeBinding | 
             'workspaceNavigationIdentity', 'workspaceRootHostPaths', 'cwd', 'layout',
             'locator', 'acceptedAtMs', 'pendingId', 'createdAt', 'excludedSessionIds',
             'requestFingerprint',
-        ], ['title', 'markerPath']);
+        ], ['projectName', 'title', 'markerPath']);
     const identity = hasSessionId === hasPendingId ? null : validateBindingIdentity(record,
         hasSessionId ? { sessionId: record.sessionId } : { pendingId: record.pendingId });
     if (!exactKeys || record.version !== RECORD_VERSION || record.state !== 'ambiguous'
@@ -943,6 +944,7 @@ function validateAmbiguousRecord(value: unknown): TmuxAmbiguousRuntimeBinding | 
         || (hasPendingId && (!isDateString(record.createdAt) || !Array.isArray(record.excludedSessionIds)
             || record.excludedSessionIds.length > MAX_EXCLUDED_SESSION_IDS
             || record.excludedSessionIds.some(id => !isBoundedString(id, MAX_ID_LENGTH))
+            || (record.projectName !== undefined && !isOptionalTitle(record.projectName))
             || (record.title !== undefined && !isOptionalTitle(record.title))
             || (record.markerPath !== undefined
                 && !isBoundedString(record.markerPath, MAX_PATH_LENGTH))
@@ -961,6 +963,7 @@ function validateAmbiguousRecord(value: unknown): TmuxAmbiguousRuntimeBinding | 
                 cwd: record.cwd as string,
                 createdAt: record.createdAt as string,
                 excludedSessionIds: [...record.excludedSessionIds as string[]],
+                ...(record.projectName === undefined ? {} : { projectName: record.projectName as string }),
                 ...(record.title === undefined ? {} : { title: record.title as string }),
                 ...(record.markerPath === undefined ? {} : { markerPath: record.markerPath as string }),
                 requestFingerprint: record.requestFingerprint as string,
@@ -1133,6 +1136,7 @@ function cloneAmbiguous(record: TmuxAmbiguousRuntimeBinding): TmuxAmbiguousRunti
         cwd: string;
         createdAt: string;
         excludedSessionIds: string[];
+        projectName?: string;
         title?: string;
         markerPath?: string;
         requestFingerprint: string;
@@ -1358,10 +1362,6 @@ function isBoundedString(value: unknown, maxLength: number): value is string {
 
 function isOptionalTitle(value: unknown): value is string {
     return typeof value === 'string' && value.length <= MAX_TITLE_LENGTH && !CONTROL_CHARACTERS.test(value);
-}
-
-function isDisplayName(value: unknown): value is string {
-    return typeof value === 'string' && value.length <= MAX_PATH_LENGTH && !CONTROL_CHARACTERS.test(value);
 }
 
 function isDateString(value: unknown): value is string {

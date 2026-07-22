@@ -2876,6 +2876,21 @@ async function runTmuxStoreChecks() {
         assert.deepStrictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
             readableSessionPending, now
         ), readableSessionPending, 'runtime binding validation must retain session locator windowName');
+        const namedPending = pending('named-project', '2026-07-18T09:59:02Z', {
+            projectName: 'RedDB DTS Dual Active', title: 'Investigate lag',
+        });
+        assert.deepStrictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            namedPending, now
+        ), namedPending, 'pending bindings must retain bounded creation-time project names');
+        assert.strictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            { ...namedPending, projectName: 'p'.repeat(201) }, now
+        ), null, 'pending project names must share the 200-character title bound');
+        assert.strictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            { ...namedPending, projectName: 'bad\nproject' }, now
+        ), null, 'pending project names must reject control characters');
+        assert.notStrictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            pending('legacy-without-project-name', '2026-07-18T09:59:03Z'), now
+        ), null, 'legacy pending records without projectName must remain valid');
         assert.strictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding({
             ...legacySessionPending,
             locator: { ...legacySessionPending.locator, windowName: undefined },
@@ -3317,6 +3332,7 @@ async function runTmuxStoreChecks() {
             cwd: '/pending-ambiguous',
             createdAt: '2026-07-18T09:59:00Z',
             excludedSessionIds: ['old'],
+            projectName: 'RedDB DTS Dual Active',
             title: 'Pending ambiguous',
             markerPath: '/tmp/pending-ambiguous',
             requestFingerprint: 'b'.repeat(64),
@@ -3327,6 +3343,23 @@ async function runTmuxStoreChecks() {
         await store.setAmbiguous(pendingAmbiguousRecord);
         assert.deepStrictEqual(await restartedStore.getAmbiguous(pendingIdentity(pendingAmbiguousRecord)),
             pendingAmbiguousRecord);
+        await assert.rejects(store.setAmbiguous({
+            ...pendingAmbiguousRecord, pendingId: 'oversized-project-name',
+            projectName: 'p'.repeat(201),
+        }), /ambiguous tmux binding is invalid/);
+        await assert.rejects(store.setAmbiguous({
+            ...pendingAmbiguousRecord, pendingId: 'controlled-project-name',
+            projectName: 'bad\nproject',
+        }), /ambiguous tmux binding is invalid/);
+        const legacyPendingAmbiguousRecord = { ...pendingAmbiguousRecord };
+        delete legacyPendingAmbiguousRecord.projectName;
+        legacyPendingAmbiguousRecord.pendingId = 'legacy-ambiguous-without-project-name';
+        await store.setAmbiguous(legacyPendingAmbiguousRecord);
+        assert.deepStrictEqual(await restartedStore.getAmbiguous(
+            pendingIdentity(legacyPendingAmbiguousRecord)
+        ), legacyPendingAmbiguousRecord,
+        'legacy pending ambiguity records without projectName must remain valid');
+        await store.removeAmbiguous(pendingIdentity(legacyPendingAmbiguousRecord));
         const conflictingPendingAmbiguous = {
             ...pendingAmbiguousRecord,
             provider: 'claude',
@@ -4306,25 +4339,34 @@ async function runTmuxBackendChecks() {
     const projectBackend = new backendModule.TmuxRuntimeBackend(projectHarness.dependencies);
     const firstProject = await projectBackend.ensureResume({
         identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
-        projectName: 'App',
+        projectName: 'RedDB DTS Dual Active',
+        sessionName: 'Repair replication',
         terminalName: 'AI Sessions: App',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/m1' },
     }, 'project');
     const secondProject = await projectBackend.ensureResume({
         identity: { provider: 'claude', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's2' },
-        projectName: 'App',
+        projectName: 'Renamed Card',
+        sessionName: 'Audit failover',
         terminalName: 'AI Sessions: App',
         launch: { executable: 'claude', args: ['--resume', 's2'], markerPath: '/tmp/m2' },
     }, 'project');
+    assert.match(firstProject.tmux.sessionName, /^ps-RedDB-DTS-Dual-Active-[0-9a-f]{8}$/);
+    assert.match(firstProject.tmux.windowName, /^codex-Repair-replication-[0-9a-f]{8}$/);
+    assert.strictEqual(secondProject.tmux.sessionName, firstProject.tmux.sessionName,
+        'a renamed project card must reuse the workspace-owned creation-time container');
+    assert.match(secondProject.tmux.windowName, /^claude-Audit-failover-[0-9a-f]{8}$/);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-session').length, 1);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 2);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'configure-window').length, 2);
     const firstProjectRequest = {
         identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
-        projectName: 'App', terminalName: 'AI Sessions: App',
+        projectName: 'Renamed Card', sessionName: 'Changed display alias', terminalName: 'AI Sessions: App',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/m1' },
     };
-    await projectBackend.ensureResume(firstProjectRequest, 'project');
+    const reusedFirstProject = await projectBackend.ensureResume(firstProjectRequest, 'project');
+    assert.deepStrictEqual(reusedFirstProject.tmux, firstProject.tmux,
+        'an existing identity must reuse its actual creation-time locator after display changes');
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-session').length, 1);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 2);
     assert.strictEqual(projectHarness.terminals.length, 1);
@@ -4339,6 +4381,37 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(firstProject.terminal, projectHarness.terminals[0]);
     assert.strictEqual(secondProject.terminal, projectHarness.terminals[0]);
     assert.strictEqual(projectBackend.getActive().length, 2);
+
+    const ownershipConflictHarness = createTmuxBackendHarness();
+    for (const [index, sessionName] of ['ps-first-owned-11111111', 'ps-second-owned-22222222'].entries()) {
+        ownershipConflictHarness.windows.push({
+            sessionName, windowName: 'project-steward', windowId: `@ownership-${index}`,
+            active: false,
+            sessionMetadata: {
+                managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'owned-conflict',
+            },
+            windowMetadata: {}, metadata: {},
+        });
+    }
+    const ownershipConflictBackend = new backendModule.TmuxRuntimeBackend(
+        ownershipConflictHarness.dependencies
+    );
+    await assert.rejects(ownershipConflictBackend.ensureResume({
+        identity: {
+            provider: 'codex', workspaceScopeIdentity: 'owned-conflict',
+            workspaceNavigationIdentity: 'nav-owned-conflict', workspaceRootHostPaths: ['/work'],
+            cwd: '/work', sessionId: 'owned-conflict-session',
+        },
+        projectName: 'Current Card', sessionName: 'Do not dispatch', terminalName: 'Conflict',
+        launch: { executable: 'codex', args: ['resume', 'owned-conflict-session'] },
+    }, 'project'), error => error && error.name === 'AiSessionRuntimeConflictError'
+        && error.conflicts.length === 2
+        && error.conflicts.map(runtime => runtime.tmux.sessionName).sort().join(',')
+            === 'ps-first-owned-11111111,ps-second-owned-22222222');
+    assert.strictEqual(ownershipConflictHarness.operations.some(operation =>
+        ['new-session', 'new-window', 'store-ambiguous', 'session-options', 'window-options']
+            .includes(operation.type)), false,
+    'ambiguous workspace ownership must fail before provider dispatch or tmux mutation');
     const verifiedFocusStart = projectHarness.operations.length;
     await projectBackend.focus(firstProject);
     const verifiedFocusOperations = projectHarness.operations.slice(verifiedFocusStart);
@@ -4619,7 +4692,11 @@ async function runTmuxBackendChecks() {
     const requestedOwnershipIdentity = {
         provider: 'codex', workspaceScopeIdentity: 'requested-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'requested-session',
     };
-    const requestedOwnershipLocator = new tmuxLayout.ProjectTmuxLayout().getLocator(requestedOwnershipIdentity);
+    const requestedOwnershipLocator = tmuxNaming.buildReadableTmuxLocator(
+        requestedOwnershipIdentity, 'project', {
+            projectName: 'App', sessionName: 'requested-session',
+        }
+    );
     const wrongOwnershipRuntime = {
         identity: { provider: 'claude', workspaceScopeIdentity: 'different-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'other-session' },
         backend: 'tmux', state: 'active', markerPath: '', runStartedAtMs: 0, attached: false,
@@ -4696,16 +4773,29 @@ async function runTmuxBackendChecks() {
     const sessionBackend = new backendModule.TmuxRuntimeBackend(sessionHarness.dependencies);
     await sessionBackend.ensureResume({
         identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
-        projectName: 'App', terminalName: 'Codex: s1',
+        projectName: 'RedDB DTS Dual Active', sessionName: 'Repair replication', terminalName: 'Codex: s1',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/s1' },
     }, 'session');
     await sessionBackend.ensureResume({
         identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's2' },
-        projectName: 'App', terminalName: 'Codex: s2',
+        projectName: 'RedDB DTS Dual Active', sessionName: 'Audit failover', terminalName: 'Codex: s2',
         launch: { executable: 'codex', args: ['resume', 's2'], markerPath: '/tmp/s2' },
     }, 'session');
     assert.strictEqual(sessionHarness.operations.filter(item => item.type === 'new-session').length, 2);
     assert.strictEqual(sessionHarness.operations.filter(item => item.type === 'new-window').length, 0);
+    const firstSessionCreate = sessionHarness.operations.find(item => item.type === 'new-session');
+    assert.match(firstSessionCreate.sessionName,
+        /^ps-RedDB-DTS-Dual-Active-Repair-replication-[0-9a-f]{8}$/);
+    assert.match(firstSessionCreate.windowName, /^codex-Repair-replication-[0-9a-f]{8}$/);
+    assert.deepStrictEqual(sessionHarness.operations.find(item => item.type === 'configure-window'), {
+        type: 'configure-window',
+        sessionName: firstSessionCreate.sessionName,
+        windowName: firstSessionCreate.windowName,
+    });
+    assert.deepStrictEqual(sessionHarness.operations.find(item => item.type === 'select-window').locator, {
+        layout: 'session', sessionName: firstSessionCreate.sessionName,
+        windowName: firstSessionCreate.windowName,
+    }, 'session creation focus must use the actual readable window target');
     assert.strictEqual(sessionHarness.terminals.length, 2);
     assert.ok(sessionHarness.terminals.every(terminal => terminal.name.endsWith(' [tmux]')),
         'initial session-layout viewers must use the same tmux-specific naming as reattach');
@@ -5050,7 +5140,7 @@ async function runTmuxBackendChecks() {
         identity: {
             provider: 'codex', workspaceScopeIdentity: 'snapshot-resume', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/original'], cwd: '/original', sessionId: 'original-session',
         },
-        projectName: 'Original Project', terminalName: 'Codex: Original',
+        projectName: 'Original Project', sessionName: 'Original Session Name', terminalName: 'Codex: Original',
         launch: {
             executable: 'codex', args: ['resume', 'original-session'], cwd: '/original',
             markerPath: '/tmp/original-marker',
@@ -5061,6 +5151,8 @@ async function runTmuxBackendChecks() {
     resumeSnapshotRequest.identity.workspaceScopeIdentity = 'mutated-project';
     resumeSnapshotRequest.identity.cwd = '/mutated';
     resumeSnapshotRequest.identity.sessionId = 'mutated-session';
+    resumeSnapshotRequest.projectName = 'Mutated Project';
+    resumeSnapshotRequest.sessionName = 'Mutated Session Name';
     resumeSnapshotRequest.launch.executable = 'mutated-provider';
     resumeSnapshotRequest.launch.args[1] = 'mutated-session';
     resumeSnapshotRequest.launch.cwd = '/mutated';
@@ -5070,6 +5162,13 @@ async function runTmuxBackendChecks() {
     const resumeSnapshotRuntime = await resumeSnapshotPromise;
     assert.strictEqual(resumeSnapshotRuntime.identity.workspaceScopeIdentity, 'snapshot-resume');
     assert.strictEqual(resumeSnapshotRuntime.identity.sessionId, 'original-session');
+    assert.deepStrictEqual(resumeSnapshotRuntime.tmux,
+        tmuxNaming.buildReadableTmuxLocator({
+            provider: 'codex', workspaceScopeIdentity: 'snapshot-resume',
+            workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/original'],
+            cwd: '/original', sessionId: 'original-session',
+        }, 'session', { projectName: 'Original Project', sessionName: 'Original Session Name' }),
+    'resume creation must snapshot display context before awaiting availability');
     assert.match(resumeSnapshotHarness.terminals[0].name, /^Project Steward: codex .+ \[tmux\]$/);
     const resumeSnapshotCreate = resumeSnapshotHarness.operations.find(item => item.type === 'new-session');
     assert.strictEqual(resumeSnapshotCreate.cwd, '/original');
@@ -5104,6 +5203,7 @@ async function runTmuxBackendChecks() {
     await pendingSnapshotLockEntered.promise;
     pendingSnapshotRequest.identity.cwd = '/mutated';
     pendingSnapshotRequest.identity.pendingId = 'mutated-pending';
+    pendingSnapshotRequest.projectName = 'Mutated Project';
     pendingSnapshotRequest.launch.executable = 'mutated-provider';
     pendingSnapshotRequest.launch.args[1] = 'mutated-title';
     pendingSnapshotRequest.launch.cwd = '/mutated';
@@ -5114,6 +5214,7 @@ async function runTmuxBackendChecks() {
     releasePendingSnapshotLock.resolve();
     const pendingSnapshotRuntime = await pendingSnapshotPromise;
     assert.strictEqual(pendingSnapshotRuntime.identity.pendingId, 'original-pending');
+    assert.strictEqual(pendingSnapshotRuntime.projectName, 'Original Project');
     assert.deepStrictEqual(pendingSnapshotRuntime.excludedSessionIds, ['original-exclusion']);
     assert.strictEqual(pendingSnapshotRuntime.title, 'Original title');
     assert.match(pendingSnapshotHarness.terminals[0].name, /^Project Steward: kimi .+ \[tmux\]$/);
@@ -5218,21 +5319,70 @@ async function runTmuxBackendChecks() {
     const pendingBackend = new backendModule.TmuxRuntimeBackend(pendingHarness.dependencies);
     const pendingRequest = {
         identity: { provider: 'claude', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-1' },
-        projectName: 'App', terminalName: 'Claude: New',
+        projectName: 'RedDB DTS Dual Active', terminalName: 'Claude: New',
         createdAt: '2026-07-18T09:59:00Z',
         excludedSessionIds: ['old'],
-        title: 'New work',
-        launch: { executable: 'claude', args: ['--name', 'New work'], markerPath: '/tmp/pending' },
+        title: 'Investigate lag',
+        launch: { executable: 'claude', args: ['--name', 'Investigate lag'], markerPath: '/tmp/pending' },
     };
     const pendingRuntime = await pendingBackend.ensurePending(pendingRequest, 'session');
-    assert.strictEqual(pendingRuntime.projectName, 'App');
+    assert.strictEqual(pendingRuntime.projectName, 'RedDB DTS Dual Active');
+    assert.match(pendingRuntime.tmux.sessionName,
+        /^ps-RedDB-DTS-Dual-Active-Investigate-lag-[0-9a-f]{8}$/);
+    assert.match(pendingRuntime.tmux.windowName, /^claude-Investigate-lag-[0-9a-f]{8}$/);
     const pendingSessionReadIndex = pendingHarness.operations.findIndex(item => item.type === 'get-session-options');
     const pendingWindowReadIndex = pendingHarness.operations.findIndex(item => item.type === 'get-window-options');
     const pendingStoreIndex = pendingHarness.operations.findIndex(item => item.type === 'store-pending');
     assert.ok(pendingSessionReadIndex >= 0 && pendingSessionReadIndex < pendingStoreIndex);
     assert.ok(pendingWindowReadIndex >= 0 && pendingWindowReadIndex < pendingStoreIndex);
     assert.strictEqual(pendingBackend.getPending().length, 1);
-    assert.strictEqual(pendingBackend.getPending()[0].projectName, 'App');
+    assert.strictEqual(pendingBackend.getPending()[0].projectName, 'RedDB DTS Dual Active');
+    const fallbackPendingHarness = createTmuxBackendHarness();
+    const fallbackPending = await new backendModule.TmuxRuntimeBackend(
+        fallbackPendingHarness.dependencies
+    ).ensurePending({
+        identity: {
+            provider: 'codex', workspaceScopeIdentity: 'fallback-pending',
+            workspaceNavigationIdentity: 'nav-fallback-pending', workspaceRootHostPaths: ['/work'],
+            cwd: '/work', pendingId: 'fallback-pending-id',
+        },
+        projectName: 'RedDB DTS Dual Active', terminalName: 'Codex: New',
+        createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [], title: '   ',
+        launch: { executable: 'codex', args: ['new'] },
+    }, 'project');
+    assert.match(fallbackPending.tmux.sessionName,
+        /^ps-RedDB-DTS-Dual-Active-[0-9a-f]{8}$/);
+    assert.match(fallbackPending.tmux.windowName, /^codex-new-session-[0-9a-f]{8}$/);
+
+    const readableRecoveryHarness = createTmuxBackendHarness({ failSetPendingCount: 1 });
+    const readableRecoveryRequest = {
+        identity: {
+            provider: 'kimi', workspaceScopeIdentity: 'readable-pending-recovery',
+            workspaceNavigationIdentity: 'nav-readable-pending-recovery',
+            workspaceRootHostPaths: ['/work'], cwd: '/work',
+            pendingId: 'readable-pending-recovery-id',
+        },
+        projectName: 'Original Card', terminalName: 'Kimi: Recover Readable',
+        createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: ['old'], title: 'Recover lag',
+        launch: { executable: 'kimi', args: ['new'], markerPath: '/tmp/readable-recovery' },
+    };
+    await assert.rejects(new backendModule.TmuxRuntimeBackend(
+        readableRecoveryHarness.dependencies
+    ).ensurePending(readableRecoveryRequest, 'session'), /pending persistence failed/);
+    const readableRecoveryAmbiguous = Array.from(readableRecoveryHarness.ambiguous.values())[0];
+    assert.strictEqual(readableRecoveryAmbiguous.projectName, 'Original Card');
+    const recoveredReadablePending = await new backendModule.TmuxRuntimeBackend(
+        readableRecoveryHarness.dependencies
+    ).ensurePending({ ...readableRecoveryRequest, projectName: 'Renamed Card' }, 'session');
+    assert.strictEqual(recoveredReadablePending.projectName, 'Original Card');
+    assert.deepStrictEqual(recoveredReadablePending.tmux,
+        tmuxNaming.buildReadableTmuxLocator(readableRecoveryRequest.identity, 'session', {
+            projectName: 'Original Card', sessionName: 'Recover lag',
+        }), 'ambiguous retry must reuse the accepted creation-time readable locator');
+    assert.strictEqual(readableRecoveryHarness.operations.filter(item =>
+        item.type === 'new-session').length, 1,
+    'display-only card changes must not redispatch an ambiguous provider request');
+
     const promoted = await pendingBackend.promotePending(
         pendingRequest.identity, 'final-1', 'New work'
     );
@@ -5305,8 +5455,12 @@ async function runTmuxBackendChecks() {
             projectName: 'Renamed Workspace Card',
         }, 'session');
     assert.strictEqual(recoveredPendingRuntime.identity.pendingId, 'recover-pending');
-    assert.strictEqual(recoveredPendingRuntime.projectName, 'Renamed Workspace Card',
-        'display-only project context must not change ambiguous creation recovery matching');
+    assert.strictEqual(recoveredPendingRuntime.projectName, 'App',
+        'ambiguous retries must retain the accepted creation-time project display context');
+    assert.deepStrictEqual(recoveredPendingRuntime.tmux,
+        tmuxNaming.buildReadableTmuxLocator(pendingRecoveryRequest.identity, 'session', {
+            projectName: 'App', sessionName: 'Recover',
+        }), 'ambiguous retries must recover the creation-time locator after a card rename');
     assert.strictEqual(pendingRecoveryHarness.pending.size, 1);
     assert.strictEqual(pendingRecoveryHarness.ambiguous.size, 0);
     assert.strictEqual(pendingRecoveryHarness.operations.filter(item => item.type === 'new-session').length, 1);
