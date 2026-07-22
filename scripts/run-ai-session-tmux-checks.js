@@ -1168,6 +1168,23 @@ async function runTmuxClientChecks() {
     for (const option of Object.values(tmuxLayout.TMUX_METADATA_OPTIONS)) {
         assert.ok(targetFormat.includes(`#{${option}}`));
     }
+    const readableSessionTargetLocator = {
+        layout: 'session', sessionName: 'managed-session', windowName: 'ai-codex-1',
+    };
+    assert.deepStrictEqual(await targetClient.getTargetWindow(readableSessionTargetLocator), {
+        sessionName: 'managed-session', windowName: 'ai-codex-1', windowId: '@42',
+        metadata: Object.fromEntries(Object.entries(targetMetadata).filter(([, value]) => value)),
+    });
+    assert.deepStrictEqual(targetCalls.slice(-1)[0].slice(0, 4), [
+        'display-message', '-p', '-t', 'managed-session:ai-codex-1',
+    ], 'real tmux client target verification must address a readable session window exactly');
+    await targetClient.getTargetWindow({ layout: 'session', sessionName: 'managed-session' });
+    assert.deepStrictEqual(targetCalls.slice(-1)[0].slice(0, 4), [
+        'display-message', '-p', '-t', 'managed-session',
+    ], 'legacy session target verification must retain its session-only target');
+    await assert.rejects(targetClient.getTargetWindow({
+        layout: 'session', sessionName: 'managed-session', windowName: 'bad\nwindow',
+    }), TypeError);
 
     targetResult = { exitCode: 1, stdout: '', stderr: "can't find window: ai-codex-1" };
     assert.strictEqual(await targetClient.getTargetWindow(targetLocator), null);
@@ -1352,19 +1369,26 @@ async function runTmuxClientChecks() {
         layout: 'project', sessionName: 'session-a', windowName: 'window-a',
     });
     await metadataClient.clearPendingMetadata({ layout: 'session', sessionName: 'session-a' });
+    await metadataClient.clearPendingMetadata({
+        layout: 'session', sessionName: 'session-a', windowName: 'readable-window',
+    });
     assert.ok(metadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
         'set-option', '-t', 'session-a', '@project-steward-managed', '1',
     ])));
     assert.ok(metadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
         'set-option', '-w', '-t', 'session-a:window-a', '@project-steward-session-id', 'session-id',
     ])));
-    assert.deepStrictEqual(metadataCalls.slice(-5).map(call => call.args), [
+    assert.deepStrictEqual(metadataCalls.slice(-6).map(call => call.args), [
         ['set-option', '-w', '-t', 'session-a:window-a', 'automatic-rename', 'off'],
         ['set-option', '-w', '-t', 'session-a:window-a', 'allow-rename', 'off'],
         ['set-option', '-w', '-t', 'session-a:window-a', 'remain-on-exit', 'off'],
         ['set-option', '-uw', '-t', 'session-a:window-a', '@project-steward-pending-id'],
         ['set-option', '-u', '-t', 'session-a', '@project-steward-pending-id'],
+        ['set-option', '-u', '-t', 'session-a', '@project-steward-pending-id'],
     ]);
+    await assert.rejects(metadataClient.clearPendingMetadata({
+        layout: 'session', sessionName: 'session-a', windowName: 'bad\nwindow',
+    }), TypeError);
     await assert.rejects(
         metadataClient.setSessionOptions('session-a', { status: 'global-option-not-allowed' }),
         /metadata option/
@@ -2177,6 +2201,11 @@ async function runTmuxDiscoveryChecks() {
         ...wrongReadableBuilt,
         windowName: wrongReadableBuilt.windowName.replace(/[0-9a-f]$/, value => value === '0' ? '1' : '0'),
     };
+    const wrongReadableActualTwo = {
+        ...wrongReadableBuilt,
+        windowName: wrongReadableBuilt.windowName.replace(/[0-9a-f]$/, value =>
+            value === 'f' ? 'e' : 'f'),
+    };
     const wrongReadableSessionIdentity = {
         provider: 'claude', workspaceScopeIdentity: 'wrong-readable-session',
         workspaceNavigationIdentity: 'nav-wrong-readable-session',
@@ -2236,6 +2265,7 @@ async function runTmuxDiscoveryChecks() {
             readableRow(readableProjectIdentity, readableProjectLocator, '@readable-project'),
             readableRow(readableSessionIdentity, readableSessionLocator, '@readable-session'),
             readableRow(wrongReadableIdentity, wrongReadableActual, '@wrong-readable'),
+            readableRow(wrongReadableIdentity, wrongReadableActualTwo, '@wrong-readable-two'),
             readableRow(wrongReadableSessionIdentity, wrongReadableSessionActual,
                 '@wrong-readable-session'),
             ...duplicateReadableLocators.map((locator, index) =>
@@ -2260,6 +2290,9 @@ async function runTmuxDiscoveryChecks() {
         kind: 'tmux-locator-collision', identity: wrongReadableIdentity,
         actual: wrongReadableActual, expected: wrongReadableExpected,
     }, 'a readable locator with the wrong identity suffix must remain a collision diagnostic');
+    assert.strictEqual(readableDiscovery.getDiagnostics().filter(diagnostic =>
+        diagnostic.identity.sessionId === wrongReadableIdentity.sessionId).length, 1,
+    'multiple wrong-suffix actual locators for one identity must produce one raw diagnostic');
     assert.deepStrictEqual(readableDiscovery.getDiagnostics().find(diagnostic =>
         diagnostic.identity.sessionId === wrongReadableSessionIdentity.sessionId), {
         kind: 'tmux-locator-collision', identity: wrongReadableSessionIdentity,

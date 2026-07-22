@@ -363,14 +363,16 @@ export class TmuxRuntimeDiscovery {
             }
             if (!tmuxLocatorMatchesIdentity(actual, identity)) {
                 collisionIdentityKeys.add(parsedIdentityKey);
-                const diagnostic: AiSessionTmuxDiscoveryDiagnostic = {
-                    kind: 'tmux-locator-collision',
-                    identity,
-                    actual,
-                    expected,
-                };
-                diagnosticsByKey.set(diagnosticKey(diagnostic), diagnostic);
-                diagnosticIdentityKeys.add(parsedIdentityKey);
+                if (!diagnosticIdentityKeys.has(parsedIdentityKey)) {
+                    const diagnostic: AiSessionTmuxDiscoveryDiagnostic = {
+                        kind: 'tmux-locator-collision',
+                        identity,
+                        actual,
+                        expected,
+                    };
+                    diagnosticsByKey.set(diagnosticKey(diagnostic), diagnostic);
+                    diagnosticIdentityKeys.add(parsedIdentityKey);
+                }
                 continue;
             }
 

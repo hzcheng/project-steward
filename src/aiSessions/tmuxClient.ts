@@ -383,19 +383,14 @@ export class TmuxClient {
     }
 
     async clearPendingMetadata(locator: AiSessionTmuxLocator): Promise<void> {
+        const target = validatedLocatorTarget(locator);
         await this.requireAvailable();
         if (locator.layout === 'project') {
-            if (!locator.windowName) {
-                throw new TypeError('A project tmux locator must identify a window.');
-            }
             await this.runResultChecked('clear-pending-metadata', [
-                'set-option', '-uw', '-t', windowTarget(locator.sessionName, locator.windowName),
+                'set-option', '-uw', '-t', target,
                 TMUX_METADATA_OPTIONS.pendingId,
             ]);
             return;
-        }
-        if (locator.windowName) {
-            throw new TypeError('A session tmux locator must not identify a window.');
         }
         await this.runResultChecked('clear-pending-metadata', [
             'set-option', '-u', '-t', locator.sessionName, TMUX_METADATA_OPTIONS.pendingId,
@@ -786,8 +781,13 @@ function validatedLocatorTarget(locator: AiSessionTmuxLocator): string {
     if (locator.layout === 'project' && locator.windowName && isTargetField(locator.windowName)) {
         return windowTarget(locator.sessionName, locator.windowName);
     }
-    if (locator.layout === 'session' && locator.windowName === undefined) {
-        return locator.sessionName;
+    if (locator.layout === 'session') {
+        if (locator.windowName === undefined) {
+            return locator.sessionName;
+        }
+        if (isTargetField(locator.windowName)) {
+            return windowTarget(locator.sessionName, locator.windowName);
+        }
     }
     throw new TypeError('The tmux runtime locator is invalid.');
 }
