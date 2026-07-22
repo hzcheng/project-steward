@@ -377,7 +377,9 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
     }
     const pendingLocator = { ...pending.tmux };
     const finalSessionId = 'promoted:session.special';
-    const promoted = await contextA.backend.promotePending(pending.identity, finalSessionId);
+    const promoted = await contextA.backend.promotePending(
+        pending.identity, finalSessionId, "Title with 'quotes' ; $HOME"
+    );
     assert.strictEqual(promoted.length, 1);
     assert.strictEqual(promoted[0].identity.sessionId, finalSessionId);
     rows = await client.listWindows();
