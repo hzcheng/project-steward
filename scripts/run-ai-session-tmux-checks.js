@@ -10,6 +10,7 @@ const launchSpec = require('../out/aiSessions/launchSpec');
 const commandBuilders = require('../out/aiSessions/commandBuilders');
 const runtimeConfiguration = require('../out/aiSessions/runtimeConfiguration');
 const tmuxLayout = require('../out/aiSessions/tmuxLayout');
+const tmuxNaming = require('../out/aiSessions/tmuxNaming');
 const tmuxClientModule = require('../out/aiSessions/tmuxClient');
 const discoveryModule = require('../out/aiSessions/tmuxRuntimeDiscovery');
 const runtimeStoreModule = require('../out/aiSessions/tmuxRuntimeBindingStore');
@@ -732,6 +733,102 @@ function runTmuxLayoutChecks() {
     const identity = { provider: 'codex', workspaceScopeIdentity: 'project-key', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work/app'], cwd: '/work/app', sessionId: 'session-1' };
     const project = new tmuxLayout.ProjectTmuxLayout().getLocator(identity);
     const session = new tmuxLayout.SessionTmuxLayout().getLocator(identity);
+
+    assert.strictEqual(
+        tmuxNaming.normalizeTmuxReadableComponent(' ＲｅｄＤＢ DTS / 双活 ', 'workspace'),
+        'RedDB-DTS-双活'
+    );
+    assert.strictEqual(tmuxNaming.normalizeTmuxReadableComponent(' : . ', 'session'), 'session');
+    assert.strictEqual(tmuxNaming.normalizeTmuxReadableComponent('', 'new-session'), 'new-session');
+
+    const readableIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'scope-a',
+        workspaceNavigationIdentity: 'nav-a', workspaceRootHostPaths: ['/work/a'],
+        cwd: '/work/a', sessionId: 'session-123456789',
+    };
+    const readable = tmuxNaming.buildReadableTmuxLocator(
+        readableIdentity, 'project',
+        { projectName: ' RedDB DTS / 双活 ', sessionName: 'Fix: replication.timeout' }
+    );
+    assert.match(readable.sessionName, /^ps-RedDB-DTS-双活-[0-9a-f]{8}$/);
+    assert.match(readable.windowName, /^codex-Fix-replication-timeout-[0-9a-f]{8}$/);
+    assert.deepStrictEqual(
+        tmuxNaming.buildReadableTmuxLocator(readableIdentity, 'project', {
+            projectName: ' RedDB DTS / 双活 ', sessionName: 'Fix: replication.timeout',
+        }),
+        readable
+    );
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(readable, readableIdentity), true);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(
+        { ...readable, windowName: readable.windowName.replace(/[0-9a-f]{8}$/, '00000000') },
+        readableIdentity
+    ), false);
+
+    const duplicateNameIdentity = { ...readableIdentity, sessionId: 'different-session' };
+    assert.notStrictEqual(
+        tmuxNaming.buildReadableTmuxLocator(duplicateNameIdentity, 'project', {
+            projectName: 'RedDB DTS / 双活', sessionName: 'Fix: replication.timeout',
+        }).windowName,
+        readable.windowName
+    );
+    const duplicateProjectIdentity = {
+        ...readableIdentity, workspaceScopeIdentity: 'scope-b',
+    };
+    assert.notStrictEqual(
+        tmuxNaming.buildReadableTmuxLocator(duplicateProjectIdentity, 'project', {
+            projectName: 'RedDB DTS / 双活', sessionName: 'Fix: replication.timeout',
+        }).sessionName,
+        readable.sessionName
+    );
+
+    const readablePendingIdentity = {
+        ...readableIdentity, sessionId: undefined, pendingId: 'pending-1',
+    };
+    assert.match(tmuxNaming.buildReadableTmuxLocator(readablePendingIdentity, 'project', {
+        projectName: 'RedDB', sessionName: '',
+    }).windowName, /^codex-new-session-[0-9a-f]{8}$/);
+
+    const sessionLayout = tmuxNaming.buildReadableTmuxLocator(readableIdentity, 'session', {
+        projectName: 'RedDB', sessionName: 'Repair replication',
+    });
+    assert.match(sessionLayout.sessionName, /^ps-RedDB-Repair-replication-[0-9a-f]{8}$/);
+    assert.match(sessionLayout.windowName, /^codex-Repair-replication-[0-9a-f]{8}$/);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(sessionLayout, readableIdentity), true);
+
+    const legacyProject = new tmuxLayout.ProjectTmuxLayout().getLocator(readableIdentity);
+    const legacySession = new tmuxLayout.SessionTmuxLayout().getLocator(readableIdentity);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(legacyProject, readableIdentity), true);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(legacySession, readableIdentity), true);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...readable, sessionName: legacyProject.sessionName,
+    }, readableIdentity), true);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...legacyProject, sessionName: readable.sessionName,
+    }, readableIdentity), true);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...legacySession, windowName: sessionLayout.windowName,
+    }, readableIdentity), false);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...sessionLayout, windowName: undefined,
+    }, readableIdentity), false);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...readable, layout: 'other',
+    }, readableIdentity), false);
+
+    const bounded = tmuxNaming.buildReadableTmuxLocator(readableIdentity, 'project', {
+        projectName: '项目'.repeat(100), sessionName: '会话'.repeat(100),
+    });
+    assert.ok(Array.from(bounded.sessionName).length <= 96);
+    assert.ok(Array.from(bounded.windowName).length <= 96);
+    assert.match(bounded.sessionName, /-[0-9a-f]{8}$/);
+    assert.match(bounded.windowName, /-[0-9a-f]{8}$/);
+    const astralBounded = tmuxNaming.buildReadableTmuxLocator(readableIdentity, 'session', {
+        projectName: '𐐀'.repeat(100), sessionName: '𐐀'.repeat(100),
+    });
+    assert.strictEqual(Array.from(astralBounded.sessionName).length, 96);
+    assert.strictEqual(Array.from(astralBounded.windowName).length, 96);
+    assert.match(astralBounded.sessionName, /-[0-9a-f]{8}$/);
+    assert.match(astralBounded.windowName, /-[0-9a-f]{8}$/);
     assert.deepStrictEqual(project, {
         layout: 'project',
         sessionName: 'project-steward-p-857b61585ca6ee92',

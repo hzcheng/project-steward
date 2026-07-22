@@ -1,6 +1,5 @@
 'use strict';
 
-import { createHash } from 'crypto';
 import type { AiSessionProviderId } from '../models';
 import type {
     AiSessionManagedTmuxMetadata,
@@ -13,6 +12,7 @@ import {
     getAiSessionRuntimeRootSnapshotKey,
     isValidAiSessionRuntimeIdentity,
 } from './runtimeTypes';
+import { legacyTmuxLocator } from './tmuxNaming';
 
 const METADATA_VERSION = 2;
 const MAX_ID_LENGTH = 512;
@@ -38,42 +38,28 @@ export const TMUX_METADATA_OPTIONS = {
 export class ProjectTmuxLayout {
     getLocator(identity: AiSessionRuntimeIdentity): AiSessionTmuxLocator {
         validateIdentityBase(identity);
-        const sessionId = requireIdentityId(identity.sessionId, 'sessionId');
-        return {
-            layout: 'project',
-            sessionName: getProjectSessionName(identity.workspaceScopeIdentity),
-            windowName: `ai-${identity.provider}-${hashIdentityId(identity, sessionId)}`,
-        };
+        requireIdentityId(identity.sessionId, 'sessionId');
+        return legacyTmuxLocator(identity, 'project');
     }
 
     getPendingLocator(identity: AiSessionRuntimeIdentity): AiSessionTmuxLocator {
         validateIdentityBase(identity);
-        const pendingId = requireIdentityId(identity.pendingId, 'pendingId');
-        return {
-            layout: 'project',
-            sessionName: getProjectSessionName(identity.workspaceScopeIdentity),
-            windowName: `pending-${identity.provider}-${hashIdentityId(identity, pendingId)}`,
-        };
+        requireIdentityId(identity.pendingId, 'pendingId');
+        return legacyTmuxLocator(identity, 'project');
     }
 }
 
 export class SessionTmuxLayout {
     getLocator(identity: AiSessionRuntimeIdentity): AiSessionTmuxLocator {
         validateIdentityBase(identity);
-        const sessionId = requireIdentityId(identity.sessionId, 'sessionId');
-        return {
-            layout: 'session',
-            sessionName: `project-steward-s-${identity.provider}-${hashIdentityId(identity, sessionId)}`,
-        };
+        requireIdentityId(identity.sessionId, 'sessionId');
+        return legacyTmuxLocator(identity, 'session');
     }
 
     getPendingLocator(identity: AiSessionRuntimeIdentity): AiSessionTmuxLocator {
         validateIdentityBase(identity);
-        const pendingId = requireIdentityId(identity.pendingId, 'pendingId');
-        return {
-            layout: 'session',
-            sessionName: `project-steward-pending-${identity.provider}-${hashIdentityId(identity, pendingId)}`,
-        };
+        requireIdentityId(identity.pendingId, 'pendingId');
+        return legacyTmuxLocator(identity, 'session');
     }
 }
 
@@ -169,18 +155,6 @@ function hasExactKeys(
     const allowed = new Set([...required, ...optional]);
     return required.every(key => Object.prototype.hasOwnProperty.call(record, key))
         && keys.every(key => allowed.has(key));
-}
-
-function getProjectSessionName(workspaceScopeIdentity: string): string {
-    return `project-steward-p-${hash(workspaceScopeIdentity)}`;
-}
-
-function hashIdentityId(identity: AiSessionRuntimeIdentity, id: string): string {
-    return hash(`${identity.workspaceScopeIdentity}:${identity.provider}:${id}`);
-}
-
-function hash(value: string): string {
-    return createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 16);
 }
 
 function validateIdentityBase(identity: AiSessionRuntimeIdentity): void {
