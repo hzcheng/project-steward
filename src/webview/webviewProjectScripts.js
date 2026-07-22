@@ -678,6 +678,7 @@ function initProjects() {
                 if (terminalRow.hasAttribute('data-session-pending')) {
                     terminalMessage.pendingCreatedAt = terminalRow.getAttribute('data-pending-created-at');
                 } else {
+                    acknowledgeAiSessionRow(terminalRow);
                     terminalMessage.sessionId = terminalRow.getAttribute('data-session-id');
                 }
                 window.vscode.postMessage(terminalMessage);
