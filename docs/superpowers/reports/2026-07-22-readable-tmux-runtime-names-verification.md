@@ -50,7 +50,7 @@ The scoped diff contains only `src/workspaces/pendingSessionPromotionController.
 
 ## Native real-tmux evidence
 
-The real smoke harness used its own randomly named isolated tmux server and native `tmux list-sessions -F '#{session_name}'` plus `tmux list-windows -a -F '#{session_name}\t#{window_name}'`. It asserted that the selected project-layout and session-layout rows appeared verbatim and ended in lowercase hexadecimal 8-character identity suffixes.
+The real smoke harness uses its own randomly named isolated tmux server and, before cleanup, invokes native `tmux list-sessions -F '#{session_name}'` plus `tmux list-windows -a -F '#{session_name}\t#{window_name}'`. The committed harness derives the expected exact rows from the actual project-layout and session-layout runtime locators, asserts that both native outputs contain those rows, and independently checks the readable project/session prefixes plus a lowercase hexadecimal 8-character identity suffix. It does not hardcode a captured suffix.
 
 Selected project-layout native rows:
 
@@ -66,7 +66,7 @@ list-sessions: ps-Smoke-Project-kimi-isolated-one-75f97c33
 list-windows:  ps-Smoke-Project-kimi-isolated-one-75f97c33	kimi-kimi-isolated-one-75f97c33
 ```
 
-The native outputs visibly retain the readable project component `Smoke-Project`, readable session components `session-one-special` and `kimi-isolated-one`, and the required suffixes `d989d08e`, `4d1229b0`, and `75f97c33`.
+These captured native outputs visibly retain the readable project component `Smoke-Project`, readable session components `session-one-special` and `kimi-isolated-one`, and the required suffixes `d989d08e`, `4d1229b0`, and `75f97c33`. They are evidence from this verification run, not constants in the harness; subsequent runs repeat the same native-row and `[0-9a-f]{8}` assertions against their runtime locators.
 
 The harness stopped its provider fixtures, killed only its isolated tmux server, removed its own temporary socket/session state, and left the nine pre-existing default-server `project-steward-p-*` sessions unchanged. Inspection also found one stopped fixture directory left by the initial failed harness run; it contained only harness-owned `.stop` files and no live PIDs, and only that exact temporary directory was removed. A final process/temp-root check found no harness server or fixture residue.
 

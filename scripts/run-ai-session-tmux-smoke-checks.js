@@ -225,6 +225,38 @@ function locatorMatches(row, locator) {
         && (locator.layout === 'session' || row.windowName === locator.windowName);
 }
 
+function assertReadableLocator(locator, layout, sessionPrefix, windowPrefix) {
+    assert.strictEqual(locator.layout, layout);
+    assert.match(locator.sessionName, new RegExp(`^${sessionPrefix}-[0-9a-f]{8}$`));
+    assert.match(locator.windowName, new RegExp(`^${windowPrefix}-[0-9a-f]{8}$`));
+}
+
+async function assertNativeReadableLocators(runner, projectLocator, sessionLocator) {
+    assertReadableLocator(
+        projectLocator, 'project', 'ps-Smoke-Project', 'codex-session-one-special'
+    );
+    assertReadableLocator(
+        sessionLocator, 'session', 'ps-Smoke-Project-kimi-isolated-one',
+        'kimi-kimi-isolated-one'
+    );
+    const nativeSessions = await runner.run(configuredTmuxPath, [
+        'list-sessions', '-F', '#{session_name}',
+    ]);
+    const nativeWindows = await runner.run(configuredTmuxPath, [
+        'list-windows', '-a', '-F', '#{session_name}\t#{window_name}',
+    ]);
+    assert.strictEqual(nativeSessions.exitCode, 0, nativeSessions.stderr);
+    assert.strictEqual(nativeWindows.exitCode, 0, nativeWindows.stderr);
+    const sessionRows = nativeSessions.stdout.trim().split(/\r?\n/);
+    const windowRows = nativeWindows.stdout.trim().split(/\r?\n/);
+    for (const locator of [projectLocator, sessionLocator]) {
+        assert.ok(sessionRows.includes(locator.sessionName),
+            `native list-sessions must contain ${locator.sessionName}`);
+        assert.ok(windowRows.includes(`${locator.sessionName}\t${locator.windowName}`),
+            `native list-windows must contain ${locator.sessionName}:${locator.windowName}`);
+    }
+}
+
 async function assertPaneAlive(runner, locator) {
     const target = locator.windowName
         ? `${locator.sessionName}:${locator.windowName}`
@@ -341,6 +373,7 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
         'session layout must create one independent tmux session per AI session');
     assert.ok(sessionRows.every(row => Object.keys(row.windowMetadata).sort().join(',')
         === 'layout,managed,version'), 'session-layout window metadata must remain base-only');
+    await assertNativeReadableLocators(runner, projectOne.tmux, sessionOne.tmux);
     await contextA.backend.detach(sessionOne);
     await assertPaneAlive(runner, sessionOne.tmux);
 
