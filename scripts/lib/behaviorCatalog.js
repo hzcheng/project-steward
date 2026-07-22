@@ -73,6 +73,7 @@ function validateBehaviorCatalog(entries, options) {
                 const ownerPath = path.resolve(repositoryRoot, catalogOwner);
                 const relativeOwnerPath = path.relative(repositoryRoot, ownerPath);
                 if (path.isAbsolute(catalogOwner)
+                    || path.win32.isAbsolute(catalogOwner)
                     || relativeOwnerPath === '..'
                     || relativeOwnerPath.startsWith(`..${path.sep}`)
                     || path.isAbsolute(relativeOwnerPath)) {

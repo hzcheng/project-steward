@@ -127,3 +127,12 @@ test('CATALOG-INTEGRITY-009 rejects legacy compatibility scripts as automated ow
         }
     }
 });
+
+test('CATALOG-INTEGRITY-010 rejects Windows drive-absolute owner paths', t => {
+    const root = createRoot(t);
+    const owner = 'C:\\outside\\owner.js';
+    const errors = validateBehaviorCatalog([automatedEntry({ owners: [owner] })], {
+        repositoryRoot: root,
+    });
+    assert.ok(errors.includes(`entry 1 owner path must be repository-relative: ${owner}`));
+});
