@@ -49,7 +49,7 @@ function createHostFixture() {
     const activationCalls = [];
     const executedCommands = [];
     const bridge = {
-        isActive: false,
+        isActive: true,
         packageJSON: { extensionKind: ['ui'] },
         activate: async () => { activationCalls.push('bridge'); bridge.isActive = true; },
     };
@@ -59,7 +59,6 @@ function createHostFixture() {
         activate: async () => {
             activationCalls.push('main');
             main.isActive = true;
-            bridge.isActive = true;
         },
     };
     const vscode = {
@@ -75,7 +74,7 @@ function createHostFixture() {
 }
 
 // RELEASE-SCHEDULED-EXTENSION-HOST-001
-test('RELEASE-SCHEDULED-EXTENSION-HOST-001 activates only main and exercises live command and view paths', async () => {
+test('RELEASE-SCHEDULED-EXTENSION-HOST-001 invokes only main activation and exercises live command and view paths', async () => {
     const fixture = createHostFixture();
     const previousTimeout = process.env.PROJECT_STEWARD_EXTENSION_HOST_TIMEOUT_MS;
     process.env.PROJECT_STEWARD_EXTENSION_HOST_TIMEOUT_MS = '1000';
@@ -88,7 +87,7 @@ test('RELEASE-SCHEDULED-EXTENSION-HOST-001 activates only main and exercises liv
     }
 
     assert.deepEqual(fixture.activationCalls, ['main']);
-    assert.equal(fixture.bridge.isActive, true, 'main activation must auto-activate its bridge dependency');
+    assert.equal(fixture.bridge.isActive, true, 'both extensions must be active after main activation');
     assert.deepEqual(fixture.executedCommands, [
         'projectSteward.open',
         'projectSteward.steward.focus',

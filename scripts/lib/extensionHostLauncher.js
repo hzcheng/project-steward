@@ -94,6 +94,10 @@ function runWorkerWithWatchdog(spawnWorker, options = {}) {
         let forceTimer;
         let timeoutTimer;
         let settled = false;
+        const timeoutError = () => new Error(
+            `Extension Host worker exceeded ${timeoutMs} ms and was terminated`
+        );
+        const isMissingProcessGroup = error => error && error.code === 'ESRCH';
         const clearTimers = () => {
             if (timeoutTimer !== undefined) clearTimeoutFn(timeoutTimer);
             if (forceTimer !== undefined) clearTimeoutFn(forceTimer);
@@ -102,6 +106,10 @@ function runWorkerWithWatchdog(spawnWorker, options = {}) {
             if (settled) return;
             settled = true;
             clearTimers();
+            if (child) {
+                child.removeListener('error', onError);
+                child.removeListener('close', onClose);
+            }
             error ? reject(error) : resolve();
         };
         const terminate = signal => {
@@ -109,22 +117,22 @@ function runWorkerWithWatchdog(spawnWorker, options = {}) {
             if (platform === 'darwin' || platform === 'linux') killProcess(-child.pid, signal);
             else child.kill(signal);
         };
+        const onError = error => {
+            if (!timedOut) finish(error);
+        };
+        const onClose = (code, signal) => {
+            if (timedOut) return;
+            if (code === 0) finish();
+            else finish(new Error(`Extension Host worker failed with code ${code === null ? signal : code}`));
+        };
         try {
             child = spawnWorker();
         } catch (error) {
             finish(error);
             return;
         }
-        child.once('error', finish);
-        child.once('close', (code, signal) => {
-            if (timedOut) {
-                finish(new Error(`Extension Host worker exceeded ${timeoutMs} ms and was terminated`));
-            } else if (code === 0) {
-                finish();
-            } else {
-                finish(new Error(`Extension Host worker failed with code ${code === null ? signal : code}`));
-            }
-        });
+        child.once('error', onError);
+        child.once('close', onClose);
         timeoutTimer = setTimeoutFn(() => {
             timedOut = true;
             try {
@@ -132,12 +140,13 @@ function runWorkerWithWatchdog(spawnWorker, options = {}) {
                 forceTimer = setTimeoutFn(() => {
                     try {
                         terminate('SIGKILL');
+                        finish(timeoutError());
                     } catch (error) {
-                        finish(error);
+                        finish(isMissingProcessGroup(error) ? timeoutError() : error);
                     }
                 }, 5000);
             } catch (error) {
-                finish(error);
+                finish(isMissingProcessGroup(error) ? timeoutError() : error);
             }
         }, timeoutMs);
     });

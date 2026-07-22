@@ -95,21 +95,65 @@ test('RELEASE-SCHEDULED-EXTENSION-HOST-001 watchdog terminates the POSIX worker 
     const child = new EventEmitter();
     child.pid = 4321;
     const kills = [];
-    let fireTimeout;
+    const timers = [];
+    let settlements = 0;
     const promise = runWorkerWithWatchdog(() => child, {
         timeoutMs: 25,
         platform: 'linux',
         killProcess: (pid, signal) => { kills.push([pid, signal]); },
-        setTimeout: callback => { fireTimeout = callback; return { fixture: true }; },
-        clearTimeout: () => undefined,
+        setTimeout: (callback, delay) => {
+            const timer = { callback, cleared: false, delay };
+            timers.push(timer);
+            return timer;
+        },
+        clearTimeout: timer => { timer.cleared = true; },
     });
-    fireTimeout();
-    fireTimeout();
-    child.emit('close', null, 'SIGKILL');
+    promise.then(() => { settlements += 1; }, () => { settlements += 1; });
+
+    timers[0].callback();
+    child.emit('close', null, 'SIGTERM');
+    await Promise.resolve();
+    assert.equal(settlements, 0, 'worker close must not settle before process-group escalation');
+    assert.equal(timers[1].cleared, false, 'worker close must not clear the force-kill timer');
+    timers[1].callback();
 
     await assert.rejects(promise, /exceeded 25 ms/);
     assert.equal(EXTENSION_HOST_WORKER_TIMEOUT_MS, 480000);
     assert.deepEqual(kills, [[-4321, 'SIGTERM'], [-4321, 'SIGKILL']]);
+    assert.equal(settlements, 1);
+    assert.equal(timers.every(timer => timer.cleared), true);
+    assert.equal(child.listenerCount('error'), 0);
+    assert.equal(child.listenerCount('close'), 0);
+});
+
+// RELEASE-SCHEDULED-EXTENSION-HOST-001
+test('RELEASE-SCHEDULED-EXTENSION-HOST-001 watchdog treats ESRCH as a cleanly absent process group', async () => {
+    const child = new EventEmitter();
+    child.pid = 9876;
+    const timers = [];
+    const promise = runWorkerWithWatchdog(() => child, {
+        timeoutMs: 25,
+        platform: 'darwin',
+        killProcess: () => {
+            const error = new Error('no such process group');
+            error.code = 'ESRCH';
+            throw error;
+        },
+        setTimeout: (callback, delay) => {
+            const timer = { callback, cleared: false, delay };
+            timers.push(timer);
+            return timer;
+        },
+        clearTimeout: timer => { timer.cleared = true; },
+    });
+
+    timers[0].callback();
+
+    await assert.rejects(promise, /exceeded 25 ms/);
+    assert.equal(timers.length, 1, 'ESRCH must not schedule a redundant force kill');
+    assert.equal(timers[0].cleared, true);
+    assert.equal(child.listenerCount('error'), 0);
+    assert.equal(child.listenerCount('close'), 0);
 });
 
 // RELEASE-SCHEDULED-EXTENSION-HOST-001

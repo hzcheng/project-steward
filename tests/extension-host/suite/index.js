@@ -19,7 +19,7 @@ async function verifyExtensionHostLifecycle() {
     await mainExtension.activate();
     assert.equal(mainExtension.isActive, true, `${MAIN_EXTENSION_ID} must activate`);
     assert.equal(bridgeExtension.isActive, true,
-        `${BRIDGE_EXTENSION_ID} must auto-activate as the main extension dependency`);
+        `${BRIDGE_EXTENSION_ID} must be active after main activation`);
 
     await vscode.commands.executeCommand('projectSteward.open');
     await vscode.commands.executeCommand('projectSteward.steward.focus');
