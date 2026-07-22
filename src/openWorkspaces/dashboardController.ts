@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 
 import type { AttentionAggregate } from '../aiSessions/attentionAggregate';
 import type { WorkspaceAiSessionViewModel } from '../aiSessions/types';
+import { PREDEFINED_COLORS } from '../constants';
 import type { Group, WorkspaceCardViewModel } from '../models';
 import { buildOpenWorkspacesUpdatedMessage } from '../dashboard/webviewUpdateMessages';
 import type { TodoSearchCatalogItem } from '../todos/types';
@@ -89,7 +90,7 @@ export class OpenWorkspaceDashboardController {
         ]));
         const navigationCards = navigationProjections.map(projection => ({
             ...projection.card,
-            color: this.options.getWorkspaceProjectColor(projection.workspace),
+            color: this.getWorkspaceCardColor(projection.workspace),
         }));
         const cards = currentCard ? [currentCard, ...navigationCards] : navigationCards;
         this.options.logDiagnostic('Renderer', {
@@ -147,7 +148,7 @@ export class OpenWorkspaceDashboardController {
             name: workspace.displayName,
             environment: workspace.environment,
             environmentLabel: this.getEnvironmentLabel(workspace.environment),
-            color: this.options.getWorkspaceProjectColor(workspace),
+            color: this.getWorkspaceCardColor(workspace),
             roots: workspace.roots
                 .slice()
                 .sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id))
@@ -166,6 +167,19 @@ export class OpenWorkspaceDashboardController {
             case 'local':
             default: return 'Local';
         }
+    }
+
+    private getWorkspaceCardColor(
+        workspace: Pick<OpenWorkspace, 'kind' | 'navigationIdentity' | 'navigationUri'>
+    ): string {
+        const projectColor = this.options.getWorkspaceProjectColor(workspace);
+        if (projectColor?.trim()) {
+            return projectColor;
+        }
+        const digest = crypto.createHash('sha256')
+            .update(workspace.navigationIdentity)
+            .digest();
+        return PREDEFINED_COLORS[digest.readUInt32BE(0) % PREDEFINED_COLORS.length].value;
     }
 
     private clearPostedSemanticRevision(semanticRevision: string): void {

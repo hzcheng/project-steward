@@ -1117,12 +1117,23 @@ async function runOpenWorkspaceClientAndControllerChecks() {
     assert.strictEqual(cards.find(card => card.kind === 'navigation').name, 'Newest registration wins');
     assert.strictEqual(cards.find(card => card.kind === 'current').color, '#123456');
     assert.strictEqual(cards.find(card => card.navigationIdentity === duplicateIdentity).color, '#abcdef');
-    assert.strictEqual(cards.find(card => card.navigationIdentity === unmatched.navigationIdentity).color, '');
+    const unmatchedColor = cards.find(
+        card => card.navigationIdentity === unmatched.navigationIdentity
+    ).color;
+    assert.ok(unmatchedColor,
+        'an unsaved workspace must receive a visible fallback accent color');
     assert.deepStrictEqual(colorRequests.sort(), [
         current.navigationUri,
         duplicateNewer.navigationUri,
         unmatched.navigationUri,
     ].sort());
+    assert.strictEqual(
+        dashboard.getCards().find(
+            card => card.navigationIdentity === unmatched.navigationIdentity
+        ).color,
+        unmatchedColor,
+        'an unsaved workspace fallback accent must stay stable across renders'
+    );
     assert.strictEqual(cards.some(card => card.roots.some(root => Object.hasOwnProperty.call(root, 'hostPath'))), false);
     assert.strictEqual(cards.find(card => card.kind === 'navigation').aiSessions, undefined,
         'OTHER WINDOWS cards must stay lightweight');
