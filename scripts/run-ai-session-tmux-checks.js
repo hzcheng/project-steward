@@ -827,6 +827,7 @@ async function runTmuxClientChecks() {
     const requiredCommands = [
         'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
         'select-window', 'attach-session', 'has-session', 'rename-session', 'rename-window',
+        'display-message',
     ];
     const calls = [];
     const runner = {
@@ -927,6 +928,80 @@ async function runTmuxClientChecks() {
         return true;
     });
     await assert.rejects(activeWindowClient.getActiveWindow('bad\nsession'), TypeError);
+
+    const targetMetadata = {
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'project-key',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
+        provider: 'codex', sessionId: 'session-1', pendingId: '',
+        createdAt: '2026-07-22T00:00:00.000Z', marker: '/tmp/session-1.done',
+    };
+    const targetFields = Object.keys(tmuxLayout.TMUX_METADATA_OPTIONS)
+        .map(key => targetMetadata[key] || '');
+    let targetResult = {
+        exitCode: 0,
+        stdout: ['managed-session', 'ai-codex-1', '@42', ...targetFields].join('\u001f') + '\n',
+        stderr: '',
+    };
+    const targetCalls = [];
+    const targetClient = new tmuxClientModule.TmuxClient('/private/tmux', {
+        run: async (_file, args) => {
+            targetCalls.push(args);
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.4\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return {
+                    exitCode: 0,
+                    stdout: [...requiredCommands, 'display-message'].join('\n'),
+                    stderr: '',
+                };
+            }
+            return targetResult;
+        },
+    });
+    const targetLocator = {
+        layout: 'project', sessionName: 'managed-session', windowName: 'ai-codex-1',
+    };
+    assert.deepStrictEqual(await targetClient.getTargetWindow(targetLocator), {
+        sessionName: 'managed-session', windowName: 'ai-codex-1', windowId: '@42',
+        metadata: Object.fromEntries(Object.entries(targetMetadata).filter(([, value]) => value)),
+    });
+    assert.deepStrictEqual(targetCalls.slice(-1)[0].slice(0, 4), [
+        'display-message', '-p', '-t', 'managed-session:ai-codex-1',
+    ]);
+    const targetFormat = targetCalls.slice(-1)[0][4];
+    assert.ok(targetFormat.startsWith('#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f'));
+    for (const option of Object.values(tmuxLayout.TMUX_METADATA_OPTIONS)) {
+        assert.ok(targetFormat.includes(`#{${option}}`));
+    }
+
+    targetResult = { exitCode: 1, stdout: '', stderr: "can't find window: ai-codex-1" };
+    assert.strictEqual(await targetClient.getTargetWindow(targetLocator), null);
+
+    targetResult = { exitCode: 0, stdout: 'too\u001ffew\n', stderr: '' };
+    await assert.rejects(targetClient.getTargetWindow(targetLocator), error =>
+        error.operation === 'get-target-window' && error.category === 'invalid-output');
+
+    const oversizedTargetFields = targetFields.slice();
+    oversizedTargetFields[Object.keys(tmuxLayout.TMUX_METADATA_OPTIONS).indexOf('marker')] = 'x'.repeat(4097);
+    targetResult = {
+        exitCode: 0,
+        stdout: ['managed-session', 'ai-codex-1', '@42', ...oversizedTargetFields].join('\u001f') + '\n',
+        stderr: '',
+    };
+    await assert.rejects(targetClient.getTargetWindow(targetLocator), error =>
+        error.operation === 'get-target-window' && error.category === 'invalid-output');
+
+    targetResult = { exitCode: 2, stdout: 'private stdout', stderr: 'private locator' };
+    await assert.rejects(targetClient.getTargetWindow(targetLocator), error => {
+        assert.strictEqual(error.operation, 'get-target-window');
+        assert.strictEqual(error.category, 'nonzero-exit');
+        for (const secret of ['private stdout', 'private locator', '/private/tmux']) {
+            assert.ok(!error.message.includes(secret));
+        }
+        return true;
+    });
+    await assert.rejects(targetClient.getTargetWindow({
+        layout: 'project', sessionName: 'bad\nsession', windowName: 'ai-codex-1',
+    }), TypeError);
 
     const metadataCalls = [];
     const optionValues = {

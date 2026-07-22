@@ -10,6 +10,10 @@ const FIELD_SEPARATOR = '\u001f';
 const LIST_WINDOWS_FORMAT = [
     '#{session_name}', '#{window_name}', '#{window_id}', '#{window_active}',
 ].join(FIELD_SEPARATOR);
+const TARGET_WINDOW_FORMAT = [
+    '#{session_name}', '#{window_name}', '#{window_id}',
+    ...Object.values(TMUX_METADATA_OPTIONS).map(option => `#{${option}}`),
+].join(FIELD_SEPARATOR);
 const MAX_LIST_OUTPUT_LENGTH = COMMAND_MAX_BUFFER;
 const MAX_LIST_ROWS = 10000;
 const MAX_TARGET_FIELD_LENGTH = 512;
@@ -26,6 +30,7 @@ const REQUIRED_COMMANDS = [
     'has-session',
     'rename-session',
     'rename-window',
+    'display-message',
 ] as const;
 
 export type TmuxUnavailableCategory =
@@ -83,11 +88,19 @@ export interface TmuxActiveWindowRecord {
     windowId: string;
 }
 
+export interface TmuxTargetWindowRecord {
+    sessionName: string;
+    windowName: string;
+    windowId: string;
+    metadata: Record<string, string>;
+}
+
 type TmuxOperation =
     | 'check-version'
     | 'list-commands'
     | 'list-windows'
     | 'get-active-window'
+    | 'get-target-window'
     | 'has-session'
     | 'create-session'
     | 'create-window'
@@ -252,6 +265,21 @@ export class TmuxClient {
             windowName: active[0].windowName,
             windowId: active[0].windowId,
         } : null;
+    }
+
+    async getTargetWindow(locator: AiSessionTmuxLocator): Promise<TmuxTargetWindowRecord | null> {
+        const target = validatedLocatorTarget(locator);
+        await this.requireAvailable();
+        const result = await this.invoke('get-target-window', [
+            'display-message', '-p', '-t', target, TARGET_WINDOW_FORMAT,
+        ]);
+        if (result.exitCode !== 0) {
+            if (isMissingTargetResult(result)) {
+                return null;
+            }
+            throw resultError('get-target-window', result);
+        }
+        return parseTargetWindow(result.stdout);
     }
 
     async hasSession(sessionName: string): Promise<boolean> {
@@ -649,6 +677,38 @@ function parseMetadataOptionValue(stdout: string, operation: TmuxOperation): str
     return value;
 }
 
+function parseTargetWindow(stdout: string): TmuxTargetWindowRecord {
+    if (stdout.length > MAX_LIST_OUTPUT_LENGTH || !stdout) {
+        throw new TmuxClientError('get-target-window', 'invalid-output');
+    }
+    const value = stdout.endsWith('\n') ? stdout.slice(0, -1) : stdout;
+    if (!value || value.includes('\n') || value.includes('\r')) {
+        throw new TmuxClientError('get-target-window', 'invalid-output');
+    }
+    const fields = value.split(FIELD_SEPARATOR);
+    const keys = metadataOptionKeys();
+    if (fields.length !== 3 + keys.length) {
+        throw new TmuxClientError('get-target-window', 'invalid-output');
+    }
+    const [sessionName, windowName, windowId, ...metadataValues] = fields;
+    if (!isTargetField(sessionName) || !isTargetField(windowName) || !/^@[0-9]+$/.test(windowId)) {
+        throw new TmuxClientError('get-target-window', 'invalid-output');
+    }
+    const metadata: Record<string, string> = {};
+    for (let index = 0; index < keys.length; index++) {
+        const metadataValue = metadataValues[index];
+        if (!metadataValue) {
+            continue;
+        }
+        if (metadataValue.length > metadataValueLimit(keys[index])
+            || CONTROL_CHARACTERS.test(metadataValue)) {
+            throw new TmuxClientError('get-target-window', 'invalid-output');
+        }
+        metadata[keys[index]] = metadataValue;
+    }
+    return { sessionName, windowName, windowId, metadata };
+}
+
 function metadataOptionKeys(): MetadataOptionKey[] {
     return Object.keys(TMUX_METADATA_OPTIONS) as MetadataOptionKey[];
 }
@@ -702,10 +762,29 @@ function isMissingSessionResult(result: TmuxCommandResult): boolean {
         || stderr === 'no sessions';
 }
 
+function isMissingTargetResult(result: TmuxCommandResult): boolean {
+    return isMissingSessionResult(result)
+        || (result.exitCode === 1 && result.stdout === ''
+            && /^can't find window: .+$/.test(result.stderr.trim()));
+}
+
 function resultError(operation: TmuxOperation, result: TmuxCommandResult): TmuxClientError {
     return new TmuxClientError(operation, result.failureCategory || 'nonzero-exit');
 }
 
 function windowTarget(sessionName: string, windowName: string): string {
     return `${sessionName}:${windowName}`;
+}
+
+function validatedLocatorTarget(locator: AiSessionTmuxLocator): string {
+    if (!locator || typeof locator !== 'object' || !isTargetField(locator.sessionName)) {
+        throw new TypeError('The tmux runtime locator is invalid.');
+    }
+    if (locator.layout === 'project' && locator.windowName && isTargetField(locator.windowName)) {
+        return windowTarget(locator.sessionName, locator.windowName);
+    }
+    if (locator.layout === 'session' && locator.windowName === undefined) {
+        return locator.sessionName;
+    }
+    throw new TypeError('The tmux runtime locator is invalid.');
 }
