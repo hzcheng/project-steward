@@ -75,8 +75,8 @@ export function buildReadableTmuxLocator(
     }
     return {
         layout,
-        sessionName: boundedName(
-            ['ps', projectComponent, sessionComponent], readableRuntimeSuffix(identity)
+        sessionName: boundedSessionName(
+            projectComponent, sessionComponent, readableRuntimeSuffix(identity)
         ),
         windowName: runtimeWindow,
     };
@@ -108,7 +108,7 @@ export function tmuxLocatorMatchesIdentity(
         return sessionMatches && windowMatches;
     }
     return locator.layout === 'session'
-        && matchesReadableName(locator.sessionName, 'ps-', runtimeSuffix)
+        && matchesReadableSessionName(locator.sessionName, runtimeSuffix)
         && readableWindow;
 }
 
@@ -118,6 +118,34 @@ function boundedName(components: string[], suffix: string): string {
     const prefix = Array.from(components.join('-')).slice(0, maxPrefixLength).join('')
         .replace(/-+$/g, '');
     return `${prefix}${suffixComponent}`;
+}
+
+function boundedSessionName(project: string, session: string, suffix: string): string {
+    const suffixComponent = `-${suffix}`;
+    const componentBudget = MAX_TMUX_NAME_LENGTH
+        - Array.from(`ps--${suffixComponent}`).length;
+    const projectPoints = Array.from(project);
+    const sessionPoints = Array.from(session);
+    const projectShare = Math.floor(componentBudget / 2);
+    let projectLength = Math.min(projectPoints.length, projectShare);
+    let sessionLength = Math.min(sessionPoints.length, componentBudget - projectShare);
+    let remaining = componentBudget - projectLength - sessionLength;
+    const projectExtra = Math.min(remaining, projectPoints.length - projectLength);
+    projectLength += projectExtra;
+    remaining -= projectExtra;
+    sessionLength += Math.min(remaining, sessionPoints.length - sessionLength);
+    const boundedProject = projectPoints.slice(0, projectLength).join('').replace(/-+$/g, '');
+    const boundedSession = sessionPoints.slice(0, sessionLength).join('').replace(/-+$/g, '');
+    return `ps-${boundedProject}-${boundedSession}${suffixComponent}`;
+}
+
+function matchesReadableSessionName(value: unknown, suffix: string): boolean {
+    if (!matchesReadableName(value, 'ps-', suffix)) {
+        return false;
+    }
+    const suffixComponent = `-${suffix}`;
+    const readableComponent = (value as string).slice('ps-'.length, -suffixComponent.length);
+    return readableComponent.includes('-');
 }
 
 function matchesReadableName(value: unknown, prefix: string, suffix: string): boolean {

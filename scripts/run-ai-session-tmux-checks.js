@@ -856,6 +856,20 @@ function runTmuxLayoutChecks() {
     assert.match(sessionLayout.sessionName, /^ps-RedDB-Repair-replication-[0-9a-f]{8}$/);
     assert.match(sessionLayout.windowName, /^codex-Repair-replication-[0-9a-f]{8}$/);
     assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(sessionLayout, readableIdentity), true);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...sessionLayout,
+        sessionName: `ps-RedDB-${readableRuntimeSuffix}`,
+    }, readableIdentity), false);
+
+    const boundary95SessionLayout = tmuxNaming.buildReadableTmuxLocator(
+        readableIdentity,
+        'session',
+        { projectName: 'p'.repeat(41), sessionName: 's'.repeat(41) }
+    );
+    assert.strictEqual(Array.from(boundary95SessionLayout.sessionName).length, 95);
+    assert.strictEqual(
+        tmuxNaming.tmuxLocatorMatchesIdentity(boundary95SessionLayout, readableIdentity), true
+    );
 
     const legacyProject = new tmuxLayout.ProjectTmuxLayout().getLocator(readableIdentity);
     const legacySession = new tmuxLayout.SessionTmuxLayout().getLocator(readableIdentity);
@@ -889,8 +903,12 @@ function runTmuxLayoutChecks() {
     });
     assert.strictEqual(Array.from(astralBounded.sessionName).length, 96);
     assert.strictEqual(Array.from(astralBounded.windowName).length, 96);
+    assert.match(astralBounded.sessionName, /^ps-𐐀+-𐐀+-[0-9a-f]{8}$/u);
     assert.match(astralBounded.sessionName, /-[0-9a-f]{8}$/);
     assert.match(astralBounded.windowName, /-[0-9a-f]{8}$/);
+    assert.strictEqual(
+        tmuxNaming.tmuxLocatorMatchesIdentity(astralBounded, readableIdentity), true
+    );
     assert.deepStrictEqual(project, {
         layout: 'project',
         sessionName: 'project-steward-p-857b61585ca6ee92',
