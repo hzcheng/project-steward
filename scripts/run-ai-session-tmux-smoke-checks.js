@@ -862,23 +862,34 @@ function reportSmokeOutcome(primaryError, cleanupError) {
     if (cleanupError) throw cleanupError;
 }
 
-async function main() {
+async function runSmokeHarness(dependencies = {}) {
     let rootOwnership = null;
     let tmuxTempRootOwnership = null;
     const fixtures = [];
     let primaryError = null;
     let cleanupError = null;
+    const previousTmuxTempRoot = tmuxTempRoot;
     try {
         try {
             rootOwnership = createOwnedTemporaryRoot('project-steward-tmux-smoke-');
             tmuxTempRootOwnership = createOwnedTemporaryRoot('project-steward-tmux-server-');
             const root = rootOwnership.path;
             tmuxTempRoot = tmuxTempRootOwnership.path;
-            const runner = new IsolatedSyncTmuxRunner();
-            const client = new TmuxClient(configuredTmuxPath, runner);
+            if (dependencies.onRootsCreated) {
+                dependencies.onRootsCreated({
+                    fixture: rootOwnership,
+                    tmux: tmuxTempRootOwnership,
+                });
+            }
+            const createRunner = dependencies.createRunner
+                || (() => new IsolatedSyncTmuxRunner());
+            const createClient = dependencies.createClient
+                || (runnerValue => new TmuxClient(configuredTmuxPath, runnerValue));
+            const runner = createRunner();
+            const client = createClient(runner);
             const availability = await client.checkAvailability();
             assert.ok(availability.available, availability.message);
-            await runSmoke(root, runner, client, fixtures);
+            await (dependencies.runSmoke || runSmoke)(root, runner, client, fixtures);
         } catch (error) {
             primaryError = error;
         }
@@ -886,10 +897,14 @@ async function main() {
         try {
             const tmuxRootWasCreated = Boolean(tmuxTempRootOwnership);
             await runBestEffortCleanup({
-                captureSocket: tmuxRootWasCreated ? captureIsolatedSocketPath : () => null,
-                killServer: tmuxRootWasCreated ? killIsolatedServer : () => undefined,
-                verifyStopped: tmuxRootWasCreated ? assertIsolatedServerStopped : () => undefined,
-                removeSocket: tmuxRootWasCreated ? removeOwnStaleSocket : () => undefined,
+                captureSocket: tmuxRootWasCreated
+                    ? (dependencies.captureSocket || captureIsolatedSocketPath) : () => null,
+                killServer: tmuxRootWasCreated
+                    ? (dependencies.killServer || killIsolatedServer) : () => undefined,
+                verifyStopped: tmuxRootWasCreated
+                    ? (dependencies.verifyStopped || assertIsolatedServerStopped) : () => undefined,
+                removeSocket: tmuxRootWasCreated
+                    ? (dependencies.removeSocket || removeOwnStaleSocket) : () => undefined,
                 terminateProviders: () => stopAndVerifyProviderFixtures(fixtures),
                 removeFixtures: (serverStopped, providersStopped) => removeFixtureRoots(
                     rootOwnership, tmuxTempRootOwnership, serverStopped, providersStopped
@@ -899,7 +914,15 @@ async function main() {
             cleanupError = error;
         }
     }
-    reportSmokeOutcome(primaryError, cleanupError);
+    try {
+        reportSmokeOutcome(primaryError, cleanupError);
+    } finally {
+        tmuxTempRoot = previousTmuxTempRoot;
+    }
+}
+
+async function main() {
+    await runSmokeHarness();
     console.log(`AI session tmux smoke checks passed (${serverName}).`);
 }
 
@@ -910,6 +933,7 @@ module.exports = {
     killIsolatedServer,
     removeOwnedTemporaryRoot,
     reportSmokeOutcome,
+    runSmokeHarness,
     runTrackedProviderLaunch,
     runBestEffortCleanup,
     stopAndVerifyProviderFixtures,

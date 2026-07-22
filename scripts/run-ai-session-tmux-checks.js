@@ -7427,6 +7427,8 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
     assert.ok(source.includes("'-f'"));
     assert.ok(source.includes("'/dev/null'"));
     assert.ok(source.includes('finally'));
+    assert.ok(source.includes('await runSmokeHarness();'),
+        'the executable smoke entry point must use the tested production orchestration');
     assert.ok(source.includes("'kill-server'"));
     assert.ok(source.includes("'list-sessions'"),
         'cleanup must verify the isolated server no longer answers');
@@ -8007,6 +8009,65 @@ async function runRealTmuxSmokeHarnessSourceChecks() {
         'an early launch failure must remove roots when all fixtures are verified unlaunched');
     assert.ok(earlyFailureFixtures.every(fixture =>
         fixture.launchState.phase === 'verified-unlaunched'));
+
+    const orchestrationPrimaryFailure = new Error('injected pre-dispatch smoke failure');
+    let orchestrationRoots = null;
+    await assert.rejects(smokeHarness.runSmokeHarness({
+        createRunner: () => ({}),
+        createClient: () => ({ checkAvailability: async () => ({ available: true }) }),
+        runSmoke: async (root, runner, client, fixtures) => {
+            fixtures.push({
+                stopPath: '/private/not-dispatched.stop',
+                launchState: { phase: 'planned' },
+            });
+            throw orchestrationPrimaryFailure;
+        },
+        onRootsCreated: roots => { orchestrationRoots = roots; },
+        captureSocket: () => null,
+        killServer: () => undefined,
+        verifyStopped: () => undefined,
+        removeSocket: () => undefined,
+    }), error => error === orchestrationPrimaryFailure,
+    'the production orchestration must preserve the exact pre-dispatch primary error');
+    assert.ok(orchestrationRoots, 'the orchestration test must observe both owned descriptors');
+    assert.strictEqual(fs.existsSync(orchestrationRoots.fixture.path), false,
+        'the real finally wiring must remove its owned fixture root');
+    assert.strictEqual(fs.existsSync(orchestrationRoots.tmux.path), false,
+        'the real finally wiring must remove its owned tmux root after server verification');
+
+    const aggregatePrimaryFailure = new Error('injected aggregate primary failure');
+    const aggregateCleanupFailure = new Error('injected aggregate cleanup failure');
+    let aggregateRoots = null;
+    try {
+        await assert.rejects(smokeHarness.runSmokeHarness({
+            createRunner: () => ({}),
+            createClient: () => ({ checkAvailability: async () => ({ available: true }) }),
+            runSmoke: async (root, runner, client, fixtures) => {
+                fixtures.push({
+                    stopPath: '/private/not-dispatched-aggregate.stop',
+                    launchState: { phase: 'planned' },
+                });
+                throw aggregatePrimaryFailure;
+            },
+            onRootsCreated: roots => { aggregateRoots = roots; },
+            captureSocket: () => null,
+            killServer: () => undefined,
+            verifyStopped: () => { throw aggregateCleanupFailure; },
+            removeSocket: () => undefined,
+        }), error => error && error.name === 'CleanupAggregateError'
+            && error.errors[0] === aggregatePrimaryFailure
+            && error.errors[1] && error.errors[1].name === 'CleanupAggregateError'
+            && error.errors[1].errors.includes(aggregateCleanupFailure),
+        'the production orchestration must retain both primary and cleanup failures');
+        assert.strictEqual(fs.existsSync(aggregateRoots.fixture.path), false,
+            'provider verification must still remove the fixture root during server cleanup failure');
+        assert.strictEqual(fs.existsSync(aggregateRoots.tmux.path), true,
+            'failed server verification must retain the owned tmux root');
+    } finally {
+        if (aggregateRoots && fs.existsSync(aggregateRoots.tmux.path)) {
+            smokeHarness.removeOwnedTemporaryRoot(aggregateRoots.tmux);
+        }
+    }
 }
 
 async function main() {
