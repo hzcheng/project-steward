@@ -1,6 +1,6 @@
 'use strict';
 
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import type * as vscode from 'vscode';
 import { serializeTmuxLaunchCommand } from './launchSpec';
 import type {
@@ -31,7 +31,11 @@ import {
     ProjectTmuxLayout,
     SessionTmuxLayout,
 } from './tmuxLayout';
-import { TmuxAttachBinding, TmuxAttachBindingStore } from './tmuxAttachBindingStore';
+import {
+    TmuxAttachBinding,
+    TmuxAttachBindingStore,
+    TmuxAttachProcessId,
+} from './tmuxAttachBindingStore';
 import { TmuxClient, TmuxClientError } from './tmuxClient';
 import {
     buildReadableTmuxLocator,
@@ -61,10 +65,13 @@ const MAX_EXCLUDED_SESSION_IDS = 1000;
 const MAX_AGGREGATE_LAUNCH_BYTES = 32 * 1024;
 const MAX_SERIALIZED_TMUX_COMMAND_BYTES = 128 * 1024;
 const LOCAL_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+const TMUX_ATTACH_RECOVERY_ENV = 'PROJECT_STEWARD_TMUX_ATTACH_ID';
+const TMUX_ATTACH_RECOVERY_TOKEN = /^[0-9a-f]{32}$/;
 
 interface AttachTerminal {
     readonly name: string;
     readonly processId: number | PromiseLike<number | undefined>;
+    readonly creationOptions?: Readonly<vscode.TerminalOptions | vscode.ExtensionTerminalOptions>;
     show(): void;
     dispose(): void;
 }
@@ -72,6 +79,7 @@ interface AttachTerminal {
 interface AttachEntry<TTerminal> {
     terminal: TTerminal;
     binding: TmuxAttachBinding;
+    recoveryToken?: string;
     focusedBinding?: TmuxAttachBinding | null;
     focusEpoch: number;
     explicitSelections: number;
@@ -725,23 +733,48 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         entry.focusEpoch++;
         this.attaches.delete(key);
         const terminal = attachTerminal(entry.terminal);
-        this.dependencies.attachStore.remove(terminal.processId);
+        this.removePersistedAttach(entry.recoveryToken || null, terminal.processId);
         terminal.dispose();
+    }
+
+    isAttachTerminalCandidate(terminal: TTerminal): boolean {
+        const attach = attachTerminal(terminal);
+        return getTmuxAttachRecoveryToken(attach.creationOptions) !== null
+            || getTmuxAttachSessionName(
+                attach.creationOptions,
+                this.dependencies.client.getExecutablePath()
+            ) !== null;
     }
 
     async restoreAttachTerminals(terminals: readonly TTerminal[]): Promise<void> {
         await this.dependencies.discovery.refresh(true);
         for (const terminal of terminals || []) {
             const attach = attachTerminal(terminal);
+            if ([...this.attaches.values()].some(entry => entry.terminal === terminal)) {
+                continue;
+            }
             const processId = await resolveProcessId(attach.processId);
             if (processId === null) {
                 continue;
             }
-            let binding = this.dependencies.attachStore.get(processId);
-            let runtime = binding && terminalTitleMatches(attach.name, binding)
-                ? this.runtimeForBinding(binding)
-                : undefined;
-            if (binding?.pendingId && terminalTitleMatches(attach.name, binding) && !runtime) {
+            const recoveryToken = getTmuxAttachRecoveryToken(attach.creationOptions);
+            const recovery = recoveryToken
+                ? this.dependencies.attachStore.getRecovery(recoveryToken)
+                : null;
+            let binding = recovery?.binding || this.dependencies.attachStore.get(processId);
+            const launchSessionName = getTmuxAttachSessionName(
+                attach.creationOptions, this.dependencies.client.getExecutablePath()
+            );
+            const bindingMatchesTerminal = binding
+                ? Boolean(recovery) || terminalMatchesBinding(attach, binding, launchSessionName)
+                : false;
+            let runtime = bindingMatchesTerminal ? this.runtimeForBinding(binding as TmuxAttachBinding)
+                : await this.runtimeForAttachSession(launchSessionName);
+            if (!bindingMatchesTerminal && runtime) {
+                binding = attachBinding(runtime, getTerminalCreationName(attach)
+                    || this.getAttachTerminalName(runtime));
+            }
+            if (binding?.pendingId && bindingMatchesTerminal && !runtime) {
                 const pendingIdentityValue: AiSessionRuntimeIdentity = {
                     provider: binding.provider,
                     workspaceScopeIdentity: binding.workspaceScopeIdentity,
@@ -760,7 +793,6 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                     const promoted = this.findVerified(finalIdentityValue, consumed.finalLocator);
                     if (promoted) {
                         binding = attachBinding(promoted, binding.terminalNamePrefix);
-                        this.dependencies.attachStore.set(processId, binding);
                         runtime = promoted;
                     } else {
                         const intent = await this.dependencies.runtimeStore.getPromoting(
@@ -774,11 +806,15 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                             if (!this.attaches.has(key)) {
                                 this.attaches.set(key, {
                                     terminal, binding, focusedBinding: binding,
+                                    ...(recoveryToken ? { recoveryToken } : {}),
                                     focusEpoch: 0, explicitSelections: 0,
                                 });
+                                this.persistAttachBinding(
+                                    attach.processId, binding, recoveryToken
+                                );
                             }
                         } else {
-                            this.dependencies.attachStore.remove(processId);
+                            this.removePersistedAttach(recoveryToken, processId);
                         }
                         continue;
                     }
@@ -790,20 +826,35 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                         if (!this.attaches.has(key)) {
                             this.attaches.set(key, {
                                 terminal, binding, focusedBinding: binding,
+                                ...(recoveryToken ? { recoveryToken } : {}),
                                 focusEpoch: 0, explicitSelections: 0,
                             });
+                            this.persistAttachBinding(
+                                attach.processId, binding, recoveryToken
+                            );
                         }
                         continue;
                     }
                 }
             }
-            if (!binding || !runtime || this.attaches.has(registryKey(runtime))) {
-                this.dependencies.attachStore.remove(processId);
+            if (!binding || !runtime) {
+                this.removePersistedAttach(recoveryToken, processId);
                 continue;
             }
-            this.attaches.set(registryKey(runtime), {
-                terminal, binding, focusedBinding: binding, focusEpoch: 0, explicitSelections: 0,
+            const key = registryKey(runtime);
+            const existing = this.attaches.get(key);
+            if (existing) {
+                if (existing.terminal !== terminal) {
+                    this.removePersistedAttach(recoveryToken, processId);
+                }
+                continue;
+            }
+            this.attaches.set(key, {
+                terminal, binding, focusedBinding: binding,
+                ...(recoveryToken ? { recoveryToken } : {}),
+                focusEpoch: 0, explicitSelections: 0,
             });
+            this.persistAttachBinding(attach.processId, binding, recoveryToken);
         }
         await this.dependencies.attachStore.flush();
     }
@@ -815,7 +866,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             }
             entry.focusEpoch++;
             this.attaches.delete(key);
-            this.dependencies.attachStore.remove(attachTerminal(terminal).processId);
+            this.removePersistedAttach(
+                entry.recoveryToken || null, attachTerminal(terminal).processId
+            );
         }
     }
 
@@ -1269,25 +1322,30 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             let entry = this.attaches.get(key);
             if (!entry) {
                 const binding = attachBinding(runtime, terminalName);
+                const recoveryToken = createAttachRecoveryToken();
                 const terminal = this.dependencies.createTerminal({
                     name: terminalName,
                     shellPath: this.dependencies.client.getExecutablePath(),
                     shellArgs: ['attach-session', '-t', runtime.tmux.sessionName],
-                    env: { TMUX: null },
+                    env: { TMUX: null, [TMUX_ATTACH_RECOVERY_ENV]: recoveryToken },
                 });
                 entry = {
-                    terminal, binding, focusedBinding: binding,
+                    terminal, binding, recoveryToken, focusedBinding: binding,
                     focusEpoch: 0, explicitSelections: 0,
                 };
                 this.attaches.set(key, entry);
-                this.dependencies.attachStore.set(attachTerminal(terminal).processId, binding);
+                this.persistAttachBinding(
+                    attachTerminal(terminal).processId, binding, recoveryToken
+                );
             } else {
                 const binding = attachBinding(runtime, entry.binding.terminalNamePrefix);
                 entry.binding = binding;
                 entry.focusedBinding = binding;
                 entry.focusEpoch++;
-                this.dependencies.attachStore.set(
-                    attachTerminal(entry.terminal).processId, entry.binding
+                this.persistAttachBinding(
+                    attachTerminal(entry.terminal).processId,
+                    entry.binding,
+                    entry.recoveryToken || null
                 );
             }
             try {
@@ -1295,7 +1353,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             } catch (error) {
                 entry.focusEpoch++;
                 this.attaches.delete(key);
-                this.dependencies.attachStore.remove(attachTerminal(entry.terminal).processId);
+                this.removePersistedAttach(
+                    entry.recoveryToken || null, attachTerminal(entry.terminal).processId
+                );
                 try {
                     attachTerminal(entry.terminal).dispose();
                 } catch (_disposeError) {
@@ -1371,6 +1431,53 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             && (!binding.sessionId || runtime.identity.sessionId === binding.sessionId));
     }
 
+    private persistAttachBinding(
+        processId: AttachTerminal['processId'],
+        binding: TmuxAttachBinding,
+        recoveryToken: string | null
+    ): void {
+        if (recoveryToken) {
+            this.dependencies.attachStore.setRecovery(recoveryToken, processId, binding);
+            return;
+        }
+        this.dependencies.attachStore.set(processId, binding);
+    }
+
+    private removePersistedAttach(
+        recoveryToken: string | null,
+        processId: TmuxAttachProcessId
+    ): void {
+        if (recoveryToken) {
+            this.dependencies.attachStore.removeRecovery(recoveryToken);
+            return;
+        }
+        this.dependencies.attachStore.remove(processId);
+    }
+
+    private async runtimeForAttachSession(
+        sessionName: string | null
+    ): Promise<AiSessionRuntimeSnapshot | undefined> {
+        if (!sessionName) {
+            return undefined;
+        }
+        const matches = [
+            ...this.dependencies.discovery.getActive(),
+            ...this.dependencies.discovery.getPending(),
+        ].filter(runtime => runtime.tmux?.sessionName === sessionName);
+        if (matches.length <= 1) {
+            return matches[0];
+        }
+        const registryKeys = new Set(matches.map(registryKey));
+        if (registryKeys.size !== 1 || matches.some(runtime => runtime.tmux?.layout !== 'project')) {
+            return undefined;
+        }
+        const activeWindow = await this.dependencies.client.getActiveWindow(sessionName);
+        const activeMatches = activeWindow
+            ? matches.filter(runtime => runtime.tmux?.windowName === activeWindow.windowName)
+            : [];
+        return activeMatches.length === 1 ? activeMatches[0] : matches[0];
+    }
+
     private async locatorIsOccupied(locator: AiSessionTmuxLocator): Promise<boolean> {
         const rows = await this.dependencies.client.listWindows();
         return rows.some(row => row.sessionName === locator.sessionName
@@ -1417,7 +1524,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         }
         if (updatePersisted) {
             entry.binding = nextBinding;
-            this.dependencies.attachStore.set(attachTerminal(entry.terminal).processId, nextBinding);
+            this.persistAttachBinding(
+                attachTerminal(entry.terminal).processId,
+                nextBinding,
+                entry.recoveryToken || null
+            );
         }
         if (updateFocused) {
             entry.focusedBinding = nextBinding;
@@ -1855,6 +1966,70 @@ function attachTerminal<TTerminal>(terminal: TTerminal): AttachTerminal {
 
 function terminalTitleMatches(title: string, binding: TmuxAttachBinding): boolean {
     return typeof title === 'string' && title.startsWith(binding.terminalNamePrefix);
+}
+
+function terminalMatchesBinding(
+    terminal: AttachTerminal,
+    binding: TmuxAttachBinding,
+    launchSessionName: string | null
+): boolean {
+    if (launchSessionName !== null) {
+        return launchSessionName === binding.sessionName
+            || terminalTitleMatches(terminal.name, binding);
+    }
+    if (hasExplicitTerminalLaunch(terminal.creationOptions)) {
+        return false;
+    }
+    return terminalTitleMatches(terminal.name, binding);
+}
+
+function getTmuxAttachSessionName(
+    creationOptions: AttachTerminal['creationOptions'],
+    tmuxExecutablePath: string
+): string | null {
+    if (!creationOptions || !('shellPath' in creationOptions)
+        || creationOptions.shellPath !== tmuxExecutablePath
+        || !Array.isArray(creationOptions.shellArgs)
+        || creationOptions.shellArgs.length !== 3
+        || creationOptions.shellArgs[0] !== 'attach-session'
+        || creationOptions.shellArgs[1] !== '-t') {
+        return null;
+    }
+    const sessionName = creationOptions.shellArgs[2];
+    return typeof sessionName === 'string' && sessionName.length > 0
+        ? sessionName
+        : null;
+}
+
+function getTmuxAttachRecoveryToken(
+    creationOptions: AttachTerminal['creationOptions']
+): string | null {
+    if (!creationOptions || !('env' in creationOptions) || !creationOptions.env) {
+        return null;
+    }
+    const token = creationOptions.env[TMUX_ATTACH_RECOVERY_ENV];
+    return typeof token === 'string' && TMUX_ATTACH_RECOVERY_TOKEN.test(token)
+        ? token
+        : null;
+}
+
+function createAttachRecoveryToken(): string {
+    return randomBytes(16).toString('hex');
+}
+
+function hasExplicitTerminalLaunch(
+    creationOptions: AttachTerminal['creationOptions']
+): boolean {
+    return Boolean(creationOptions && 'shellPath' in creationOptions
+        && (creationOptions.shellPath !== undefined || creationOptions.shellArgs !== undefined));
+}
+
+function getTerminalCreationName(terminal: AttachTerminal): string | null {
+    const creationOptions = terminal.creationOptions;
+    return creationOptions && typeof creationOptions.name === 'string'
+        && isSafeAttachTerminalName(creationOptions.name)
+        ? creationOptions.name
+        : null;
 }
 
 function resolveProcessId(value: AttachTerminal['processId']): Promise<number | null> {

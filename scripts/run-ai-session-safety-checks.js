@@ -5069,6 +5069,8 @@ function runWebviewContentChecks() {
     assert.ok(dashboard.includes('const aiSessionProviders = aiSessionProviderRegistry.providers();'));
     assert.ok(dashboard.includes('await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'));
     assert.ok(dashboard.includes('await tmuxRuntimeBackend.restoreAttachTerminals(vscode.window.terminals)'));
+    assert.match(dashboard, /onDidOpenTerminal\(terminal => \{[\s\S]*?tmuxRuntimeBackend\.restoreAttachTerminals\(\[terminal\]\)/,
+        'a terminal restored after extension activation must still recover its tmux attachment');
     assert.ok(dashboard.includes('new ActiveAiSessionTerminalHighlighter'));
     assert.ok(dashboard.includes('new TmuxFocusedRuntimeMonitor<vscode.Terminal>({'));
     assert.ok(dashboard.includes('tmuxFocusedRuntimeMonitor.start();'));

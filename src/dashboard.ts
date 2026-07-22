@@ -380,6 +380,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         nowMs: () => Date.now(),
         getAttachTerminalName: getAiSessionTmuxAttachTerminalName,
     });
+    let publishRestoredTmuxAttachTerminal = (): void => undefined;
+    context.subscriptions.push(vscode.window.onDidOpenTerminal(terminal => {
+        if (!tmuxRuntimeBackend.isAttachTerminalCandidate(terminal)) {
+            return;
+        }
+        void tmuxRuntimeBackend.restoreAttachTerminals([terminal]).then(
+            () => publishRestoredTmuxAttachTerminal(),
+            error => logAiSessionRuntimeFailure('restore-opened-tmux-attach-terminal', error)
+        );
+    }));
     const aiSessionRuntimeCoordinator = new AiSessionRuntimeCoordinator<vscode.Terminal>({
         direct: directTerminalRuntimeBackend,
         tmux: tmuxRuntimeBackend,
@@ -1424,6 +1434,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         clearInterval: handle => clearInterval(handle as NodeJS.Timeout),
     });
     tmuxFocusedRuntimeMonitor.start();
+    publishRestoredTmuxAttachTerminal = refreshAiSessionViewsIncrementally;
     const aiSessionTerminalCompletionInterval = setInterval(() => {
         const completedSessions = aiSessionTerminalService.getCompletedSessions();
         const completedRuntimes = completedSessions.filter(resolution =>

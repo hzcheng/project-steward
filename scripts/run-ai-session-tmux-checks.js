@@ -108,6 +108,7 @@ function createTmuxBackendHarness(options = {}) {
     const consumed = new Map();
     const promoting = new Map();
     const attachBindings = new Map();
+    const attachRecoveries = new Map();
     const lockQueues = new Map();
     let attachWriteQueue = Promise.resolve();
     let nextWindowId = 1;
@@ -496,6 +497,7 @@ function createTmuxBackendHarness(options = {}) {
     };
     const attachStore = {
         get: processId => attachBindings.get(processId) || null,
+        getRecovery: token => attachRecoveries.get(token) || null,
         set: (processId, binding) => {
             if (consumed.size && binding.sessionId && failAttachMigrationCount > 0) {
                 failAttachMigrationCount--;
@@ -509,6 +511,29 @@ function createTmuxBackendHarness(options = {}) {
         remove: processId => {
             attachWriteQueue = attachWriteQueue.then(() => Promise.resolve(processId)).then(value => {
                 if (typeof value === 'number') attachBindings.delete(value);
+            });
+        },
+        setRecovery: (token, processId, binding) => {
+            if (consumed.size && binding.sessionId && failAttachMigrationCount > 0) {
+                failAttachMigrationCount--;
+                pendingAttachMigrationError = new Error('attach migration failed');
+                return;
+            }
+            attachWriteQueue = attachWriteQueue.then(() => Promise.resolve(processId)).then(value => {
+                if (typeof value !== 'number') return;
+                const previous = attachRecoveries.get(token);
+                if (previous && previous.processId !== value) {
+                    attachBindings.delete(previous.processId);
+                }
+                attachBindings.set(value, { ...binding });
+                attachRecoveries.set(token, { processId: value, binding: { ...binding } });
+            });
+        },
+        removeRecovery: token => {
+            attachWriteQueue = attachWriteQueue.then(() => {
+                const previous = attachRecoveries.get(token);
+                if (previous) attachBindings.delete(previous.processId);
+                attachRecoveries.delete(token);
             });
         },
         flush: () => {
@@ -582,7 +607,7 @@ function createTmuxBackendHarness(options = {}) {
     };
     return {
         dependencies, client, runtimeStore, attachStore, operations, terminals, windows,
-        pending, known, ambiguous, consumed, promoting, attachBindings,
+        pending, known, ambiguous, consumed, promoting, attachBindings, attachRecoveries,
         failNextAttach() { failAttachCount++; },
         failNextShow() { failShowCount++; },
         failNextActiveWindow(error) { activeWindowError = error; },
@@ -4232,6 +4257,21 @@ async function runTmuxStoreChecks() {
         await attach.flush();
         assert.deepStrictEqual(attach.get(41), binding);
         assert.deepStrictEqual([...state.keys()], ['aiSessionTmuxAttachProcessBinding.v2.41']);
+        attach.setRecovery('0123456789abcdef0123456789abcdef', Promise.resolve(61), binding);
+        await attach.flush();
+        assert.deepStrictEqual(
+            attach.getRecovery('0123456789abcdef0123456789abcdef'),
+            { processId: 61, binding }
+        );
+        attach.setRecovery('0123456789abcdef0123456789abcdef', Promise.resolve(62), binding);
+        await attach.flush();
+        assert.strictEqual(attach.get(61), null,
+            'moving a stable attach recovery token must remove its stale process binding');
+        assert.deepStrictEqual(attach.get(62), binding);
+        attach.removeRecovery('0123456789abcdef0123456789abcdef');
+        await attach.flush();
+        assert.strictEqual(attach.get(62), null);
+        assert.strictEqual(attach.getRecovery('0123456789abcdef0123456789abcdef'), null);
         const legacySessionAttachBinding = { ...binding, layout: 'session' };
         delete legacySessionAttachBinding.windowName;
         legacySessionAttachBinding.sessionName = 'project-steward-s-codex-legacy';
@@ -4638,12 +4678,15 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-session').length, 1);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 2);
     assert.strictEqual(projectHarness.terminals.length, 1);
-    assert.deepStrictEqual(projectHarness.terminals[0].creationOptions, {
-        name: 'Project Steward: App [tmux]',
-        shellPath: '/opt/tmux',
-        shellArgs: ['attach-session', '-t', firstProject.tmux.sessionName],
-        env: { TMUX: null },
-    });
+    assert.strictEqual(projectHarness.terminals[0].creationOptions.name,
+        'Project Steward: App [tmux]');
+    assert.strictEqual(projectHarness.terminals[0].creationOptions.shellPath, '/opt/tmux');
+    assert.deepStrictEqual(projectHarness.terminals[0].creationOptions.shellArgs,
+        ['attach-session', '-t', firstProject.tmux.sessionName]);
+    assert.strictEqual(projectHarness.terminals[0].creationOptions.env.TMUX, null);
+    assert.match(projectHarness.terminals[0].creationOptions.env.PROJECT_STEWARD_TMUX_ATTACH_ID,
+        /^[0-9a-f]{32}$/,
+        'managed tmux terminals need a stable recovery token independent of PID and title');
     const firstAttachIndex = projectHarness.operations.findIndex(item => item.type === 'create-terminal');
     assert.ok(projectHarness.operations.slice(0, firstAttachIndex).some(item => item.type === 'select-window'));
     assert.strictEqual(firstProject.terminal, projectHarness.terminals[0]);
@@ -5777,6 +5820,11 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(promotedAttachBinding.sessionName, promoted[0].tmux.sessionName);
     assert.strictEqual(promotedAttachBinding.windowName, promoted[0].tmux.windowName);
     assert.strictEqual(promotedAttachBinding.sessionId, 'final-1');
+    const pendingRecoveryToken = pendingRuntime.terminal.creationOptions.env
+        .PROJECT_STEWARD_TMUX_ATTACH_ID;
+    assert.strictEqual(pendingHarness.attachRecoveries.get(pendingRecoveryToken)
+        .binding.sessionId, 'final-1',
+    'promotion must migrate the stable terminal recovery binding to the final identity');
     assert.strictEqual(pendingHarness.operations.filter(item => item.type === 'clear-pending').length, 1);
     assert.strictEqual(pendingHarness.operations.filter(item => item.type === 'rename-session').length, 1);
     assert.strictEqual(pendingHarness.operations.filter(item => item.type === 'rename-window').length, 1);
@@ -6341,6 +6389,8 @@ async function runTmuxBackendChecks() {
                     };
                 } else {
                     const setAttach = initial.attachStore.set.bind(initial.attachStore);
+                    const setAttachRecovery = initial.attachStore.setRecovery
+                        .bind(initial.attachStore);
                     const flushAttach = initial.attachStore.flush.bind(initial.attachStore);
                     let droppedFinalAttach = false;
                     let failed = false;
@@ -6350,6 +6400,13 @@ async function runTmuxBackendChecks() {
                             return;
                         }
                         setAttach(processId, binding);
+                    };
+                    initial.attachStore.setRecovery = (token, processId, binding) => {
+                        if (!failed && binding.sessionId === crashFinalId) {
+                            droppedFinalAttach = true;
+                            return;
+                        }
+                        setAttachRecovery(token, processId, binding);
                     };
                     initial.attachStore.flush = async () => {
                         if (!failed && droppedFinalAttach) {
@@ -6936,24 +6993,69 @@ async function runTmuxBackendChecks() {
     const originalProcessId = await originalTerminal.processId;
     await restoreHarness.attachStore.flush();
     const persistedBinding = restoreHarness.attachBindings.get(originalProcessId);
+    const recoveryToken = originalTerminal.creationOptions.env.PROJECT_STEWARD_TMUX_ATTACH_ID;
     restoreBackend.handleClosedTerminal(originalTerminal);
     await restoreHarness.attachStore.flush();
+    const restoredProcessId = originalProcessId + 100;
     const restoredTerminal = {
-        name: originalTerminal.name,
-        creationOptions: {},
-        processId: Promise.resolve(originalProcessId),
+        name: restorable.tmux.windowName,
+        creationOptions: {
+            ...originalTerminal.creationOptions,
+            shellArgs: ['attach-session', '-t', 'obsolete-pending-session-name'],
+        },
+        processId: Promise.resolve(restoredProcessId),
         shown: false,
         disposed: false,
         show() { this.shown = true; },
         dispose() { this.disposed = true; },
     };
     restoreHarness.attachBindings.set(originalProcessId, persistedBinding);
+    restoreHarness.attachRecoveries.set(recoveryToken, {
+        processId: originalProcessId, binding: persistedBinding,
+    });
+    assert.strictEqual(restoreBackend.isAttachTerminalCandidate(restoredTerminal), true,
+        'late terminal-open events must identify managed tmux attach launch options');
     await restoreBackend.restoreAttachTerminals([restoredTerminal]);
     assert.ok(restoreBackend.getActive().every(runtime => runtime.terminal === restoredTerminal));
+    assert.ok(restoreHarness.attachBindings.has(restoredProcessId),
+        'reload must recreate the attach binding when VS Code reports a new terminal process ID');
+    assert.strictEqual(restoreHarness.attachBindings.has(originalProcessId), false,
+        'recovery must remove the stale pre-reload process binding');
+    const createdTerminalCount = restoreHarness.operations
+        .filter(item => item.type === 'create-terminal').length;
+    await restoreBackend.focus(restoreBackend.find(restorable.identity)[0]);
+    assert.strictEqual(restoreHarness.operations
+        .filter(item => item.type === 'create-terminal').length, createdTerminalCount,
+    'focusing after reload must reuse the restored tmux terminal even when tmux changed its title');
     restoreBackend.handleClosedTerminal(restoredTerminal);
     assert.ok(restoreBackend.getActive().every(runtime => !runtime.terminal));
+    await restoreHarness.attachStore.flush();
 
-    const reusedPidTerminal = { ...restoredTerminal, name: 'Unrelated shell' };
+    restoreHarness.attachBindings.set(restoredProcessId, persistedBinding);
+    restoreHarness.attachRecoveries.set(recoveryToken, {
+        processId: restoredProcessId, binding: persistedBinding,
+    });
+    const concurrentRestoreBackend = new backendModule.TmuxRuntimeBackend(
+        restoreHarness.dependencies
+    );
+    await Promise.all([
+        concurrentRestoreBackend.restoreAttachTerminals([restoredTerminal]),
+        concurrentRestoreBackend.restoreAttachTerminals([restoredTerminal]),
+    ]);
+    await restoreHarness.attachStore.flush();
+    assert.ok(restoreHarness.attachBindings.has(restoredProcessId),
+        'overlapping activation and terminal-open restoration must preserve the recovered binding');
+    concurrentRestoreBackend.handleClosedTerminal(restoredTerminal);
+    await restoreHarness.attachStore.flush();
+
+    const reusedPidTerminal = {
+        ...restoredTerminal,
+        name: 'Unrelated shell',
+        processId: Promise.resolve(originalProcessId),
+        creationOptions: { name: 'Unrelated shell', shellPath: '/bin/bash' },
+    };
+    assert.strictEqual(restoreBackend.isAttachTerminalCandidate(reusedPidTerminal), false,
+        'ordinary terminal-open events must not trigger tmux attachment recovery');
     restoreHarness.attachBindings.set(originalProcessId, persistedBinding);
     await restoreBackend.restoreAttachTerminals([reusedPidTerminal]);
     await restoreHarness.attachStore.flush();

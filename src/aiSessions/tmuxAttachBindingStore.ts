@@ -5,10 +5,12 @@ import type { AiSessionRuntimeIdentity, AiSessionTmuxLayout } from './runtimeTyp
 import { cloneAiSessionRuntimeIdentity, isValidAiSessionRuntimeIdentity } from './runtimeTypes';
 
 export const AI_SESSION_TMUX_ATTACH_PROCESS_BINDING_KEY_PREFIX = 'aiSessionTmuxAttachProcessBinding.v2.';
+export const AI_SESSION_TMUX_ATTACH_RECOVERY_BINDING_KEY_PREFIX = 'aiSessionTmuxAttachRecoveryBinding.v1.';
 
 const MAX_ID_LENGTH = 512;
 const MAX_TITLE_LENGTH = 200;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+const RECOVERY_TOKEN = /^[0-9a-f]{32}$/;
 
 export interface TmuxAttachBindingState {
     get<T>(key: string, defaultValue: T): T;
@@ -28,6 +30,11 @@ export interface TmuxAttachBinding {
     sessionId?: string;
     pendingId?: string;
     terminalNamePrefix: string;
+}
+
+export interface TmuxAttachRecoveryBinding {
+    processId: number;
+    binding: TmuxAttachBinding;
 }
 
 export type TmuxAttachProcessId = number | PromiseLike<number | undefined>;
@@ -55,6 +62,21 @@ export class TmuxAttachBindingStore {
         }
     }
 
+    getRecovery(token: string): TmuxAttachRecoveryBinding | null {
+        if (!isRecoveryToken(token)) {
+            return null;
+        }
+        try {
+            const record = validateRecoveryRecord(
+                this.state.get(getRecoveryBindingKey(token), null as unknown)
+            );
+            return record ? cloneRecoveryBinding(record) : null;
+        } catch (error) {
+            this.reportErrorOnce(error);
+            return null;
+        }
+    }
+
     set(processId: TmuxAttachProcessId, input: TmuxAttachBinding): void {
         const record = validateRecord(input);
         if (!record) {
@@ -65,6 +87,47 @@ export class TmuxAttachBindingStore {
 
     remove(processId: TmuxAttachProcessId): void {
         this.enqueueWrite(processId, null);
+    }
+
+    setRecovery(
+        token: string,
+        processId: TmuxAttachProcessId,
+        input: TmuxAttachBinding
+    ): void {
+        const binding = validateRecord(input);
+        if (!isRecoveryToken(token) || !binding) {
+            return;
+        }
+        const resolvedProcessId = this.resolveProcessId(processId);
+        this.writeQueue = this.writeQueue.then(async () => {
+            const pid = await resolvedProcessId;
+            if (!isProcessId(pid)) {
+                return;
+            }
+            const previous = this.getRecovery(token);
+            await this.state.update(getBindingKey(pid), cloneBinding(binding));
+            await this.state.update(getRecoveryBindingKey(token), {
+                version: 1,
+                processId: pid,
+                binding: cloneBinding(binding),
+            });
+            if (previous && previous.processId !== pid) {
+                await this.state.update(getBindingKey(previous.processId), undefined);
+            }
+        }).catch(error => this.reportErrorOnce(error));
+    }
+
+    removeRecovery(token: string): void {
+        if (!isRecoveryToken(token)) {
+            return;
+        }
+        this.writeQueue = this.writeQueue.then(async () => {
+            const previous = this.getRecovery(token);
+            await this.state.update(getRecoveryBindingKey(token), undefined);
+            if (previous) {
+                await this.state.update(getBindingKey(previous.processId), undefined);
+            }
+        }).catch(error => this.reportErrorOnce(error));
     }
 
     flush(): Promise<void> {
@@ -114,6 +177,23 @@ export class TmuxAttachBindingStore {
 
 function getBindingKey(processId: number): string {
     return `${AI_SESSION_TMUX_ATTACH_PROCESS_BINDING_KEY_PREFIX}${processId}`;
+}
+
+function getRecoveryBindingKey(token: string): string {
+    return `${AI_SESSION_TMUX_ATTACH_RECOVERY_BINDING_KEY_PREFIX}${token}`;
+}
+
+function validateRecoveryRecord(value: unknown): TmuxAttachRecoveryBinding | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return null;
+    }
+    const record = value as Record<string, unknown>;
+    if (!hasExactKeys(record, ['version', 'processId', 'binding'])
+        || record.version !== 1 || !isProcessId(record.processId)) {
+        return null;
+    }
+    const binding = validateRecord(record.binding);
+    return binding ? { processId: record.processId, binding } : null;
 }
 
 function validateRecord(value: unknown): TmuxAttachBinding | null {
@@ -176,8 +256,16 @@ function cloneBinding(binding: TmuxAttachBinding): TmuxAttachBinding {
     return { ...binding, workspaceRootHostPaths: [...identity.workspaceRootHostPaths] };
 }
 
+function cloneRecoveryBinding(record: TmuxAttachRecoveryBinding): TmuxAttachRecoveryBinding {
+    return { processId: record.processId, binding: cloneBinding(record.binding) };
+}
+
 function isProcessId(value: unknown): value is number {
     return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function isRecoveryToken(value: unknown): value is string {
+    return typeof value === 'string' && RECOVERY_TOKEN.test(value);
 }
 
 function isProviderId(value: unknown): value is AiSessionProviderId {
