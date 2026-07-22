@@ -2,7 +2,7 @@
 
 import type { AiSessionProviderId, CodexSession } from '../models';
 import type { AttentionAggregate } from './attentionAggregate';
-import { aggregateAttentionSnapshots } from './attentionAggregate';
+import { aggregateAttentionSnapshots, filterAcknowledgedAttentionAggregate } from './attentionAggregate';
 import { MAX_ATTENTION_ITEMS } from './attentionPayload';
 import type { AttentionPayloadItem } from './attentionPayload';
 import AiSessionAttentionMonitor from './attentionMonitor';
@@ -57,6 +57,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     private remoteAggregate: AttentionAggregate | null = null;
     private localItems: AttentionPayloadItem[] = [];
     private attentionKeysBySession = new Map<string, string[]>();
+    private locallyAcknowledgedEventIds = new Set<string>();
 
     constructor(private readonly options: AiSessionAttentionControllerOptions<TRuntime>) {
         this.monitor = new AiSessionAttentionMonitor({ now: options.nowMs });
@@ -70,6 +71,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             this.remoteAggregate = null;
             this.localItems = [];
             this.attentionKeysBySession.clear();
+            this.locallyAcknowledgedEventIds.clear();
             const published = await this.options.publish([], true);
             this.options.scheduleRefresh('attention');
             return {
@@ -129,7 +131,18 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     }
 
     acknowledge(eventIds: string[]): void {
-        this.monitor.acknowledge(eventIds);
+        const uniqueEventIds = Array.from(new Set(eventIds.filter(eventId => Boolean(eventId))));
+        for (const eventId of uniqueEventIds) {
+            this.locallyAcknowledgedEventIds.delete(eventId);
+            this.locallyAcknowledgedEventIds.add(eventId);
+            if (this.locallyAcknowledgedEventIds.size > MAX_ATTENTION_ITEMS) {
+                const oldestEventId = this.locallyAcknowledgedEventIds.values().next().value;
+                if (oldestEventId) {
+                    this.locallyAcknowledgedEventIds.delete(oldestEventId);
+                }
+            }
+        }
+        this.monitor.acknowledge(uniqueEventIds);
         const result = this.buildLocalItems(this.options.getWorkspaceTarget(), this.options.getProviders());
         this.localItems = result.items;
     }
@@ -148,19 +161,18 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     }
 
     getEffectiveAggregate(): AttentionAggregate {
-        if (this.remoteAggregate) {
-            return this.remoteAggregate;
-        }
-
-        const now = this.options.nowMs();
-        return aggregateAttentionSnapshots([{
-            version: 1,
-            generatedAtMs: now,
-            items: this.localItems,
-            instanceId: '00000000000000000000000000000000',
-            sequence: 0,
-            heartbeat: 0,
-        }], new Set<string>(), now);
+        const aggregate = this.remoteAggregate || (() => {
+            const now = this.options.nowMs();
+            return aggregateAttentionSnapshots([{
+                version: 1,
+                generatedAtMs: now,
+                items: this.localItems,
+                instanceId: '00000000000000000000000000000000',
+                sequence: 0,
+                heartbeat: 0,
+            }], new Set<string>(), now);
+        })();
+        return filterAcknowledgedAttentionAggregate(aggregate, this.locallyAcknowledgedEventIds);
     }
 
     getLocalSnapshot(): Record<string, AiSessionAttentionSnapshot> {
@@ -179,7 +191,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         };
 
         Object.entries(this.monitor.getSnapshot()).forEach(([sessionKey, snapshot]) => {
-            if (snapshot.event?.eventId) {
+            if (snapshot.state === 'needsAttention' && snapshot.event?.eventId) {
                 addEvent(this.getLogicalSessionKey(sessionKey), snapshot.event.eventId);
             }
         });
@@ -198,7 +210,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     getAttentionEventIds(): string[] {
         return Array.from(new Set([
             ...Object.values(this.monitor.getSnapshot())
-                .map(snapshot => snapshot.event?.eventId)
+                .map(snapshot => snapshot.state === 'needsAttention' ? snapshot.event?.eventId : undefined)
                 .filter((id): id is string => Boolean(id)),
             ...this.getEffectiveAggregate().sessions
                 .reduce((eventIds, item) => eventIds.concat(item.eventIds), [] as string[]),

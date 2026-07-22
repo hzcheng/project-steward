@@ -2792,6 +2792,10 @@ async function runAiSessionAttentionControllerChecks() {
     await controller.acknowledge([published[0].items[0].eventId]);
     assert.strictEqual(controller.getLocalSnapshot()['codex:session-a'].state, 'acknowledged');
     assert.strictEqual(controller.getEffectiveAggregate().sessions.length, 0, 'local fallback aggregate must reflect acknowledged owner events immediately');
+    assert.deepStrictEqual(controller.getRecoverySessionEvents(), [],
+        'acknowledged owner events must not be restored into the webview acknowledgement map');
+    assert.deepStrictEqual(controller.getAttentionEventIds(), [],
+        'acknowledged owner events must not be restored into the webview attention event set');
 
     const coexistPublished = [];
     const coexistController = new AiSessionAttentionController({
@@ -3168,6 +3172,11 @@ async function runAiSessionAttentionControllerChecks() {
     assert.strictEqual(controller.hasRemoteAggregate(), true);
     assert.strictEqual(controller.getEffectiveAggregate().sessions[0].sessionKey, 'kimi:remote:1200:tmux');
     assert.deepStrictEqual(controller.getRecoverySessionEvents().map(item => item.sessionKey), ['kimi:remote']);
+    controller.acknowledge(['remote-event']);
+    assert.deepStrictEqual(controller.getEffectiveAggregate().sessions, [],
+        'a local acknowledgement must hide a stale remote aggregate without waiting for the bridge round trip');
+    assert.deepStrictEqual(controller.getRecoverySessionEvents(), [],
+        'a locally acknowledged remote event must not be restored into the webview acknowledgement map');
 
     enabled = false;
     const disabledEvaluation = await controller.evaluate();
@@ -5078,7 +5087,14 @@ function runWebviewContentChecks() {
         'view visibility and active-terminal changes must both request reconciliation');
     assert.ok(dashboard.includes("logAiSessionRuntimeFailure('sync-focused-runtime', error)"));
     assert.ok(dashboard.includes('context.subscriptions.push(tmuxFocusedRuntimeMonitor);'));
-    assert.match(dashboard, /const acknowledgeAiSessionAttentionEventIds = async[\s\S]*?aiSessionAttentionController\.acknowledge\(uniqueEventIds\);[\s\S]*?await aiSessionAttentionBridgeClient\.acknowledge\(uniqueEventIds\)/);
+    assert.match(dashboard,
+        /beforeRefresh: reason => \{\s*currentAiSessionRefreshReason = reason;\s*postAiSessionAttentionState\(\);\s*\}/,
+        'every incremental AI-session render must publish its current attention event map before the HTML update');
+    assert.match(dashboard,
+        /function postAiSessionAttentionState\(\) \{[\s\S]*?sessionEvents: aiSessionAttentionController\.getRecoverySessionEvents\(\)[\s\S]*?eventIds: aiSessionAttentionController\.getAttentionEventIds\(\)/,
+        'the shared attention-state publisher must carry every event for each logical session');
+    assert.match(dashboard, /const acknowledgeAiSessionAttentionEventIds = async[\s\S]*?aiSessionAttentionController\.acknowledge\(uniqueEventIds\);\s*refreshAiSessionViewsIncrementally\(\);\s*await aiSessionAttentionBridgeClient\.acknowledge\(uniqueEventIds\)/,
+        'attention acknowledgement must refresh the local view before waiting for the cross-window bridge');
     assert.match(dashboard, /const acknowledgeAiSessionAttention = async[\s\S]*?await acknowledgeAiSessionAttentionEventIds\(getAiSessionAttentionEventIds\(identity\)\)/);
     const selectedProjectHandler = dashboard.slice(
         dashboard.indexOf("'selected-project': async e =>"),
@@ -8484,6 +8500,32 @@ function runAttentionPayloadChecks() {
     assert.strictEqual(partial.sessions.length, 1, 'duplicate owners count as one logical session');
     assert.deepStrictEqual(partial.sessions[0].eventIds, ['e-2'], 'only the exact acknowledged event is removed');
     assert.deepStrictEqual(partial.sessions[0].reasons, ['completed']);
+
+    const multiEventAggregate = {
+        ...partial,
+        aggregateRevision: '3'.repeat(64),
+        sessions: [{
+            ...partial.sessions[0],
+            reasons: ['completed', 'input-required'],
+            eventIds: ['e', 'e-2'],
+        }],
+    };
+    assert.strictEqual(
+        attentionAggregate.filterAcknowledgedAttentionAggregate(
+            multiEventAggregate,
+            new Set(['e'])
+        ),
+        multiEventAggregate,
+        'the local overlay must not partially filter a session when event-to-reason ownership is unavailable'
+    );
+    assert.deepStrictEqual(
+        attentionAggregate.filterAcknowledgedAttentionAggregate(
+            multiEventAggregate,
+            new Set(['e', 'e-2'])
+        ).sessions,
+        [],
+        'the local overlay may hide a session once all of its events are acknowledged'
+    );
 
     const newerAcknowledgedOwner = attentionPayload.validateAttentionOwnerSnapshot({
         ...secondOwner,

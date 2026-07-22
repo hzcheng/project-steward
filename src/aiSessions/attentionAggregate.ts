@@ -23,6 +23,17 @@ const MAX_AGGREGATE_SESSIONS = 1000;
 const MAX_AGGREGATE_EVENTS_PER_SESSION = 1000;
 const MAX_AGGREGATE_ID_LENGTH = 1024;
 
+function createAggregateRevision(sessions: AggregatedAttentionSession[]): string {
+    const semantic = JSON.stringify(sessions.map(session => [
+        session.projectId,
+        session.sessionKey,
+        session.reasons,
+        session.eventIds,
+        session.observedAtMs,
+    ]));
+    return crypto.createHash('sha256').update(semantic).digest('hex');
+}
+
 function exactKeys(value: Record<string, unknown>, expected: string[], label: string): void {
     if (Object.keys(value).sort().join('\n') !== expected.slice().sort().join('\n')) throw new Error(`${label} has unexpected fields`);
 }
@@ -108,17 +119,30 @@ export function aggregateAttentionSnapshots(
         };
     }).sort((left, right) => left.sessionKey.localeCompare(right.sessionKey))
         .slice(0, MAX_AGGREGATE_SESSIONS);
-    const semantic = JSON.stringify(sessions.map(session => [
-        session.projectId,
-        session.sessionKey,
-        session.reasons,
-        session.eventIds,
-        session.observedAtMs,
-    ]));
     return {
         protocolVersion: 1,
-        aggregateRevision: crypto.createHash('sha256').update(semantic).digest('hex'),
+        aggregateRevision: createAggregateRevision(sessions),
         generatedAtMs: nowMs,
+        sessions,
+    };
+}
+
+export function filterAcknowledgedAttentionAggregate(
+    aggregate: AttentionAggregate,
+    acknowledgedEventIds: ReadonlySet<string>
+): AttentionAggregate {
+    if (!acknowledgedEventIds.size) {
+        return aggregate;
+    }
+    const sessions = aggregate.sessions.filter(session =>
+        !session.eventIds.every(eventId => acknowledgedEventIds.has(eventId))
+    );
+    if (sessions.length === aggregate.sessions.length) {
+        return aggregate;
+    }
+    return {
+        ...aggregate,
+        aggregateRevision: createAggregateRevision(sessions),
         sessions,
     };
 }

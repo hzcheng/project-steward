@@ -778,8 +778,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
         }
         aiSessionAttentionController.acknowledge(uniqueEventIds);
-        await aiSessionAttentionBridgeClient.acknowledge(uniqueEventIds);
         refreshAiSessionViewsIncrementally();
+        await aiSessionAttentionBridgeClient.acknowledge(uniqueEventIds);
     };
     const acknowledgeAiSessionAttention = async (
         identity: ActiveAiSessionTerminalIdentity
@@ -933,7 +933,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         refresh: refreshStewardViews,
         logError,
         logDiagnostic: logAiSessionDiagnostic,
-        beforeRefresh: reason => { currentAiSessionRefreshReason = reason; },
+        beforeRefresh: reason => {
+            currentAiSessionRefreshReason = reason;
+            postAiSessionAttentionState();
+        },
         afterRefresh: () => { currentAiSessionRefreshReason = 'refresh'; },
         debounceMs: AI_SESSION_REFRESH_DEBOUNCE_MS,
         watcherRefreshMinIntervalMs: AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS,
@@ -1239,11 +1242,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 activeAiSessionTerminalHighlighter.request();
             },
             'request-ai-session-attention-state': () => {
-                provider.postMessage({
-                    type: 'ai-session-attention-state',
-                    sessionEvents: aiSessionAttentionController.getRecoverySessionEvents(),
-                    eventIds: aiSessionAttentionController.getAttentionEventIds(),
-                });
+                postAiSessionAttentionState();
             },
             'open-settings': async () => {
                 await showProjectStewardSettings();
@@ -1875,6 +1874,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     function refreshAiSessionViewsIncrementally() {
         void aiSessionDashboardController.refreshNow();
+    }
+
+    function postAiSessionAttentionState() {
+        void provider.postMessage({
+            type: 'ai-session-attention-state',
+            sessionEvents: aiSessionAttentionController.getRecoverySessionEvents(),
+            eventIds: aiSessionAttentionController.getAttentionEventIds(),
+        });
     }
 
     function postBatchArchiveCompletion(message: AiSessionBatchArchiveCompletedMessage) {
