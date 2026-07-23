@@ -239,6 +239,7 @@
             ],
             "behaviors": [
                 "ATTENTION-ATTENTION-PROJECTION-001",
+                "ATTENTION-LOGICAL-SESSION-CARD-COUNT-001",
                 "ATTENTION-ATTENTION-PROJECT-RENDERING-001"
             ],
             "prGates": [

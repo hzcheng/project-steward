@@ -104,6 +104,20 @@
     ]
   },
   {
+    "id": "ATTENTION-LOGICAL-SESSION-CARD-COUNT-001",
+    "domain": "attention",
+    "title": "Logical Session Card Attention Count behavior",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/attentionProject.ts",
+      "src/workspaces/attentionProjection.ts"
+    ]
+  },
+  {
     "id": "PROJECT-FAVORITE-PROJECT-ORDER-001",
     "domain": "project",
     "title": "Favorite Project Order behavior",

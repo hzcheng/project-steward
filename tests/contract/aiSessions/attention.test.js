@@ -18,10 +18,12 @@ const {
 } = require('../../../out/aiSessions/attentionController');
 const {
     aggregateAttentionSnapshots,
+    filterAcknowledgedAttentionAggregate,
 } = require('../../../out/aiSessions/attentionAggregate');
 const attentionPayload = require('../../../out/aiSessions/attentionPayload');
 const attentionProject = require('../../../out/aiSessions/attentionProject');
 const lifecycle = require('../../../out/aiSessions/lifecycle');
+const workspaceAttentionProjection = require('../../../out/workspaces/attentionProjection');
 
 const fixturesRoot = path.resolve(__dirname, '../../fixtures/providers');
 
@@ -151,6 +153,103 @@ test('ATTENTION-ATTENTION-PROJECT-001 ATTENTION-ATTENTION-PROJECTION-001 maps ag
             attentionProject.getAttentionSessionLookupKey(projectKey, 'codex:one')
         ).eventIds[0],
         'event-b'
+    );
+});
+
+test('ATTENTION-LOGICAL-SESSION-CARD-COUNT-001 counts logical sessions and retains every run event', () => {
+    const projectPath = 'file:///fixtures/project';
+    const projectKey = attentionProject.getAttentionProjectKey('/fixtures/project');
+    const sameLogicalSessionAggregate = {
+        protocolVersion: 1,
+        aggregateRevision: 'b'.repeat(64),
+        generatedAtMs: 300,
+        sessions: [{
+            projectId: projectKey,
+            sessionKey: 'codex:one:100:tmux',
+            reasons: ['completed'],
+            eventIds: ['event-old'],
+            observedAtMs: 100,
+        }, {
+            projectId: projectKey,
+            sessionKey: 'codex:one:200:vscode',
+            reasons: ['input-required'],
+            eventIds: ['event-new'],
+            observedAtMs: 200,
+        }],
+    };
+
+    const projectSummary = attentionProject.getAttentionProjectSummaries(
+        sameLogicalSessionAggregate
+    )[0];
+    assert.deepEqual(projectSummary, {
+        projectKey,
+        attentionCount: 1,
+        eventIds: ['event-new', 'event-old'],
+        sessions: [{
+            sessionKey: 'codex:one',
+            eventId: 'event-new',
+            eventIds: ['event-new', 'event-old'],
+        }],
+    });
+    assert.equal(
+        attentionProject.getLogicalAttentionSessionKey('codex:one:200:vscode'),
+        'codex:one'
+    );
+    assert.equal(
+        attentionProject.getLogicalAttentionSessionKey('opaque-session-key'),
+        'opaque-session-key'
+    );
+    assert.deepEqual(
+        attentionProject.withAttentionProject(
+            { id: 'project', path: projectPath },
+            sameLogicalSessionAggregate
+        ),
+        {
+            id: 'project',
+            path: projectPath,
+            aiSessionAttentionCount: 1,
+            aiSessionAttentionEventIds: ['event-new', 'event-old'],
+        }
+    );
+    assert.deepEqual(
+        workspaceAttentionProjection.getWorkspaceAttentionSummary({
+            roots: [{ uri: projectPath }],
+        }, sameLogicalSessionAggregate),
+        {
+            attentionCount: 1,
+            eventIds: ['event-new', 'event-old'],
+            sessions: [{
+                sessionKey: 'codex:one',
+                eventId: 'event-new',
+                eventIds: ['event-new', 'event-old'],
+            }],
+        }
+    );
+
+    const acknowledged = filterAcknowledgedAttentionAggregate(
+        sameLogicalSessionAggregate,
+        new Set(['event-old', 'event-new'])
+    );
+    assert.equal(
+        workspaceAttentionProjection.getWorkspaceAttentionSummary({
+            roots: [{ uri: projectPath }],
+        }, acknowledged).attentionCount,
+        0
+    );
+
+    const twoLogicalSessions = {
+        ...sameLogicalSessionAggregate,
+        sessions: sameLogicalSessionAggregate.sessions.concat({
+            projectId: projectKey,
+            sessionKey: 'codex:two:300:tmux',
+            reasons: ['failed'],
+            eventIds: ['event-two'],
+            observedAtMs: 300,
+        }),
+    };
+    assert.equal(
+        attentionProject.getAttentionProjectSummaries(twoLogicalSessions)[0].attentionCount,
+        2
     );
 });
 
