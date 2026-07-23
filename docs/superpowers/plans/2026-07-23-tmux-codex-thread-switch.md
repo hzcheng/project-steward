@@ -209,7 +209,7 @@ Implement these constants:
 ```ts
 const DEFAULT_MAX_PROCESSES = 128;
 const DEFAULT_MAX_DESCRIPTORS = 1024;
-const DEFAULT_MAX_FIRST_LINE_BYTES = 16 * 1024;
+const DEFAULT_MAX_FIRST_LINE_BYTES = 1024 * 1024;
 const MAX_PID = 2147483647;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$/;
 ```

@@ -166,7 +166,9 @@ Existing provider history remains the source of its final lifecycle and name.
 ## Safety and Compatibility
 
 - All process inspection is bounded by existing discovery row limits plus
-  explicit descendant, descriptor, path-length, and first-line byte limits.
+  explicit descendant, descriptor, path-length, and 1 MiB first-line byte
+  limits. The first-line limit accommodates current Codex `session_meta`
+  records that embed base instructions while remaining strictly bounded.
 - Candidate paths are canonicalized and constrained beneath the Codex sessions
   root before being opened.
 - Subagent metadata is excluded using the same semantic rule as
