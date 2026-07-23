@@ -256,16 +256,22 @@ test('RUNTIME-TMUX-THREAD-SWITCH-001 SESSION-ALIAS-THREAD-SWITCH-001 rebinds one
         event.next.sessionId,
     ]), [['codex', 'old-root', 'codex', 'new-root']]);
 
+    const recoveredEvents = [];
     const restarted = new TmuxRuntimeDiscovery({
         client: { listWindows: async () => [row] },
         bindingStore: store,
         codexRootThreadObserver: observer,
+        onSessionRebound: (previous, next) => recoveredEvents.push({ previous, next }),
         markerIsCurrent: () => false,
         nowMs: () => 2001,
         cacheTtlMs: 0,
     });
     await restarted.refresh(true);
     assert.deepEqual(restarted.getActive().map(runtime => runtime.identity.sessionId), ['new-root']);
+    assert.deepEqual(recoveredEvents.map(event => [
+        event.previous.sessionId,
+        event.next.sessionId,
+    ]), [['old-root', 'new-root']]);
 });
 
 test('RUNTIME-TMUX-THREAD-SWITCH-001 preserves the durable projection when observation cannot commit', async () => {
@@ -305,6 +311,31 @@ test('RUNTIME-TMUX-THREAD-SWITCH-001 preserves the durable projection when obser
         );
     }
     assert.equal(reboundEvents, 0);
+});
+
+test('SESSION-ALIAS-THREAD-SWITCH-001 keeps a committed rebind when the alias hook fails', async () => {
+    const row = makeTmuxDiscoveryRow({ sessionId: 'old-root', panePid: 4321 });
+    const locator = {
+        layout: 'project',
+        sessionName: row.sessionName,
+        windowName: row.windowName,
+    };
+    const store = createSyntheticTmuxStore({
+        known: [makeTmuxKnownBinding('old-root', { locator })],
+    });
+    const discovery = new TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [row] },
+        bindingStore: store,
+        codexRootThreadObserver: { observe: async () => 'new-root' },
+        onSessionRebound: () => { throw new Error('controlled alias hook failure'); },
+        markerIsCurrent: () => false,
+        cacheTtlMs: 0,
+    });
+
+    await assert.doesNotReject(discovery.refresh(true));
+    assert.deepEqual(discovery.getActive().map(runtime => runtime.identity.sessionId), ['new-root']);
+    assert.equal(store.known.has('codex:old-root'), false);
+    assert.equal(store.known.has('codex:new-root'), true);
 });
 
 test('RUNTIME-TMUX-THREAD-SWITCH-001 rejects ambiguous locator authority and non-Codex observation', async () => {

@@ -17,6 +17,8 @@
 - Copy the old alias; do not remove it from the old History Session.
 - Never overwrite an alias already stored for the new Session ID.
 - Alias persistence failure must not invalidate a successful durable runtime rebind.
+- Backfill aliases for thread switches that were already durably committed
+  before the fix was installed.
 - Do not migrate pins, attention state, or provider records in this change.
 
 ---
@@ -92,6 +94,15 @@ onSessionRebound: (previous, next) => reboundEvents.push({ previous, next }),
 
 and assert exactly one event carries `old-root` and `new-root`. In the existing
 observer/stale/missing loop, pass a counter callback and assert it remains zero.
+Construct a restarted discovery with immutable `old-root` tmux metadata and a
+durable `new-root` binding, then assert it reports the same old-to-new
+transition even though the observer already returns `new-root`.
+
+Add a successful durable rebind whose `onSessionRebound` throws. Assert refresh
+still resolves, discovery projects `new-root`, and the durable store contains
+only the new binding. Add a controller store whose `saveAll` throws and assert
+`copyForRebind` logs the stable preservation error, invokes `showSaveError`,
+and does not throw.
 
 - [ ] **Step 4: Prove production composition wires the callback**
 
@@ -188,6 +199,12 @@ Add `onSessionRebound` to `TmuxRuntimeDiscoveryOptions`. After
 `rebindKnown(...)` returns `rebound`, construct cloned previous and next
 identities, invoke the callback in a `try/catch`, then project the next
 identity. Do not invoke it for any other rebind result.
+
+Before observing a new thread, compare the immutable parsed Session ID with the
+exact-locator known binding. For Codex only, when they differ, invoke the same
+best-effort callback with parsed identity as `previous` and the durable identity
+as `next`. This repairs aliases for transitions committed by older builds and
+remains idempotent through the controller target check.
 
 - [ ] **Step 3: Wire production activation**
 

@@ -22,7 +22,9 @@ assigned to the new root.
 ## Required Behavior
 
 - Alias continuity runs only after `TmuxRuntimeBindingStore.rebindKnown()`
-  returns `rebound`.
+  returns `rebound`, or when discovery later proves the same committed
+  transition from immutable managed-tmux metadata and the exact durable
+  locator binding.
 - If `provider:<old-session-id>` has an alias and
   `provider:<new-session-id>` does not, copy the old alias to the new key.
 - Retain the old key and alias so the previous root keeps its readable History
@@ -34,6 +36,8 @@ assigned to the new root.
   durable runtime rebind.
 - Failed, stale, missing, ambiguous, or non-Codex rebind attempts must not copy
   aliases.
+- An installation that already committed the thread switch before this fix
+  must backfill the active alias on its next successful runtime discovery.
 
 ## Architecture
 
@@ -48,6 +52,12 @@ rebind and before projecting the new identity. The callback is metadata-only:
 discovery catches callback failures so alias persistence cannot invalidate the
 already committed runtime transition.
 
+For an already-rebound runtime, immutable tmux metadata still names the
+original Session ID while the exact-locator known binding names the current
+Session ID. Discovery uses that existing authority relationship to emit the
+same callback during refresh. The controller's idempotent target check makes
+repeated refreshes read-only after the first successful backfill.
+
 Construct the alias controller before tmux discovery in `dashboard.ts`, then
 wire the callback to `copyForRebind`. No new service, storage file, schema, or
 provider API is introduced.
@@ -56,8 +66,8 @@ provider API is introduced.
 
 ```text
 same managed tmux locator
-  -> observer finds a different Codex root Session ID
-  -> durable runtime store returns "rebound"
+  -> observer/store commit a different Codex root Session ID
+     OR discovery recovers an earlier commit from metadata + exact binding
   -> discovery reports old and new runtime identities
   -> alias controller copies old alias when the new key is empty
   -> active card resolves the copied alias under the new Session ID
@@ -76,6 +86,10 @@ The focused contract must prove:
 4. No source alias produces no write.
 5. Failed rebind outcomes do not invoke alias migration.
 6. Dashboard activation wires an alias-preserving callback into tmux discovery.
+7. A restart with old immutable metadata and an already-rebound durable binding
+   reports the old-to-current transition for automatic alias backfill.
+8. A throwing alias hook or alias-store save failure is contained, logged at
+   the controller boundary, and cannot roll back the new runtime projection.
 
 The owner tests live under `tests/contract/aiSessions/`. They are executed by
 `test:deterministic:run`, which is called by `test:ci:linux`, which is the

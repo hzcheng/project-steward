@@ -314,6 +314,20 @@ export class TmuxRuntimeDiscovery {
         }));
     }
 
+    private notifySessionRebound(
+        previous: AiSessionRuntimeIdentity,
+        next: AiSessionRuntimeIdentity
+    ): void {
+        try {
+            this.options.onSessionRebound?.(
+                cloneAiSessionRuntimeIdentity(previous),
+                cloneAiSessionRuntimeIdentity(next)
+            );
+        } catch (e) {
+            // Runtime identity is already durably rebound; metadata hooks are best-effort.
+        }
+    }
+
     private async enumerate(): Promise<DiscoveryResult> {
         const listed = await this.options.client.listWindows();
         if (!Array.isArray(listed) || listed.length > MAX_DISCOVERY_ROWS) {
@@ -420,6 +434,13 @@ export class TmuxRuntimeDiscovery {
                 || (parsed.createdAt ? Date.parse(parsed.createdAt) : 0);
 
             if (locatorKnown
+                && identity.provider === 'codex'
+                && identity.sessionId
+                && identity.sessionId !== locatorKnown.sessionId) {
+                this.notifySessionRebound(identity, projectedIdentity);
+            }
+
+            if (locatorKnown
                 && projectedIdentity.provider === 'codex'
                 && Number.isSafeInteger(row.panePid)
                 && row.panePid > 0
@@ -440,16 +461,11 @@ export class TmuxRuntimeDiscovery {
                         locatorKnown, observedSessionId
                     );
                     if (rebound === 'rebound') {
-                        const previousIdentity = cloneAiSessionRuntimeIdentity(projectedIdentity);
-                        const nextIdentity = cloneAiSessionRuntimeIdentity({
+                        const nextIdentity = {
                             ...projectedIdentity,
                             sessionId: observedSessionId,
-                        });
-                        try {
-                            this.options.onSessionRebound?.(previousIdentity, nextIdentity);
-                        } catch (e) {
-                            // Runtime identity is already durably rebound; metadata hooks are best-effort.
-                        }
+                        };
+                        this.notifySessionRebound(projectedIdentity, nextIdentity);
                         projectedIdentity = nextIdentity;
                     }
                 }

@@ -94,6 +94,28 @@ test('SESSION-ALIAS-THREAD-SWITCH-001 copies an old alias without removing it or
     controller.copyForRebind('codex', 'missing-root', 'another-root');
     assert.equal(aliases['codex:another-root'], undefined);
     assert.equal(saves, 1, 'a missing source alias must not write');
+
+    const errors = [];
+    let saveErrors = 0;
+    const failing = new AiSessionAliasController({
+        store: {
+            getAll: () => ({ 'codex:old-root': 'Readable name' }),
+            saveAll() { throw new Error('controlled alias save failure'); },
+            remove() {},
+            set() {},
+        },
+        isProviderId: value => value === 'codex',
+        getSessionKey: (provider, id) => `${provider}:${id}`,
+        getProviderResult: () => ({ sessions: [] }),
+        logError: (message, error) => errors.push([message, error.message]),
+        showSaveError: () => { saveErrors += 1; },
+    });
+    assert.doesNotThrow(() => failing.copyForRebind('codex', 'old-root', 'new-root'));
+    assert.deepEqual(errors, [[
+        'Failed to preserve AI session alias after runtime rebind.',
+        'controlled alias save failure',
+    ]]);
+    assert.equal(saveErrors, 1);
 });
 
 test('SESSION-AI-SESSION-COMMAND-CONTROLLER-001 exposes validated command effects without mutating invalid targets', async () => {
