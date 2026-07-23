@@ -28,8 +28,10 @@ silently removing a project saved on another client.
 
 The fix must distinguish absence from deletion:
 
-- a record missing from a snapshot is not a deletion;
-- only an explicit, causally newer tombstone is a deletion;
+- a record merely missing from an unversioned or unobserving snapshot is not a
+  deletion;
+- only an explicit removal whose causal context has observed the record is a
+  deletion;
 - a concurrent deletion conflict keeps the live project and reports recovery;
 - a stale snapshot cannot undo either a new project or a valid observed
   deletion.
@@ -43,7 +45,7 @@ The fix must distinguish absence from deletion:
 - Recovering data after every device and every synced or local copy of that data
   has been permanently destroyed.
 - Treating deletion performed by an old extension version as authoritative when
-  that version cannot emit a tombstone.
+  that version cannot advance the versioned causal context.
 
 ## Options Considered
 
@@ -62,10 +64,10 @@ multi-machine deletion into an ambiguous restore.
 
 ### Versioned synchronized catalog with a local shadow
 
-This is the selected design. A versioned document gives additions, updates, and
-deletions explicit identities and causal metadata. A nonsynced local shadow
-retains the latest state known by each extension host and can repair a later
-whole-setting rollback.
+This is the selected design. A versioned observed-remove map gives additions,
+updates, and deletions causal metadata without retaining an operation log or
+per-deletion tombstone table. A nonsynced local shadow retains the latest state
+known by each extension host and can repair a later whole-setting rollback.
 
 ## Storage Architecture
 
@@ -77,19 +79,19 @@ document whose logical shape is:
 ```text
 ProjectSyncDocumentV1
   schemaVersion
-  versionVector
+  versionVector -> compact causal context, one counter per observed actor
   groups[groupId] -> versioned group fields
   projects[projectId] -> versioned project fields + groupId
-  groupTombstones[groupId] -> deletion version
-  projectTombstones[projectId] -> deletion version
   layout -> versioned group and project ordering
 ```
 
 Every extension host has a stable local actor ID and an increasing actor
 counter. A local mutation increments the counter and stamps only the affected
-records, tombstones, and layout. Version vectors determine whether one value
-causally follows another or whether two values are concurrent. Actor IDs provide
-a deterministic tie-break for concurrent field or layout edits.
+records and layout. An explicit removal deletes the live record after advancing
+the document's causal context past the removed record. Version vectors determine
+whether a side observed a record before omitting it or whether the omission is
+concurrent and therefore unsafe to treat as deletion. Actor IDs provide a
+deterministic tie-break for concurrent field or layout edits.
 
 `projectSyncData` becomes the canonical source when settings storage is enabled.
 The existing `projectData` array remains a compatibility projection so current
@@ -112,7 +114,7 @@ Add a focused catalog synchronization component rather than expanding
 `ProjectService` with merge internals. It owns:
 
 - migration from legacy `projectData`;
-- version stamping and tombstone creation;
+- version stamping and observed-remove causal-context updates;
 - deterministic document merge and materialization;
 - shadow persistence;
 - serialized writes and retry state;
@@ -125,27 +127,54 @@ synchronization component. Global-state-only storage keeps its current path.
 ## Merge Semantics
 
 1. Merge the incoming synchronized document with the local shadow by stable
-   group and project ID.
-2. Preserve a record that is present on only one side. Absence is never treated
-   as deletion.
-3. Apply a tombstone only when its version causally follows the corresponding
-   live record.
-4. If a live record and tombstone are concurrent, keep the live record and emit
+   group and project ID, and take the per-actor maximum for the merged version
+   vector.
+2. If a live record exists on only one side, remove it only when the other
+   side's causal context dominates that record's version. Dominance proves the
+   other side observed and explicitly removed that value.
+3. If the other side did not observe the record, preserve it. A stale or
+   concurrent omission is not a deletion.
+4. If a removal and a live update are concurrent, keep the live record and emit
    a conflict diagnostic. This implements the approved no-silent-loss policy.
 5. If two live values are concurrent, choose deterministically by version and
    actor ID. The project ID remains present, so the conflict cannot erase the
    saved project.
 6. Merge layout independently from record existence. A stale order may lose a
    deterministic ordering tie-break, but it cannot drop a record.
-7. Group deletion emits tombstones for the group and for projects intentionally
-   removed with it. Moving projects or deleting an empty group does not create
-   unrelated project tombstones.
-8. Re-adding a removed project creates a new project ID; tombstoned IDs are not
-   reused.
+7. Group deletion explicitly removes the group and projects intentionally
+   removed with it after advancing the causal context. Moving projects or
+   deleting an empty group does not remove unrelated projects.
+8. Re-adding a removed project through the product creates a new project ID.
+   A stale same-ID record whose version is dominated by the causal context
+   remains removed.
 
 The normalized merged document must have a stable serialization. Reconciliation
 rewrites `projectSyncData` only when the incoming synchronized value is missing
 known state, preventing configuration-change write loops.
+
+## Storage Growth and Sync Cost
+
+The synchronized format is a state document, not an append-only operation log:
+
+- edits replace the latest versioned value instead of appending history;
+- observed deletions are compressed into the version vector and do not leave a
+  permanent per-project or per-group tombstone;
+- repeated mutations by the same extension host update one actor counter;
+- the version vector grows with the number of distinct extension hosts that
+  have participated, not with the number of saves, edits, or deletions.
+
+While compatibility is required, Settings Sync carries both the live
+`projectData` projection and the versioned `projectSyncData` document. The
+steady-state synchronized payload is therefore approximately two live catalogs
+plus small record-version and actor-vector metadata. The local shadow is not
+synced. Removing the legacy projection can be considered only in a future
+schema-breaking release after old clients no longer need it.
+
+The focused tests must include repeated add/delete cycles from a fixed actor set
+and prove that no operation history or tombstone collection grows. Payload size
+may grow with legitimate live catalog fields and newly participating actors; it
+must not grow merely because existing actors continue to mutate the same
+catalog.
 
 ## Data Flow
 
@@ -171,7 +200,7 @@ retryable local operation instead of silently discarding it.
 incoming projectSyncData/projectData change
   -> serialize behind any local mutation
   -> merge incoming document with local shadow
-  -> preserve additions and valid tombstones
+  -> preserve unseen additions and causally valid removals
   -> rewrite stale synchronized state when repair is required
   -> refresh only after the merged catalog is available
 ```
@@ -199,9 +228,9 @@ new synchronized document and projection.
 
 After migration, additions and updates supplied through the legacy array can be
 imported conservatively. A legacy snapshot's missing record cannot be imported
-as a deletion because it has no tombstone. This makes mixed-version operation
-addition-safe while requiring the new extension version for reliable
-cross-machine deletion.
+as a deletion because it has no causal context proving observation. This makes
+mixed-version operation addition-safe while requiring the new extension version
+for reliable cross-machine deletion.
 
 ## Failure and Conflict Handling
 
@@ -244,8 +273,8 @@ acceptable RED.
 The complete focused contract must then prove:
 
 1. stale client overwrite cannot remove a project added by another client;
-2. a deletion made after observing the project emits a tombstone and is
-   restored as the winning state when a tombstone-carrying client reconciles
+2. a deletion made after observing the project advances causal context and is
+   restored as the winning state when a deletion-carrying client reconciles
    after an older snapshot returns;
 3. concurrent deletion and live update preserve the project and report one
    recovery conflict;
@@ -256,7 +285,9 @@ The complete focused contract must then prove:
    failure remains retryable;
 8. repeated reconciliation is idempotent and does not create a configuration
    change loop;
-9. global-state-only storage retains its existing behavior.
+9. repeated add/delete cycles by fixed actors do not accumulate operation
+   history or tombstones;
+10. global-state-only storage retains its existing behavior.
 
 Owner tests should exercise the merge component deterministically, while a
 service/composition contract proves `ProjectService` and configuration-change
@@ -279,9 +310,11 @@ after the focused tests pass.
 1. The diagnosed two-client stale-snapshot sequence is covered by CI and passes.
 2. A saved project omitted by a later snapshot is restored when any replica
    carrying its versioned record reconciles.
-3. Only explicit causally valid tombstones delete synchronized records.
+3. Only explicit removals whose causal context observed a record delete it.
 4. Concurrent deletion conflicts preserve the live project and are observable.
 5. Existing catalogs migrate without changing IDs or visible ordering.
 6. Settings Sync remains available and `projectData` remains compatible.
 7. Local recovery data makes failed or stale synchronized writes retryable.
 8. Existing global-state-only users are unaffected.
+9. Sync metadata grows with live records and participating actors, not mutation
+   or deletion history.
