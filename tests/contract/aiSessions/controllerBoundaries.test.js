@@ -57,6 +57,45 @@ test('SESSION-ALIAS-CONTROLLER-001 sanitizes writes and resolves original names 
     assert.equal(controller.getOriginalName('codex', 'missing'), 'missing');
 });
 
+test('SESSION-ALIAS-THREAD-SWITCH-001 copies an old alias without removing it or overwriting the new root', () => {
+    let aliases = { 'codex:old-root': 'Readable name' };
+    let saves = 0;
+    const controller = new AiSessionAliasController({
+        store: {
+            getAll: () => ({ ...aliases }),
+            saveAll: next => {
+                aliases = { ...next };
+                saves += 1;
+            },
+            remove() {},
+            set() {},
+        },
+        isProviderId: value => value === 'codex',
+        getSessionKey: (provider, id) => `${provider}:${id}`,
+        getProviderResult: () => ({ sessions: [] }),
+        logError() {},
+    });
+
+    controller.copyForRebind('codex', 'old-root', 'new-root');
+    assert.deepEqual(aliases, {
+        'codex:old-root': 'Readable name',
+        'codex:new-root': 'Readable name',
+    });
+    assert.equal(saves, 1);
+
+    controller.copyForRebind('codex', 'old-root', 'new-root');
+    assert.equal(saves, 1, 'an already copied alias should be idempotent');
+
+    aliases['codex:explicit-root'] = 'Explicit new name';
+    controller.copyForRebind('codex', 'old-root', 'explicit-root');
+    assert.equal(aliases['codex:explicit-root'], 'Explicit new name');
+    assert.equal(saves, 1, 'an explicit target alias must not be overwritten');
+
+    controller.copyForRebind('codex', 'missing-root', 'another-root');
+    assert.equal(aliases['codex:another-root'], undefined);
+    assert.equal(saves, 1, 'a missing source alias must not write');
+});
+
 test('SESSION-AI-SESSION-COMMAND-CONTROLLER-001 exposes validated command effects without mutating invalid targets', async () => {
     const effects = [];
     const workspaceTarget = {

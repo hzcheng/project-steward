@@ -63,6 +63,7 @@ async function main() {
     const restores = [];
     const events = [];
     const verified = new Set();
+    const aliasRebinds = [];
     let dashboardCommandRegistrationInvocations = 0;
     const patch = (prototype, name, replacement) => {
         const original = prototype[name];
@@ -104,6 +105,7 @@ async function main() {
         const { TmuxRuntimeBindingStore } = require('../../../out/aiSessions/tmuxRuntimeBindingStore');
         const { TmuxRuntimeDiscovery } = require('../../../out/aiSessions/tmuxRuntimeDiscovery');
         const { AiSessionAttentionController } = require('../../../out/aiSessions/attentionController');
+        const AiSessionAliasController = require('../../../out/aiSessions/aliasController').default;
         const { DashboardCommandRegistration } = require('../../../out/dashboard/commandRegistration');
 
         const originalDashboardRegister = DashboardCommandRegistration.prototype.register;
@@ -111,12 +113,21 @@ async function main() {
             dashboardCommandRegistrationInvocations += 1;
             return originalDashboardRegister.apply(this, args);
         });
+        patch(AiSessionAliasController.prototype, 'copyForRebind', function (...args) {
+            aliasRebinds.push(args);
+        });
 
         patch(TmuxRuntimeDiscovery.prototype, 'loadPersistedInactive', async function () {
             assert.ok(this instanceof TmuxRuntimeDiscovery);
             assert.ok(this.options.client instanceof TmuxClient);
             assert.ok(this.options.bindingStore instanceof TmuxRuntimeBindingStore);
+            assert.equal(typeof this.options.onSessionRebound, 'function');
+            this.options.onSessionRebound(
+                { provider: 'codex', sessionId: 'old-root' },
+                { provider: 'codex', sessionId: 'new-root' }
+            );
             verified.add('client-store-discovery');
+            verified.add('thread-switch-alias-wiring');
             events.push('inactive-restored');
         });
         patch(TerminalService.prototype, 'restorePersistedTerminals', async function () {
@@ -159,6 +170,7 @@ async function main() {
             verified: [...verified].sort(),
             registeredCommands: vscode.registeredCommands,
             dashboardCommandRegistrationInvocations,
+            aliasRebinds,
         }));
     } finally {
         for (const subscription of context.subscriptions.slice().reverse()) subscription.dispose?.();

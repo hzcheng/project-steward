@@ -210,7 +210,7 @@ test('RUNTIME-TMUX-DISCOVERY-001 classifies vanished runtimes as completed or st
     assert.deepEqual(stopped.getInactive().map(runtime => runtime.state), ['stopped']);
 });
 
-test('RUNTIME-TMUX-THREAD-SWITCH-001 rebinds one managed locator to its observed Codex root thread', async () => {
+test('RUNTIME-TMUX-THREAD-SWITCH-001 SESSION-ALIAS-THREAD-SWITCH-001 rebinds one managed locator and reports the committed root transition', async () => {
     const row = makeTmuxDiscoveryRow({
         sessionId: 'old-root',
         panePid: 4321,
@@ -223,6 +223,7 @@ test('RUNTIME-TMUX-THREAD-SWITCH-001 rebinds one managed locator to its observed
     const known = makeTmuxKnownBinding('old-root', { locator });
     const store = createSyntheticTmuxStore({ known: [known] });
     const observed = [];
+    const reboundEvents = [];
     const observer = {
         observe: async request => {
             observed.push(request);
@@ -236,6 +237,7 @@ test('RUNTIME-TMUX-THREAD-SWITCH-001 rebinds one managed locator to its observed
         markerIsCurrent: () => false,
         nowMs: () => 2000,
         cacheTtlMs: 0,
+        onSessionRebound: (previous, next) => reboundEvents.push({ previous, next }),
     });
 
     await discovery.refresh(true);
@@ -247,6 +249,12 @@ test('RUNTIME-TMUX-THREAD-SWITCH-001 rebinds one managed locator to its observed
     assert.deepEqual(discovery.getActive().map(runtime => runtime.identity.sessionId), ['new-root']);
     assert.equal(store.known.has('codex:old-root'), false);
     assert.equal(store.known.get('codex:new-root').locator.windowName, row.windowName);
+    assert.deepEqual(reboundEvents.map(event => [
+        event.previous.provider,
+        event.previous.sessionId,
+        event.next.provider,
+        event.next.sessionId,
+    ]), [['codex', 'old-root', 'codex', 'new-root']]);
 
     const restarted = new TmuxRuntimeDiscovery({
         client: { listWindows: async () => [row] },
@@ -267,6 +275,7 @@ test('RUNTIME-TMUX-THREAD-SWITCH-001 preserves the durable projection when obser
         sessionName: row.sessionName,
         windowName: row.windowName,
     };
+    let reboundEvents = 0;
     for (const failure of ['observer', 'stale', 'missing']) {
         const store = createSyntheticTmuxStore({
             known: [makeTmuxKnownBinding('old-root', { locator })],
@@ -286,6 +295,7 @@ test('RUNTIME-TMUX-THREAD-SWITCH-001 preserves the durable projection when obser
             markerIsCurrent: () => false,
             nowMs: () => 2000,
             cacheTtlMs: 0,
+            onSessionRebound: () => { reboundEvents += 1; },
         });
         await discovery.refresh(true);
         assert.deepEqual(
@@ -294,6 +304,7 @@ test('RUNTIME-TMUX-THREAD-SWITCH-001 preserves the durable projection when obser
             failure
         );
     }
+    assert.equal(reboundEvents, 0);
 });
 
 test('RUNTIME-TMUX-THREAD-SWITCH-001 rejects ambiguous locator authority and non-Codex observation', async () => {

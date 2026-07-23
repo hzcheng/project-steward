@@ -109,15 +109,17 @@ function runProductionActivation(mode) {
     return JSON.parse(result.stdout);
 }
 
-test('RUNTIME-HOST-RUNTIME-COMPOSITION-001 production activation assembles runtime modules and restores before hydration', () => {
+test('RUNTIME-HOST-RUNTIME-COMPOSITION-001 SESSION-ALIAS-THREAD-SWITCH-001 production activation wires alias continuity and restores before hydration', () => {
     const result = runProductionActivation('success');
     assert.equal(result.failure, null);
     assert.deepEqual(result.events.slice(0, 4), [
         'inactive-restored', 'direct-restored', 'tmux-restored', 'hydration-constructed',
     ]);
     assert.deepEqual(result.verified, [
-        'client-store-discovery', 'direct-tmux-coordinator', 'tmux-backend',
+        'client-store-discovery', 'direct-tmux-coordinator', 'thread-switch-alias-wiring',
+        'tmux-backend',
     ]);
+    assert.deepEqual(result.aliasRebinds, [['codex', 'old-root', 'new-root']]);
 });
 
 test('RUNTIME-HOST-RUNTIME-COMPOSITION-001 production activation blocks tmux restore and hydration after Direct failure', () => {
