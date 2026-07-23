@@ -238,6 +238,31 @@ export default class ProjectService extends BaseService {
         return this.saveGroupsWithMutation(groups);
     }
 
+    saveGroupsFromManualEdit(groups: Group[], baselineGroups: Group[]): Thenable<void> {
+        const nextGroupIds = new Set((groups || []).map(group => group.id));
+        const nextProjectIds = new Set((groups || []).reduce(
+            (projectIds, group) => projectIds.concat(
+                (group.projects || []).map(project => project.id)
+            ),
+            [] as string[]
+        ));
+        const deletedGroupIds = (baselineGroups || [])
+            .map(group => group.id)
+            .filter(groupId => !nextGroupIds.has(groupId));
+        const deletedProjectIds = (baselineGroups || []).reduce(
+            (projectIds, group) => projectIds.concat(
+                (group.projects || [])
+                    .map(project => project.id)
+                    .filter(projectId => !nextProjectIds.has(projectId))
+            ),
+            [] as string[]
+        );
+        return this.saveGroupsWithMutation(groups, {
+            deletedGroupIds,
+            deletedProjectIds,
+        });
+    }
+
     reconcileProjectCatalog(): Promise<void> {
         if (!this.useSettingsStorage()) {
             return Promise.resolve();

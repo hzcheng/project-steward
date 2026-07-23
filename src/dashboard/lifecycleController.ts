@@ -10,6 +10,7 @@ export interface WindowStateLike {
 
 export interface DashboardLifecycleControllerOptions {
     checkDataMigration: (openStewardAfterMigrate: boolean) => Promise<void>;
+    reconcileProjectCatalog?: () => Promise<void>;
     applyProjectColorToCurrentWindow: () => void;
     refresh: (reason: string) => void;
     publishOpenWorkspace: (followsFocusEvent?: boolean) => void;
@@ -24,6 +25,11 @@ export class DashboardLifecycleController {
         if (event.affectsConfiguration('projectSteward.storeProjectsInSettings')
             || event.affectsConfiguration('dashboard.storeProjectsInSettings')) {
             await this.options.checkDataMigration(false);
+        }
+
+        if (event.affectsConfiguration('projectSteward.projectSyncData')
+            || event.affectsConfiguration('projectSteward.projectData')) {
+            await this.options.reconcileProjectCatalog?.();
         }
 
         if (event.affectsConfiguration('projectSteward')

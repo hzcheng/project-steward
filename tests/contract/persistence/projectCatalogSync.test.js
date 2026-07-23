@@ -195,6 +195,35 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 keeps an observed deletion after an olde
     assert.deepEqual(projectIds(clientA.getGroups()), ['project-existing']);
 });
 
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 manual replacement deletes only baseline records and preserves later additions', async () => {
+    const removeTarget = {
+        id: 'project-remove',
+        name: 'Remove',
+        path: '/work/remove',
+        color: '#991122',
+    };
+    const { clientA, clientB } = makeTwoClientHarness(makeCatalogGroups([removeTarget]));
+    await clientA.migrateDataIfNeeded();
+    await clientB.migrateDataIfNeeded();
+    const baseline = clone(clientA.getGroups(true));
+    const remoteAddition = {
+        id: 'project-remote-addition',
+        name: 'Remote addition',
+        path: '/work/remote-addition',
+        color: '#229944',
+    };
+    await clientB.addProject(remoteAddition, 'group-main');
+    const edited = clone(baseline);
+    edited[0].projects = edited[0].projects.filter(project => project.id !== removeTarget.id);
+
+    await clientA.saveGroupsFromManualEdit(edited, baseline);
+
+    assert.deepEqual(projectIds(clientA.getGroups()), [
+        'project-existing',
+        'project-remote-addition',
+    ]);
+});
+
 test('PROJECT-CATALOG-SYNC-CONFLICT-001 model preserves unseen additions and observed deletions', () => {
     const {
         applyProjectCatalogSnapshot,

@@ -2582,12 +2582,17 @@
     "priority": "P0",
     "status": "automated",
     "owners": [
-      "tests/contract/persistence/projectCatalogSync.test.js"
+      "tests/contract/persistence/projectCatalogSync.test.js",
+      "tests/contract/projects/controllers.test.js",
+      "tests/integration/dashboard/errorRecovery.test.js"
     ],
     "evidence": [
       "src/services/projectService.ts",
       "src/projects/projectCatalogSync.ts",
-      "src/services/projectCatalogSyncService.ts"
+      "src/services/projectCatalogSyncService.ts",
+      "src/projects/projectManualEditController.ts",
+      "src/dashboard/lifecycleController.ts",
+      "src/dashboard.ts"
     ]
   },
   {
