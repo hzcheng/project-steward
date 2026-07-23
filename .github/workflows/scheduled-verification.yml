@@ -9,8 +9,12 @@ permissions:
   contents: read
 
 jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+
   scheduled-macos:
     name: scheduled-macos
+    needs: verify
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
@@ -23,15 +27,5 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Compile extensions
-        run: npm run test-compile
-      - name: Validate behavior ownership
-        run: npm run test:behavior-contracts
-      - name: Run deterministic tests
-        run: npm run test:deterministic:run
-      - name: Enforce lint warning baseline
-        run: npm run lint:ci
-      - name: Verify release packaging contracts
-        run: npm run test:release-packaging
       - name: Run stable Extension Host smoke
         run: npm run test:extension-host

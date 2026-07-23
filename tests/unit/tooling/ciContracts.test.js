@@ -7,11 +7,16 @@ const test = require('node:test');
 const {
     validateQualityGateScripts,
     validateSafetyScripts,
+    validateScheduledWorkflow,
     validateVerifyWorkflow,
 } = require('../../../scripts/lib/ciContracts');
 
 const verifyWorkflow = fs.readFileSync(
     path.resolve(__dirname, '../../../.github/workflows/verify.yml'),
+    'utf8'
+);
+const scheduledWorkflow = fs.readFileSync(
+    path.resolve(__dirname, '../../../.github/workflows/scheduled-verification.yml'),
     'utf8'
 );
 const packageScripts = JSON.parse(fs.readFileSync(
@@ -96,4 +101,51 @@ test('ARCH-CI-QUALITY-GATE-001 requires architecture guards in the compile-once 
 
 test('ARCH-CI-QUALITY-GATE-001 keeps the repository Linux quality chain wired exactly', () => {
     assert.doesNotThrow(() => validateQualityGateScripts(packageScripts));
+});
+
+test('ARCH-CI-QUALITY-GATE-001 scheduled verification reuses the complete Verify workflow', () => {
+    assert.doesNotThrow(() => validateScheduledWorkflow(scheduledWorkflow));
+
+    assert.throws(
+        () => validateScheduledWorkflow(
+            scheduledWorkflow.replace(/\n  verify:\n[\s\S]*?(?=\n  scheduled-macos:)/, '')
+        ),
+        /must define verify/
+    );
+    assert.throws(
+        () => validateScheduledWorkflow(
+            scheduledWorkflow.replace(
+                'uses: ./.github/workflows/verify.yml',
+                'uses: ./.github/workflows/release-vsix.yml'
+            )
+        ),
+        /verify must reuse \.\/\.github\/workflows\/verify\.yml/
+    );
+});
+
+test('ARCH-CI-QUALITY-GATE-001 scheduled Extension Host gate is pinned and blocking', () => {
+    for (const [source, message] of [
+        [
+            scheduledWorkflow.replace('        run: npm run test:extension-host', '        run: npm test'),
+            /scheduled-macos must run npm run test:extension-host/,
+        ],
+        [
+            scheduledWorkflow.replace('node-version: 22.12.0', 'node-version: 22'),
+            /scheduled-macos setup-node step must use Node 22\.12\.0/,
+        ],
+        [
+            scheduledWorkflow.replace('          cache: npm', '          cache: false'),
+            /scheduled-macos setup-node step must cache npm/,
+        ],
+        [
+            scheduledWorkflow.replace('        run: npm ci', '        run: npm install'),
+            /scheduled-macos must run npm ci/,
+        ],
+        [
+            `${scheduledWorkflow}\n    continue-on-error: true\n`,
+            /must not define continue-on-error/,
+        ],
+    ]) {
+        assert.throws(() => validateScheduledWorkflow(source), message);
+    }
 });

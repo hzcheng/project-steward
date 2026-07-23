@@ -364,6 +364,8 @@
                 "test:ci:linux"
             ],
             "scheduledJobs": [
+                "quality-linux",
+                "platform-windows",
                 "scheduled-macos",
                 "tmux-smoke-linux"
             ],

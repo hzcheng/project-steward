@@ -102,6 +102,56 @@ function validateVerifyWorkflow(verifyWorkflow) {
         'GitHub verification workflow must not define continue-on-error');
 }
 
+function validateScheduledWorkflow(scheduledWorkflow) {
+    const workflow = parseVerifyWorkflow(scheduledWorkflow);
+    assert.ok(hasOwn(workflow, 'on'),
+        'GitHub scheduled verification workflow must define the on trigger mapping');
+    assert.ok(isMapping(workflow.on),
+        'GitHub scheduled verification workflow on must be a mapping');
+    assert.ok(Array.isArray(workflow.on.schedule) && workflow.on.schedule.length > 0,
+        'GitHub scheduled verification workflow must define a schedule');
+    assert.ok(hasOwn(workflow.on, 'workflow_dispatch'),
+        'GitHub scheduled verification workflow must define workflow_dispatch');
+    assert.deepEqual(workflow.permissions, { contents: 'read' },
+        'GitHub scheduled verification workflow permissions must be exactly contents: read');
+    assert.ok(isMapping(workflow.jobs),
+        'GitHub scheduled verification workflow jobs must be a mapping');
+
+    const verify = workflow.jobs.verify;
+    assert.ok(isMapping(verify), 'GitHub scheduled verification workflow must define verify');
+    assert.equal(verify.uses, './.github/workflows/verify.yml',
+        'scheduled verify must reuse ./.github/workflows/verify.yml');
+    assert.deepEqual(Object.keys(verify), ['uses'],
+        'scheduled verify must contain only the reusable workflow reference');
+
+    const macos = workflow.jobs['scheduled-macos'];
+    assert.ok(isMapping(macos),
+        'GitHub scheduled verification workflow must define scheduled-macos');
+    assert.equal(macos.name, 'scheduled-macos',
+        'scheduled-macos must expose the stable check name scheduled-macos');
+    assert.equal(macos.needs, 'verify', 'scheduled-macos must need verify');
+    assert.equal(macos['runs-on'], 'macos-latest', 'scheduled-macos must use macos-latest');
+    assert.equal(macos['timeout-minutes'], 15, 'scheduled-macos timeout-minutes must be 15');
+    assert.ok(findStep(macos, step => isMapping(step) && step.uses === 'actions/checkout@v4'),
+        'scheduled-macos must use actions/checkout@v4');
+    const setupNode = findStep(macos,
+        step => isMapping(step) && step.uses === 'actions/setup-node@v4');
+    assert.ok(setupNode, 'scheduled-macos must use actions/setup-node@v4');
+    assert.ok(isMapping(setupNode.with), 'scheduled-macos setup-node step must define with');
+    assert.equal(setupNode.with['node-version'], '22.12.0',
+        'scheduled-macos setup-node step must use Node 22.12.0');
+    assert.equal(setupNode.with.cache, 'npm',
+        'scheduled-macos setup-node step must cache npm');
+    assert.ok(findStep(macos, step => isMapping(step) && step.run === 'npm ci'),
+        'scheduled-macos must run npm ci');
+    assert.ok(findStep(
+        macos,
+        step => isMapping(step) && step.run === 'npm run test:extension-host'
+    ), 'scheduled-macos must run npm run test:extension-host');
+    assert.equal(containsKey(workflow, 'continue-on-error'), false,
+        'GitHub scheduled verification workflow must not define continue-on-error');
+}
+
 function includesShellCommand(script, command) {
     return typeof script === 'string'
         && script.split(/&&|;/).map(part => part.trim()).includes(command);
@@ -132,5 +182,6 @@ function validateQualityGateScripts(scripts) {
 module.exports = {
     validateQualityGateScripts,
     validateSafetyScripts,
+    validateScheduledWorkflow,
     validateVerifyWorkflow,
 };
