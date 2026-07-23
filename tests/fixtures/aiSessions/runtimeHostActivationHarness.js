@@ -14,9 +14,11 @@ function disposable() {
 }
 
 function createVscode() {
+    const registeredCommands = [];
     const configuration = { get: (_key, fallback) => fallback, inspect: () => undefined, update: async () => undefined };
     const uri = value => ({ scheme: 'file', fsPath: value, path: value, toString: () => value });
     return {
+        registeredCommands,
         ConfigurationTarget: { Global: 1, Workspace: 2 }, ExtensionMode: { Test: 3 }, ViewColumn: { One: 1 },
         Uri: { file: uri, parse: uri, joinPath: (base, ...parts) => uri(path.join(base.fsPath, ...parts)) },
         window: {
@@ -37,7 +39,13 @@ function createVscode() {
             onDidChangeConfiguration: () => disposable(), onDidChangeWorkspaceFolders: () => disposable(),
             onWillSaveTextDocument: () => disposable(), openTextDocument: async () => ({}),
         },
-        commands: { registerCommand: () => disposable(), executeCommand: async () => undefined },
+        commands: {
+            registerCommand: command => {
+                registeredCommands.push(command);
+                return disposable();
+            },
+            executeCommand: async () => undefined,
+        },
         env: {
             remoteName: undefined, machineId: 'fixture-machine',
             clipboard: { writeText: async () => undefined }, openExternal: async () => true,
@@ -136,7 +144,12 @@ async function main() {
             failure = error instanceof Error ? error.message : String(error);
         }
         await new Promise(resolve => setImmediate(resolve));
-        process.stdout.write(JSON.stringify({ events, failure, verified: [...verified].sort() }));
+        process.stdout.write(JSON.stringify({
+            events,
+            failure,
+            verified: [...verified].sort(),
+            registeredCommands: vscode.registeredCommands,
+        }));
     } finally {
         for (const subscription of context.subscriptions.slice().reverse()) subscription.dispose?.();
         restores.reverse().forEach(restore => restore());

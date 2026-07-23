@@ -377,6 +377,41 @@ test('WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001 SESSION-CONTROLLER-001 preserves OPEN
     assert.equal(harness.storage.get('projectSteward.activeDashboardTab'), 'todo');
 });
 
+test('SESSION-CONTROLLER-001 validates lazy responses and preserves independent background-tab scroll state', () => {
+    const harness = createDashboardHarness();
+    assert.equal(harness.context.normalizeDashboardTab('unknown'), 'open');
+    assert.equal(harness.context.getAdjacentDashboardTab('open', 'ArrowLeft'), 'todo');
+    assert.equal(harness.context.getAdjacentDashboardTab('todo', 'ArrowRight'), 'open');
+    assert.equal(harness.context.validateProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '',
+    }), true);
+    assert.equal(harness.context.validateProjectsPanelMessage({
+        type: 'projects-panel-content', version: 2, requestId: 1, html: '',
+    }), false);
+
+    harness.context.window.scrollY = 41;
+    harness.controller.activateTab('projects');
+    harness.context.window.scrollY = 17;
+    harness.controller.activateTab('todo');
+    harness.context.window.scrollY = 9;
+    harness.controller.activateTab('open');
+    assert.equal(harness.controller.getScrollPosition('open'), 41);
+    assert.equal(harness.controller.getScrollPosition('projects'), 17);
+    assert.equal(harness.controller.getScrollPosition('todo'), 9);
+    assert.equal(harness.context.window.scrollY, 41);
+
+    assert.equal(harness.controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 2, html: '<p>future</p>',
+    }), false);
+    assert.equal(harness.controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '<p>current</p>',
+    }), true);
+    assert.equal(harness.controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '<p>stale</p>',
+    }), false);
+    assert.equal(harness.projectsPanel.innerHTML, '<p>current</p>');
+});
+
 test('TODO-TODO-SEARCH-RESULT-RENDERING-001 search reveal requests host data then focuses the mounted TODO', () => {
     const harness = createDashboardHarness({ initialTab: 'todo', synchronousFrames: false });
     assert.equal(harness.controller.applyTodoPanelMessage({
@@ -472,6 +507,74 @@ function createProjectVm({ querySelector, querySelectorAll, activeElement, sourc
     messages.length = 0;
     return { context, documentListeners, windowListeners, messages, replacedCatalogs, getWebviewState: () => webviewState };
 }
+
+test('SESSION-CONTROLLER-001 preserves AI tab helpers, persisted state, and hidden-list scroll offsets', () => {
+    const harness = createProjectVm();
+    const context = harness.context;
+    assert.equal(context.normalizeAiSessionTab('active'), 'active');
+    assert.equal(context.normalizeAiSessionTab('invalid'), 'sessions');
+    assert.equal(context.getAdjacentAiSessionTab('active', 'ArrowRight'), 'sessions');
+    assert.equal(context.getAdjacentAiSessionTab('sessions', 'ArrowLeft'), 'active');
+    assert.equal(context.getAdjacentAiSessionTab('sessions', 'Home'), 'active');
+    assert.equal(context.getAdjacentAiSessionTab('active', 'End'), 'sessions');
+
+    context.writeAiSessionTabState(context.window.vscode, 'project-a', 'active');
+    context.writeAiSessionTabState(context.window.vscode, 'project-b', 'invalid');
+    assert.deepEqual(toPlain(context.readAiSessionTabState(context.window.vscode)), {
+        'project-a': 'active', 'project-b': 'sessions',
+    });
+    assert.equal(harness.getWebviewState().unrelated, 'preserved');
+
+    const activeList = { scrollTop: 0, scrollHeight: 100, clientHeight: 40 };
+    const historyList = { scrollTop: 0, scrollHeight: 0, clientHeight: 0 };
+    const tab = id => {
+        const attributes = new Map([['data-ai-session-tab', id]]);
+        return {
+            getAttribute: name => attributes.get(name) || null,
+            setAttribute: (name, value) => attributes.set(name, String(value)),
+            focus() {},
+        };
+    };
+    const panel = (id, list) => {
+        const attributes = new Map([['data-ai-session-panel', id]]);
+        return {
+            getAttribute: name => attributes.get(name) || null,
+            toggleAttribute(name, force) {
+                if (force) attributes.set(name, '');
+                else attributes.delete(name);
+                if (name === 'hidden') {
+                    list.scrollHeight = force ? 0 : 100;
+                    list.clientHeight = force ? 0 : 40;
+                }
+            },
+            querySelector: () => null,
+        };
+    };
+    const tabs = [tab('active'), tab('sessions')];
+    const panels = [panel('active', activeList), panel('sessions', historyList)];
+    const project = {
+        querySelector(selector) {
+            if (selector === '.codex-sessions') return { setAttribute() {} };
+            if (selector === '.ai-session-active-panel .codex-sessions-list') return activeList;
+            if (selector === '.ai-session-history-panel .codex-sessions-list') return historyList;
+            if (selector === '[data-ai-session-panel="active"]') return panels[0];
+            return null;
+        },
+        querySelectorAll(selector) {
+            if (selector === '[data-ai-session-tab]') return tabs;
+            if (selector === '[data-ai-session-panel]') return panels;
+            if (selector === '.codex-session-row') return [];
+            return [];
+        },
+    };
+    context.restoreAiSessionViewState(project, {
+        activeScrollTop: 17, historyScrollTop: 29, restoreFocus: false,
+    }, 'active');
+    assert.equal(activeList.scrollTop, 17);
+    assert.equal(historyList.scrollTop, 29);
+    assert.equal(tabs[0].getAttribute('aria-selected'), 'true');
+    assert.equal(tabs[1].getAttribute('aria-selected'), 'false');
+});
 
 function assertCollapseButtonBehavior(context) {
     assert.deepEqual(toPlain(context.getCollapseButtonState('open', [])), {

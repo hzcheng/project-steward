@@ -86,7 +86,7 @@ test('SESSION-RECORD-001 converts project metadata and includes only positive ac
     assert.equal(records[2].activeSessionCount, undefined);
 });
 
-test('PROJECT-PROJECTION-001 OPEN-OPEN-PROJECT-RUNTIME-IDENTITY-001 keeps current cards, excludes own and current identities, and picks the focused duplicate', () => {
+test('PROJECT-PROJECTION-001 keeps current cards, excludes own and current identities, and picks the focused duplicate', () => {
     const current = [{
         id: '__openProjects-0',
         name: 'Current',

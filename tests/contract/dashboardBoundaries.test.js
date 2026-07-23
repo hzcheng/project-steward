@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const configuration = require('../../out/dashboard/configuration');
 const { shouldOpenStewardOnStartup } = require('../../out/dashboard/startup');
@@ -12,103 +14,297 @@ const {
     getPrimarySelectionLineRange,
 } = require('../../out/dashboard/activeTerminalFileReference');
 
-function config(values) {
+function configured(values = {}, members = {}) {
     return {
-        get: (key, fallback) => Object.prototype.hasOwnProperty.call(values, key) ? values[key] : fallback,
-        inspect: key => Object.prototype.hasOwnProperty.call(values, key) ? { globalValue: values[key] } : undefined,
-        update: () => 'updated',
+        ...members,
+        get(key, fallback) {
+            return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : fallback;
+        },
+        inspect(key) {
+            return Object.prototype.hasOwnProperty.call(values, key) ? { globalValue: values[key] } : undefined;
+        },
     };
 }
 
-test('SESSION-CONFIGURATION-001 gives explicit primary values precedence and preserves legacy fallback', () => {
-    const steward = configuration.createStewardConfiguration(config({ customCss: '.primary{}' }), config({
-        customCss: '.legacy{}', displayProjectPath: false,
-    }));
+function flushAsync() {
+    return new Promise(resolve => setImmediate(resolve));
+}
+
+test('SESSION-CONFIGURATION-001 preserves primary precedence, legacy fallback, defaults, properties, and bound passthrough methods', async () => {
+    const calls = [];
+    const primary = configured({ customCss: '.primary{}', falseValue: false }, {
+        marker: 'primary-marker',
+        update(key, value) {
+            calls.push([this.marker, key, value]);
+            return Promise.resolve('updated');
+        },
+    });
+    const legacy = configured({ customCss: '.legacy{}', displayProjectPath: false, legacyProperty: 'legacy' });
+    const steward = configuration.createStewardConfiguration(primary, legacy);
+
     assert.equal(steward.get('customCss'), '.primary{}');
     assert.equal(steward.get('displayProjectPath'), false);
     assert.equal(steward.get('missing', 'default'), 'default');
-    assert.equal(steward.update(), 'updated');
-    assert.equal(configuration.hasConfiguredValue(config({ value: false }), 'value'), true);
+    assert.equal(steward.customCss, '.primary{}');
+    assert.equal(steward.legacyProperty, 'legacy');
+    assert.equal(steward.unknownProperty, undefined);
+    assert.equal(steward.marker, 'primary-marker');
+    assert.equal(await steward.update('color', '#fff'), 'updated');
+    assert.deepEqual(calls, [['primary-marker', 'color', '#fff']]);
+
+    for (const field of [
+        'globalValue', 'workspaceValue', 'workspaceFolderValue',
+        'globalLanguageValue', 'workspaceLanguageValue', 'workspaceFolderLanguageValue',
+    ]) {
+        assert.equal(configuration.hasConfiguredValue({ inspect: () => ({ [field]: false }) }, 'value'), true);
+    }
+    assert.equal(configuration.hasConfiguredValue({ inspect: () => ({}) }, 'value'), false);
+    assert.equal(configuration.hasConfiguredValue({ inspect: () => undefined }, 'value'), false);
 });
 
-test('SESSION-STARTUP-001 opens for reopen and configured empty-workspace cases only', () => {
-    assert.equal(shouldOpenStewardOnStartup({ reopenReason: 1, openOnStartup: 'never', workspaceName: 'project' }), true);
-    assert.equal(shouldOpenStewardOnStartup({ openOnStartup: 'always', workspaceName: 'project' }), true);
-    assert.equal(shouldOpenStewardOnStartup({ openOnStartup: 'never', workspaceName: '', visibleEditorLanguageIds: [] }), false);
-    assert.equal(shouldOpenStewardOnStartup({ openOnStartup: 'empty workspace', workspaceName: '', visibleEditorLanguageIds: [] }), true);
-    assert.equal(shouldOpenStewardOnStartup({ openOnStartup: 'empty workspace', workspaceName: 'project', visibleEditorLanguageIds: [] }), false);
+test('SESSION-STARTUP-001 preserves reopen, always, never, and genuinely empty-workspace startup behavior', () => {
+    const decide = input => shouldOpenStewardOnStartup({
+        reopenReason: 0, reopenNoneValue: 0, openOnStartup: 'empty workspace',
+        workspaceName: '', visibleEditorLanguageIds: [], ...input,
+    });
+    assert.equal(decide({ reopenReason: 1, openOnStartup: 'never', workspaceName: 'project' }), true);
+    assert.equal(decide({ openOnStartup: 'always', workspaceName: 'project' }), true);
+    assert.equal(decide({ openOnStartup: 'never' }), false);
+    assert.equal(decide({}), true);
+    assert.equal(decide({ visibleEditorLanguageIds: ['code-runner-output'] }), true);
+    assert.equal(decide({ visibleEditorLanguageIds: ['typescript'] }), false);
+    assert.equal(decide({ visibleEditorLanguageIds: ['code-runner-output', 'typescript'] }), false);
+    assert.equal(decide({ workspaceName: 'project' }), false);
+    assert.equal(decide({ openOnStartup: 'unrecognized' }), true);
 });
 
-test('RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001 routes observable refresh, reveal, message, and color effects', async () => {
+function runtimeHarness(overrides = {}) {
     const events = [];
     let visible = true;
-    const controller = new DashboardRuntimeController({
+    const options = {
         isVisible: () => visible,
-        refreshProvider: () => events.push('refresh'),
+        refreshProvider: () => events.push(['refresh']),
         logDashboardDiagnostic: value => events.push(['diagnostic', value]),
         executeCommand: async (command, ...args) => events.push(['command', command, ...args]),
-        viewType: 'fixture.view', publishOpenProjects: () => events.push('publish'),
+        viewType: 'fixture.view',
+        publishOpenProjects: () => events.push(['publish']),
         getOpenProjects: () => [{ id: 'project', path: '/work' }],
         syncProjectColorToCurrentWindow: async project => events.push(['color', project?.id || null]),
         postMessage: async message => events.push(['message', message]),
         logError: (message, error) => events.push(['error', message, error.message]),
+        ...overrides,
+    };
+    return {
+        controller: new DashboardRuntimeController(options),
+        events,
+        setVisible(value) { visible = value; },
+    };
+}
+
+test('RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001 refreshes and reveals only through the stable production command boundary', async () => {
+    const harness = runtimeHarness();
+    harness.controller.refresh('manual');
+    harness.setVisible(false);
+    harness.controller.refresh('hidden');
+    harness.setVisible(true);
+    await harness.controller.showSteward();
+    await harness.controller.openSettings();
+
+    assert.deepEqual(harness.events, [
+        ['diagnostic', { event: 'full-refresh', reason: 'manual' }],
+        ['refresh'],
+        ['publish'],
+        ['command', 'workbench.view.extension.project-steward'],
+        ['command', 'fixture.view.focus'],
+        ['diagnostic', { event: 'full-refresh', reason: 'show-steward' }],
+        ['refresh'],
+        ['command', 'workbench.action.openSettings', '@ext:hzcheng.project-steward'],
+    ]);
+
+    const attempts = [];
+    const retry = runtimeHarness({
+        executeCommand(command) {
+            attempts.push(command);
+            if (command === 'fixture.view.focus' && attempts.filter(value => value === command).length === 1) {
+                return Promise.reject(new Error('focus race'));
+            }
+            return Promise.resolve();
+        },
     });
-    controller.refresh('manual');
-    visible = false;
-    controller.refresh('hidden');
-    visible = true;
-    await controller.showSteward();
-    controller.postActiveAiSessionTerminalChanged({ provider: 'codex', sessionId: 's1' });
-    controller.applyProjectColorToCurrentWindow();
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(events.filter(item => item === 'refresh').length, 2);
-    assert.ok(events.some(item => Array.isArray(item) && item[0] === 'message' && item[1].sessionId === 's1'));
-    assert.ok(events.some(item => Array.isArray(item) && item[0] === 'color' && item[1] === 'project'));
+    await retry.controller.revealSidebarSteward();
+    assert.deepEqual(attempts, [
+        'workbench.view.extension.project-steward', 'fixture.view.focus', 'fixture.view.focus',
+    ]);
+
+    const revealThrows = runtimeHarness({ executeCommand: () => { throw new Error('reveal failed'); } });
+    await assert.doesNotReject(revealThrows.controller.revealSidebarSteward());
 });
 
-test('WEBVIEW-DASHBOARD-COMMAND-REGISTRATION-001 registers every public command and preserves its callback', async () => {
+test('RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001 publishes exact attention, batch, terminal, mutation, and color effects', async () => {
+    const harness = runtimeHarness();
+    const attention = [{ projectKey: 'key', count: 2 }];
+    const batch = { type: 'ai-session-batch-archive-completed', archived: 2 };
+    harness.controller.postAttentionProjectsUpdated(attention);
+    harness.controller.postBatchArchiveCompletion(batch);
+    harness.controller.postActiveAiSessionTerminalChanged({ provider: 'codex', sessionId: 's1' });
+    harness.controller.postActiveAiSessionTerminalChanged(null);
+    harness.controller.applyProjectColorToCurrentWindow();
+    harness.controller.applyProjectColorToCurrentWindow({ id: 'save', showSaveAction: true });
+    harness.controller.refreshAfterMutation('saved');
+    await flushAsync();
+
+    assert.deepEqual(harness.events, [
+        ['message', { type: 'ai-session-attention-projects-updated', projects: attention }],
+        ['message', batch],
+        ['message', { type: 'active-ai-session-terminal-changed', provider: 'codex', sessionId: 's1' }],
+        ['message', { type: 'active-ai-session-terminal-changed', provider: null, sessionId: null }],
+        ['color', 'project'],
+        ['color', null],
+        ['color', 'project'],
+        ['diagnostic', { event: 'full-refresh', reason: 'saved' }],
+        ['refresh'],
+        ['publish'],
+    ]);
+
+    harness.setVisible(false);
+    harness.controller.postAttentionProjectsUpdated([{ projectKey: 'hidden' }]);
+    await flushAsync();
+    assert.equal(harness.events.some(entry => entry[0] === 'message'
+        && entry[1]?.projects?.[0]?.projectKey === 'hidden'), false);
+});
+
+test('RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001 maps rejected promises and synchronous throws to stable diagnostics', async () => {
+    for (const mode of ['reject', 'throw']) {
+        const errors = [];
+        const fail = () => {
+            const error = new Error(`${mode} failure`);
+            if (mode === 'throw') throw error;
+            return Promise.reject(error);
+        };
+        const controller = new DashboardRuntimeController({
+            isVisible: () => true, refreshProvider() {}, logDashboardDiagnostic() {},
+            executeCommand: async () => undefined, viewType: 'fixture.view', publishOpenProjects() {},
+            getOpenProjects: () => [{ id: 'project' }], syncProjectColorToCurrentWindow: fail,
+            postMessage: fail,
+            logError: (message, error) => errors.push([message, error.message]),
+        });
+        controller.postAttentionProjectsUpdated([]);
+        controller.postBatchArchiveCompletion({ type: 'batch' });
+        controller.postActiveAiSessionTerminalChanged(null);
+        controller.applyProjectColorToCurrentWindow();
+        await flushAsync();
+        assert.deepEqual(errors, [
+            ['Failed to post AI session attention projects.', `${mode} failure`],
+            ['Failed to post batch AI session archive completion.', `${mode} failure`],
+            ['Failed to post the active AI session terminal.', `${mode} failure`],
+            ['Failed to apply project color to current window.', `${mode} failure`],
+        ]);
+    }
+});
+
+const DASHBOARD_COMMANDS = [
+    'projectSteward.open', 'projectSteward.addProject', 'projectSteward.saveProject',
+    'projectSteward.removeProject', 'projectSteward.editProjects', 'projectSteward.addGroup',
+    'projectSteward.removeGroup', 'projectSteward.addProjectsFromFolder',
+    'projectSteward.addFileToActiveTerminal',
+];
+
+test('WEBVIEW-DASHBOARD-COMMAND-REGISTRATION-001 registers exact callbacks and subscriptions', async () => {
     const registered = new Map();
     const subscriptions = [];
     const calls = [];
-    const handlers = Object.fromEntries([
+    const handlerNames = [
         'open', 'addProject', 'saveProject', 'removeProject', 'editProjects', 'addGroup', 'removeGroup',
         'addProjectsFromFolder', 'addFileToActiveTerminal',
-    ].map(name => [name, () => calls.push(name)]));
+    ];
+    const handlers = Object.fromEntries(handlerNames.map(name => [name, (...args) => calls.push([name, ...args])]));
     new DashboardCommandRegistration({
-        registerCommand: (command, callback) => { registered.set(command, callback); return { command, dispose() {} }; },
-        pushSubscription: disposable => subscriptions.push(disposable), handlers,
+        registerCommand: (command, callback) => {
+            registered.set(command, callback);
+            return { command, dispose() {} };
+        },
+        pushSubscription: disposable => subscriptions.push(disposable),
+        handlers,
     }).register();
-    assert.deepEqual([...registered.keys()], [
-        'projectSteward.open', 'projectSteward.addProject', 'projectSteward.saveProject',
-        'projectSteward.removeProject', 'projectSteward.editProjects', 'projectSteward.addGroup',
-        'projectSteward.removeGroup', 'projectSteward.addProjectsFromFolder',
-        'projectSteward.addFileToActiveTerminal',
-    ]);
-    for (const callback of registered.values()) await callback();
-    assert.equal(subscriptions.length, 9);
-    assert.deepEqual(calls, Object.keys(handlers));
+
+    assert.deepEqual([...registered.keys()], DASHBOARD_COMMANDS);
+    for (const callback of registered.values()) await callback('ignored');
+    assert.deepEqual(calls, handlerNames.map(name => [name, 'ignored']));
+    assert.deepEqual(subscriptions.map(value => value.command), DASHBOARD_COMMANDS);
 });
 
-test('SESSION-ACTIVE-TERMINAL-FILE-REFERENCE-001 sends one selection-aware reference and rejects absent terminals', async () => {
+test('WEBVIEW-DASHBOARD-COMMAND-REGISTRATION-001 production activation installs the exact Dashboard public command surface', () => {
+    const environment = { ...process.env, NODE_V8_COVERAGE: '' };
+    const result = spawnSync(process.execPath, [
+        path.resolve(__dirname, '../fixtures/aiSessions/runtimeHostActivationHarness.js'), 'success',
+    ], { encoding: 'utf8', env: environment });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const activation = JSON.parse(result.stdout);
+    assert.equal(activation.failure, null);
+    assert.deepEqual(
+        activation.registeredCommands.filter(command => command.startsWith('projectSteward.')),
+        DASHBOARD_COMMANDS
+    );
+});
+
+function fileReferenceHarness({ editor, terminal, relativePath = 'src/file.ts' }) {
     const sent = [];
     const warnings = [];
-    const editor = { document: { uri: { scheme: 'file', fsPath: '/repo/src/file.ts' } }, selection: {
-        isEmpty: false, start: { line: 4 }, end: { line: 2 },
-    } };
+    let shown = 0;
+    const activeTerminal = terminal === undefined ? {
+        sendText: (value, addNewLine) => sent.push([value, addNewLine]),
+        show: () => { shown += 1; },
+    } : terminal;
     const controller = new ActiveTerminalFileReferenceController({
         getActiveTextEditor: () => editor,
-        getActiveTerminal: () => ({ sendText: (value, addNewLine) => sent.push([value, addNewLine]), show() {} }),
-        asRelativePath: uri => uri.fsPath.replace('/repo/', ''),
+        getActiveTerminal: () => activeTerminal,
+        asRelativePath: () => relativePath,
         showWarningMessage: message => warnings.push(message),
     });
-    assert.deepEqual(getPrimarySelectionLineRange(editor.selection), { startLine: 3, endLine: 5 });
+    return { controller, sent, warnings, get shown() { return shown; } };
+}
+
+test('SESSION-ACTIVE-TERMINAL-FILE-REFERENCE-001 formats local, empty, reversed, and remote saved-file references', async () => {
+    assert.equal(formatFileReference('src/file.ts', null), 'src/file.ts');
+    assert.equal(formatFileReference('src/file.ts', { startLine: 3, endLine: 3 }), 'src/file.ts:3');
     assert.equal(formatFileReference('src/file.ts', { startLine: 3, endLine: 5 }), 'src/file.ts:3-5');
-    await controller.addFileToActiveTerminal();
-    assert.deepEqual(sent, [['src/file.ts:3-5', false]]);
-    const missing = new ActiveTerminalFileReferenceController({
-        getActiveTextEditor: () => editor, getActiveTerminal: () => null,
-        asRelativePath: () => 'src/file.ts', showWarningMessage: message => warnings.push(message),
+    assert.equal(getPrimarySelectionLineRange(null), null);
+    assert.equal(getPrimarySelectionLineRange({ isEmpty: true, start: { line: 9 }, end: { line: 9 } }), null);
+    const reversed = { isEmpty: false, start: { line: 4 }, end: { line: 2 } };
+    assert.deepEqual(getPrimarySelectionLineRange(reversed), { startLine: 3, endLine: 5 });
+
+    const local = fileReferenceHarness({
+        editor: { document: { uri: { scheme: 'file', fsPath: '/repo/src/file.ts' } }, selection: reversed },
     });
-    await missing.addFileToActiveTerminal();
-    assert.deepEqual(warnings, ['No active terminal to receive the file reference.']);
+    await local.controller.addFileToActiveTerminal();
+    assert.deepEqual(local.sent, [['src/file.ts:3-5', false]]);
+    assert.equal(local.shown, 1);
+
+    const remote = fileReferenceHarness({
+        editor: {
+            document: { uri: { scheme: 'vscode-remote', path: '/work/app.ts' } },
+            selection: { isEmpty: true, start: { line: 0 }, end: { line: 0 } },
+        },
+        relativePath: 'app.ts',
+    });
+    await remote.controller.addFileToActiveTerminal();
+    assert.deepEqual(remote.sent, [['app.ts', false]]);
+});
+
+test('SESSION-ACTIVE-TERMINAL-FILE-REFERENCE-001 warns without effects for missing terminals and unsaved editors', async () => {
+    const editor = {
+        document: { uri: { scheme: 'file', fsPath: '/repo/src/file.ts' } },
+        selection: { isEmpty: true, start: { line: 0 }, end: { line: 0 } },
+    };
+    const missingTerminal = fileReferenceHarness({ editor, terminal: null });
+    await missingTerminal.controller.addFileToActiveTerminal();
+    assert.deepEqual(missingTerminal.warnings, ['No active terminal to receive the file reference.']);
+    assert.deepEqual(missingTerminal.sent, []);
+
+    const untitled = fileReferenceHarness({
+        editor: { ...editor, document: { uri: { scheme: 'untitled', path: 'Untitled-1' } } },
+    });
+    await untitled.controller.addFileToActiveTerminal();
+    assert.deepEqual(untitled.warnings, ['Open a saved file before adding it to the active terminal.']);
+    assert.deepEqual(untitled.sent, []);
 });
