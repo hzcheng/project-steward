@@ -9,7 +9,7 @@ description: Use when fixing a bug or functional regression in this repository, 
 
 Turn every confirmed regression into a CI-owned behavior before changing production code.
 
-**Core rule:** no production fix before a CI-reachable focused test has failed for the expected reason.
+**Core rule:** no production edit, including a test seam, before a CI-reachable focused test has failed for the expected reason. Before RED, name the required PR check and its `package.json` command path.
 
 **REQUIRED SUB-SKILLS:** Use `systematic-debugging`, `protecting-main-with-worktrees`, and `test-driven-development`. Before completion, use `review-fix-commit-loop` and `verification-before-completion`.
 
@@ -23,7 +23,7 @@ Turn every confirmed regression into a CI-owned behavior before changing product
    - Select an existing behavior ID or add one to `docs/testing/behavior-contracts.json`.
    - Add the ID to a focused test at the lowest stable layer.
 3. **Prove CI reachability**
-   - Trace the test file through `package.json` to an existing required PR check.
+   - Before reporting RED, trace the test file through `package.json` to an existing required PR check; state that trace before any production-edit plan.
    - A locally runnable orphan test is not CI coverage.
 4. **Verify RED**
    - Run the focused test against the unfixed implementation.
