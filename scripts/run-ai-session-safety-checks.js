@@ -6453,6 +6453,10 @@ function runBatchAiSessionWebviewChecks() {
     activeRow.setAttribute('data-session-event-id', 'attention-active-session');
     tmuxRow.setAttribute('data-ai-session-attention', '');
     tmuxRow.setAttribute('data-session-event-id', 'attention-tmux-session');
+    context.window.__projectStewardAttentionSessionEvents = {
+        'codex:active-session': ['attention-active-old', 'attention-active-new'],
+        'kimi:tmux-session': ['attention-tmux-old', 'attention-tmux-new'],
+    };
     const detachTmuxTarget = {
         getAttribute: attribute => attribute === 'data-action' ? 'detach-ai-session-terminal' : null,
         closest: selector => {
@@ -6475,14 +6479,16 @@ function runBatchAiSessionWebviewChecks() {
     }, {
         type: 'create-ai-session', projectId: 'project-a',
     }, {
-        type: 'acknowledge-ai-session-attention', eventIds: ['attention-active-session'],
+        type: 'acknowledge-ai-session-attention',
+        eventIds: ['attention-active-old', 'attention-active-new'],
     }, {
         type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'codex', sessionId: 'active-session',
     }, {
         type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'claude',
         pendingCreatedAt: '2026-07-18T08:00:00Z',
     }, {
-        type: 'acknowledge-ai-session-attention', eventIds: ['attention-tmux-session'],
+        type: 'acknowledge-ai-session-attention',
+        eventIds: ['attention-tmux-old', 'attention-tmux-new'],
     }, {
         type: 'detach-ai-session-terminal', projectId: 'project-a', provider: 'kimi',
         sessionId: 'tmux-session',
