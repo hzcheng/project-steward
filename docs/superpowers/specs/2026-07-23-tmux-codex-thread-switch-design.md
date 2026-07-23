@@ -117,8 +117,12 @@ binding only when all expected old fields still match:
 
 The new binding preserves provider, workspace, cwd, layout, locator, marker
 path, and runtime start time while replacing the session ID. The operation
-writes the new canonical known record durably and removes the old canonical
-known record under the same final-record lock.
+writes a bounded durable rebind intent before changing either canonical known
+record. Under the same final-record lock it writes the new canonical known
+record durably, removes the old canonical known record, and then removes the
+intent. Store startup and final-record enumeration recover an interrupted
+intent to the same completed state. This prevents a process interruption from
+leaving two authoritative bindings or losing the locator mapping.
 
 The operation returns one of:
 
@@ -129,12 +133,23 @@ The operation returns one of:
 On `stale` or `missing`, discovery does not project the observed replacement in
 that refresh. A later refresh re-evaluates current durable state.
 
+Tmux metadata is not rewritten during this operation. Its original session ID
+continues to prove which managed container was created and to validate the
+stable readable locator suffix. The binding store is the authority for which
+root thread currently occupies that exact locator.
+
 ### Discovery and projection
 
-During enumeration, discovery compares each managed window's durable known
-binding with the root-thread observer result. When an unambiguous replacement
-exists, discovery attempts the atomic rebind before constructing the active
-runtime snapshot.
+During enumeration, discovery first validates the managed row and locator
+against the immutable tmux metadata. It then finds at most one durable known
+binding whose provider, workspace identities, cwd, layout, and exact locator
+match the row. When present, that binding supplies the current active session
+ID and lifecycle evidence even when its session ID differs from the original
+tmux metadata.
+
+Discovery compares that durable current binding with the root-thread observer
+result. When an unambiguous replacement exists, discovery attempts the atomic
+rebind before constructing the active runtime snapshot.
 
 After a successful rebind:
 
@@ -177,10 +192,13 @@ Focused contract tests will establish:
 5. A stale or missing compare-and-swap prevents discovery from projecting the
    new identity.
 6. A successful rebind leaves exactly one known record at the same locator and
-   survives a fresh discovery instance.
-7. Hydration keeps the old session in History while the new session is Active
+   survives a fresh discovery instance whose tmux metadata still contains the
+   original session ID.
+7. Interruptions after the intent, replacement write, and old-record removal
+   each recover to exactly the replacement binding.
+8. Hydration keeps the old session in History while the new session is Active
    with `executionState: running`.
-8. Webview projection applies the configured running animation after the
+9. Webview projection applies the configured running animation after the
    switch.
 
 The focused tests will be followed by the tmux contracts, AI-session safety
