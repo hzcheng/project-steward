@@ -331,9 +331,9 @@ git commit -m "test: trace main capabilities to regression gates"
 **Interfaces:**
 - Consumes:
   - `selectPrimaryWorkspaceRoot`, `buildAiSessionDirectoryScope`
-  - `getProviderAdditionalDirectoryCapability`
+  - `preflightAiSessionDirectoryScope`, provider-specific command builders
   - `SavedWorkspaceProjectAdapter`, `PendingWorkspaceSaveStore`
-  - `classifyNavigationOutcome`
+  - `WorkspaceNavigationController`
 - Produces:
   - `SESSION-WORKSPACE-SCOPE-001`
   - `PERSIST-WORKSPACE-SAVE-001`
@@ -341,7 +341,7 @@ git commit -m "test: trace main capabilities to regression gates"
 
 - [ ] **Step 1: Write failing workspace-scope tests**
 
-Move the observable primary-root and provider-capability cases from
+Move the observable primary-root, preflight, and provider command-builder cases from
 `run-ai-session-safety-checks.js` into `tests/unit/workspaces/sessionScope.test.js`.
 Cover this precedence exactly:
 
@@ -390,18 +390,20 @@ fixture that calls the adapter twice before releasing the migration gate.
 
 - [ ] **Step 4: Write failing navigation outcome tests**
 
-Create `tests/unit/openWorkspaces/navigationOutcome.test.js` around
-`spikes/workspace-navigation/outcomeClassifier.js`. Cover the 12
-environment/workspace-kind cells and assert:
+Create `tests/unit/openWorkspaces/navigationOutcome.test.js` around the
+production `src/openWorkspaces/navigationController.ts`. Cover all five
+environment values across single-folder, saved multi-root, and untitled
+multi-root workspaces and assert:
 
-- proven exact navigation returns direct capability;
-- unsupported saved/single-folder returns native Switch Window;
-- unsupported untitled returns save-first;
-- no result substitutes a member root URI;
-- malformed probe evidence fails closed.
+- saved and single-folder workspaces pass the exact navigation URI to
+  `vscode.openFolder`;
+- command or URI parsing failure instructs the user to use native Switch Window;
+- untitled workspaces return save-first;
+- no path substitutes a member root URI;
+- stale cards refresh instead of navigating.
 
-Run the new test before adding any missing export or input validation and record
-the expected RED.
+Verify RED with a controlled expectation that the member-root URI is opened,
+then correct it to the exact workspace navigation URI and record GREEN.
 
 - [ ] **Step 5: Add behavior ownership and run focused GREEN**
 

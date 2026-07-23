@@ -2443,6 +2443,49 @@
     ]
   },
   {
+    "id": "SESSION-WORKSPACE-SCOPE-001",
+    "domain": "session",
+    "title": "Workspace session scope preserves root precedence and provider directory arguments",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/workspaces/sessionScope.test.js"
+    ],
+    "evidence": [
+      "src/workspaces/sessionScope.ts",
+      "src/aiSessions/commandController.ts",
+      "src/aiSessions/commandBuilders.ts"
+    ]
+  },
+  {
+    "id": "PERSIST-WORKSPACE-SAVE-001",
+    "domain": "persistence",
+    "title": "Workspace saves serialize after migration without mutating existing records",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/workspaces/workspaceSave.test.js"
+    ],
+    "evidence": [
+      "src/workspaces/savedWorkspaceProjectAdapter.ts",
+      "src/workspaces/pendingWorkspaceSaveStore.ts",
+      "src/dashboard/startupController.ts"
+    ]
+  },
+  {
+    "id": "OPEN-WORKSPACE-NAVIGATION-001",
+    "domain": "open-project",
+    "title": "Workspace navigation uses exact URIs and fails closed without root substitution",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/openWorkspaces/navigationOutcome.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/navigationController.ts"
+    ]
+  },
+  {
     "id": "ARCH-MAIN-CAPABILITY-COVERAGE-001",
     "domain": "architecture",
     "title": "Every main capability has reachable automated regression coverage",

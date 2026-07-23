@@ -36,7 +36,8 @@
                 "f895d42378fa3b2ab422bbf750558e045f57b533"
             ],
             "behaviors": [
-                "PROJECT-ASSIGNMENT-001"
+                "PROJECT-ASSIGNMENT-001",
+                "SESSION-WORKSPACE-SCOPE-001"
             ],
             "prGates": [
                 "test:deterministic:run"
@@ -143,7 +144,8 @@
                 "35a8eba46ff1e7b17dcbfeb020b80caaa3b62d64"
             ],
             "behaviors": [
-                "OPEN-OPEN-PROJECT-WORKSPACE-CONTROLLER-001"
+                "OPEN-OPEN-PROJECT-WORKSPACE-CONTROLLER-001",
+                "OPEN-WORKSPACE-NAVIGATION-001"
             ],
             "prGates": [
                 "test:deterministic:run"
@@ -163,7 +165,8 @@
             ],
             "behaviors": [
                 "OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001",
-                "PERSIST-DASHBOARD-MIGRATION-PUBLICATION-001"
+                "PERSIST-DASHBOARD-MIGRATION-PUBLICATION-001",
+                "PERSIST-WORKSPACE-SAVE-001"
             ],
             "prGates": [
                 "test:deterministic:run"
