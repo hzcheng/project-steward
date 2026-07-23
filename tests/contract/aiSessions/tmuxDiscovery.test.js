@@ -256,22 +256,16 @@ test('RUNTIME-TMUX-THREAD-SWITCH-001 SESSION-ALIAS-THREAD-SWITCH-001 rebinds one
         event.next.sessionId,
     ]), [['codex', 'old-root', 'codex', 'new-root']]);
 
-    const recoveredEvents = [];
     const restarted = new TmuxRuntimeDiscovery({
         client: { listWindows: async () => [row] },
         bindingStore: store,
         codexRootThreadObserver: observer,
-        onSessionRebound: (previous, next) => recoveredEvents.push({ previous, next }),
         markerIsCurrent: () => false,
         nowMs: () => 2001,
         cacheTtlMs: 0,
     });
     await restarted.refresh(true);
     assert.deepEqual(restarted.getActive().map(runtime => runtime.identity.sessionId), ['new-root']);
-    assert.deepEqual(recoveredEvents.map(event => [
-        event.previous.sessionId,
-        event.next.sessionId,
-    ]), [['old-root', 'new-root']]);
 });
 
 test('RUNTIME-TMUX-THREAD-SWITCH-001 preserves the durable projection when observation cannot commit', async () => {

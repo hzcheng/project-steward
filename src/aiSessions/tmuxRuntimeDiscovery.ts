@@ -434,13 +434,6 @@ export class TmuxRuntimeDiscovery {
                 || (parsed.createdAt ? Date.parse(parsed.createdAt) : 0);
 
             if (locatorKnown
-                && identity.provider === 'codex'
-                && identity.sessionId
-                && identity.sessionId !== locatorKnown.sessionId) {
-                this.notifySessionRebound(identity, projectedIdentity);
-            }
-
-            if (locatorKnown
                 && projectedIdentity.provider === 'codex'
                 && Number.isSafeInteger(row.panePid)
                 && row.panePid > 0
