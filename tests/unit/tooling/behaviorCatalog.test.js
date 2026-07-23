@@ -232,3 +232,118 @@ test('CATALOG-INTEGRITY-017 rejects owner symlinks that resolve outside the repo
     });
     assert.ok(errors.includes(`entry 1 owner path resolves outside repository: ${owner}`));
 });
+
+test('CATALOG-INTEGRITY-018 audits an in-repository owner symlink by its canonical legacy target', t => {
+    const root = createRoot(t);
+    const legacyOwner = 'scripts/run-ai-session-safety-checks.js';
+    const legacyPath = path.join(root, legacyOwner);
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+    fs.writeFileSync(legacyPath, '// PROJECT-PATH-001\n');
+    const owner = 'tests/unit/legacy-owner-link.test.js';
+    try {
+        fs.symlinkSync(legacyPath, path.join(root, owner));
+    } catch (error) {
+        if (error && (error.code === 'EPERM' || error.code === 'EACCES')) {
+            t.skip(`symlinks unavailable: ${error.code}`);
+            return;
+        }
+        throw error;
+    }
+
+    const errors = validateBehaviorCatalog([automatedEntry({ owners: [owner] })], {
+        repositoryRoot: root,
+    });
+    assert.ok(errors.includes(
+        `entry 1 legacy compatibility script cannot own automated behavior: ${owner}`,
+    ));
+});
+
+test('CATALOG-INTEGRITY-019 accepts an in-repository owner symlink to an ordinary ID owner', t => {
+    const root = createRoot(t);
+    const ownerTarget = path.join(root, 'tests', 'unit', 'ordinary-owner.test.js');
+    fs.writeFileSync(ownerTarget, '// PROJECT-PATH-001\n');
+    const owner = 'tests/unit/ordinary-owner-link.test.js';
+    try {
+        fs.symlinkSync(ownerTarget, path.join(root, owner));
+    } catch (error) {
+        if (error && (error.code === 'EPERM' || error.code === 'EACCES')) {
+            t.skip(`symlinks unavailable: ${error.code}`);
+            return;
+        }
+        throw error;
+    }
+
+    const errors = validateBehaviorCatalog([automatedEntry({ owners: [owner] })], {
+        repositoryRoot: root,
+    });
+    assert.deepEqual(errors, []);
+});
+
+test('CATALOG-INTEGRITY-020 rejects Win32 drive-relative owner and evidence paths', t => {
+    const root = createRoot(t);
+    for (const { field, value } of [
+        { field: 'owner', value: 'C:owner.test.js' },
+        { field: 'evidence', value: 'D:evidence.ts' },
+    ]) {
+        const overrides = field === 'owner' ? { owners: [value] } : { evidence: [value] };
+        const errors = validateBehaviorCatalog([automatedEntry(overrides)], { repositoryRoot: root });
+        assert.ok(errors.includes(
+            `entry 1 ${field} path must be repository-relative: ${value}`,
+        ));
+    }
+});
+
+test('CATALOG-INTEGRITY-021 rejects canonical paths in a repository-name prefix sibling', t => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'behavior-prefix-parent-'));
+    t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+    const root = path.join(parent, 'repository');
+    fs.mkdirSync(root);
+    const ownerPath = path.join(root, 'tests', 'unit', 'sample.test.js');
+    fs.mkdirSync(path.dirname(ownerPath), { recursive: true });
+    fs.writeFileSync(ownerPath, '// PROJECT-PATH-001\n');
+    const sibling = path.join(parent, 'repository-evil');
+    fs.mkdirSync(sibling);
+    const outsideFile = path.join(sibling, 'evidence.ts');
+    fs.writeFileSync(outsideFile, 'export const outside = true;\n');
+    const evidence = 'evidence-link.ts';
+    try {
+        fs.symlinkSync(outsideFile, path.join(root, evidence));
+    } catch (error) {
+        if (error && (error.code === 'EPERM' || error.code === 'EACCES')) {
+            t.skip(`symlinks unavailable: ${error.code}`);
+            return;
+        }
+        throw error;
+    }
+
+    const errors = validateBehaviorCatalog([automatedEntry({ evidence: [evidence] })], {
+        repositoryRoot: root,
+    });
+    assert.ok(errors.includes(`entry 1 evidence path resolves outside repository: ${evidence}`));
+});
+
+test('CATALOG-INTEGRITY-022 converts non-ENOENT inspection failures into stable errors', t => {
+    const root = createRoot(t);
+    const evidence = 'src/projects/projectPathUtils.ts';
+    const controlledPath = path.join(root, evidence);
+    const originalStatSync = fs.statSync;
+    let errors;
+    try {
+        fs.statSync = function statSyncWithControlledFailure(filePath, ...args) {
+            if (filePath === controlledPath) {
+                const error = new Error('controlled inspection denial');
+                error.code = 'EACCES';
+                throw error;
+            }
+            return originalStatSync.call(fs, filePath, ...args);
+        };
+        assert.doesNotThrow(() => {
+            errors = validateBehaviorCatalog([automatedEntry()], { repositoryRoot: root });
+        });
+    } finally {
+        fs.statSync = originalStatSync;
+    }
+    assert.ok(errors.includes(
+        `entry 1 cannot inspect evidence path ${evidence}: controlled inspection denial`,
+    ));
+});

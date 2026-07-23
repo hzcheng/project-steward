@@ -10,6 +10,7 @@ const ALLOWED_DOMAINS = new Set([
 ]);
 const ALLOWED_PRIORITIES = new Set(['P0', 'P1', 'P2']);
 const ALLOWED_STATUSES = new Set(['automated', 'scheduled', 'manual']);
+const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:/;
 const LEGACY_COMPATIBILITY_OWNERS = new Set([
     'scripts/run-ai-session-safety-checks.js',
     'scripts/run-ai-session-tmux-checks.js',
@@ -27,6 +28,7 @@ function inspectRepositoryFile(repositoryRoot, canonicalRepositoryRoot, catalogP
     const relativePath = path.relative(repositoryRoot, resolvedPath);
     if (path.isAbsolute(normalizedPath)
         || path.win32.isAbsolute(normalizedPath)
+        || WINDOWS_DRIVE_PATH_PATTERN.test(normalizedPath)
         || relativePath === '..'
         || relativePath.startsWith(`..${path.sep}`)
         || path.isAbsolute(relativePath)) {
@@ -59,7 +61,7 @@ function inspectRepositoryFile(repositoryRoot, canonicalRepositoryRoot, catalogP
     }
 
     return {
-        canonicalCatalogPath: relativePath.split(path.sep).join('/'),
+        canonicalCatalogPath: canonicalRelativePath.split(path.sep).join('/'),
         resolvedPath,
     };
 }
