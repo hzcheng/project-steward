@@ -88,8 +88,8 @@ test('RUNTIME-TMUX-CLIENT-001 parses one active window and rejects malformed, fo
     let result = {
         exitCode: 0,
         stdout: [
-            'project-session\u001fbase\u001f@1\u001f0',
-            'project-session\u001fai-codex-a\u001f@2\u001f1',
+            'project-session\u001fbase\u001f@1\u001f0\u001f4320',
+            'project-session\u001fai-codex-a\u001f@2\u001f1\u001f4321',
         ].join('\n') + '\n',
         stderr: '',
     };
@@ -104,14 +104,19 @@ test('RUNTIME-TMUX-CLIENT-001 parses one active window and rejects malformed, fo
     });
     assert.deepEqual(calls.at(-1), [
         'list-windows', '-t', 'project-session', '-F',
-        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}',
+        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}\u001f#{pane_pid}',
     ]);
 
     result = { exitCode: 0, stdout: '', stderr: '' };
     assert.equal(await client.getActiveWindow('project-session'), null);
     for (const stdout of [
-        'project-session\u001fa\u001f@1\u001f1\nproject-session\u001fb\u001f@2\u001f1\n',
-        'foreign-session\u001fa\u001f@1\u001f1\n',
+        'project-session\u001fa\u001f@1\u001f1\u001f4321\nproject-session\u001fb\u001f@2\u001f1\u001f4322\n',
+        'foreign-session\u001fa\u001f@1\u001f1\u001f4321\n',
+        'project-session\u001fa\u001f@1\u001f1\u001f0\n',
+        'project-session\u001fa\u001f@1\u001f1\u001f-1\n',
+        'project-session\u001fa\u001f@1\u001f1\u001fpid\n',
+        'project-session\u001fa\u001f@1\u001f1\u001f1.5\n',
+        'project-session\u001fa\u001f@1\u001f1\u001f2147483648\n',
         'x'.repeat(1024 * 1024 + 1),
     ]) {
         result = { exitCode: 0, stdout, stderr: '' };
@@ -168,8 +173,8 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
                 return {
                     exitCode: 0,
                     stdout: [
-                        'session-a\u001fwindow-a\u001f@12\u001f1',
-                        'session-a\u001fwindow-a\u001f@13\u001f0',
+                        'session-a\u001fwindow-a\u001f@12\u001f1\u001f4312',
+                        'session-a\u001fwindow-a\u001f@13\u001f0\u001f4313',
                     ].join('\n') + '\n',
                     stderr: '',
                 };
@@ -189,17 +194,18 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
     assert.deepEqual(windows.map(window => ({
         windowId: window.windowId,
         active: window.active,
+        panePid: window.panePid,
         provider: window.metadata.provider,
         sessionId: window.metadata.sessionId,
         marker: window.metadata.marker,
         workspaceScopeIdentity: window.metadata.workspaceScopeIdentity,
     })), [
         {
-            windowId: '@12', active: true, provider: 'codex', sessionId: 'session-id-12',
+            windowId: '@12', active: true, panePid: 4312, provider: 'codex', sessionId: 'session-id-12',
             marker: '/tmp/done-12 marker', workspaceScopeIdentity: 'scope-identity',
         },
         {
-            windowId: '@13', active: false, provider: 'kimi', sessionId: 'session-id-13',
+            windowId: '@13', active: false, panePid: 4313, provider: 'kimi', sessionId: 'session-id-13',
             marker: '/tmp/done-13 marker', workspaceScopeIdentity: 'scope-identity',
         },
     ]);

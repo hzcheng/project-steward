@@ -792,6 +792,7 @@ function makeTmuxDiscoveryRow(overrides = {}) {
         windowName: locator.windowName || 'ai-session',
         windowId: overrides.windowId || '@1',
         active: overrides.active || false,
+        panePid: overrides.panePid || 1001,
         sessionMetadata,
         windowMetadata,
         metadata: { ...sessionMetadata, ...windowMetadata },

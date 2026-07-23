@@ -1268,8 +1268,8 @@ async function runTmuxClientChecks() {
     let activeWindowResult = {
         exitCode: 0,
         stdout: [
-            'project-session\u001fbase\u001f@1\u001f0',
-            'project-session\u001fai-codex-a\u001f@2\u001f1',
+            'project-session\u001fbase\u001f@1\u001f0\u001f4320',
+            'project-session\u001fai-codex-a\u001f@2\u001f1\u001f4321',
         ].join('\n') + '\n',
         stderr: '',
     };
@@ -1288,7 +1288,7 @@ async function runTmuxClientChecks() {
     });
     assert.deepStrictEqual(activeWindowCalls.slice(-1)[0], [
         'list-windows', '-t', 'project-session', '-F',
-        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}',
+        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}\u001f#{pane_pid}',
     ]);
 
     activeWindowResult = { exitCode: 0, stdout: '', stderr: '' };
@@ -1297,8 +1297,8 @@ async function runTmuxClientChecks() {
     activeWindowResult = {
         exitCode: 0,
         stdout: [
-            'project-session\u001fa\u001f@1\u001f1',
-            'project-session\u001fb\u001f@2\u001f1',
+            'project-session\u001fa\u001f@1\u001f1\u001f4321',
+            'project-session\u001fb\u001f@2\u001f1\u001f4322',
         ].join('\n') + '\n',
         stderr: '',
     };
@@ -1307,7 +1307,7 @@ async function runTmuxClientChecks() {
 
     activeWindowResult = {
         exitCode: 0,
-        stdout: 'foreign-session\u001fa\u001f@1\u001f1\n',
+        stdout: 'foreign-session\u001fa\u001f@1\u001f1\u001f4321\n',
         stderr: '',
     };
     await assert.rejects(activeWindowClient.getActiveWindow('project-session'), error =>
@@ -1463,8 +1463,8 @@ async function runTmuxClientChecks() {
                 return {
                     exitCode: 0,
                     stdout: [
-                        'session-a\u001fwindow-a\u001f@12\u001f1',
-                        'session-a\u001fwindow-a\u001f@13\u001f0',
+                        'session-a\u001fwindow-a\u001f@12\u001f1\u001f4312',
+                        'session-a\u001fwindow-a\u001f@13\u001f0\u001f4313',
                     ].join('\n') + '\n',
                     stderr: '',
                 };
@@ -1488,6 +1488,7 @@ async function runTmuxClientChecks() {
             windowName: 'window-a',
             windowId: '@12',
             active: true,
+            panePid: 4312,
             sessionMetadata: {
                 managed: '1',
                 version: '2',
@@ -1526,6 +1527,7 @@ async function runTmuxClientChecks() {
             windowName: 'window-a',
             windowId: '@13',
             active: false,
+            panePid: 4313,
             sessionMetadata: {
                 managed: '1',
                 version: '2',

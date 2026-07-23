@@ -9,6 +9,7 @@ const COMMAND_MAX_BUFFER = 1024 * 1024;
 const FIELD_SEPARATOR = '\u001f';
 const LIST_WINDOWS_FORMAT = [
     '#{session_name}', '#{window_name}', '#{window_id}', '#{window_active}',
+    '#{pane_pid}',
 ].join(FIELD_SEPARATOR);
 const TARGET_WINDOW_FORMAT = [
     '#{session_name}', '#{window_name}', '#{window_id}',
@@ -16,6 +17,7 @@ const TARGET_WINDOW_FORMAT = [
 ].join(FIELD_SEPARATOR);
 const MAX_LIST_OUTPUT_LENGTH = COMMAND_MAX_BUFFER;
 const MAX_LIST_ROWS = 10000;
+const MAX_PID = 2147483647;
 const MAX_TARGET_FIELD_LENGTH = 512;
 const MAX_METADATA_VALUE_LENGTH = 4096;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
@@ -77,6 +79,7 @@ export interface TmuxWindowRecord {
     windowName: string;
     windowId: string;
     active: boolean;
+    panePid: number;
     sessionMetadata: Record<string, string>;
     windowMetadata: Record<string, string>;
     metadata: Record<string, string>;
@@ -652,15 +655,18 @@ function parseWindowRows(
     }
     return lines.map(line => {
         const fields = line.split(FIELD_SEPARATOR);
-        if (fields.length !== 4) {
+        if (fields.length !== 5) {
             throw new TmuxClientError(operation, 'invalid-output');
         }
-        const [sessionName, windowName, windowId, active] = fields;
+        const [sessionName, windowName, windowId, active, panePidValue] = fields;
+        const panePid = Number(panePidValue);
         if (!isTargetField(sessionName) || !isTargetField(windowName)
-            || !/^@[0-9]+$/.test(windowId) || (active !== '0' && active !== '1')) {
+            || !/^@[0-9]+$/.test(windowId) || (active !== '0' && active !== '1')
+            || !/^[1-9][0-9]{0,9}$/.test(panePidValue)
+            || !Number.isSafeInteger(panePid) || panePid > MAX_PID) {
             throw new TmuxClientError(operation, 'invalid-output');
         }
-        return { sessionName, windowName, windowId, active: active === '1' };
+        return { sessionName, windowName, windowId, active: active === '1', panePid };
     });
 }
 
