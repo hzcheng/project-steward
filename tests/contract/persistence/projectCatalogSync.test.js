@@ -109,7 +109,14 @@ function loadProjectCatalogSyncService() {
     return require('../../../out/services/projectCatalogSyncService').ProjectCatalogSyncService;
 }
 
-function makeSyncPersistenceHarness({ legacyGroups, syncData = null, localState = null } = {}) {
+function makeSyncPersistenceHarness({
+    legacyGroups,
+    syncData = null,
+    localState = null,
+    failLocal = null,
+    failSync = null,
+    failLegacy = null,
+} = {}) {
     const values = {
         legacyGroups: clone(legacyGroups || makeCatalogGroups()),
         syncData: clone(syncData),
@@ -118,28 +125,36 @@ function makeSyncPersistenceHarness({ legacyGroups, syncData = null, localState 
     const writes = [];
     const conflicts = [];
     const diagnostics = [];
+    const failures = {
+        local: failLocal,
+        sync: failSync,
+        legacy: failLegacy,
+    };
     const ProjectCatalogSyncService = loadProjectCatalogSyncService();
     const service = new ProjectCatalogSyncService({
         getSyncData: () => clone(values.syncData),
         updateSyncData: async value => {
             writes.push('settings:projectSyncData');
+            if (failures.sync) throw failures.sync;
             values.syncData = clone(value);
         },
         getLegacyGroups: () => clone(values.legacyGroups),
         updateLegacyGroups: async groups => {
             writes.push('settings:projectData');
+            if (failures.legacy) throw failures.legacy;
             values.legacyGroups = clone(groups);
         },
         getLocalState: () => clone(values.localState),
         updateLocalState: async value => {
             writes.push('globalState:projectCatalogSyncLocal.v1');
+            if (failures.local) throw failures.local;
             values.localState = clone(value);
         },
         createActorId: () => 'actor-local',
         onDiagnostic: event => diagnostics.push(clone(event)),
         onConflict: projectIds => conflicts.push([...projectIds]),
     });
-    return { conflicts, diagnostics, service, values, writes };
+    return { conflicts, diagnostics, failures, service, values, writes };
 }
 
 test('PROJECT-CATALOG-SYNC-CONFLICT-001 preserves a project when a stale client submits an older full snapshot', async () => {
@@ -371,5 +386,171 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 persistence reads merged shadow state be
         'project-build-your-own-x',
         'project-existing',
     ]);
+    assert.deepEqual(harness.writes, []);
+});
+
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 hardening repairs malformed sync data without logging catalog content', async () => {
+    const {
+        applyProjectCatalogSnapshot,
+        migrateLegacyProjectCatalog,
+    } = loadProjectCatalogSyncModel();
+    const base = migrateLegacyProjectCatalog(makeCatalogGroups(), 'actor-a');
+    const secretProject = {
+        id: 'project-secret',
+        name: 'Secret',
+        description: 'private project description',
+        path: '/work/secret',
+        color: '#123456',
+    };
+    const recovered = applyProjectCatalogSnapshot(
+        base,
+        makeCatalogGroups([secretProject]),
+        'actor-b'
+    );
+    const harness = makeSyncPersistenceHarness({
+        syncData: {
+            schemaVersion: 1,
+            malformed: 'private project description',
+        },
+        localState: {
+            schemaVersion: 1,
+            actorId: 'actor-b',
+            document: recovered,
+        },
+    });
+
+    await harness.service.reconcile();
+
+    assert.deepEqual(projectIds(harness.service.getGroups()), [
+        'project-existing',
+        'project-secret',
+    ]);
+    assert.equal(
+        harness.diagnostics.some(event =>
+            event.event === 'project-catalog-sync-invalid-source'
+            && event.source === 'projectSyncData'),
+        true
+    );
+    assert.equal(JSON.stringify(harness.diagnostics).includes('private project description'), false);
+});
+
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 hardening imports a legacy-client addition without accepting legacy omissions', async () => {
+    const {
+        materializeProjectCatalog,
+        migrateLegacyProjectCatalog,
+    } = loadProjectCatalogSyncModel();
+    const baseline = makeCatalogGroups();
+    const baseDocument = migrateLegacyProjectCatalog(baseline, 'actor-a');
+    const legacyAddition = {
+        id: 'project-legacy-client',
+        name: 'Legacy client',
+        path: '/work/legacy-client',
+        color: '#654321',
+    };
+    const harness = makeSyncPersistenceHarness({
+        legacyGroups: makeCatalogGroups([legacyAddition]),
+        syncData: baseDocument,
+        localState: {
+            schemaVersion: 1,
+            actorId: 'actor-a',
+            document: baseDocument,
+            legacyProjection: baseline,
+        },
+    });
+
+    await harness.service.reconcile();
+
+    assert.deepEqual(projectIds(harness.service.getGroups()), [
+        'project-existing',
+        'project-legacy-client',
+    ]);
+    assert.deepEqual(projectIds(materializeProjectCatalog(harness.values.syncData)), [
+        'project-existing',
+        'project-legacy-client',
+    ]);
+});
+
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 hardening aborts before settings when shadow fails and retries later settings failures', async () => {
+    const addedProject = {
+        id: 'project-retry',
+        name: 'Retry',
+        path: '/work/retry',
+        color: '#abcdef',
+    };
+    const shadowError = new Error('shadow unavailable');
+    const shadowFailure = makeSyncPersistenceHarness({ failLocal: shadowError });
+    await assert.rejects(
+        shadowFailure.service.saveGroups(makeCatalogGroups([addedProject])),
+        shadowError
+    );
+    assert.deepEqual(shadowFailure.writes, ['globalState:projectCatalogSyncLocal.v1']);
+
+    const syncError = new Error('sync unavailable');
+    const retry = makeSyncPersistenceHarness({ failSync: syncError });
+    await assert.rejects(
+        retry.service.saveGroups(makeCatalogGroups([addedProject])),
+        syncError
+    );
+    assert.deepEqual(retry.writes, [
+        'globalState:projectCatalogSyncLocal.v1',
+        'settings:projectSyncData',
+    ]);
+    retry.failures.sync = null;
+    retry.writes.length = 0;
+
+    await retry.service.reconcile();
+
+    assert.deepEqual(projectIds(retry.service.getGroups()), [
+        'project-existing',
+        'project-retry',
+    ]);
+    assert.deepEqual(retry.writes, [
+        'settings:projectSyncData',
+        'settings:projectData',
+        'globalState:projectCatalogSyncLocal.v1',
+    ]);
+    retry.writes.length = 0;
+    await retry.service.reconcile();
+    assert.deepEqual(retry.writes, []);
+});
+
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 hardening confirms the legacy baseline only after its projection succeeds', async () => {
+    const addedProject = {
+        id: 'project-projection-retry',
+        name: 'Projection retry',
+        path: '/work/projection-retry',
+        color: '#fedcba',
+    };
+    const projectionError = new Error('legacy projection unavailable');
+    const harness = makeSyncPersistenceHarness({ failLegacy: projectionError });
+
+    await assert.rejects(
+        harness.service.saveGroups(makeCatalogGroups([addedProject])),
+        projectionError
+    );
+    assert.deepEqual(harness.writes, [
+        'globalState:projectCatalogSyncLocal.v1',
+        'settings:projectSyncData',
+        'settings:projectData',
+    ]);
+    assert.deepEqual(
+        projectIds(harness.values.localState.legacyProjection),
+        ['project-existing']
+    );
+
+    harness.failures.legacy = null;
+    harness.writes.length = 0;
+    await harness.service.reconcile();
+
+    assert.deepEqual(harness.writes, [
+        'settings:projectData',
+        'globalState:projectCatalogSyncLocal.v1',
+    ]);
+    assert.deepEqual(
+        projectIds(harness.values.localState.legacyProjection),
+        ['project-existing', 'project-projection-retry']
+    );
+    harness.writes.length = 0;
+    await harness.service.reconcile();
     assert.deepEqual(harness.writes, []);
 });
