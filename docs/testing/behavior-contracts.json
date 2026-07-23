@@ -491,7 +491,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/aiSessions/archiveAndHydration.test.js"
+      "tests/contract/aiSessions/projectHydrationPromotion.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
