@@ -2,7 +2,7 @@
 
 ## Scope and revision
 
-The original full verification was performed on 2026-07-23 against source commit `6406f090fe2cdb6fad4a545dba81708dae0a11ea` on `feat/refactor-and-ci`. A later follow-up on this branch adds the scheduled real Extension Host smoke, its exact test dependency, contract, and documentation; the original command table below remains evidence for the earlier verified revision and does not claim that the new macOS scenario has already run in GitHub Actions.
+The final local verification was performed on 2026-07-23 against source commit `a634c618dcab5329e20959a5340fa593acd71d6c` on `feat/refactor-and-ci`. This revision includes the scheduled real Extension Host smoke, exact test dependency, lifecycle contract, catalog path hardening, migrated behavior owners, tmux early-failure cleanup, and the generated-coverage ignore rule. The command results below do not claim that the new macOS scenario has already run in GitHub Actions.
 
 Environment: Linux, Node.js 22.12.0, npm 10.9.0, and tmux 3.2a. The test process used isolated temporary provider roots. This report intentionally omits local absolute paths, provider prompts, session content, and temporary resource names.
 
@@ -12,17 +12,17 @@ All commands below exited 0. Durations are wall-clock measurements from this env
 
 | Command | Wall time | Result |
 | --- | ---: | --- |
-| `npm ci` | 2.89 s | PASS; 578 locked packages installed |
-| `npm run test:ci:linux` | 32.57 s | PASS; below the five-minute Linux main-gate target |
-| `npm run test:tmux:smoke` | 8.96 s | PASS; isolated real-tmux server cleaned by the harness |
-| `npm run test:release-packaging` | 0.92 s | PASS |
-| `npm run test:architecture-baseline` | 0.89 s | PASS |
-| `git diff --check` | 0.78 s | PASS |
+| `npm ci` | 3.10 s | PASS; 608 locked packages installed |
+| `npm run test:ci:linux` | 35.6 s | PASS; below the five-minute Linux main-gate target |
+| `npm run test:tmux:smoke` | 4.54 s | PASS; isolated real-tmux server cleaned by the harness |
+| `npm run test:release-packaging` | 0.98 s | PASS |
+| `npm run test:architecture-baseline` | 0.94 s | PASS |
+| `git diff --check` | 0.82 s | PASS; generated `coverage/` output is ignored |
 | `npm run test:behavior-contracts` | 1.06 s | PASS |
 
 The Linux gate covered TypeScript compilation for both extensions, behavior-catalog validation, the TSLint warning ratchet, deterministic unit/contract/integration tests, compatibility safety and Dashboard checks, architecture baseline and guards, release notes and package checks, the production bundle, and the coverage ratchet.
 
-An additional isolation audit ran `test:deterministic:run`, `test:safety:run`, and `test:dashboard:run` with fresh empty Codex, Kimi, and Claude provider roots. All three commands exited 0 (4.78 s, 7.42 s, and 0.17 s). The captured output contained none of the audited home/repository-parent markers or prompt/session canaries, and the temporary root was removed. This establishes output and fixture isolation for these suites; it does not claim that external remote environments were exercised.
+An additional isolation audit ran `test:deterministic:run`, `test:safety:run`, and `test:dashboard:run` with fresh empty Codex, Kimi, and Claude provider roots. All three commands exited 0 (6.63 s, 7.32 s, and 0.18 s). The captured output contained none of the audited home/repository-parent markers or prompt/session canaries, and the empty temporary root was removed. This establishes output and fixture isolation for these suites; it does not claim that external remote environments were exercised.
 
 ## Behavior and quality baselines
 
@@ -40,10 +40,10 @@ The TSLint baseline contains 100 existing warnings across 8 files and 13 file/ru
 
 | Coverage | Baseline | Fresh Linux result |
 | --- | ---: | ---: |
-| Lines | 77.00% | 77.41% |
-| Branches | 68.59% | 69.21% |
-| Functions | 74.88% | 75.71% |
-| Statements | 77.00% | 77.41% |
+| Lines | 77.00% | 79.06% |
+| Branches | 68.59% | 73.56% |
+| Functions | 74.88% | 78.86% |
+| Statements | 77.00% | 79.06% |
 
 The fresh result meets or exceeds every stored coverage baseline. Behavior IDs remain the semantic ownership mechanism; coverage percentages are a regression ratchet, not a substitute for behavioral assertions.
 
