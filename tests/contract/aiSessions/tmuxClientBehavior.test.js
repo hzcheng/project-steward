@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
 const test = require('node:test');
 const { TmuxClient, TmuxClientError } = require('../../../out/aiSessions/tmuxClient');
 const { TMUX_METADATA_OPTIONS } = require('../../../out/aiSessions/tmuxLayout');
@@ -17,6 +18,12 @@ function availabilityResult(args) {
         return { exitCode: 0, stdout: REQUIRED_COMMANDS.map(name => `${name} [-flags]`).join('\n'), stderr: '' };
     }
     return null;
+}
+
+function encodedMetadata(value) {
+    const payload = Buffer.from(value, 'utf8').toString('base64url');
+    const checksum = createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 16);
+    return `psb64v1.${payload}.${checksum}`;
 }
 
 test('RUNTIME-TMUX-CLIENT-001 caches availability and sends exact argv without shell interpolation', async () => {
@@ -245,10 +252,11 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
     });
     await client.clearPendingMetadata({ layout: 'session', sessionName: 'session-a' });
     assert.ok(calls.some(call => JSON.stringify(call.args) === JSON.stringify([
-        'set-option', '-t', 'session-a', '@project-steward-managed', '1',
+        'set-option', '-t', 'session-a', '@project-steward-managed', encodedMetadata('1'),
     ])));
     assert.ok(calls.some(call => JSON.stringify(call.args) === JSON.stringify([
-        'set-option', '-w', '-t', 'session-a:window-a', '@project-steward-session-id', 'session-id',
+        'set-option', '-w', '-t', 'session-a:window-a',
+        '@project-steward-session-id', encodedMetadata('session-id'),
     ])));
     assert.deepEqual(calls.slice(-5).map(call => call.args), [
         ['set-option', '-w', '-t', 'session-a:window-a', 'automatic-rename', 'off'],
@@ -340,6 +348,57 @@ test('RUNTIME-TMUX-CLIENT-001 fails closed on missing, ambiguous, or malformed a
         }
         return true;
     });
+});
+
+test('RUNTIME-TMUX-CLIENT-001 preserves metadata that tmux 3.4 would escape', async () => {
+    const raw = {
+        managed: '1',
+        cwd: "/work/$dollar ; 'quoted'",
+    };
+    const calls = [];
+    let corruptTransport = false;
+    const client = new TmuxClient('/private/tmux', {
+        run: async (_file, args) => {
+            calls.push(args);
+            const available = availabilityResult(args);
+            if (available) return available;
+            if (args[0] === 'show-options') {
+                const option = args.at(-1);
+                const key = Object.keys(TMUX_METADATA_OPTIONS)
+                    .find(name => TMUX_METADATA_OPTIONS[name] === option);
+                const value = key && raw[key];
+                return {
+                    exitCode: 0,
+                    stdout: value === undefined
+                        ? ''
+                        : `${corruptTransport && key === 'cwd'
+                            ? 'psb64v1.invalid.deadbeefdeadbeef'
+                            : encodedMetadata(value)}\n`,
+                    stderr: '',
+                };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    });
+
+    assert.deepEqual(await client.getSessionOptions('session-a'), raw);
+    await client.setWindowOptions('session-a', 'window-a', raw);
+    const writes = calls.filter(args => args[0] === 'set-option');
+    assert.deepEqual(writes, [
+        [
+            'set-option', '-w', '-t', 'session-a:window-a',
+            '@project-steward-managed', encodedMetadata(raw.managed),
+        ],
+        [
+            'set-option', '-w', '-t', 'session-a:window-a',
+            '@project-steward-cwd', encodedMetadata(raw.cwd),
+        ],
+    ]);
+    corruptTransport = true;
+    await assert.rejects(client.getSessionOptions('session-a'), error =>
+        error instanceof TmuxClientError
+        && error.operation === 'get-session-options'
+        && error.category === 'invalid-output');
 });
 
 test('RUNTIME-TMUX-FOCUS-TARGET-001 reads one exact atomic target snapshot and fails closed', async () => {

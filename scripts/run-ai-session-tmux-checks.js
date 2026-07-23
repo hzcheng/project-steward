@@ -23,6 +23,13 @@ const tmuxBackendModule = require('../out/aiSessions/tmuxRuntimeBackend');
 const WorkspacePendingSessionPromotionController = require(
     '../out/workspaces/pendingSessionPromotionController'
 ).WorkspacePendingSessionPromotionController;
+
+function encodeExpectedTmuxMetadata(value) {
+    const payload = Buffer.from(value, 'utf8').toString('base64url');
+    const checksum = crypto.createHash('sha256').update(value, 'utf8')
+        .digest('hex').slice(0, 16);
+    return `psb64v1.${payload}.${checksum}`;
+}
 const CreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
 const ResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const TerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
@@ -1595,10 +1602,12 @@ async function runTmuxClientChecks() {
         layout: 'session', sessionName: 'session-a', windowName: 'readable-window',
     });
     assert.ok(metadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
-        'set-option', '-t', 'session-a', '@project-steward-managed', '1',
+        'set-option', '-t', 'session-a', '@project-steward-managed',
+        encodeExpectedTmuxMetadata('1'),
     ])));
     assert.ok(metadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
-        'set-option', '-w', '-t', 'session-a:window-a', '@project-steward-session-id', 'session-id',
+        'set-option', '-w', '-t', 'session-a:window-a',
+        '@project-steward-session-id', encodeExpectedTmuxMetadata('session-id'),
     ])));
     assert.deepStrictEqual(metadataCalls.slice(-6).map(call => call.args), [
         ['set-option', '-w', '-t', 'session-a:window-a', 'automatic-rename', 'off'],

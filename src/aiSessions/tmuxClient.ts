@@ -1,6 +1,7 @@
 'use strict';
 
 import { execFile } from 'child_process';
+import { createHash } from 'crypto';
 import type { AiSessionTmuxLocator } from './runtimeTypes';
 import { TMUX_METADATA_OPTIONS } from './tmuxLayout';
 
@@ -21,7 +22,9 @@ const MAX_LIST_OUTPUT_LENGTH = COMMAND_MAX_BUFFER;
 const MAX_LIST_ROWS = 10000;
 const MAX_PID = 2147483647;
 const MAX_TARGET_FIELD_LENGTH = 512;
-const MAX_METADATA_VALUE_LENGTH = 4096;
+const MAX_ENCODED_METADATA_VALUE_LENGTH = 8192;
+const METADATA_ENCODING_PREFIX = 'psb64v1.';
+const METADATA_CHECKSUM_LENGTH = 16;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 const REQUIRED_COMMANDS = [
     'new-session',
@@ -380,7 +383,8 @@ export class TmuxClient {
         await this.requireAvailable();
         for (const [key, value] of entries) {
             await this.runResultChecked('set-session-options', [
-                'set-option', '-t', sessionName, TMUX_METADATA_OPTIONS[key], value,
+                'set-option', '-t', sessionName, TMUX_METADATA_OPTIONS[key],
+                encodeMetadataValue(value),
             ]);
         }
     }
@@ -395,7 +399,8 @@ export class TmuxClient {
         const target = windowTarget(sessionName, windowName);
         for (const [key, value] of entries) {
             await this.runResultChecked('set-window-options', [
-                'set-option', '-w', '-t', target, TMUX_METADATA_OPTIONS[key], value,
+                'set-option', '-w', '-t', target, TMUX_METADATA_OPTIONS[key],
+                encodeMetadataValue(value),
             ]);
         }
     }
@@ -478,7 +483,10 @@ export class TmuxClient {
                 throw resultError(operation, result);
             }
             const value = parseMetadataOptionValue(result.stdout, operation);
-            return [key, value] as const;
+            return [
+                key,
+                value === null ? null : decodeMetadataValue(value, key, operation),
+            ] as const;
         }));
         const values: Record<string, string> = {};
         for (const [key, value] of entries) {
@@ -729,7 +737,8 @@ function parseMetadataOptionValue(stdout: string, operation: TmuxOperation): str
         return null;
     }
     const value = stdout.endsWith('\n') ? stdout.slice(0, -1) : stdout;
-    if (!value || value.length > MAX_METADATA_VALUE_LENGTH || CONTROL_CHARACTERS.test(value)) {
+    if (!value || value.length > MAX_ENCODED_METADATA_VALUE_LENGTH
+        || CONTROL_CHARACTERS.test(value)) {
         throw new TmuxClientError(operation, 'invalid-output');
     }
     return value;
@@ -758,17 +767,75 @@ function parseTargetWindow(stdout: string): TmuxTargetWindowRecord {
         if (!metadataValue) {
             continue;
         }
-        if (metadataValue.length > metadataValueLimit(keys[index])
-            || CONTROL_CHARACTERS.test(metadataValue)) {
-            throw new TmuxClientError('get-target-window', 'invalid-output');
-        }
-        metadata[keys[index]] = metadataValue;
+        metadata[keys[index]] = decodeMetadataValue(
+            metadataValue, keys[index], 'get-target-window'
+        );
     }
     return { sessionName, windowName, windowId, metadata };
 }
 
 function metadataOptionKeys(): MetadataOptionKey[] {
     return Object.keys(TMUX_METADATA_OPTIONS) as MetadataOptionKey[];
+}
+
+function encodeMetadataValue(value: string): string {
+    const payload = toBase64Url(Buffer.from(value, 'utf8'));
+    return `${METADATA_ENCODING_PREFIX}${payload}.${metadataChecksum(value)}`;
+}
+
+function decodeMetadataValue(
+    value: string,
+    key: MetadataOptionKey,
+    operation: TmuxOperation
+): string {
+    let decoded = value;
+    if (value.startsWith(METADATA_ENCODING_PREFIX)) {
+        const encoded = value.slice(METADATA_ENCODING_PREFIX.length);
+        const separatorIndex = encoded.lastIndexOf('.');
+        if (separatorIndex <= 0
+            || encoded.length - separatorIndex - 1 !== METADATA_CHECKSUM_LENGTH) {
+            throw new TmuxClientError(operation, 'invalid-output');
+        }
+        const payload = encoded.slice(0, separatorIndex);
+        const checksum = encoded.slice(separatorIndex + 1);
+        if (!/^[A-Za-z0-9_-]+$/.test(payload) || !/^[0-9a-f]{16}$/.test(checksum)) {
+            throw new TmuxClientError(operation, 'invalid-output');
+        }
+        try {
+            decoded = fromBase64Url(payload).toString('utf8');
+        } catch (_error) {
+            throw new TmuxClientError(operation, 'invalid-output');
+        }
+        if (toBase64Url(Buffer.from(decoded, 'utf8')) !== payload
+            || metadataChecksum(decoded) !== checksum) {
+            throw new TmuxClientError(operation, 'invalid-output');
+        }
+    }
+    if (!decoded || decoded.length > metadataValueLimit(key)
+        || CONTROL_CHARACTERS.test(decoded)) {
+        throw new TmuxClientError(operation, 'invalid-output');
+    }
+    return decoded;
+}
+
+function metadataChecksum(value: string): string {
+    return createHash('sha256').update(value, 'utf8').digest('hex')
+        .slice(0, METADATA_CHECKSUM_LENGTH);
+}
+
+function toBase64Url(value: Buffer): string {
+    return value.toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+}
+
+function fromBase64Url(value: string): Buffer {
+    const padding = (4 - value.length % 4) % 4;
+    return Buffer.from(
+        value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat(padding),
+        'base64'
+    );
 }
 
 function validateMetadataEntries(values: Record<string, string>): Array<[MetadataOptionKey, string]> {
