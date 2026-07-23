@@ -280,6 +280,21 @@ function createSyntheticTmuxStore(initial = {}) {
         listKnown: async () => [...known.values()].map(cloneBinding),
         getKnown: async (provider, sessionId) => cloneBinding(known.get(`${provider}:${sessionId}`) || null),
         setKnown: async record => { known.set(`${record.provider}:${record.sessionId}`, cloneBinding(record)); },
+        rebindKnown: async (expected, nextSessionId) => {
+            const key = `${expected.provider}:${expected.sessionId}`;
+            const current = known.get(key);
+            if (!current) return 'missing';
+            if (JSON.stringify(current) !== JSON.stringify(expected)
+                || known.has(`${expected.provider}:${nextSessionId}`)) {
+                return 'stale';
+            }
+            known.delete(key);
+            known.set(`${expected.provider}:${nextSessionId}`, cloneBinding({
+                ...expected,
+                sessionId: nextSessionId,
+            }));
+            return 'rebound';
+        },
         removeKnown: async (provider, sessionId) => { known.delete(`${provider}:${sessionId}`); },
         listInactive: async () => [...inactive.values()].map(cloneBinding),
         setInactive: async record => { inactive.set(`${record.provider}:${record.sessionId}`, cloneBinding(record)); },

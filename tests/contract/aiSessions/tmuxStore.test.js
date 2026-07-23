@@ -1,6 +1,9 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const {
     createRuntimeFilesystemFixture,
@@ -129,3 +132,127 @@ test('RUNTIME-TMUX-STORE-001 rejects stale transition and acknowledgement races'
     assert.equal(await first.acknowledgeInactive(oldRun), 'stale');
     assert.deepEqual(await second.getInactive('codex', 'ack-race'), newRun);
 });
+
+test('RUNTIME-TMUX-THREAD-SWITCH-001 atomically rebinds a known runtime to one replacement session', async t => {
+    const filesystem = createRuntimeFilesystemFixture(t, 'project-steward-tmux-rebind-');
+    const store = new TmuxRuntimeBindingStore(filesystem.root, () => NOW);
+    const oldBinding = makeTmuxKnownBinding('old-root', { lastSeenAtMs: NOW - 10 });
+    await store.setKnown(oldBinding);
+
+    assert.equal(await store.rebindKnown(oldBinding, 'new-root'), 'rebound');
+    assert.equal(await store.getKnown('codex', 'old-root'), null);
+    assert.deepEqual(await store.getKnown('codex', 'new-root'), {
+        ...oldBinding,
+        sessionId: 'new-root',
+    });
+
+    const restarted = new TmuxRuntimeBindingStore(filesystem.root, () => NOW);
+    assert.deepEqual(await restarted.listKnown(), [{
+        ...oldBinding,
+        sessionId: 'new-root',
+    }]);
+    assert.ok((await require('node:fs').promises.readdir(filesystem.root))
+        .every(name => !name.endsWith('.tmp') && !name.startsWith('rebind-')));
+});
+
+test('RUNTIME-TMUX-THREAD-SWITCH-001 rejects stale, missing, invalid, and occupied rebind targets', async t => {
+    const filesystem = createRuntimeFilesystemFixture(t, 'project-steward-tmux-rebind-reject-');
+    const store = new TmuxRuntimeBindingStore(filesystem.root, () => NOW);
+    const expected = makeTmuxKnownBinding('old-root', { lastSeenAtMs: NOW - 20 });
+    const current = makeTmuxKnownBinding('old-root', { lastSeenAtMs: NOW - 10 });
+    await store.setKnown(current);
+
+    assert.equal(await store.rebindKnown(expected, 'new-root'), 'stale');
+    assert.equal(await store.rebindKnown(
+        makeTmuxKnownBinding('missing-root', { lastSeenAtMs: NOW - 10 }),
+        'new-root'
+    ), 'missing');
+    assert.equal(await store.rebindKnown(current, 'bad\nroot'), 'stale');
+
+    const occupied = makeTmuxKnownBinding('occupied', { lastSeenAtMs: NOW - 5 });
+    await store.setKnown(occupied);
+    assert.equal(await store.rebindKnown(current, occupied.sessionId), 'stale');
+    assert.deepEqual(await store.getKnown('codex', current.sessionId), current);
+    assert.deepEqual(await store.getKnown('codex', occupied.sessionId), occupied);
+});
+
+test('RUNTIME-TMUX-THREAD-SWITCH-001 serializes competing known-runtime rebinds', async t => {
+    const filesystem = createRuntimeFilesystemFixture(t, 'project-steward-tmux-rebind-race-');
+    const records = filesystem.resolve('records');
+    let lockQueue = Promise.resolve();
+    const withLock = operation => {
+        const result = lockQueue.then(operation);
+        lockQueue = result.then(() => undefined, () => undefined);
+        return result;
+    };
+    const first = new TmuxRuntimeBindingStore(records, () => NOW, withLock);
+    const second = new TmuxRuntimeBindingStore(records, () => NOW, withLock);
+    const expected = makeTmuxKnownBinding('old-root', { lastSeenAtMs: NOW - 10 });
+    await first.setKnown(expected);
+
+    const results = await Promise.all([
+        first.rebindKnown(expected, 'new-root-a'),
+        second.rebindKnown(expected, 'new-root-b'),
+    ]);
+    assert.equal(results.filter(result => result === 'rebound').length, 1);
+    assert.equal((await first.listKnown()).length, 1);
+    assert.notEqual((await first.listKnown())[0].sessionId, 'old-root');
+});
+
+test('RUNTIME-TMUX-THREAD-SWITCH-001 recovers every durable rebind interruption stage', async t => {
+    for (const stage of ['intent-only', 'replacement-written', 'old-removed']) {
+        const filesystem = createRuntimeFilesystemFixture(
+            t, `project-steward-tmux-rebind-recovery-${stage}-`
+        );
+        const expected = makeTmuxKnownBinding('old-root', { lastSeenAtMs: NOW - 10 });
+        const replacement = { ...expected, sessionId: 'new-root' };
+        const intent = {
+            version: 1,
+            state: 'rebind-known',
+            expected,
+            replacement,
+            recordedAtMs: NOW,
+        };
+        fs.mkdirSync(filesystem.root, { recursive: true });
+        if (stage !== 'old-removed') {
+            fs.writeFileSync(
+                path.join(filesystem.root, recordFilename(
+                    'known', expected.provider, expected.workspaceScopeIdentity, expected.sessionId
+                )),
+                JSON.stringify(expected)
+            );
+        }
+        if (stage !== 'intent-only') {
+            fs.writeFileSync(
+                path.join(filesystem.root, recordFilename(
+                    'known', replacement.provider,
+                    replacement.workspaceScopeIdentity, replacement.sessionId
+                )),
+                JSON.stringify(replacement)
+            );
+        }
+        fs.writeFileSync(
+            path.join(filesystem.root, recordFilename(
+                'rebind', expected.provider,
+                expected.workspaceScopeIdentity, JSON.stringify(expected.locator)
+            )),
+            JSON.stringify(intent)
+        );
+
+        const restarted = new TmuxRuntimeBindingStore(filesystem.root, () => NOW);
+        assert.deepEqual(await restarted.listKnown(), [replacement], stage);
+        assert.deepEqual(
+            (await fs.promises.readdir(filesystem.root)).filter(name =>
+                name.startsWith('rebind-') || name.endsWith('.tmp')),
+            [],
+            stage
+        );
+    }
+});
+
+function recordFilename(kind, ...identity) {
+    const digest = createHash('sha256')
+        .update(JSON.stringify([2, kind, ...identity]), 'utf8')
+        .digest('hex');
+    return `${kind}-${digest}.json`;
+}
