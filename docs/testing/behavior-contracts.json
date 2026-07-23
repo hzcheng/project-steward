@@ -2585,7 +2585,8 @@
       "tests/contract/persistence/projectCatalogSync.test.js"
     ],
     "evidence": [
-      "src/services/projectService.ts"
+      "src/services/projectService.ts",
+      "src/projects/projectCatalogSync.ts"
     ]
   },
   {
