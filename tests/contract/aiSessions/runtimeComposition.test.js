@@ -126,7 +126,9 @@ test('RUNTIME-HOST-RUNTIME-COMPOSITION-001 production activation blocks tmux res
     const result = runProductionActivation('direct-failure');
     assert.match(result.failure, /controlled direct restore failure/);
     assert.deepEqual(result.events, ['inactive-restored', 'direct-failed']);
-    assert.deepEqual(result.verified, ['client-store-discovery']);
+    assert.deepEqual(result.verified, [
+        'client-store-discovery', 'thread-switch-alias-wiring',
+    ]);
 });
 
 test('RUNTIME-HOST-RUNTIME-COMPOSITION-001 assembles real runtime components and restores ownership before hydration', async t => {
