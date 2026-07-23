@@ -2576,6 +2576,19 @@
     ]
   },
   {
+    "id": "PROJECT-CATALOG-SYNC-CONFLICT-001",
+    "domain": "persistence",
+    "title": "Project Catalog Sync Conflict Recovery behavior",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/persistence/projectCatalogSync.test.js"
+    ],
+    "evidence": [
+      "src/services/projectService.ts"
+    ]
+  },
+  {
     "id": "OPEN-WORKSPACE-NAVIGATION-001",
     "domain": "open-project",
     "title": "Workspace navigation uses exact URIs and fails closed without root substitution",
