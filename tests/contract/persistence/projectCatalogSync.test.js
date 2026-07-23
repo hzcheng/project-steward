@@ -63,11 +63,23 @@ function makeTwoClientHarness(initialGroups) {
         __dirname
     ).default;
     const colorService = { addRecentColor: async () => undefined };
+    const stateA = makeMemento();
+    const stateB = makeMemento();
 
     return {
         configurationValues,
-        clientA: new ProjectService({ globalState: makeMemento() }, colorService),
-        clientB: new ProjectService({ globalState: makeMemento() }, colorService),
+        stateA,
+        stateB,
+        clientA: new ProjectService(
+            { globalState: stateA },
+            colorService,
+            { createActorId: () => 'actor-a' }
+        ),
+        clientB: new ProjectService(
+            { globalState: stateB },
+            colorService,
+            { createActorId: () => 'actor-b' }
+        ),
     };
 }
 
@@ -158,6 +170,29 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 preserves a project when a stale client 
         clientB.getProjectsFlat().map(project => project.id).sort(),
         ['project-build-your-own-x', 'project-existing']
     );
+});
+
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 keeps an observed deletion after an older canonical snapshot returns', async () => {
+    const { clientA, clientB, configurationValues } = makeTwoClientHarness(makeCatalogGroups());
+    await clientA.migrateDataIfNeeded();
+    await clientB.migrateDataIfNeeded();
+    const added = {
+        id: 'project-build-your-own-x',
+        name: 'build-your-own-x',
+        path: '/work/build-your-own-x',
+        color: '#445566',
+    };
+    await clientB.addProject(added, 'group-main');
+    await clientA.reconcileProjectCatalog();
+    const staleCanonical = clone(configurationValues.projectSyncData);
+    const staleProjection = clone(configurationValues.projectData);
+
+    await clientA.removeProject(added.id);
+    configurationValues.projectSyncData = staleCanonical;
+    configurationValues.projectData = staleProjection;
+    await clientA.reconcileProjectCatalog();
+
+    assert.deepEqual(projectIds(clientA.getGroups()), ['project-existing']);
 });
 
 test('PROJECT-CATALOG-SYNC-CONFLICT-001 model preserves unseen additions and observed deletions', () => {

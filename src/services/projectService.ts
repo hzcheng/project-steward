@@ -3,22 +3,67 @@
 import * as vscode from 'vscode';
 
 import { Project, Group } from "../models";
-import { ADD_NEW_PROJECT_TO_FRONT, PROJECTS_KEY, StorageOption } from "../constants";
+import {
+    ADD_NEW_PROJECT_TO_FRONT,
+    PROJECTS_KEY,
+    PROJECT_SYNC_DATA_KEY,
+    PROJECT_SYNC_LOCAL_STATE_KEY,
+    StorageOption,
+} from "../constants";
+import type { ProjectCatalogMutationOptions } from '../projects/projectCatalogSync';
 import BaseService from './baseService';
 import ColorService from './colorService';
+import {
+    ProjectCatalogLocalStateV1,
+    ProjectCatalogSyncService,
+} from './projectCatalogSyncService';
+
+export interface ProjectServiceSyncOptions {
+    createActorId?: () => string;
+    onDiagnostic?: (event: Record<string, unknown>) => void;
+    onConflict?: (projectIds: string[]) => void;
+}
 
 export default class ProjectService extends BaseService {
 
     colorService: ColorService;
+    private readonly catalogSyncService: ProjectCatalogSyncService;
 
-    constructor(context: vscode.ExtensionContext, colorService: ColorService) {
+    constructor(
+        context: vscode.ExtensionContext,
+        colorService: ColorService,
+        syncOptions: ProjectServiceSyncOptions = {}
+    ) {
         super(context);
         this.colorService = colorService;
+        this.catalogSyncService = new ProjectCatalogSyncService({
+            getSyncData: () => this.getConfig<unknown>(PROJECT_SYNC_DATA_KEY),
+            updateSyncData: value => this.configurationSection.update(
+                PROJECT_SYNC_DATA_KEY,
+                value,
+                vscode.ConfigurationTarget.Global
+            ),
+            getLegacyGroups: () => this.getProjectsFromSettings(true),
+            updateLegacyGroups: groups => this.saveGroupsInSettings(groups),
+            getLocalState: () => this.context.globalState.get(
+                PROJECT_SYNC_LOCAL_STATE_KEY
+            ) as ProjectCatalogLocalStateV1,
+            updateLocalState: value => this.context.globalState.update(
+                PROJECT_SYNC_LOCAL_STATE_KEY,
+                value
+            ),
+            createActorId: syncOptions.createActorId
+                || (() => Group.getRandomId('project-sync-actor')),
+            onDiagnostic: syncOptions.onDiagnostic,
+            onConflict: syncOptions.onConflict,
+        });
     }
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~ GET ~~~~~~~~~~~~~~~~~~~~~~~~~
     getGroups(noSanitize = false): Group[] {
-        var groups = this.getProjectsFromStorage();
+        var groups = this.useSettingsStorage()
+            ? this.catalogSyncService.getGroups()
+            : this.getProjectsFromGlobalState();
 
         if (!noSanitize) {
             groups = this.sanitizeGroups(groups);
@@ -155,32 +200,60 @@ export default class ProjectService extends BaseService {
     // ~~~~~~~~~~~~~~~~~~~~~~~~~ REMOVE ~~~~~~~~~~~~~~~~~~~~~~~~~
     async removeProject(projectId: string): Promise<Group[]> {
         let groups = this.getGroups();
+        let removed = false;
         for (let i = 0; i < groups.length; i++) {
             let group = groups[i];
             let index = group.projects.findIndex(p => p.id === projectId);
 
             if (index !== -1) {
                 group.projects.splice(index, 1);
+                removed = true;
                 break;
             }
         }
-        await this.saveGroups(groups);
+        await this.saveGroupsWithMutation(groups, {
+            deletedProjectIds: removed ? [projectId] : [],
+        });
         return groups;
     }
 
     async removeGroup(groupId: string, testIfEmpty: boolean = false): Promise<Group[]> {
         let groups = this.getGroups();
+        const removedGroup = groups.find(group =>
+            group.id === groupId && (!testIfEmpty || !group.projects.length));
 
         groups = groups.filter(g => g.id !== groupId || (testIfEmpty && g.projects.length));
-        await this.saveGroups(groups);
+        await this.saveGroupsWithMutation(groups, {
+            deletedGroupIds: removedGroup ? [groupId] : [],
+            deletedProjectIds: removedGroup
+                ? removedGroup.projects.map(project => project.id)
+                : [],
+        });
 
         return groups;
     }
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~ SAVE ~~~~~~~~~~~~~~~~~~~~~~~~~
     saveGroups(groups: Group[]): Thenable<void> {
+        return this.saveGroupsWithMutation(groups);
+    }
+
+    reconcileProjectCatalog(): Promise<void> {
+        if (!this.useSettingsStorage()) {
+            return Promise.resolve();
+        }
+        return this.catalogSyncService.reconcile().then(() => undefined);
+    }
+
+    private saveGroupsWithMutation(
+        groups: Group[],
+        options: ProjectCatalogMutationOptions = {}
+    ): Thenable<void> {
         groups = this.sanitizeGroups(groups);
 
+        if (this.useSettingsStorage()) {
+            return this.catalogSyncService.saveGroups(groups, options).then(() => undefined);
+        }
         return this.saveGroupsInStorage(groups);
     }
 
@@ -272,6 +345,9 @@ export default class ProjectService extends BaseService {
 
         var projects = this.getProjectsFromStorage(storageOptionToCopyFrom, true);
         await this.saveGroupsInStorage(projects);
+        if (this.useSettingsStorage()) {
+            await this.catalogSyncService.reconcile();
+        }
     }
 
     async migrateDataIfNeeded() {
@@ -299,6 +375,10 @@ export default class ProjectService extends BaseService {
             //await this.saveGroupsInSettings(null);
         }
 
+
+        if (this.useSettingsStorage()) {
+            await this.catalogSyncService.reconcile();
+        }
 
         return toMigrate;
     }
