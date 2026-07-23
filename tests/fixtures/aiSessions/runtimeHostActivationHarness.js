@@ -62,6 +62,7 @@ async function main() {
     const restores = [];
     const events = [];
     const verified = new Set();
+    let dashboardCommandRegistrationInvocations = 0;
     const patch = (prototype, name, replacement) => {
         const original = prototype[name];
         prototype[name] = replacement;
@@ -102,6 +103,13 @@ async function main() {
         const { TmuxRuntimeBindingStore } = require('../../../out/aiSessions/tmuxRuntimeBindingStore');
         const { TmuxRuntimeDiscovery } = require('../../../out/aiSessions/tmuxRuntimeDiscovery');
         const { AiSessionAttentionController } = require('../../../out/aiSessions/attentionController');
+        const { DashboardCommandRegistration } = require('../../../out/dashboard/commandRegistration');
+
+        const originalDashboardRegister = DashboardCommandRegistration.prototype.register;
+        patch(DashboardCommandRegistration.prototype, 'register', function (...args) {
+            dashboardCommandRegistrationInvocations += 1;
+            return originalDashboardRegister.apply(this, args);
+        });
 
         patch(TmuxRuntimeDiscovery.prototype, 'loadPersistedInactive', async function () {
             assert.ok(this instanceof TmuxRuntimeDiscovery);
@@ -149,6 +157,7 @@ async function main() {
             failure,
             verified: [...verified].sort(),
             registeredCommands: vscode.registeredCommands,
+            dashboardCommandRegistrationInvocations,
         }));
     } finally {
         for (const subscription of context.subscriptions.slice().reverse()) subscription.dispose?.();

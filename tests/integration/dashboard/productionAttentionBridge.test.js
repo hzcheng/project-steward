@@ -15,7 +15,15 @@ test('ATTENTION-PRODUCTION-ATTENTION-BRIDGE-INTEGRATION-001 activates the produc
         window: {
             createOutputChannel: () => ({ appendLine() {}, dispose() {} }),
         },
-        workspace: { workspaceFolders: [] },
+        workspace: { workspaceFolders: [{
+            name: 'sensitive',
+            uri: {
+                scheme: 'vscode-remote',
+                authority: 'ssh-remote+sensitive-host',
+                path: '/home/sensitive-user/private-project',
+                toString: () => 'vscode-remote://ssh-remote%2Bsensitive-host/home/sensitive-user/private-project',
+            },
+        }] },
         commands: {
             registerCommand: (command, callback) => {
                 registered.set(command, callback);
@@ -110,9 +118,20 @@ test('ATTENTION-PRODUCTION-ATTENTION-BRIDGE-INTEGRATION-001 activates the produc
             .map(name => fs.readFileSync(path.join(productionRoot, name), 'utf8'))
             .join('\n');
         assert.doesNotMatch(storedText, /\/home\/|ssh-remote|workspaceIdentity/);
+        assert.doesNotMatch(storedText, /sensitive-user|sensitive-host|private-project/);
         assert.match(storedText, new RegExp(`"bridgeVersion":"${bridgePackage.version.replace('.', '\\.')}"`));
 
-        await unregister({ protocolVersion: 1, instanceId: validSnapshot.instanceId });
+        const unregisterCount = () => executed.filter(entry =>
+            entry.command === '_projectStewardAttention.bridge.unregister'
+            && entry.argument?.instanceId === validSnapshot.instanceId).length;
+        assert.equal(fs.existsSync(path.join(productionRoot, `${validSnapshot.instanceId}.json`)), true);
+        client.dispose();
+        for (let attempt = 0; attempt < 50
+            && (unregisterCount() === 0
+                || fs.existsSync(path.join(productionRoot, `${validSnapshot.instanceId}.json`))); attempt += 1) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.equal(unregisterCount(), 1, 'disposing the real client unregisters its production snapshot');
         assert.equal(fs.existsSync(path.join(productionRoot, `${validSnapshot.instanceId}.json`)), false);
     } finally {
         client?.dispose();

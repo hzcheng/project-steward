@@ -388,6 +388,12 @@ test('SESSION-CONTROLLER-001 validates lazy responses and preserves independent 
     assert.equal(harness.context.validateProjectsPanelMessage({
         type: 'projects-panel-content', version: 2, requestId: 1, html: '',
     }), false);
+    assert.equal(harness.context.validateTodoPanelMessage({
+        type: 'todo-panel-content', version: 1, requestId: 1, html: '',
+    }), true);
+    assert.equal(harness.context.validateTodoPanelMessage({
+        type: 'todo-panel-content', version: 2, requestId: 1, html: '',
+    }), false);
 
     harness.context.window.scrollY = 41;
     harness.controller.activateTab('projects');
@@ -410,6 +416,17 @@ test('SESSION-CONTROLLER-001 validates lazy responses and preserves independent 
         type: 'projects-panel-content', version: 1, requestId: 1, html: '<p>stale</p>',
     }), false);
     assert.equal(harness.projectsPanel.innerHTML, '<p>current</p>');
+
+    assert.equal(harness.controller.applyTodoPanelMessage({
+        type: 'todo-panel-content', version: 1, requestId: 2, html: '<p>future todo</p>',
+    }), false);
+    assert.equal(harness.controller.applyTodoPanelMessage({
+        type: 'todo-panel-content', version: 1, requestId: 1, html: '<p>current todo</p>',
+    }), true);
+    assert.equal(harness.controller.applyTodoPanelMessage({
+        type: 'todo-panel-content', version: 1, requestId: 1, html: '<p>stale todo</p>',
+    }), false);
+    assert.equal(harness.todoPanel.innerHTML, '<p>current todo</p>');
 });
 
 test('TODO-TODO-SEARCH-RESULT-RENDERING-001 search reveal requests host data then focuses the mounted TODO', () => {
