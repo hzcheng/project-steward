@@ -1,0 +1,4 @@
+interface:
+  display_name: "Protected Main Worktrees"
+  short_description: "Worktree flow for protected main branches"
+  default_prompt: "Use $protecting-main-with-worktrees to start isolated feature work from a protected main branch."

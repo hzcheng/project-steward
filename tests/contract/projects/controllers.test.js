@@ -11,6 +11,7 @@ const { GroupCommandController } = require('../../../out/projects/groupCommandCo
 const { queryGroupName } = require('../../../out/projects/groupPrompts');
 const { ProjectOrderController } = require('../../../out/projects/projectOrderController');
 const { ProjectRemovalController } = require('../../../out/projects/projectRemovalController');
+const { ProjectManualEditController } = require('../../../out/projects/projectManualEditController');
 const {
     ProjectOpenType,
     ProjectPathType,
@@ -308,6 +309,57 @@ test('PROJECT-PROJECT-REMOVAL-CONTROLLER-001 honors picker and confirmation canc
     assert.equal(events.filter(event => event[0] === 'remove').length, 2);
     assert.equal(events.filter(event => event[0] === 'refresh').length, 1);
     assert.equal(events.filter(event => event[0] === 'post-command').length, 1);
+});
+
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 manual editor passes its exported baseline with the edited groups', async () => {
+    const exportedGroups = [{
+        id: 'group-main',
+        groupName: 'Main',
+        projects: [{
+            id: 'project-a',
+            name: 'A',
+            path: '/work/a',
+        }, {
+            id: 'project-b',
+            name: 'B',
+            path: '/work/b',
+        }],
+    }];
+    const editedGroups = [{
+        ...exportedGroups[0],
+        projects: [exportedGroups[0].projects[0]],
+    }];
+    const document = {
+        getText: () => JSON.stringify(editedGroups),
+    };
+    let saveListener;
+    const saves = [];
+    const controller = new ProjectManualEditController({
+        getGroups: () => structuredClone(exportedGroups),
+        getTempFilePath: () => '/tmp/project-steward-projects.json',
+        writeTextFile: async () => undefined,
+        fileUri: value => value,
+        openTextDocument: async () => document,
+        showTextDocument: async () => undefined,
+        onWillSaveTextDocument: listener => {
+            saveListener = listener;
+            return { dispose() {} };
+        },
+        saveGroups: async (groups, baselineGroups) => {
+            saves.push({ groups, baselineGroups });
+        },
+        executeCommand: async () => undefined,
+        showErrorMessage: message => assert.fail(message),
+        postSave: () => undefined,
+    });
+
+    await controller.editProjectsManually();
+    await saveListener({ document });
+
+    assert.deepEqual(saves, [{
+        groups: editedGroups,
+        baselineGroups: exportedGroups,
+    }]);
 });
 
 test('OPEN-PROJECT-OPEN-CONTROLLER-001 maps default and explicit window modes to VS Code commands', async () => {

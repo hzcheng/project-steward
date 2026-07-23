@@ -200,7 +200,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const logOpenWorkspaceBridgeError = (error: unknown) => dashboardDiagnostics.logOpenWorkspaceBridgeError(error);
 
     const colorService = new ColorService(context);
-    const projectService = new ProjectService(context, colorService);
+    const projectService = new ProjectService(context, colorService, {
+        onDiagnostic: event => logDashboardDiagnostic(event),
+        onConflict: projectIds => {
+            logDashboardDiagnostic({
+                event: 'project-catalog-sync-conflict-recovered',
+                projectIds,
+            });
+            void vscode.window.showInformationMessage(
+                'Project Steward recovered projects from a sync conflict.'
+            );
+        },
+    });
     const todoService = new TodoService(context);
     const todoViewState = todoService.getViewState();
     let revealedTodoId: string | undefined;
@@ -296,7 +307,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         openTextDocument: uri => vscode.workspace.openTextDocument(uri),
         showTextDocument: document => vscode.window.showTextDocument(document),
         onWillSaveTextDocument: listener => vscode.workspace.onWillSaveTextDocument(listener),
-        saveGroups: groups => projectService.saveGroups(groups),
+        saveGroups: (groups, baselineGroups) =>
+            projectService.saveGroupsFromManualEdit(groups, baselineGroups),
         executeCommand: command => vscode.commands.executeCommand(command),
         showErrorMessage: message => vscode.window.showErrorMessage(message),
         postSave: () => showSteward(),
@@ -335,6 +347,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         aiSessionProviders,
         logAiSessionDiagnostic
     );
+    const aiSessionAliasStore = new AiSessionAliasStore(context.globalStoragePath);
+    const aiSessionAliasController = new AiSessionAliasController({
+        store: aiSessionAliasStore,
+        isProviderId: isAiSessionProviderId,
+        getSessionKey: getAiSessionPinKey,
+        getProviderResult: (providerId, options) => aiSessionReadCoordinator.getProviderResult(providerId, options),
+        logError,
+        showSaveError: () => vscode.window.showErrorMessage("Could not save the chat name."),
+    });
     const aiSessionTerminalBindingStore = new AiSessionTerminalBindingStore(context.workspaceState, error =>
         logError('Failed to persist AI session terminal ownership.', error)
     );
@@ -363,6 +384,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         client: tmuxClient,
         bindingStore: tmuxRuntimeStore,
         codexRootThreadObserver: new ProcCodexRootThreadObserver(),
+        onSessionRebound: (previous, next) => aiSessionAliasController.copyForRebind(
+            previous.provider,
+            previous.sessionId || '',
+            next.sessionId || ''
+        ),
         markerIsCurrent: isCurrentRuntimeMarker,
     });
     try {
@@ -414,15 +440,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     } catch (error) {
         logAiSessionRuntimeFailure('restore-attach-terminals', error);
     }
-    const aiSessionAliasStore = new AiSessionAliasStore(context.globalStoragePath);
-    const aiSessionAliasController = new AiSessionAliasController({
-        store: aiSessionAliasStore,
-        isProviderId: isAiSessionProviderId,
-        getSessionKey: getAiSessionPinKey,
-        getProviderResult: (providerId, options) => aiSessionReadCoordinator.getProviderResult(providerId, options),
-        logError,
-        showSaveError: () => vscode.window.showErrorMessage("Could not save the chat name."),
-    });
     const aiSessionPinStore = new AiSessionPinStore(context.globalStoragePath);
     const aiSessionPinController = new AiSessionPinController({
         store: aiSessionPinStore,
@@ -1544,6 +1561,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         checkDataMigration: async openStewardAfterMigrate => {
             await dashboardStartupController.checkDataMigration(openStewardAfterMigrate);
         },
+        reconcileProjectCatalog: () => projectService.reconcileProjectCatalog(),
         applyProjectColorToCurrentWindow,
         refresh: refreshStewardViews,
         publishOpenWorkspace: followsFocusEvent => openWorkspaceController.publish(followsFocusEvent),

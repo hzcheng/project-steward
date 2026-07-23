@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Fix Commit Loop"
+  short_description: "Turn review findings into verified commits"
+  default_prompt: "Use $review-fix-commit-loop to review these changes, fix findings, verify, and commit."

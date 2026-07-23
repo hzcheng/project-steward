@@ -75,6 +75,10 @@ export interface TmuxRuntimeDiscoveryOptions {
     client: TmuxDiscoveryClient;
     bindingStore: TmuxDiscoveryBindingStore;
     codexRootThreadObserver?: CodexRootThreadObserver;
+    onSessionRebound?: (
+        previous: AiSessionRuntimeIdentity,
+        next: AiSessionRuntimeIdentity
+    ) => void;
     markerIsCurrent: (markerPath: string, runStartedAtMs: number) => boolean | Promise<boolean>;
     nowMs?: () => number;
     cacheTtlMs?: number;
@@ -310,6 +314,20 @@ export class TmuxRuntimeDiscovery {
         }));
     }
 
+    private notifySessionRebound(
+        previous: AiSessionRuntimeIdentity,
+        next: AiSessionRuntimeIdentity
+    ): void {
+        try {
+            this.options.onSessionRebound?.(
+                cloneAiSessionRuntimeIdentity(previous),
+                cloneAiSessionRuntimeIdentity(next)
+            );
+        } catch (e) {
+            // Runtime identity is already durably rebound; metadata hooks are best-effort.
+        }
+    }
+
     private async enumerate(): Promise<DiscoveryResult> {
         const listed = await this.options.client.listWindows();
         if (!Array.isArray(listed) || listed.length > MAX_DISCOVERY_ROWS) {
@@ -436,10 +454,12 @@ export class TmuxRuntimeDiscovery {
                         locatorKnown, observedSessionId
                     );
                     if (rebound === 'rebound') {
-                        projectedIdentity = {
+                        const nextIdentity = {
                             ...projectedIdentity,
                             sessionId: observedSessionId,
                         };
+                        this.notifySessionRebound(projectedIdentity, nextIdentity);
+                        projectedIdentity = nextIdentity;
                     }
                 }
             }

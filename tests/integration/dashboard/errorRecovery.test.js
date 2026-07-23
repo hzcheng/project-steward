@@ -268,6 +268,34 @@ test('PERSIST-DASHBOARD-LIFECYCLE-CONTROLLER-001 routes workspace, configuration
     ]);
 });
 
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 reconciles synchronized project data before dashboard publication', async () => {
+    const events = [];
+    const controller = new DashboardLifecycleController({
+        checkDataMigration: async () => undefined,
+        reconcileProjectCatalog: async () => {
+            events.push('reconcile:start');
+            await Promise.resolve();
+            events.push('reconcile:end');
+        },
+        applyProjectColorToCurrentWindow: () => events.push('color'),
+        refresh: reason => events.push(['refresh', reason]),
+        publishOpenWorkspace: () => events.push('publish'),
+        evaluateAiSessionAttention: () => undefined,
+    });
+
+    await controller.handleConfigurationChanged(
+        makeConfigurationEvent('projectSteward.projectSyncData')
+    );
+
+    assert.deepEqual(events, [
+        'reconcile:start',
+        'reconcile:end',
+        'color',
+        ['refresh', 'configuration-changed'],
+        'publish',
+    ]);
+});
+
 test('WEBVIEW-DASHBOARD-STARTUP-CONTROLLER-001 retries a failed migration without stale refresh or publication', async () => {
     const events = [];
     let attempt = 0;

@@ -12,7 +12,7 @@ export interface ProjectManualEditControllerOptions {
     openTextDocument: (uri: vscode.Uri) => Thenable<vscode.TextDocument>;
     showTextDocument: (document: vscode.TextDocument) => Thenable<unknown>;
     onWillSaveTextDocument: (listener: (event: vscode.TextDocumentWillSaveEvent) => unknown) => vscode.Disposable;
-    saveGroups: (groups: Group[]) => Thenable<unknown>;
+    saveGroups: (groups: Group[], baselineGroups: Group[]) => Thenable<unknown>;
     executeCommand: (command: string) => Thenable<unknown>;
     showErrorMessage: (message: string) => unknown;
     postSave: () => void;
@@ -61,7 +61,7 @@ export class ProjectManualEditController {
             }
 
             updatedGroups = validation.groups;
-            await this.options.saveGroups(updatedGroups);
+            await this.options.saveGroups(updatedGroups, projects);
 
             subscriptions.forEach(s => s.dispose());
 
