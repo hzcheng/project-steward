@@ -13,6 +13,49 @@ export interface AttentionProjectSummary {
 
 export type AttentionSummary = Pick<AttentionProjectSummary, 'attentionCount' | 'eventIds' | 'sessions'>;
 
+export function getLogicalAttentionSessionKey(sessionKey: string): string {
+    const match = /^(codex|kimi|claude):(.+):\d+:(?:vscode|tmux)$/.exec(sessionKey || '');
+    return match ? `${match[1]}:${match[2]}` : sessionKey;
+}
+
+function summarizeAttentionSessions(
+    sourceSessions: readonly AggregatedAttentionSession[]
+): AttentionSummary {
+    const allEventIds = new Set<string>();
+    const sessionEventIds = new Map<string, Set<string>>();
+    for (const session of sourceSessions) {
+        const sessionKey = getLogicalAttentionSessionKey(session.sessionKey);
+        let events = sessionEventIds.get(sessionKey);
+        if (!events) {
+            events = new Set<string>();
+            sessionEventIds.set(sessionKey, events);
+        }
+        for (const eventId of session.eventIds || []) {
+            if (eventId) {
+                events.add(eventId);
+                allEventIds.add(eventId);
+            }
+        }
+    }
+
+    const sessions = Array.from(sessionEventIds.entries())
+        .map(([sessionKey, events]) => {
+            const eventIds = Array.from(events).sort();
+            return {
+                sessionKey,
+                eventId: eventIds[0] || sessionKey,
+                eventIds,
+            };
+        })
+        .sort((left, right) => left.sessionKey.localeCompare(right.sessionKey));
+
+    return {
+        attentionCount: sessions.length,
+        eventIds: Array.from(allEventIds).sort(),
+        sessions,
+    };
+}
+
 export function getAttentionProjectKey(projectPath: string): string {
     const canonicalPath = normalizeAiSessionComparablePath(projectPath);
     if (!canonicalPath) {
@@ -53,65 +96,26 @@ export function getAttentionSummaryForProjectKeys(
     aggregate: AttentionAggregate | null
 ): AttentionSummary {
     const selectedProjectKeys = new Set((projectKeys || []).filter(Boolean));
-    const eventIds = new Set<string>();
-    const sessionEventIds = new Map<string, Set<string>>();
-    for (const session of aggregate?.sessions || []) {
-        if (!selectedProjectKeys.has(session.projectId)) {
-            continue;
-        }
-        let events = sessionEventIds.get(session.sessionKey);
-        if (!events) {
-            events = new Set<string>();
-            sessionEventIds.set(session.sessionKey, events);
-        }
-        for (const eventId of session.eventIds || []) {
-            if (!eventId) {
-                continue;
-            }
-            events.add(eventId);
-            eventIds.add(eventId);
-        }
-    }
-
-    const sessions = Array.from(sessionEventIds.entries())
-        .map(([sessionKey, events]) => {
-            const sortedEventIds = Array.from(events).sort();
-            return {
-                sessionKey,
-                eventId: sortedEventIds[0] || sessionKey,
-                eventIds: sortedEventIds,
-            };
-        })
-        .sort((left, right) => left.sessionKey.localeCompare(right.sessionKey));
-    return {
-        attentionCount: sessions.length,
-        eventIds: Array.from(eventIds).sort(),
-        sessions,
-    };
+    return summarizeAttentionSessions(
+        (aggregate?.sessions || []).filter(session => selectedProjectKeys.has(session.projectId))
+    );
 }
 
 export function getAttentionProjectSummaries(aggregate: AttentionAggregate | null): AttentionProjectSummary[] {
-    const summaries = new Map<string, AttentionProjectSummary>();
-    for (const item of aggregate?.sessions || []) {
-        let summary = summaries.get(item.projectId);
-        if (!summary) {
-            summary = { projectKey: item.projectId, attentionCount: 0, eventIds: [], sessions: [] };
-            summaries.set(item.projectId, summary);
+    const sessionsByProject = new Map<string, AggregatedAttentionSession[]>();
+    for (const session of aggregate?.sessions || []) {
+        let projectSessions = sessionsByProject.get(session.projectId);
+        if (!projectSessions) {
+            projectSessions = [];
+            sessionsByProject.set(session.projectId, projectSessions);
         }
-        summary.attentionCount += 1;
-        summary.eventIds.push(...item.eventIds);
-        summary.sessions.push({
-            sessionKey: item.sessionKey,
-            eventId: item.eventIds[0] || `${item.sessionKey}:${item.observedAtMs}`,
-            eventIds: item.eventIds.slice().sort(),
-        });
+        projectSessions.push(session);
     }
 
-    return Array.from(summaries.values())
-        .map(summary => ({
-            ...summary,
-            eventIds: summary.eventIds.sort(),
-            sessions: summary.sessions.sort((left, right) => left.sessionKey.localeCompare(right.sessionKey)),
+    return Array.from(sessionsByProject.entries())
+        .map(([projectKey, sessions]) => ({
+            projectKey,
+            ...summarizeAttentionSessions(sessions),
         }))
         .sort((left, right) => left.projectKey.localeCompare(right.projectKey));
 }

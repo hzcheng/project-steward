@@ -8,10 +8,9 @@ import type { AttentionPayloadItem } from './attentionPayload';
 import AiSessionAttentionMonitor from './attentionMonitor';
 import type { AiSessionAttentionSnapshot } from './attentionMonitor';
 import type { AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
-import { getAttentionProjectKeys } from './attentionProject';
+import { getAttentionProjectKeys, getLogicalAttentionSessionKey } from './attentionProject';
 import { getAiSessionKey } from './sessionHelpers';
 import type { WorkspaceAiSessionActionTarget, WorkspaceAiSessionViewModel } from './types';
-import { getLogicalAttentionSessionKey } from '../workspaces/sessionAttention';
 
 export interface AiSessionAttentionRuntimeEntry {
     runStartedAtMs: number;

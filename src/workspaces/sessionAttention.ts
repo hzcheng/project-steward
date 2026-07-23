@@ -4,6 +4,7 @@ import type { AttentionAggregate } from '../aiSessions/attentionAggregate';
 import {
     getAttentionProjectKeys,
     getAttentionSessionLookupKey,
+    getLogicalAttentionSessionKey,
 } from '../aiSessions/attentionProject';
 import { getAiSessionKey } from '../aiSessions/sessionHelpers';
 import type { AiSessionViewModel } from '../aiSessions/types';
@@ -15,11 +16,6 @@ type IndexedAttention = NonNullable<AiSessionViewModel['attention']> & {
 };
 
 export type WorkspaceSessionAttentionIndex = ReadonlyMap<string, IndexedAttention>;
-
-export function getLogicalAttentionSessionKey(sessionKey: string): string {
-    const match = /^(codex|kimi|claude):(.+):\d+:(?:vscode|tmux)$/.exec(sessionKey || '');
-    return match ? match[1] + ':' + match[2] : sessionKey;
-}
 
 export function buildWorkspaceSessionAttentionIndex(
     aggregate: AttentionAggregate | null
