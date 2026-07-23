@@ -45,7 +45,7 @@ test('PERSIST-BATCH-AI-SESSION-ARCHIVE-HOST-001 emits one terminal completion fo
     assert.equal(effects.filter(item => item === 'refresh').length, 1);
 });
 
-test('PERSIST-AI-SESSION-PROJECT-HYDRATION-001 PERSIST-AI-SESSION-PROJECT-HYDRATION-CONTROLLER-001 PERSIST-AI-SESSION-PROJECT-HYDRATION-PROMOTION-001 projects assignment, pin, alias, provider availability, and attention without input mutation leaks', () => {
+test('PERSIST-AI-SESSION-PROJECT-HYDRATION-001 PERSIST-AI-SESSION-PROJECT-HYDRATION-PROMOTION-001 projects assignment, pin, alias, provider availability, and attention without input mutation leaks', () => {
     const project = { id: 'p', path: '/work/app' };
     const session = { id: 's', name: 'Original', cwd: '/work/app', updatedAt: '2026-01-01T00:00:00Z' };
     const projectAttentionKey = getAttentionProjectKey(project.path);
