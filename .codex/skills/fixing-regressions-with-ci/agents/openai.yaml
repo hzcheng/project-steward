@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fix Regressions With CI"
+  short_description: "Prove regressions in CI before fixing them"
+  default_prompt: "Use $fixing-regressions-with-ci to diagnose this regression, prove it with a CI-reachable failing test, and only then implement and verify the fix."
