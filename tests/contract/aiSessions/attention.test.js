@@ -7,6 +7,7 @@ const test = require('node:test');
 const { createFakeClock } = require('../../helpers/fakeClock');
 const { makeTempDirectory } = require('../../helpers/tempDirectory');
 const {
+    createDeferred,
     flushAsync,
     loadFreshWithFakeVscode,
 } = require('../../helpers/runtimeContract');
@@ -314,6 +315,63 @@ test('ATTENTION-PRODUCTION-ATTENTION-STORE-UNREGISTER-PROPAGATION-001 ATTENTION-
         /sequence decreased/
     );
     assert.deepEqual((await peer.scan(1005)).snapshots.map(value => value.sequence), [2]);
+});
+
+test('ATTENTION-PRODUCTION-ATTENTION-STORE-UNREGISTER-PROPAGATION-001 scan racing remove cannot repopulate owner caches', async t => {
+    const { ProductionAttentionStore } = require(
+        '../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/productionAttentionStore'
+    );
+    const root = makeTempDirectory(t, 'project-steward-attention-scan-remove-race-');
+    const instanceId = 'f'.repeat(32);
+    const ownerPath = path.join(root, 'instances', `${instanceId}.json`);
+    const writer = new ProductionAttentionStore(root, 'writer');
+    const peer = new ProductionAttentionStore(root, 'peer');
+    const snapshot = {
+        version: 1,
+        generatedAtMs: 1000,
+        items: [],
+        instanceId,
+        sequence: 1,
+        heartbeat: 1,
+    };
+    await writer.write(snapshot, 1000, 'fixture');
+    assert.deepEqual((await peer.scan(1001)).snapshots.map(value => value.sequence), [1]);
+
+    const readEntered = createDeferred();
+    const releaseRead = createDeferred();
+    const originalReadFile = fs.promises.readFile;
+    let intercepted = false;
+    fs.promises.readFile = async (...args) => {
+        const value = await originalReadFile.apply(fs.promises, args);
+        if (String(args[0]) === ownerPath && !intercepted) {
+            intercepted = true;
+            readEntered.resolve();
+            await releaseRead.promise;
+        }
+        return value;
+    };
+    try {
+        const racingScan = writer.scan(1002);
+        let timeout;
+        await Promise.race([
+            readEntered.promise,
+            new Promise((_, reject) => {
+                timeout = setTimeout(
+                    () => reject(new Error('attention owner read did not start within 2 seconds')),
+                    2000
+                );
+            }),
+        ]).finally(() => clearTimeout(timeout));
+        const racingRemove = writer.remove(instanceId, 1003);
+        releaseRead.resolve();
+        await Promise.all([racingScan, racingRemove]);
+    } finally {
+        releaseRead.resolve();
+        fs.promises.readFile = originalReadFile;
+    }
+
+    assert.deepEqual((await writer.scan(1004)).snapshots, []);
+    assert.deepEqual((await peer.scan(1004)).snapshots, []);
 });
 
 test('ATTENTION-ATTENTION-BRIDGE-CLIENT-LIFECYCLE-001 ATTENTION-ATTENTION-BRIDGE-CLIENT-PRIVACY-001 reconnects and flushes only the latest privacy-safe owner snapshot', async () => {
