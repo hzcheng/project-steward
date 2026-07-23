@@ -1,4 +1,5 @@
 .vscode/**
+.codex/**
 .vscode-test/**
 .github/**
 .ci/**

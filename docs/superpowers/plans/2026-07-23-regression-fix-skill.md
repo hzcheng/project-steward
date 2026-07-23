@@ -77,13 +77,13 @@ Expected: exit code `0` with no output. The source hashes are:
 
 ```text
 f59f8be1c20d29f1a5ca4cf1ac9882a503d293a67700cdcdb49a576381c289ae  installing-vscode-extensions-locally/SKILL.md
-e4e0462430d1044834d0ac2461f92f3f3c1a0150541d498ea48374764810f697  installing-vscode-extensions-locally/agents/openai.yaml
+81a38b7c9019ecac08dc8b8780c82e7aea7284bc0982dc2370060b9ba5c2dfba  installing-vscode-extensions-locally/agents/openai.yaml
 caabff3091b7a7910e3f94b69968d4f4d365f24ce46bb19b0aecbae9d6265be4  protecting-main-with-worktrees/SKILL.md
-f1e2c693d9b670b41bb7ae8ee855438143ec59e5fece09c993a8df4996f804c8  protecting-main-with-worktrees/agents/openai.yaml
+e37f0375cc11dbd6d194c9d4e750f23d14e2d22e21db1369d9ebc923a0bb4544  protecting-main-with-worktrees/agents/openai.yaml
 87f9e085766dc3c4e75229eeeba49387b985ec6c5414a2c3863243c413b08807  publishing-and-merging-github-prs/SKILL.md
-4797a91b3d4d1ecce6c6c1baa85af5fe270ae7732bbdab7f492b921bb9cbbf86  publishing-and-merging-github-prs/agents/openai.yaml
+ec72f49f1590ce7d79fbbd58e8f7e40d0011570d16a46292da046c2413e9f35c  publishing-and-merging-github-prs/agents/openai.yaml
 66e8f8180547050b41f007636836f800258b813ba40d8a6237ff4a638c510a10  review-fix-commit-loop/SKILL.md
-461a39bfedf5e2a2b23dddde5f7e4079e24fea9a7dfdd2bcce544ede8fce9b87  review-fix-commit-loop/agents/openai.yaml
+9eec070700fc445bb0e20e6da69a1f0eb6c287fe76567171e515c4f5c5d999a2  review-fix-commit-loop/agents/openai.yaml
 ```
 
 - [ ] **Step 3: Validate all imported Skill packages**
