@@ -63,6 +63,14 @@ function defineProviderContract({ id, serviceFactory, fixtures, definition }) {
     }
 
     test(`SESSION-PROVIDER-001 [${id}] exposes stable metadata, project keys, and launch specs`, () => {
+        const directoryScope = Object.freeze({
+            workspaceNavigationIdentity: `navigation:${manifest.projectPath}`,
+            workspaceScopeIdentity: `scope:${manifest.projectPath}`,
+            workspaceRootHostPaths: Object.freeze([manifest.projectPath]),
+            primaryRootId: `root:${manifest.projectPath}`,
+            primaryCwd: manifest.projectPath,
+            additionalDirectories: Object.freeze([]),
+        });
         assert.equal(manifest.id, id, `SESSION-PROVIDER-001 [${id}] fixture manifest must match`);
         assert.equal(definition.id, id);
         assert.equal(definition.label, manifest.label);
@@ -73,14 +81,14 @@ function defineProviderContract({ id, serviceFactory, fixtures, definition }) {
         assert.deepEqual(
             definition.buildResumeLaunchSpec(
                 manifest.launch.sessionId,
-                manifest.projectPath,
+                directoryScope,
                 manifest.launch.markerPath
             ),
             manifest.launch.resume
         );
         assert.deepEqual(
             definition.buildNewSessionLaunchSpec(
-                manifest.projectPath,
+                directoryScope,
                 manifest.launch.title,
                 manifest.launch.markerPath
             ),

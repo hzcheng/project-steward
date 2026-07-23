@@ -8,24 +8,27 @@ const {
     flushAsync,
     loadWithFakeVscode,
     makeAggregate,
+    makeRecord,
     makeRegistration,
 } = require('./helpers');
 const {
-    OpenProjectDashboardController,
-} = loadWithFakeVscode('../../../out/openProjects/dashboardController');
+    OpenWorkspaceDashboardController,
+} = loadWithFakeVscode('../../../out/openWorkspaces/dashboardController');
 
 function createOptions(overrides = {}) {
+    const currentWorkspace = makeRecord({ name: 'Current', uri: '/work/current' });
     return {
-        getOpenProjects: () => [{
-            id: '__openProjects-0',
-            name: 'Current',
-            description: 'Workspace folder',
-            path: '/work/current',
-        }],
+        getCurrentWorkspace: () => ({
+            ...currentWorkspace,
+            roots: currentWorkspace.roots.map(root => ({ ...root, hostPath: '/work/current' })),
+        }),
+        isWorkspaceSavedAsProject: () => true,
+        getWorkspaceProjectColor: () => '',
+        getCurrentWorkspaceAiSessions: () => null,
         getGroups: () => [],
         getTodoSearchItems: () => [{
-            key: 'todo:open-projects',
-            todoId: 'open-projects',
+            key: 'todo:open-workspaces',
+            todoId: 'open-workspaces',
             groupId: 'release',
             title: 'Preserve OPEN catalog',
             groupTitle: 'Release',
@@ -34,7 +37,8 @@ function createOptions(overrides = {}) {
             notesSearchText: '',
             searchText: 'preserve open catalog release high',
         }],
-        getStewardInfos: () => ({ openProjectsGroupCollapsed: false, config: {} }),
+        getCollapsed: () => false,
+        getRunningCardAnimation: () => undefined,
         getAttentionAggregate: () => ({
             protocolVersion: 1,
             aggregateRevision: 'a'.repeat(64),
@@ -62,7 +66,7 @@ test('OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001 posts each semantic revision on
         },
         logDiagnostic: (source, event) => diagnostics.push([source, event]),
     });
-    const controller = new OpenProjectDashboardController(options);
+    const controller = new OpenWorkspaceDashboardController(options);
     const first = makeAggregate([makeRegistration(SELF, 4000, '/work/current')], {
         semanticRevision: 'revision-1',
     });
@@ -74,15 +78,16 @@ test('OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001 posts each semantic revision on
     await flushAsync();
 
     assert.equal(posted.length, 1);
-    assert.equal(posted[0].type, 'open-projects-updated');
-    assert.equal(posted[0].semanticRevision, 'revision-1');
-    assert.equal(posted[0].searchCatalog.todos[0].todoId, 'open-projects');
-    assert.ok(diagnostics.some(([, event]) => event.event === 'post-update-skip'));
+    assert.equal(posted[0].type, 'open-workspaces-updated');
+    assert.match(posted[0].semanticRevision, /^[a-f0-9]{64}$/);
+    assert.equal(posted[0].searchCatalog.todos[0].todoId, 'open-workspaces');
+    assert.ok(diagnostics.some(([, event]) => event.event === 'open-workspace-cards-build'));
 
     controller.setAggregate({ ...first, semanticRevision: 'revision-2' });
     controller.postUpdated();
     await flushAsync();
-    assert.deepEqual(posted.map(message => message.semanticRevision), ['revision-1', 'revision-2']);
+    assert.equal(posted.length, 2);
+    assert.notEqual(posted[0].semanticRevision, posted[1].semanticRevision);
 });
 
 test('OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001 retries undelivered and rejected incremental updates through full refresh', async () => {
@@ -90,7 +95,7 @@ test('OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001 retries undelivered and rejecte
     const refreshes = [];
     const errors = [];
     let delivery = () => Promise.resolve(false);
-    const controller = new OpenProjectDashboardController(createOptions({
+    const controller = new OpenWorkspaceDashboardController(createOptions({
         postMessage: message => {
             posted.push(message);
             return delivery();
@@ -112,11 +117,11 @@ test('OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001 retries undelivered and rejecte
 
     assert.equal(posted.length, 3);
     assert.deepEqual(refreshes, [
-        'open-project-update-not-delivered',
-        'open-project-update-not-delivered',
-        'open-project-update-post-error',
+        'open-workspace-update-not-delivered',
+        'open-workspace-update-not-delivered',
+        'open-workspace-update-post-error',
     ]);
-    assert.deepEqual(errors, [['Failed to post OPEN PROJECT update message.', 'webview closed']]);
+    assert.deepEqual(errors, [['Failed to post OPEN WORKSPACE update message.', 'webview closed']]);
 });
 
 test('PERSIST-DASHBOARD-MIGRATION-PUBLICATION-001 republishes only after migrated project metadata is visible', async () => {
@@ -134,7 +139,7 @@ test('PERSIST-DASHBOARD-MIGRATION-PUBLICATION-001 republishes only after migrate
             return { projects: { migrated }, todos: { migrated: false } };
         },
         refreshDashboard: () => events.push(['refresh', metadata]),
-        publishOpenProjects: () => events.push(['publish', metadata]),
+        publishOpenWorkspace: () => events.push(['publish', metadata]),
         showInformationMessage: () => undefined,
         showErrorMessage: () => undefined,
         logError: () => undefined,

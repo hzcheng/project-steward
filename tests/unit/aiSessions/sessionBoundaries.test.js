@@ -14,6 +14,8 @@ let candidates;
 let sessionPaths;
 let pending;
 let resolver;
+let sessionHydration;
+let sessionScope;
 let getUsableTerminalCwd;
 try {
     Module._load = function (request, parent, isMain) {
@@ -31,6 +33,8 @@ try {
     sessionPaths = require('../../../out/aiSessions/sessionPaths');
     pending = require('../../../out/aiSessions/pendingTerminals');
     resolver = require('../../../out/aiSessions/pendingTerminalResolver');
+    sessionHydration = require('../../../out/workspaces/sessionHydration');
+    sessionScope = require('../../../out/workspaces/sessionScope');
     ({ getUsableTerminalCwd } = require('../../../out/aiSessions/terminalCwd'));
 } finally {
     Module._load = previousLoad;
@@ -57,24 +61,30 @@ test('PROJECT-CANDIDATE-FILTER-001 normalizes duplicate roots and excludes sessi
     assert.equal(helpers.filterAiSessionsByCandidatePaths(source, [], item => item.cwd), source);
 });
 
-test('PROJECT-PROJECT-CANDIDATE-001 exposes stable local and remote project candidate paths', () => {
-    const projects = [
-        { id: 'local', path: '/work/app/' },
-        { id: 'remote', path: 'vscode-remote://ssh-remote+host/work/remote' },
-    ];
-    assert.deepEqual(candidates.getAiSessionOpenProjectCandidates(projects).map(item => [item.project.id, item.path]), [
-        ['local', '/work/app'], ['remote', '/work/remote'],
+test('PROJECT-PROJECT-CANDIDATE-001 exposes stable workspace-root candidate paths', () => {
+    const workspace = {
+        navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
+        kind: 'savedMultiRoot', displayName: 'Fixture', navigationUri: 'file:///work/fixture.code-workspace',
+        environment: 'local', roots: [
+            { id: 'local', name: 'App', uri: 'file:///work/app', hostPath: '/work/app/', ordinal: 0 },
+            { id: 'remote', name: 'Remote', uri: 'vscode-remote://ssh-remote+host/work/remote', hostPath: '/work/remote', ordinal: 1 },
+        ],
+    };
+    assert.deepEqual(sessionHydration.getWorkspaceAiSessionCandidatePaths(workspace), [
+        '/work/app', '/work/remote',
     ]);
-    assert.equal(candidates.getOpenProjectAiSessionKey(projects[0]), '/work/app');
     assert.equal(candidates.normalizeAiSessionProjectPath(''), '');
 });
 
 test('PROJECT-SESSION-PATH-001 selects provider-specific cwd fields and safe terminal labels', () => {
-    const project = { id: 'app', path: '/work/app', codexSessions: [{ id: 'c1', cwd: '/work/codex' }] };
-    assert.deepEqual(sessionPaths.getProjectAiSessions(project, 'codex', providers).map(item => item.id), ['c1']);
     assert.equal(sessionPaths.getAiSessionComparableCwd('kimi', { id: 'k1', cwd: '/fallback', workDir: '/preferred' }, providers), '/preferred');
-    assert.equal(sessionPaths.getAiSessionTerminalCwd('kimi', { id: 'k2' }, project, providers), '/work/app');
     assert.equal(sessionPaths.getAiSessionTerminalName('unknown', { id: 'unsafe', name: '<name>' }, providers), 'AI: <name> [unsafe]');
+    const scope = sessionScope.buildAiSessionDirectoryScope({
+        navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
+        kind: 'singleFolder', displayName: 'App', navigationUri: 'file:///work/app', environment: 'local',
+        roots: [{ id: 'app', name: 'App', uri: 'file:///work/app', hostPath: '/work/app', ordinal: 0 }],
+    }, { isDirectory: value => value === '/work/app' });
+    assert.equal(scope.primaryCwd, '/work/app');
 });
 
 test('SESSION-PENDING-TERMINAL-MATCHER-001 picks the newest unclaimed post-create session in the same cwd', () => {
@@ -96,7 +106,11 @@ test('SESSION-PENDING-TERMINAL-MATCHER-001 picks the newest unclaimed post-creat
 
 test('SESSION-PENDING-TERMINAL-RESOLVER-001 promotes one valid runtime and reports controlled invalid promotion output', async () => {
     const base = {
-        identity: { provider: 'codex', projectKey: '/work/app', cwd: '/work/app', pendingId: 'pending-1' },
+        identity: {
+            provider: 'codex', workspaceScopeIdentity: 'scope:/work/app',
+            workspaceNavigationIdentity: 'navigation:/work/app', workspaceRootHostPaths: ['/work/app'],
+            cwd: '/work/app', pendingId: 'pending-1',
+        },
         backend: 'vscode', state: 'pending', markerPath: '/tmp/pending', runStartedAtMs: 1,
         attached: true, createdAt: '2026-01-01T00:00:00Z', excludedSessionIds: [], title: 'Fixture',
     };

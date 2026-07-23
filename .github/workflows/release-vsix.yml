@@ -95,17 +95,14 @@ jobs:
       - name: Verify release notes
         run: npm run test:release-notes
 
-      - name: Verify release packaging
-        run: npm run test:release-packaging
-
       - name: Compile
         run: npm run test-compile && npm run attention:bridge:compile
 
       - name: Lint
         run: npm run lint
 
-      - name: Package release VSIX files
-        run: npm run package:release
+      - name: Package and verify release VSIX files
+        run: npm run test:release-packaging
 
       - name: Write package summary
         shell: bash

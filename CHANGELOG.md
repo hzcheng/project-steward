@@ -2,6 +2,31 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
+## [2.1.4] 2026-07-22
+
+### Added
+
+-   Represent one card per non-empty VS Code workspace, with roots shown only as metadata and one flat AI-session surface for single-folder, saved multi-root, and untitled multi-root windows.
+-   Give new and resumed Codex, Kimi, and Claude sessions access to all workspace roots through provider-native `--add-dir`, with one primary cwd shared by Direct Terminal and both tmux layouts.
+-   Add trust and provider-capability preflight: Restricted Mode keeps cards and history readable while launch is blocked, and missing verified `--add-dir` capability creates no partial runtime.
+-   Name managed tmux sessions after workspace cards and tmux windows after AI sessions when they are created, while keeping those names stable for the runtime lifetime.
+
+### Changed
+
+-   Use the UI Bridge v3 workspace registry and fail-closed other-window navigation. Unproven saved-workspace navigation uses VS Code's native `Switch Window` picker, while an untitled workspace asks the user to save it first; member roots are never opened as a fallback.
+-   Preserve saved projects unchanged, including groups, favorites, colors, descriptions, and member-folder entries. Saving a workspace adds one project without merging or deleting existing entries.
+-   Choose the primary working directory before creating a multi-root workspace session, and keep normal tmux session focusing on the verified fast path.
+-   Use the same responsive card shell, project colors, running animation, and attention behavior for `CURRENT WORKSPACE`, `OTHER WINDOWS`, and saved projects.
+-   Intentionally ignore transient v1 open-window state. Legacy terminal and tmux runtime bindings are not adopted or migrated; existing provider processes keep running and can be recreated or resumed under workspace-aware ownership.
+
+### Fixed
+
+-   Restore workspace-scoped AI session discovery, pending-session promotion, completion attention, and explicit attention acknowledgement across current and other windows.
+-   Keep attention visible until its Session is opened, and clear it when the Session terminal exits or the user leaves the acknowledged Session.
+-   Reuse an existing managed tmux attach terminal during Extension Host reload recovery instead of opening a duplicate terminal for the same tmux target.
+-   Recover durable readable tmux names across promotion and reload, tolerate an empty tmux server, and reject renamed or unverified managed targets.
+-   Keep workspace cards compact and fully visible in narrow sidebars, limit collapse toggling to the card summary, and assign stable fallback colors to unsaved workspaces.
+
 ## [2.1.3] 2026-07-20
 
 ### Added

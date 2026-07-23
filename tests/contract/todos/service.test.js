@@ -365,7 +365,7 @@ test('TODO-DASHBOARD-TODO-MIGRATION-SEQUENCING-001 and WEBVIEW-DASHBOARD-STARTUP
         isExtensionInstalled: () => false,
         migrateDataIfNeeded: async () => ({ projects, todos }),
         refreshDashboard: async () => events.push('refresh'),
-        publishOpenProjects: () => events.push('publish'),
+        publishOpenWorkspace: () => events.push('publish'),
         showInformationMessage: () => undefined,
         showErrorMessage: message => events.push(['error', message]),
         logError: (message, error) => events.push(['log', message, error]),

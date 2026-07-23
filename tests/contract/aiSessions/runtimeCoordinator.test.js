@@ -8,6 +8,7 @@ const {
     fakeCreateRequest,
     fakeResumeRequest,
     fakeRuntime,
+    workspaceIdentity,
 } = require('../../helpers/runtimeContract');
 const { AiSessionRuntimeCoordinator } = require('../../../out/aiSessions/runtimeCoordinator');
 const { TmuxRuntimeUnavailableError } = require('../../../out/aiSessions/runtimeTypes');
@@ -36,7 +37,7 @@ test('RUNTIME-RUNTIME-COORDINATOR-001 RUNTIME-AI-SESSION-RUNTIME-CONTROLLER-001 
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(tmux.ensureResumeCalls, 1);
     resumeGate.resolve();
-    assert.deepEqual((await Promise.all(resumes)).map(result => result.status), ['started', 'started']);
+    assert.deepEqual((await Promise.all(resumes)).map(result => result.status), ['started', 'focused']);
 
     const creates = [
         coordinator.create(fakeCreateRequest('pending-single-flight')),
@@ -98,26 +99,30 @@ test('RUNTIME-RUNTIME-COORDINATOR-001 promotes the unique pending backend and pr
     const direct = createFakeRuntimeBackend('vscode');
     const tmux = createFakeRuntimeBackend('tmux');
     tmux.pending.push(fakeRuntime('tmux', undefined, {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-one' },
+        identity: workspaceIdentity({ pendingId: 'pending-one' }),
         state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
         attached: false, tmux: { layout: 'session', sessionName: 'pending-one' },
     }));
     const coordinator = createCoordinator(direct, tmux);
 
-    const promoted = await coordinator.promotePending('pending-one', 'session-one');
+    const promoted = await coordinator.promotePending(
+        workspaceIdentity({ pendingId: 'pending-one' }), 'session-one', 'Session one'
+    );
     assert.equal(promoted[0].identity.sessionId, 'session-one');
     assert.deepEqual(tmux.promoted, [{ pendingId: 'pending-one', sessionId: 'session-one' }]);
 
     direct.pending.push(fakeRuntime('vscode', undefined, {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-two' },
+        identity: workspaceIdentity({ pendingId: 'pending-two' }),
         state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
     }));
     tmux.pending.push(fakeRuntime('tmux', undefined, {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-two' },
+        identity: workspaceIdentity({ pendingId: 'pending-two' }),
         state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
         attached: false, tmux: { layout: 'project', sessionName: 'managed', windowName: 'pending-two' },
     }));
-    const conflicted = await coordinator.promotePending('pending-two', 'never');
+    const conflicted = await coordinator.promotePending(
+        workspaceIdentity({ pendingId: 'pending-two' }), 'never', 'Never'
+    );
     assert.equal(conflicted.length, 2);
     assert.ok(conflicted.every(runtime => runtime.state === 'conflict'));
 });

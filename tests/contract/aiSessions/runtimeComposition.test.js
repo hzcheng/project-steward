@@ -16,6 +16,7 @@ const { TmuxRuntimeDiscovery } = require('../../../out/aiSessions/tmuxRuntimeDis
 const REQUIRED_COMMANDS = [
     'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
     'select-window', 'attach-session', 'has-session', 'rename-session', 'rename-window',
+    'display-message',
 ];
 
 function createTerminalService(events) {

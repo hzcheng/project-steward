@@ -1,16 +1,17 @@
 'use strict';
 
-import type { AiSessionProviderId, CodexSession, Project } from '../models';
+import type { AiSessionProviderId, CodexSession } from '../models';
 import type { AttentionAggregate } from './attentionAggregate';
-import { aggregateAttentionSnapshots } from './attentionAggregate';
+import { aggregateAttentionSnapshots, filterAcknowledgedAttentionAggregate } from './attentionAggregate';
 import { MAX_ATTENTION_ITEMS } from './attentionPayload';
 import type { AttentionPayloadItem } from './attentionPayload';
 import AiSessionAttentionMonitor from './attentionMonitor';
 import type { AiSessionAttentionSnapshot } from './attentionMonitor';
 import type { AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
-import { getAttentionProjectSummaries } from './attentionProject';
-import type { AttentionProjectSummary } from './attentionProject';
+import { getAttentionProjectKeys } from './attentionProject';
 import { getAiSessionKey } from './sessionHelpers';
+import type { WorkspaceAiSessionActionTarget, WorkspaceAiSessionViewModel } from './types';
+import { getLogicalAttentionSessionKey } from '../workspaces/sessionAttention';
 
 export interface AiSessionAttentionRuntimeEntry {
     runStartedAtMs: number;
@@ -19,7 +20,6 @@ export interface AiSessionAttentionRuntimeEntry {
 
 export interface AiSessionAttentionProvider {
     id: AiSessionProviderId;
-    projectSessionsKey: 'codexSessions' | 'kimiSessions' | 'claudeSessions';
     service: {
         getLifecycleSignals(requests: readonly AiSessionLifecycleRequest[]): Record<string, AiSessionLifecycleSignal>;
     };
@@ -27,15 +27,13 @@ export interface AiSessionAttentionProvider {
 
 export interface AiSessionAttentionControllerOptions<TRuntime extends AiSessionAttentionRuntimeEntry = AiSessionAttentionRuntimeEntry> {
     isEnabled: () => boolean;
-    getOpenProjects: () => Project[];
+    getWorkspaceTarget: () => WorkspaceAiSessionActionTarget | null;
     getProviders: () => AiSessionAttentionProvider[];
     getSessionKey?: (providerId: AiSessionProviderId, sessionId: string) => string;
-    getProjectKey: (project: Project) => string;
     getRuntimeById: (providerId: AiSessionProviderId, sessionId: string) => TRuntime | null;
     isRuntimeComplete: (runtime: TRuntime) => boolean;
     publish: (items: AttentionPayloadItem[], forceHeartbeat?: boolean) => Promise<boolean>;
     scheduleRefresh: (reason: string) => void;
-    postProjectsUpdated: (projects: AttentionProjectSummary[]) => void;
     nowMs: () => number;
 }
 
@@ -59,6 +57,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     private remoteAggregate: AttentionAggregate | null = null;
     private localItems: AttentionPayloadItem[] = [];
     private attentionKeysBySession = new Map<string, string[]>();
+    private locallyAcknowledgedEventIds = new Set<string>();
 
     constructor(private readonly options: AiSessionAttentionControllerOptions<TRuntime>) {
         this.monitor = new AiSessionAttentionMonitor({ now: options.nowMs });
@@ -72,9 +71,9 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             this.remoteAggregate = null;
             this.localItems = [];
             this.attentionKeysBySession.clear();
+            this.locallyAcknowledgedEventIds.clear();
             const published = await this.options.publish([], true);
             this.options.scheduleRefresh('attention');
-            this.postProjectsUpdated();
             return {
                 enabled: false,
                 published,
@@ -84,9 +83,9 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             };
         }
 
-        const projects = this.options.getOpenProjects();
+        const workspaceTarget = this.options.getWorkspaceTarget();
         const providers = this.options.getProviders();
-        const ownedSessions = this.getOwnedSessions(projects, providers, runtimeOverrides);
+        const ownedSessions = this.getOwnedSessions(workspaceTarget?.sessions || null, providers, runtimeOverrides);
         for (const [attentionKey, owned] of ownedSessions) {
             const keys = this.attentionKeysBySession.get(owned.baseSessionKey) || [];
             if (!keys.includes(attentionKey)) {
@@ -119,11 +118,8 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             this.options.scheduleRefresh('attention');
         }
 
-        const localResult = this.buildLocalItems(projects, providers);
+        const localResult = this.buildLocalItems(workspaceTarget, providers);
         this.localItems = localResult.items;
-        if (!this.remoteAggregate) {
-            this.postProjectsUpdated();
-        }
         const published = await this.options.publish(this.localItems);
         return {
             enabled: true,
@@ -135,8 +131,19 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     }
 
     acknowledge(eventIds: string[]): void {
-        this.monitor.acknowledge(eventIds);
-        const result = this.buildLocalItems(this.options.getOpenProjects(), this.options.getProviders());
+        const uniqueEventIds = Array.from(new Set(eventIds.filter(eventId => Boolean(eventId))));
+        for (const eventId of uniqueEventIds) {
+            this.locallyAcknowledgedEventIds.delete(eventId);
+            this.locallyAcknowledgedEventIds.add(eventId);
+            if (this.locallyAcknowledgedEventIds.size > MAX_ATTENTION_ITEMS) {
+                const oldestEventId = this.locallyAcknowledgedEventIds.values().next().value;
+                if (oldestEventId) {
+                    this.locallyAcknowledgedEventIds.delete(oldestEventId);
+                }
+            }
+        }
+        this.monitor.acknowledge(uniqueEventIds);
+        const result = this.buildLocalItems(this.options.getWorkspaceTarget(), this.options.getProviders());
         this.localItems = result.items;
     }
 
@@ -154,19 +161,18 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     }
 
     getEffectiveAggregate(): AttentionAggregate {
-        if (this.remoteAggregate) {
-            return this.remoteAggregate;
-        }
-
-        const now = this.options.nowMs();
-        return aggregateAttentionSnapshots([{
-            version: 1,
-            generatedAtMs: now,
-            items: this.localItems,
-            instanceId: '00000000000000000000000000000000',
-            sequence: 0,
-            heartbeat: 0,
-        }], new Set<string>(), now);
+        const aggregate = this.remoteAggregate || (() => {
+            const now = this.options.nowMs();
+            return aggregateAttentionSnapshots([{
+                version: 1,
+                generatedAtMs: now,
+                items: this.localItems,
+                instanceId: '00000000000000000000000000000000',
+                sequence: 0,
+                heartbeat: 0,
+            }], new Set<string>(), now);
+        })();
+        return filterAcknowledgedAttentionAggregate(aggregate, this.locallyAcknowledgedEventIds);
     }
 
     getLocalSnapshot(): Record<string, AiSessionAttentionSnapshot> {
@@ -185,7 +191,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         };
 
         Object.entries(this.monitor.getSnapshot()).forEach(([sessionKey, snapshot]) => {
-            if (snapshot.event?.eventId) {
+            if (snapshot.state === 'needsAttention' && snapshot.event?.eventId) {
                 addEvent(this.getLogicalSessionKey(sessionKey), snapshot.event.eventId);
             }
         });
@@ -204,23 +210,15 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     getAttentionEventIds(): string[] {
         return Array.from(new Set([
             ...Object.values(this.monitor.getSnapshot())
-                .map(snapshot => snapshot.event?.eventId)
+                .map(snapshot => snapshot.state === 'needsAttention' ? snapshot.event?.eventId : undefined)
                 .filter((id): id is string => Boolean(id)),
             ...this.getEffectiveAggregate().sessions
                 .reduce((eventIds, item) => eventIds.concat(item.eventIds), [] as string[]),
         ]));
     }
 
-    getProjectSummaries(): AttentionProjectSummary[] {
-        return getAttentionProjectSummaries(this.getEffectiveAggregate());
-    }
-
-    private postProjectsUpdated(): void {
-        this.options.postProjectsUpdated(this.getProjectSummaries());
-    }
-
     private getOwnedSessions(
-        projects: Project[],
+        workspaceSessions: WorkspaceAiSessionViewModel | null,
         providers: AiSessionAttentionProvider[],
         runtimeOverrides: readonly AiSessionAttentionRuntimeOverride<TRuntime>[]
     ): Map<string, {
@@ -248,9 +246,8 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                 overrides.set(baseSessionKey, entries);
             }
         }
-        for (const project of projects) {
-            for (const provider of providers) {
-                for (const session of project[provider.projectSessionsKey] || []) {
+        for (const provider of providers) {
+            for (const session of workspaceSessions?.sessionsByProvider[provider.id] || []) {
                     const baseSessionKey = this.getSessionKey(provider.id, session.id);
                     const overridden = overrides.get(baseSessionKey);
                     if (overridden?.length) {
@@ -274,7 +271,6 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                     ownedSessions.set(baseSessionKey, {
                         providerId: provider.id, session, runtime, baseSessionKey,
                     });
-                }
             }
         }
         return ownedSessions;
@@ -310,18 +306,20 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     }
 
     private buildLocalItems(
-        projects: Project[],
+        workspaceTarget: WorkspaceAiSessionActionTarget | null,
         providers: AiSessionAttentionProvider[]
     ): { items: AttentionPayloadItem[]; overflowedSessionKeys: string[] } {
         const snapshot = this.monitor.getSnapshot();
         const items: AttentionPayloadItem[] = [];
-        for (const project of projects) {
-            const projectKey = this.options.getProjectKey(project);
-            if (!projectKey) {
-                continue;
-            }
-            for (const provider of providers) {
-                for (const session of project[provider.projectSessionsKey] || []) {
+        for (const provider of providers) {
+            for (const session of workspaceTarget?.sessions.sessionsByProvider[provider.id] || []) {
+                    const root = workspaceTarget.workspace.roots.find(candidate =>
+                        candidate.id === session.primaryRootId
+                    );
+                    const attentionRootKey = root ? getAttentionProjectKeys([root.uri])[0] || '' : '';
+                    if (!attentionRootKey) {
+                        continue;
+                    }
                     const baseSessionKey = this.getSessionKey(provider.id, session.id);
                     const attentionKeys = this.attentionKeysBySession.get(baseSessionKey)
                         || [baseSessionKey];
@@ -331,7 +329,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                             continue;
                         }
                         items.push({
-                            projectId: projectKey,
+                            projectId: attentionRootKey,
                             sessionKey: attentionKey,
                             state: attention.state === 'needsAttention' ? 'needsAttention' : 'acknowledged',
                             eventId: attention.event.eventId,
@@ -339,7 +337,6 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                             observedAtMs: attention.stateChangedAt,
                         });
                     }
-                }
             }
         }
         const sorted = items
@@ -371,11 +368,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                 return sessionKey;
             }
         }
-        const runKey = /^(codex|kimi|claude):(.+):\d+:(?:vscode|tmux)$/.exec(attentionKey);
-        if (runKey) {
-            return `${runKey[1]}:${runKey[2]}`;
-        }
-        return attentionKey;
+        return getLogicalAttentionSessionKey(attentionKey);
     }
 
     private getSessionKey(providerId: AiSessionProviderId, sessionId: string): string {

@@ -5,87 +5,118 @@ import {
     quotePosixShellArg,
     serializeDirectLaunchCommand,
 } from './launchSpec';
+import type { AiSessionDirectoryScope } from './types';
 
 export type AiSessionCommandPlatform = NodeJS.Platform;
 
-export function buildCodexResumeLaunchSpec(sessionId: string, cwd: string, markerPath: string = null): AiSessionLaunchSpec {
+function buildRepeatedAdditionalDirectoryArgs(scope: AiSessionDirectoryScope): string[] {
+    return (scope?.additionalDirectories || []).reduce((args, directory) => [
+        ...args,
+        '--add-dir',
+        directory,
+    ], [] as string[]);
+}
+
+function buildClaudeAdditionalDirectoryArgs(scope: AiSessionDirectoryScope): string[] {
+    const additionalDirectories = scope?.additionalDirectories || [];
+    return additionalDirectories.length ? ['--add-dir', ...additionalDirectories] : [];
+}
+
+export function buildCodexResumeLaunchSpec(sessionId: string, scope: AiSessionDirectoryScope, markerPath: string = null): AiSessionLaunchSpec {
     return {
         executable: 'codex',
-        args: ['resume', ...(cwd ? ['--cd', cwd] : []), sessionId],
+        args: [
+            'resume',
+            ...(scope?.primaryCwd ? ['--cd', scope.primaryCwd] : []),
+            ...buildRepeatedAdditionalDirectoryArgs(scope),
+            sessionId,
+        ],
         markerPath,
         windowsDirectShell: 'current',
     };
 }
 
-export function buildCodexNewSessionLaunchSpec(cwd: string, prompt: string = null, markerPath: string = null): AiSessionLaunchSpec {
+export function buildCodexNewSessionLaunchSpec(scope: AiSessionDirectoryScope, prompt: string = null, markerPath: string = null): AiSessionLaunchSpec {
     return {
         executable: 'codex',
-        args: [...(cwd ? ['--cd', cwd] : []), ...(prompt ? [prompt] : [])],
+        args: [
+            ...(scope?.primaryCwd ? ['--cd', scope.primaryCwd] : []),
+            ...buildRepeatedAdditionalDirectoryArgs(scope),
+            ...(prompt ? [prompt] : []),
+        ],
         markerPath,
         windowsDirectShell: 'powershell',
     };
 }
 
-export function buildKimiResumeLaunchSpec(sessionId: string, cwd: string, markerPath: string = null): AiSessionLaunchSpec {
+export function buildKimiResumeLaunchSpec(sessionId: string, scope: AiSessionDirectoryScope, markerPath: string = null): AiSessionLaunchSpec {
     return {
         executable: 'kimi',
-        args: [...(cwd ? ['--work-dir', cwd] : []), '--resume', sessionId],
+        args: [
+            ...(scope?.primaryCwd ? ['--work-dir', scope.primaryCwd] : []),
+            ...buildRepeatedAdditionalDirectoryArgs(scope),
+            '--resume', sessionId,
+        ],
         markerPath,
         windowsDirectShell: 'current',
     };
 }
 
-export function buildKimiNewSessionLaunchSpec(cwd: string, prompt: string = null, markerPath: string = null): AiSessionLaunchSpec {
+export function buildKimiNewSessionLaunchSpec(scope: AiSessionDirectoryScope, prompt: string = null, markerPath: string = null): AiSessionLaunchSpec {
     return {
         executable: 'kimi',
-        args: [...(cwd ? ['--work-dir', cwd] : []), ...(prompt ? ['--prompt', prompt] : [])],
+        args: [
+            ...(scope?.primaryCwd ? ['--work-dir', scope.primaryCwd] : []),
+            ...buildRepeatedAdditionalDirectoryArgs(scope),
+            ...(prompt ? ['--prompt', prompt] : []),
+        ],
         markerPath,
         windowsDirectShell: 'powershell',
     };
 }
 
-export function buildClaudeResumeLaunchSpec(sessionId: string, cwd: string, markerPath: string = null): AiSessionLaunchSpec {
+export function buildClaudeResumeLaunchSpec(sessionId: string, scope: AiSessionDirectoryScope, markerPath: string = null): AiSessionLaunchSpec {
     return {
         executable: 'claude',
-        args: ['--resume', sessionId],
-        cwd: cwd || undefined,
+        args: [...buildClaudeAdditionalDirectoryArgs(scope), '--resume', sessionId],
+        cwd: scope?.primaryCwd || undefined,
         markerPath,
         windowsDirectShell: 'current',
     };
 }
 
-export function buildClaudeNewSessionLaunchSpec(cwd: string, title: string = null, markerPath: string = null): AiSessionLaunchSpec {
+export function buildClaudeNewSessionLaunchSpec(scope: AiSessionDirectoryScope, title: string = null, markerPath: string = null): AiSessionLaunchSpec {
     return {
         executable: 'claude',
-        args: title ? ['--name', title] : [],
-        cwd: cwd || undefined,
+        args: [...buildClaudeAdditionalDirectoryArgs(scope), ...(title ? ['--name', title] : [])],
+        cwd: scope?.primaryCwd || undefined,
         markerPath,
         windowsDirectShell: 'powershell',
     };
 }
 
-export function buildCodexResumeCommand(sessionId: string, cwd: string, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
-    return serializeDirectLaunchCommand(buildCodexResumeLaunchSpec(sessionId, cwd, markerPath), platform);
+export function buildCodexResumeCommand(sessionId: string, scope: AiSessionDirectoryScope, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
+    return serializeDirectLaunchCommand(buildCodexResumeLaunchSpec(sessionId, scope, markerPath), platform);
 }
 
-export function buildCodexNewSessionCommand(cwd: string, prompt: string = null, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
-    return serializeDirectLaunchCommand(buildCodexNewSessionLaunchSpec(cwd, prompt, markerPath), platform);
+export function buildCodexNewSessionCommand(scope: AiSessionDirectoryScope, prompt: string = null, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
+    return serializeDirectLaunchCommand(buildCodexNewSessionLaunchSpec(scope, prompt, markerPath), platform);
 }
 
-export function buildKimiResumeCommand(sessionId: string, cwd: string, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
-    return serializeDirectLaunchCommand(buildKimiResumeLaunchSpec(sessionId, cwd, markerPath), platform);
+export function buildKimiResumeCommand(sessionId: string, scope: AiSessionDirectoryScope, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
+    return serializeDirectLaunchCommand(buildKimiResumeLaunchSpec(sessionId, scope, markerPath), platform);
 }
 
-export function buildKimiNewSessionCommand(cwd: string, prompt: string = null, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
-    return serializeDirectLaunchCommand(buildKimiNewSessionLaunchSpec(cwd, prompt, markerPath), platform);
+export function buildKimiNewSessionCommand(scope: AiSessionDirectoryScope, prompt: string = null, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
+    return serializeDirectLaunchCommand(buildKimiNewSessionLaunchSpec(scope, prompt, markerPath), platform);
 }
 
-export function buildClaudeResumeCommand(sessionId: string, cwd: string, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
-    return serializeDirectLaunchCommand(buildClaudeResumeLaunchSpec(sessionId, cwd, markerPath), platform);
+export function buildClaudeResumeCommand(sessionId: string, scope: AiSessionDirectoryScope, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
+    return serializeDirectLaunchCommand(buildClaudeResumeLaunchSpec(sessionId, scope, markerPath), platform);
 }
 
-export function buildClaudeNewSessionCommand(cwd: string, title: string = null, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
-    return serializeDirectLaunchCommand(buildClaudeNewSessionLaunchSpec(cwd, title, markerPath), platform);
+export function buildClaudeNewSessionCommand(scope: AiSessionDirectoryScope, title: string = null, markerPath: string = null, platform: AiSessionCommandPlatform = process.platform): string {
+    return serializeDirectLaunchCommand(buildClaudeNewSessionLaunchSpec(scope, title, markerPath), platform);
 }
 
 export function quoteShellArg(value: string, platform: AiSessionCommandPlatform = process.platform): string {

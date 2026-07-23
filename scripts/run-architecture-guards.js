@@ -199,31 +199,31 @@ const PROTOCOL_EXPECTATIONS = [
     { file: 'extensions/attention-ui-bridge/src/extension.ts', site: 'bridge unregister reader',
         scope: { kind: 'registered-callback', variableName: 'productionUnregisterDisposable', argumentIndex: 1 },
         nodes: [{ kind: ts.SyntaxKind.CallExpression, text: 'validateAttentionUnregisterRequest(raw)' }] },
-    { file: 'src/openProjects/bridgeClient.ts', site: 'open-project client aggregate reader',
-        scope: { kind: 'class-method', className: 'OpenProjectBridgeClient', methodName: 'receiveAggregate' },
-        nodes: [{ kind: ts.SyntaxKind.CallExpression, text: 'validateOpenProjectAggregate(raw)' }] },
-    { file: 'src/openProjects/bridgeClient.ts', site: 'open-project client unregister writer',
-        scope: { kind: 'class-method', className: 'OpenProjectBridgeClient', methodName: 'dispose' },
-        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' }] },
-    { file: 'src/openProjects/bridgeClient.ts', site: 'open-project client publication writer',
-        scope: { kind: 'class-method', className: 'OpenProjectBridgeClient', methodName: 'publishInternal' },
-        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' }] },
-    ...['validateOpenProjectPublication', 'validateOpenProjectRegistration', 'validateOpenProjectAggregate']
-        .map(name => ({ file: 'src/openProjects/protocol.ts', site: `${name} validator and normalized return`,
+    { file: 'src/openWorkspaces/bridgeClient.ts', site: 'open-workspace client aggregate reader',
+        scope: { kind: 'class-method', className: 'OpenWorkspaceBridgeClient', methodName: 'receiveAggregate' },
+        nodes: [{ kind: ts.SyntaxKind.CallExpression, text: 'validateOpenWorkspaceAggregate(raw)' }] },
+    { file: 'src/openWorkspaces/bridgeClient.ts', site: 'open-workspace client unregister writer',
+        scope: { kind: 'class-method-call-callback', className: 'OpenWorkspaceBridgeClient', methodName: 'dispose', callee: 'Promise.resolve().then', argumentIndex: 0 },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: OPEN_WORKSPACE_PROTOCOL_VERSION' }] },
+    { file: 'src/openWorkspaces/bridgeClient.ts', site: 'open-workspace client publication writer',
+        scope: { kind: 'class-method', className: 'OpenWorkspaceBridgeClient', methodName: 'publishNow' },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: OPEN_WORKSPACE_PROTOCOL_VERSION' }] },
+    ...['validateOpenWorkspacePublication', 'validateOpenWorkspaceRegistration', 'validateOpenWorkspaceAggregate']
+        .map(name => ({ file: 'src/openWorkspaces/protocol.ts', site: `${name} validator and normalized return`,
             scope: { kind: 'function', name }, nodes: [
-                { kind: ts.SyntaxKind.BinaryExpression,
-                    text: `${name === 'validateOpenProjectPublication' ? 'publication' : name === 'validateOpenProjectRegistration' ? 'registration' : 'aggregate'}.protocolVersion !== OPEN_PROJECT_PROTOCOL_VERSION` },
-                { kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: OPEN_PROJECT_PROTOCOL_VERSION' },
+                { kind: ts.SyntaxKind.CallExpression,
+                    text: `requireProtocolVersion(${name === 'validateOpenWorkspacePublication' ? 'publication' : name === 'validateOpenWorkspaceRegistration' ? 'registration' : 'aggregate'}.protocolVersion)` },
+                { kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: OPEN_WORKSPACE_PROTOCOL_VERSION' },
             ] })),
-    { file: 'extensions/attention-ui-bridge/src/openProjectCoordinator.ts', site: 'coordinator unregister version forwarding',
+    { file: 'extensions/attention-ui-bridge/src/openWorkspaceCoordinator.ts', site: 'coordinator unregister version forwarding',
         scope: { kind: 'function', name: 'validateUnregisterRequest' },
         nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: request.protocolVersion' }] },
-    { file: 'extensions/attention-ui-bridge/src/openProjectCoordinator.ts', site: 'coordinator registration writer',
-        scope: { kind: 'class-method-call-callback', className: 'OpenProjectCoordinator', methodName: 'publish', callee: 'this.enqueueMutation', argumentIndex: 0 },
-        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: OPEN_PROJECT_PROTOCOL_VERSION' }] },
-    { file: 'extensions/attention-ui-bridge/src/openProjectCoordinator.ts', site: 'coordinator aggregate writer',
-        scope: { kind: 'class-method', className: 'OpenProjectCoordinator', methodName: 'scanOnce' },
-        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: OPEN_PROJECT_PROTOCOL_VERSION' }] },
+    { file: 'extensions/attention-ui-bridge/src/openWorkspaceCoordinator.ts', site: 'coordinator registration writer',
+        scope: { kind: 'class-method-call-callback', className: 'OpenWorkspaceCoordinator', methodName: 'publish', callee: 'this.enqueueMutation', argumentIndex: 0 },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: OPEN_WORKSPACE_PROTOCOL_VERSION' }] },
+    { file: 'extensions/attention-ui-bridge/src/openWorkspaceCoordinator.ts', site: 'coordinator aggregate writer',
+        scope: { kind: 'class-method', className: 'OpenWorkspaceCoordinator', methodName: 'scanOnce' },
+        nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: OPEN_WORKSPACE_PROTOCOL_VERSION' }] },
 ];
 
 function validateProtocolExpectations(root, id, risk) {
@@ -267,14 +267,14 @@ const guards = {
     'ARCH-AI-SESSION-SCAN-BOUNDARY-001'(root) {
         const risk = 'unbounded provider scans can block the extension host';
         const dashboard = parseTypescript(root, 'src/dashboard.ts', this.id, risk);
-        const hydration = parseTypescript(root, 'src/aiSessions/projectHydrationController.ts', this.id, risk);
+        const hydration = parseTypescript(root, 'src/workspaces/sessionHydrationController.ts', this.id, risk);
         if (numericInitializer(dashboard, 'AI_SESSION_INCREMENTAL_SCAN_MAX_FILES', this.id, risk) <= 0) {
             fail(this.id, risk, 'incremental scans must keep a positive finite file budget');
         }
         const policyCalls = callArguments(hydration, 'getAiSessionScanMaxFiles');
         if (policyCalls.length !== 1 || policyCalls[0].map(argument => argument.getText(hydration)).join(',')
             !== 'reason,this.options.incrementalScanMaxFiles') {
-            fail(this.id, risk, 'project hydration must apply the bounded scan policy exactly once');
+            fail(this.id, risk, 'workspace hydration must apply the bounded scan policy exactly once');
         }
         const readCalls = callArguments(hydration, 'this.options.readCoordinator.getResults');
         if (readCalls.length !== 1 || readCalls[0].length !== 1
@@ -361,10 +361,10 @@ const guards = {
     // ARCH-PROTOCOL-001
     'ARCH-PROTOCOL-001'(root) {
         const risk = 'protocol drift breaks compatibility between workspace and UI extension hosts';
-        const openProtocol = parseTypescript(root, 'src/openProjects/protocol.ts', this.id, risk);
+        const openProtocol = parseTypescript(root, 'src/openWorkspaces/protocol.ts', this.id, risk);
         const attentionProtocol = parseTypescript(root, 'src/aiSessions/attentionPayload.ts', this.id, risk);
-        if (numericInitializer(openProtocol, 'OPEN_PROJECT_PROTOCOL_VERSION', this.id, risk) !== 1) {
-            fail(this.id, risk, 'open-project protocol version must remain 1 until an explicit migration exists');
+        if (numericInitializer(openProtocol, 'OPEN_WORKSPACE_PROTOCOL_VERSION', this.id, risk) !== 3) {
+            fail(this.id, risk, 'open-workspace protocol version must remain 3 until an explicit migration exists');
         }
         if (numericInitializer(attentionProtocol, 'ATTENTION_PAYLOAD_VERSION', this.id, risk) !== 1) {
             fail(this.id, risk, 'attention payload version must remain 1 until an explicit migration exists');

@@ -1,10 +1,11 @@
 'use strict';
 
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import type * as vscode from 'vscode';
 import { serializeTmuxLaunchCommand } from './launchSpec';
 import type {
     AiSessionCreateRuntimeRequest,
+    AiSessionDurablePendingPromotionCandidate,
     AiSessionExecutableRuntimeBackend,
     AiSessionPendingRuntimeSnapshot,
     AiSessionResumeRuntimeRequest,
@@ -15,13 +16,32 @@ import type {
     TmuxRuntimeUnavailableReason,
 } from './runtimeTypes';
 import {
+    aiSessionRuntimeIdentitiesEqual,
     AiSessionRuntimeConflictError,
     AiSessionRuntimeLifecycleBlockedError,
+    AiSessionRuntimeTargetChangedError,
+    cloneAiSessionRuntimeIdentity,
+    isValidAiSessionPromotionDisplayName,
+    isValidAiSessionRuntimeIdentity,
     TmuxRuntimeUnavailableError,
 } from './runtimeTypes';
-import { getTmuxRuntimeKey, ProjectTmuxLayout, SessionTmuxLayout } from './tmuxLayout';
-import { TmuxAttachBinding, TmuxAttachBindingStore } from './tmuxAttachBindingStore';
+import {
+    getTmuxRuntimeKey,
+    parseManagedTmuxMetadata,
+    ProjectTmuxLayout,
+    SessionTmuxLayout,
+} from './tmuxLayout';
+import {
+    TmuxAttachBinding,
+    TmuxAttachBindingStore,
+    TmuxAttachProcessId,
+} from './tmuxAttachBindingStore';
 import { TmuxClient, TmuxClientError } from './tmuxClient';
+import {
+    buildReadableTmuxLocator,
+    projectTmuxSessionMatchesWorkspace,
+    tmuxLocatorMatchesIdentity,
+} from './tmuxNaming';
 import {
     TmuxAmbiguousRuntimeBinding,
     TmuxConsumedPendingBinding,
@@ -45,10 +65,13 @@ const MAX_EXCLUDED_SESSION_IDS = 1000;
 const MAX_AGGREGATE_LAUNCH_BYTES = 32 * 1024;
 const MAX_SERIALIZED_TMUX_COMMAND_BYTES = 128 * 1024;
 const LOCAL_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+const TMUX_ATTACH_RECOVERY_ENV = 'PROJECT_STEWARD_TMUX_ATTACH_ID';
+const TMUX_ATTACH_RECOVERY_TOKEN = /^[0-9a-f]{32}$/;
 
 interface AttachTerminal {
     readonly name: string;
     readonly processId: number | PromiseLike<number | undefined>;
+    readonly creationOptions?: Readonly<vscode.TerminalOptions | vscode.ExtensionTerminalOptions>;
     show(): void;
     dispose(): void;
 }
@@ -56,6 +79,7 @@ interface AttachTerminal {
 interface AttachEntry<TTerminal> {
     terminal: TTerminal;
     binding: TmuxAttachBinding;
+    recoveryToken?: string;
     focusedBinding?: TmuxAttachBinding | null;
     focusEpoch: number;
     explicitSelections: number;
@@ -82,6 +106,7 @@ export interface TmuxRuntimeBackendDependencies<TTerminal> {
 export class TmuxRuntimeBackend<TTerminal = vscode.Terminal>
 implements AiSessionExecutableRuntimeBackend<TTerminal> {
     private readonly attaches = new Map<string, AttachEntry<TTerminal>>();
+    private attachRestoreQueue: Promise<void> = Promise.resolve();
 
     constructor(private readonly dependencies: TmuxRuntimeBackendDependencies<TTerminal>) { }
 
@@ -124,6 +149,30 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         return this.dependencies.discovery.find(identity).map(runtime => this.withAttach(runtime));
     }
 
+    async listRecoverablePending(): Promise<AiSessionDurablePendingPromotionCandidate<TTerminal>[]> {
+        const candidates = await this.dependencies.runtimeStore.listRecoverablePending();
+        return candidates.map(candidate => ({
+            ...pendingSnapshotFromBinding(candidate.pendingBinding),
+            promotionRecoveryDisplayName: candidate.promotionRecoveryDisplayName,
+            recoverySessionId: candidate.recoverySessionId,
+        }) as AiSessionDurablePendingPromotionCandidate<TTerminal>);
+    }
+
+    async getRecoverablePending(
+        identity: AiSessionRuntimeIdentity & { pendingId: string }
+    ): Promise<AiSessionPendingRuntimeSnapshot<TTerminal> | null> {
+        const pendingIdentityValue = pendingIdentity(identity);
+        if (!isValidAiSessionRuntimeIdentity(pendingIdentityValue)) {
+            return null;
+        }
+        const matches = (await this.listRecoverablePending()).filter(runtime =>
+            aiSessionRuntimeIdentitiesEqual(runtime.identity, pendingIdentityValue));
+        if (matches.length > 1) {
+            throw new Error('Multiple durable tmux promotions target one pending runtime.');
+        }
+        return matches[0] || null;
+    }
+
     async ensureResume(
         request: AiSessionResumeRuntimeRequest,
         layout: AiSessionTmuxLayout = 'project'
@@ -133,13 +182,16 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         validateDispatchInputs(request.identity, request.launch);
         await this.requireAvailable();
         const identity = finalIdentity(request.identity);
-        const locator = getFinalLocator(identity, layout);
+        const preferredLocator = buildReadableTmuxLocator(identity, layout, {
+            projectName: request.projectName,
+            sessionName: request.sessionName,
+        });
         const lockKey = getTmuxRuntimeKey(identity);
         const runtime = await this.withCreationLocks(identity, layout, lockKey, async () => {
             await this.dependencies.discovery.refresh(true);
             this.throwIfCollision(identity);
             this.throwIfLifecycleBlocked(identity);
-            const existing = this.findVerified(identity, locator);
+            const existing = this.findVerified(identity);
             if (existing) {
                 await this.dependencies.runtimeStore.removeAmbiguous(identity);
                 return existing;
@@ -148,6 +200,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             if (ambiguous) {
                 throw new Error('The prior tmux creation result is ambiguous; the provider command was not sent again.');
             }
+            const locator = await this.resolveCreationLocator(identity, preferredLocator);
             return this.createFinalRuntime(request, layout, locator);
         });
         return this.attachAndFocus(runtime, this.getAttachTerminalName(runtime));
@@ -162,41 +215,61 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         validateDispatchInputs(request.identity, request.launch);
         const identity = pendingIdentity(request.identity);
         await this.auditPendingId(identity);
-        const locator = getPendingLocator(identity, layout);
+        const preferredLocator = buildReadableTmuxLocator(identity, layout, {
+            projectName: request.projectName,
+            sessionName: request.title?.trim() || 'new-session',
+        });
         const binding = validateTmuxPendingRuntimeBinding({
-            version: 1,
+            version: 2,
             state: 'pending',
             pendingId: identity.pendingId,
             provider: identity.provider,
-            projectKey: identity.projectKey,
+            workspaceScopeIdentity: identity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: [...identity.workspaceRootHostPaths],
             cwd: identity.cwd,
             createdAt: request.createdAt,
             excludedSessionIds: request.excludedSessionIds,
+            projectName: request.projectName,
             ...(request.title === undefined ? {} : { title: request.title }),
             acceptedAtMs: Date.parse(request.createdAt),
             layout,
-            locator,
+            locator: preferredLocator,
         }, this.dependencies.nowMs());
         if (!binding) {
             throw new Error('The pending runtime request is invalid or expired.');
         }
         await this.requireAvailable();
-        const lockKey = pendingLifecycleLockKey(identity.pendingId as string);
+        const lockKey = pendingLifecycleLockKey(identity);
         const runtime = await this.withCreationLocks(identity, layout, lockKey, async () => {
             await this.dependencies.discovery.refresh(true);
             this.throwIfCollision(identity);
             const lifecycle = await this.auditPendingId(identity);
-            const existing = this.findVerified(identity, locator) as AiSessionPendingRuntimeSnapshot | undefined;
+            const existing = this.findVerified(identity) as AiSessionPendingRuntimeSnapshot | undefined;
             if (existing) {
                 await this.dependencies.runtimeStore.removeAmbiguous(identity);
                 return existing;
             }
             const ambiguous = lifecycle.ambiguous;
             if (ambiguous) {
-                return this.recoverPendingAmbiguity(request, binding, locator, ambiguous);
+                const pendingAmbiguous = ambiguous as PendingAmbiguousRuntimeBinding;
+                const acceptedBinding = validateTmuxPendingRuntimeBinding({
+                    ...binding,
+                    locator: { ...pendingAmbiguous.locator },
+                    ...(pendingAmbiguous.projectName === undefined
+                        ? {} : { projectName: pendingAmbiguous.projectName }),
+                }, this.dependencies.nowMs());
+                if (!acceptedBinding) {
+                    throw new Error('The prior pending runtime binding is invalid or expired.');
+                }
+                return this.recoverPendingAmbiguity(
+                    request, acceptedBinding, acceptedBinding.locator, pendingAmbiguous
+                );
             }
+            const locator = await this.resolveCreationLocator(identity, preferredLocator);
             const dispatchBinding = validateTmuxPendingRuntimeBinding({
                 ...binding,
+                locator,
                 acceptedAtMs: this.dependencies.nowMs(),
             }, this.dependencies.nowMs());
             if (!dispatchBinding) {
@@ -213,40 +286,33 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         ambiguous: TmuxAmbiguousRuntimeBinding | null;
         pending: TmuxPendingRuntimeBinding | null;
     }> {
-        const pendingId = identity.pendingId as string;
-        const promoting = await this.dependencies.runtimeStore.getPromotingByPendingId(pendingId);
-        if (promoting && !pendingLifecycleIdentityMatches(promoting, identity)) {
-            throw pendingIdentityConflictError();
-        }
+        const promoting = await this.dependencies.runtimeStore.getPromoting(identity);
         if (promoting) {
             throw new Error('The pending tmux runtime has a promotion in progress.');
         }
-        const consumed = await this.dependencies.runtimeStore.getConsumedByPendingId(pendingId);
-        if (consumed && !pendingLifecycleIdentityMatches(consumed, identity)) {
-            throw pendingIdentityConflictError();
-        }
+        const consumed = await this.dependencies.runtimeStore.getConsumed(identity);
         if (consumed) {
             throw consumedPendingError(consumed);
         }
-        const ambiguous = await this.dependencies.runtimeStore.getAmbiguousByPendingId(pendingId);
-        if (ambiguous && !pendingLifecycleIdentityMatches(ambiguous, identity)) {
-            throw pendingIdentityConflictError();
-        }
-        const pending = await this.dependencies.runtimeStore.getPending(pendingId);
-        if (pending && !pendingLifecycleIdentityMatches(pending, identity)) {
-            throw pendingIdentityConflictError();
-        }
+        const ambiguous = await this.dependencies.runtimeStore.getAmbiguous(identity);
+        const pending = await this.dependencies.runtimeStore.getPending(identity);
         return { ambiguous, pending };
     }
 
-    async promotePending(pendingId: string, sessionId: string): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
-        if (!isIdentityField(pendingId) || !isIdentityField(sessionId)) {
+    async promotePending(
+        identity: AiSessionRuntimeIdentity & { pendingId: string },
+        sessionId: string,
+        sessionName: string
+    ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
+        const pendingIdentityValue = pendingIdentity(identity);
+        if (!isValidAiSessionRuntimeIdentity(pendingIdentityValue) || !isIdentityField(sessionId)
+            || !isValidAiSessionPromotionDisplayName(sessionName)) {
             return [];
         }
         return this.dependencies.withCreationLock<AiSessionRuntimeSnapshot<TTerminal>[]>(
-            pendingLifecycleLockKey(pendingId), async () => {
-            const storedIntent = await this.dependencies.runtimeStore.getPromotingByPendingId(pendingId);
-            const storedLiveBinding = await this.dependencies.runtimeStore.getPending(pendingId);
+            pendingLifecycleLockKey(pendingIdentityValue), async () => {
+            const storedIntent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
+            const storedLiveBinding = await this.dependencies.runtimeStore.getPending(pendingIdentityValue);
             if (storedIntent && storedLiveBinding
                 && !promotionIntentMatchesLiveBinding(storedIntent, storedLiveBinding)) {
                 throw new Error('The pending tmux promotion intent conflicts with the live pending binding.');
@@ -256,29 +322,27 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             if (!storedPending) {
                 return [];
             }
+            if (!pendingLifecycleIdentityMatches(storedPending, pendingIdentityValue)) {
+                return [];
+            }
             if (storedIntent && storedIntent.finalSessionId !== sessionId) {
                 throw new Error('The pending tmux runtime has a conflicting promotion in progress.');
             }
             await this.requireAvailable();
             await this.dependencies.discovery.refresh(true);
-            const pendingIdentityValue = identityFromPendingBinding(storedPending);
-            this.throwIfCollision(pendingIdentityValue);
-            const consumedByPendingId = await this.dependencies.runtimeStore.getConsumedByPendingId(pendingId);
-            if (consumedByPendingId
-                && !pendingLifecycleIdentityMatches(consumedByPendingId, pendingIdentityValue)) {
-                throw pendingIdentityConflictError();
+            if (!storedIntent) {
+                this.throwIfCollision(pendingIdentityValue);
             }
-            const ambiguousByPendingId = await this.dependencies.runtimeStore
-                .getAmbiguousByPendingId(pendingId);
-            if (ambiguousByPendingId
-                && !pendingLifecycleIdentityMatches(ambiguousByPendingId, pendingIdentityValue)) {
-                throw pendingIdentityConflictError();
+            const consumed = await this.dependencies.runtimeStore.getConsumed(pendingIdentityValue);
+            if (consumed && consumed.finalSessionId !== sessionId) {
+                throw new Error('The pending tmux runtime was consumed by a different promotion.');
             }
-            if (ambiguousByPendingId) {
+            const ambiguous = await this.dependencies.runtimeStore.getAmbiguous(pendingIdentityValue);
+            if (ambiguous) {
                 throw new Error('The prior pending runtime creation result remains ambiguous.');
             }
             const currentIntent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
-            const freshBinding = await this.dependencies.runtimeStore.getPending(pendingId);
+            const freshBinding = await this.dependencies.runtimeStore.getPending(pendingIdentityValue);
             if (currentIntent && freshBinding
                 && !promotionIntentMatchesLiveBinding(currentIntent, freshBinding)) {
                 throw new Error('The pending tmux promotion intent conflicts with the live pending binding.');
@@ -289,58 +353,104 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 return [];
             }
             const currentPending = this.dependencies.discovery.getPending()
-                .find(runtime => runtime.identity.pendingId === pendingId
+                .find(runtime => aiSessionRuntimeIdentitiesEqual(
+                    runtime.identity, pendingIdentityValue
+                )
                     && !!runtime.tmux && locatorsEqual(runtime.tmux, currentBinding.locator));
             const pendingSnapshot = currentPending || pendingSnapshotFromBinding(currentBinding);
-            const identity: AiSessionRuntimeIdentity = {
+            const finalIdentityValue: AiSessionRuntimeIdentity = {
                 provider: currentBinding.provider,
-                projectKey: currentBinding.projectKey,
+                workspaceScopeIdentity: currentBinding.workspaceScopeIdentity,
+                workspaceNavigationIdentity: currentBinding.workspaceNavigationIdentity,
+                workspaceRootHostPaths: [...currentBinding.workspaceRootHostPaths],
                 cwd: currentBinding.cwd,
                 sessionId,
             };
-            const finalLocator = getFinalLocator(identity, currentBinding.layout);
-            const finalLockKey = getTmuxRuntimeKey(identity);
+            const preferredFinal = buildReadableTmuxLocator(finalIdentityValue, currentBinding.layout, {
+                projectName: currentBinding.projectName || 'workspace',
+                sessionName,
+            });
+            const finalLocator: AiSessionTmuxLocator = currentBinding.layout === 'project'
+                ? { ...preferredFinal, sessionName: currentBinding.locator.sessionName }
+                : preferredFinal;
+            const finalLockKey = getTmuxRuntimeKey(finalIdentityValue);
             return this.dependencies.withCreationLock<AiSessionRuntimeSnapshot<TTerminal>[]>(
                 finalLockKey,
                 async () => {
                     await this.dependencies.discovery.refresh(true);
-                    this.throwIfCollision(pendingIdentityValue);
-                    this.throwIfCollision(identity);
                     const intent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
+                    if (!intent) {
+                        this.throwIfCollision(pendingIdentityValue);
+                    }
+                    this.throwIfCollision(finalIdentityValue);
                     const expectedIntent = promotionIntent(currentBinding, {
                         ...pendingSnapshot,
                         markerPath: intent?.markerPath ?? pendingSnapshot.markerPath,
-                    }, identity, finalLocator, this.dependencies.nowMs());
+                    }, finalIdentityValue, sessionName, finalLocator, this.dependencies.nowMs());
                     if (intent && !promotionIntentsMatch(intent, expectedIntent)) {
                         throw new Error('The pending tmux runtime has a conflicting promotion in progress.');
                     }
                     const consumed = await this.dependencies.runtimeStore.getConsumed(pendingIdentityValue);
                     if (consumed) {
                         if (consumed.finalSessionId !== sessionId
+                            || consumed.finalSessionName !== sessionName
                             || !locatorsEqual(consumed.finalLocator, finalLocator)) {
                             throw new Error('The pending tmux runtime was consumed by a different promotion.');
                         }
-                        await this.dependencies.runtimeStore.removePromoting(pendingIdentityValue);
-                        await this.dependencies.runtimeStore.removePending(pendingId);
-                        const completed = this.findVerified(identity, finalLocator);
-                        return completed ? [this.withAttach(completed)] : [];
+                        const completed = this.findVerified(finalIdentityValue, finalLocator);
+                        if (!completed) {
+                            return [];
+                        }
+                        await this.finishPromotionCleanup(pendingSnapshot, completed, pendingIdentityValue);
+                        return [this.withAttach(completed)];
                     }
-                    const compatible = this.findVerified(identity, finalLocator);
+                    const compatible = this.findVerified(finalIdentityValue, finalLocator);
                     if (compatible) {
                         if (!intent) {
                             return [this.withAttach(asConflict(compatible)), this.withAttach(asConflict(pendingSnapshot))];
                         }
-                        return this.completePromotion(pendingSnapshot, identity, finalLocator,
-                            compatible, pendingIdentityValue);
+                        return this.completePromotion(pendingSnapshot, finalIdentityValue, sessionName,
+                            finalLocator, compatible, pendingIdentityValue);
                     }
-                    if (intent && await this.promotionTransitionMatches(intent, identity)) {
-                        await this.writeFinalMetadata(identity, finalLocator, {
+                    const differentlyNamedFinal = this.findVerified(finalIdentityValue);
+                    if (differentlyNamedFinal) {
+                        return [
+                            this.withAttach(asConflict(differentlyNamedFinal)),
+                            this.withAttach(asConflict(pendingSnapshot)),
+                        ];
+                    }
+                    if (intent && await this.promotionTransitionMatches(intent, finalIdentityValue)) {
+                        await this.writeFinalMetadata(finalIdentityValue, finalLocator, {
                             createdAt: intent.createdAt,
                             markerPath: intent.markerPath,
                         });
                         await this.dependencies.client.clearPendingMetadata(finalLocator);
-                        return this.verifyAndCompletePromotion(pendingSnapshot, identity,
-                            finalLocator, pendingIdentityValue);
+                        return this.verifyAndCompletePromotion(pendingSnapshot, finalIdentityValue,
+                            sessionName, finalLocator, pendingIdentityValue);
+                    }
+                    if (intent && await this.sessionPromotionPartiallyRenamed(intent)) {
+                        const sourceWindow = intent.sourceLocator.windowName || SESSION_WINDOW;
+                        const finalWindow = intent.finalLocator.windowName;
+                        if (!finalWindow) {
+                            throw new Error('The pending tmux promotion state is ambiguous; no mutation was attempted.');
+                        }
+                        try {
+                            await this.dependencies.client.renameWindow(
+                                intent.finalLocator.sessionName, sourceWindow, finalWindow
+                            );
+                            await this.writeFinalMetadata(finalIdentityValue, finalLocator, {
+                                createdAt: intent.createdAt,
+                                markerPath: intent.markerPath,
+                            });
+                            await this.dependencies.client.clearPendingMetadata(finalLocator);
+                        } catch (error) {
+                            await this.dependencies.discovery.refresh(true);
+                            if (!this.findVerified(finalIdentityValue, finalLocator)) {
+                                throw error;
+                            }
+                        }
+                        return this.verifyAndCompletePromotion(pendingSnapshot, finalIdentityValue,
+                            sessionName, finalLocator, pendingIdentityValue);
                     }
                     const sourcePendingVerified = !!currentPending || !!(intent
                         && await this.pendingMetadataMatches(pendingIdentityValue,
@@ -358,14 +468,14 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                     try {
                         const sourceLocator = currentPending?.tmux || currentBinding.locator;
                         await this.renameRuntime(sourceLocator, finalLocator);
-                        await this.writeFinalMetadata(identity, finalLocator, {
+                        await this.writeFinalMetadata(finalIdentityValue, finalLocator, {
                             createdAt: pendingSnapshot.createdAt,
                             markerPath: pendingSnapshot.markerPath,
                         });
                         await this.dependencies.client.clearPendingMetadata(finalLocator);
                     } catch (error) {
                         await this.dependencies.discovery.refresh(true);
-                        const recovered = this.findVerified(identity, finalLocator);
+                        const recovered = this.findVerified(finalIdentityValue, finalLocator);
                         if (!recovered) {
                             const sourceStillVerified = await this.pendingMetadataMatches(
                                 pendingIdentityValue, currentBinding.locator,
@@ -377,8 +487,8 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                             throw error;
                         }
                     }
-                    return this.verifyAndCompletePromotion(pendingSnapshot, identity,
-                        finalLocator, pendingIdentityValue);
+                    return this.verifyAndCompletePromotion(pendingSnapshot, finalIdentityValue,
+                        sessionName, finalLocator, pendingIdentityValue);
                 }
             );
         });
@@ -394,7 +504,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             );
             const windowName = intent.finalLocator.layout === 'project'
                 ? intent.finalLocator.windowName
-                : SESSION_WINDOW;
+                : intent.finalLocator.windowName || SESSION_WINDOW;
             if (!windowName) {
                 return false;
             }
@@ -403,7 +513,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             );
             const pendingIdentityValue: AiSessionRuntimeIdentity = {
                 provider: intent.provider,
-                projectKey: intent.projectKey,
+                workspaceScopeIdentity: intent.workspaceScopeIdentity,
+                workspaceNavigationIdentity: intent.workspaceNavigationIdentity,
+                workspaceRootHostPaths: [...intent.workspaceRootHostPaths],
                 cwd: intent.cwd,
                 pendingId: intent.pendingId,
             };
@@ -418,11 +530,52 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             const identityOptions = intent.layout === 'project' ? windowOptions : sessionOptions;
             const baseOptions = intent.layout === 'project' ? sessionOptions : windowOptions;
             const expectedBase = intent.layout === 'project'
-                ? projectSessionMetadata(intent.projectKey)
+                ? projectSessionMetadata(pendingIdentityValue)
                 : sessionWindowMetadata();
             return recordsEqual(baseOptions, expectedBase)
                 && [pendingMetadata, finalMetadata, bothMetadata]
                     .some(expected => recordsEqual(identityOptions, expected));
+        } catch (_error) {
+            return false;
+        }
+    }
+
+    private async sessionPromotionPartiallyRenamed(
+        intent: TmuxPromotingRuntimeBinding
+    ): Promise<boolean> {
+        if (intent.layout !== 'session') {
+            return false;
+        }
+        const sourceWindow = intent.sourceLocator.windowName || SESSION_WINDOW;
+        const finalWindow = intent.finalLocator.windowName;
+        if (!finalWindow || sourceWindow === finalWindow) {
+            return false;
+        }
+        try {
+            const rows = await this.dependencies.client.listWindows();
+            const finalSessionRows = rows.filter(row =>
+                row.sessionName === intent.finalLocator.sessionName);
+            if (finalSessionRows.length !== 1 || finalSessionRows[0].windowName !== sourceWindow
+                || rows.some(row => row.sessionName === intent.sourceLocator.sessionName)) {
+                return false;
+            }
+            const sessionOptions = await this.dependencies.client.getSessionOptions(
+                intent.finalLocator.sessionName
+            );
+            const windowOptions = await this.dependencies.client.getWindowOptions(
+                intent.finalLocator.sessionName, sourceWindow
+            );
+            const pendingIdentityValue: AiSessionRuntimeIdentity = {
+                provider: intent.provider,
+                workspaceScopeIdentity: intent.workspaceScopeIdentity,
+                workspaceNavigationIdentity: intent.workspaceNavigationIdentity,
+                workspaceRootHostPaths: [...intent.workspaceRootHostPaths],
+                cwd: intent.cwd,
+                pendingId: intent.pendingId,
+            };
+            return recordsEqual(sessionOptions, fullMetadata(
+                pendingIdentityValue, intent.layout, intent.createdAt, intent.markerPath
+            )) && recordsEqual(windowOptions, sessionWindowMetadata());
         } catch (_error) {
             return false;
         }
@@ -445,6 +598,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     private async verifyAndCompletePromotion(
         pending: AiSessionRuntimeSnapshot,
         identity: AiSessionRuntimeIdentity,
+        finalSessionName: string,
         finalLocator: AiSessionTmuxLocator,
         pendingIdentityValue: AiSessionRuntimeIdentity
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
@@ -453,30 +607,61 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!promoted) {
             throw new Error('The promoted tmux runtime could not be verified.');
         }
-        return this.completePromotion(pending, identity, finalLocator, promoted, pendingIdentityValue);
+        return this.completePromotion(
+            pending, identity, finalSessionName, finalLocator, promoted, pendingIdentityValue
+        );
     }
 
     private async completePromotion(
         pending: AiSessionRuntimeSnapshot,
         identity: AiSessionRuntimeIdentity,
+        finalSessionName: string,
         finalLocator: AiSessionTmuxLocator,
         promoted: AiSessionRuntimeSnapshot,
         pendingIdentityValue: AiSessionRuntimeIdentity
     ): Promise<AiSessionRuntimeSnapshot<TTerminal>[]> {
         await this.persistKnown(identity, finalLocator, promoted);
-        await this.persistConsumed(pending, identity, finalLocator);
-        await this.dependencies.runtimeStore.removePromoting(pendingIdentityValue);
-        await this.dependencies.runtimeStore.removePending(pendingIdentityValue.pendingId as string);
-        await this.dependencies.discovery.refresh(true);
-        await this.migrateAttach(pending, promoted);
+        await this.persistConsumed(pending, identity, finalSessionName, finalLocator);
+        await this.finishPromotionCleanup(pending, promoted, pendingIdentityValue);
         return [this.withAttach(promoted)];
+    }
+
+    private async finishPromotionCleanup(
+        pending: AiSessionRuntimeSnapshot,
+        promoted: AiSessionRuntimeSnapshot,
+        pendingIdentityValue: AiSessionRuntimeIdentity
+    ): Promise<void> {
+        await this.migrateAttach(pending, promoted);
+        await this.dependencies.runtimeStore.removePending(pendingIdentityValue);
+        await this.dependencies.discovery.refresh(true);
+        await this.dependencies.runtimeStore.removePromoting(pendingIdentityValue);
     }
 
     async focus(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void> {
         if (!runtime || runtime.backend !== 'tmux' || !runtime.tmux) {
             return;
         }
+        await this.attachRestoreQueue;
+        await this.verifyFocusTarget(runtime);
         await this.attachAndFocus(runtime, this.getAttachTerminalName(runtime));
+    }
+
+    private async verifyFocusTarget(runtime: AiSessionRuntimeSnapshot<TTerminal>): Promise<void> {
+        if (!runtime.tmux) {
+            throw new AiSessionRuntimeTargetChangedError();
+        }
+        const target = await this.dependencies.client.getTargetWindow(runtime.tmux);
+        const metadata = target ? parseManagedTmuxMetadata(target.metadata) : null;
+        const actualLocator: AiSessionTmuxLocator | null = target && metadata ? {
+            layout: metadata.layout,
+            sessionName: target.sessionName,
+            ...(metadata.layout === 'project' || runtime.tmux.windowName
+                ? { windowName: target.windowName } : {}),
+        } : null;
+        if (!metadata || !actualLocator || !locatorsEqual(actualLocator, runtime.tmux)
+            || !aiSessionRuntimeIdentitiesEqual(metadata, runtime.identity)) {
+            throw new AiSessionRuntimeTargetChangedError();
+        }
     }
 
     getFocusedRuntime(terminal: TTerminal | null | undefined): AiSessionRuntimeSnapshot<TTerminal> | null {
@@ -503,7 +688,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!entry || entry.binding.layout !== 'project') {
             return {
                 monitored: false, changed: false,
-                identity: previous ? { ...previous.identity } : null,
+                identity: previous ? cloneAiSessionRuntimeIdentity(previous.identity) : null,
             };
         }
         const focusEpoch = entry.focusEpoch;
@@ -513,14 +698,14 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             const current = this.getFocusedRuntime(terminal);
             return {
                 monitored: true, changed: false,
-                identity: current ? { ...current.identity } : null,
+                identity: current ? cloneAiSessionRuntimeIdentity(current.identity) : null,
             };
         }
         const matches = activeWindow ? [
             ...this.dependencies.discovery.getActive(),
             ...this.dependencies.discovery.getPending(),
         ].filter(runtime => runtime.tmux?.layout === 'project'
-            && runtime.identity.projectKey === entry.binding.projectKey
+            && runtime.identity.workspaceScopeIdentity === entry.binding.workspaceScopeIdentity
             && runtime.tmux.sessionName === activeWindow.sessionName
             && runtime.tmux.windowName === activeWindow.windowName) : [];
         if (matches.length > 1) {
@@ -534,7 +719,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         return {
             monitored: true,
             changed: !runtimeIdentityEquals(previous?.identity || null, next?.identity || null),
-            identity: next ? { ...next.identity } : null,
+            identity: next ? cloneAiSessionRuntimeIdentity(next.identity) : null,
         };
     }
 
@@ -550,29 +735,136 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         entry.focusEpoch++;
         this.attaches.delete(key);
         const terminal = attachTerminal(entry.terminal);
-        this.dependencies.attachStore.remove(terminal.processId);
+        this.removePersistedAttach(entry.recoveryToken || null, terminal.processId);
         terminal.dispose();
     }
 
-    async restoreAttachTerminals(terminals: readonly TTerminal[]): Promise<void> {
+    isAttachTerminalCandidate(terminal: TTerminal): boolean {
+        const attach = attachTerminal(terminal);
+        return getTmuxAttachRecoveryToken(attach.creationOptions) !== null
+            || getTmuxAttachSessionName(
+                attach.creationOptions,
+                this.dependencies.client.getExecutablePath()
+            ) !== null;
+    }
+
+    restoreAttachTerminals(terminals: readonly TTerminal[]): Promise<void> {
+        const restore = this.attachRestoreQueue.then(
+            () => this.restoreAttachTerminalsOnce(terminals)
+        );
+        this.attachRestoreQueue = restore.catch(() => undefined);
+        return restore;
+    }
+
+    private async restoreAttachTerminalsOnce(terminals: readonly TTerminal[]): Promise<void> {
         await this.dependencies.discovery.refresh(true);
         for (const terminal of terminals || []) {
             const attach = attachTerminal(terminal);
+            if ([...this.attaches.values()].some(entry => entry.terminal === terminal)) {
+                continue;
+            }
             const processId = await resolveProcessId(attach.processId);
             if (processId === null) {
                 continue;
             }
-            const binding = this.dependencies.attachStore.get(processId);
-            const runtime = binding && terminalTitleMatches(attach.name, binding)
-                ? this.runtimeForBinding(binding)
-                : undefined;
-            if (!binding || !runtime || this.attaches.has(registryKey(runtime))) {
-                this.dependencies.attachStore.remove(processId);
+            const recoveryToken = getTmuxAttachRecoveryToken(attach.creationOptions);
+            const recovery = recoveryToken
+                ? this.dependencies.attachStore.getRecovery(recoveryToken)
+                : null;
+            let binding = recovery?.binding || this.dependencies.attachStore.get(processId);
+            const launchSessionName = getTmuxAttachSessionName(
+                attach.creationOptions, this.dependencies.client.getExecutablePath()
+            );
+            const bindingMatchesTerminal = binding
+                ? Boolean(recovery) || terminalMatchesBinding(attach, binding, launchSessionName)
+                : false;
+            let runtime = bindingMatchesTerminal ? this.runtimeForBinding(binding as TmuxAttachBinding)
+                : await this.runtimeForAttachSession(launchSessionName);
+            if (!bindingMatchesTerminal && runtime) {
+                binding = attachBinding(runtime, getTerminalCreationName(attach)
+                    || this.getAttachTerminalName(runtime));
+            }
+            if (binding?.pendingId && bindingMatchesTerminal && !runtime) {
+                const pendingIdentityValue: AiSessionRuntimeIdentity = {
+                    provider: binding.provider,
+                    workspaceScopeIdentity: binding.workspaceScopeIdentity,
+                    workspaceNavigationIdentity: binding.workspaceNavigationIdentity,
+                    workspaceRootHostPaths: [...binding.workspaceRootHostPaths],
+                    cwd: binding.cwd,
+                    pendingId: binding.pendingId,
+                };
+                const consumed = await this.dependencies.runtimeStore.getConsumed(pendingIdentityValue);
+                if (consumed) {
+                    const finalIdentityValue: AiSessionRuntimeIdentity = {
+                        ...pendingIdentityValue,
+                        pendingId: undefined,
+                        sessionId: consumed.finalSessionId,
+                    };
+                    const promoted = this.findVerified(finalIdentityValue, consumed.finalLocator);
+                    if (promoted) {
+                        binding = attachBinding(promoted, binding.terminalNamePrefix);
+                        runtime = promoted;
+                    } else {
+                        const intent = await this.dependencies.runtimeStore.getPromoting(
+                            pendingIdentityValue
+                        );
+                        const intentPending = intent
+                            && consumedMatchesPromotionIntent(consumed, intent)
+                            ? pendingSnapshotFromBinding(intent.pendingBinding) : null;
+                        if (intentPending && bindingTargetsRuntime(binding, intentPending)) {
+                            const key = registryKey(intentPending);
+                            if (!this.attaches.has(key)) {
+                                this.attaches.set(key, {
+                                    terminal, binding, focusedBinding: binding,
+                                    ...(recoveryToken ? { recoveryToken } : {}),
+                                    focusEpoch: 0, explicitSelections: 0,
+                                });
+                                this.persistAttachBinding(
+                                    attach.processId, binding, recoveryToken
+                                );
+                            }
+                        } else {
+                            this.removePersistedAttach(recoveryToken, processId);
+                        }
+                        continue;
+                    }
+                } else {
+                    const intent = await this.dependencies.runtimeStore.getPromoting(pendingIdentityValue);
+                    const intentPending = intent ? pendingSnapshotFromBinding(intent.pendingBinding) : null;
+                    if (intentPending && bindingTargetsRuntime(binding, intentPending)) {
+                        const key = registryKey(intentPending);
+                        if (!this.attaches.has(key)) {
+                            this.attaches.set(key, {
+                                terminal, binding, focusedBinding: binding,
+                                ...(recoveryToken ? { recoveryToken } : {}),
+                                focusEpoch: 0, explicitSelections: 0,
+                            });
+                            this.persistAttachBinding(
+                                attach.processId, binding, recoveryToken
+                            );
+                        }
+                        continue;
+                    }
+                }
+            }
+            if (!binding || !runtime) {
+                this.removePersistedAttach(recoveryToken, processId);
                 continue;
             }
-            this.attaches.set(registryKey(runtime), {
-                terminal, binding, focusedBinding: binding, focusEpoch: 0, explicitSelections: 0,
+            const key = registryKey(runtime);
+            const existing = this.attaches.get(key);
+            if (existing) {
+                if (existing.terminal !== terminal) {
+                    this.removePersistedAttach(recoveryToken, processId);
+                }
+                continue;
+            }
+            this.attaches.set(key, {
+                terminal, binding, focusedBinding: binding,
+                ...(recoveryToken ? { recoveryToken } : {}),
+                focusEpoch: 0, explicitSelections: 0,
             });
+            this.persistAttachBinding(attach.processId, binding, recoveryToken);
         }
         await this.dependencies.attachStore.flush();
     }
@@ -584,7 +876,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             }
             entry.focusEpoch++;
             this.attaches.delete(key);
-            this.dependencies.attachStore.remove(attachTerminal(terminal).processId);
+            this.removePersistedAttach(
+                entry.recoveryToken || null, attachTerminal(terminal).processId
+            );
         }
     }
 
@@ -597,7 +891,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         let providerLaunchAttempted = false;
         try {
             await this.createTarget(layout, locator, request.identity.cwd,
-                serializeTmuxLaunchCommand(request.launch), request.identity.projectKey,
+                serializeTmuxLaunchCommand(request.launch), request.identity,
                 async () => {
                     await this.persistAmbiguous(request.identity, locator);
                     providerLaunchAttempted = true;
@@ -630,7 +924,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         let providerLaunchAttempted = false;
         try {
             await this.createTarget(binding.layout, locator, request.identity.cwd,
-                serializeTmuxLaunchCommand(request.launch), request.identity.projectKey,
+                serializeTmuxLaunchCommand(request.launch), request.identity,
                 async () => {
                     await this.persistAmbiguous(request.identity, locator, request, binding);
                     providerLaunchAttempted = true;
@@ -658,24 +952,28 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         locator: AiSessionTmuxLocator,
         cwd: string,
         command: string,
-        projectKey: string,
+        identity: AiSessionRuntimeIdentity,
         onProviderLaunch: () => Promise<void>
     ): Promise<void> {
         if (layout === 'session') {
             if (await this.dependencies.client.hasSession(locator.sessionName)) {
                 throw new Error('The requested tmux session name is already occupied by an unverified target.');
             }
+            const windowName = locator.windowName || SESSION_WINDOW;
             await onProviderLaunch();
-            await this.dependencies.client.createSession(locator.sessionName, SESSION_WINDOW, cwd, command);
-            await this.dependencies.client.configureManagedWindow(locator.sessionName, SESSION_WINDOW);
+            await this.dependencies.client.createSession(locator.sessionName, windowName, cwd, command);
+            await this.dependencies.client.configureManagedWindow(locator.sessionName, windowName);
             return;
         }
 
+        if (!projectTmuxSessionMatchesWorkspace(locator.sessionName, identity)) {
+            throw new Error('The requested project tmux session is an unverified target.');
+        }
         const hasSession = await this.dependencies.client.hasSession(locator.sessionName);
-        const compatibleContainer = this.projectContainerIsVerified(locator, projectKey)
+        const compatibleContainer = this.projectContainerIsVerified(locator, identity.workspaceScopeIdentity)
             || (hasSession && recordsEqual(
                 await this.dependencies.client.getSessionOptions(locator.sessionName),
-                projectSessionMetadata(projectKey)
+                projectSessionMetadata(identity)
             ));
         if (hasSession && !compatibleContainer) {
             throw new Error('The requested project tmux session is occupied by an unverified target.');
@@ -685,7 +983,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 locator.sessionName, PROJECT_BOOTSTRAP_WINDOW, cwd, PROJECT_BOOTSTRAP_COMMAND
             );
             await this.dependencies.client.setSessionOptions(locator.sessionName,
-                projectSessionMetadata(projectKey));
+                projectSessionMetadata(identity));
         }
         if (!locator.windowName) {
             throw new Error('A project tmux runtime requires a window name.');
@@ -698,11 +996,46 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         await this.dependencies.client.configureManagedWindow(locator.sessionName, locator.windowName);
     }
 
-    private projectContainerIsVerified(locator: AiSessionTmuxLocator, projectKey: string): boolean {
+    private projectContainerIsVerified(locator: AiSessionTmuxLocator, workspaceScopeIdentity: string): boolean {
         return [...this.dependencies.discovery.getActive(), ...this.dependencies.discovery.getPending()]
             .some(runtime => runtime.tmux?.layout === 'project'
                 && runtime.tmux.sessionName === locator.sessionName
-                && runtime.identity.projectKey === projectKey);
+                && runtime.identity.workspaceScopeIdentity === workspaceScopeIdentity);
+    }
+
+    private async resolveCreationLocator(
+        identity: AiSessionRuntimeIdentity,
+        preferred: AiSessionTmuxLocator
+    ): Promise<AiSessionTmuxLocator> {
+        if (preferred.layout !== 'project') {
+            return { ...preferred };
+        }
+        const rows = await this.dependencies.client.listWindows();
+        const expected = projectSessionMetadata(identity);
+        const containers = new Map<string, string>();
+        for (const row of rows) {
+            if (recordsEqual(row.sessionMetadata, expected) && !containers.has(row.sessionName)) {
+                containers.set(row.sessionName, row.windowName);
+            }
+        }
+        if (containers.size === 0) {
+            return { ...preferred };
+        }
+        const hasInvalidContainer = [...containers.keys()].some(sessionName =>
+            !projectTmuxSessionMatchesWorkspace(sessionName, identity));
+        if (containers.size === 1 && !hasInvalidContainer) {
+            return { ...preferred, sessionName: containers.keys().next().value as string };
+        }
+        const conflicts = [...containers].map(([sessionName, windowName]) => ({
+            identity: cloneAiSessionRuntimeIdentity(identity),
+            backend: 'tmux' as const,
+            state: 'conflict' as const,
+            markerPath: '',
+            runStartedAtMs: 0,
+            attached: false,
+            tmux: { layout: 'project' as const, sessionName, windowName },
+        }));
+        throw new AiSessionRuntimeConflictError(conflicts);
     }
 
     private withCreationLocks<T>(
@@ -714,7 +1047,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (layout !== 'project') {
             return this.dependencies.withCreationLock(identityLockKey, operation);
         }
-        return this.dependencies.withCreationLock(`project:${identity.projectKey}`, () =>
+        return this.dependencies.withCreationLock(`project:${identity.workspaceScopeIdentity}`, () =>
             this.dependencies.withCreationLock(identityLockKey, operation));
     }
 
@@ -729,12 +1062,13 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 throw new Error('A project tmux runtime requires a window name.');
             }
             await this.dependencies.client.setSessionOptions(locator.sessionName,
-                projectSessionMetadata(identity.projectKey));
+                projectSessionMetadata(identity));
             await this.dependencies.client.setWindowOptions(locator.sessionName, locator.windowName, full);
             return;
         }
         await this.dependencies.client.setSessionOptions(locator.sessionName, full);
-        await this.dependencies.client.setWindowOptions(locator.sessionName, SESSION_WINDOW,
+        await this.dependencies.client.setWindowOptions(locator.sessionName,
+            locator.windowName || SESSION_WINDOW,
             sessionWindowMetadata());
     }
 
@@ -754,13 +1088,15 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         markerPath: string
     ): Promise<void> {
         const sessionOptions = await this.dependencies.client.getSessionOptions(locator.sessionName);
-        const windowName = locator.layout === 'project' ? locator.windowName : SESSION_WINDOW;
+        const windowName = locator.layout === 'project'
+            ? locator.windowName
+            : locator.windowName || SESSION_WINDOW;
         if (!windowName) {
             throw new Error('The pending tmux metadata could not be verified.');
         }
         const windowOptions = await this.dependencies.client.getWindowOptions(locator.sessionName, windowName);
         const expectedSession = locator.layout === 'project'
-            ? projectSessionMetadata(identity.projectKey)
+            ? projectSessionMetadata(identity)
             : fullMetadata(identity, locator.layout, createdAt, markerPath);
         const expectedWindow = locator.layout === 'project'
             ? fullMetadata(identity, locator.layout, createdAt, markerPath)
@@ -784,16 +1120,18 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             && Number.isFinite(lifecycle.runStartedAtMs)
             && lifecycle.runStartedAtMs > 0;
         await this.dependencies.runtimeStore.setKnown({
-            version: 1,
+            version: 2,
             state: 'known',
             provider: identity.provider,
             sessionId: identity.sessionId,
-            projectKey: identity.projectKey,
+            workspaceScopeIdentity: identity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: [...identity.workspaceRootHostPaths],
+            cwd: identity.cwd,
             layout: locator.layout,
             locator: { ...locator },
             lastSeenAtMs: this.dependencies.nowMs(),
             ...(hasLifecycleEvidence ? {
-                cwd: identity.cwd,
                 markerPath: lifecycle.markerPath,
                 runStartedAtMs: lifecycle.runStartedAtMs,
             } : {}),
@@ -840,17 +1178,21 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             throw new Error('A pending ambiguity tombstone requires the complete accepted request.');
         }
         const record: TmuxAmbiguousRuntimeBinding = {
-            version: 1,
+            version: 2,
             state: 'ambiguous',
             provider: identity.provider,
-            projectKey: identity.projectKey,
+            workspaceScopeIdentity: identity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: [...identity.workspaceRootHostPaths],
+            cwd: identity.cwd,
             ...(identity.sessionId !== undefined
                 ? { sessionId: identity.sessionId }
                 : {
                     pendingId: identity.pendingId as string,
-                    cwd: pendingBinding?.cwd as string,
                     createdAt: pendingBinding?.createdAt as string,
                     excludedSessionIds: [...pendingBinding?.excludedSessionIds || []],
+                    ...(pendingBinding?.projectName === undefined
+                        ? {} : { projectName: pendingBinding.projectName }),
                     ...(pendingBinding?.title === undefined ? {} : { title: pendingBinding.title }),
                     ...(pendingRequest?.launch.markerPath
                         ? { markerPath: pendingRequest.launch.markerPath }
@@ -916,19 +1258,23 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     private async persistConsumed(
         pending: AiSessionRuntimeSnapshot,
         finalIdentityValue: AiSessionRuntimeIdentity,
+        finalSessionName: string,
         finalLocator: AiSessionTmuxLocator
     ): Promise<void> {
         if (!pending.identity.pendingId || !finalIdentityValue.sessionId) {
             throw new Error('A consumed pending runtime requires pending and final IDs.');
         }
         if (await this.dependencies.runtimeStore.setConsumed({
-            version: 1,
+            version: 2,
             state: 'consumed',
             pendingId: pending.identity.pendingId,
             provider: pending.identity.provider,
-            projectKey: pending.identity.projectKey,
+            workspaceScopeIdentity: pending.identity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: pending.identity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: [...pending.identity.workspaceRootHostPaths],
             cwd: pending.identity.cwd,
             finalSessionId: finalIdentityValue.sessionId,
+            finalSessionName,
             layout: finalLocator.layout,
             finalLocator: { ...finalLocator },
             consumedAtMs: this.dependencies.nowMs(),
@@ -939,10 +1285,15 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
 
     private findVerified(
         identity: AiSessionRuntimeIdentity,
-        locator: AiSessionTmuxLocator
+        requiredLocator?: AiSessionTmuxLocator
     ): AiSessionRuntimeSnapshot | undefined {
-        return this.dependencies.discovery.find(identity)
-            .find(runtime => !!runtime.tmux && locatorsEqual(runtime.tmux, locator));
+        const matches = this.dependencies.discovery.find(identity)
+            .filter(runtime => !!runtime.tmux
+                && tmuxLocatorMatchesIdentity(runtime.tmux as AiSessionTmuxLocator, identity)
+                && (!requiredLocator || locatorsEqual(
+                    runtime.tmux as AiSessionTmuxLocator, requiredLocator
+                )));
+        return matches.length === 1 ? matches[0] : undefined;
     }
 
     private throwIfCollision(identity: AiSessionRuntimeIdentity): void {
@@ -956,6 +1307,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     private throwIfLifecycleBlocked(identity: AiSessionRuntimeIdentity): void {
         const blockers = this.getLifecycleBlockers().filter(runtime =>
             runtime.identity.provider === identity.provider
+            && runtime.identity.workspaceScopeIdentity === identity.workspaceScopeIdentity
             && runtime.identity.sessionId === identity.sessionId);
         if (blockers.length) {
             throw new AiSessionRuntimeLifecycleBlockedError(blockers);
@@ -980,25 +1332,30 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             let entry = this.attaches.get(key);
             if (!entry) {
                 const binding = attachBinding(runtime, terminalName);
+                const recoveryToken = createAttachRecoveryToken();
                 const terminal = this.dependencies.createTerminal({
                     name: terminalName,
                     shellPath: this.dependencies.client.getExecutablePath(),
                     shellArgs: ['attach-session', '-t', runtime.tmux.sessionName],
-                    env: { TMUX: null },
+                    env: { TMUX: null, [TMUX_ATTACH_RECOVERY_ENV]: recoveryToken },
                 });
                 entry = {
-                    terminal, binding, focusedBinding: binding,
+                    terminal, binding, recoveryToken, focusedBinding: binding,
                     focusEpoch: 0, explicitSelections: 0,
                 };
                 this.attaches.set(key, entry);
-                this.dependencies.attachStore.set(attachTerminal(terminal).processId, binding);
+                this.persistAttachBinding(
+                    attachTerminal(terminal).processId, binding, recoveryToken
+                );
             } else {
                 const binding = attachBinding(runtime, entry.binding.terminalNamePrefix);
                 entry.binding = binding;
                 entry.focusedBinding = binding;
                 entry.focusEpoch++;
-                this.dependencies.attachStore.set(
-                    attachTerminal(entry.terminal).processId, entry.binding
+                this.persistAttachBinding(
+                    attachTerminal(entry.terminal).processId,
+                    entry.binding,
+                    entry.recoveryToken || null
                 );
             }
             try {
@@ -1006,7 +1363,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             } catch (error) {
                 entry.focusEpoch++;
                 this.attaches.delete(key);
-                this.dependencies.attachStore.remove(attachTerminal(entry.terminal).processId);
+                this.removePersistedAttach(
+                    entry.recoveryToken || null, attachTerminal(entry.terminal).processId
+                );
                 try {
                     attachTerminal(entry.terminal).dispose();
                 } catch (_disposeError) {
@@ -1027,7 +1386,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
     private getAttachTerminalName(runtime: AiSessionRuntimeSnapshot): string {
         const candidate = this.dependencies.getAttachTerminalName?.({
             ...runtime,
-            identity: { ...runtime.identity },
+            identity: cloneAiSessionRuntimeIdentity(runtime.identity),
             ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
         });
         return isSafeAttachTerminalName(candidate)
@@ -1040,7 +1399,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         const { terminal: _terminal, ...base } = runtime;
         return {
             ...base,
-            identity: { ...runtime.identity },
+            identity: cloneAiSessionRuntimeIdentity(runtime.identity),
             attached: !!entry,
             ...(entry ? { terminal: entry.terminal } : {}),
             ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
@@ -1070,15 +1429,63 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         ];
         if (binding.layout === 'project') {
             return runtimes.find(runtime => runtime.tmux?.layout === 'project'
-                && runtime.identity.projectKey === binding.projectKey
+                && runtime.identity.workspaceScopeIdentity === binding.workspaceScopeIdentity
                 && runtime.tmux.sessionName === binding.sessionName
                 && (!binding.windowName || runtime.tmux.windowName === binding.windowName));
         }
         return runtimes.find(runtime => runtime.tmux?.layout === 'session'
-            && runtime.identity.projectKey === binding.projectKey
+            && runtime.identity.workspaceScopeIdentity === binding.workspaceScopeIdentity
             && runtime.tmux.sessionName === binding.sessionName
+            && (!binding.windowName || runtime.tmux.windowName === binding.windowName)
             && (!binding.provider || runtime.identity.provider === binding.provider)
             && (!binding.sessionId || runtime.identity.sessionId === binding.sessionId));
+    }
+
+    private persistAttachBinding(
+        processId: AttachTerminal['processId'],
+        binding: TmuxAttachBinding,
+        recoveryToken: string | null
+    ): void {
+        if (recoveryToken) {
+            this.dependencies.attachStore.setRecovery(recoveryToken, processId, binding);
+            return;
+        }
+        this.dependencies.attachStore.set(processId, binding);
+    }
+
+    private removePersistedAttach(
+        recoveryToken: string | null,
+        processId: TmuxAttachProcessId
+    ): void {
+        if (recoveryToken) {
+            this.dependencies.attachStore.removeRecovery(recoveryToken);
+            return;
+        }
+        this.dependencies.attachStore.remove(processId);
+    }
+
+    private async runtimeForAttachSession(
+        sessionName: string | null
+    ): Promise<AiSessionRuntimeSnapshot | undefined> {
+        if (!sessionName) {
+            return undefined;
+        }
+        const matches = [
+            ...this.dependencies.discovery.getActive(),
+            ...this.dependencies.discovery.getPending(),
+        ].filter(runtime => runtime.tmux?.sessionName === sessionName);
+        if (matches.length <= 1) {
+            return matches[0];
+        }
+        const registryKeys = new Set(matches.map(registryKey));
+        if (registryKeys.size !== 1 || matches.some(runtime => runtime.tmux?.layout !== 'project')) {
+            return undefined;
+        }
+        const activeWindow = await this.dependencies.client.getActiveWindow(sessionName);
+        const activeMatches = activeWindow
+            ? matches.filter(runtime => runtime.tmux?.windowName === activeWindow.windowName)
+            : [];
+        return activeMatches.length === 1 ? activeMatches[0] : matches[0];
     }
 
     private async locatorIsOccupied(locator: AiSessionTmuxLocator): Promise<boolean> {
@@ -1099,6 +1506,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             return;
         }
         await this.dependencies.client.renameSession(from.sessionName, to.sessionName);
+        const sourceWindow = from.windowName || SESSION_WINDOW;
+        if (!to.windowName) {
+            throw new Error('A session tmux promotion requires a final managed window name.');
+        }
+        await this.dependencies.client.renameWindow(to.sessionName, sourceWindow, to.windowName);
     }
 
     private async migrateAttach(
@@ -1122,7 +1534,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         }
         if (updatePersisted) {
             entry.binding = nextBinding;
-            this.dependencies.attachStore.set(attachTerminal(entry.terminal).processId, nextBinding);
+            this.persistAttachBinding(
+                attachTerminal(entry.terminal).processId,
+                nextBinding,
+                entry.recoveryToken || null
+            );
         }
         if (updateFocused) {
             entry.focusedBinding = nextBinding;
@@ -1138,10 +1554,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
 
 function finalIdentity(identity: AiSessionRuntimeIdentity & { sessionId: string }): AiSessionRuntimeIdentity {
     return {
-        provider: identity.provider,
-        projectKey: identity.projectKey,
-        cwd: identity.cwd,
+        ...cloneAiSessionRuntimeIdentity(identity),
         sessionId: identity.sessionId,
+        pendingId: undefined,
     };
 }
 
@@ -1150,7 +1565,7 @@ function runtimeIdentitiesMatch(
     right: AiSessionRuntimeIdentity
 ): boolean {
     if (!left || !right || left.provider !== right.provider
-        || left.projectKey !== right.projectKey) {
+        || left.workspaceScopeIdentity !== right.workspaceScopeIdentity) {
         return false;
     }
     if (right.sessionId !== undefined) {
@@ -1167,10 +1582,7 @@ function runtimeIdentityEquals(
     if (!left || !right) {
         return left === right;
     }
-    return left.provider === right.provider
-        && left.projectKey === right.projectKey
-        && left.sessionId === right.sessionId
-        && left.pendingId === right.pendingId;
+    return aiSessionRuntimeIdentitiesEqual(left, right);
 }
 
 function bindingTargetsRuntime(
@@ -1179,7 +1591,7 @@ function bindingTargetsRuntime(
 ): boolean {
     if (!binding || !runtime.tmux
         || binding.layout !== runtime.tmux.layout
-        || binding.projectKey !== runtime.identity.projectKey
+        || !aiSessionRuntimeIdentitiesEqual(binding, runtime.identity)
         || binding.sessionName !== runtime.tmux.sessionName) {
         return false;
     }
@@ -1187,7 +1599,8 @@ function bindingTargetsRuntime(
         return binding.windowName === runtime.tmux.windowName;
     }
     return (!binding.provider || binding.provider === runtime.identity.provider)
-        && (!binding.sessionId || binding.sessionId === runtime.identity.sessionId);
+        && (!binding.sessionId || binding.sessionId === runtime.identity.sessionId)
+        && (!binding.windowName || binding.windowName === runtime.tmux.windowName);
 }
 
 function getRestoredAttachTerminalName(runtime: AiSessionRuntimeSnapshot): string {
@@ -1195,7 +1608,7 @@ function getRestoredAttachTerminalName(runtime: AiSessionRuntimeSnapshot): strin
     const digest = createHash('sha256').update(JSON.stringify([
         runtime.tmux?.layout,
         runtime.identity.provider,
-        runtime.identity.projectKey,
+        runtime.identity.workspaceScopeIdentity,
         identityId,
         runtime.tmux?.sessionName,
         runtime.tmux?.windowName || '',
@@ -1216,13 +1629,18 @@ function snapshotResumeRequest(request: AiSessionResumeRuntimeRequest): AiSessio
     }
     const identity = snapshotResumeIdentity(request.identity);
     const projectName = snapshotRequiredString(request.projectName, 'The tmux runtime request');
+    const sessionName = snapshotDisplayName(
+        request.sessionName, identity.sessionId, 'The tmux runtime request'
+    );
     const terminalName = snapshotRequiredString(request.terminalName, 'The tmux runtime request');
     const launch = snapshotLaunch(request.launch);
     return {
         identity,
         projectName,
+        sessionName,
         terminalName,
         launch,
+        directoryScope: request.directoryScope,
     };
 }
 
@@ -1246,6 +1664,7 @@ function snapshotPendingRequest(request: AiSessionCreateRuntimeRequest): AiSessi
         excludedSessionIds,
         ...(title === undefined ? {} : { title }),
         launch,
+        directoryScope: request.directoryScope,
     };
 }
 
@@ -1281,12 +1700,19 @@ function snapshotResumeIdentity(value: unknown): AiSessionResumeRuntimeRequest['
         throw new Error('The tmux runtime request shape is invalid.');
     }
     const provider = snapshotRequiredString(value.provider, 'The tmux runtime request');
-    const projectKey = snapshotRequiredString(value.projectKey, 'The tmux runtime request');
+    const workspaceScopeIdentity = snapshotRequiredString(value.workspaceScopeIdentity, 'The tmux runtime request');
+    const workspaceNavigationIdentity = snapshotRequiredString(
+        value.workspaceNavigationIdentity, 'The tmux runtime request'
+    );
+    const workspaceRootHostPaths = snapshotDenseStringArray(value.workspaceRootHostPaths,
+        MAX_EXCLUDED_SESSION_IDS, 'workspace root paths', 'The tmux runtime request');
     const cwd = snapshotRequiredString(value.cwd, 'The tmux runtime request');
     const sessionId = snapshotRequiredString(value.sessionId, 'The tmux runtime request');
     return {
         provider: provider as AiSessionResumeRuntimeRequest['identity']['provider'],
-        projectKey,
+        workspaceScopeIdentity,
+        workspaceNavigationIdentity,
+        workspaceRootHostPaths,
         cwd,
         sessionId,
     };
@@ -1297,12 +1723,19 @@ function snapshotPendingIdentity(value: unknown): AiSessionCreateRuntimeRequest[
         throw new Error('The pending runtime request shape is invalid.');
     }
     const provider = snapshotRequiredString(value.provider, 'The pending runtime request');
-    const projectKey = snapshotRequiredString(value.projectKey, 'The pending runtime request');
+    const workspaceScopeIdentity = snapshotRequiredString(value.workspaceScopeIdentity, 'The pending runtime request');
+    const workspaceNavigationIdentity = snapshotRequiredString(
+        value.workspaceNavigationIdentity, 'The pending runtime request'
+    );
+    const workspaceRootHostPaths = snapshotDenseStringArray(value.workspaceRootHostPaths,
+        MAX_EXCLUDED_SESSION_IDS, 'workspace root paths', 'The pending runtime request');
     const cwd = snapshotRequiredString(value.cwd, 'The pending runtime request');
     const pendingId = snapshotRequiredString(value.pendingId, 'The pending runtime request');
     return {
         provider: provider as AiSessionCreateRuntimeRequest['identity']['provider'],
-        projectKey,
+        workspaceScopeIdentity,
+        workspaceNavigationIdentity,
+        workspaceRootHostPaths,
         cwd,
         pendingId,
     };
@@ -1317,6 +1750,14 @@ function snapshotRequiredString(value: unknown, owner: string): string {
 
 function snapshotOptionalString(value: unknown, owner: string): string | undefined {
     return value === undefined ? undefined : snapshotRequiredString(value, owner);
+}
+
+function snapshotDisplayName(value: unknown, fallback: string, owner: string): string {
+    const candidate = value === undefined ? fallback : snapshotRequiredString(value, owner);
+    if (candidate.length > 200 || LOCAL_CONTROL_CHARACTERS.test(candidate)) {
+        throw new Error(`${owner} display name is invalid.`);
+    }
+    return candidate;
 }
 
 function snapshotDenseStringArray(
@@ -1352,15 +1793,14 @@ function isRecordShape(value: unknown): value is Record<string, unknown> {
 
 function pendingIdentity(identity: AiSessionRuntimeIdentity & { pendingId: string }): AiSessionRuntimeIdentity {
     return {
-        provider: identity.provider,
-        projectKey: identity.projectKey,
-        cwd: identity.cwd,
+        ...cloneAiSessionRuntimeIdentity(identity),
         pendingId: identity.pendingId,
+        sessionId: undefined,
     };
 }
 
-function pendingLifecycleLockKey(pendingId: string): string {
-    return `pending:${pendingId}`;
+function pendingLifecycleLockKey(identity: AiSessionRuntimeIdentity): string {
+    return `pending:${getTmuxRuntimeKey(identity)}`;
 }
 
 function pendingLifecycleIdentityMatches(
@@ -1369,7 +1809,18 @@ function pendingLifecycleIdentityMatches(
     identity: AiSessionRuntimeIdentity
 ): boolean {
     return record.pendingId === identity.pendingId && record.provider === identity.provider
-        && record.projectKey === identity.projectKey && 'cwd' in record && record.cwd === identity.cwd;
+        && aiSessionRuntimeIdentitiesEqual({
+            ...cloneAiSessionRuntimeIdentity(identity),
+            sessionId: undefined,
+            pendingId: record.pendingId,
+        }, {
+            provider: record.provider,
+            workspaceScopeIdentity: record.workspaceScopeIdentity,
+            workspaceNavigationIdentity: record.workspaceNavigationIdentity,
+            workspaceRootHostPaths: [...record.workspaceRootHostPaths],
+            cwd: record.cwd,
+            pendingId: record.pendingId,
+        });
 }
 
 function pendingIdentityConflictError(): Error {
@@ -1392,13 +1843,13 @@ function validateDispatchInputs(
     identity: AiSessionRuntimeIdentity,
     launch: AiSessionResumeRuntimeRequest['launch']
 ): void {
-    if (!identity || !isLocalPath(identity.cwd)) {
+    if (!identity || !isValidAiSessionRuntimeIdentity(identity)) {
         throw new Error('The tmux runtime cwd is invalid.');
     }
     const hasSessionId = identity.sessionId !== undefined;
     const hasPendingId = identity.pendingId !== undefined;
     if ((identity.provider !== 'codex' && identity.provider !== 'kimi' && identity.provider !== 'claude')
-        || !isIdentityField(identity.projectKey) || hasSessionId === hasPendingId
+        || hasSessionId === hasPendingId
         || !isIdentityField(hasSessionId ? identity.sessionId : identity.pendingId)) {
         throw new Error('The tmux runtime identity is invalid.');
     }
@@ -1454,23 +1905,17 @@ function isBoundedOptionalLocalPath(value: unknown): value is string {
         && !LOCAL_CONTROL_CHARACTERS.test(value);
 }
 
-function getPendingLocator(identity: AiSessionRuntimeIdentity, layout: AiSessionTmuxLayout): AiSessionTmuxLocator {
-    return layout === 'project'
-        ? new ProjectTmuxLayout().getPendingLocator(identity)
-        : new SessionTmuxLayout().getPendingLocator(identity);
-}
-
-function projectSessionMetadata(projectKey: string): Record<string, string> {
+function projectSessionMetadata(identity: AiSessionRuntimeIdentity): Record<string, string> {
     return {
         managed: '1',
-        version: '1',
+        version: '2',
         layout: 'project',
-        projectKey,
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
     };
 }
 
 function sessionWindowMetadata(): Record<string, string> {
-    return { managed: '1', version: '1', layout: 'session' };
+    return { managed: '1', version: '2', layout: 'session' };
 }
 
 function fullMetadata(
@@ -1481,9 +1926,12 @@ function fullMetadata(
 ): Record<string, string> {
     return {
         managed: '1',
-        version: '1',
+        version: '2',
         layout,
-        ...(layout === 'session' ? { projectKey: identity.projectKey } : {}),
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: JSON.stringify(identity.workspaceRootHostPaths),
+        cwd: identity.cwd,
         provider: identity.provider,
         ...(identity.sessionId ? { sessionId: identity.sessionId } : { pendingId: identity.pendingId as string }),
         createdAt,
@@ -1496,24 +1944,27 @@ function attachBinding(runtime: AiSessionRuntimeSnapshot, terminalName: string):
         throw new Error('A tmux attach binding requires a locator.');
     }
     return {
-        version: 1,
+        version: 2,
         layout: runtime.tmux.layout,
-        projectKey: runtime.identity.projectKey,
+        workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: runtime.identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: [...runtime.identity.workspaceRootHostPaths],
+        cwd: runtime.identity.cwd,
         sessionName: runtime.tmux.sessionName,
-        ...(runtime.tmux.layout === 'project' && runtime.tmux.windowName
+        ...(runtime.tmux.windowName
             ? { windowName: runtime.tmux.windowName }
             : {}),
-        ...(runtime.tmux.layout === 'session' ? { provider: runtime.identity.provider } : {}),
-        ...(runtime.tmux.layout === 'session' && runtime.identity.sessionId
+        provider: runtime.identity.provider,
+        ...(runtime.identity.sessionId
             ? { sessionId: runtime.identity.sessionId }
-            : {}),
+            : { pendingId: runtime.identity.pendingId as string }),
         terminalNamePrefix: terminalName,
     };
 }
 
 function registryKey(runtime: AiSessionRuntimeSnapshot): string {
     if (runtime.tmux?.layout === 'project') {
-        return `project:${runtime.identity.projectKey}`;
+        return `project:${runtime.identity.workspaceScopeIdentity}`;
     }
     const identityId = runtime.identity.sessionId || `pending:${runtime.identity.pendingId || ''}`;
     return `session:${runtime.identity.provider}:${identityId}`;
@@ -1525,6 +1976,70 @@ function attachTerminal<TTerminal>(terminal: TTerminal): AttachTerminal {
 
 function terminalTitleMatches(title: string, binding: TmuxAttachBinding): boolean {
     return typeof title === 'string' && title.startsWith(binding.terminalNamePrefix);
+}
+
+function terminalMatchesBinding(
+    terminal: AttachTerminal,
+    binding: TmuxAttachBinding,
+    launchSessionName: string | null
+): boolean {
+    if (launchSessionName !== null) {
+        return launchSessionName === binding.sessionName
+            || terminalTitleMatches(terminal.name, binding);
+    }
+    if (hasExplicitTerminalLaunch(terminal.creationOptions)) {
+        return false;
+    }
+    return terminalTitleMatches(terminal.name, binding);
+}
+
+function getTmuxAttachSessionName(
+    creationOptions: AttachTerminal['creationOptions'],
+    tmuxExecutablePath: string
+): string | null {
+    if (!creationOptions || !('shellPath' in creationOptions)
+        || creationOptions.shellPath !== tmuxExecutablePath
+        || !Array.isArray(creationOptions.shellArgs)
+        || creationOptions.shellArgs.length !== 3
+        || creationOptions.shellArgs[0] !== 'attach-session'
+        || creationOptions.shellArgs[1] !== '-t') {
+        return null;
+    }
+    const sessionName = creationOptions.shellArgs[2];
+    return typeof sessionName === 'string' && sessionName.length > 0
+        ? sessionName
+        : null;
+}
+
+function getTmuxAttachRecoveryToken(
+    creationOptions: AttachTerminal['creationOptions']
+): string | null {
+    if (!creationOptions || !('env' in creationOptions) || !creationOptions.env) {
+        return null;
+    }
+    const token = creationOptions.env[TMUX_ATTACH_RECOVERY_ENV];
+    return typeof token === 'string' && TMUX_ATTACH_RECOVERY_TOKEN.test(token)
+        ? token
+        : null;
+}
+
+function createAttachRecoveryToken(): string {
+    return randomBytes(16).toString('hex');
+}
+
+function hasExplicitTerminalLaunch(
+    creationOptions: AttachTerminal['creationOptions']
+): boolean {
+    return Boolean(creationOptions && 'shellPath' in creationOptions
+        && (creationOptions.shellPath !== undefined || creationOptions.shellArgs !== undefined));
+}
+
+function getTerminalCreationName(terminal: AttachTerminal): string | null {
+    const creationOptions = terminal.creationOptions;
+    return creationOptions && typeof creationOptions.name === 'string'
+        && isSafeAttachTerminalName(creationOptions.name)
+        ? creationOptions.name
+        : null;
 }
 
 function resolveProcessId(value: AttachTerminal['processId']): Promise<number | null> {
@@ -1560,9 +2075,11 @@ function recordsEqual(left: Record<string, string>, right: Record<string, string
 
 function pendingRequestFingerprint(request: AiSessionCreateRuntimeRequest): string {
     return createHash('sha256').update(JSON.stringify([
-        1,
+        2,
         request.identity.provider,
-        request.identity.projectKey,
+        request.identity.workspaceScopeIdentity,
+        request.identity.workspaceNavigationIdentity,
+        request.identity.workspaceRootHostPaths.slice().sort(),
         request.identity.pendingId,
         request.identity.cwd,
         request.createdAt,
@@ -1579,7 +2096,9 @@ function pendingRequestFingerprint(request: AiSessionCreateRuntimeRequest): stri
 function identityFromPendingBinding(binding: TmuxPendingRuntimeBinding): AiSessionRuntimeIdentity {
     return {
         provider: binding.provider,
-        projectKey: binding.projectKey,
+        workspaceScopeIdentity: binding.workspaceScopeIdentity,
+        workspaceNavigationIdentity: binding.workspaceNavigationIdentity,
+        workspaceRootHostPaths: [...binding.workspaceRootHostPaths],
         cwd: binding.cwd,
         pendingId: binding.pendingId,
     };
@@ -1596,14 +2115,20 @@ function pendingSnapshotFromBinding(binding: TmuxPendingRuntimeBinding): AiSessi
         tmux: { ...binding.locator },
         createdAt: binding.createdAt,
         excludedSessionIds: [...binding.excludedSessionIds],
+        ...(binding.projectName === undefined ? {} : { projectName: binding.projectName }),
         ...(binding.title === undefined ? {} : { title: binding.title }),
     };
 }
 
 function pendingBindingsEqual(left: TmuxPendingRuntimeBinding, right: TmuxPendingRuntimeBinding): boolean {
     return left.pendingId === right.pendingId && left.provider === right.provider
-        && left.projectKey === right.projectKey && left.cwd === right.cwd
-        && left.createdAt === right.createdAt && left.title === right.title
+        && left.workspaceScopeIdentity === right.workspaceScopeIdentity
+        && left.workspaceNavigationIdentity === right.workspaceNavigationIdentity
+        && JSON.stringify(left.workspaceRootHostPaths.slice().sort())
+            === JSON.stringify(right.workspaceRootHostPaths.slice().sort())
+        && left.cwd === right.cwd
+        && left.createdAt === right.createdAt && left.projectName === right.projectName
+        && left.title === right.title
         && left.acceptedAtMs === right.acceptedAtMs && left.layout === right.layout
         && locatorsEqual(left.locator, right.locator)
         && left.excludedSessionIds.length === right.excludedSessionIds.length
@@ -1614,28 +2139,35 @@ function promotionIntent(
     binding: TmuxPendingRuntimeBinding,
     pending: AiSessionRuntimeSnapshot,
     finalIdentityValue: AiSessionRuntimeIdentity,
+    finalSessionName: string,
     finalLocator: AiSessionTmuxLocator,
     recordedAtMs: number
 ): TmuxPromotingRuntimeBinding {
     if (!finalIdentityValue.sessionId) {
         throw new Error('A promotion intent requires a final session ID.');
     }
-    const requestFingerprint = promotionRequestFingerprint(binding, pending.markerPath);
+    const requestFingerprint = promotionRequestFingerprint(
+        binding, pending.markerPath, finalSessionName, finalLocator
+    );
     return {
-        version: 1,
+        version: 2,
         state: 'promoting',
         pendingId: binding.pendingId,
         provider: binding.provider,
-        projectKey: binding.projectKey,
+        workspaceScopeIdentity: binding.workspaceScopeIdentity,
+        workspaceNavigationIdentity: binding.workspaceNavigationIdentity,
+        workspaceRootHostPaths: [...binding.workspaceRootHostPaths],
         cwd: binding.cwd,
         createdAt: binding.createdAt,
         markerPath: pending.markerPath,
         pendingBinding: {
             ...binding,
+            workspaceRootHostPaths: [...binding.workspaceRootHostPaths],
             excludedSessionIds: [...binding.excludedSessionIds],
             locator: { ...binding.locator },
         },
         finalSessionId: finalIdentityValue.sessionId,
+        finalSessionName,
         layout: binding.layout,
         sourceLocator: { ...binding.locator },
         finalLocator: { ...finalLocator },
@@ -1644,11 +2176,18 @@ function promotionIntent(
     };
 }
 
-function promotionRequestFingerprint(binding: TmuxPendingRuntimeBinding, markerPath: string): string {
+function promotionRequestFingerprint(
+    binding: TmuxPendingRuntimeBinding,
+    markerPath: string,
+    finalSessionName: string,
+    finalLocator: AiSessionTmuxLocator
+): string {
     return createHash('sha256').update(JSON.stringify([
-        1,
+        2,
         binding.provider,
-        binding.projectKey,
+        binding.workspaceScopeIdentity,
+        binding.workspaceNavigationIdentity,
+        binding.workspaceRootHostPaths.slice().sort(),
         binding.pendingId,
         binding.cwd,
         binding.createdAt,
@@ -1658,6 +2197,8 @@ function promotionRequestFingerprint(binding: TmuxPendingRuntimeBinding, markerP
         binding.layout,
         binding.locator,
         markerPath,
+        finalSessionName,
+        finalLocator,
     ]), 'utf8').digest('hex');
 }
 
@@ -1666,7 +2207,9 @@ function promotionIntentMatchesLiveBinding(
     binding: TmuxPendingRuntimeBinding
 ): boolean {
     return pendingBindingsEqual(intent.pendingBinding, binding)
-        && intent.requestFingerprint === promotionRequestFingerprint(binding, intent.markerPath);
+        && intent.requestFingerprint === promotionRequestFingerprint(
+            binding, intent.markerPath, intent.finalSessionName, intent.finalLocator
+        );
 }
 
 function promotionIntentsMatch(
@@ -1674,13 +2217,30 @@ function promotionIntentsMatch(
     right: TmuxPromotingRuntimeBinding
 ): boolean {
     return left.pendingId === right.pendingId && left.provider === right.provider
-        && left.projectKey === right.projectKey && left.cwd === right.cwd
+        && left.workspaceScopeIdentity === right.workspaceScopeIdentity
+        && left.workspaceNavigationIdentity === right.workspaceNavigationIdentity
+        && JSON.stringify(left.workspaceRootHostPaths.slice().sort())
+            === JSON.stringify(right.workspaceRootHostPaths.slice().sort())
+        && left.cwd === right.cwd
         && left.createdAt === right.createdAt && left.markerPath === right.markerPath
         && pendingBindingsEqual(left.pendingBinding, right.pendingBinding)
-        && left.finalSessionId === right.finalSessionId && left.layout === right.layout
+        && left.finalSessionId === right.finalSessionId
+        && left.finalSessionName === right.finalSessionName && left.layout === right.layout
         && locatorsEqual(left.sourceLocator, right.sourceLocator)
         && locatorsEqual(left.finalLocator, right.finalLocator)
         && left.requestFingerprint === right.requestFingerprint;
+}
+
+function consumedMatchesPromotionIntent(
+    consumed: TmuxConsumedPendingBinding,
+    intent: TmuxPromotingRuntimeBinding
+): boolean {
+    return consumed.finalSessionName !== undefined
+        && pendingLifecycleIdentityMatches(consumed, intent)
+        && consumed.finalSessionId === intent.finalSessionId
+        && consumed.finalSessionName === intent.finalSessionName
+        && consumed.layout === intent.layout
+        && locatorsEqual(consumed.finalLocator, intent.finalLocator);
 }
 
 type PendingAmbiguousRuntimeBinding = TmuxAmbiguousRuntimeBinding & {
@@ -1689,6 +2249,7 @@ type PendingAmbiguousRuntimeBinding = TmuxAmbiguousRuntimeBinding & {
     cwd: string;
     createdAt: string;
     excludedSessionIds: string[];
+    projectName?: string;
     title?: string;
     markerPath?: string;
     requestFingerprint: string;
@@ -1701,7 +2262,7 @@ function pendingAmbiguityMatches(
     locator: AiSessionTmuxLocator
 ): boolean {
     return ambiguous.provider === binding.provider
-        && ambiguous.projectKey === binding.projectKey
+        && ambiguous.workspaceScopeIdentity === binding.workspaceScopeIdentity
         && ambiguous.pendingId === binding.pendingId
         && ambiguous.cwd === binding.cwd
         && ambiguous.createdAt === binding.createdAt
@@ -1767,7 +2328,7 @@ function consumedPendingError(record: TmuxConsumedPendingBinding): Error {
 function asConflict(runtime: AiSessionRuntimeSnapshot): AiSessionRuntimeSnapshot {
     return {
         ...runtime,
-        identity: { ...runtime.identity },
+        identity: cloneAiSessionRuntimeIdentity(runtime.identity),
         state: 'conflict',
         ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
     };

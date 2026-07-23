@@ -59,9 +59,13 @@ test('SESSION-ALIAS-CONTROLLER-001 sanitizes writes and resolves original names 
 
 test('SESSION-AI-SESSION-COMMAND-CONTROLLER-001 exposes validated command effects without mutating invalid targets', async () => {
     const effects = [];
+    const workspaceTarget = {
+        cardId: 'project',
+        workspace: { scopeIdentity: 'scope:/work' },
+        sessions: {},
+    };
     const controller = new AiSessionCommandController({
-        getOpenProjects: () => [{ id: 'project', path: '/work' }],
-        getProjectKey: project => project.path,
+        getWorkspaceTarget: cardId => cardId === 'project' ? workspaceTarget : null,
         isProviderId: value => value === 'codex',
         setExpanded: async (key, value) => effects.push(['expanded', key, value]),
         setActiveProvider: async (key, value) => effects.push(['provider', key, value]),
@@ -77,7 +81,7 @@ test('SESSION-AI-SESSION-COMMAND-CONTROLLER-001 exposes validated command effect
     await controller.renameSession('codex', 'session');
     await controller.copySessionId('session');
     assert.deepEqual(effects, [
-        ['expanded', '/work', true], ['provider', '/work', 'codex'], ['refresh'],
+        ['expanded', 'scope:/work', true], ['provider', 'scope:/work', 'codex'], ['refresh'],
         ['aliases', { 'codex:session': 'Alias' }], ['refresh'],
         ['clipboard', 'session'], ['message', 'Chat ID copied to clipboard.'],
     ]);
@@ -93,7 +97,7 @@ test('SESSION-AI-SESSION-EXECUTION-MONITOR-001 ignores duplicate and older event
     const snapshot = monitor.getSnapshot();
     snapshot['codex:a'].state = 'stopped';
     assert.equal(monitor.getSnapshot()['codex:a'].state, 'running');
-    assert.deepEqual(monitor.evaluate([]), []);
+    assert.deepEqual(monitor.evaluate([]), ['codex:a']);
     assert.deepEqual(monitor.getSnapshot(), {});
 });
 

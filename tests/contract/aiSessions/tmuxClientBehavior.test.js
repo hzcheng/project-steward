@@ -8,6 +8,7 @@ const { TMUX_METADATA_OPTIONS } = require('../../../out/aiSessions/tmuxLayout');
 const REQUIRED_COMMANDS = [
     'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
     'select-window', 'attach-session', 'has-session', 'rename-session', 'rename-window',
+    'display-message',
 ];
 
 function availabilityResult(args) {
@@ -137,9 +138,12 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
     const calls = [];
     const values = {
         'session-a|managed': '1',
-        'session-a|version': '1',
+        'session-a|version': '2',
         'session-a|layout': 'project',
-        'session-a|projectKey': 'project-key',
+        'session-a|workspaceScopeIdentity': 'scope-identity',
+        'session-a|workspaceNavigationIdentity': 'navigation-identity',
+        'session-a|workspaceRootHostPaths': '["/work/app"]',
+        'session-a|cwd': '/work/app',
         'session-a:window-a|provider': 'codex',
         'session-a:window-a|sessionId': 'session-id',
         '@12|managed': '1',
@@ -188,15 +192,15 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
         provider: window.metadata.provider,
         sessionId: window.metadata.sessionId,
         marker: window.metadata.marker,
-        projectKey: window.metadata.projectKey,
+        workspaceScopeIdentity: window.metadata.workspaceScopeIdentity,
     })), [
         {
             windowId: '@12', active: true, provider: 'codex', sessionId: 'session-id-12',
-            marker: '/tmp/done-12 marker', projectKey: 'project-key',
+            marker: '/tmp/done-12 marker', workspaceScopeIdentity: 'scope-identity',
         },
         {
             windowId: '@13', active: false, provider: 'kimi', sessionId: 'session-id-13',
-            marker: '/tmp/done-13 marker', projectKey: 'project-key',
+            marker: '/tmp/done-13 marker', workspaceScopeIdentity: 'scope-identity',
         },
     ]);
     for (const windowId of ['@12', '@13']) {
@@ -205,12 +209,18 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
         ])));
     }
     assert.deepEqual(await client.getSessionOptions('session-a'), {
-        managed: '1', version: '1', layout: 'project', projectKey: 'project-key',
+        managed: '1',
+        version: '2',
+        layout: 'project',
+        workspaceScopeIdentity: 'scope-identity',
+        workspaceNavigationIdentity: 'navigation-identity',
+        workspaceRootHostPaths: '["/work/app"]',
+        cwd: '/work/app',
     });
     assert.deepEqual(await client.getWindowOptions('session-a', 'window-a'), {
         provider: 'codex', sessionId: 'session-id',
     });
-    await client.setSessionOptions('session-a', { managed: '1', version: '1' });
+    await client.setSessionOptions('session-a', { managed: '1', version: '2' });
     await client.setWindowOptions('session-a', 'window-a', { provider: 'codex', sessionId: 'session-id' });
     await client.configureManagedWindow('session-a', 'window-a');
     await client.clearPendingMetadata({

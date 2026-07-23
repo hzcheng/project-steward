@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { resolveAttentionProjectKey } from '../aiSessions/attentionProject';
 import * as path from 'path';
 
 import {
@@ -11,25 +10,42 @@ import {
     sanitizeProjectName,
     AiSessionProviderId,
     CodexSession,
+    WorkspaceCardViewModel,
 } from '../models';
 import {
     FAVORITES_GROUP_ID,
     FITTY_OPTIONS,
     INBUILT_COLOR_DEFAULTS,
     OPEN_CURRENT_WORKSPACE_GROUP_ID,
-    OPEN_PROJECTS_GROUP_ID,
+    OPEN_WORKSPACES_GROUP_ID,
 } from '../constants';
 import { getFavoriteProjectsInOrder } from '../projects/favoriteProjectOrder';
-import { buildDashboardSearchCatalog, serializeDashboardSearchCatalog } from './dashboardViewModel';
+import {
+    buildWorkspaceDashboardSearchCatalog,
+    serializeDashboardSearchCatalog,
+} from './dashboardViewModel';
 import * as Icons from './webviewIcons';
 import type { ActiveAiSessionViewModel, AiSessionTabId } from '../aiSessions/types';
+import type { OpenWorkspaceBridgeStatus } from '../openWorkspaces/bridgeClient';
+import { removeWorkspaceWindowDecorations } from '../workspaces/contextResolver';
 
 const FAVORITES_GROUP_NAME = 'FAVORITES';
 const OPEN_CURRENT_WORKSPACE_GROUP_NAME = 'CURRENT WORKSPACE';
 const OPEN_OTHER_WINDOWS_GROUP_NAME = 'OTHER WINDOWS';
 const DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP = 5;
+const AI_SESSION_RUNNING_CARD_ANIMATIONS = new Set([
+    'current',
+    'sweep',
+    'orbit',
+    'halo',
+    'ripple',
+    'breath',
+    'none',
+]);
 
-type ProjectAttentionMode = 'current' | 'navigation' | 'none';
+function normalizeRunningCardAnimation(value: string | undefined): string {
+    return value && AI_SESSION_RUNNING_CARD_ANIMATIONS.has(value) ? value : 'current';
+}
 
 interface GroupSectionOptions {
     virtual: boolean;
@@ -38,8 +54,28 @@ interface GroupSectionOptions {
     collapsible: boolean;
     className: string;
     systemBadge: string;
-    projectAttentionMode: ProjectAttentionMode;
-    sessionFx?: string;
+}
+
+interface AiSessionRenderOptions {
+    showRootChips?: boolean;
+}
+
+interface RootLabeledAiSession extends CodexSession {
+    primaryRootId?: string;
+    primaryRootLabel?: string;
+}
+
+interface AiSessionSurfaceViewModel {
+    id: string;
+    activeAiSessionProvider?: AiSessionProviderId;
+    activeAiSessionTab?: AiSessionTabId;
+    codexSessions?: RootLabeledAiSession[];
+    kimiSessions?: RootLabeledAiSession[];
+    claudeSessions?: RootLabeledAiSession[];
+    codexSessionsUnavailable?: boolean;
+    kimiSessionsUnavailable?: boolean;
+    claudeSessionsUnavailable?: boolean;
+    activeAiSessions?: ActiveAiSessionViewModel[];
 }
 
 export function getStewardContent(
@@ -47,7 +83,9 @@ export function getStewardContent(
     webview: vscode.Webview,
     groups: Group[],
     infos: StewardInfos,
-    isSidebar: boolean = false
+    isSidebar: boolean = false,
+    workspaceCards: WorkspaceCardViewModel[] = [],
+    otherWindowsStatus: OpenWorkspaceBridgeStatus = 'ready',
 ): string {
     var stylesPath = getMediaResource(context, webview, 'styles.css');
     var fittyPath = getMediaResource(context, webview, 'fitty.min.js');
@@ -75,11 +113,17 @@ export function getStewardContent(
         'webviewFilterScripts.js'
     );
 
-    var openProjects = infos.openProjects || [];
     var customCss = infos.config.get('customCss') || '';
-    var allGroupsCollapsed = !!infos.openProjectsGroupCollapsed;
-    var searchCatalog = serializeDashboardSearchCatalog(buildDashboardSearchCatalog(groups, openProjects, infos.todoSearchItems || []));
-    var openProjectsContent = getOpenProjectsGroupContent(openProjects, infos.openProjectsGroupCollapsed, infos);
+    var allGroupsCollapsed = !!infos.openWorkspacesGroupCollapsed;
+    var searchCatalog = serializeDashboardSearchCatalog(
+        buildWorkspaceDashboardSearchCatalog(groups, workspaceCards, infos.todoSearchItems || [])
+    );
+    var openWorkspacesContent = getOpenWorkspacesGroupContent(
+        workspaceCards,
+        infos.openWorkspacesGroupCollapsed,
+        otherWindowsStatus,
+        infos.config.get<string>('aiSessionRunningCardAnimation', 'current'),
+    );
 
     return `
 <!DOCTYPE html>
@@ -127,7 +171,7 @@ export function getStewardContent(
         <main class="dashboard-content">
             <section id="dashboard-tab-open" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-open-button">
                 <div class="sticky-groups-wrapper">
-                    ${openProjectsContent}
+                    ${openWorkspacesContent}
                 </div>
             </section>
             <section id="dashboard-tab-projects" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-projects-button" hidden>
@@ -196,54 +240,183 @@ export function getStewardContent(
 </html>`;
 }
 
-const SESSION_FX_IDS = ['current', 'sweep', 'orbit', 'halo', 'ripple', 'breath', 'none'];
-
-function getSessionFx(infos: StewardInfos): string {
-    const configured = infos && infos.config && typeof infos.config.get === 'function'
-        ? infos.config.get('aiSessionRunningCardAnimation', 'current')
-        : 'current';
-    return SESSION_FX_IDS.indexOf(configured) !== -1 ? configured : 'current';
+export function getCurrentWorkspaceGroupContent(
+    card: WorkspaceCardViewModel | null,
+    hasOtherWindows: boolean = false,
+    runningCardAnimation?: string,
+): string {
+    const currentCard = card && card.kind === 'current' && card.roots.length > 0 ? card : null;
+    return `
+<div class="group steward-section open-current-workspace-group ${currentCard ? '' : 'no-projects'}" data-group-id="${OPEN_CURRENT_WORKSPACE_GROUP_ID}" data-virtual-group data-system-group="${OPEN_CURRENT_WORKSPACE_GROUP_ID}">
+    <div class="group-title steward-section-header steward-group-header">
+        <span class="group-title-text">${OPEN_CURRENT_WORKSPACE_GROUP_NAME}</span>
+        <span class="group-title-badge">Live</span>
+    </div>
+    <div class="group-list">
+        <div class="drop-signal"></div>
+        ${currentCard ? getWorkspaceCardDiv(currentCard, runningCardAnimation) : getOpenCurrentWorkspaceEmptyState(hasOtherWindows)}
+    </div>
+</div>`;
 }
 
-export function getOpenProjectsGroupContent(
-    openProjects: Project[],
+export function getOpenWorkspacesGroupContent(
+    cards: WorkspaceCardViewModel[],
     collapsed: boolean,
-    infos: StewardInfos,
+    otherWindowsStatus: OpenWorkspaceBridgeStatus = 'ready',
+    runningCardAnimation?: string,
 ): string {
-    var currentProjects = (openProjects || []).filter(project => project.openProjectCardKind !== 'projectNavigation');
-    var navigationProjects = (openProjects || []).filter(project => project.openProjectCardKind === 'projectNavigation');
-    var currentGroup = new Group(OPEN_CURRENT_WORKSPACE_GROUP_NAME, currentProjects);
-    currentGroup.id = OPEN_CURRENT_WORKSPACE_GROUP_ID;
-    currentGroup.collapsed = false;
-    var currentSection = getGroupSection(currentGroup, {
-        virtual: true,
-        readOnlyProjects: true,
-        draggableVirtualProjects: false,
-        collapsible: false,
-        className: 'open-current-workspace-group',
-        systemBadge: 'Live',
-        projectAttentionMode: 'current',
-    }, currentProjects.length
-        ? ''
-        : getOpenCurrentWorkspaceEmptyState(navigationProjects.length > 0));
-
-    if (!navigationProjects.length) {
+    const current = (cards || []).find(card => card.kind === 'current') || null;
+    const navigationCards = (cards || []).filter(card => card.kind === 'navigation');
+    const currentSection = getCurrentWorkspaceGroupContent(
+        current,
+        navigationCards.length > 0,
+        runningCardAnimation,
+    );
+    if (!navigationCards.length && otherWindowsStatus === 'ready') {
         return currentSection;
     }
+    const statusContent = otherWindowsStatus === 'update-required'
+        ? `<div class="open-other-windows-state" role="status">
+            <p>Update the Project Steward UI Bridge extension to restore OTHER WINDOWS.</p>
+            <button type="button" class="project-action" data-action="open-bridge-extension">Show UI Bridge Extension</button>
+        </div>`
+        : otherWindowsStatus === 'unavailable'
+            ? `<div class="open-other-windows-state" role="status">
+                <p>OTHER WINDOWS is temporarily unavailable. Project Steward will retry automatically.</p>
+            </div>`
+            : navigationCards.map(card => getWorkspaceCardDiv(card, runningCardAnimation)).join('\n');
+    const otherWindowsCollapsed = otherWindowsStatus === 'ready' && collapsed;
+    return `${currentSection}
+<div class="group steward-section open-other-windows-group ${otherWindowsCollapsed ? 'collapsed' : ''}" data-group-id="${OPEN_WORKSPACES_GROUP_ID}" data-virtual-group data-system-group="${OPEN_WORKSPACES_GROUP_ID}" data-other-windows-status="${otherWindowsStatus}">
+    <div class="group-title steward-section-header steward-group-header">
+        <span class="group-title-text" data-action="collapse">
+            <span class="collapse-icon" title="Open/Collapse Group">${Icons.collapse}</span>
+            ${OPEN_OTHER_WINDOWS_GROUP_NAME}
+        </span>
+        <span class="group-title-badge">${otherWindowsStatus === 'update-required' ? 'Update required' : otherWindowsStatus === 'unavailable' ? 'Unavailable' : 'Live'}</span>
+    </div>
+    <div class="group-list">
+        <div class="drop-signal"></div>
+        ${statusContent}
+    </div>
+</div>`;
+}
 
-    var navigationGroup = new Group(OPEN_OTHER_WINDOWS_GROUP_NAME, navigationProjects);
-    navigationGroup.id = OPEN_PROJECTS_GROUP_ID;
-    navigationGroup.collapsed = collapsed;
-    return `${currentSection}\n${getGroupSection(navigationGroup, {
-        virtual: true,
-        readOnlyProjects: true,
-        draggableVirtualProjects: false,
-        collapsible: true,
-        className: 'open-other-windows-group',
-        systemBadge: 'Live',
-        projectAttentionMode: 'navigation',
-        sessionFx: getSessionFx(infos),
-    })}`;
+function getWorkspaceCardDiv(card: WorkspaceCardViewModel, runningCardAnimation?: string): string {
+    const roots = card.roots.slice().sort((left, right) => left.ordinal - right.ordinal);
+    const rootCount = roots.length;
+    const compactWorkspaceName = rootCount === 1
+        ? roots[0].name
+        : removeWorkspaceWindowDecorations(card.name);
+    const workspaceName = escapeAttribute(sanitizeProjectName(compactWorkspaceName) || 'Workspace');
+    const environmentLabel = escapeAttribute(sanitizeProjectName(card.environmentLabel) || 'Local');
+    const remoteType = getWorkspaceRemoteType(card.environment);
+    const projectIcon = getProjectIcon(remoteType);
+    const projectIconTitle = getProjectIconTitle(remoteType);
+    const folderLabel = `${rootCount} folder${rootCount === 1 ? '' : 's'}`;
+    const isCurrent = card.kind === 'current';
+    const showSaveAction = isCurrent && card.showSaveAction;
+    const saveBadge = showSaveAction
+        ? `<span data-action="save-current-workspace" class="project-save-badge" title="Save Workspace" aria-label="Save Workspace">${Icons.save}</span>`
+        : '';
+    const aiSessions = isCurrent ? card.aiSessions : undefined;
+    const runningSessionCount = isCurrent
+        ? (aiSessions?.activeSessions || []).filter(session => session.executionState === 'running').length
+        : card.runningSessionCount;
+    const sessionFx = runningSessionCount > 0
+        ? normalizeRunningCardAnimation(runningCardAnimation)
+        : '';
+    const runningTitle = runningSessionCount > 0
+        ? `Workspace — ${runningSessionCount} active session${runningSessionCount === 1 ? '' : 's'} running`
+        : '';
+    const aiSessionCount = aiSessions?.aiSessionCount || 0;
+    const activeSessionCount = aiSessions?.activeSessionCount || 0;
+    const attentionCount = card.attentionCount || 0;
+    const summaryParts = isCurrent ? [
+        aiSessionCount ? `${aiSessionCount} AI session${aiSessionCount === 1 ? '' : 's'}` : '',
+        activeSessionCount ? `${activeSessionCount} active AI session${activeSessionCount === 1 ? '' : 's'}` : '',
+        attentionCount ? `${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention` : '',
+    ].filter(Boolean) : [];
+    const summaryLabel = escapeAttribute(summaryParts.join(', '));
+    const currentSummaryBadge = summaryParts.length
+        ? `<span class="project-codex-badge" data-ai-session-total-count="${aiSessionCount}" data-ai-session-active-count="${activeSessionCount}" data-ai-session-attention-count="${attentionCount}" title="${summaryLabel}" aria-label="${summaryLabel}">${
+            aiSessionCount ? `<span class="ai-session-total-count">AI ${aiSessionCount}</span>` : ''
+        }${activeSessionCount ? `<span class="ai-session-active-count" aria-label="${activeSessionCount} active AI session${activeSessionCount === 1 ? '' : 's'}">●${activeSessionCount}</span>` : ''
+        }${attentionCount ? `<b class="ai-session-attention-count" aria-label="${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention">${attentionCount}</b>` : ''
+        }</span>`
+        : '';
+    const navigationAttentionLabel = `${attentionCount} item${attentionCount === 1 ? '' : 's'} need${attentionCount === 1 ? 's' : ''} attention`;
+    const navigationAttentionBadge = !isCurrent && attentionCount
+        ? `<span class="project-ai-attention-badge" title="${navigationAttentionLabel}" aria-label="${navigationAttentionLabel}">${attentionCount}</span>`
+        : '';
+    const navigationRunningLabel = `${runningSessionCount} active AI session${runningSessionCount === 1 ? '' : 's'}`;
+    const navigationRunningBadge = !isCurrent && runningSessionCount
+        ? `<span class="project-codex-badge" data-ai-session-active-count="${runningSessionCount}" title="${navigationRunningLabel}" aria-label="${navigationRunningLabel}"><span class="ai-session-active-count" aria-label="${navigationRunningLabel}">●${runningSessionCount}</span></span>`
+        : '';
+    const badge = isCurrent
+        ? currentSummaryBadge
+        : `${navigationRunningBadge}${navigationAttentionBadge}`;
+    const sessionSection = isCurrent
+        ? getAiSessionsDiv(getWorkspaceAiSessionSurface(card), {
+            showRootChips: rootCount > 1,
+        })
+        : '';
+    const colorStyles = getCardColorStyles(card.color);
+
+    return `<div class="project-container" data-nodrag>
+    <div class="workspace-card project steward-item-card${runningSessionCount > 0 ? ' session-running' : ''}" style="${colorStyles.cardStyle}" data-id="${escapeAttribute(card.id)}" data-name="${escapeAttribute(`${card.name || ''} ${card.environmentLabel || ''} ${roots.map(root => root.name).join(' ')}`.toLowerCase())}" data-workspace-card-kind="${card.kind}" data-workspace-navigation-identity="${escapeAttribute(card.navigationIdentity)}" data-workspace-scope-identity="${escapeAttribute(card.scopeIdentity)}" ${sessionFx ? `data-session-fx="${sessionFx}"` : ''}${runningTitle ? ` title="${runningTitle}"` : ''} ${isCurrent ? 'data-current-workspace' : 'data-workspace-navigation data-other-workspace'}${currentSummaryBadge || navigationRunningBadge ? ' data-has-ai-session-badge' : ''}${showSaveAction ? ' data-has-save-action' : ''} data-readonly-project${aiSessions?.expanded ? ' data-codex-expanded' : ''}>
+        <div class="project-aura"></div>
+        <div class="project-border steward-item-accent" style="${colorStyles.accentStyle}"></div>
+        ${sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : ''}
+        ${saveBadge}
+        <div class="fitty-container project-title-row">
+            <span class="project-kind-icon" title="${projectIconTitle}">${projectIcon}</span>
+            <h2 class="project-header">${workspaceName}</h2>
+        </div>
+        <p class="project-description workspace-metadata">${folderLabel}</p>
+        ${badge}
+        ${sessionSection}
+    </div>
+</div>`;
+}
+
+function getWorkspaceRemoteType(environment: WorkspaceCardViewModel['environment']): ProjectRemoteType {
+    switch (environment) {
+        case 'ssh': return ProjectRemoteType.SSH;
+        case 'wsl': return ProjectRemoteType.WSL;
+        case 'devContainer': return ProjectRemoteType.DevContainer;
+        case 'remote': return ProjectRemoteType.Remote;
+        case 'local':
+        default: return ProjectRemoteType.None;
+    }
+}
+
+function getWorkspaceAiSessionSurface(card: WorkspaceCardViewModel): AiSessionSurfaceViewModel {
+    const aiSessions = card.aiSessions;
+    if (!aiSessions) {
+        return {
+            id: card.id,
+            activeAiSessionProvider: 'codex',
+            activeAiSessionTab: 'sessions',
+            codexSessions: [],
+            kimiSessions: [],
+            claudeSessions: [],
+            activeAiSessions: [],
+        };
+    }
+    const unavailable = new Set(aiSessions.unavailableProviders || []);
+    return {
+        id: card.id,
+        activeAiSessionProvider: aiSessions.activeProvider,
+        activeAiSessionTab: aiSessions.defaultTab,
+        codexSessions: aiSessions.sessionsByProvider.codex || [],
+        kimiSessions: aiSessions.sessionsByProvider.kimi || [],
+        claudeSessions: aiSessions.sessionsByProvider.claude || [],
+        codexSessionsUnavailable: unavailable.has('codex'),
+        kimiSessionsUnavailable: unavailable.has('kimi'),
+        claudeSessionsUnavailable: unavailable.has('claude'),
+        activeAiSessions: aiSessions.activeSessions.slice(),
+    };
 }
 
 export function getProjectsPanelContent(groups: Group[], infos: StewardInfos): string {
@@ -273,7 +446,6 @@ export function getProjectsPanelContent(groups: Group[], infos: StewardInfos): s
         collapsible: true,
         className: 'favorites-group',
         systemBadge: 'Pinned',
-        projectAttentionMode: 'none',
     };
     var projectOptions: GroupSectionOptions = {
         virtual: false,
@@ -282,7 +454,6 @@ export function getProjectsPanelContent(groups: Group[], infos: StewardInfos): s
         collapsible: true,
         className: 'saved-project-group',
         systemBadge: '',
-        projectAttentionMode: 'none',
     };
 
     return `<div class="groups-wrapper ${!infos.config.displayProjectPath ? 'hide-project-path' : ''}" style="--steward-max-visible-projects-per-group: ${maxVisibleProjectsPerGroup};">
@@ -436,36 +607,16 @@ function getProjectDiv(
     project: Project,
     options: GroupSectionOptions
 ) {
-    var isProjectNavigation = project.openProjectCardKind === 'projectNavigation';
-    var showCurrentAttention = options.projectAttentionMode === 'current';
-    var showNavigationAttention = options.projectAttentionMode === 'navigation';
-    var rawProjectColor = (project.color || '').trim();
-    var projectColor = escapeStyleValue(rawProjectColor);
-    projectColor = projectColor === rawProjectColor ? projectColor : '';
-    var borderStyle = projectColor ? `background: ${projectColor};` : '';
-    var projectStyle = projectColor ? `--project-color: ${projectColor};` : '';
+    var colorStyles = getCardColorStyles(project.color);
     var remoteType = getRemoteType(project);
     var description = sanitizeProjectName(project.description);
     var projectName = escapeAttribute(sanitizeProjectName(project.name));
-    var codexSessions = project.codexSessions || [];
-    var kimiSessions = project.kimiSessions || [];
-    var claudeSessions = project.claudeSessions || [];
-    var searchText = escapeAttribute(isProjectNavigation
-        ? `${project.name || ''} ${description}`.toLowerCase()
-        : getProjectSearchText(project));
+    var searchText = escapeAttribute(getProjectSearchText(project));
     var escapedDescription = escapeAttribute(description);
     var projectIcon = getProjectIcon(remoteType);
     var projectIconTitle = getProjectIconTitle(remoteType);
-    var navigationActiveSessionCount = isProjectNavigation ? (project.openProjectActiveSessionCount || 0) : 0;
-    var sessionFx = navigationActiveSessionCount > 0 ? (options.sessionFx || 'current') : '';
-    var projectCardClassModifier = sessionFx ? ' session-running' : '';
-    var sessionFxAttribute = sessionFx ? ` data-session-fx="${sessionFx}"` : '';
-    var sessionFxLayer = sessionFx && sessionFx !== 'none' ? '<div class="project-session-fx"></div>' : '';
-    if (navigationActiveSessionCount > 0) {
-        projectIconTitle = `${projectIconTitle} — ${navigationActiveSessionCount} active session${navigationActiveSessionCount === 1 ? '' : 's'} running`;
-    }
     var favoriteTitle = project.favorite ? 'Remove From Favorites' : 'Add To Favorites';
-    var projectActions = options.readOnlyProjects || isProjectNavigation
+    var projectActions = options.readOnlyProjects
         ? ''
         : `<span data-action="color" title="Edit Color">${Icons.palette
         }</span>
@@ -481,57 +632,25 @@ function getProjectDiv(
         </div>`
         : '';
     var favoriteBadgeIcon = project.favorite ? Icons.starFilled : Icons.star;
-    var favoriteBadge = options.readOnlyProjects || isProjectNavigation
+    var favoriteBadge = options.readOnlyProjects
         ? ''
         : `<span data-action="favorite" class="project-favorite-badge ${project.favorite ? 'active' : ''}" title="${favoriteTitle}">${favoriteBadgeIcon}</span>`;
-    var saveBadge = !isProjectNavigation && project.showSaveAction
+    var saveBadge = project.showSaveAction
         ? `<span data-action="save" class="project-save-badge" title="Save Current Project">${Icons.save}</span>`
         : '';
-    var aiSessionCount = codexSessions.length + kimiSessions.length + claudeSessions.length;
-    var attentionCount = codexSessions.concat(kimiSessions).concat(claudeSessions).filter(session => session.attention?.unread).length;
-    var activeAiSessionCount = (project.activeAiSessions || []).length;
-    var projectAttentionCount = project.aiSessionAttentionCount ?? attentionCount;
-    var attentionProjectKey = options.projectAttentionMode === 'none'
-        ? ''
-        : resolveAttentionProjectKey(project);
-    var projectAttentionBadge = showNavigationAttention && projectAttentionCount
-        ? `<span class="project-ai-attention-badge" title="${projectAttentionCount} AI session${projectAttentionCount === 1 ? ' needs' : 's need'} attention">${projectAttentionCount}</span>`
-        : '';
-    var aiSessionSummaryLabel = [
-        aiSessionCount ? `${aiSessionCount} AI session${aiSessionCount === 1 ? '' : 's'}` : '',
-        activeAiSessionCount ? `${activeAiSessionCount} active AI session${activeAiSessionCount === 1 ? '' : 's'}` : '',
-        attentionCount ? `${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention` : '',
-    ].filter(Boolean).join(', ');
-    var aiSessionBadge = showCurrentAttention && (aiSessionCount || activeAiSessionCount || attentionCount)
-        ? `<span class="project-codex-badge" data-ai-session-total-count="${aiSessionCount}" data-ai-session-active-count="${activeAiSessionCount}" data-ai-session-attention-count="${attentionCount}" title="${escapeAttribute(aiSessionSummaryLabel)}" aria-label="${escapeAttribute(aiSessionSummaryLabel)}">${
-            aiSessionCount ? `<span class="ai-session-total-count">AI ${aiSessionCount}</span>` : ''
-        }${activeAiSessionCount ? `<span class="ai-session-active-count" aria-label="${activeAiSessionCount} active AI session${activeAiSessionCount === 1 ? '' : 's'}">●${activeAiSessionCount}</span>` : ''
-        }${attentionCount ? `<b class="ai-session-attention-count" aria-label="${attentionCount} AI session${attentionCount === 1 ? ' needs' : 's need'} attention">${attentionCount}</b>` : ''
-        }</span>`
-        : '';
-    var codexSessionSection = showCurrentAttention ? getAiSessionsDiv(project) : '';
-
     var isRemote = remoteType !== ProjectRemoteType.None;
 
     return `
 <div class="project-container"${options.virtual && !options.draggableVirtualProjects ? ' data-nodrag' : ''}>
-    <div class="project steward-item-card${projectCardClassModifier}" style="${projectStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
-        }${attentionProjectKey ? ` data-attention-project-key="${attentionProjectKey}"` : ''
+    <div class="project steward-item-card" style="${colorStyles.cardStyle}" data-id="${project.id}" data-name="${searchText}"${isRemote ? ' data-is-remote' : ''
         }${options.virtual ? ' data-virtual-project' : ''
-        }${options.readOnlyProjects || isProjectNavigation ? ' data-readonly-project' : ''
-        }${showCurrentAttention ? ' data-open-project' : ''
-        }${isProjectNavigation ? ' data-project-navigation title="Switch to this project"' : ''
-        }${sessionFxAttribute
-        }${!isProjectNavigation && project.codexSessionsExpanded ? ' data-codex-expanded' : ''
-        }${!options.readOnlyProjects && !isProjectNavigation ? ' data-has-favorite-toggle' : ''
-        }${!isProjectNavigation && project.showSaveAction ? ' data-has-save-action' : ''
-        }${!isProjectNavigation && project.favorite ? ' data-favorite-project' : ''
-        }${showCurrentAttention ? ' data-current-workspace' : ''
+        }${options.readOnlyProjects ? ' data-readonly-project' : ''
+        }${!options.readOnlyProjects ? ' data-has-favorite-toggle' : ''
+        }${project.showSaveAction ? ' data-has-save-action' : ''
+        }${project.favorite ? ' data-favorite-project' : ''
         }>
         <div class="project-aura"></div>
-        <div class="project-border steward-item-accent" style="${borderStyle}"></div>
-        ${sessionFxLayer}
-        ${projectAttentionBadge}
+        <div class="project-border steward-item-accent" style="${colorStyles.accentStyle}"></div>
         ${favoriteBadge}
         ${saveBadge}
         ${projectActionsWrapper}
@@ -546,10 +665,19 @@ function getProjectDiv(
         <p class="project-description" title="${escapedDescription}">
             ${escapedDescription}
         </p>
-        ${aiSessionBadge}
-        ${codexSessionSection}
     </div>
 </div>`;
+}
+
+function getCardColorStyles(colorValue: string | undefined): { cardStyle: string; accentStyle: string } {
+    const rawColor = (colorValue || '').trim();
+    const escapedColor = escapeStyleValue(rawColor);
+    const color = escapedColor === rawColor ? escapedColor : '';
+
+    return {
+        cardStyle: color ? `--project-color: ${color};` : '',
+        accentStyle: color ? `background: ${color};` : '',
+    };
 }
 
 export function getProjectSearchText(project: Project): string {
@@ -566,7 +694,7 @@ export function getProjectSearchText(project: Project): string {
     return `${project.name || ''} ${description} ${aiSessionSearchText}`.toLowerCase();
 }
 
-export function getAiSessionsDiv(project: Project): string {
+export function getAiSessionsDiv(project: AiSessionSurfaceViewModel, options: AiSessionRenderOptions = {}): string {
     var codexSessions = project.codexSessions || [];
     var kimiSessions = project.kimiSessions || [];
     var claudeSessions = project.claudeSessions || [];
@@ -576,26 +704,28 @@ export function getAiSessionsDiv(project: Project): string {
         : activeProvider === 'claude' ? claudeSessions : codexSessions;
     var activeSessions = project.activeAiSessions || [];
     var selectedTab: AiSessionTabId = project.activeAiSessionTab || (activeSessions.length ? 'active' : 'sessions');
-    project = { ...project, activeAiSessionTab: selectedTab } as Project;
+    project = { ...project, activeAiSessionTab: selectedTab };
     var totalSessionCount = codexSessions.length + kimiSessions.length + claudeSessions.length;
 
     return `
-<div class="codex-sessions" data-selected-ai-session-tab="${selectedTab}">
+<div class="codex-sessions" data-ai-session-region data-selected-ai-session-tab="${selectedTab}">
     <div class="ai-session-module-header">
         <span class="ai-session-module-title">AI SESSIONS</span>
-        <button type="button" class="ai-session-create-button" data-action="create-ai-session" aria-label="New AI Session" title="New AI Session"><span aria-hidden="true">+</span><span>NEW</span></button>
+        <span class="ai-session-create-actions">
+            <button type="button" class="ai-session-create-button" data-action="create-ai-session" aria-label="New AI Session" title="New AI Session"><span aria-hidden="true">+</span><span>NEW</span></button>
+        </span>
     </div>
     <div class="ai-session-tabs" role="tablist" aria-label="AI Session views">
         ${getAiSessionTabButton(project, 'active', activeSessions.length)}
         ${getAiSessionTabButton(project, 'sessions', totalSessionCount)}
     </div>
-    ${getActiveAiSessionPanel(project, activeSessions)}
-    ${getAiSessionHistoryPanel(project, activeProvider, historySessionsForProvider)}
+    ${getActiveAiSessionPanel(project, activeSessions, options)}
+    ${getAiSessionHistoryPanel(project, activeProvider, historySessionsForProvider, options)}
     <div class="ai-session-live-region" data-ai-session-live-region aria-live="polite" aria-atomic="true"></div>
 </div>`;
 }
 
-function getAiSessionTabButton(project: Project, tab: AiSessionTabId, count: number): string {
+function getAiSessionTabButton(project: AiSessionSurfaceViewModel, tab: AiSessionTabId, count: number): string {
     var projectId = escapeAttribute(project.id || 'project');
     var selected = project.activeAiSessionTab === tab;
     var isActiveTab = tab === 'active';
@@ -610,11 +740,15 @@ function getAiSessionTabButton(project: Project, tab: AiSessionTabId, count: num
     return `<button type="button" id="${tabId}" role="tab" data-action="select-ai-session-tab" data-tab="${tab}" data-ai-session-tab="${tab}" aria-selected="${selected}" aria-controls="${panelId}" tabindex="${selected ? '0' : '-1'}"><span>${isActiveTab ? 'ACTIVE' : 'SESSIONS'}</span><span class="ai-session-tab-count">${count}</span>${attentionDot}</button>`;
 }
 
-function getActiveAiSessionPanel(project: Project, sessions: ActiveAiSessionViewModel[]): string {
+function getActiveAiSessionPanel(
+    project: AiSessionSurfaceViewModel,
+    sessions: ActiveAiSessionViewModel[],
+    options: AiSessionRenderOptions
+): string {
     var projectId = escapeAttribute(project.id || 'project');
     var selected = project.activeAiSessionTab === 'active';
     var rows = sessions.length
-        ? sessions.map(getActiveAiSessionRow).join('\n')
+        ? sessions.map(session => getActiveAiSessionRow(session, options.showRootChips)).join('\n')
         : `<div class="codex-sessions-empty ai-session-active-empty">
             <strong>No active sessions</strong>
             <span>Start a new AI session or open one from Sessions.</span>
@@ -629,9 +763,10 @@ function getActiveAiSessionPanel(project: Project, sessions: ActiveAiSessionView
 }
 
 function getAiSessionHistoryPanel(
-    project: Project,
+    project: AiSessionSurfaceViewModel,
     activeProvider: AiSessionProviderId,
-    sessions: CodexSession[]
+    sessions: CodexSession[],
+    options: AiSessionRenderOptions
 ): string {
     var projectId = escapeAttribute(project.id || 'project');
     var selected = project.activeAiSessionTab === 'sessions';
@@ -653,7 +788,8 @@ function getAiSessionHistoryPanel(
             session,
             activeProvider,
             (project.activeAiSessions || []).find(runtime =>
-                runtime.provider === activeProvider && runtime.sessionId === session.id)
+                runtime.provider === activeProvider && runtime.sessionId === session.id),
+            options.showRootChips
         )).join('\n')
         : `<div class="codex-sessions-empty"><span>${emptyText}</span>${otherProviderHasHistory ? '<small>Other providers have sessions.</small>' : ''}</div>`;
 
@@ -694,7 +830,7 @@ function getManageAiSessionsButton(activeProvider: AiSessionProviderId): string 
     return `<button type="button" class="ai-session-manage-button" data-action="manage-ai-sessions" data-provider="${activeProvider}" title="${label}" aria-label="${label}" aria-pressed="false">${Icons.manage}</button>`;
 }
 
-function getActiveAiSessionProvider(project: Project): AiSessionProviderId {
+function getActiveAiSessionProvider(project: AiSessionSurfaceViewModel): AiSessionProviderId {
     if (isAiProvider(project.activeAiSessionProvider)) {
         return project.activeAiSessionProvider;
     }
@@ -726,9 +862,10 @@ function getAiProviderLabel(providerId: AiSessionProviderId): string {
 }
 
 function getCodexSessionRow(
-    session: CodexSession,
+    session: RootLabeledAiSession,
     provider: AiSessionProviderId,
-    runtime?: ActiveAiSessionViewModel
+    runtime?: ActiveAiSessionViewModel,
+    showRootChip: boolean = false
 ) {
     var sessionName = escapeAttribute(sanitizeProjectName(session.name || session.id));
     var sessionId = escapeAttribute(session.id || '');
@@ -770,15 +907,23 @@ function getCodexSessionRow(
     if (runtime?.stale) {
         primaryAriaLabel += ', runtime status is stale';
     }
+    var primaryRootId = session.primaryRootId || runtime?.primaryRootId || '';
+    var primaryRootLabel = session.primaryRootLabel || runtime?.primaryRootLabel || '';
+    var rootAttributes = showRootChip && primaryRootId
+        ? ` data-primary-root-id="${escapeAttribute(primaryRootId)}"`
+        : '';
+    var rootChip = showRootChip && primaryRootLabel
+        ? `<span class="ai-session-root-chip">${escapeAttribute(sanitizeProjectName(primaryRootLabel))}</span>`
+        : '';
 
     return `
-<div class="codex-session-row" role="group" aria-label="${providerLabel} session ${sessionName}"${runtimeAttributes}${pinned ? ' data-session-pinned' : ''}${active ? ' data-session-active' : ''}${needsAttention ? ' data-ai-session-attention data-session-event-id="' + escapeAttribute(session.attention.eventId) + '"' : ''} data-session-id="${sessionId}" data-session-provider="${provider}">
+<div class="codex-session-row" role="group" aria-label="${providerLabel} session ${sessionName}"${runtimeAttributes}${rootAttributes}${pinned ? ' data-session-pinned' : ''}${active ? ' data-session-active' : ''}${needsAttention ? ' data-ai-session-attention data-session-event-id="' + escapeAttribute(session.attention.eventId) + '"' : ''} data-session-id="${sessionId}" data-session-provider="${provider}">
     ${batchCheckbox}
     <button type="button" class="ai-session-primary-action" data-action="activate-ai-session" aria-label="${primaryAriaLabel}" title="${primaryAction} ${providerLabel} Session">
         ${attentionIndicator}
         <span class="codex-session-icon">${Icons.terminalLine}</span>
         <span class="codex-session-text">
-            <span class="codex-session-name">${sessionName}</span>
+            ${rootChip ? `<span class="codex-session-title-line"><span class="codex-session-name">${sessionName}</span>${rootChip}</span>` : `<span class="codex-session-name">${sessionName}</span>`}
             <span class="codex-session-meta">${activeStatus}${active && metadata ? ' · ' : ''}${metadata}</span>
         </span>
     </button>
@@ -789,7 +934,7 @@ function getCodexSessionRow(
 </div>`;
 }
 
-function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
+function getActiveAiSessionRow(model: ActiveAiSessionViewModel, showRootChip: boolean = false): string {
     var providerLabel = getAiProviderLabel(model.provider);
     var sessionName = escapeAttribute(sanitizeProjectName(model.name || model.sessionId || `New ${providerLabel} session`));
     var sessionId = escapeAttribute(model.sessionId || '');
@@ -843,12 +988,18 @@ function getActiveAiSessionRow(model: ActiveAiSessionViewModel): string {
     if (model.stale) {
         primaryAriaLabel += ', runtime status is stale';
     }
-    return `<div class="codex-session-row active-ai-session-row" role="group" aria-label="${providerLabel} session ${sessionName}" data-session-provider="${model.provider}" data-execution-state="${model.executionState}"${runtimeAttributes}${pendingAttributes}${model.pinned ? ' data-session-pinned' : ''}${model.focused ? ' data-session-focused' : ''}${model.needsAttention ? ' data-session-needs-attention' : ''}${attentionAttributes}>
+    var rootAttributes = showRootChip && model.primaryRootId
+        ? ` data-primary-root-id="${escapeAttribute(model.primaryRootId)}"`
+        : '';
+    var rootChip = showRootChip && model.primaryRootLabel
+        ? `<span class="ai-session-root-chip">${escapeAttribute(sanitizeProjectName(model.primaryRootLabel))}</span>`
+        : '';
+    return `<div class="codex-session-row active-ai-session-row" role="group" aria-label="${providerLabel} session ${sessionName}" data-session-provider="${model.provider}" data-execution-state="${model.executionState}"${runtimeAttributes}${rootAttributes}${pendingAttributes}${model.pinned ? ' data-session-pinned' : ''}${model.focused ? ' data-session-focused' : ''}${model.needsAttention ? ' data-session-needs-attention' : ''}${attentionAttributes}>
         <button type="button" class="ai-session-primary-action" data-action="activate-ai-session" aria-label="${primaryAriaLabel}" title="${primaryAction} ${providerLabel} Session">
             ${attentionIndicator}
             <span class="codex-session-icon">${Icons.terminalLine}</span>
             <span class="codex-session-text">
-                <span class="codex-session-title-line">${runtimeBadge}<span class="codex-session-name">${sessionName}</span></span>
+                <span class="codex-session-title-line">${runtimeBadge}<span class="codex-session-name">${sessionName}</span>${rootChip}</span>
                 <span class="codex-session-meta">${metadata}</span>
             </span>
         </button>

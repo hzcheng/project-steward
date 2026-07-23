@@ -14,6 +14,14 @@ function configuration(values) {
     return { get: (key, fallback) => Object.prototype.hasOwnProperty.call(values, key) ? values[key] : fallback };
 }
 
+function directoryScope(primaryCwd) {
+    return {
+        workspaceNavigationIdentity: 'navigation:fixture', workspaceScopeIdentity: 'scope:fixture',
+        workspaceRootHostPaths: [primaryCwd], primaryRootId: 'root:fixture', primaryCwd,
+        additionalDirectories: [],
+    };
+}
+
 function decodePowerShellPayload(command) {
     const prefix = 'powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ';
     assert.ok(command.startsWith(prefix));
@@ -54,7 +62,7 @@ test('RUNTIME-RUNTIME-CONFIGURATION-001 reads supported settings and fails close
 
 test('RUNTIME-LAUNCH-SPEC-001 preserves argv boundaries and renders hostile values as inert shell data', () => {
     const resume = commandBuilders.buildCodexResumeLaunchSpec(
-        `session'; touch /tmp/nope; '`, `/work/it's app`, '/tmp/done marker'
+        `session'; touch /tmp/nope; '`, directoryScope(`/work/it's app`), '/tmp/done marker'
     );
     assert.deepEqual(resume, {
         executable: 'codex',
@@ -77,25 +85,25 @@ test('RUNTIME-LAUNCH-SPEC-001 preserves argv boundaries and renders hostile valu
     assert.ok(windowsResumePayload.includes("'session''; touch /tmp/nope; '''"));
 
     assert.deepEqual(commandBuilders.buildKimiResumeLaunchSpec(
-        'kimi; nope', '/work/Kimi App', '/tmp/kimi.done'
+        'kimi; nope', directoryScope('/work/Kimi App'), '/tmp/kimi.done'
     ), {
         executable: 'kimi', args: ['--work-dir', '/work/Kimi App', '--resume', 'kimi; nope'],
         markerPath: '/tmp/kimi.done', windowsDirectShell: 'current',
     });
     assert.deepEqual(commandBuilders.buildKimiNewSessionLaunchSpec(
-        '/work/Kimi App', "owner's task", '/tmp/kimi-new.done'
+        directoryScope('/work/Kimi App'), "owner's task", '/tmp/kimi-new.done'
     ), {
         executable: 'kimi', args: ['--work-dir', '/work/Kimi App', '--prompt', "owner's task"],
         markerPath: '/tmp/kimi-new.done', windowsDirectShell: 'powershell',
     });
     assert.deepEqual(commandBuilders.buildClaudeResumeLaunchSpec(
-        'claude-session', '/work/claude', '/tmp/claude.done'
+        'claude-session', directoryScope('/work/claude'), '/tmp/claude.done'
     ), {
         executable: 'claude', args: ['--resume', 'claude-session'], cwd: '/work/claude',
         markerPath: '/tmp/claude.done', windowsDirectShell: 'current',
     });
     assert.deepEqual(commandBuilders.buildClaudeNewSessionLaunchSpec(
-        '/work/app', 'Title', '/tmp/claude-new.done'
+        directoryScope('/work/app'), 'Title', '/tmp/claude-new.done'
     ), {
         executable: 'claude', args: ['--name', 'Title'], cwd: '/work/app',
         markerPath: '/tmp/claude-new.done', windowsDirectShell: 'powershell',
@@ -103,7 +111,7 @@ test('RUNTIME-LAUNCH-SPEC-001 preserves argv boundaries and renders hostile valu
 
     const hostile = `Prompt "quoted"; Set-Content C:\\tmp\\pwned 1; #`;
     const windows = launchSpec.serializeDirectLaunchCommand(
-        commandBuilders.buildCodexNewSessionLaunchSpec(`C:\\work\\O'Brien`, hostile, `C:\\tmp\\done`),
+        commandBuilders.buildCodexNewSessionLaunchSpec(directoryScope(`C:\\work\\O'Brien`), hostile, `C:\\tmp\\done`),
         'win32'
     );
     assert.equal(windows.includes('Set-Content'), false);
@@ -113,8 +121,8 @@ test('RUNTIME-LAUNCH-SPEC-001 preserves argv boundaries and renders hostile valu
     assert.ok(payload.includes("Remove-Item -LiteralPath 'C:\\tmp\\done'"));
     assert.ok(payload.includes("New-Item -ItemType File -Force -Path 'C:\\tmp\\done'"));
     for (const hostileSpec of [
-        commandBuilders.buildKimiNewSessionLaunchSpec(`C:\\work\\O'Brien`, hostile, `C:\\tmp\\done`),
-        commandBuilders.buildClaudeNewSessionLaunchSpec(`C:\\work\\O'Brien`, hostile, `C:\\tmp\\done`),
+        commandBuilders.buildKimiNewSessionLaunchSpec(directoryScope(`C:\\work\\O'Brien`), hostile, `C:\\tmp\\done`),
+        commandBuilders.buildClaudeNewSessionLaunchSpec(directoryScope(`C:\\work\\O'Brien`), hostile, `C:\\tmp\\done`),
     ]) {
         const hostileCommand = launchSpec.serializeDirectLaunchCommand(hostileSpec, 'win32');
         assert.equal(hostileCommand.includes('Set-Content'), false);
@@ -127,22 +135,22 @@ test('RUNTIME-LAUNCH-SPEC-001 preserves argv boundaries and renders hostile valu
             : hostilePayload.includes("'C:\\work\\O''Brien'"));
     }
     assert.equal(commandBuilders.buildCodexResumeCommand(
-        'session-1', 'C:\\Repo App', null, 'win32'
+        'session-1', directoryScope('C:\\Repo App'), null, 'win32'
     ), 'codex resume --cd "C:\\Repo App" "session-1"');
     assert.equal(commandBuilders.buildKimiResumeCommand(
-        'session-1', 'C:\\Repo App', null, 'win32'
+        'session-1', directoryScope('C:\\Repo App'), null, 'win32'
     ), 'kimi --work-dir "C:\\Repo App" --resume "session-1"');
     assert.equal(commandBuilders.buildClaudeResumeCommand(
-        'session-1', 'C:\\Repo App', null, 'win32'
+        'session-1', directoryScope('C:\\Repo App'), null, 'win32'
     ), 'cd "C:\\Repo App" && claude --resume "session-1"');
     assert.equal(decodePowerShellPayload(commandBuilders.buildCodexNewSessionCommand(
-        'C:\\Repo App', 'Prompt', null, 'win32'
+        directoryScope('C:\\Repo App'), 'Prompt', null, 'win32'
     )), "codex --cd 'C:\\Repo App' 'Prompt'");
     assert.equal(decodePowerShellPayload(commandBuilders.buildKimiNewSessionCommand(
-        'C:\\Repo App', 'Prompt', null, 'win32'
+        directoryScope('C:\\Repo App'), 'Prompt', null, 'win32'
     )), "kimi --work-dir 'C:\\Repo App' --prompt 'Prompt'");
     assert.equal(decodePowerShellPayload(commandBuilders.buildClaudeNewSessionCommand(
-        'C:\\Repo App', 'Title', null, 'win32'
+        directoryScope('C:\\Repo App'), 'Title', null, 'win32'
     )), "Set-Location -LiteralPath 'C:\\Repo App'; claude --name 'Title'");
     assert.equal(launchSpec.serializeDirectLaunchCommand({
         executable: 'tool', args: ['deploy', '--target', 'value'],
@@ -159,39 +167,53 @@ test('RUNTIME-TMUX-LAYOUT-001 creates stable bounded locators and rejects ambigu
         assert.equal(runtimeTypes.isValidAiSessionRuntimeIdentityId(invalidId), false);
     }
 
-    const identity = { provider: 'codex', projectKey: 'project-key', cwd: '/work/app', sessionId: 'session-1' };
+    const identity = {
+        provider: 'codex', workspaceScopeIdentity: 'scope:project-key',
+        workspaceNavigationIdentity: 'navigation:project-key',
+        workspaceRootHostPaths: ['/work/app'], cwd: '/work/app', sessionId: 'session-1',
+    };
     const project = new tmuxLayout.ProjectTmuxLayout().getLocator(identity);
     const session = new tmuxLayout.SessionTmuxLayout().getLocator(identity);
     assert.deepEqual(project, {
-        layout: 'project', sessionName: 'project-steward-p-857b61585ca6ee92',
-        windowName: 'ai-codex-391f442b59834258',
+        layout: 'project', sessionName: 'project-steward-p-7f92e748a07b18ae',
+        windowName: 'ai-codex-422cf24af2ae26f3',
     });
     assert.deepEqual(session, {
-        layout: 'session', sessionName: 'project-steward-s-codex-391f442b59834258',
+        layout: 'session', sessionName: 'project-steward-s-codex-422cf24af2ae26f3',
     });
     assert.deepEqual(new tmuxLayout.ProjectTmuxLayout().getLocator(identity), project);
 
     const pending = { ...identity, sessionId: undefined, pendingId: 'p1' };
     assert.deepEqual(new tmuxLayout.ProjectTmuxLayout().getPendingLocator(pending), {
-        layout: 'project', sessionName: 'project-steward-p-857b61585ca6ee92',
-        windowName: 'pending-codex-20634e8befb9ebc9',
+        layout: 'project', sessionName: 'project-steward-p-7f92e748a07b18ae',
+        windowName: 'pending-codex-9084f97358c3712c',
     });
     assert.deepEqual(new tmuxLayout.SessionTmuxLayout().getPendingLocator(pending), {
-        layout: 'session', sessionName: 'project-steward-pending-codex-20634e8befb9ebc9',
+        layout: 'session', sessionName: 'project-steward-pending-codex-9084f97358c3712c',
     });
-    assert.equal(tmuxLayout.getTmuxRuntimeKey(identity), '[1,"codex","project-key","session","session-1"]');
-    assert.equal(tmuxLayout.getTmuxRuntimeKey(pending), '[1,"codex","project-key","pending","p1"]');
+    assert.equal(tmuxLayout.getTmuxRuntimeKey(identity), '[2,"codex","scope:project-key","navigation:project-key",["/work/app"],"/work/app","session","session-1"]');
+    assert.equal(tmuxLayout.getTmuxRuntimeKey(pending), '[2,"codex","scope:project-key","navigation:project-key",["/work/app"],"/work/app","pending","p1"]');
 
-    assert.deepEqual(tmuxLayout.parseManagedTmuxMetadata({
-        managed: '1', version: '1', layout: 'project', projectKey: 'project-key',
+    const metadata = {
+        managed: '1', version: '2', layout: 'project',
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: JSON.stringify(identity.workspaceRootHostPaths), cwd: identity.cwd,
         provider: 'codex', sessionId: 'session-1', marker: '/tmp/done',
-    }), {
-        version: 1, layout: 'project', projectKey: 'project-key', provider: 'codex',
+    };
+    assert.deepEqual(tmuxLayout.parseManagedTmuxMetadata(metadata), {
+        version: 2, layout: 'project', workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: ['/work/app'], cwd: '/work/app', provider: 'codex',
         sessionId: 'session-1', marker: '/tmp/done',
     });
     assert.deepEqual(tmuxLayout.TMUX_METADATA_OPTIONS, {
         managed: '@project-steward-managed', version: '@project-steward-version',
-        layout: '@project-steward-layout', projectKey: '@project-steward-project-key',
+        layout: '@project-steward-layout',
+        workspaceScopeIdentity: '@project-steward-workspace-scope-identity',
+        workspaceNavigationIdentity: '@project-steward-workspace-navigation-identity',
+        workspaceRootHostPaths: '@project-steward-workspace-root-host-paths',
+        cwd: '@project-steward-cwd',
         provider: '@project-steward-provider', sessionId: '@project-steward-session-id',
         pendingId: '@project-steward-pending-id', createdAt: '@project-steward-created-at',
         marker: '@project-steward-marker',
@@ -200,7 +222,7 @@ test('RUNTIME-TMUX-LAYOUT-001 creates stable bounded locators and rejects ambigu
     for (const invalidIdentity of [
         { ...identity, sessionId: '' },
         { ...identity, provider: 'other' },
-        { ...identity, projectKey: 'x'.repeat(513) },
+        { ...identity, workspaceScopeIdentity: 'x'.repeat(513) },
         { ...identity, sessionId: 'session\u001f1' },
     ]) {
         assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator(invalidIdentity));
@@ -210,30 +232,34 @@ test('RUNTIME-TMUX-LAYOUT-001 creates stable bounded locators and rejects ambigu
     assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getPendingLocator({
         ...identity, sessionId: undefined, pendingId: '',
     }));
-    assert.deepEqual(new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, pendingId: 'ignored' }), project);
-    assert.deepEqual(new tmuxLayout.SessionTmuxLayout().getPendingLocator({
-        ...pending, sessionId: 'ignored',
-    }), { layout: 'session', sessionName: 'project-steward-pending-codex-20634e8befb9ebc9' });
+    assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, pendingId: 'invalid' }));
+    assert.throws(() => new tmuxLayout.SessionTmuxLayout().getPendingLocator({
+        ...pending, sessionId: 'invalid',
+    }));
 
     assert.equal(tmuxLayout.parseManagedTmuxMetadata({
-        managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex',
+        managed: '1', version: '2', layout: 'session',
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: JSON.stringify(identity.workspaceRootHostPaths), cwd: identity.cwd,
+        provider: 'codex',
         pendingId: 'p1', createdAt: '2026-07-18T01:02:03.000Z', marker: '/tmp/p1.done',
     }).pendingId, 'p1');
 
     for (const invalidMetadata of [
         { managed: '1', version: '99' },
-        { managed: '1', version: '1', layout: 'other', projectKey: 'project-key', provider: 'codex', sessionId: 's' },
-        { managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'other', sessionId: 's' },
-        { managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex', sessionId: 's\n1' },
-        { managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex' },
-        { managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex', sessionId: 's', pendingId: 'p' },
-        { managed: '1', version: '1', layout: 'session', projectKey: 'x'.repeat(513), provider: 'codex', sessionId: 's' },
-        { managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex', sessionId: 'x'.repeat(513) },
-        { managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex', sessionId: 's', createdAt: 'x'.repeat(201) },
-        { managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex', sessionId: 's', createdAt: 'not-a-date' },
-        { managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex', sessionId: 's', marker: 'x'.repeat(4097) },
-        { managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex', sessionId: 's', marker: '' },
-        { managed: '1', version: '1', layout: 'session', projectKey: 'project-key', provider: 'codex', sessionId: 's', marker: '/tmp/control\u007f' },
+        { ...metadata, layout: 'other' },
+        { ...metadata, provider: 'other' },
+        { ...metadata, sessionId: 's\n1' },
+        { ...metadata, sessionId: undefined },
+        { ...metadata, pendingId: 'p' },
+        { ...metadata, workspaceScopeIdentity: 'x'.repeat(513) },
+        { ...metadata, sessionId: 'x'.repeat(513) },
+        { ...metadata, createdAt: 'x'.repeat(201) },
+        { ...metadata, createdAt: 'not-a-date' },
+        { ...metadata, marker: 'x'.repeat(4097) },
+        { ...metadata, marker: '' },
+        { ...metadata, marker: '/tmp/control\u007f' },
     ]) {
         assert.equal(tmuxLayout.parseManagedTmuxMetadata(invalidMetadata), null);
     }

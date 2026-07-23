@@ -7,65 +7,130 @@ const { AiSessionResumeController } = require('../../../out/aiSessions/resumeCon
 const { AiSessionTerminalCommandController } = require('../../../out/aiSessions/terminalCommandController');
 const { AiSessionExecutionController } = require('../../../out/aiSessions/executionController');
 
+const workspace = {
+    navigationIdentity: 'navigation:fixture',
+    scopeIdentity: 'scope:fixture',
+    kind: 'singleFolder',
+    displayName: 'Project',
+    navigationUri: 'file:///work',
+    environment: 'local',
+    roots: [{ id: 'root:fixture', name: 'work', uri: 'file:///work', hostPath: '/work', ordinal: 0 }],
+};
+const directoryScope = {
+    workspaceNavigationIdentity: workspace.navigationIdentity,
+    workspaceScopeIdentity: workspace.scopeIdentity,
+    workspaceRootHostPaths: ['/work'],
+    primaryRootId: 'root:fixture',
+    primaryCwd: '/work',
+    additionalDirectories: [],
+};
+function makeWorkspaceTarget(sessions = []) {
+    return {
+        cardId: 'p',
+        workspace,
+        sessions: {
+            activeProvider: 'codex',
+            expanded: true,
+            sessionsByProvider: { codex: sessions },
+            unavailableProviders: [],
+            activeSessions: [],
+        },
+    };
+}
+
 test('SESSION-AI-SESSION-CREATION-CONTROLLER-001 creates one tracked pending terminal from validated public input', async () => {
     const effects = [];
-    const terminal = { show() {}, dispose() {} };
+    const requests = [];
     const controller = new AiSessionCreationController({
-        isProviderId: value => value === 'codex', getOpenProjects: () => [{ id: 'p', name: 'Project', path: '/work' }],
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: id => id === 'p' ? makeWorkspaceTarget() : null,
+        pickWorkspaceRoot: async () => undefined,
         pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
-        getProvider: () => ({ label: 'Codex', terminalNamePrefix: 'Codex' }), getTerminalCwd: project => project.path,
+        getProvider: () => ({
+            label: 'Codex',
+            terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: () => ({ executable: 'codex', args: ['--new'], cwd: '/work' }),
+        }),
+        resolveWorkspaceDirectoryScope: () => directoryScope,
         showInputBox: async () => '  Fixture title  ', showActiveTab: async id => effects.push(['tab', id]),
         showWarningMessage: async message => effects.push(['warning', message]), refresh: () => effects.push(['refresh']),
         getExistingSessionIdsForCwd: () => ['existing'], getPendingMarkerPath: () => '/tmp/pending',
         scheduleNewSessionRefresh: provider => effects.push(['schedule', provider]), nowMs: () => 1000,
-        getUsableTerminalCwd: value => value, createTerminal: options => { effects.push(['terminal', options]); return { terminal }; },
-        trackPendingTerminal: value => effects.push(['pending', value]),
-        sendNewSessionCommand: async (...args) => effects.push(['send', ...args]),
+        createPendingId: () => 'pending-fixture',
+        announceStatus: async () => undefined,
+        runtimeCoordinator: {
+            create: async request => { requests.push(request); return { status: 'started', backend: 'vscode' }; },
+            getActive: () => [],
+            getPending: () => [],
+        },
     });
     await controller.createSession('p');
-    assert.equal(effects.filter(item => item[0] === 'terminal').length, 1);
-    assert.equal(effects.find(item => item[0] === 'pending')[1].title, 'Fixture title');
-    assert.equal(effects.find(item => item[0] === 'send')[1], 'codex');
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].title, 'Fixture title');
+    assert.equal(requests[0].identity.provider, 'codex');
+    assert.equal(requests[0].identity.workspaceScopeIdentity, 'scope:fixture');
+    assert.deepEqual(requests[0].excludedSessionIds, ['existing']);
     const before = effects.length;
     await controller.createSession('missing');
     assert.equal(effects.length, before + 1);
-    assert.match(effects.at(-1)[1], /not found/);
+    assert.match(effects.at(-1)[1], /not found/i);
 });
 
-test('SESSION-AI-SESSION-RESUME-CONTROLLER-001 focuses a live terminal and creates only after completion', async () => {
+test('SESSION-AI-SESSION-RESUME-CONTROLLER-001 delegates scoped resume and reveals successful runtime results', async () => {
     const effects = [];
-    const live = { terminal: { show: () => effects.push('show') }, markerPath: '/tmp/live' };
-    let complete = false;
+    const requests = [];
     const controller = new AiSessionResumeController({
-        getOpenProjects: () => [{ id: 'p', path: '/work' }], getProvider: () => ({ label: 'Codex', terminalEnvKey: 'CODEX' }),
-        getProjectSession: () => ({ id: 's', name: 'Session', cwd: '/work' }), getTerminalCwd: () => '/work',
+        getWorkspaceTarget: id => id === 'p'
+            ? makeWorkspaceTarget([{ id: 's', name: 'Session', cwd: '/work' }])
+            : null,
+        getProvider: () => ({
+            label: 'Codex',
+            terminalEnvKey: 'CODEX',
+            buildResumeLaunchSpec: () => ({ executable: 'codex', args: ['resume', 's'], cwd: '/work' }),
+        }),
+        resolveWorkspaceDirectoryScope: () => directoryScope,
         getTerminalName: () => 'Codex: Session', getMarkerPath: () => '/tmp/new', showWarningMessage: message => effects.push(message),
-        refresh: () => effects.push('refresh'), showActiveTab: id => effects.push(`tab:${id}`), getComparableCwd: () => '/work',
-        getUsableTerminalCwd: value => value, normalizeProjectPath: value => value, getExistingTerminal: () => live,
-        isTerminalComplete: () => complete, beginResume: () => true, finishResume: () => effects.push('finish'),
-        findPendingTerminalForSession: () => null,
-        createTerminal: () => ({ terminal: { show() {} }, cwdAccepted: true }), track: () => effects.push('track'),
-        claimPendingTerminal: () => effects.push('claim'), sendResumeCommand: async () => effects.push('send'),
-        syncActiveTerminal: () => effects.push('sync'), logError() {}, nowMs: () => 1000,
+        refresh: () => effects.push('refresh'), showActiveTab: id => effects.push(`tab:${id}`),
+        announceStatus: async () => undefined,
+        runtimeCoordinator: {
+            resume: async request => { requests.push(request); return { status: 'started', backend: 'vscode' }; },
+        },
     });
     await controller.resumeProjectSession('p', 'codex', 's');
-    assert.deepEqual(effects, ['show', 'tab:p', 'refresh']);
-    complete = true;
-    await controller.resumeProjectSession('p', 'codex', 's');
-    assert.ok(effects.includes('send'));
-    assert.ok(effects.includes('track'));
-    assert.ok(effects.includes('finish'));
+    assert.deepEqual(effects, ['tab:p', 'refresh']);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].identity.sessionId, 's');
+    assert.equal(requests[0].identity.workspaceScopeIdentity, 'scope:fixture');
 });
 
 test('SESSION-AI-SESSION-TERMINAL-COMMAND-CONTROLLER-001 focuses and closes only project-owned terminals', async () => {
     const effects = [];
     const terminal = { show: () => effects.push('show'), dispose: () => effects.push('dispose') };
+    const identity = {
+        provider: 'codex',
+        sessionId: 's',
+        workspaceScopeIdentity: 'scope:fixture',
+        workspaceNavigationIdentity: 'navigation:fixture',
+        workspaceRootHostPaths: ['/work'],
+        cwd: '/work',
+    };
+    const runtime = {
+        backend: 'vscode', state: 'active', identity, terminal,
+        attached: true, stale: false, runStartedAtMs: 1,
+    };
     const controller = new AiSessionTerminalCommandController({
-        isProviderId: value => value === 'codex', getOpenProjects: () => [{ id: 'p', path: '/work', codexSessions: [{ id: 's' }] }],
-        getProjectSessions: project => project.codexSessions, getProjectCwd: project => project.path, normalizePath: value => value,
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: id => id === 'p' ? makeWorkspaceTarget([{ id: 's' }]) : null,
         showErrorMessage: async message => effects.push(message), getProviderLabel: () => 'Codex', refresh: () => effects.push('refresh'),
-        getActiveTerminal: (_provider, session) => session === 's' ? { terminal, cwd: '/work' } : null,
-        getPendingTerminals: () => [], confirmClose: async () => 'Close Terminal',
+        runtimeCoordinator: {
+            getById: (_provider, session, scope) =>
+                session === 's' && scope === 'scope:fixture' ? runtime : null,
+            getPending: () => [],
+            focus: async () => effects.push('show'),
+            detach: async () => effects.push('dispose'),
+        },
+        confirmRuntimeClose: async () => 'Close Terminal',
+        announceStatus: async () => undefined,
     });
     await controller.focusActive('p', 'codex', 's');
     await controller.closeTerminal({ projectId: 'p', providerId: 'codex', sessionId: 's' });

@@ -1322,7 +1322,7 @@
       "scripts/run-architecture-guards.js"
     ],
     "evidence": [
-      "src/openProjects/protocol.ts"
+      "src/openWorkspaces/protocol.ts"
     ]
   },
   {
@@ -1348,7 +1348,7 @@
       "tests/contract/openProjects/protocol.test.js"
     ],
     "evidence": [
-      "src/openProjects/protocol.ts"
+      "src/openWorkspaces/protocol.ts"
     ]
   },
   {
@@ -1361,7 +1361,7 @@
       "tests/contract/openProjects/protocol.test.js"
     ],
     "evidence": [
-      "src/openProjects/protocol.ts"
+      "src/openWorkspaces/protocol.ts"
     ]
   },
   {
@@ -1374,7 +1374,7 @@
       "tests/contract/openProjects/protocol.test.js"
     ],
     "evidence": [
-      "src/openProjects/protocol.ts"
+      "src/openWorkspaces/protocol.ts"
     ]
   },
   {
@@ -1387,7 +1387,7 @@
       "tests/contract/openProjects/protocol.test.js"
     ],
     "evidence": [
-      "src/openProjects/protocol.ts"
+      "src/openWorkspaces/protocol.ts"
     ]
   },
   {
@@ -1400,7 +1400,7 @@
       "tests/contract/openProjects/protocol.test.js"
     ],
     "evidence": [
-      "src/openProjects/protocol.ts"
+      "src/openWorkspaces/protocol.ts"
     ]
   },
   {
@@ -1413,7 +1413,7 @@
       "tests/contract/openProjects/protocol.test.js"
     ],
     "evidence": [
-      "src/openProjects/protocol.ts"
+      "src/openWorkspaces/protocol.ts"
     ]
   },
   {
@@ -1622,7 +1622,7 @@
       "tests/contract/openProjects/coordinator.test.js"
     ],
     "evidence": [
-      "extensions/attention-ui-bridge/src/openProjectCoordinator.ts"
+      "extensions/attention-ui-bridge/src/openWorkspaceCoordinator.ts"
     ]
   },
   {
@@ -1635,7 +1635,7 @@
       "tests/contract/openProjects/coordinator.test.js"
     ],
     "evidence": [
-      "extensions/attention-ui-bridge/src/openProjectCoordinator.ts"
+      "extensions/attention-ui-bridge/src/openWorkspaceCoordinator.ts"
     ]
   },
   {
@@ -2106,7 +2106,7 @@
       "tests/unit/tooling/architectureGuards.test.js"
     ],
     "evidence": [
-      "src/aiSessions/projectHydrationController.ts"
+      "src/workspaces/sessionHydrationController.ts"
     ]
   },
   {

@@ -14,6 +14,30 @@ const { TmuxClientError } = require('../../out/aiSessions/tmuxClient');
 
 const FIXED_NOW = Date.parse('2026-07-18T10:00:00.000Z');
 
+function workspaceIdentity(overrides = {}) {
+    const cwd = overrides.cwd || '/work';
+    return {
+        provider: overrides.provider || 'codex',
+        workspaceScopeIdentity: overrides.workspaceScopeIdentity || 'scope:fixture',
+        workspaceNavigationIdentity: overrides.workspaceNavigationIdentity || 'navigation:fixture',
+        workspaceRootHostPaths: overrides.workspaceRootHostPaths || ['/work'],
+        cwd,
+        ...(overrides.sessionId === undefined ? {} : { sessionId: overrides.sessionId }),
+        ...(overrides.pendingId === undefined ? {} : { pendingId: overrides.pendingId }),
+    };
+}
+
+function directoryScope(identity) {
+    return {
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: [...identity.workspaceRootHostPaths],
+        primaryRootId: 'root:fixture',
+        primaryCwd: identity.cwd,
+        additionalDirectories: [],
+    };
+}
+
 function createRuntimeFilesystemFixture(testContext, prefix = 'project-steward-runtime-contract-') {
     const root = makeTempDirectory(testContext, prefix);
     return {
@@ -34,7 +58,7 @@ function createDeferred() {
 
 function fakeRuntime(backend, sessionId, overrides = {}) {
     return {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId },
+        identity: workspaceIdentity({ sessionId }),
         backend,
         state: 'active',
         markerPath: '/tmp/runtime-contract.done',
@@ -45,22 +69,26 @@ function fakeRuntime(backend, sessionId, overrides = {}) {
 }
 
 function fakeResumeRequest(sessionId, overrides = {}) {
+    const identity = workspaceIdentity({ sessionId });
     return {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId },
+        identity,
         projectName: 'Fixture Project',
+        sessionName: `Session ${sessionId}`,
         terminalName: `Codex: ${sessionId}`,
         launch: {
             executable: 'codex',
             args: ['resume', sessionId],
             markerPath: `/tmp/${sessionId}.done`,
         },
+        directoryScope: directoryScope(identity),
         ...overrides,
     };
 }
 
 function fakeCreateRequest(pendingId, overrides = {}) {
+    const identity = workspaceIdentity({ pendingId });
     return {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId },
+        identity,
         projectName: 'Fixture Project',
         terminalName: `Codex: ${pendingId}`,
         createdAt: '2026-07-18T10:00:00.000Z',
@@ -71,6 +99,7 @@ function fakeCreateRequest(pendingId, overrides = {}) {
             args: [],
             markerPath: `/tmp/${pendingId}.done`,
         },
+        directoryScope: directoryScope(identity),
         ...overrides,
     };
 }
@@ -127,8 +156,8 @@ function createFakeRuntimeBackend(backend, options = {}) {
         fake.pending.push(runtime);
         return clonePendingRuntime(runtime);
     };
-    fake.promotePending = async (pendingId, sessionId) => {
-        fake.promoted.push({ pendingId, sessionId });
+    fake.promotePending = async (identity, sessionId) => {
+        fake.promoted.push({ pendingId: identity.pendingId, sessionId });
         return [fakeRuntime(backend, sessionId)];
     };
     fake.handleClosedTerminal = terminal => { fake.closed.push(terminal); };
@@ -212,9 +241,11 @@ function createDirectRuntimeHarness() {
             tracked.push({
                 provider: identity.provider, sessionId: identity.sessionId, terminal: first,
                 markerPath: '/tmp/one.done', runStartedAtMs: 1, cwd: identity.cwd,
+                runtimeIdentity: { ...identity, workspaceRootHostPaths: [...identity.workspaceRootHostPaths] },
             }, {
                 provider: identity.provider, sessionId: identity.sessionId, terminal: second,
                 markerPath: '/tmp/two.done', runStartedAtMs: 2, cwd: identity.cwd,
+                runtimeIdentity: { ...identity, workspaceRootHostPaths: [...identity.workspaceRootHostPaths] },
             });
         },
     };
@@ -232,16 +263,20 @@ function createSyntheticTmuxStore(initial = {}) {
     const consumed = new Map();
     const promoting = new Map();
     const identityKey = identity => JSON.stringify([
-        identity.provider, identity.projectKey,
+        identity.provider, identity.workspaceScopeIdentity, identity.workspaceNavigationIdentity,
+        identity.workspaceRootHostPaths,
         identity.sessionId === undefined ? 'pending' : 'session',
         identity.sessionId === undefined ? identity.pendingId : identity.sessionId,
     ]);
     const store = {
         pending, known, inactive, ambiguous, consumed, promoting,
         listPending: async () => [...pending.values()].map(cloneBinding),
-        getPending: async pendingId => cloneBinding(pending.get(pendingId) || null),
+        getPending: async identity => cloneBinding([...pending.values()].find(record =>
+            record.pendingId === identity?.pendingId
+            && record.provider === identity?.provider
+            && record.workspaceScopeIdentity === identity?.workspaceScopeIdentity) || null),
         setPending: async record => { pending.set(record.pendingId, cloneBinding(record)); return true; },
-        removePending: async pendingId => { pending.delete(pendingId); },
+        removePending: async identity => { pending.delete(identity?.pendingId); },
         listKnown: async () => [...known.values()].map(cloneBinding),
         getKnown: async (provider, sessionId) => cloneBinding(known.get(`${provider}:${sessionId}`) || null),
         setKnown: async record => { known.set(`${record.provider}:${record.sessionId}`, cloneBinding(record)); },
@@ -270,7 +305,9 @@ function createSyntheticTmuxStore(initial = {}) {
                 const key = `${runtime.identity.provider}:${runtime.identity.sessionId}`;
                 known.set(key, makeTmuxKnownBinding(runtime.identity.sessionId, {
                     provider: runtime.identity.provider,
-                    projectKey: runtime.identity.projectKey,
+                    workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+                    workspaceNavigationIdentity: runtime.identity.workspaceNavigationIdentity,
+                    workspaceRootHostPaths: runtime.identity.workspaceRootHostPaths,
                     cwd: runtime.identity.cwd,
                     layout: runtime.tmux.layout,
                     locator: runtime.tmux,
@@ -307,6 +344,7 @@ function createTmuxRuntimeHarness(layout, options = {}) {
     const windows = [];
     const terminals = [];
     const attachBindings = new Map();
+    const recoveryBindings = new Map();
     const store = createSyntheticTmuxStore();
     const lockQueues = new Map();
     let attachQueue = Promise.resolve();
@@ -341,6 +379,14 @@ function createTmuxRuntimeHarness(layout, options = {}) {
                 sessionName: active[0].sessionName,
                 windowName: active[0].windowName,
                 windowId: active[0].windowId,
+            } : null;
+        },
+        getTargetWindow: async locator => {
+            const row = windows.find(value => value.sessionName === locator.sessionName
+                && (!locator.windowName || value.windowName === locator.windowName));
+            return row ? {
+                sessionName: row.sessionName, windowName: row.windowName, windowId: row.windowId,
+                metadata: { ...row.metadata },
             } : null;
         },
         hasSession: async sessionName => windows.some(row => row.sessionName === sessionName),
@@ -430,6 +476,23 @@ function createTmuxRuntimeHarness(layout, options = {}) {
                 if (typeof value === 'number') attachBindings.delete(value);
             });
         },
+        getRecovery: token => cloneBinding(recoveryBindings.get(token) || null),
+        setRecovery: (token, processId, binding) => {
+            attachQueue = attachQueue.then(async () => {
+                const value = await Promise.resolve(processId);
+                if (typeof value === 'number') {
+                    attachBindings.set(value, cloneBinding(binding));
+                    recoveryBindings.set(token, { processId: value, binding: cloneBinding(binding) });
+                }
+            });
+        },
+        removeRecovery: token => {
+            attachQueue = attachQueue.then(() => {
+                const previous = recoveryBindings.get(token);
+                recoveryBindings.delete(token);
+                if (previous) attachBindings.delete(previous.processId);
+            });
+        },
         flush: () => attachQueue,
     };
     const dependencies = {
@@ -490,7 +553,9 @@ function createTmuxRuntimeHarness(layout, options = {}) {
                 : { ...locator, sessionName: `${locator.sessionName}-occupied` };
             const row = makeTmuxDiscoveryRow({
                 provider: identity.provider,
-                projectKey: identity.projectKey,
+                workspaceScopeIdentity: identity.workspaceScopeIdentity,
+                workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+                workspaceRootHostPaths: identity.workspaceRootHostPaths,
                 sessionId: identity.sessionId,
                 layout,
                 locator: actual,
@@ -535,7 +600,7 @@ function defineRuntimeContract({ backendId, layout, createHarness }) {
         assert.equal(harness.providerCreateCount(), creationCount, 'pending reuse must not dispatch twice');
 
         const promoted = await harness.backend.promotePending(
-            request.identity.pendingId, `promoted-${layout}`
+            request.identity, `promoted-${layout}`, `Promoted ${layout}`
         );
         assert.equal(promoted.length, 1);
         assert.equal(promoted[0].identity.sessionId, `promoted-${layout}`);
@@ -654,16 +719,14 @@ function defineRuntimeContract({ backendId, layout, createHarness }) {
 
 function makeTmuxPendingBinding(pendingId, overrides = {}) {
     const layout = overrides.layout || 'project';
-    const identity = {
-        provider: overrides.provider || 'codex',
-        projectKey: overrides.projectKey || 'pk',
-        cwd: overrides.cwd || '/work',
-        pendingId,
-    };
+    const identity = workspaceIdentity({ ...overrides, pendingId });
     const locator = overrides.locator || getLayout(layout).getPendingLocator(identity);
     return {
-        version: 1, state: 'pending', pendingId,
-        provider: identity.provider, projectKey: identity.projectKey, cwd: identity.cwd,
+        version: 2, state: 'pending', pendingId,
+        provider: identity.provider,
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: [...identity.workspaceRootHostPaths], cwd: identity.cwd,
         createdAt: overrides.createdAt || '2026-07-18T10:00:00.000Z',
         excludedSessionIds: overrides.excludedSessionIds || [],
         acceptedAtMs: overrides.acceptedAtMs ?? FIXED_NOW,
@@ -674,16 +737,13 @@ function makeTmuxPendingBinding(pendingId, overrides = {}) {
 
 function makeTmuxKnownBinding(sessionId, overrides = {}) {
     const layout = overrides.layout || 'project';
-    const identity = {
-        provider: overrides.provider || 'codex',
-        projectKey: overrides.projectKey || 'pk',
-        cwd: overrides.cwd || '/work',
-        sessionId,
-    };
+    const identity = workspaceIdentity({ ...overrides, sessionId });
     const locator = overrides.locator || getLayout(layout).getLocator(identity);
     return {
-        version: 1, state: 'known', provider: identity.provider, sessionId,
-        projectKey: identity.projectKey, layout, locator: { ...locator },
+        version: 2, state: 'known', provider: identity.provider, sessionId,
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: [...identity.workspaceRootHostPaths], layout, locator: { ...locator },
         lastSeenAtMs: overrides.lastSeenAtMs ?? FIXED_NOW,
         cwd: identity.cwd,
         markerPath: overrides.markerPath || `/tmp/${sessionId}.done`,
@@ -694,8 +754,10 @@ function makeTmuxKnownBinding(sessionId, overrides = {}) {
 function makeTmuxInactiveBinding(sessionId, state = 'completed', overrides = {}) {
     const known = makeTmuxKnownBinding(sessionId, overrides);
     return {
-        version: 1, state, provider: known.provider, sessionId,
-        projectKey: known.projectKey,
+        version: 2, state, provider: known.provider, sessionId,
+        workspaceScopeIdentity: known.workspaceScopeIdentity,
+        workspaceNavigationIdentity: known.workspaceNavigationIdentity,
+        workspaceRootHostPaths: [...known.workspaceRootHostPaths],
         cwd: overrides.cwd || '/work',
         layout: known.layout,
         locator: { ...known.locator },
@@ -707,26 +769,24 @@ function makeTmuxInactiveBinding(sessionId, state = 'completed', overrides = {})
 
 function makeTmuxDiscoveryRow(overrides = {}) {
     const layout = overrides.layout || 'project';
-    const identity = {
-        provider: overrides.provider || 'codex',
-        projectKey: overrides.projectKey || 'pk',
-        cwd: '',
-        sessionId: overrides.sessionId || 'session-one',
-    };
+    const identity = workspaceIdentity({ ...overrides, cwd: overrides.cwd || '/work', sessionId: overrides.sessionId || 'session-one' });
     const expected = getLayout(layout).getLocator(identity);
     const locator = overrides.locator || expected;
-    const sessionMetadata = layout === 'project' ? {
-        managed: '1', version: '1', layout, projectKey: identity.projectKey,
-    } : {
-        managed: '1', version: '1', layout, projectKey: identity.projectKey,
+    const fullMetadata = {
+        managed: '1', version: '2', layout,
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: JSON.stringify(identity.workspaceRootHostPaths), cwd: identity.cwd,
         provider: identity.provider, sessionId: identity.sessionId,
         createdAt: '2026-07-18T10:00:00.000Z', marker: `/tmp/${identity.sessionId}.done`,
     };
+    const sessionMetadata = layout === 'project' ? {
+        managed: '1', version: '2', layout,
+        workspaceScopeIdentity: identity.workspaceScopeIdentity,
+    } : fullMetadata;
     const windowMetadata = layout === 'project' ? {
-        managed: '1', version: '1', layout,
-        provider: identity.provider, sessionId: identity.sessionId,
-        createdAt: '2026-07-18T10:00:00.000Z', marker: `/tmp/${identity.sessionId}.done`,
-    } : { managed: '1', version: '1', layout };
+        ...fullMetadata,
+    } : { managed: '1', version: '2', layout };
     return {
         sessionName: locator.sessionName,
         windowName: locator.windowName || 'ai-session',
@@ -866,4 +926,5 @@ module.exports = {
     makeTmuxInactiveBinding,
     makeTmuxKnownBinding,
     makeTmuxPendingBinding,
+    workspaceIdentity,
 };

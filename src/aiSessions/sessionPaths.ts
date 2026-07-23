@@ -1,36 +1,12 @@
 'use strict';
 
-import type { AiSessionProviderId, CodexSession, Project } from '../models';
+import type { AiSessionProviderId, CodexSession } from '../models';
 import type { AiSessionProviderDefinition } from './types';
-import { getOpenProjectTerminalCwd } from './projectCandidates';
 
 type AiSessionPathProvider = Pick<
     AiSessionProviderDefinition,
     'id' | 'terminalNamePrefix' | 'projectSessionsKey' | 'terminalCwdFields'
 >;
-
-export function getProjectAiSessions(
-    project: Project,
-    providerId: AiSessionProviderId,
-    providers: readonly AiSessionPathProvider[]
-): CodexSession[] {
-    let sessionProvider = getAiSessionPathProvider(providerId, providers);
-    return sessionProvider ? project[sessionProvider.projectSessionsKey] || [] : [];
-}
-
-export function getAiSessionTerminalCwd(
-    providerId: AiSessionProviderId,
-    session: CodexSession,
-    project: Project,
-    providers: readonly AiSessionPathProvider[]
-): string {
-    let sessionCwd = getAiSessionComparableCwd(providerId, session, providers);
-    if (sessionCwd) {
-        return sessionCwd;
-    }
-
-    return getOpenProjectTerminalCwd(project);
-}
 
 export function getAiSessionComparableCwd(
     providerId: AiSessionProviderId,

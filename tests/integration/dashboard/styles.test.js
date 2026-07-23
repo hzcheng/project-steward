@@ -30,7 +30,7 @@ function extractBlock(source, selector, occurrence = 0) {
 
 function validateReducedMotion(source) {
     const dashboardMotion = extractBlock(source, '@media (prefers-reduced-motion: reduce)', 0);
-    for (const value of ['.steward-item-card', '.steward-item-accent', 'transition: none']) {
+    for (const value of ['.steward-item-card', '.steward-item-accent', 'transition: none;']) {
         assert.ok(dashboardMotion.includes(value), `WEBVIEW-REDUCED-MOTION-001 missing ${value}`);
     }
     const sessionMotion = extractBlock(source, '@media (prefers-reduced-motion: reduce)', 1);
@@ -90,7 +90,7 @@ function validateSharedCardPresentation(source) {
     assertDeclarations(ruleForSelector(source, 'body.steward-sidebar .steward-group-header'), id,
         ['padding: 4px 6px', 'border-radius: 7px', 'font-size: 15px', 'line-height: 1.25']);
     assertDeclarations(ruleForSelector(source, 'body.steward-sidebar .steward-item-card', 'height: 58px'), id,
-        ['width: calc(100% - 4px)', 'height: 58px', 'padding: 8px 10px 8px 15px', 'border-radius: 18px']);
+        ['width: 100%', 'height: 58px', 'padding: 8px 10px 8px 15px', 'border-radius: 18px']);
     const hover = ruleForSelector(source, 'body.steward-sidebar .steward-item-card:focus-within');
     assertDeclarations(hover, id,
         ['background: var(--vscode-list-hoverBackground)', 'border-color: var(--vscode-focusBorder)', 'transform: translateY(-1px)']);
@@ -171,7 +171,9 @@ test('WEBVIEW-STYLES-ARTIFACT-001 committed CSS exactly matches compiled and min
 
 test('WEBVIEW-REDUCED-MOTION-001 disables dashboard and session animation for reduced motion', () => {
     validateReducedMotion(styles);
-    assert.throws(() => validateReducedMotion(styles.replace('transition: none;', 'transition: all 1s;')),
+    assert.throws(() => validateReducedMotion(styles.replace(
+        'body.steward-sidebar .steward-item-accent {\n        transition: none;',
+        'body.steward-sidebar .steward-item-accent {\n        transition: all 1s;')),
         /WEBVIEW-REDUCED-MOTION-001/);
 });
 

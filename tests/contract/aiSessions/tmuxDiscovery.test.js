@@ -96,7 +96,7 @@ test('RUNTIME-TMUX-DISCOVERY-001 isolates locator collisions as stale-safe confl
 
     await discovery.refresh();
     assert.deepEqual(discovery.getActive(), []);
-    const conflict = findTmuxCollisionRuntime(discovery.getDiagnostics(), 'claude', 'same');
+    const conflict = findTmuxCollisionRuntime(discovery.getDiagnostics(), 'claude', 'same', 'scope:fixture');
     assert.equal(conflict.state, 'conflict');
     assert.deepEqual(conflict.tmux, {
         layout: 'project', sessionName: expected.sessionName, windowName: expected.windowName,
@@ -104,7 +104,7 @@ test('RUNTIME-TMUX-DISCOVERY-001 isolates locator collisions as stale-safe confl
 
     fail = true;
     await assert.rejects(discovery.refresh(true), /collision refresh failed/);
-    assert.equal(findTmuxCollisionRuntime(discovery.getDiagnostics(), 'claude', 'same').stale, true);
+    assert.equal(findTmuxCollisionRuntime(discovery.getDiagnostics(), 'claude', 'same', 'scope:fixture').stale, true);
 });
 
 test('RUNTIME-TMUX-DISCOVERY-001 classifies vanished runtimes as completed or stopped and retains them', async () => {

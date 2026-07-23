@@ -1,18 +1,34 @@
 'use strict';
 
 import type { AiSessionProviderId, CodexSession } from '../models';
+import type { OpenWorkspace } from '../workspaces/types';
 import type { BatchAiSessionArchiveResult } from './archiveBatch';
-import type { AiSessionExecutionState, AiSessionLifecycleRequest, AiSessionLifecycleSignal } from './lifecycle';
-import type { DashboardSearchCatalog } from '../webview/dashboardViewModel';
+import type {
+    AiSessionAttentionReason,
+    AiSessionExecutionState,
+    AiSessionLifecycleRequest,
+    AiSessionLifecycleSignal,
+} from './lifecycle';
+import type { DashboardWorkspaceSearchCatalog } from '../webview/dashboardViewModel';
 import type { AiSessionLaunchSpec } from './launchSpec';
-import type { AiSessionRuntimeBackendId, AiSessionTmuxLayout } from './runtimeTypes';
+import type { AiSessionRuntimeBackendId, AiSessionRuntimeIdentity, AiSessionTmuxLayout } from './runtimeTypes';
 
 export interface AiSessionTerminalEntry<TTerminal = unknown> {
     terminal: TTerminal;
     markerPath: string;
     runStartedAtMs: number;
     cwd?: string;
+    runtimeIdentity?: AiSessionRuntimeIdentity;
     released?: boolean;
+}
+
+export interface AiSessionDirectoryScope {
+    workspaceNavigationIdentity: string;
+    workspaceScopeIdentity: string;
+    workspaceRootHostPaths: string[];
+    primaryRootId: string;
+    primaryCwd: string;
+    additionalDirectories: string[];
 }
 
 export type AiSessionTabId = 'active' | 'sessions';
@@ -22,6 +38,7 @@ export type ActiveAiSessionStatus = 'starting' | 'running' | 'focused' | 'needsA
 export interface AiSessionActiveTerminalRuntime {
     provider: AiSessionProviderId;
     sessionId: string;
+    workspaceScopeIdentity: string;
     cwd?: string;
     runStartedAtMs: number;
 }
@@ -45,6 +62,9 @@ export interface ActiveAiSessionViewModel {
     createdAt?: string;
     pinned?: boolean;
     attentionEventId?: string;
+    primaryRootId?: string;
+    primaryRootLabel?: string;
+    outsideWorkspace?: boolean;
 }
 
 export interface AiSessionReadResult {
@@ -83,10 +103,10 @@ export interface AiSessionProviderDefinition {
     projectSessionsKey: 'codexSessions' | 'kimiSessions' | 'claudeSessions';
     projectSessionsUnavailableKey: 'codexSessionsUnavailable' | 'kimiSessionsUnavailable' | 'claudeSessionsUnavailable';
     terminalCwdFields: Array<'cwd' | 'workDir'>;
-    buildResumeLaunchSpec: (sessionId: string, cwd: string, markerPath: string) => AiSessionLaunchSpec;
-    buildNewSessionLaunchSpec: (cwd: string, title: string, markerPath: string) => AiSessionLaunchSpec;
-    buildResumeCommand: (sessionId: string, cwd: string, markerPath: string) => string;
-    buildNewSessionCommand: (cwd: string, title: string, markerPath: string) => string;
+    buildResumeLaunchSpec: (sessionId: string, scope: AiSessionDirectoryScope, markerPath: string) => AiSessionLaunchSpec;
+    buildNewSessionLaunchSpec: (scope: AiSessionDirectoryScope, title: string, markerPath: string) => AiSessionLaunchSpec;
+    buildResumeCommand: (sessionId: string, scope: AiSessionDirectoryScope, markerPath: string) => string;
+    buildNewSessionCommand: (scope: AiSessionDirectoryScope, title: string, markerPath: string) => string;
 }
 
 export interface AiSessionProvider extends AiSessionProviderDefinition {
@@ -110,33 +130,42 @@ export interface AiSessionViewModel {
     pinned?: boolean;
     active?: boolean;
     focused?: boolean;
+    attention?: { eventId: string; reason: AiSessionAttentionReason; unread: boolean };
+    primaryRootId?: string;
+    primaryRootLabel?: string;
+    outsideWorkspace?: boolean;
 }
 
-export interface OpenProjectAiSessionViewModel {
-    projectId: string;
-    projectKey: string;
+export interface WorkspaceAiSessionViewModel {
+    workspaceScopeIdentity: string;
+    workspaceNavigationIdentity: string;
     activeProvider: AiSessionProviderId;
     expanded: boolean;
     providers: AiSessionProviderSummary[];
     sessionsByProvider: Partial<Record<AiSessionProviderId, AiSessionViewModel[]>>;
     unavailableProviders: AiSessionProviderId[];
-    searchText?: string;
-    aiSessionCount?: number;
-    attentionCount?: number;
+    aiSessionCount: number;
+    attentionCount: number;
     defaultTab: AiSessionTabId;
     activeSessions: ActiveAiSessionViewModel[];
     activeSessionCount: number;
     activeAttentionCount: number;
-    sessionSectionHtml?: string;
+}
+
+export interface WorkspaceAiSessionActionTarget {
+    cardId: string;
+    workspace: OpenWorkspace;
+    sessions: WorkspaceAiSessionViewModel;
 }
 
 export interface AiSessionsUpdatedMessage {
     type: 'ai-sessions-updated';
-    version: 1;
+    version: 2;
     sequence: number;
     generatedAt: string;
-    openProjects: OpenProjectAiSessionViewModel[];
-    searchCatalog: DashboardSearchCatalog;
+    currentWorkspaceCount: 0 | 1;
+    html: string;
+    searchCatalog: DashboardWorkspaceSearchCatalog;
 }
 
 export interface AiSessionActiveTerminalChangedMessage {

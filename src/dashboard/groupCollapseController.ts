@@ -3,8 +3,8 @@
 import {
     FAVORITES_GROUP_COLLAPSED_KEY,
     FAVORITES_GROUP_ID,
-    OPEN_PROJECTS_GROUP_COLLAPSED_KEY,
-    OPEN_PROJECTS_GROUP_ID,
+    OPEN_WORKSPACES_GROUP_COLLAPSED_KEY,
+    OPEN_WORKSPACES_GROUP_ID,
 } from '../constants';
 import type { Group } from '../models';
 
@@ -31,8 +31,8 @@ export class GroupCollapseController {
         return this.options.state.get<boolean>(FAVORITES_GROUP_COLLAPSED_KEY);
     }
 
-    getOpenProjectsCollapsed(): boolean | undefined {
-        return this.options.state.get<boolean>(OPEN_PROJECTS_GROUP_COLLAPSED_KEY);
+    getOpenWorkspacesCollapsed(): boolean | undefined {
+        return this.options.state.get<boolean>(OPEN_WORKSPACES_GROUP_COLLAPSED_KEY);
     }
 
     async collapseGroup(groupId: string, collapsed?: boolean): Promise<void> {
@@ -41,8 +41,8 @@ export class GroupCollapseController {
             return;
         }
 
-        if (groupId === OPEN_PROJECTS_GROUP_ID) {
-            await this.options.state.update(OPEN_PROJECTS_GROUP_COLLAPSED_KEY, Boolean(collapsed));
+        if (groupId === OPEN_WORKSPACES_GROUP_ID) {
+            await this.options.state.update(OPEN_WORKSPACES_GROUP_COLLAPSED_KEY, Boolean(collapsed));
             return;
         }
 

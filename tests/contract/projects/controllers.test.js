@@ -203,14 +203,12 @@ test('TODO-GROUP-COLLAPSE-CONTROLLER-001 persists virtual and saved group collap
 
     assert.equal(controller.getFavoritesCollapsed(), true);
     await controller.collapseGroup('__favorites', false);
-    await controller.collapseGroup('__openProjects', true);
     await controller.collapseGroup('group-a');
     await controller.collapseGroup('group-b', false);
     await controller.collapseGroup('missing', true);
 
     assert.deepEqual(stateUpdates, [
         ['favoritesGroupCollapsed', false],
-        ['openProjectsGroupCollapsed', true],
     ]);
     assert.deepEqual(groupUpdates, [
         ['group-a', { id: 'group-a', collapsed: true }],

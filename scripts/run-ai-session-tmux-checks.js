@@ -10,6 +10,7 @@ const launchSpec = require('../out/aiSessions/launchSpec');
 const commandBuilders = require('../out/aiSessions/commandBuilders');
 const runtimeConfiguration = require('../out/aiSessions/runtimeConfiguration');
 const tmuxLayout = require('../out/aiSessions/tmuxLayout');
+const tmuxNaming = require('../out/aiSessions/tmuxNaming');
 const tmuxClientModule = require('../out/aiSessions/tmuxClient');
 const discoveryModule = require('../out/aiSessions/tmuxRuntimeDiscovery');
 const runtimeStoreModule = require('../out/aiSessions/tmuxRuntimeBindingStore');
@@ -19,7 +20,9 @@ const directBackendModule = require('../out/aiSessions/directTerminalRuntimeBack
 const coordinatorModule = require('../out/aiSessions/runtimeCoordinator');
 const runtimeTypesModule = require('../out/aiSessions/runtimeTypes');
 const tmuxBackendModule = require('../out/aiSessions/tmuxRuntimeBackend');
-const activeSessionProjection = require('../out/aiSessions/activeSessionProjection');
+const WorkspacePendingSessionPromotionController = require(
+    '../out/workspaces/pendingSessionPromotionController'
+).WorkspacePendingSessionPromotionController;
 const CreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
 const ResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const TerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
@@ -45,6 +48,37 @@ function decodePowerShellPayload(command) {
 
 function quotePowerShellLiteral(value) {
     return `'${String(value).replace(/'/g, `''`)}'`;
+}
+
+function createDirectoryScope(primaryCwd, additionalDirectories = []) {
+    return Object.freeze({
+        workspaceNavigationIdentity: `navigation:${primaryCwd}`,
+        workspaceScopeIdentity: `scope:${primaryCwd}`,
+        workspaceRootHostPaths: Object.freeze([primaryCwd, ...additionalDirectories]),
+        primaryRootId: `root:${primaryCwd}`,
+        primaryCwd,
+        additionalDirectories: Object.freeze([...additionalDirectories]),
+    });
+}
+
+function createWorkspaceActionTarget(project, workspaceScopeIdentity) {
+    return {
+        cardId: project.id,
+        workspace: {
+            displayName: project.name,
+            navigationIdentity: `navigation:${workspaceScopeIdentity}`,
+            scopeIdentity: workspaceScopeIdentity,
+            roots: [],
+        },
+        sessions: {
+            sessionsByProvider: {
+                codex: project.codexSessions || [],
+                kimi: project.kimiSessions || [],
+                claude: project.claudeSessions || [],
+            },
+            activeSessions: [],
+        },
+    };
 }
 
 function deferred() {
@@ -74,6 +108,7 @@ function createTmuxBackendHarness(options = {}) {
     const consumed = new Map();
     const promoting = new Map();
     const attachBindings = new Map();
+    const attachRecoveries = new Map();
     const lockQueues = new Map();
     let attachWriteQueue = Promise.resolve();
     let nextWindowId = 1;
@@ -95,9 +130,14 @@ function createTmuxBackendHarness(options = {}) {
     let ambiguousRenameWindowCount = options.ambiguousRenameWindowCount || 0;
     let failFinalMetadataIdentityWriteCount = options.failFinalMetadataIdentityWriteCount || 0;
     let failPromotionClearPendingCount = options.failPromotionClearPendingCount || 0;
+    let failRemovePendingAfterConsumedCount = options.failRemovePendingAfterConsumedCount || 0;
+    let failRefreshAfterConsumedCount = options.failRefreshAfterConsumedCount || 0;
+    let failAttachMigrationCount = options.failAttachMigrationCount || 0;
+    let pendingAttachMigrationError = null;
     let failConfigureWindowTimeoutCount = options.failConfigureWindowTimeoutCount || 0;
     let activeWindowError = null;
     let activeWindowDeferred = null;
+    let targetWindowOverride;
     let promotionRenameOccurred = false;
 
     function syncMetadata(row) {
@@ -128,7 +168,7 @@ function createTmuxBackendHarness(options = {}) {
 
     function ambiguousKey(identity) {
         const kind = identity.sessionId !== undefined ? 'session' : 'pending';
-        return JSON.stringify([identity.provider, identity.projectKey, kind,
+        return JSON.stringify([identity.provider, identity.workspaceScopeIdentity, kind,
             identity.sessionId !== undefined ? identity.sessionId : identity.pendingId]);
     }
 
@@ -136,8 +176,31 @@ function createTmuxBackendHarness(options = {}) {
         listPending: async () => Array.from(pending.values()).filter(record =>
             !options.enforcePendingTtl
             || (dependencies.nowMs() - record.acceptedAtMs < 24 * 60 * 60 * 1000)),
-        getPending: async pendingId => {
-            const record = pending.get(pendingId) || null;
+        listRecoverablePending: async () => {
+            const records = [];
+            const durableKeys = new Set([...promoting.keys(), ...consumed.keys()]);
+            for (const key of durableKeys) {
+                const intent = promoting.get(key);
+                const tombstone = consumed.get(key);
+                const livePending = pending.get(key);
+                if (intent) {
+                    records.push({
+                        pendingBinding: intent.pendingBinding,
+                        promotionRecoveryDisplayName: intent.finalSessionName,
+                        recoverySessionId: intent.finalSessionId,
+                    });
+                } else if (tombstone?.finalSessionName && livePending) {
+                    records.push({
+                        pendingBinding: livePending,
+                        promotionRecoveryDisplayName: tombstone.finalSessionName,
+                        recoverySessionId: tombstone.finalSessionId,
+                    });
+                }
+            }
+            return records;
+        },
+        getPending: async identity => {
+            const record = pending.get(ambiguousKey(identity)) || null;
             return record && options.enforcePendingTtl
                 && dependencies.nowMs() - record.acceptedAtMs >= 24 * 60 * 60 * 1000 ? null : record;
         },
@@ -148,12 +211,16 @@ function createTmuxBackendHarness(options = {}) {
                 failSetPendingCount--;
                 throw new Error('pending persistence failed');
             }
-            pending.set(record.pendingId, { ...record });
+            pending.set(ambiguousKey(record), { ...record });
             return true;
         },
-        removePending: async pendingId => {
-            operations.push({ type: 'remove-pending', pendingId });
-            pending.delete(pendingId);
+        removePending: async identity => {
+            operations.push({ type: 'remove-pending', pendingId: identity.pendingId });
+            if (consumed.size && failRemovePendingAfterConsumedCount > 0) {
+                failRemovePendingAfterConsumedCount--;
+                throw new Error('post-consumed pending removal failed');
+            }
+            pending.delete(ambiguousKey(identity));
         },
         setKnown: async record => {
             operations.push({ type: 'store-known', sessionId: record.sessionId });
@@ -162,13 +229,6 @@ function createTmuxBackendHarness(options = {}) {
         getKnown: async (provider, sessionId) => known.get(`${provider}:${sessionId}`) || null,
         removeKnown: async (provider, sessionId) => known.delete(`${provider}:${sessionId}`),
         getAmbiguous: async identity => ambiguous.get(ambiguousKey(identity)) || null,
-        getAmbiguousByPendingId: async pendingId => {
-            stateReadCount++;
-            const matches = Array.from(ambiguous.values()).filter(record =>
-                record.pendingId === pendingId);
-            if (matches.length > 1) throw new Error('Multiple tmux ambiguous records use the same pending ID.');
-            return matches[0] || null;
-        },
         setAmbiguous: async record => {
             operations.push({ type: 'store-ambiguous', record: { ...record } });
             ambiguous.set(ambiguousKey(record), { ...record, locator: { ...record.locator } });
@@ -180,12 +240,6 @@ function createTmuxBackendHarness(options = {}) {
         getConsumed: async identity => {
             stateReadCount++;
             return consumed.get(ambiguousKey(identity)) || null;
-        },
-        getConsumedByPendingId: async pendingId => {
-            stateReadCount++;
-            const matches = Array.from(consumed.values()).filter(record => record.pendingId === pendingId);
-            if (matches.length > 1) throw new Error('Multiple tmux consumed records use the same pending ID.');
-            return matches[0] || null;
         },
         setConsumed: async record => {
             operations.push({ type: 'store-consumed', pendingId: record.pendingId });
@@ -199,12 +253,6 @@ function createTmuxBackendHarness(options = {}) {
         getPromoting: async identity => {
             stateReadCount++;
             return promoting.get(ambiguousKey(identity)) || null;
-        },
-        getPromotingByPendingId: async pendingId => {
-            stateReadCount++;
-            const matches = Array.from(promoting.values()).filter(record => record.pendingId === pendingId);
-            if (matches.length > 1) throw new Error('Multiple tmux promotion intents use the same pending ID.');
-            return matches[0] || null;
         },
         setPromoting: async record => {
             operations.push({ type: 'store-promoting', pendingId: record.pendingId });
@@ -230,11 +278,14 @@ function createTmuxBackendHarness(options = {}) {
                 const sessionId = runtime.identity.sessionId;
                 if (sessionId && runtime.tmux) {
                     known.set(`${runtime.identity.provider}:${sessionId}`, {
-                        version: 1,
+                        version: 2,
                         state: 'known',
                         provider: runtime.identity.provider,
                         sessionId,
-                        projectKey: runtime.identity.projectKey,
+                        workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+                        workspaceNavigationIdentity: runtime.identity.workspaceNavigationIdentity,
+                        workspaceRootHostPaths: [...runtime.identity.workspaceRootHostPaths],
+                        cwd: runtime.identity.cwd,
                         layout: runtime.tmux.layout,
                         locator: { ...runtime.tmux },
                         lastSeenAtMs: Date.parse('2026-07-18T10:00:00Z'),
@@ -283,6 +334,23 @@ function createTmuxBackendHarness(options = {}) {
                 await pendingResult.promise;
             }
             return result;
+        },
+        getTargetWindow: async locator => {
+            operations.push({ type: 'get-target-window', locator: { ...locator } });
+            if (targetWindowOverride !== undefined) {
+                return targetWindowOverride === null ? null : {
+                    ...targetWindowOverride,
+                    metadata: { ...targetWindowOverride.metadata },
+                };
+            }
+            const row = windows.find(candidate => candidate.sessionName === locator.sessionName
+                && (!locator.windowName || candidate.windowName === locator.windowName));
+            return row ? {
+                sessionName: row.sessionName,
+                windowName: row.windowName,
+                windowId: row.windowId,
+                metadata: { ...row.metadata },
+            } : null;
         },
         hasSession: async name => {
             const exists = windows.some(item => item.sessionName === name);
@@ -388,7 +456,7 @@ function createTmuxBackendHarness(options = {}) {
             const item = windows.find(candidate => candidate.sessionName === sessionName
                 && candidate.windowName === windowName);
             const values = item ? { ...item.windowMetadata } : {};
-            return options.corruptPendingMetadata ? { ...values, projectKey: 'wrong-scope' } : values;
+            return options.corruptPendingMetadata ? { ...values, workspaceScopeIdentity: 'wrong-scope' } : values;
         },
         configureManagedWindow: async (sessionName, windowName) => {
             operations.push({ type: 'configure-window', sessionName, windowName });
@@ -419,9 +487,23 @@ function createTmuxBackendHarness(options = {}) {
             ? options.nowMs() : Date.parse('2026-07-18T10:00:00Z'),
         cacheTtlMs: 0,
     });
+    const refreshDiscovery = discovery.refresh.bind(discovery);
+    discovery.refresh = async force => {
+        if (consumed.size && failRefreshAfterConsumedCount > 0) {
+            failRefreshAfterConsumedCount--;
+            throw new Error('post-consumed discovery refresh failed');
+        }
+        return refreshDiscovery(force);
+    };
     const attachStore = {
         get: processId => attachBindings.get(processId) || null,
+        getRecovery: token => attachRecoveries.get(token) || null,
         set: (processId, binding) => {
+            if (consumed.size && binding.sessionId && failAttachMigrationCount > 0) {
+                failAttachMigrationCount--;
+                pendingAttachMigrationError = new Error('attach migration failed');
+                return;
+            }
             attachWriteQueue = attachWriteQueue.then(() => Promise.resolve(processId)).then(value => {
                 if (typeof value === 'number') attachBindings.set(value, { ...binding });
             });
@@ -431,7 +513,37 @@ function createTmuxBackendHarness(options = {}) {
                 if (typeof value === 'number') attachBindings.delete(value);
             });
         },
-        flush: () => attachWriteQueue,
+        setRecovery: (token, processId, binding) => {
+            if (consumed.size && binding.sessionId && failAttachMigrationCount > 0) {
+                failAttachMigrationCount--;
+                pendingAttachMigrationError = new Error('attach migration failed');
+                return;
+            }
+            attachWriteQueue = attachWriteQueue.then(() => Promise.resolve(processId)).then(value => {
+                if (typeof value !== 'number') return;
+                const previous = attachRecoveries.get(token);
+                if (previous && previous.processId !== value) {
+                    attachBindings.delete(previous.processId);
+                }
+                attachBindings.set(value, { ...binding });
+                attachRecoveries.set(token, { processId: value, binding: { ...binding } });
+            });
+        },
+        removeRecovery: token => {
+            attachWriteQueue = attachWriteQueue.then(() => {
+                const previous = attachRecoveries.get(token);
+                if (previous) attachBindings.delete(previous.processId);
+                attachRecoveries.delete(token);
+            });
+        },
+        flush: () => {
+            if (pendingAttachMigrationError) {
+                const error = pendingAttachMigrationError;
+                pendingAttachMigrationError = null;
+                return Promise.reject(error);
+            }
+            return attachWriteQueue;
+        },
     };
     const dependencies = {
         platform: options.platform || 'linux',
@@ -495,10 +607,11 @@ function createTmuxBackendHarness(options = {}) {
     };
     return {
         dependencies, client, runtimeStore, attachStore, operations, terminals, windows,
-        pending, known, ambiguous, consumed, promoting, attachBindings,
+        pending, known, ambiguous, consumed, promoting, attachBindings, attachRecoveries,
         failNextAttach() { failAttachCount++; },
         failNextShow() { failShowCount++; },
         failNextActiveWindow(error) { activeWindowError = error; },
+        setTargetWindow(value) { targetWindowOverride = value; },
         deferNextActiveWindow() {
             activeWindowDeferred = deferred();
             return activeWindowDeferred;
@@ -507,31 +620,1354 @@ function createTmuxBackendHarness(options = {}) {
     };
 }
 
+async function promoteWithRestartedCoordinator(harness, identity, sessionId, sessionName) {
+    const { coordinator } = createRestartedRuntime(harness);
+    return coordinator.promotePending(identity, sessionId, sessionName);
+}
+
+function createRestartedRuntime(harness) {
+    const direct = createFakeRuntimeBackend('vscode');
+    const tmux = new tmuxBackendModule.TmuxRuntimeBackend(harness.dependencies);
+    const coordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct,
+        tmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    return { coordinator, tmux };
+}
+
+function createPersistedAttachState() {
+    const values = new Map();
+    return {
+        values,
+        state: {
+            get: (key, fallback) => values.has(key)
+                ? JSON.parse(JSON.stringify(values.get(key))) : fallback,
+            update: async (key, value) => {
+                if (value === undefined) {
+                    values.delete(key);
+                } else {
+                    values.set(key, JSON.parse(JSON.stringify(value)));
+                }
+            },
+        },
+    };
+}
+
+function clonePersistedAttachState(source) {
+    const clone = createPersistedAttachState();
+    for (const [key, value] of source.values) {
+        clone.values.set(key, JSON.parse(JSON.stringify(value)));
+    }
+    return clone;
+}
+
+function createFreshPersistedRuntime(harness, runtimeRoot, attachState) {
+    const runtimeStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+        runtimeRoot, harness.dependencies.nowMs
+    );
+    const attachStore = new attachStoreModule.TmuxAttachBindingStore(attachState.state);
+    const discovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: harness.client,
+        bindingStore: runtimeStore,
+        markerIsCurrent: () => false,
+        nowMs: harness.dependencies.nowMs,
+        cacheTtlMs: 0,
+    });
+    const dependencies = {
+        ...harness.dependencies,
+        runtimeStore,
+        attachStore,
+        discovery,
+    };
+    const tmux = new tmuxBackendModule.TmuxRuntimeBackend(dependencies);
+    const direct = createFakeRuntimeBackend('vscode');
+    const coordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct,
+        tmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    return { attachStore, coordinator, dependencies, direct, discovery, runtimeStore, tmux };
+}
+
+function createPromotionController(runtimeCoordinator) {
+    return new WorkspacePendingSessionPromotionController({
+        providers: [{
+            id: 'codex', terminalNamePrefix: 'Codex', projectSessionsKey: 'codexSessions',
+            terminalCwdFields: ['cwd'],
+        }],
+        getSessionKey: (provider, sessionId) => `${provider}:${sessionId}`,
+        runtimeCoordinator,
+        setAlias: () => undefined,
+        syncActiveRuntime: () => undefined,
+        evaluateExecution: () => undefined,
+        scheduleRefresh: () => undefined,
+    });
+}
+
 function runtimeRecordFilename(record) {
     const canonicalState = record.state === 'completed' || record.state === 'stopped'
         ? 'known' : record.state;
-    const identity = record.state === 'pending'
-        ? [record.pendingId]
-        : record.state === 'consumed' || record.state === 'promoting'
-            ? [record.provider, record.projectKey, record.pendingId]
-            : [record.provider, record.sessionId];
+    const identity = record.state === 'pending' || record.state === 'consumed' || record.state === 'promoting'
+            ? [record.provider, record.workspaceScopeIdentity, record.workspaceNavigationIdentity,
+                JSON.stringify(Array.isArray(record.workspaceRootHostPaths)
+                    ? record.workspaceRootHostPaths.slice().sort() : []), record.cwd, record.pendingId]
+            : [record.provider, record.workspaceScopeIdentity, record.sessionId];
     const digest = crypto.createHash('sha256')
-        .update(JSON.stringify([1, canonicalState, ...identity]), 'utf8')
+        .update(JSON.stringify([2, canonicalState, ...identity]), 'utf8')
         .digest('hex');
     return `${canonicalState}-${digest}.json`;
 }
 
-// RUNTIME-TMUX-DISCOVERY-001
+function runRuntimeConfigurationChecks() {
+    assert.deepStrictEqual(runtimeConfiguration.readAiSessionRuntimeConfiguration(config({})), {
+        mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux',
+    });
+    assert.deepStrictEqual(runtimeConfiguration.readAiSessionRuntimeConfiguration(config({
+        aiSessionTerminalMode: 'tmux', aiSessionTmuxLayout: 'session', aiSessionTmuxPath: '/opt/bin/tmux',
+    })), { mode: 'tmux', tmuxLayout: 'session', tmuxPath: '/opt/bin/tmux' });
+    assert.deepStrictEqual(runtimeConfiguration.readAiSessionRuntimeConfiguration(config({
+        aiSessionTerminalMode: 'bad', aiSessionTmuxLayout: 'bad', aiSessionTmuxPath: '   ',
+    })), { mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' });
+    assert.deepStrictEqual(runtimeConfiguration.readAiSessionRuntimeConfiguration(config({
+        aiSessionTerminalMode: null, aiSessionTmuxLayout: 1, aiSessionTmuxPath: false,
+    })), { mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' });
+
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    const properties = manifest.contributes.configuration.properties;
+    assert.deepStrictEqual(properties['projectSteward.aiSessionTerminalMode'].enum, ['vscode', 'tmux']);
+    assert.strictEqual(properties['projectSteward.aiSessionTerminalMode'].scope, 'machine');
+    assert.strictEqual(properties['projectSteward.aiSessionTmuxLayout'].default, 'project');
+    assert.strictEqual(properties['projectSteward.aiSessionTmuxPath'].scope, 'machine');
+}
+
+function runLaunchSpecChecks() {
+    const spec = commandBuilders.buildCodexResumeLaunchSpec(
+        `session'; touch /tmp/nope; '`,
+        createDirectoryScope(`/work/it's app`),
+        `/tmp/done marker`
+    );
+    assert.strictEqual(spec.executable, 'codex');
+    assert.deepStrictEqual(spec.args, ['resume', '--cd', `/work/it's app`, `session'; touch /tmp/nope; '`]);
+    assert.strictEqual(spec.cwd, undefined);
+    assert.strictEqual(spec.markerPath, '/tmp/done marker');
+
+    const tmuxCommand = launchSpec.serializeTmuxLaunchCommand(spec);
+    assert.ok(tmuxCommand.startsWith('exec /bin/sh -lc '));
+    assert.ok(tmuxCommand.includes("'\\''"));
+    assert.ok(tmuxCommand.includes('rm -f'));
+    assert.ok(tmuxCommand.includes(': >'));
+    assert.ok(tmuxCommand.includes('exit'));
+
+    assert.deepStrictEqual(
+        commandBuilders.buildKimiResumeLaunchSpec(
+            'kimi; nope', createDirectoryScope('/work/Kimi App'), '/tmp/kimi.done'
+        ).args,
+        ['--work-dir', '/work/Kimi App', '--resume', 'kimi; nope']
+    );
+    assert.deepStrictEqual(
+        commandBuilders.buildKimiNewSessionLaunchSpec(
+            createDirectoryScope('/work/Kimi App'), "owner's task", '/tmp/kimi-new.done'
+        ).args,
+        ['--work-dir', '/work/Kimi App', '--prompt', "owner's task"]
+    );
+    assert.strictEqual(
+        commandBuilders.buildClaudeResumeLaunchSpec(
+            'claude-session', createDirectoryScope('/work/claude'), '/tmp/claude.done'
+        ).cwd,
+        '/work/claude'
+    );
+    assert.strictEqual(
+        commandBuilders.buildClaudeNewSessionLaunchSpec(
+            createDirectoryScope('/work/app'), 'Title', '/tmp/claude-new.done'
+        ).cwd,
+        '/work/app'
+    );
+    assert.deepStrictEqual(
+        commandBuilders.buildCodexNewSessionLaunchSpec(
+            createDirectoryScope('/work/app'), 'Prompt', '/tmp/codex-new.done'
+        ).args,
+        ['--cd', '/work/app', 'Prompt']
+    );
+
+    const windowsCommand = launchSpec.serializeDirectLaunchCommand(spec, 'win32');
+    const windowsPayload = decodePowerShellPayload(windowsCommand);
+    assert.ok(windowsPayload.includes("Remove-Item -LiteralPath '/tmp/done marker'"));
+    assert.ok(windowsPayload.includes("New-Item -ItemType File -Force -Path '/tmp/done marker'"));
+    assert.ok(windowsPayload.includes("'session''; touch /tmp/nope; '''"));
+
+    const adversarialValues = {
+        prompt: `Prompt "quoted"; Set-Content C:\\tmp\\prompt-pwned 1; #`,
+        title: `Title "quoted"; Set-Content C:\\tmp\\title-pwned 1; #`,
+        session: `Session "quoted"; Set-Content C:\\tmp\\session-pwned 1; #`,
+        cwd: `C:\\work\\O'Brien "quoted"; Set-Content C:\\tmp\\cwd-pwned 1; #`,
+        marker: `C:\\tmp\\done "quoted"; Set-Content C:\\tmp\\marker-pwned 1; #`,
+    };
+    const adversarialScope = createDirectoryScope(adversarialValues.cwd);
+    const windowsSpecs = [
+        commandBuilders.buildCodexNewSessionLaunchSpec(adversarialScope, adversarialValues.prompt, adversarialValues.marker),
+        commandBuilders.buildClaudeNewSessionLaunchSpec(adversarialScope, adversarialValues.title, adversarialValues.marker),
+        commandBuilders.buildCodexResumeLaunchSpec(adversarialValues.session, adversarialScope, adversarialValues.marker),
+    ];
+    for (const windowsSpec of windowsSpecs) {
+        const command = launchSpec.serializeDirectLaunchCommand(windowsSpec, 'win32');
+        assert.strictEqual(command.includes('Set-Content'), false);
+        const payload = decodePowerShellPayload(command);
+        assert.ok(payload.includes(quotePowerShellLiteral(adversarialValues.marker)));
+        for (const value of Object.values(adversarialValues)) {
+            if (windowsSpec.args.includes(value)) {
+                assert.ok(payload.includes(quotePowerShellLiteral(value)));
+            }
+        }
+        if (windowsSpec.cwd) {
+            assert.ok(payload.includes(`Set-Location -LiteralPath ${quotePowerShellLiteral(windowsSpec.cwd)}`));
+        }
+    }
+
+    assert.strictEqual(
+        commandBuilders.buildCodexResumeCommand(
+            'session-1', createDirectoryScope('C:\\Repo App'), null, 'win32'
+        ),
+        'codex resume --cd "C:\\Repo App" "session-1"'
+    );
+    assert.strictEqual(
+        commandBuilders.buildKimiResumeCommand(
+            'session-1', createDirectoryScope('C:\\Repo App'), null, 'win32'
+        ),
+        'kimi --work-dir "C:\\Repo App" --resume "session-1"'
+    );
+    assert.strictEqual(
+        commandBuilders.buildClaudeResumeCommand(
+            'session-1', createDirectoryScope('C:\\Repo App'), null, 'win32'
+        ),
+        'cd "C:\\Repo App" && claude --resume "session-1"'
+    );
+
+    assert.strictEqual(
+        decodePowerShellPayload(commandBuilders.buildCodexNewSessionCommand(
+            createDirectoryScope('C:\\Repo App'), 'Prompt', null, 'win32'
+        )),
+        "codex --cd 'C:\\Repo App' 'Prompt'"
+    );
+    assert.strictEqual(
+        decodePowerShellPayload(commandBuilders.buildKimiNewSessionCommand(
+            createDirectoryScope('C:\\Repo App'), 'Prompt', null, 'win32'
+        )),
+        "kimi --work-dir 'C:\\Repo App' --prompt 'Prompt'"
+    );
+    assert.strictEqual(
+        decodePowerShellPayload(commandBuilders.buildClaudeNewSessionCommand(
+            createDirectoryScope('C:\\Repo App'), 'Title', null, 'win32'
+        )),
+        "Set-Location -LiteralPath 'C:\\Repo App'; claude --name 'Title'"
+    );
+
+    assert.strictEqual(
+        launchSpec.serializeDirectLaunchCommand({ executable: 'tool', args: ['deploy', '--target', 'value'] }, 'linux'),
+        "tool deploy --target 'value'"
+    );
+    assert.strictEqual(
+        launchSpec.serializeDirectLaunchCommand({
+            executable: 'tool', args: ['resume'], windowsDirectShell: 'current',
+        }, 'win32'),
+        'tool "resume"'
+    );
+}
+
+function runTmuxLayoutChecks() {
+    assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentityId('pending-codex_1.2:3'), true);
+    for (const invalidId of ['', '   ', 'pending id', 'pending\ncontrol', '../unsafe', 'x'.repeat(513)]) {
+        assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentityId(invalidId), false);
+    }
+    const nestedRuntimeIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'nested-scope', workspaceNavigationIdentity: 'nested-nav',
+        workspaceRootHostPaths: ['/work', '/work/api'], cwd: '/work/api/packages/service', sessionId: 'nested-session',
+    };
+    assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentity(nestedRuntimeIdentity), true,
+        'runtime identity must accept a normalized cwd contained by a current workspace root');
+    assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentity({
+        ...nestedRuntimeIdentity, cwd: '/work/api/../outside',
+    }), false, 'runtime identity must reject a non-normalized cwd');
+    assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentity({
+        ...nestedRuntimeIdentity, cwd: '/workspace-other',
+    }), false, 'runtime identity must reject a boundary-adjacent workspace-external cwd');
+    assert.strictEqual(runtimeTypesModule.isValidAiSessionRuntimeIdentity({
+        ...nestedRuntimeIdentity, workspaceRootHostPaths: ['/work/api', '/work/api/'],
+    }), false, 'runtime identity must reject duplicate normalized roots');
+    const identity = { provider: 'codex', workspaceScopeIdentity: 'project-key', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work/app'], cwd: '/work/app', sessionId: 'session-1' };
+    const project = new tmuxLayout.ProjectTmuxLayout().getLocator(identity);
+    const session = new tmuxLayout.SessionTmuxLayout().getLocator(identity);
+
+    assert.strictEqual(
+        tmuxNaming.normalizeTmuxReadableComponent(' ＲｅｄＤＢ DTS / 双活 ', 'workspace'),
+        'RedDB-DTS-双活'
+    );
+    assert.strictEqual(tmuxNaming.normalizeTmuxReadableComponent(' : . ', 'session'), 'session');
+    assert.strictEqual(tmuxNaming.normalizeTmuxReadableComponent('', 'new-session'), 'new-session');
+    assert.strictEqual(
+        tmuxNaming.normalizeTmuxReadableComponent('Fix\u0000replication\u001fnow', 'session'),
+        'Fix-replication-now'
+    );
+
+    const readableIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'scope-a',
+        workspaceNavigationIdentity: 'nav-a', workspaceRootHostPaths: ['/work/a'],
+        cwd: '/work/a', sessionId: 'session-123456789',
+    };
+    const readable = tmuxNaming.buildReadableTmuxLocator(
+        readableIdentity, 'project',
+        { projectName: ' RedDB DTS / 双活 ', sessionName: 'Fix: replication.timeout' }
+    );
+    assert.match(readable.sessionName, /^ps-RedDB-DTS-双活-[0-9a-f]{8}$/);
+    assert.match(readable.windowName, /^codex-Fix-replication-timeout-[0-9a-f]{8}$/);
+    assert.deepStrictEqual(
+        tmuxNaming.buildReadableTmuxLocator(readableIdentity, 'project', {
+            projectName: ' RedDB DTS / 双活 ', sessionName: 'Fix: replication.timeout',
+        }),
+        readable
+    );
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(readable, readableIdentity), true);
+    const readableWorkspaceSuffix = readable.sessionName.match(/([0-9a-f]{8})$/)[1];
+    assert.strictEqual(tmuxNaming.projectTmuxSessionMatchesWorkspace(
+        readable.sessionName, readableIdentity
+    ), true);
+    assert.strictEqual(tmuxNaming.projectTmuxSessionMatchesWorkspace(
+        `ps-Renamed-Card-${readableWorkspaceSuffix}`, readableIdentity
+    ), true, 'project session ownership must ignore the creation-time readable prefix');
+    assert.strictEqual(tmuxNaming.projectTmuxSessionMatchesWorkspace(
+        new tmuxLayout.ProjectTmuxLayout().getLocator(readableIdentity).sessionName,
+        readableIdentity
+    ), true, 'legacy project sessions must remain workspace-owned');
+    for (const invalidProjectSession of [
+        `ps-Renamed-Card-00000000`,
+        `ps-Bad:Card-${readableWorkspaceSuffix}`,
+        `ps-Bad\nCard-${readableWorkspaceSuffix}`,
+        `ps-${'x'.repeat(100)}-${readableWorkspaceSuffix}`,
+        `ps-Ｃard-${readableWorkspaceSuffix}`,
+        `ps--${readableWorkspaceSuffix}`,
+    ]) {
+        assert.strictEqual(tmuxNaming.projectTmuxSessionMatchesWorkspace(
+            invalidProjectSession, readableIdentity
+        ), false, `project workspace ownership must reject ${JSON.stringify(invalidProjectSession)}`);
+    }
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(
+        { ...readable, windowName: readable.windowName.replace(/[0-9a-f]{8}$/, '00000000') },
+        readableIdentity
+    ), false);
+    const readableRuntimeSuffix = readable.windowName.match(/([0-9a-f]{8})$/)[1];
+    for (const unsafeWindowName of [
+        `codex-bad:name-${readableRuntimeSuffix}`,
+        `codex-bad--name-${readableRuntimeSuffix}`,
+        `codex-bad\u0000name-${readableRuntimeSuffix}`,
+        `codex-Ｆix-${readableRuntimeSuffix}`,
+        `codex-${'a'.repeat(100)}-${readableRuntimeSuffix}`,
+    ]) {
+        assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+            ...readable, windowName: unsafeWindowName,
+        }, readableIdentity), false);
+    }
+    for (const unsafeSessionName of [
+        `ps-bad:name-${readableWorkspaceSuffix}`,
+        `ps-bad\u0000name-${readableWorkspaceSuffix}`,
+        `ps-${'a'.repeat(100)}-${readableWorkspaceSuffix}`,
+    ]) {
+        assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+            ...readable, sessionName: unsafeSessionName,
+        }, readableIdentity), false);
+    }
+
+    const duplicateNameIdentity = { ...readableIdentity, sessionId: 'different-session' };
+    assert.notStrictEqual(
+        tmuxNaming.buildReadableTmuxLocator(duplicateNameIdentity, 'project', {
+            projectName: 'RedDB DTS / 双活', sessionName: 'Fix: replication.timeout',
+        }).windowName,
+        readable.windowName
+    );
+    const duplicateProjectIdentity = {
+        ...readableIdentity, workspaceScopeIdentity: 'scope-b',
+    };
+    assert.notStrictEqual(
+        tmuxNaming.buildReadableTmuxLocator(duplicateProjectIdentity, 'project', {
+            projectName: 'RedDB DTS / 双活', sessionName: 'Fix: replication.timeout',
+        }).sessionName,
+        readable.sessionName
+    );
+
+    const readablePendingIdentity = {
+        ...readableIdentity, sessionId: undefined, pendingId: 'pending-1',
+    };
+    const readablePending = tmuxNaming.buildReadableTmuxLocator(readablePendingIdentity, 'project', {
+        projectName: 'RedDB', sessionName: '',
+    });
+    assert.match(readablePending.windowName, /^codex-new-session-[0-9a-f]{8}$/);
+    assert.deepStrictEqual(tmuxNaming.buildReadableTmuxLocator(readablePendingIdentity, 'project', {
+        projectName: 'RedDB', sessionName: '',
+    }), readablePending);
+    assert.strictEqual(
+        tmuxNaming.tmuxLocatorMatchesIdentity(readablePending, readablePendingIdentity), true
+    );
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(
+        new tmuxLayout.ProjectTmuxLayout().getPendingLocator(readablePendingIdentity),
+        readablePendingIdentity
+    ), true);
+    const otherPendingIdentity = { ...readablePendingIdentity, pendingId: 'pending-2' };
+    const otherReadablePending = tmuxNaming.buildReadableTmuxLocator(otherPendingIdentity, 'project', {
+        projectName: 'RedDB', sessionName: '',
+    });
+    assert.notStrictEqual(otherReadablePending.windowName, readablePending.windowName);
+    assert.strictEqual(
+        tmuxNaming.tmuxLocatorMatchesIdentity(readablePending, otherPendingIdentity), false
+    );
+    const pendingSessionLayout = tmuxNaming.buildReadableTmuxLocator(
+        readablePendingIdentity,
+        'session',
+        { projectName: 'RedDB', sessionName: '' }
+    );
+    const pendingRuntimeSuffix = readablePending.windowName.match(/([0-9a-f]{8})$/)[1];
+    assert.match(
+        pendingSessionLayout.sessionName,
+        new RegExp(`^ps-RedDB-new-session-${pendingRuntimeSuffix}$`)
+    );
+    assert.match(
+        pendingSessionLayout.windowName,
+        new RegExp(`^codex-new-session-${pendingRuntimeSuffix}$`)
+    );
+    assert.strictEqual(
+        tmuxNaming.tmuxLocatorMatchesIdentity(pendingSessionLayout, readablePendingIdentity), true
+    );
+
+    const sessionLayout = tmuxNaming.buildReadableTmuxLocator(readableIdentity, 'session', {
+        projectName: 'RedDB', sessionName: 'Repair replication',
+    });
+    assert.match(sessionLayout.sessionName, /^ps-RedDB-Repair-replication-[0-9a-f]{8}$/);
+    assert.match(sessionLayout.windowName, /^codex-Repair-replication-[0-9a-f]{8}$/);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(sessionLayout, readableIdentity), true);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...sessionLayout,
+        sessionName: `ps-RedDB-${readableRuntimeSuffix}`,
+    }, readableIdentity), false);
+
+    const boundary95SessionLayout = tmuxNaming.buildReadableTmuxLocator(
+        readableIdentity,
+        'session',
+        { projectName: 'p'.repeat(41), sessionName: 's'.repeat(41) }
+    );
+    assert.strictEqual(Array.from(boundary95SessionLayout.sessionName).length, 95);
+    assert.strictEqual(
+        tmuxNaming.tmuxLocatorMatchesIdentity(boundary95SessionLayout, readableIdentity), true
+    );
+
+    const legacyProject = new tmuxLayout.ProjectTmuxLayout().getLocator(readableIdentity);
+    const legacySession = new tmuxLayout.SessionTmuxLayout().getLocator(readableIdentity);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(legacyProject, readableIdentity), true);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity(legacySession, readableIdentity), true);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...readable, sessionName: legacyProject.sessionName,
+    }, readableIdentity), true);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...legacyProject, sessionName: readable.sessionName,
+    }, readableIdentity), true);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...legacySession, windowName: sessionLayout.windowName,
+    }, readableIdentity), false);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...sessionLayout, windowName: undefined,
+    }, readableIdentity), false);
+    assert.strictEqual(tmuxNaming.tmuxLocatorMatchesIdentity({
+        ...readable, layout: 'other',
+    }, readableIdentity), false);
+
+    const bounded = tmuxNaming.buildReadableTmuxLocator(readableIdentity, 'project', {
+        projectName: '项目'.repeat(100), sessionName: '会话'.repeat(100),
+    });
+    assert.ok(Array.from(bounded.sessionName).length <= 96);
+    assert.ok(Array.from(bounded.windowName).length <= 96);
+    assert.match(bounded.sessionName, /-[0-9a-f]{8}$/);
+    assert.match(bounded.windowName, /-[0-9a-f]{8}$/);
+    const astralBounded = tmuxNaming.buildReadableTmuxLocator(readableIdentity, 'session', {
+        projectName: '𐐀'.repeat(100), sessionName: '𐐀'.repeat(100),
+    });
+    assert.strictEqual(Array.from(astralBounded.sessionName).length, 96);
+    assert.strictEqual(Array.from(astralBounded.windowName).length, 96);
+    assert.match(astralBounded.sessionName, /^ps-𐐀+-𐐀+-[0-9a-f]{8}$/u);
+    assert.match(astralBounded.sessionName, /-[0-9a-f]{8}$/);
+    assert.match(astralBounded.windowName, /-[0-9a-f]{8}$/);
+    assert.strictEqual(
+        tmuxNaming.tmuxLocatorMatchesIdentity(astralBounded, readableIdentity), true
+    );
+    assert.deepStrictEqual(project, {
+        layout: 'project',
+        sessionName: 'project-steward-p-857b61585ca6ee92',
+        windowName: 'ai-codex-33e62d2489174976',
+    });
+    assert.deepStrictEqual(session, {
+        layout: 'session',
+        sessionName: 'project-steward-s-codex-33e62d2489174976',
+    });
+    assert.strictEqual(new tmuxLayout.ProjectTmuxLayout().getLocator(identity).sessionName, project.sessionName);
+    const pendingIdentity = { ...identity, sessionId: undefined, pendingId: 'p1' };
+    assert.deepStrictEqual(new tmuxLayout.ProjectTmuxLayout().getPendingLocator(pendingIdentity), {
+        layout: 'project',
+        sessionName: 'project-steward-p-857b61585ca6ee92',
+        windowName: 'pending-codex-3f26128a9ac32c34',
+    });
+    assert.deepStrictEqual(new tmuxLayout.SessionTmuxLayout().getPendingLocator(pendingIdentity), {
+        layout: 'session',
+        sessionName: 'project-steward-pending-codex-3f26128a9ac32c34',
+    });
+    assert.deepStrictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'scope-1',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: JSON.stringify(['/work/api', '/work/web']),
+        cwd: '/work/web', provider: 'codex', sessionId: 's1'
+    }), {
+        version: 2, layout: 'project', workspaceScopeIdentity: 'scope-1',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work/api', '/work/web'],
+        cwd: '/work/web', provider: 'codex', sessionId: 's1'
+    });
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '1', layout: 'project', workspaceScopeIdentity: 'scope-1',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: JSON.stringify(['/work/web']),
+        cwd: '/work/web', provider: 'codex', sessionId: 's1', projectKey: 'old'
+    }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({ managed: '1', version: '99' }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'scope-1',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: JSON.stringify(['/work/web']),
+        cwd: '/work/web', provider: 'codex', sessionId: 's1', projectKey: 'legacy-extra',
+    }), null, 'v2 managed metadata must reject legacy and unknown extra fields');
+
+    assert.deepStrictEqual(tmuxLayout.TMUX_METADATA_OPTIONS, {
+        managed: '@project-steward-managed',
+        version: '@project-steward-version',
+        layout: '@project-steward-layout',
+        workspaceScopeIdentity: '@project-steward-workspace-scope-identity',
+        workspaceNavigationIdentity: '@project-steward-workspace-navigation-identity',
+        workspaceRootHostPaths: '@project-steward-workspace-root-host-paths',
+        cwd: '@project-steward-cwd',
+        provider: '@project-steward-provider',
+        sessionId: '@project-steward-session-id',
+        pendingId: '@project-steward-pending-id',
+        createdAt: '@project-steward-created-at',
+        marker: '@project-steward-marker',
+    });
+    assert.strictEqual(tmuxLayout.getTmuxRuntimeKey(identity), '[2,"codex","project-key","nav-1",["/work/app"],"/work/app","session","session-1"]');
+    assert.strictEqual(tmuxLayout.getTmuxRuntimeKey({ ...identity, sessionId: undefined, pendingId: 'p1' }), '[2,"codex","project-key","nav-1",["/work/app"],"/work/app","pending","p1"]');
+    const reorderedRoots = { ...identity, workspaceRootHostPaths: ['/work/web', '/work/app'] };
+    const sortedRoots = { ...identity, workspaceRootHostPaths: ['/work/app', '/work/web'] };
+    assert.strictEqual(tmuxLayout.getTmuxRuntimeKey(reorderedRoots), tmuxLayout.getTmuxRuntimeKey(sortedRoots));
+    assert.notStrictEqual(tmuxLayout.getTmuxRuntimeKey(identity), tmuxLayout.getTmuxRuntimeKey({
+        ...identity, workspaceScopeIdentity: 'other-scope'
+    }));
+    assert.ok(!project.sessionName.includes('/work/app') && !session.sessionName.includes('/work/app'));
+    assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, sessionId: '' }));
+    assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, provider: 'other' }));
+    assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, workspaceScopeIdentity: 'x'.repeat(513) }));
+    assert.throws(() => new tmuxLayout.SessionTmuxLayout().getLocator({ ...identity, sessionId: 'session\u001f1' }));
+    assert.throws(() => new tmuxLayout.SessionTmuxLayout().getPendingLocator({ ...identity, sessionId: undefined, pendingId: '' }));
+    assert.throws(() => tmuxLayout.getTmuxRuntimeKey({ ...identity, sessionId: undefined, pendingId: undefined }));
+    assert.throws(() => tmuxLayout.getTmuxRuntimeKey({ ...identity, pendingId: 'p1' }));
+    assert.throws(() => new tmuxLayout.ProjectTmuxLayout().getLocator({ ...identity, pendingId: 'rejected' }));
+    assert.throws(() => new tmuxLayout.SessionTmuxLayout().getPendingLocator({ ...pendingIdentity, sessionId: 'rejected' }));
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '2', layout: 'other', workspaceScopeIdentity: 'project-key', provider: 'codex', sessionId: 'session-1'
+    }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'other', sessionId: 'session-1'
+    }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'codex', sessionId: 'session\n1'
+    }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'codex'
+    }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'codex',
+        sessionId: 'session-1', pendingId: 'p1'
+    }), null);
+    assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'codex',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: JSON.stringify(['/work/app']), cwd: '/work/app',
+        pendingId: 'p1', createdAt: '2026-07-18T01:02:03.000Z', marker: '/tmp/p1.done'
+    }).pendingId, 'p1');
+    for (const invalidField of [
+        { workspaceScopeIdentity: 'x'.repeat(513) },
+        { sessionId: 'x'.repeat(513) },
+        { createdAt: 'x'.repeat(201) },
+        { createdAt: 'not-a-date' },
+        { marker: 'x'.repeat(4097) },
+        { marker: '' },
+        { marker: '/tmp/control\u007f' },
+    ]) {
+        assert.strictEqual(tmuxLayout.parseManagedTmuxMetadata({
+            managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'project-key', provider: 'codex',
+            sessionId: 'session-1', ...invalidField
+        }), null);
+    }
+}
+
+async function runTmuxClientChecks() {
+    const requiredCommands = [
+        'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
+        'select-window', 'attach-session', 'has-session', 'rename-session', 'rename-window',
+        'display-message',
+    ];
+    const calls = [];
+    const runner = {
+        run: async (file, args) => {
+            calls.push({ file, args });
+            if (args[0] === '-V') {
+                return { exitCode: 0, stdout: 'tmux 3.2a\n', stderr: '' };
+            }
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: `${requiredCommands.join('\n')}\n`, stderr: '' };
+            }
+            if (args[0] === 'list-windows') {
+                return { exitCode: 1, stdout: '', stderr: 'no server running on /tmp/tmux' };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    };
+    const client = new tmuxClientModule.TmuxClient('/opt/bin/tmux', runner);
+    assert.deepStrictEqual(await client.checkAvailability(), { available: true, version: '3.2a' });
+    assert.deepStrictEqual(await client.checkAvailability(), { available: true, version: '3.2a' });
+    assert.strictEqual(calls.filter(call => call.args[0] === '-V').length, 1);
+    assert.deepStrictEqual(await client.listWindows(), []);
+
+    const emptyServerClient = new tmuxClientModule.TmuxClient('/opt/bin/tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') {
+                return { exitCode: 0, stdout: 'tmux 3.2a\n', stderr: '' };
+            }
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: `${requiredCommands.join('\n')}\n`, stderr: '' };
+            }
+            if (args[0] === 'list-windows') {
+                return { exitCode: 1, stdout: '', stderr: 'no current target\n' };
+            }
+            if (args[0] === 'has-session') {
+                return { exitCode: 1, stdout: '', stderr: 'no current target\n' };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    });
+    assert.deepStrictEqual(await emptyServerClient.listWindows(), [],
+        'an empty tmux server with no current target must discover zero windows');
+    assert.strictEqual(await emptyServerClient.hasSession('absent'), false,
+        'an empty tmux server with no current target must report sessions as absent');
+    await client.selectWindow({
+        layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-b',
+    });
+    assert.deepStrictEqual(calls[calls.length - 1], {
+        file: '/opt/bin/tmux', args: ['select-window', '-t', 'project-steward-p-a:ai-codex-b'],
+    });
+    assert.ok(calls.every(call => Array.isArray(call.args)));
+
+    const activeWindowCalls = [];
+    let activeWindowResult = {
+        exitCode: 0,
+        stdout: [
+            'project-session\u001fbase\u001f@1\u001f0',
+            'project-session\u001fai-codex-a\u001f@2\u001f1',
+        ].join('\n') + '\n',
+        stderr: '',
+    };
+    const activeWindowClient = new tmuxClientModule.TmuxClient('/opt/private/tmux', {
+        run: async (_file, args) => {
+            activeWindowCalls.push(args);
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.2a\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return activeWindowResult;
+        },
+    });
+    assert.deepStrictEqual(await activeWindowClient.getActiveWindow('project-session'), {
+        sessionName: 'project-session', windowName: 'ai-codex-a', windowId: '@2',
+    });
+    assert.deepStrictEqual(activeWindowCalls.slice(-1)[0], [
+        'list-windows', '-t', 'project-session', '-F',
+        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}',
+    ]);
+
+    activeWindowResult = { exitCode: 0, stdout: '', stderr: '' };
+    assert.strictEqual(await activeWindowClient.getActiveWindow('project-session'), null);
+
+    activeWindowResult = {
+        exitCode: 0,
+        stdout: [
+            'project-session\u001fa\u001f@1\u001f1',
+            'project-session\u001fb\u001f@2\u001f1',
+        ].join('\n') + '\n',
+        stderr: '',
+    };
+    await assert.rejects(activeWindowClient.getActiveWindow('project-session'), error =>
+        error.operation === 'get-active-window' && error.category === 'invalid-output');
+
+    activeWindowResult = {
+        exitCode: 0,
+        stdout: 'foreign-session\u001fa\u001f@1\u001f1\n',
+        stderr: '',
+    };
+    await assert.rejects(activeWindowClient.getActiveWindow('project-session'), error =>
+        error.operation === 'get-active-window' && error.category === 'invalid-output');
+
+    activeWindowResult = { exitCode: 0, stdout: 'x'.repeat(1024 * 1024 + 1), stderr: '' };
+    await assert.rejects(activeWindowClient.getActiveWindow('project-session'), error =>
+        error.operation === 'get-active-window' && error.category === 'invalid-output');
+
+    activeWindowResult = { exitCode: 1, stdout: '', stderr: "can't find session: project-session" };
+    assert.strictEqual(await activeWindowClient.getActiveWindow('project-session'), null);
+
+    activeWindowResult = {
+        exitCode: 2,
+        stdout: 'secret stdout',
+        stderr: 'secret stderr for project-session',
+    };
+    await assert.rejects(activeWindowClient.getActiveWindow('project-session'), error => {
+        assert.strictEqual(error.operation, 'get-active-window');
+        assert.strictEqual(error.category, 'nonzero-exit');
+        for (const secret of ['project-session', 'secret stdout', 'secret stderr', '/opt/private/tmux']) {
+            assert.ok(!error.message.includes(secret));
+        }
+        return true;
+    });
+    await assert.rejects(activeWindowClient.getActiveWindow('bad\nsession'), TypeError);
+
+    const targetMetadata = {
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'project-key',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
+        provider: 'codex', sessionId: 'session-1', pendingId: '',
+        createdAt: '2026-07-22T00:00:00.000Z', marker: '/tmp/session-1.done',
+    };
+    const targetFields = Object.keys(tmuxLayout.TMUX_METADATA_OPTIONS)
+        .map(key => targetMetadata[key] || '');
+    let targetResult = {
+        exitCode: 0,
+        stdout: ['managed-session', 'ai-codex-1', '@42', ...targetFields].join('\u001f') + '\n',
+        stderr: '',
+    };
+    const targetCalls = [];
+    const targetClient = new tmuxClientModule.TmuxClient('/private/tmux', {
+        run: async (_file, args) => {
+            targetCalls.push(args);
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.4\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return {
+                    exitCode: 0,
+                    stdout: [...requiredCommands, 'display-message'].join('\n'),
+                    stderr: '',
+                };
+            }
+            return targetResult;
+        },
+    });
+    const targetLocator = {
+        layout: 'project', sessionName: 'managed-session', windowName: 'ai-codex-1',
+    };
+    assert.deepStrictEqual(await targetClient.getTargetWindow(targetLocator), {
+        sessionName: 'managed-session', windowName: 'ai-codex-1', windowId: '@42',
+        metadata: Object.fromEntries(Object.entries(targetMetadata).filter(([, value]) => value)),
+    });
+    assert.deepStrictEqual(targetCalls.slice(-1)[0].slice(0, 4), [
+        'display-message', '-p', '-t', 'managed-session:ai-codex-1',
+    ]);
+    const targetFormat = targetCalls.slice(-1)[0][4];
+    assert.ok(targetFormat.startsWith('#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f'));
+    for (const option of Object.values(tmuxLayout.TMUX_METADATA_OPTIONS)) {
+        assert.ok(targetFormat.includes(`#{${option}}`));
+    }
+    const readableSessionTargetLocator = {
+        layout: 'session', sessionName: 'managed-session', windowName: 'ai-codex-1',
+    };
+    assert.deepStrictEqual(await targetClient.getTargetWindow(readableSessionTargetLocator), {
+        sessionName: 'managed-session', windowName: 'ai-codex-1', windowId: '@42',
+        metadata: Object.fromEntries(Object.entries(targetMetadata).filter(([, value]) => value)),
+    });
+    assert.deepStrictEqual(targetCalls.slice(-1)[0].slice(0, 4), [
+        'display-message', '-p', '-t', 'managed-session:ai-codex-1',
+    ], 'real tmux client target verification must address a readable session window exactly');
+    await targetClient.getTargetWindow({ layout: 'session', sessionName: 'managed-session' });
+    assert.deepStrictEqual(targetCalls.slice(-1)[0].slice(0, 4), [
+        'display-message', '-p', '-t', 'managed-session',
+    ], 'legacy session target verification must retain its session-only target');
+    await assert.rejects(targetClient.getTargetWindow({
+        layout: 'session', sessionName: 'managed-session', windowName: 'bad\nwindow',
+    }), TypeError);
+
+    targetResult = { exitCode: 1, stdout: '', stderr: "can't find window: ai-codex-1" };
+    assert.strictEqual(await targetClient.getTargetWindow(targetLocator), null);
+
+    targetResult = { exitCode: 0, stdout: 'too\u001ffew\n', stderr: '' };
+    await assert.rejects(targetClient.getTargetWindow(targetLocator), error =>
+        error.operation === 'get-target-window' && error.category === 'invalid-output');
+
+    const oversizedTargetFields = targetFields.slice();
+    oversizedTargetFields[Object.keys(tmuxLayout.TMUX_METADATA_OPTIONS).indexOf('marker')] = 'x'.repeat(4097);
+    targetResult = {
+        exitCode: 0,
+        stdout: ['managed-session', 'ai-codex-1', '@42', ...oversizedTargetFields].join('\u001f') + '\n',
+        stderr: '',
+    };
+    await assert.rejects(targetClient.getTargetWindow(targetLocator), error =>
+        error.operation === 'get-target-window' && error.category === 'invalid-output');
+
+    targetResult = { exitCode: 2, stdout: 'private stdout', stderr: 'private locator' };
+    await assert.rejects(targetClient.getTargetWindow(targetLocator), error => {
+        assert.strictEqual(error.operation, 'get-target-window');
+        assert.strictEqual(error.category, 'nonzero-exit');
+        for (const secret of ['private stdout', 'private locator', '/private/tmux']) {
+            assert.ok(!error.message.includes(secret));
+        }
+        return true;
+    });
+    await assert.rejects(targetClient.getTargetWindow({
+        layout: 'project', sessionName: 'bad\nsession', windowName: 'ai-codex-1',
+    }), TypeError);
+
+    const metadataCalls = [];
+    const optionValues = {
+        'session-a|managed': '1',
+        'session-a|version': '2',
+        'session-a|layout': 'project',
+        'session-a|workspaceScopeIdentity': 'project-key',
+        'session-a|workspaceNavigationIdentity': 'nav-1',
+        'session-a|workspaceRootHostPaths': '["/work"]',
+        'session-a|cwd': '/work',
+        '@12|managed': '1',
+        '@12|version': '2',
+        '@12|layout': 'project',
+        '@12|provider': 'codex',
+        '@12|sessionId': 'session-id-12',
+        '@12|marker': '/tmp/done-12 marker',
+        '@13|managed': '1',
+        '@13|version': '2',
+        '@13|layout': 'project',
+        '@13|provider': 'kimi',
+        '@13|sessionId': 'session-id-13',
+        '@13|marker': '/tmp/done-13 marker',
+        'session-a:window-a|provider': 'claude',
+        'session-a:window-a|sessionId': 'public-window-lookup',
+    };
+    const metadataRunner = {
+        run: async (file, args) => {
+            metadataCalls.push({ file, args });
+            if (args[0] === '-V') {
+                return { exitCode: 0, stdout: 'tmux 3.4\n', stderr: '' };
+            }
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.map(name => `${name} [-flags]`).join('\n'), stderr: '' };
+            }
+            if (args[0] === 'list-windows') {
+                return {
+                    exitCode: 0,
+                    stdout: [
+                        'session-a\u001fwindow-a\u001f@12\u001f1',
+                        'session-a\u001fwindow-a\u001f@13\u001f0',
+                    ].join('\n') + '\n',
+                    stderr: '',
+                };
+            }
+            if (args[0] === 'show-options') {
+                const target = args[args.indexOf('-t') + 1];
+                const optionName = args[args.length - 1];
+                const key = Object.keys(tmuxLayout.TMUX_METADATA_OPTIONS)
+                    .find(name => tmuxLayout.TMUX_METADATA_OPTIONS[name] === optionName);
+                const value = optionValues[`${target}|${key}`];
+                return { exitCode: 0, stdout: value === undefined ? '' : `${value}\n`, stderr: '' };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    };
+    const metadataClient = new tmuxClientModule.TmuxClient('  /opt/tmux tools/tmux  ', metadataRunner);
+    assert.strictEqual(metadataClient.getExecutablePath(), '/opt/tmux tools/tmux');
+    assert.deepStrictEqual(await metadataClient.listWindows(), [
+        {
+            sessionName: 'session-a',
+            windowName: 'window-a',
+            windowId: '@12',
+            active: true,
+            sessionMetadata: {
+                managed: '1',
+                version: '2',
+                layout: 'project',
+                workspaceScopeIdentity: 'project-key',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: '["/work"]',
+                cwd: '/work',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: '["/work"]',
+                cwd: '/work',
+            },
+            windowMetadata: {
+                managed: '1',
+                version: '2',
+                layout: 'project',
+                provider: 'codex',
+                sessionId: 'session-id-12',
+                marker: '/tmp/done-12 marker',
+            },
+            metadata: {
+                managed: '1',
+                version: '2',
+                layout: 'project',
+                workspaceScopeIdentity: 'project-key',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: '["/work"]',
+                cwd: '/work',
+                provider: 'codex',
+                sessionId: 'session-id-12',
+                marker: '/tmp/done-12 marker',
+            },
+        },
+        {
+            sessionName: 'session-a',
+            windowName: 'window-a',
+            windowId: '@13',
+            active: false,
+            sessionMetadata: {
+                managed: '1',
+                version: '2',
+                layout: 'project',
+                workspaceScopeIdentity: 'project-key',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: '["/work"]',
+                cwd: '/work',
+            },
+            windowMetadata: {
+                managed: '1',
+                version: '2',
+                layout: 'project',
+                provider: 'kimi',
+                sessionId: 'session-id-13',
+                marker: '/tmp/done-13 marker',
+            },
+            metadata: {
+                managed: '1',
+                version: '2',
+                layout: 'project',
+                workspaceScopeIdentity: 'project-key',
+                workspaceNavigationIdentity: 'nav-1',
+                workspaceRootHostPaths: '["/work"]',
+                cwd: '/work',
+                provider: 'kimi',
+                sessionId: 'session-id-13',
+                marker: '/tmp/done-13 marker',
+            },
+        },
+    ]);
+    const listingMetadataCalls = metadataCalls.slice();
+    for (const windowId of ['@12', '@13']) {
+        assert.ok(listingMetadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
+            'show-options', '-qvw', '-t', windowId, '@project-steward-provider',
+        ])));
+    }
+    assert.deepStrictEqual(await metadataClient.getSessionOptions('session-a'), {
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'project-key',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
+    });
+    assert.deepStrictEqual(await metadataClient.getWindowOptions('session-a', 'window-a'), {
+        provider: 'claude', sessionId: 'public-window-lookup',
+    });
+    await metadataClient.setSessionOptions('session-a', { managed: '1', version: '2' });
+    await metadataClient.setWindowOptions('session-a', 'window-a', {
+        provider: 'codex', sessionId: 'session-id',
+    });
+    await metadataClient.configureManagedWindow('session-a', 'window-a');
+    await metadataClient.clearPendingMetadata({
+        layout: 'project', sessionName: 'session-a', windowName: 'window-a',
+    });
+    await metadataClient.clearPendingMetadata({ layout: 'session', sessionName: 'session-a' });
+    await metadataClient.clearPendingMetadata({
+        layout: 'session', sessionName: 'session-a', windowName: 'readable-window',
+    });
+    assert.ok(metadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
+        'set-option', '-t', 'session-a', '@project-steward-managed', '1',
+    ])));
+    assert.ok(metadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
+        'set-option', '-w', '-t', 'session-a:window-a', '@project-steward-session-id', 'session-id',
+    ])));
+    assert.deepStrictEqual(metadataCalls.slice(-6).map(call => call.args), [
+        ['set-option', '-w', '-t', 'session-a:window-a', 'automatic-rename', 'off'],
+        ['set-option', '-w', '-t', 'session-a:window-a', 'allow-rename', 'off'],
+        ['set-option', '-w', '-t', 'session-a:window-a', 'remain-on-exit', 'off'],
+        ['set-option', '-uw', '-t', 'session-a:window-a', '@project-steward-pending-id'],
+        ['set-option', '-u', '-t', 'session-a', '@project-steward-pending-id'],
+        ['set-option', '-u', '-t', 'session-a', '@project-steward-pending-id'],
+    ]);
+    await assert.rejects(metadataClient.clearPendingMetadata({
+        layout: 'session', sessionName: 'session-a', windowName: 'bad\nwindow',
+    }), TypeError);
+    await assert.rejects(
+        metadataClient.setSessionOptions('session-a', { status: 'global-option-not-allowed' }),
+        /metadata option/
+    );
+
+    let inFlightOptions = 0;
+    let peakOptions = 0;
+    let failedOption = null;
+    const parallelClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.4\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            if (args[0] === 'show-options') {
+                const option = args[args.length - 1];
+                inFlightOptions++;
+                peakOptions = Math.max(peakOptions, inFlightOptions);
+                await new Promise(resolve => setImmediate(resolve));
+                inFlightOptions--;
+                if (option === failedOption) {
+                    return { exitCode: 2, stdout: 'private stdout', stderr: 'private stderr' };
+                }
+                return { exitCode: 0, stdout: 'value\n', stderr: '' };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    });
+    const parallelMetadata = await parallelClient.getSessionOptions('managed-session');
+    assert.strictEqual(Object.keys(parallelMetadata).length,
+        Object.keys(tmuxLayout.TMUX_METADATA_OPTIONS).length);
+    assert.strictEqual(peakOptions, Object.keys(tmuxLayout.TMUX_METADATA_OPTIONS).length,
+        'one target must read its fixed metadata option set concurrently');
+
+    failedOption = tmuxLayout.TMUX_METADATA_OPTIONS.provider;
+    await assert.rejects(parallelClient.getWindowOptions('managed-session', 'managed-window'), error =>
+        error.operation === 'get-window-options' && error.category === 'nonzero-exit');
+
+    await metadataClient.createSession('s', 'w', '/work/space here', 'exec secret-tool --token credential');
+    await metadataClient.createWindow('s', 'w2', '/work/space here', 'exec secret-tool --token credential');
+    await metadataClient.renameSession('s', 's2');
+    await metadataClient.renameWindow('s2', 'w2', 'w3');
+    await metadataClient.selectWindow({ layout: 'session', sessionName: 's2' });
+    assert.deepStrictEqual(metadataCalls.slice(-5).map(call => call.args), [
+        ['new-session', '-d', '-s', 's', '-n', 'w', '-c', '/work/space here', 'exec secret-tool --token credential'],
+        ['new-window', '-d', '-t', 's', '-n', 'w2', '-c', '/work/space here', 'exec secret-tool --token credential'],
+        ['rename-session', '-t', 's', 's2'],
+        ['rename-window', '-t', 's2:w2', 'w3'],
+        ['select-window', '-t', 's2'],
+    ]);
+
+    const e2bigClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            const error = new Error('argument list too long');
+            error.code = 'E2BIG';
+            throw error;
+        },
+    });
+    await assert.rejects(e2bigClient.createSession('s', 'w', '/work', 'command'), error => {
+        assert.strictEqual(error.category, 'argument-list-too-long');
+        return true;
+    });
+
+    const hasSessionRunner = {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            if (args[0] === 'has-session') {
+                return { exitCode: 1, stdout: '', stderr: "can't find session: absent" };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    };
+    assert.strictEqual(await new tmuxClientModule.TmuxClient('tmux', hasSessionRunner).hasSession('absent'), false);
+
+    const pathCalls = [];
+    const pathRunner = {
+        run: async (file, args) => {
+            pathCalls.push({ file, args });
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    };
+    const pathClient = new tmuxClientModule.TmuxClient('tmux', pathRunner);
+    await pathClient.checkAvailability();
+    pathClient.setExecutablePath('  /new path/tmux  ');
+    assert.strictEqual(pathClient.getExecutablePath(), '/new path/tmux');
+    await pathClient.hasSession('s');
+    assert.strictEqual(pathCalls.filter(call => call.args[0] === '-V').length, 2);
+    assert.ok(pathCalls.slice(-3).every(call => call.file === '/new path/tmux'));
+    pathClient.setExecutablePath('/new path/tmux');
+    await pathClient.checkAvailability();
+    assert.strictEqual(pathCalls.filter(call => call.args[0] === '-V').length, 3);
+    assert.throws(() => pathClient.setExecutablePath('   '), /executable/);
+
+    const missingCapabilityClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => args[0] === '-V'
+            ? { exitCode: 0, stdout: 'tmux 3.2\n', stderr: '' }
+            : { exitCode: 0, stdout: requiredCommands.filter(name => name !== 'attach-session').join('\n'), stderr: '' },
+    });
+    assert.deepStrictEqual(await missingCapabilityClient.checkAvailability(), {
+        available: false,
+        category: 'missing-capability',
+        message: 'The configured tmux does not provide all required commands.',
+    });
+    for (const omittedCommand of ['has-session', 'rename-session', 'rename-window']) {
+        const omittedCapabilityClient = new tmuxClientModule.TmuxClient('tmux', {
+            run: async (_file, args) => args[0] === '-V'
+                ? { exitCode: 0, stdout: 'tmux 3.2\n', stderr: '' }
+                : {
+                    exitCode: 0,
+                    stdout: requiredCommands.filter(name => name !== omittedCommand).join('\n'),
+                    stderr: '',
+                },
+        });
+        assert.deepStrictEqual(await omittedCapabilityClient.checkAvailability(), {
+            available: false,
+            category: 'missing-capability',
+            message: 'The configured tmux does not provide all required commands.',
+        }, `availability must require ${omittedCommand}`);
+    }
+
+    const invalidVersionClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async () => ({ exitCode: 0, stdout: 'tmux   \n', stderr: 'credential=never-report' }),
+    });
+    assert.deepStrictEqual(await invalidVersionClient.checkAvailability(), {
+        available: false,
+        category: 'invalid-version',
+        message: 'The configured tmux returned an unrecognized version.',
+    });
+    const unsafeVersionClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async () => ({
+            exitCode: 0,
+            stdout: 'tmux 3.3 token=credential\n',
+            stderr: '',
+        }),
+    });
+    assert.deepStrictEqual(await unsafeVersionClient.checkAvailability(), {
+        available: false,
+        category: 'invalid-version',
+        message: 'The configured tmux returned an unrecognized version.',
+    });
+
+    const secret = 'prompt=do-not-report token=credential';
+    const failingRunner = {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return { exitCode: 42, stdout: `stdout ${secret}`, stderr: `stderr ${secret}` };
+        },
+    };
+    const failingClient = new tmuxClientModule.TmuxClient('/secret/path/tmux', failingRunner);
+    await assert.rejects(
+        failingClient.createSession('secret-session', 'secret-window', '/secret/cwd', secret),
+        error => {
+            assert.ok(error instanceof tmuxClientModule.TmuxClientError);
+            assert.strictEqual(error.operation, 'create-session');
+            assert.strictEqual(error.category, 'nonzero-exit');
+            const publicError = `${error.message} ${JSON.stringify(error)}`;
+            for (const sensitive of [secret, '/secret/path/tmux', 'secret-session', 'secret-window', '/secret/cwd']) {
+                assert.strictEqual(publicError.includes(sensitive), false);
+            }
+            assert.strictEqual(publicError.includes('stdout'), false);
+            assert.strictEqual(publicError.includes('stderr'), false);
+            return true;
+        }
+    );
+
+    const notFoundClient = new tmuxClientModule.TmuxClient('/secret/missing-tmux', {
+        run: async () => {
+            const error = new Error(`spawn /secret/missing-tmux ENOENT ${secret}`);
+            error.code = 'ENOENT';
+            throw error;
+        },
+    });
+    const notFoundAvailability = await notFoundClient.checkAvailability();
+    assert.strictEqual(notFoundAvailability.category, 'not-found');
+    assert.strictEqual(JSON.stringify(notFoundAvailability).includes('/secret'), false);
+    assert.strictEqual(JSON.stringify(notFoundAvailability).includes(secret), false);
+
+    const malformedClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return { exitCode: 0, stdout: `session\u001fwindow\u001f@1\u001f1\u001f${secret}\n`, stderr: '' };
+        },
+    });
+    await assert.rejects(malformedClient.listWindows(), error => {
+        assert.ok(error instanceof tmuxClientModule.TmuxClientError);
+        assert.strictEqual(error.operation, 'list-windows');
+        assert.strictEqual(error.category, 'invalid-output');
+        assert.strictEqual(error.message.includes(secret), false);
+        return true;
+    });
+
+    const malformedFailureCategory = 'prompt=do-not-report';
+    const malformedResultClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return {
+                exitCode: null, stdout: '', stderr: '', failureCategory: malformedFailureCategory,
+            };
+        },
+    });
+    await assert.rejects(malformedResultClient.hasSession('s'), error => {
+        assert.strictEqual(error.operation, 'has-session');
+        assert.strictEqual(error.category, 'invalid-output');
+        assert.strictEqual(error.message.includes(malformedFailureCategory), false);
+        return true;
+    });
+
+    const forgedSecrets = {
+        message: 'message=forged-secret',
+        operation: 'operation=forged-secret',
+        category: 'category=forged-secret',
+        name: 'name=forged-secret',
+        stack: 'stack=forged-secret',
+        code: 'code=forged-secret',
+    };
+    const forgedError = new tmuxClientModule.TmuxClientError(
+        forgedSecrets.operation, forgedSecrets.category
+    );
+    Object.assign(forgedError, forgedSecrets);
+    const forgedErrorClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            throw forgedError;
+        },
+    });
+    await assert.rejects(forgedErrorClient.hasSession('s'), error => {
+        assert.ok(error instanceof tmuxClientModule.TmuxClientError);
+        assert.notStrictEqual(error, forgedError);
+        assert.strictEqual(error.operation, 'has-session');
+        assert.strictEqual(error.category, 'unsupported');
+        const publicError = `${error.name} ${error.message} ${error.stack} ${JSON.stringify(error)}`;
+        for (const value of Object.values(forgedSecrets)) {
+            assert.strictEqual(publicError.includes(value), false);
+        }
+        return true;
+    });
+
+    const rejectedGetterCases = [
+        {
+            secret: 'rejected-code-getter-secret',
+            value: new Proxy({}, {
+                get: (_target, property) => {
+                    if (property === 'code') {
+                        throw new Error('rejected-code-getter-secret');
+                    }
+                    return undefined;
+                },
+            }),
+        },
+        {
+            secret: 'rejected-killed-getter-secret',
+            value: Object.defineProperties({}, {
+                code: { value: 'UNKNOWN', enumerable: true },
+                killed: {
+                    enumerable: true,
+                    get: () => { throw new Error('rejected-killed-getter-secret'); },
+                },
+            }),
+        },
+    ];
+    for (const rejectedCase of rejectedGetterCases) {
+        const rejectedGetterClient = new tmuxClientModule.TmuxClient('tmux', {
+            run: async (_file, args) => {
+                if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+                if (args[0] === 'list-commands') {
+                    return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+                }
+                throw rejectedCase.value;
+            },
+        });
+        await assert.rejects(rejectedGetterClient.hasSession('s'), error => {
+            assert.ok(error instanceof tmuxClientModule.TmuxClientError);
+            assert.notStrictEqual(error, rejectedCase.value);
+            assert.strictEqual(error.operation, 'has-session');
+            assert.strictEqual(error.category, 'unsupported');
+            const publicError = `${error.name} ${error.message} ${error.stack} ${JSON.stringify(error)}`;
+            assert.strictEqual(publicError.includes(rejectedCase.secret), false);
+            return true;
+        });
+    }
+
+    const fulfilledGetterSecrets = {
+        message: 'fulfilled-getter-message-secret',
+        operation: 'fulfilled-getter-operation-secret',
+        category: 'fulfilled-getter-category-secret',
+    };
+    const fulfilledGetterError = new tmuxClientModule.TmuxClientError(
+        fulfilledGetterSecrets.operation, fulfilledGetterSecrets.category
+    );
+    fulfilledGetterError.message = fulfilledGetterSecrets.message;
+    const fulfilledResultProxy = new Proxy({}, {
+        get: (_target, property) => {
+            if (property === 'exitCode') {
+                throw fulfilledGetterError;
+            }
+            return '';
+        },
+    });
+    const fulfilledGetterClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async (_file, args) => {
+            if (args[0] === '-V') return { exitCode: 0, stdout: 'tmux 3.3\n', stderr: '' };
+            if (args[0] === 'list-commands') {
+                return { exitCode: 0, stdout: requiredCommands.join('\n'), stderr: '' };
+            }
+            return fulfilledResultProxy;
+        },
+    });
+    await assert.rejects(fulfilledGetterClient.hasSession('s'), error => {
+        assert.ok(error instanceof tmuxClientModule.TmuxClientError);
+        assert.notStrictEqual(error, fulfilledGetterError);
+        assert.strictEqual(error.operation, 'has-session');
+        assert.strictEqual(error.category, 'invalid-output');
+        const publicError = `${error.name} ${error.message} ${error.stack} ${JSON.stringify(error)}`;
+        for (const value of Object.values(fulfilledGetterSecrets)) {
+            assert.strictEqual(publicError.includes(value), false);
+        }
+        return true;
+    });
+
+    const availabilityGetterSecret = 'availability-getter-secret';
+    const availabilityGetterClient = new tmuxClientModule.TmuxClient('tmux', {
+        run: async () => new Proxy({}, {
+            get: () => { throw new Error(availabilityGetterSecret); },
+        }),
+    });
+    const getterAvailability = await availabilityGetterClient.checkAvailability();
+    assert.deepStrictEqual(getterAvailability, {
+        available: false,
+        category: 'command-failed',
+        message: 'The configured tmux could not complete an availability check.',
+    });
+    assert.strictEqual(JSON.stringify(getterAvailability).includes(availabilityGetterSecret), false);
+}
+
 async function runTmuxDiscoveryChecks() {
     const finalIdentity = {
-        provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1',
+        provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1',
     };
     const finalLocator = new tmuxLayout.ProjectTmuxLayout().getLocator(finalIdentity);
     const finalSessionMetadata = {
-        managed: '1', version: '1', layout: 'project', projectKey: 'pk',
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'pk',
     };
     const finalWindowMetadata = {
-        managed: '1', version: '1', layout: 'project',
+        managed: '1', version: '2', layout: 'project',
+        workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1',
+        workspaceRootHostPaths: JSON.stringify(['/work']), cwd: '/work',
         provider: 'codex', sessionId: 's1', marker: '/tmp/s1.done',
         createdAt: '2026-07-18T10:00:00Z',
     };
@@ -562,7 +1998,7 @@ async function runTmuxDiscoveryChecks() {
     await discovery.refresh();
     assert.strictEqual(lists, 1);
     assert.deepStrictEqual(discovery.getActive(), [{
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         backend: 'tmux',
         state: 'active',
         markerPath: '/tmp/s1.done',
@@ -580,6 +2016,51 @@ async function runTmuxDiscoveryChecks() {
     activeCopy[0].tmux.sessionName = 'mutated';
     assert.strictEqual(discovery.getActive()[0].identity.sessionId, 's1');
     assert.strictEqual(discovery.getActive()[0].tmux.sessionName, finalLocator.sessionName);
+
+    const immutableProjectIdentities = [
+        {
+            provider: 'codex', workspaceScopeIdentity: 'shared-scope',
+            workspaceNavigationIdentity: 'nav:first', workspaceRootHostPaths: ['/work/first'],
+            cwd: '/work/first', sessionId: 'immutable-first',
+        },
+        {
+            provider: 'claude', workspaceScopeIdentity: 'shared-scope',
+            workspaceNavigationIdentity: 'nav:second', workspaceRootHostPaths: ['/work/second'],
+            cwd: '/work/second', sessionId: 'immutable-second',
+        },
+    ];
+    const immutableProjectRows = immutableProjectIdentities.map((identity, index) => ({
+        ...new tmuxLayout.ProjectTmuxLayout().getLocator(identity),
+        windowId: `@immutable-${index}`,
+        active: index === 0,
+        sessionMetadata: {
+            managed: '1', version: '2', layout: 'project',
+            workspaceScopeIdentity: identity.workspaceScopeIdentity,
+        },
+        windowMetadata: {
+            managed: '1', version: '2', layout: 'project',
+            workspaceScopeIdentity: identity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: JSON.stringify(identity.workspaceRootHostPaths),
+            cwd: identity.cwd, provider: identity.provider, sessionId: identity.sessionId,
+            createdAt: `2026-07-18T10:00:0${index}.000Z`,
+        },
+        metadata: {},
+    }));
+    const immutableProjectDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => immutableProjectRows },
+        bindingStore: {
+            listPending: async () => [], listKnown: async () => [],
+            reconcileKnown: async () => undefined,
+        },
+        markerIsCurrent: () => false,
+    });
+    await immutableProjectDiscovery.refresh();
+    assert.deepStrictEqual(
+        immutableProjectDiscovery.getActive().map(runtime => runtime.identity),
+        immutableProjectIdentities,
+        'each project-layout window must retain its immutable cwd, navigation, and root snapshot'
+    );
 
     discovery.invalidate();
     await discovery.refresh();
@@ -670,27 +2151,29 @@ async function runTmuxDiscoveryChecks() {
     assert.strictEqual(failedCacheLists, 2);
 
     const pendingIdentity = {
-        provider: 'kimi', projectKey: 'pending-project', cwd: '/work/pending', pendingId: 'p1',
+        provider: 'kimi', workspaceScopeIdentity: 'pending-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work/pending'], cwd: '/work/pending', pendingId: 'p1',
     };
     const pendingLocator = new tmuxLayout.ProjectTmuxLayout().getPendingLocator(pendingIdentity);
     const pendingBinding = {
-        version: 1, state: 'pending', pendingId: 'p1', provider: 'kimi',
-        projectKey: 'pending-project', cwd: '/work/pending',
+        version: 2, state: 'pending', pendingId: 'p1', provider: 'kimi',
+        workspaceScopeIdentity: 'pending-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work/pending'], cwd: '/work/pending',
         createdAt: '2026-07-18T11:00:00Z', excludedSessionIds: ['old-session'],
         title: 'Pending title', layout: 'project', locator: pendingLocator,
     };
     const pendingWindowMetadata = {
-        managed: '1', version: '1', layout: 'project', provider: 'kimi', pendingId: 'p1',
+        managed: '1', version: '2', layout: 'project', provider: 'kimi', pendingId: 'p1',
+        workspaceScopeIdentity: 'pending-project', workspaceNavigationIdentity: 'nav-1',
+        workspaceRootHostPaths: JSON.stringify(['/work/pending']), cwd: '/work/pending',
         createdAt: pendingBinding.createdAt, marker: '/tmp/p1.done',
     };
     const pendingDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [{
             ...pendingLocator, windowId: '@2', active: true,
             sessionMetadata: {
-                managed: '1', version: '1', layout: 'project', projectKey: 'pending-project',
+                managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'pending-project',
             },
             windowMetadata: pendingWindowMetadata,
-            metadata: { projectKey: 'pending-project', ...pendingWindowMetadata },
+            metadata: { workspaceScopeIdentity: 'pending-project', ...pendingWindowMetadata },
         }] },
         bindingStore: {
             listPending: async () => [pendingBinding], listKnown: async () => [],
@@ -713,7 +2196,7 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(pendingDiscovery.getPending()[0].excludedSessionIds, ['old-session']);
 
     const collisionIdentity = {
-        provider: 'claude', projectKey: 'collision-project', cwd: '', sessionId: 'collision-session',
+        provider: 'claude', workspaceScopeIdentity: 'collision-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'collision-session',
     };
     const collisionExpected = new tmuxLayout.ProjectTmuxLayout().getLocator(collisionIdentity);
     const collisionActual = {
@@ -721,13 +2204,19 @@ async function runTmuxDiscoveryChecks() {
         windowName: `${collisionExpected.windowName}-occupied`,
     };
     const collisionMetadata = {
-        managed: '1', version: '1', layout: 'project', provider: 'claude',
+        managed: '1', version: '2', layout: 'project', provider: 'claude',
+        workspaceScopeIdentity: 'collision-project', workspaceNavigationIdentity: 'nav-1',
+        workspaceRootHostPaths: JSON.stringify(['/work']), cwd: '/work',
         sessionId: 'collision-session', marker: '/tmp/collision.done',
     };
     const collisionKnown = {
-        version: 1, state: 'known', provider: 'claude', sessionId: 'collision-session',
-        projectKey: 'collision-project', layout: 'project', locator: collisionExpected,
+        version: 2, state: 'known', provider: 'claude', sessionId: 'collision-session',
+        workspaceScopeIdentity: 'collision-project', workspaceNavigationIdentity: 'nav-1',
+        workspaceRootHostPaths: ['/work'], cwd: '/work', layout: 'project', locator: collisionExpected,
         lastSeenAtMs: 900,
+    };
+    const collisionSessionMetadata = {
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'collision-project',
     };
     const collisionReconciled = [];
     const collisionRemoved = [];
@@ -740,30 +2229,23 @@ async function runTmuxDiscoveryChecks() {
             return [
             {
                 ...collisionActual, windowId: '@3', active: true,
-                sessionMetadata: {
-                    managed: '1', version: '1', layout: 'project', projectKey: 'collision-project',
-                },
+                sessionMetadata: collisionSessionMetadata,
                 windowMetadata: collisionMetadata,
-                metadata: { projectKey: 'collision-project', ...collisionMetadata },
+                metadata: { workspaceScopeIdentity: 'collision-project', ...collisionMetadata },
             },
             {
                 ...collisionActual, windowId: '@3-duplicate', active: false,
-                sessionMetadata: {
-                    managed: '1', version: '1', layout: 'project', projectKey: 'collision-project',
-                },
+                sessionMetadata: collisionSessionMetadata,
                 windowMetadata: collisionMetadata,
-                metadata: { projectKey: 'collision-project', ...collisionMetadata },
+                metadata: { workspaceScopeIdentity: 'collision-project', ...collisionMetadata },
             },
             {
                 ...collisionExpected, windowId: '@4', active: true,
-                sessionMetadata: {
-                    managed: '1', version: '1', layout: 'project',
-                    projectKey: 'collision-project',
-                },
+                sessionMetadata: collisionSessionMetadata,
                 windowMetadata: collisionMetadata,
                 metadata: {
-                    managed: '1', version: '1', layout: 'project',
-                    projectKey: 'collision-project', provider: 'claude', sessionId: 'collision-session',
+                    managed: '1', version: '2', layout: 'project',
+                    workspaceScopeIdentity: 'collision-project', provider: 'claude', sessionId: 'collision-session',
                 },
             },
             {
@@ -798,26 +2280,36 @@ async function runTmuxDiscoveryChecks() {
         actual: collisionActual, expected: collisionExpected,
     });
     const collisionSnapshot = discoveryModule.findTmuxCollisionRuntime(
-        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session',
+        collisionIdentity.workspaceScopeIdentity
     );
     assert.strictEqual(collisionSnapshot.state, 'conflict');
     assert.strictEqual(collisionSnapshot.backend, 'tmux');
     assert.deepStrictEqual(collisionSnapshot.identity, collisionIdentity);
     assert.deepStrictEqual(collisionSnapshot.tmux, collisionExpected);
     const stableCollisionSnapshot = discoveryModule.findTmuxCollisionRuntime(
-        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session',
+        collisionIdentity.workspaceScopeIdentity
     );
     collisionSnapshot.identity.sessionId = 'mutated';
     collisionSnapshot.tmux.sessionName = 'mutated';
     assert.deepStrictEqual(discoveryModule.findTmuxCollisionRuntime(
-        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session',
+        collisionIdentity.workspaceScopeIdentity
     ), stableCollisionSnapshot, 'synthetic collision snapshots must be stable defensive copies');
+    assert.strictEqual(discoveryModule.findTmuxCollisionRuntime(
+        [{ ...collisionDiscovery.getDiagnostics()[0], identity: {
+            ...collisionIdentity, workspaceScopeIdentity: 'other-scope',
+        } }],
+        'claude', 'collision-session', collisionIdentity.workspaceScopeIdentity
+    ), null, 'collision lookup must not cross workspaceScopeIdentity');
     collisionListFailure = true;
     await assert.rejects(collisionDiscovery.refresh(true), /collision refresh failed/);
     assert.strictEqual(collisionDiscovery.getDiagnostics()[0].stale, true,
         'retained collision diagnostics must be marked stale after a failed refresh');
     assert.strictEqual(discoveryModule.findTmuxCollisionRuntime(
-        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session'
+        collisionDiscovery.getDiagnostics(), 'claude', 'collision-session',
+        collisionIdentity.workspaceScopeIdentity
     ).stale, true, 'synthetic collision runtimes must preserve diagnostic staleness');
 
     const pendingCollisionActual = {
@@ -829,10 +2321,10 @@ async function runTmuxDiscoveryChecks() {
         client: { listWindows: async () => [{
             ...pendingCollisionActual, windowId: '@pending-collision', active: false,
             sessionMetadata: {
-                managed: '1', version: '1', layout: 'project', projectKey: 'pending-project',
+                managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'pending-project',
             },
             windowMetadata: pendingWindowMetadata,
-            metadata: { projectKey: 'pending-project', ...pendingWindowMetadata },
+            metadata: { workspaceScopeIdentity: 'pending-project', ...pendingWindowMetadata },
         }] },
         bindingStore: {
             listPending: async () => [pendingBinding], listKnown: async () => [],
@@ -848,31 +2340,32 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(pendingCollisionRemoved, []);
     assert.deepStrictEqual(pendingCollisionDiscovery.getDiagnostics(), [{
         kind: 'tmux-locator-collision',
-        identity: { ...pendingIdentity, cwd: '' },
+        identity: pendingIdentity,
         actual: pendingCollisionActual,
         expected: pendingLocator,
     }]);
 
     const sessionIdentity = {
-        provider: 'codex', projectKey: 'session-project', cwd: '', sessionId: 'session-layout-id',
+        provider: 'codex', workspaceScopeIdentity: 'session-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'session-layout-id',
     };
     const sessionLocator = new tmuxLayout.SessionTmuxLayout().getLocator(sessionIdentity);
     const sessionMetadata = {
-        managed: '1', version: '1', layout: 'session', projectKey: 'session-project',
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'session-project',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: JSON.stringify(['/work']), cwd: '/work',
         provider: 'codex', sessionId: 'session-layout-id', marker: '/tmp/session.done',
     };
     const sessionWindowMetadata = {
-        managed: '1', version: '1', layout: 'session',
+        managed: '1', version: '2', layout: 'session',
     };
     const sessionDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [
             {
-                ...sessionLocator, windowName: 'shell', windowId: '@6', active: false,
+                ...sessionLocator, windowName: 'ai-session', windowId: '@6', active: false,
                 sessionMetadata, windowMetadata: sessionWindowMetadata,
                 metadata: { ...sessionMetadata, ...sessionWindowMetadata },
             },
             {
-                ...sessionLocator, windowName: 'logs', windowId: '@7', active: true,
+                ...sessionLocator, windowName: 'ai-session', windowId: '@7', active: true,
                 sessionMetadata, windowMetadata: sessionWindowMetadata,
                 metadata: { ...sessionMetadata, ...sessionWindowMetadata },
             },
@@ -886,6 +2379,142 @@ async function runTmuxDiscoveryChecks() {
     await sessionDiscovery.refresh();
     assert.strictEqual(sessionDiscovery.getActive().length, 1);
     assert.strictEqual(sessionDiscovery.getActive()[0].attached, false);
+    assert.deepStrictEqual(sessionDiscovery.getActive()[0].tmux, sessionLocator,
+        'legacy session-layout discovery must retain its locator without windowName');
+
+    const readableProjectIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'readable-project',
+        workspaceNavigationIdentity: 'nav-readable-project', workspaceRootHostPaths: ['/work/readable'],
+        cwd: '/work/readable', sessionId: 'readable-project-session',
+    };
+    const readableSessionIdentity = {
+        provider: 'claude', workspaceScopeIdentity: 'readable-session',
+        workspaceNavigationIdentity: 'nav-readable-session', workspaceRootHostPaths: ['/work/readable-session'],
+        cwd: '/work/readable-session', sessionId: 'readable-session-id',
+    };
+    const readableProjectLocator = tmuxNaming.buildReadableTmuxLocator(
+        readableProjectIdentity, 'project', { projectName: 'RedDB', sessionName: 'Repair replication' }
+    );
+    const readableSessionLocator = tmuxNaming.buildReadableTmuxLocator(
+        readableSessionIdentity, 'session', { projectName: 'RedDB', sessionName: 'Repair replication' }
+    );
+    const wrongReadableIdentity = {
+        provider: 'kimi', workspaceScopeIdentity: 'wrong-readable',
+        workspaceNavigationIdentity: 'nav-wrong-readable', workspaceRootHostPaths: ['/work/wrong-readable'],
+        cwd: '/work/wrong-readable', sessionId: 'wrong-readable-session',
+    };
+    const wrongReadableExpected = new tmuxLayout.ProjectTmuxLayout().getLocator(wrongReadableIdentity);
+    const wrongReadableBuilt = tmuxNaming.buildReadableTmuxLocator(
+        wrongReadableIdentity, 'project', { projectName: 'RedDB', sessionName: 'Wrong suffix' }
+    );
+    const wrongReadableActual = {
+        ...wrongReadableBuilt,
+        windowName: wrongReadableBuilt.windowName.replace(/[0-9a-f]$/, value => value === '0' ? '1' : '0'),
+    };
+    const wrongReadableActualTwo = {
+        ...wrongReadableBuilt,
+        windowName: wrongReadableBuilt.windowName.replace(/[0-9a-f]$/, value =>
+            value === 'f' ? 'e' : 'f'),
+    };
+    const wrongReadableSessionIdentity = {
+        provider: 'claude', workspaceScopeIdentity: 'wrong-readable-session',
+        workspaceNavigationIdentity: 'nav-wrong-readable-session',
+        workspaceRootHostPaths: ['/work/wrong-readable-session'], cwd: '/work/wrong-readable-session',
+        sessionId: 'wrong-readable-session-id',
+    };
+    const wrongReadableSessionExpected = new tmuxLayout.SessionTmuxLayout()
+        .getLocator(wrongReadableSessionIdentity);
+    const wrongReadableSessionBuilt = tmuxNaming.buildReadableTmuxLocator(
+        wrongReadableSessionIdentity, 'session', { projectName: 'RedDB', sessionName: 'Wrong suffix' }
+    );
+    const wrongReadableSessionActual = {
+        ...wrongReadableSessionBuilt,
+        sessionName: wrongReadableSessionBuilt.sessionName.replace(
+            /[0-9a-f]$/, value => value === '0' ? '1' : '0'
+        ),
+    };
+    const duplicateReadableIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'duplicate-readable',
+        workspaceNavigationIdentity: 'nav-duplicate-readable', workspaceRootHostPaths: ['/work/duplicate'],
+        cwd: '/work/duplicate', sessionId: 'duplicate-readable-session',
+    };
+    const duplicateReadableLocators = [
+        tmuxNaming.buildReadableTmuxLocator(duplicateReadableIdentity, 'project', {
+            projectName: 'RedDB', sessionName: 'Repair replication',
+        }),
+        tmuxNaming.buildReadableTmuxLocator(duplicateReadableIdentity, 'project', {
+            projectName: 'BlueDB', sessionName: 'Repair replication',
+        }),
+    ];
+    const readableRow = (identity, locator, windowId) => {
+        const full = {
+            managed: '1', version: '2', layout: locator.layout,
+            workspaceScopeIdentity: identity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: identity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: JSON.stringify(identity.workspaceRootHostPaths), cwd: identity.cwd,
+            provider: identity.provider, sessionId: identity.sessionId,
+            createdAt: '2026-07-18T10:00:00Z',
+        };
+        const ownership = locator.layout === 'project'
+            ? {
+                managed: '1', version: '2', layout: 'project',
+                workspaceScopeIdentity: identity.workspaceScopeIdentity,
+            }
+            : { managed: '1', version: '2', layout: 'session' };
+        return {
+            ...locator, windowId, active: false,
+            sessionMetadata: locator.layout === 'project' ? ownership : full,
+            windowMetadata: locator.layout === 'project' ? full : ownership,
+            metadata: { ...ownership, ...full },
+        };
+    };
+    const readableDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [
+            finalRow,
+            readableRow(sessionIdentity, { ...sessionLocator, windowName: 'ai-session' }, '@legacy-session'),
+            readableRow(readableProjectIdentity, readableProjectLocator, '@readable-project'),
+            readableRow(readableSessionIdentity, readableSessionLocator, '@readable-session'),
+            readableRow(wrongReadableIdentity, wrongReadableActual, '@wrong-readable'),
+            readableRow(wrongReadableIdentity, wrongReadableActualTwo, '@wrong-readable-two'),
+            readableRow(wrongReadableSessionIdentity, wrongReadableSessionActual,
+                '@wrong-readable-session'),
+            ...duplicateReadableLocators.map((locator, index) =>
+                readableRow(duplicateReadableIdentity, locator, `@duplicate-readable-${index}`)),
+        ] },
+        bindingStore: {
+            listPending: async () => [], listKnown: async () => [],
+            reconcileKnown: async () => undefined,
+        },
+        markerIsCurrent: () => false,
+    });
+    await readableDiscovery.refresh();
+    assert.deepStrictEqual(
+        readableDiscovery.getActive().map(runtime => runtime.tmux),
+        [finalLocator, sessionLocator, readableProjectLocator, readableSessionLocator],
+        'discovery must preserve legacy locators and exact readable project/session actual locators'
+    );
+    assert.deepStrictEqual(readableDiscovery.find(duplicateReadableIdentity), [],
+        'multiple readable actual locators for one identity must fail closed');
+    assert.deepStrictEqual(readableDiscovery.getDiagnostics().find(diagnostic =>
+        diagnostic.identity.sessionId === wrongReadableIdentity.sessionId), {
+        kind: 'tmux-locator-collision', identity: wrongReadableIdentity,
+        actual: wrongReadableActual, expected: wrongReadableExpected,
+    }, 'a readable locator with the wrong identity suffix must remain a collision diagnostic');
+    assert.strictEqual(readableDiscovery.getDiagnostics().filter(diagnostic =>
+        diagnostic.identity.sessionId === wrongReadableIdentity.sessionId).length, 1,
+    'multiple wrong-suffix actual locators for one identity must produce one raw diagnostic');
+    assert.deepStrictEqual(readableDiscovery.getDiagnostics().find(diagnostic =>
+        diagnostic.identity.sessionId === wrongReadableSessionIdentity.sessionId), {
+        kind: 'tmux-locator-collision', identity: wrongReadableSessionIdentity,
+        actual: wrongReadableSessionActual, expected: wrongReadableSessionExpected,
+    }, 'a readable session locator with a wrong suffix must remain a collision diagnostic');
+    assert.deepStrictEqual(
+        discoveryModule.getTmuxCollisionRuntimes(readableDiscovery.getDiagnostics())
+            .filter(runtime => runtime.identity.sessionId === duplicateReadableIdentity.sessionId)
+            .map(runtime => runtime.identity),
+        [duplicateReadableIdentity],
+        'multiple valid actual locators must produce one conflict identity'
+    );
 
     const wrongScopeDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [
@@ -900,6 +2529,12 @@ async function runTmuxDiscoveryChecks() {
                 sessionMetadata,
                 windowMetadata: { ...sessionWindowMetadata, provider: 'codex' },
                 metadata: { ...sessionMetadata, ...sessionWindowMetadata },
+            },
+            {
+                ...sessionLocator, windowName: 'legacy', windowId: '@legacy-session-window', active: false,
+                sessionMetadata,
+                windowMetadata: { ...sessionWindowMetadata, projectKey: 'legacy-project' },
+                metadata: { ...sessionMetadata, ...sessionWindowMetadata, projectKey: 'legacy-project' },
             },
         ] },
         bindingStore: {
@@ -928,7 +2563,7 @@ async function runTmuxDiscoveryChecks() {
     const invalidProjectScopeDiscovery = new discoveryModule.TmuxRuntimeDiscovery({
         client: { listWindows: async () => [{
             ...finalLocator, windowId: '@invalid-project-scope', active: true,
-            sessionMetadata: { projectKey: 'pk' },
+            sessionMetadata: { workspaceScopeIdentity: 'pk' },
             windowMetadata: finalWindowMetadata,
             metadata: { ...finalSessionMetadata, ...finalWindowMetadata },
         }] },
@@ -961,7 +2596,8 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(disagreeingSessionDiscovery.getActive(), []);
 
     const known = {
-        version: 1, state: 'known', provider: 'codex', sessionId: 's1', projectKey: 'pk',
+        version: 2, state: 'known', provider: 'codex', sessionId: 's1', workspaceScopeIdentity: 'pk',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
         layout: 'project', locator: finalLocator, lastSeenAtMs: 900,
     };
 
@@ -1054,8 +2690,8 @@ async function runTmuxDiscoveryChecks() {
     const releaseAcknowledgement = deferred();
     let persistedAcknowledgementExpected;
     const mutationBinding = {
-        version: 1, state: 'completed', provider: 'codex', sessionId: 'mutation-ack',
-        projectKey: 'pk', cwd: '/work', layout: 'project',
+        version: 2, state: 'completed', provider: 'codex', sessionId: 'mutation-ack',
+        workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', layout: 'project',
         locator: {
             layout: 'project', sessionName: 'project-pk', windowName: 'mutation-ack',
         },
@@ -1082,7 +2718,7 @@ async function runTmuxDiscoveryChecks() {
     await acknowledgementEntered.promise;
     callerOwnedExpected.identity.provider = 'kimi';
     callerOwnedExpected.identity.sessionId = 'mutated-session';
-    callerOwnedExpected.identity.projectKey = 'mutated-project';
+    callerOwnedExpected.identity.workspaceScopeIdentity = 'mutated-project';
     callerOwnedExpected.identity.cwd = '/mutated';
     callerOwnedExpected.tmux.layout = 'session';
     callerOwnedExpected.tmux.sessionName = 'mutated-tmux';
@@ -1178,12 +2814,12 @@ async function runTmuxDiscoveryChecks() {
             discoveryAckRoot, () => now, discoveryAckLock
         );
         const discoveryAckIdentity = {
-            provider: 'codex', sessionId: 'discovery-ack-cas', projectKey: 'pk', cwd: '/work',
+            provider: 'codex', sessionId: 'discovery-ack-cas', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
         };
         const discoveryAckLocator = new tmuxLayout.ProjectTmuxLayout()
             .getLocator(discoveryAckIdentity);
         const oldDiscoveryAck = {
-            version: 1, state: 'completed', ...discoveryAckIdentity, layout: 'project',
+            version: 2, state: 'completed', ...discoveryAckIdentity, layout: 'project',
             locator: discoveryAckLocator, markerPath: '/tmp/discovery-ack-old.done',
             runStartedAtMs: 900, detectedAtMs: 990,
         };
@@ -1208,14 +2844,26 @@ async function runTmuxDiscoveryChecks() {
             runStartedAtMs: 950, detectedAtMs: now,
         };
         await discoveryAckStoreA.setInactive(newDiscoveryAck);
+        const otherScopeDiscoveryAck = {
+            ...newDiscoveryAck,
+            workspaceScopeIdentity: 'other-scope',
+            workspaceNavigationIdentity: 'other-nav',
+            markerPath: '/tmp/discovery-ack-other-scope.done',
+            runStartedAtMs: 975,
+            detectedAtMs: now + 1,
+        };
+        await discoveryAckStoreA.setInactive(otherScopeDiscoveryAck);
         assert.strictEqual(await discoveryAckB.acknowledgeInactive(lateOldExpected), 'stale',
             'a second discovery must not clear a newer run with its retained old snapshot');
         assert.deepStrictEqual(await discoveryAckStoreA.getInactive(
-            'codex', 'discovery-ack-cas'
+            'codex', 'discovery-ack-cas', discoveryAckIdentity.workspaceScopeIdentity
         ), newDiscoveryAck);
         assert.strictEqual(discoveryAckB.getInactive()[0].runStartedAtMs,
             newDiscoveryAck.runStartedAtMs,
             'a stale acknowledgement must reload and retain the current lifecycle blocker');
+        assert.strictEqual(discoveryAckB.getInactive()[0].identity.workspaceScopeIdentity,
+            discoveryAckIdentity.workspaceScopeIdentity,
+            'stale acknowledgement reload must not cross workspaceScopeIdentity');
     } finally {
         fs.rmSync(discoveryAckRoot, { recursive: true, force: true });
     }
@@ -1227,8 +2875,8 @@ async function runTmuxDiscoveryChecks() {
         tmux: { ...finalLocator },
     };
     let persistedInactive = [{
-        version: 1, state: 'completed', provider: 'codex', sessionId: 's1',
-        projectKey: 'pk', cwd: '/work', layout: 'project', locator: { ...finalLocator },
+        version: 2, state: 'completed', provider: 'codex', sessionId: 's1',
+        workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', layout: 'project', locator: { ...finalLocator },
         markerPath: '/tmp/s1.done', runStartedAtMs: 900, detectedAtMs: now,
     }];
     let blockInactiveRead = false;
@@ -1370,18 +3018,19 @@ async function runTmuxDiscoveryChecks() {
     assert.deepStrictEqual(markerFailureDiscovery.getInactive(), []);
 }
 
-// RUNTIME-TMUX-STORE-001
 async function runTmuxStoreChecks() {
     const now = Date.parse('2026-07-18T10:00:00Z');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-tmux-store-'));
     try {
         const store = new runtimeStoreModule.TmuxRuntimeBindingStore(root, () => now);
         const pending = (pendingId, createdAt, overrides = {}) => ({
-            version: 1,
+            version: 2,
             state: 'pending',
             pendingId,
             provider: 'codex',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
             cwd: '/work',
             createdAt,
             excludedSessionIds: [],
@@ -1394,12 +3043,23 @@ async function runTmuxStoreChecks() {
             },
             ...overrides,
         });
+        const pendingIdentity = record => ({
+            provider: record.provider,
+            workspaceScopeIdentity: record.workspaceScopeIdentity,
+            workspaceNavigationIdentity: record.workspaceNavigationIdentity,
+            workspaceRootHostPaths: [...record.workspaceRootHostPaths],
+            cwd: record.cwd,
+            pendingId: record.pendingId,
+        });
         const known = (sessionId, lastSeenAtMs, overrides = {}) => ({
-            version: 1,
+            version: 2,
             state: 'known',
             provider: 'codex',
             sessionId,
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
+            cwd: '/work',
             layout: 'project',
             locator: {
                 layout: 'project',
@@ -1409,12 +3069,71 @@ async function runTmuxStoreChecks() {
             lastSeenAtMs,
             ...overrides,
         });
+        const legacySessionPending = pending('legacy-session-locator', '2026-07-18T09:59:00Z', {
+            layout: 'session',
+            locator: { layout: 'session', sessionName: 'project-steward-pending-codex-legacy' },
+        });
+        const readableSessionPending = pending('readable-session-locator', '2026-07-18T09:59:01Z', {
+            layout: 'session',
+            locator: {
+                layout: 'session', sessionName: 'ps-RedDB-Repair-replication-12345678',
+                windowName: 'codex-Repair-replication-12345678',
+            },
+        });
+        assert.deepStrictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            legacySessionPending, now
+        ), legacySessionPending, 'runtime binding validation must retain legacy session locators');
+        assert.deepStrictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            readableSessionPending, now
+        ), readableSessionPending, 'runtime binding validation must retain session locator windowName');
+        const namedPending = pending('named-project', '2026-07-18T09:59:02Z', {
+            projectName: 'RedDB DTS Dual Active', title: 'Investigate lag',
+        });
+        assert.deepStrictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            namedPending, now
+        ), namedPending, 'pending bindings must retain bounded creation-time project names');
+        assert.strictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            { ...namedPending, projectName: 'p'.repeat(201) }, now
+        ), null, 'pending project names must share the 200-character title bound');
+        assert.strictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            { ...namedPending, projectName: 'bad\nproject' }, now
+        ), null, 'pending project names must reject control characters');
+        assert.notStrictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            pending('legacy-without-project-name', '2026-07-18T09:59:03Z'), now
+        ), null, 'legacy pending records without projectName must remain valid');
+        assert.strictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding({
+            ...legacySessionPending,
+            locator: { ...legacySessionPending.locator, windowName: undefined },
+        }, now), null, 'session locators must reject an explicit undefined windowName key');
+        assert.strictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding({
+            ...readableSessionPending,
+            locator: { ...readableSessionPending.locator, unexpected: true },
+        }, now), null, 'session locators must reject keys outside both accepted families');
+        await store.setPending(legacySessionPending);
+        await store.setPending(readableSessionPending);
+        assert.deepStrictEqual(await store.getPending(pendingIdentity(legacySessionPending)),
+            legacySessionPending);
+        assert.deepStrictEqual(await store.getPending(pendingIdentity(readableSessionPending)),
+            readableSessionPending, 'runtime binding persistence must round-trip session windowName');
+        await store.removePending(pendingIdentity(legacySessionPending));
+        await store.removePending(pendingIdentity(readableSessionPending));
+        const missingAcceptedAt = pending('missing-accepted', '2026-07-18T09:59:00Z');
+        delete missingAcceptedAt.acceptedAtMs;
+        assert.strictEqual(runtimeStoreModule.validateTmuxPendingRuntimeBinding(
+            missingAcceptedAt, now
+        ), null, 'v2 pending bindings must not synthesize a missing acceptedAtMs');
+        await assert.rejects(store.setPending({
+            ...pending('extra-pending-key', '2026-07-18T09:59:00Z'),
+            projectKey: 'legacy-extra',
+        }), /invalid or expired/, 'v2 pending bindings must reject extra legacy keys');
         const inactive = (sessionId, state, detectedAtMs, overrides = {}) => ({
-            version: 1,
+            version: 2,
             state,
             provider: 'codex',
             sessionId,
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
             cwd: '/work',
             layout: 'project',
             locator: {
@@ -1427,6 +3146,34 @@ async function runTmuxStoreChecks() {
             detectedAtMs,
             ...overrides,
         });
+
+        for (const [kind, validRecord, invalidRecords] of [
+            ['known', known('strict-known', now), record => [
+                { ...record, pendingId: 'also-pending' },
+                { ...record, projectKey: 'legacy' },
+                { ...record, unexpected: true },
+                (() => { const value = { ...record }; delete value.lastSeenAtMs; return value; })(),
+            ]],
+            ['inactive', inactive('strict-inactive', 'completed', now), record => [
+                { ...record, pendingId: 'also-pending' },
+                { ...record, projectKey: 'legacy' },
+                { ...record, unexpected: true },
+                (() => { const value = { ...record }; delete value.detectedAtMs; return value; })(),
+            ]],
+        ]) {
+            for (const [index, invalidRecord] of invalidRecords(validRecord).entries()) {
+                const strictRoot = path.join(root, `${kind}-strict-${index}`);
+                fs.mkdirSync(strictRoot);
+                fs.writeFileSync(path.join(strictRoot, runtimeRecordFilename(validRecord)),
+                    JSON.stringify(invalidRecord));
+                const strictStore = new runtimeStoreModule.TmuxRuntimeBindingStore(strictRoot, () => now);
+                const restored = kind === 'known'
+                    ? await strictStore.getKnown('codex', validRecord.sessionId, 'pk')
+                    : await strictStore.getInactive('codex', validRecord.sessionId, 'pk');
+                assert.strictEqual(restored, null,
+                    `v2 ${kind} bindings must reject both IDs, missing fields, legacy fields, and extras`);
+            }
+        }
 
         const inactiveRoot = path.join(root, 'inactive-lifecycle');
         const inactiveStore = new runtimeStoreModule.TmuxRuntimeBindingStore(inactiveRoot, () => now);
@@ -1530,18 +3277,19 @@ async function runTmuxStoreChecks() {
         assert.strictEqual(await acknowledgementCasA.acknowledgeInactive(newAcknowledgement),
             'missing', 'same-run duplicate acknowledgement is idempotent');
 
-        const legacyKnownRoot = path.join(root, 'legacy-known-no-discriminator');
-        fs.mkdirSync(legacyKnownRoot);
-        const normalizedLegacyKnown = known('legacy-known', now - 100);
-        const legacyKnown = { ...normalizedLegacyKnown };
-        delete legacyKnown.state;
-        fs.writeFileSync(path.join(legacyKnownRoot, runtimeRecordFilename(normalizedLegacyKnown)),
-            JSON.stringify(legacyKnown));
-        const legacyKnownStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
-            legacyKnownRoot, () => now
+        const missingStateKnownRoot = path.join(root, 'v2-known-no-discriminator');
+        fs.mkdirSync(missingStateKnownRoot);
+        const normalizedKnown = known('missing-state-known', now - 100);
+        const missingStateKnown = { ...normalizedKnown };
+        delete missingStateKnown.state;
+        fs.writeFileSync(path.join(missingStateKnownRoot, runtimeRecordFilename(normalizedKnown)),
+            JSON.stringify(missingStateKnown));
+        const missingStateKnownStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            missingStateKnownRoot, () => now
         );
-        assert.deepStrictEqual(await legacyKnownStore.getKnown('codex', 'legacy-known'),
-            normalizedLegacyKnown, 'legacy final records without a discriminator parse as known');
+        assert.strictEqual(await missingStateKnownStore.getKnown(
+            'codex', 'missing-state-known', normalizedKnown.workspaceScopeIdentity
+        ), null, 'v2 final records without the exact known-state discriminator are ignored');
 
         const crossHostRoot = path.join(root, 'cross-host-final-records');
         const crossHostRecords = path.join(crossHostRoot, 'records');
@@ -1580,7 +3328,7 @@ async function runTmuxStoreChecks() {
         const crossNew = known('cross-host', now);
         const crossRuntime = {
             identity: {
-                provider: 'codex', sessionId: 'cross-host', projectKey: 'pk', cwd: '/work',
+                provider: 'codex', sessionId: 'cross-host', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
             },
             backend: 'tmux', state: 'active', markerPath: '/tmp/cross-host.done',
             runStartedAtMs: now - 1000, attached: false, tmux: { ...crossNew.locator },
@@ -1602,14 +3350,14 @@ async function runTmuxStoreChecks() {
         );
         await crossHostA.setKnown(crossOld);
         blockNextReconcileOperation = true;
-        const reconcileBeforeTransition = crossHostB.reconcileKnown([crossRuntime]);
+        const reconcileBeforeStaleTransition = crossHostB.reconcileKnown([crossRuntime]);
         await reconcileLockEntered.promise;
         const staleTransitionOperation = crossHostA.transitionKnownToInactive(
             inactive('cross-host', 'stopped', now), crossOld.lastSeenAtMs
         );
         releaseReconcileLock.resolve();
         const [_, staleCrossTransition] = await Promise.all([
-            reconcileBeforeTransition,
+            reconcileBeforeStaleTransition,
             staleTransitionOperation,
         ]);
         assert.strictEqual(staleCrossTransition, false);
@@ -1755,13 +3503,16 @@ async function runTmuxStoreChecks() {
         ), null);
 
         const ambiguousIdentity = {
-            provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 'ambiguous-session',
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'ambiguous-session',
         };
         const ambiguousRecord = {
-            version: 1,
+            version: 2,
             state: 'ambiguous',
             provider: 'codex',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
+            cwd: '/work',
             sessionId: 'ambiguous-session',
             layout: 'session',
             locator: {
@@ -1776,19 +3527,22 @@ async function runTmuxStoreChecks() {
         assert.deepStrictEqual(await restartedStore.getAmbiguous(ambiguousIdentity), ambiguousRecord);
         await restartedStore.removeAmbiguous(ambiguousIdentity);
         assert.strictEqual(await store.getAmbiguous(ambiguousIdentity), null);
-        await assert.rejects(store.setAmbiguous({ ...ambiguousRecord, projectKey: '' }),
+        await assert.rejects(store.setAmbiguous({ ...ambiguousRecord, workspaceScopeIdentity: '' }),
             /ambiguous tmux binding is invalid/);
         assert.strictEqual(await store.getAmbiguous(ambiguousIdentity), null);
 
         const pendingAmbiguousRecord = {
-            version: 1,
+            version: 2,
             state: 'ambiguous',
             provider: 'kimi',
-            projectKey: 'pending-ambiguous-project',
+            workspaceScopeIdentity: 'pending-ambiguous-project',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/pending-ambiguous'],
             pendingId: 'global-ambiguous-pending',
             cwd: '/pending-ambiguous',
             createdAt: '2026-07-18T09:59:00Z',
             excludedSessionIds: ['old'],
+            projectName: 'RedDB DTS Dual Active',
             title: 'Pending ambiguous',
             markerPath: '/tmp/pending-ambiguous',
             requestFingerprint: 'b'.repeat(64),
@@ -1797,33 +3551,87 @@ async function runTmuxStoreChecks() {
             acceptedAtMs: now,
         };
         await store.setAmbiguous(pendingAmbiguousRecord);
-        assert.deepStrictEqual(await restartedStore.getAmbiguousByPendingId('global-ambiguous-pending'),
+        assert.deepStrictEqual(await restartedStore.getAmbiguous(pendingIdentity(pendingAmbiguousRecord)),
             pendingAmbiguousRecord);
+        await assert.rejects(store.setAmbiguous({
+            ...pendingAmbiguousRecord, pendingId: 'oversized-project-name',
+            projectName: 'p'.repeat(201),
+        }), /ambiguous tmux binding is invalid/);
+        await assert.rejects(store.setAmbiguous({
+            ...pendingAmbiguousRecord, pendingId: 'controlled-project-name',
+            projectName: 'bad\nproject',
+        }), /ambiguous tmux binding is invalid/);
+        const legacyPendingAmbiguousRecord = { ...pendingAmbiguousRecord };
+        delete legacyPendingAmbiguousRecord.projectName;
+        legacyPendingAmbiguousRecord.pendingId = 'legacy-ambiguous-without-project-name';
+        await store.setAmbiguous(legacyPendingAmbiguousRecord);
+        assert.deepStrictEqual(await restartedStore.getAmbiguous(
+            pendingIdentity(legacyPendingAmbiguousRecord)
+        ), legacyPendingAmbiguousRecord,
+        'legacy pending ambiguity records without projectName must remain valid');
+        await store.removeAmbiguous(pendingIdentity(legacyPendingAmbiguousRecord));
         const conflictingPendingAmbiguous = {
             ...pendingAmbiguousRecord,
             provider: 'claude',
-            projectKey: 'other-pending-ambiguous-project',
+            workspaceScopeIdentity: 'other-pending-ambiguous-project',
+            workspaceRootHostPaths: ['/other-pending-ambiguous'],
             cwd: '/other-pending-ambiguous',
             locator: { layout: 'session', sessionName: 'project-steward-s-claude-pending-ambiguous' },
         };
         await store.setAmbiguous(conflictingPendingAmbiguous);
-        await assert.rejects(restartedStore.getAmbiguousByPendingId('global-ambiguous-pending'),
-            /Multiple.*pending ID/);
+        assert.deepStrictEqual(await restartedStore.getAmbiguous(
+            pendingIdentity(conflictingPendingAmbiguous)
+        ), conflictingPendingAmbiguous);
         await store.removeAmbiguous({
             provider: pendingAmbiguousRecord.provider,
-            projectKey: pendingAmbiguousRecord.projectKey,
+            workspaceScopeIdentity: pendingAmbiguousRecord.workspaceScopeIdentity,
+            workspaceNavigationIdentity: pendingAmbiguousRecord.workspaceNavigationIdentity,
+            workspaceRootHostPaths: pendingAmbiguousRecord.workspaceRootHostPaths,
+            cwd: pendingAmbiguousRecord.cwd,
             pendingId: pendingAmbiguousRecord.pendingId,
         });
         await store.removeAmbiguous({
             provider: conflictingPendingAmbiguous.provider,
-            projectKey: conflictingPendingAmbiguous.projectKey,
+            workspaceScopeIdentity: conflictingPendingAmbiguous.workspaceScopeIdentity,
+            workspaceNavigationIdentity: conflictingPendingAmbiguous.workspaceNavigationIdentity,
+            workspaceRootHostPaths: conflictingPendingAmbiguous.workspaceRootHostPaths,
+            cwd: conflictingPendingAmbiguous.cwd,
             pendingId: conflictingPendingAmbiguous.pendingId,
         });
 
         await store.setPending(pending('p-new', '2026-07-18T09:59:00Z'));
         await store.setPending(pending('p-old', '2026-07-18T09:58:00Z'));
         assert.deepStrictEqual((await store.listPending()).map(record => record.pendingId), ['p-old', 'p-new']);
-        assert.strictEqual((await store.getPending('p-new')).pendingId, 'p-new');
+        assert.strictEqual((await store.getPending(pendingIdentity(
+            pending('p-new', '2026-07-18T09:59:00Z')
+        ))).pendingId, 'p-new');
+        const sameScopeRoot = path.join(root, 'same-scope-pending-snapshots');
+        const sameScopeStore = new runtimeStoreModule.TmuxRuntimeBindingStore(sameScopeRoot, () => now);
+        const sameScopePendingA = pending('same-scope-pending', '2026-07-18T09:59:00Z', {
+            workspaceNavigationIdentity: 'nav:a',
+            workspaceRootHostPaths: ['/work/a'],
+            cwd: '/work/a',
+            locator: { layout: 'session', sessionName: 'pending-a' },
+            layout: 'session',
+        });
+        const sameScopePendingB = pending('same-scope-pending', '2026-07-18T09:59:01Z', {
+            workspaceNavigationIdentity: 'nav:b',
+            workspaceRootHostPaths: ['/work/b'],
+            cwd: '/work/b',
+            locator: { layout: 'session', sessionName: 'pending-b' },
+            layout: 'session',
+        });
+        await sameScopeStore.setPending(sameScopePendingA);
+        await sameScopeStore.setPending(sameScopePendingB);
+        assert.strictEqual((await sameScopeStore.listPending()).length, 2,
+            'same provider/scope/pending ID with different immutable snapshots must not overwrite');
+        assert.deepStrictEqual(await sameScopeStore.getPending(pendingIdentity(sameScopePendingA)),
+            sameScopePendingA);
+        assert.deepStrictEqual(await sameScopeStore.getPending(pendingIdentity(sameScopePendingB)),
+            sameScopePendingB);
+        await sameScopeStore.removePending(pendingIdentity(sameScopePendingA));
+        assert.deepStrictEqual(await sameScopeStore.listPending(), [sameScopePendingB],
+            'removing one immutable pending identity must retain the other');
         await assert.rejects(store.setPending(pending('future-created-persisted', '2026-07-18T10:05:01Z', {
             acceptedAtMs: now,
         })), /invalid or expired/);
@@ -1844,8 +3652,8 @@ async function runTmuxStoreChecks() {
         }
         const futureDiskStore = new runtimeStoreModule.TmuxRuntimeBindingStore(futureDiskRoot, () => now);
         assert.deepStrictEqual((await futureDiskStore.listPending()).map(record => record.pendingId), ['valid-disk']);
-        assert.strictEqual(await futureDiskStore.getPending('future-created-disk'), null);
-        assert.strictEqual(await futureDiskStore.getPending('future-accepted-disk'), null);
+        assert.strictEqual(await futureDiskStore.getPending(pendingIdentity(futureCreatedDisk)), null);
+        assert.strictEqual(await futureDiskStore.getPending(pendingIdentity(futureAcceptedDisk)), null);
 
         const nonFiniteRoot = path.join(root, 'non-finite-clock');
         const finiteClockStore = new runtimeStoreModule.TmuxRuntimeBindingStore(nonFiniteRoot, () => now);
@@ -1854,13 +3662,15 @@ async function runTmuxStoreChecks() {
         }));
         const nonFiniteClockStore = new runtimeStoreModule.TmuxRuntimeBindingStore(nonFiniteRoot, () => NaN);
         assert.deepStrictEqual(await nonFiniteClockStore.listPending(), []);
-        assert.strictEqual(await nonFiniteClockStore.getPending('non-finite-clock'), null);
+        assert.strictEqual(await nonFiniteClockStore.getPending(pendingIdentity(
+            pending('non-finite-clock', '2026-07-18T09:59:00Z')
+        )), null);
         const acceptedBeforeExpiry = pending('accepted-before-expiry', '2026-07-17T10:00:01Z', {
             acceptedAtMs: now,
         });
         assert.strictEqual(await store.setPending(acceptedBeforeExpiry), true);
         assert.ok((await store.listPending()).some(record => record.pendingId === 'accepted-before-expiry'));
-        await store.removePending('accepted-before-expiry');
+        await store.removePending(pendingIdentity(acceptedBeforeExpiry));
         assert.ok(fs.readdirSync(root).every(name => !name.includes('p-old') && !name.includes('p-new')));
 
         fs.writeFileSync(path.join(root, 'bad.json'), '{bad');
@@ -1879,22 +3689,39 @@ async function runTmuxStoreChecks() {
         })), /invalid or expired/);
         assert.deepStrictEqual((await store.listPending()).map(record => record.pendingId), ['p-old', 'p-new']);
 
-        const consumedIdentity = { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'p-used' };
+        const consumedIdentity = { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-used' };
         const consumedRecord = {
-            version: 1,
+            version: 2,
             state: 'consumed',
             provider: 'codex',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
             cwd: '/work',
             pendingId: 'p-used',
             finalSessionId: 's-used',
+            finalSessionName: 'Used session',
             layout: 'session',
             finalLocator: { layout: 'session', sessionName: 'project-steward-s-codex-used' },
             consumedAtMs: now,
         };
         assert.strictEqual(await store.setConsumed(consumedRecord), true);
         assert.deepStrictEqual(await restartedStore.getConsumed(consumedIdentity), consumedRecord);
-        assert.deepStrictEqual(await restartedStore.getConsumedByPendingId('p-used'), consumedRecord);
+
+        const preDisplayConsumedRecord = { ...consumedRecord };
+        delete preDisplayConsumedRecord.finalSessionName;
+        preDisplayConsumedRecord.pendingId = 'p-used-before-display-snapshot';
+        const preDisplayConsumedPath = path.join(root,
+            runtimeRecordFilename(preDisplayConsumedRecord));
+        fs.writeFileSync(preDisplayConsumedPath,
+            `${JSON.stringify(preDisplayConsumedRecord, null, 2)}\n`);
+        assert.deepStrictEqual(await restartedStore.getConsumed({
+            ...consumedIdentity, pendingId: preDisplayConsumedRecord.pendingId,
+        }), preDisplayConsumedRecord,
+        'pre-display-name v2 tombstones must remain readable and fail closed on promotion replay');
+        await assert.rejects(store.setConsumed(preDisplayConsumedRecord),
+            /consumed tmux binding is invalid/,
+        'new consumed records must include the exact raw promotion display name');
 
         const legacyConsumedRoot = path.join(root, 'legacy-consumed');
         fs.mkdirSync(legacyConsumedRoot);
@@ -1904,6 +3731,7 @@ async function runTmuxStoreChecks() {
             pendingId: 'legacy-consumed-pending',
             provider: 'codex',
             projectKey: 'legacy-consumed-project',
+            cwd: '/legacy-work',
             finalSessionId: 'legacy-final',
             layout: 'session',
             finalLocator: { layout: 'session', sessionName: 'project-steward-s-codex-legacy-final' },
@@ -1917,73 +3745,57 @@ async function runTmuxStoreChecks() {
             legacyConsumedRoot, () => now
         );
         const legacyConsumedIdentity = {
-            provider: 'codex', projectKey: 'legacy-consumed-project', cwd: '/fresh-work',
+            provider: 'codex', workspaceScopeIdentity: 'legacy-consumed-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/fresh-work'], cwd: '/fresh-work',
             pendingId: 'legacy-consumed-pending',
         };
-        assert.deepStrictEqual(await legacyConsumedStore.getConsumed(legacyConsumedIdentity),
-            legacyConsumedRecord);
-        assert.deepStrictEqual(await legacyConsumedStore.getConsumedByPendingId('legacy-consumed-pending'),
-            legacyConsumedRecord);
+        assert.strictEqual(await legacyConsumedStore.getConsumed(legacyConsumedIdentity), null);
+        assert.deepStrictEqual(await legacyConsumedStore.listRecoverablePending(), [],
+            'pre-workspace consumed tombstones must not block modern promotion enumeration');
         await assert.rejects(legacyConsumedStore.setConsumed(legacyConsumedRecord),
             /consumed tmux binding is invalid/);
-        const legacyConsumedHarness = createTmuxBackendHarness();
-        legacyConsumedHarness.dependencies.runtimeStore = legacyConsumedStore;
-        const legacyBackendModule = require('../out/aiSessions/tmuxRuntimeBackend');
-        await assert.rejects(
-            new legacyBackendModule.TmuxRuntimeBackend(legacyConsumedHarness.dependencies).ensurePending({
-                identity: legacyConsumedIdentity,
-                projectName: 'App', terminalName: 'Codex: Legacy Consumed',
-                createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
-                launch: { executable: 'codex', args: ['new'], cwd: '/fresh-work' },
-            }, 'session'),
-            /pending ID.*identity|already consumed/i
-        );
-        assert.strictEqual(legacyConsumedHarness.operations.some(item =>
-            item.type === 'new-session' || item.type === 'new-window'), false);
         assert.strictEqual(fs.readFileSync(legacyConsumedPath, 'utf8'), legacyConsumedBytes);
+
+        const invalidModernConsumedRoot = path.join(root, 'invalid-modern-consumed');
+        fs.mkdirSync(invalidModernConsumedRoot);
+        const invalidModernConsumedRecord = { ...legacyConsumedRecord, version: 2 };
+        fs.writeFileSync(path.join(invalidModernConsumedRoot,
+            runtimeRecordFilename(invalidModernConsumedRecord)),
+        `${JSON.stringify(invalidModernConsumedRecord, null, 2)}\n`);
+        await assert.rejects(
+            new runtimeStoreModule.TmuxRuntimeBindingStore(
+                invalidModernConsumedRoot, () => now
+            ).listRecoverablePending(),
+            /durable tmux consumed record is invalid/,
+            'modern malformed consumed records must continue to fail closed'
+        );
 
         const conflictingConsumedRecord = {
             ...consumedRecord,
             provider: 'kimi',
-            projectKey: 'other-consumed-project',
+            workspaceScopeIdentity: 'other-consumed-project',
+            workspaceRootHostPaths: ['/other-consumed'],
             cwd: '/other-consumed',
             finalSessionId: 'other-used',
             finalLocator: { layout: 'session', sessionName: 'project-steward-s-kimi-other-used' },
         };
         assert.strictEqual(await store.setConsumed(conflictingConsumedRecord), true);
-        await assert.rejects(restartedStore.getConsumedByPendingId('p-used'), /Multiple.*pending ID/);
-
-        const boundedConsumedRoot = path.join(root, 'bounded-consumed');
-        fs.mkdirSync(boundedConsumedRoot);
-        for (let index = 0; index < 513; index++) {
-            fs.writeFileSync(path.join(boundedConsumedRoot, `consumed-${index}.json`), '{}');
-        }
-        await assert.rejects(
-            new runtimeStoreModule.TmuxRuntimeBindingStore(boundedConsumedRoot, () => now)
-                .getConsumedByPendingId('bounded-pending'),
-            /Too many.*lifecycle|bounded/i
-        );
-        const boundedDirectoryRoot = path.join(root, 'bounded-directory');
-        fs.mkdirSync(boundedDirectoryRoot);
-        for (let index = 0; index < 4097; index++) {
-            fs.writeFileSync(path.join(boundedDirectoryRoot, `noise-${index}.json`), '{}');
-        }
-        await assert.rejects(
-            new runtimeStoreModule.TmuxRuntimeBindingStore(boundedDirectoryRoot, () => now)
-                .getConsumedByPendingId('bounded-directory-pending'),
-            /Too many.*lifecycle files|bounded/i
-        );
+        assert.deepStrictEqual(await restartedStore.getConsumed(pendingIdentity(
+            conflictingConsumedRecord
+        )), conflictingConsumedRecord);
 
         const promotingRecord = {
-            version: 1,
+            version: 2,
             state: 'promoting',
             provider: 'codex',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
             pendingId: 'p-promoting',
             cwd: '/work',
             createdAt: '2026-07-18T09:59:00Z',
             markerPath: '/tmp/promoting',
             finalSessionId: 's-promoting',
+            finalSessionName: 'Repair replication',
             layout: 'project',
             sourceLocator: {
                 layout: 'project', sessionName: 'project-steward-p-a', windowName: 'pending-codex-p-promoting',
@@ -2000,23 +3812,71 @@ async function runTmuxStoreChecks() {
         });
         assert.strictEqual(await store.setPromoting(promotingRecord), true);
         const readPromoting = await restartedStore.getPromoting({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         });
         assert.deepStrictEqual(readPromoting, promotingRecord);
         readPromoting.sourceLocator.windowName = 'mutated';
         assert.strictEqual((await store.getPromoting({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         })).sourceLocator.windowName, 'pending-codex-p-promoting');
         assert.strictEqual(await store.getPromoting({
-            provider: 'codex', projectKey: 'other', cwd: '/work', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'other', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         }), null);
-        assert.deepStrictEqual(await restartedStore.getPromotingByPendingId('p-promoting'), promotingRecord);
         await store.setPending(promotingRecord.pendingBinding);
+        assert.deepStrictEqual((await store.listRecoverablePending()).map(record =>
+            record.pendingBinding.pendingId),
+            ['p-promoting'], 'a strict durable intent must enumerate its exact pending snapshot');
+        assert.strictEqual((await store.listRecoverablePending())[0].promotionRecoveryDisplayName,
+            promotingRecord.finalSessionName);
+        assert.strictEqual((await store.listRecoverablePending())[0].recoverySessionId,
+            promotingRecord.finalSessionId);
         const expiredPromotionStore = new runtimeStoreModule.TmuxRuntimeBindingStore(root,
             () => now + (24 * 60 * 60 * 1000) + 1);
-        assert.strictEqual(await expiredPromotionStore.getPending('p-promoting'), null);
-        assert.deepStrictEqual(await expiredPromotionStore.getPromotingByPendingId('p-promoting'), promotingRecord);
-        await store.removePending('p-promoting');
+        assert.strictEqual(await expiredPromotionStore.getPending(
+            pendingIdentity(promotingRecord.pendingBinding)
+        ), null);
+        assert.deepStrictEqual(await expiredPromotionStore.getPromoting(pendingIdentity(
+            promotingRecord
+        )), promotingRecord);
+        assert.deepStrictEqual((await expiredPromotionStore.listRecoverablePending())
+            .map(record => record.pendingBinding.pendingId), ['p-promoting'],
+        'the intent snapshot must remain authoritative after the live pending record expires');
+
+        const inconsistentDurableRoot = path.join(root, 'inconsistent-durable');
+        const inconsistentDurableStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            inconsistentDurableRoot, () => now
+        );
+        await inconsistentDurableStore.setPromoting(promotingRecord);
+        await inconsistentDurableStore.setConsumed({
+            version: 2, state: 'consumed',
+            provider: promotingRecord.provider,
+            workspaceScopeIdentity: promotingRecord.workspaceScopeIdentity,
+            workspaceNavigationIdentity: promotingRecord.workspaceNavigationIdentity,
+            workspaceRootHostPaths: [...promotingRecord.workspaceRootHostPaths],
+            cwd: promotingRecord.cwd, pendingId: promotingRecord.pendingId,
+            finalSessionId: 'different-final', finalSessionName: 'Different final',
+            layout: promotingRecord.layout,
+            finalLocator: {
+                ...promotingRecord.finalLocator,
+                windowName: 'ai-codex-different-final',
+            },
+            consumedAtMs: now,
+        });
+        await assert.rejects(inconsistentDurableStore.listRecoverablePending(),
+            /disagree on the final runtime/,
+        'multiple durable records for one identity must fail closed when they disagree');
+
+        const invalidDurableRoot = path.join(root, 'invalid-durable');
+        fs.mkdirSync(invalidDurableRoot);
+        fs.writeFileSync(path.join(invalidDurableRoot, `promoting-${'a'.repeat(64)}.json`),
+            JSON.stringify({ version: 2, state: 'promoting' }));
+        const invalidDurableStore = new runtimeStoreModule.TmuxRuntimeBindingStore(
+            invalidDurableRoot, () => now
+        );
+        await assert.rejects(invalidDurableStore.listRecoverablePending(),
+            /durable tmux promoting record is invalid/,
+        'invalid strict durable records must fail the entire promotion enumeration');
+        await store.removePending(pendingIdentity(promotingRecord.pendingBinding));
         await assert.rejects(store.setPromoting({
             ...promotingRecord,
             cwd: '/different',
@@ -2024,7 +3884,9 @@ async function runTmuxStoreChecks() {
         }), /promoting tmux binding is invalid/);
         const conflictingPromoting = {
             ...promotingRecord,
-            projectKey: 'other-project',
+            workspaceScopeIdentity: 'other-project',
+            workspaceNavigationIdentity: 'nav-other',
+            workspaceRootHostPaths: ['/other'],
             cwd: '/other',
             sourceLocator: {
                 layout: 'project', sessionName: 'project-steward-p-other', windowName: 'pending-codex-p-promoting',
@@ -2035,20 +3897,28 @@ async function runTmuxStoreChecks() {
         };
         conflictingPromoting.pendingBinding = {
             ...promotingRecord.pendingBinding,
-            projectKey: conflictingPromoting.projectKey,
+            workspaceScopeIdentity: conflictingPromoting.workspaceScopeIdentity,
+            workspaceNavigationIdentity: conflictingPromoting.workspaceNavigationIdentity,
+            workspaceRootHostPaths: conflictingPromoting.workspaceRootHostPaths,
             cwd: conflictingPromoting.cwd,
             locator: { ...conflictingPromoting.sourceLocator },
         };
         await store.setPromoting(conflictingPromoting);
-        await assert.rejects(restartedStore.getPromotingByPendingId('p-promoting'), /Multiple.*pending ID/);
+        assert.deepStrictEqual(await restartedStore.getPromoting(pendingIdentity(
+            conflictingPromoting
+        )), conflictingPromoting);
+        assert.deepStrictEqual((await store.listRecoverablePending()).map(record =>
+            `${record.pendingBinding.workspaceScopeIdentity}:${record.pendingBinding.pendingId}`).sort(), [
+            'other-project:p-promoting', 'pk:p-promoting',
+        ], 'multiple strict durable identities must enumerate independently');
         await store.removePromoting({
-            provider: 'codex', projectKey: 'other-project', cwd: '/other', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'other-project', workspaceNavigationIdentity: 'nav-other', workspaceRootHostPaths: ['/other'], cwd: '/other', pendingId: 'p-promoting',
         });
         await restartedStore.removePromoting({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         });
         assert.strictEqual(await store.getPromoting({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'p-promoting',
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'p-promoting',
         }), null);
 
         await store.setKnown(known('s-old', now - 2));
@@ -2090,7 +3960,7 @@ async function runTmuxStoreChecks() {
         };
         const queuedSetRecord = known('queued-set', now);
         const queuedLiveIdentity = {
-            identity: { provider: 'kimi', projectKey: 'pk-queued', cwd: '/queued', sessionId: 'queued-live' },
+            identity: { provider: 'kimi', workspaceScopeIdentity: 'pk-queued', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/queued'], cwd: '/queued', sessionId: 'queued-live' },
             backend: 'tmux',
             state: 'active',
             markerPath: '/tmp/queued.done',
@@ -2317,25 +4187,28 @@ async function runTmuxStoreChecks() {
         );
         await legacyReconcileStore.reconcileKnown([{
             identity: {
-                provider: 'codex', projectKey: 'legacy-project', cwd: '', sessionId: 'legacy-live',
+                provider: 'codex', workspaceScopeIdentity: 'legacy-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'legacy-live',
             },
             backend: 'tmux', state: 'active', markerPath: '', runStartedAtMs: 0,
             attached: false,
             tmux: { layout: 'session', sessionName: 'project-steward-s-codex-legacy' },
         }]);
         assert.deepStrictEqual(await legacyReconcileStore.getKnown('codex', 'legacy-live'), {
-            version: 1,
+            version: 2,
             state: 'known',
             provider: 'codex',
             sessionId: 'legacy-live',
-            projectKey: 'legacy-project',
+            workspaceScopeIdentity: 'legacy-project',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
+            cwd: '/work',
             layout: 'session',
             locator: { layout: 'session', sessionName: 'project-steward-s-codex-legacy' },
             lastSeenAtMs: now,
         }, 'legacy managed metadata without a run timestamp must retain a duplicate-prevention hint');
 
         await store.reconcileKnown([{
-            identity: { provider: 'kimi', projectKey: 'pk-live', cwd: '/live', sessionId: 'live' },
+            identity: { provider: 'kimi', workspaceScopeIdentity: 'pk-live', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/live'], cwd: '/live', sessionId: 'live' },
             backend: 'tmux',
             state: 'active',
             markerPath: '/tmp/live.done',
@@ -2343,7 +4216,7 @@ async function runTmuxStoreChecks() {
             attached: false,
             tmux: { layout: 'session', sessionName: 'project-steward-s-kimi-live' },
         }, {
-            identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 'ignored-vscode' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'ignored-vscode' },
             backend: 'vscode',
             state: 'active',
             markerPath: '/tmp/vscode.done',
@@ -2355,7 +4228,7 @@ async function runTmuxStoreChecks() {
         assert.strictEqual(live.layout, 'session');
         assert.strictEqual(await store.getKnown('codex', 'ignored-vscode'), null);
 
-        await store.removePending('p-old');
+        await store.removePending(pendingIdentity(pending('p-old', '2026-07-18T09:58:00Z')));
         await store.removeKnown('kimi', 'live');
         assert.deepStrictEqual((await store.listPending()).map(record => record.pendingId), ['p-new']);
         assert.strictEqual(await store.getKnown('kimi', 'live'), null);
@@ -2368,9 +4241,12 @@ async function runTmuxStoreChecks() {
         };
         const attach = new attachStoreModule.TmuxAttachBindingStore(bindingState);
         const binding = {
-            version: 1,
+            version: 2,
             layout: 'project',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
+            workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'],
+            cwd: '/work',
             sessionName: 'project-steward-p-a',
             windowName: 'ai-codex-a',
             provider: 'codex',
@@ -2380,26 +4256,82 @@ async function runTmuxStoreChecks() {
         attach.set(Promise.resolve(41), binding);
         await attach.flush();
         assert.deepStrictEqual(attach.get(41), binding);
-        assert.deepStrictEqual([...state.keys()], ['aiSessionTmuxAttachProcessBinding.v1.41']);
+        assert.deepStrictEqual([...state.keys()], ['aiSessionTmuxAttachProcessBinding.v2.41']);
+        attach.setRecovery('0123456789abcdef0123456789abcdef', Promise.resolve(61), binding);
+        await attach.flush();
+        assert.deepStrictEqual(
+            attach.getRecovery('0123456789abcdef0123456789abcdef'),
+            { processId: 61, binding }
+        );
+        attach.setRecovery('0123456789abcdef0123456789abcdef', Promise.resolve(62), binding);
+        await attach.flush();
+        assert.strictEqual(attach.get(61), null,
+            'moving a stable attach recovery token must remove its stale process binding');
+        assert.deepStrictEqual(attach.get(62), binding);
+        attach.removeRecovery('0123456789abcdef0123456789abcdef');
+        await attach.flush();
+        assert.strictEqual(attach.get(62), null);
+        assert.strictEqual(attach.getRecovery('0123456789abcdef0123456789abcdef'), null);
+        const legacySessionAttachBinding = { ...binding, layout: 'session' };
+        delete legacySessionAttachBinding.windowName;
+        legacySessionAttachBinding.sessionName = 'project-steward-s-codex-legacy';
+        const readableSessionAttachBinding = {
+            ...legacySessionAttachBinding,
+            sessionName: 'ps-RedDB-Repair-replication-12345678',
+            windowName: 'codex-Repair-replication-12345678',
+        };
+        attach.set(Promise.resolve(42), legacySessionAttachBinding);
+        attach.set(Promise.resolve(43), readableSessionAttachBinding);
+        await attach.flush();
+        assert.deepStrictEqual(attach.get(42), legacySessionAttachBinding,
+            'attach persistence must retain legacy session bindings without windowName');
+        assert.deepStrictEqual(attach.get(43), readableSessionAttachBinding,
+            'attach persistence must round-trip session binding windowName');
+        for (const [processId, invalid] of [
+            [46, { ...binding, pendingId: 'also-pending' }],
+            [47, { ...binding, projectKey: 'legacy' }],
+            [48, { ...binding, unexpected: true }],
+            [49, (() => { const value = { ...binding }; delete value.cwd; return value; })()],
+            [52, { ...legacySessionAttachBinding, windowName: undefined }],
+            [53, { ...readableSessionAttachBinding, unexpected: true }],
+        ]) {
+            state.set(`aiSessionTmuxAttachProcessBinding.v2.${processId}`, invalid);
+            assert.strictEqual(attach.get(processId), null,
+                'v2 attach bindings must reject both IDs, missing fields, legacy fields, and extras');
+            state.delete(`aiSessionTmuxAttachProcessBinding.v2.${processId}`);
+        }
         const minimalBinding = {
-            version: 1,
+            version: 2,
             layout: 'project',
-            projectKey: 'pk',
+            workspaceScopeIdentity: 'pk',
             sessionName: 'project-steward-p-a',
             terminalNamePrefix: 'Project Steward:',
         };
         attach.set(Promise.resolve(44), minimalBinding);
         await attach.flush();
-        assert.deepStrictEqual(attach.get(44), minimalBinding);
+        assert.strictEqual(attach.get(44), null);
         attach.remove(Promise.resolve(44));
         attach.set(Promise.resolve(0), binding);
-        attach.set(Promise.resolve(42), { ...binding, layout: 'session' });
-        attach.set(Promise.resolve(43), { ...binding, windowName: undefined, terminalNamePrefix: '' });
+        attach.set(Promise.resolve(50), { ...binding, layout: 'session', windowName: '' });
+        attach.set(Promise.resolve(51), { ...binding, windowName: undefined, terminalNamePrefix: '' });
         await attach.flush();
-        assert.strictEqual(state.size, 1);
+        assert.strictEqual(state.size, 3);
         attach.remove(Promise.resolve(41));
+        attach.remove(Promise.resolve(42));
+        attach.remove(Promise.resolve(43));
         await attach.flush();
         assert.strictEqual(state.size, 0);
+
+        state.set('aiSessionTmuxAttachProcessBinding.v1.45', {
+            ...binding,
+            version: 1,
+            projectKey: binding.workspaceScopeIdentity,
+            workspaceScopeIdentity: undefined,
+            workspaceNavigationIdentity: undefined,
+            workspaceRootHostPaths: undefined,
+            cwd: undefined,
+        });
+        assert.strictEqual(attach.get(45), null, 'v1 attach bindings must be ignored');
 
         let inside = 0;
         let highestInside = 0;
@@ -2629,11 +4561,10 @@ async function runTmuxStoreChecks() {
     }
 }
 
-// RUNTIME-TMUX-BACKEND-001
 async function runTmuxBackendChecks() {
     const backendModule = require('../out/aiSessions/tmuxRuntimeBackend');
     const backendCollisionIdentity = {
-        provider: 'codex', projectKey: 'backend-collision-project', cwd: '/work',
+        provider: 'codex', workspaceScopeIdentity: 'backend-collision-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
         sessionId: 'backend-collision-session',
     };
     const backendCollisionExpected = new tmuxLayout.SessionTmuxLayout()
@@ -2671,7 +4602,7 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(backendCollisionMutationCalls, 0,
         'backend forced refresh collision guard must run before any tmux mutation/provider dispatch');
     const backendLifecycleIdentity = {
-        provider: 'codex', projectKey: 'backend-lifecycle-project', cwd: '/work',
+        provider: 'codex', workspaceScopeIdentity: 'backend-lifecycle-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
         sessionId: 'backend-lifecycle-session',
     };
     const backendLifecycleBlocker = {
@@ -2715,43 +4646,349 @@ async function runTmuxBackendChecks() {
     });
     const projectBackend = new backendModule.TmuxRuntimeBackend(projectHarness.dependencies);
     const firstProject = await projectBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
-        projectName: 'App',
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
+        projectName: 'RedDB DTS Dual Active',
+        sessionName: 'Repair replication',
         terminalName: 'AI Sessions: App',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/m1' },
     }, 'project');
     const secondProject = await projectBackend.ensureResume({
-        identity: { provider: 'claude', projectKey: 'pk', cwd: '/work', sessionId: 's2' },
-        projectName: 'App',
+        identity: { provider: 'claude', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's2' },
+        projectName: 'Renamed Card',
+        sessionName: 'Audit failover',
         terminalName: 'AI Sessions: App',
         launch: { executable: 'claude', args: ['--resume', 's2'], markerPath: '/tmp/m2' },
     }, 'project');
+    assert.match(firstProject.tmux.sessionName, /^ps-RedDB-DTS-Dual-Active-[0-9a-f]{8}$/);
+    assert.match(firstProject.tmux.windowName, /^codex-Repair-replication-[0-9a-f]{8}$/);
+    assert.strictEqual(secondProject.tmux.sessionName, firstProject.tmux.sessionName,
+        'a renamed project card must reuse the workspace-owned creation-time container');
+    assert.match(secondProject.tmux.windowName, /^claude-Audit-failover-[0-9a-f]{8}$/);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-session').length, 1);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 2);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'configure-window').length, 2);
     const firstProjectRequest = {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
-        projectName: 'App', terminalName: 'AI Sessions: App',
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
+        projectName: 'Renamed Card', sessionName: 'Changed display alias', terminalName: 'AI Sessions: App',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/m1' },
     };
-    await projectBackend.ensureResume(firstProjectRequest, 'project');
+    const reusedFirstProject = await projectBackend.ensureResume(firstProjectRequest, 'project');
+    assert.deepStrictEqual(reusedFirstProject.tmux, firstProject.tmux,
+        'an existing identity must reuse its actual creation-time locator after display changes');
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-session').length, 1);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 2);
     assert.strictEqual(projectHarness.terminals.length, 1);
-    assert.deepStrictEqual(projectHarness.terminals[0].creationOptions, {
-        name: 'Project Steward: App [tmux]',
-        shellPath: '/opt/tmux',
-        shellArgs: ['attach-session', '-t', firstProject.tmux.sessionName],
-        env: { TMUX: null },
-    });
+    assert.strictEqual(projectHarness.terminals[0].creationOptions.name,
+        'Project Steward: App [tmux]');
+    assert.strictEqual(projectHarness.terminals[0].creationOptions.shellPath, '/opt/tmux');
+    assert.deepStrictEqual(projectHarness.terminals[0].creationOptions.shellArgs,
+        ['attach-session', '-t', firstProject.tmux.sessionName]);
+    assert.strictEqual(projectHarness.terminals[0].creationOptions.env.TMUX, null);
+    assert.match(projectHarness.terminals[0].creationOptions.env.PROJECT_STEWARD_TMUX_ATTACH_ID,
+        /^[0-9a-f]{32}$/,
+        'managed tmux terminals need a stable recovery token independent of PID and title');
     const firstAttachIndex = projectHarness.operations.findIndex(item => item.type === 'create-terminal');
     assert.ok(projectHarness.operations.slice(0, firstAttachIndex).some(item => item.type === 'select-window'));
     assert.strictEqual(firstProject.terminal, projectHarness.terminals[0]);
     assert.strictEqual(secondProject.terminal, projectHarness.terminals[0]);
     assert.strictEqual(projectBackend.getActive().length, 2);
+
+    const ownershipConflictHarness = createTmuxBackendHarness();
+    for (const [index, sessionName] of ['ps-first-owned-11111111', 'ps-second-owned-22222222'].entries()) {
+        ownershipConflictHarness.windows.push({
+            sessionName, windowName: 'project-steward', windowId: `@ownership-${index}`,
+            active: false,
+            sessionMetadata: {
+                managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'owned-conflict',
+            },
+            windowMetadata: {}, metadata: {},
+        });
+    }
+    const ownershipConflictBackend = new backendModule.TmuxRuntimeBackend(
+        ownershipConflictHarness.dependencies
+    );
+    await assert.rejects(ownershipConflictBackend.ensureResume({
+        identity: {
+            provider: 'codex', workspaceScopeIdentity: 'owned-conflict',
+            workspaceNavigationIdentity: 'nav-owned-conflict', workspaceRootHostPaths: ['/work'],
+            cwd: '/work', sessionId: 'owned-conflict-session',
+        },
+        projectName: 'Current Card', sessionName: 'Do not dispatch', terminalName: 'Conflict',
+        launch: { executable: 'codex', args: ['resume', 'owned-conflict-session'] },
+    }, 'project'), error => error && error.name === 'AiSessionRuntimeConflictError'
+        && error.conflicts.length === 2
+        && error.conflicts.map(runtime => runtime.tmux.sessionName).sort().join(',')
+            === 'ps-first-owned-11111111,ps-second-owned-22222222');
+    assert.strictEqual(ownershipConflictHarness.operations.some(operation =>
+        ['new-session', 'new-window', 'store-ambiguous', 'session-options', 'window-options']
+            .includes(operation.type)), false,
+    'ambiguous workspace ownership must fail before provider dispatch or tmux mutation');
+
+    const renamedContainerIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'renamed-container',
+        workspaceNavigationIdentity: 'nav-renamed-container', workspaceRootHostPaths: ['/work'],
+        cwd: '/work', sessionId: 'renamed-container-runtime',
+    };
+    const renamedContainerPreferred = tmuxNaming.buildReadableTmuxLocator(
+        renamedContainerIdentity, 'project', {
+            projectName: 'Original Card', sessionName: 'Repair ownership',
+        }
+    );
+    const renamedContainerSuffix = renamedContainerPreferred.sessionName.match(/([0-9a-f]{8})$/)[1];
+    const renamedContainerMetadata = {
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'renamed-container',
+    };
+    const seedProjectContainer = (harness, sessionName, index = 0) => {
+        harness.windows.push({
+            sessionName, windowName: 'project-steward', windowId: `@renamed-container-${index}`,
+            active: false, sessionMetadata: { ...renamedContainerMetadata },
+            windowMetadata: {}, metadata: {},
+        });
+    };
+    const renamedContainerRequest = {
+        identity: renamedContainerIdentity,
+        projectName: 'Current Card', sessionName: 'Repair ownership', terminalName: 'Ownership',
+        launch: { executable: 'codex', args: ['resume', 'renamed-container-runtime'] },
+    };
+    const mutationTypes = new Set([
+        'store-ambiguous', 'new-session', 'new-window', 'session-options', 'window-options',
+    ]);
+    for (const invalidSessionName of [
+        'externally-renamed-without-suffix',
+        `ps-Wrong-Suffix-00000000`,
+        `ps-Bad:Card-${renamedContainerSuffix}`,
+        `ps-Bad\nCard-${renamedContainerSuffix}`,
+        `ps-${'x'.repeat(100)}-${renamedContainerSuffix}`,
+        `ps-Ｃard-${renamedContainerSuffix}`,
+        `ps--${renamedContainerSuffix}`,
+    ]) {
+        const invalidContainerHarness = createTmuxBackendHarness();
+        seedProjectContainer(invalidContainerHarness, invalidSessionName);
+        await assert.rejects(new backendModule.TmuxRuntimeBackend(
+            invalidContainerHarness.dependencies
+        ).ensureResume(renamedContainerRequest, 'project'), error =>
+            error && error.name === 'AiSessionRuntimeConflictError'
+            && error.conflicts.length === 1
+            && error.conflicts[0].tmux.sessionName === invalidSessionName);
+        assert.strictEqual(invalidContainerHarness.operations.some(operation =>
+            mutationTypes.has(operation.type)), false,
+        `invalid owned container ${JSON.stringify(invalidSessionName)} must fail before dispatch/mutation`);
+    }
+
+    for (const validSessionName of [
+        `ps-Old-Card-${renamedContainerSuffix}`,
+        new tmuxLayout.ProjectTmuxLayout().getLocator(renamedContainerIdentity).sessionName,
+    ]) {
+        const validContainerHarness = createTmuxBackendHarness();
+        seedProjectContainer(validContainerHarness, validSessionName);
+        const reused = await new backendModule.TmuxRuntimeBackend(
+            validContainerHarness.dependencies
+        ).ensureResume(renamedContainerRequest, 'project');
+        assert.strictEqual(reused.tmux.sessionName, validSessionName,
+            'canonical readable and legacy project containers must remain reusable');
+        assert.strictEqual(validContainerHarness.operations.filter(operation =>
+            operation.type === 'new-session').length, 0);
+        assert.strictEqual(validContainerHarness.operations.filter(operation =>
+            operation.type === 'new-window').length, 1);
+    }
+
+    const mixedOwnershipHarness = createTmuxBackendHarness();
+    const validOwnedSession = `ps-Old-Card-${renamedContainerSuffix}`;
+    const invalidOwnedSession = 'externally-renamed-without-suffix';
+    seedProjectContainer(mixedOwnershipHarness, validOwnedSession, 1);
+    seedProjectContainer(mixedOwnershipHarness, invalidOwnedSession, 2);
+    await assert.rejects(new backendModule.TmuxRuntimeBackend(
+        mixedOwnershipHarness.dependencies
+    ).ensureResume(renamedContainerRequest, 'project'), error =>
+        error && error.name === 'AiSessionRuntimeConflictError'
+        && error.conflicts.length === 2
+        && error.conflicts.map(runtime => runtime.tmux.sessionName).sort().join(',')
+            === [invalidOwnedSession, validOwnedSession].sort().join(','));
+    assert.strictEqual(mixedOwnershipHarness.operations.some(operation =>
+        mutationTypes.has(operation.type)), false,
+    'one valid plus one invalid owned container must fail before dispatch/mutation');
+
+    const createTargetDefenseHarness = createTmuxBackendHarness();
+    seedProjectContainer(createTargetDefenseHarness, invalidOwnedSession);
+    let defenseProviderDispatches = 0;
+    await assert.rejects(new backendModule.TmuxRuntimeBackend(
+        createTargetDefenseHarness.dependencies
+    ).createTarget('project', {
+        ...renamedContainerPreferred, sessionName: invalidOwnedSession,
+    }, '/work', 'codex resume', renamedContainerIdentity, async () => {
+        defenseProviderDispatches++;
+    }), /unverified target/);
+    assert.strictEqual(defenseProviderDispatches, 0,
+        'createTarget must independently reject an invalid workspace session before dispatch');
+    assert.strictEqual(createTargetDefenseHarness.operations.some(operation =>
+        mutationTypes.has(operation.type)), false,
+    'createTarget defense must run before project window or metadata mutation');
+    const verifiedFocusStart = projectHarness.operations.length;
     await projectBackend.focus(firstProject);
+    const verifiedFocusOperations = projectHarness.operations.slice(verifiedFocusStart);
+    assert.ok(verifiedFocusOperations.findIndex(item => item.type === 'get-target-window')
+        < verifiedFocusOperations.findIndex(item => item.type === 'select-window'),
+    'tmux ownership must be live-verified before selecting the target');
     assert.deepStrictEqual(projectHarness.operations.filter(item => item.type === 'select-window').slice(-1)[0].locator,
         firstProject.tmux);
+
+    const validTargetMetadata = {
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'pk',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
+        provider: 'codex', sessionId: 's1', createdAt: '2026-07-18T10:00:00.000Z', marker: '/tmp/m1',
+    };
+    const validTargetWindow = {
+        sessionName: firstProject.tmux.sessionName,
+        windowName: firstProject.tmux.windowName,
+        windowId: '@777',
+        metadata: validTargetMetadata,
+    };
+    for (const target of [
+        null,
+        { ...validTargetWindow, metadata: { ...validTargetMetadata, workspaceScopeIdentity: 'other' } },
+        { ...validTargetWindow, metadata: { ...validTargetMetadata, provider: 'kimi' } },
+        { ...validTargetWindow, metadata: { ...validTargetMetadata, sessionId: 'other' } },
+        { ...validTargetWindow, windowName: 'other-window' },
+        { ...validTargetWindow, metadata: { managed: '1', version: '2', layout: 'project' } },
+    ]) {
+        projectHarness.setTargetWindow(target);
+        const selectCount = projectHarness.operations.filter(item => item.type === 'select-window').length;
+        const terminalCount = projectHarness.terminals.length;
+        await assert.rejects(projectBackend.focus(firstProject), error =>
+            error && error.name === 'AiSessionRuntimeTargetChangedError');
+        assert.strictEqual(projectHarness.operations.filter(item => item.type === 'select-window').length,
+            selectCount, 'a changed target must not be selected');
+        assert.strictEqual(projectHarness.terminals.length, terminalCount,
+            'a changed target must not create an attach terminal');
+    }
+
+    const readableFocusIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'readable-focus',
+        workspaceNavigationIdentity: 'nav-readable-focus', workspaceRootHostPaths: ['/work/readable-focus'],
+        cwd: '/work/readable-focus', sessionId: 'readable-focus-session',
+    };
+    const readableFocusLocator = tmuxNaming.buildReadableTmuxLocator(
+        readableFocusIdentity, 'session', { projectName: 'RedDB', sessionName: 'Repair replication' }
+    );
+    const readableFocusMetadata = {
+        managed: '1', version: '2', layout: 'session',
+        workspaceScopeIdentity: readableFocusIdentity.workspaceScopeIdentity,
+        workspaceNavigationIdentity: readableFocusIdentity.workspaceNavigationIdentity,
+        workspaceRootHostPaths: JSON.stringify(readableFocusIdentity.workspaceRootHostPaths),
+        cwd: readableFocusIdentity.cwd, provider: readableFocusIdentity.provider,
+        sessionId: readableFocusIdentity.sessionId, createdAt: '2026-07-18T10:00:00.000Z',
+    };
+    const readableFocusRuntime = {
+        identity: readableFocusIdentity, backend: 'tmux', state: 'active', markerPath: '',
+        runStartedAtMs: Date.parse(readableFocusMetadata.createdAt), attached: false,
+        tmux: readableFocusLocator,
+    };
+    const readableFocusHarness = createTmuxBackendHarness();
+    const readableFocusBackend = new backendModule.TmuxRuntimeBackend(readableFocusHarness.dependencies);
+    readableFocusHarness.setTargetWindow({
+        sessionName: readableFocusLocator.sessionName,
+        windowName: readableFocusLocator.windowName,
+        windowId: '@readable-focus', metadata: readableFocusMetadata,
+    });
+    await readableFocusBackend.focus(readableFocusRuntime);
+    const readableFocusBinding = readableFocusHarness.attachBindings.get(
+        await readableFocusHarness.terminals[0].processId
+    );
+    assert.strictEqual(readableFocusBinding.windowName, readableFocusLocator.windowName,
+        'session attach bindings must preserve the discovered readable windowName');
+    readableFocusHarness.setTargetWindow({
+        sessionName: readableFocusLocator.sessionName,
+        windowName: 'other-window', windowId: '@changed-readable-focus',
+        metadata: readableFocusMetadata,
+    });
+    await assert.rejects(readableFocusBackend.focus(readableFocusRuntime), error =>
+        error && error.name === 'AiSessionRuntimeTargetChangedError',
+    'readable session target verification must compare the actual windowName');
+
+    const legacyFocusIdentity = {
+        ...readableFocusIdentity, workspaceScopeIdentity: 'legacy-focus',
+        workspaceNavigationIdentity: 'nav-legacy-focus', sessionId: 'legacy-focus-session',
+    };
+    const legacyFocusLocator = new tmuxLayout.SessionTmuxLayout().getLocator(legacyFocusIdentity);
+    const legacyFocusHarness = createTmuxBackendHarness();
+    const legacyFocusBackend = new backendModule.TmuxRuntimeBackend(legacyFocusHarness.dependencies);
+    legacyFocusHarness.setTargetWindow({
+        sessionName: legacyFocusLocator.sessionName, windowName: 'renamed-legacy-window',
+        windowId: '@legacy-focus', metadata: {
+            ...readableFocusMetadata,
+            workspaceScopeIdentity: legacyFocusIdentity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: legacyFocusIdentity.workspaceNavigationIdentity,
+            sessionId: legacyFocusIdentity.sessionId,
+        },
+    });
+    await legacyFocusBackend.focus({
+        ...readableFocusRuntime, identity: legacyFocusIdentity, tmux: legacyFocusLocator,
+    });
+
+    for (const [label, identity, locator, expectedWindowName] of [
+        ['readable', readableFocusIdentity, readableFocusLocator, readableFocusLocator.windowName],
+        ['legacy', legacyFocusIdentity, legacyFocusLocator, 'ai-session'],
+    ]) {
+        const metadataHarness = createTmuxBackendHarness();
+        metadataHarness.windows.push({
+            sessionName: locator.sessionName, windowName: expectedWindowName,
+            windowId: `@metadata-${label}`, active: false,
+            sessionMetadata: {}, windowMetadata: {}, metadata: {},
+        });
+        const metadataBackend = new backendModule.TmuxRuntimeBackend(metadataHarness.dependencies);
+        await metadataBackend.writePendingMetadata(
+            identity, locator, '2026-07-18T10:00:00.000Z', ''
+        );
+        await metadataBackend.verifyPendingMetadata(
+            identity, locator, '2026-07-18T10:00:00.000Z', ''
+        );
+        assert.ok(metadataHarness.operations.some(operation =>
+            operation.type === 'window-options' && operation.windowName === expectedWindowName),
+        `${label} session metadata writes must use the locator window fallback`);
+        assert.ok(metadataHarness.operations.some(operation =>
+            operation.type === 'get-window-options' && operation.windowName === expectedWindowName),
+        `${label} session metadata reads must use the locator window fallback`);
+    }
+    const transitionPendingIdentity = {
+        provider: 'kimi', workspaceScopeIdentity: 'readable-transition',
+        workspaceNavigationIdentity: 'nav-readable-transition',
+        workspaceRootHostPaths: ['/work/readable-transition'], cwd: '/work/readable-transition',
+        pendingId: 'readable-transition-pending',
+    };
+    const transitionFinalIdentity = {
+        ...transitionPendingIdentity, pendingId: undefined, sessionId: 'readable-transition-final',
+    };
+    const transitionFinalLocator = tmuxNaming.buildReadableTmuxLocator(
+        transitionFinalIdentity, 'session', { projectName: 'RedDB', sessionName: 'Transition' }
+    );
+    const transitionHarness = createTmuxBackendHarness();
+    transitionHarness.windows.push({
+        sessionName: transitionFinalLocator.sessionName,
+        windowName: transitionFinalLocator.windowName,
+        windowId: '@readable-transition', active: false,
+        sessionMetadata: {
+            managed: '1', version: '2', layout: 'session',
+            workspaceScopeIdentity: transitionFinalIdentity.workspaceScopeIdentity,
+            workspaceNavigationIdentity: transitionFinalIdentity.workspaceNavigationIdentity,
+            workspaceRootHostPaths: JSON.stringify(transitionFinalIdentity.workspaceRootHostPaths),
+            cwd: transitionFinalIdentity.cwd, provider: transitionFinalIdentity.provider,
+            sessionId: transitionFinalIdentity.sessionId, createdAt: '2026-07-18T10:00:00.000Z',
+        },
+        windowMetadata: { managed: '1', version: '2', layout: 'session' },
+        metadata: {},
+    });
+    const transitionBackend = new backendModule.TmuxRuntimeBackend(transitionHarness.dependencies);
+    assert.strictEqual(await transitionBackend.promotionTransitionMatches({
+        version: 2, state: 'promoting', ...transitionPendingIdentity,
+        createdAt: '2026-07-18T10:00:00.000Z', markerPath: '',
+        finalSessionId: transitionFinalIdentity.sessionId, layout: 'session',
+        finalLocator: transitionFinalLocator,
+    }, transitionFinalIdentity), true);
+    assert.ok(transitionHarness.operations.some(operation =>
+        operation.type === 'get-window-options'
+        && operation.windowName === transitionFinalLocator.windowName),
+    'session promotion metadata reads must use the actual locator windowName');
+    projectHarness.setTargetWindow(undefined);
     await projectBackend.detach(firstProject);
     assert.strictEqual(projectHarness.terminals[0].disposed, true);
     assert.strictEqual(projectBackend.getActive().length, 2);
@@ -2833,10 +5070,12 @@ async function runTmuxBackendChecks() {
     const projectManagedRows = projectHarness.windows.filter(row => row.windowMetadata.provider);
     assert.strictEqual(projectManagedRows.length, 2);
     assert.deepStrictEqual(projectManagedRows[0].sessionMetadata, {
-        managed: '1', version: '1', layout: 'project', projectKey: 'pk',
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'pk',
     });
     assert.deepStrictEqual(projectManagedRows[0].windowMetadata, {
-        managed: '1', version: '1', layout: 'project', provider: 'codex', sessionId: 's1',
+        managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'pk',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
+        provider: 'codex', sessionId: 's1',
         createdAt: '2026-07-18T10:00:00.000Z', marker: '/tmp/m1',
     });
     assert.ok(projectHarness.operations.findIndex(item => item.type === 'availability')
@@ -2847,12 +5086,12 @@ async function runTmuxBackendChecks() {
     const concurrentProjectBackendB = new backendModule.TmuxRuntimeBackend(concurrentProjectHarness.dependencies);
     await Promise.all([
         concurrentProjectBackendA.ensureResume({
-            identity: { provider: 'codex', projectKey: 'concurrent', cwd: '/work', sessionId: 'a' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'concurrent', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'a' },
             projectName: 'App', terminalName: 'AI Sessions: Concurrent',
             launch: { executable: 'codex', args: ['resume', 'a'] },
         }, 'project'),
         concurrentProjectBackendB.ensureResume({
-            identity: { provider: 'claude', projectKey: 'concurrent', cwd: '/work', sessionId: 'b' },
+            identity: { provider: 'claude', workspaceScopeIdentity: 'concurrent', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'b' },
             projectName: 'App', terminalName: 'AI Sessions: Concurrent',
             launch: { executable: 'claude', args: ['--resume', 'b'] },
         }, 'project'),
@@ -2862,11 +5101,15 @@ async function runTmuxBackendChecks() {
 
     const projectOwnershipHarness = createTmuxBackendHarness();
     const requestedOwnershipIdentity = {
-        provider: 'codex', projectKey: 'requested-project', cwd: '/work', sessionId: 'requested-session',
+        provider: 'codex', workspaceScopeIdentity: 'requested-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'requested-session',
     };
-    const requestedOwnershipLocator = new tmuxLayout.ProjectTmuxLayout().getLocator(requestedOwnershipIdentity);
+    const requestedOwnershipLocator = tmuxNaming.buildReadableTmuxLocator(
+        requestedOwnershipIdentity, 'project', {
+            projectName: 'App', sessionName: 'requested-session',
+        }
+    );
     const wrongOwnershipRuntime = {
-        identity: { provider: 'claude', projectKey: 'different-project', cwd: '', sessionId: 'other-session' },
+        identity: { provider: 'claude', workspaceScopeIdentity: 'different-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'other-session' },
         backend: 'tmux', state: 'active', markerPath: '', runStartedAtMs: 0, attached: false,
         tmux: {
             layout: 'project', sessionName: requestedOwnershipLocator.sessionName, windowName: 'ai-claude-other',
@@ -2876,10 +5119,10 @@ async function runTmuxBackendChecks() {
         sessionName: requestedOwnershipLocator.sessionName,
         windowName: 'ai-claude-other', windowId: '@hash-collision', active: true,
         sessionMetadata: {
-            managed: '1', version: '1', layout: 'project', projectKey: 'different-project',
+            managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'different-project',
         },
         windowMetadata: {
-            managed: '1', version: '1', layout: 'project', provider: 'claude', sessionId: 'other-session',
+            managed: '1', version: '2', layout: 'project', provider: 'claude', sessionId: 'other-session',
         },
         metadata: {},
     });
@@ -2903,7 +5146,7 @@ async function runTmuxBackendChecks() {
 
     const lifecycleAckHarness = createTmuxBackendHarness();
     const lifecycleAckIdentity = {
-        provider: 'codex', projectKey: 'lifecycle-ack', cwd: '/work', sessionId: 'ack-then-resume',
+        provider: 'codex', workspaceScopeIdentity: 'lifecycle-ack', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'ack-then-resume',
     };
     let lifecycleAckBlockers = [{
         identity: { ...lifecycleAckIdentity }, backend: 'tmux', state: 'completed',
@@ -2924,6 +5167,13 @@ async function runTmuxBackendChecks() {
     await assert.rejects(lifecycleAckBackend.ensureResume(lifecycleAckRequest, 'session'),
         error => error && error.name === 'AiSessionRuntimeLifecycleBlockedError');
     assert.strictEqual(lifecycleAckHarness.operations.some(item => item.type === 'new-session'), false);
+    lifecycleAckBlockers = [{
+        ...lifecycleAckBlockers[0],
+        identity: { ...lifecycleAckBlockers[0].identity, workspaceScopeIdentity: 'other-scope' },
+    }];
+    await lifecycleAckBackend.ensureResume(lifecycleAckRequest, 'session');
+    assert.strictEqual(lifecycleAckHarness.operations.filter(item => item.type === 'new-session').length, 1,
+        'a lifecycle blocker in another workspace scope must not block this scope');
     lifecycleAckBlockers = [];
     await lifecycleAckBackend.ensureResume(lifecycleAckRequest, 'session');
     assert.strictEqual(lifecycleAckHarness.operations.filter(item => item.type === 'new-session').length, 1);
@@ -2933,33 +5183,47 @@ async function runTmuxBackendChecks() {
     const sessionHarness = createTmuxBackendHarness();
     const sessionBackend = new backendModule.TmuxRuntimeBackend(sessionHarness.dependencies);
     await sessionBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
-        projectName: 'App', terminalName: 'Codex: s1',
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
+        projectName: 'RedDB DTS Dual Active', sessionName: 'Repair replication', terminalName: 'Codex: s1',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/s1' },
     }, 'session');
     await sessionBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's2' },
-        projectName: 'App', terminalName: 'Codex: s2',
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's2' },
+        projectName: 'RedDB DTS Dual Active', sessionName: 'Audit failover', terminalName: 'Codex: s2',
         launch: { executable: 'codex', args: ['resume', 's2'], markerPath: '/tmp/s2' },
     }, 'session');
     assert.strictEqual(sessionHarness.operations.filter(item => item.type === 'new-session').length, 2);
     assert.strictEqual(sessionHarness.operations.filter(item => item.type === 'new-window').length, 0);
+    const firstSessionCreate = sessionHarness.operations.find(item => item.type === 'new-session');
+    assert.match(firstSessionCreate.sessionName,
+        /^ps-RedDB-DTS-Dual-Active-Repair-replication-[0-9a-f]{8}$/);
+    assert.match(firstSessionCreate.windowName, /^codex-Repair-replication-[0-9a-f]{8}$/);
+    assert.deepStrictEqual(sessionHarness.operations.find(item => item.type === 'configure-window'), {
+        type: 'configure-window',
+        sessionName: firstSessionCreate.sessionName,
+        windowName: firstSessionCreate.windowName,
+    });
+    assert.deepStrictEqual(sessionHarness.operations.find(item => item.type === 'select-window').locator, {
+        layout: 'session', sessionName: firstSessionCreate.sessionName,
+        windowName: firstSessionCreate.windowName,
+    }, 'session creation focus must use the actual readable window target');
     assert.strictEqual(sessionHarness.terminals.length, 2);
     assert.ok(sessionHarness.terminals.every(terminal => terminal.name.endsWith(' [tmux]')),
         'initial session-layout viewers must use the same tmux-specific naming as reattach');
     const sessionManagedRow = sessionHarness.windows[0];
     assert.deepStrictEqual(sessionManagedRow.sessionMetadata, {
-        managed: '1', version: '1', layout: 'session', projectKey: 'pk', provider: 'codex',
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'pk', provider: 'codex',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
         sessionId: 's1', createdAt: '2026-07-18T10:00:00.000Z', marker: '/tmp/s1',
     });
     assert.deepStrictEqual(sessionManagedRow.windowMetadata, {
-        managed: '1', version: '1', layout: 'session',
+        managed: '1', version: '2', layout: 'session',
     });
 
     const sessionFocusHarness = createTmuxBackendHarness();
     const sessionFocusBackend = new backendModule.TmuxRuntimeBackend(sessionFocusHarness.dependencies);
     const sessionFocusRuntime = await sessionFocusBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'session-focus', cwd: '/work', sessionId: 'sf1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'session-focus', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'sf1' },
         projectName: 'App', terminalName: 'Codex: sf1',
         launch: { executable: 'codex', args: ['resume', 'sf1'], markerPath: '/tmp/sf1' },
     }, 'session');
@@ -2994,8 +5258,8 @@ async function runTmuxBackendChecks() {
         const invalidBackend = new backendModule.TmuxRuntimeBackend(invalidHarness.dependencies);
         await assert.rejects(invalidBackend.ensurePending({
             identity: {
-                provider: 'codex', projectKey: 'invalid-pending', cwd: '/work',
-                pendingId: invalidCase.label,
+                provider: 'codex', workspaceScopeIdentity: 'invalid-pending', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
+                pendingId: invalidCase.label.replace(/ /g, '-'),
             },
             projectName: 'App', terminalName: 'Codex: Invalid',
             createdAt: invalidCase.createdAt,
@@ -3011,12 +5275,12 @@ async function runTmuxBackendChecks() {
     const invalidLayoutHarness = createTmuxBackendHarness();
     const invalidLayoutBackend = new backendModule.TmuxRuntimeBackend(invalidLayoutHarness.dependencies);
     await assert.rejects(invalidLayoutBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 'bad-layout' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'bad-layout' },
         projectName: 'App', terminalName: 'Codex: Invalid Layout',
         launch: { executable: 'codex', args: ['resume', 'bad-layout'] },
     }, 'invalid'), /layout/i);
     await assert.rejects(invalidLayoutBackend.ensurePending({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'bad-layout' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'bad-layout' },
         projectName: 'App', terminalName: 'Codex: Invalid Layout',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'] },
@@ -3026,27 +5290,27 @@ async function runTmuxBackendChecks() {
     const invalidDispatchCases = [
         {
             label: 'cwd nul',
-            identity: { provider: 'codex', projectKey: 'invalid-dispatch', cwd: '/work\0bad', sessionId: 's1' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'invalid-dispatch', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work\0bad'], cwd: '/work\0bad', sessionId: 's1' },
             launch: { executable: 'codex', args: ['resume', 's1'] },
         },
         {
             label: 'executable nul',
-            identity: { provider: 'codex', projectKey: 'invalid-dispatch', cwd: '/work', sessionId: 's2' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'invalid-dispatch', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's2' },
             launch: { executable: 'codex\0bad', args: ['resume', 's2'] },
         },
         {
             label: 'argument nul',
-            identity: { provider: 'codex', projectKey: 'invalid-dispatch', cwd: '/work', sessionId: 's3' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'invalid-dispatch', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's3' },
             launch: { executable: 'codex', args: ['resume', 's3\0bad'] },
         },
         {
             label: 'launch cwd nul',
-            identity: { provider: 'codex', projectKey: 'invalid-dispatch', cwd: '/work', sessionId: 's4' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'invalid-dispatch', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's4' },
             launch: { executable: 'codex', args: ['resume', 's4'], cwd: '/work\0bad' },
         },
         {
             label: 'marker nul',
-            identity: { provider: 'codex', projectKey: 'invalid-dispatch', cwd: '/work', sessionId: 's5' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'invalid-dispatch', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's5' },
             launch: { executable: 'codex', args: ['resume', 's5'], markerPath: '/tmp/bad\0marker' },
         },
     ];
@@ -3071,7 +5335,7 @@ async function runTmuxBackendChecks() {
     });
     const oversizedArgsHarness = createTmuxBackendHarness();
     await assert.rejects(new backendModule.TmuxRuntimeBackend(oversizedArgsHarness.dependencies).ensureResume({
-        identity: { provider: 'codex', projectKey: 'oversized-args', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'oversized-args', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: Oversized Args',
         launch: { executable: 'codex', args: oversizedArgs },
     }, 'session'), /too many provider launch arguments/);
@@ -3082,7 +5346,7 @@ async function runTmuxBackendChecks() {
     sparseArgs[1] = 's1';
     const sparseArgsHarness = createTmuxBackendHarness();
     await assert.rejects(new backendModule.TmuxRuntimeBackend(sparseArgsHarness.dependencies).ensureResume({
-        identity: { provider: 'codex', projectKey: 'sparse-args', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'sparse-args', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: Sparse Args',
         launch: { executable: 'codex', args: sparseArgs },
     }, 'session'), /dense provider launch arguments/);
@@ -3100,7 +5364,7 @@ async function runTmuxBackendChecks() {
     const oversizedExclusionsHarness = createTmuxBackendHarness();
     await assert.rejects(new backendModule.TmuxRuntimeBackend(oversizedExclusionsHarness.dependencies).ensurePending({
         identity: {
-            provider: 'kimi', projectKey: 'oversized-exclusions', cwd: '/work', pendingId: 'pending',
+            provider: 'kimi', workspaceScopeIdentity: 'oversized-exclusions', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending',
         },
         projectName: 'App', terminalName: 'Kimi: Oversized Exclusions',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: oversizedExclusions,
@@ -3113,7 +5377,7 @@ async function runTmuxBackendChecks() {
     sparseExclusions[1] = 'old';
     const sparseExclusionsHarness = createTmuxBackendHarness();
     await assert.rejects(new backendModule.TmuxRuntimeBackend(sparseExclusionsHarness.dependencies).ensurePending({
-        identity: { provider: 'kimi', projectKey: 'sparse-exclusions', cwd: '/work', pendingId: 'pending' },
+        identity: { provider: 'kimi', workspaceScopeIdentity: 'sparse-exclusions', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending' },
         projectName: 'App', terminalName: 'Kimi: Sparse Exclusions',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: sparseExclusions,
         launch: { executable: 'kimi', args: ['new'] },
@@ -3128,8 +5392,8 @@ async function runTmuxBackendChecks() {
         get identity() {
             switchingIdentityReads++;
             return switchingIdentityReads === 1
-                ? { provider: 'codex', projectKey: 'single-read-container', cwd: '/work', sessionId: 'stable' }
-                : { provider: 'codex', projectKey: 'switched-container', cwd: '/changed', sessionId: 'changed' };
+                ? { provider: 'codex', workspaceScopeIdentity: 'single-read-container', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'stable' }
+                : { provider: 'codex', workspaceScopeIdentity: 'switched-container', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/changed'], cwd: '/changed', sessionId: 'changed' };
         },
         projectName: 'App', terminalName: 'Codex: Single Read Container',
         get launch() {
@@ -3144,7 +5408,7 @@ async function runTmuxBackendChecks() {
     ).ensureResume(switchingContainerRequest, 'session');
     assert.strictEqual(switchingIdentityReads, 1);
     assert.strictEqual(switchingLaunchReads, 1);
-    assert.strictEqual(switchingContainerRuntime.identity.projectKey, 'single-read-container');
+    assert.strictEqual(switchingContainerRuntime.identity.workspaceScopeIdentity, 'single-read-container');
     assert.strictEqual(switchingContainerRuntime.identity.sessionId, 'stable');
     const switchingContainerCreate = switchingContainerHarness.operations.find(item => item.type === 'new-session');
     assert.strictEqual(switchingContainerCreate.cwd, '/work');
@@ -3152,7 +5416,7 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(switchingContainerCreate.command.includes('changed'), false);
 
     const siblingMutationIdentity = {
-        provider: 'codex', projectKey: 'sibling-stable', cwd: '/work', sessionId: 'sibling-stable',
+        provider: 'codex', workspaceScopeIdentity: 'sibling-stable', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'sibling-stable',
     };
     const siblingMutationArgs = ['resume', 'sibling-stable'];
     const siblingMutationHarness = createTmuxBackendHarness();
@@ -3161,7 +5425,7 @@ async function runTmuxBackendChecks() {
     ).ensureResume({
         identity: siblingMutationIdentity,
         get projectName() {
-            siblingMutationIdentity.projectKey = 'sibling-mutated';
+            siblingMutationIdentity.workspaceScopeIdentity = 'sibling-mutated';
             return 'App';
         },
         terminalName: 'Codex: Sibling Mutation',
@@ -3174,7 +5438,7 @@ async function runTmuxBackendChecks() {
             },
         },
     }, 'session');
-    assert.strictEqual(siblingMutationRuntime.identity.projectKey, 'sibling-stable');
+    assert.strictEqual(siblingMutationRuntime.identity.workspaceScopeIdentity, 'sibling-stable');
     const siblingMutationCreate = siblingMutationHarness.operations.find(item => item.type === 'new-session');
     assert.ok(siblingMutationCreate.command.includes('sibling-stable'));
     assert.strictEqual(siblingMutationCreate.command.includes('sibling-mutated'), false);
@@ -3193,7 +5457,7 @@ async function runTmuxBackendChecks() {
     const switchingLengthRuntime = await new backendModule.TmuxRuntimeBackend(
         switchingLengthHarness.dependencies
     ).ensureResume({
-        identity: { provider: 'codex', projectKey: 'single-read-length', cwd: '/work', sessionId: 'stable-length' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'single-read-length', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'stable-length' },
         projectName: 'App', terminalName: 'Codex: Single Read Length',
         launch: { executable: 'codex', args: switchingLengthArgs },
     }, 'session');
@@ -3215,7 +5479,7 @@ async function runTmuxBackendChecks() {
     const switchingElementHarness = createTmuxBackendHarness();
     await new backendModule.TmuxRuntimeBackend(switchingElementHarness.dependencies).ensureResume({
         identity: {
-            provider: 'codex', projectKey: 'single-read-element', cwd: '/work', sessionId: 'stable-element',
+            provider: 'codex', workspaceScopeIdentity: 'single-read-element', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'stable-element',
         },
         projectName: 'App', terminalName: 'Codex: Single Read Element',
         launch: { executable: 'codex', args: switchingElementArgs },
@@ -3229,7 +5493,7 @@ async function runTmuxBackendChecks() {
     const switchingPendingHarness = createTmuxBackendHarness();
     const switchingPendingRequest = {
         identity: {
-            provider: 'kimi', projectKey: 'single-read-pending', cwd: '/work', pendingId: 'single-read-pending',
+            provider: 'kimi', workspaceScopeIdentity: 'single-read-pending', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'single-read-pending',
         },
         projectName: 'App', terminalName: 'Kimi: Single Read Pending', createdAt: '2026-07-18T09:59:00Z',
         get excludedSessionIds() {
@@ -3260,7 +5524,7 @@ async function runTmuxBackendChecks() {
         const launchBudgetHarness = createTmuxBackendHarness();
         await assert.rejects(new backendModule.TmuxRuntimeBackend(launchBudgetHarness.dependencies).ensureResume({
             identity: {
-                provider: 'codex', projectKey: `budget-${launchBudgetCase.label}`, cwd: '/work', sessionId: 's1',
+                provider: 'codex', workspaceScopeIdentity: `budget-${launchBudgetCase.label}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1',
             },
             projectName: 'App', terminalName: 'Codex: Budget',
             launch: { executable: 'codex', args: launchBudgetCase.args, markerPath: '/tmp/budget' },
@@ -3271,7 +5535,7 @@ async function runTmuxBackendChecks() {
 
     const e2bigHarness = createTmuxBackendHarness({ failCreateSessionE2bigCount: 1 });
     const e2bigRequest = {
-        identity: { provider: 'codex', projectKey: 'e2big', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'e2big', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: E2BIG',
         launch: { executable: 'codex', args: ['resume', 's1'] },
     };
@@ -3285,9 +5549,9 @@ async function runTmuxBackendChecks() {
     const resumeSnapshotHarness = createTmuxBackendHarness({ availabilityGate: resumeAvailabilityGate });
     const resumeSnapshotRequest = {
         identity: {
-            provider: 'codex', projectKey: 'snapshot-resume', cwd: '/original', sessionId: 'original-session',
+            provider: 'codex', workspaceScopeIdentity: 'snapshot-resume', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/original'], cwd: '/original', sessionId: 'original-session',
         },
-        projectName: 'Original Project', terminalName: 'Codex: Original',
+        projectName: 'Original Project', sessionName: 'Original Session Name', terminalName: 'Codex: Original',
         launch: {
             executable: 'codex', args: ['resume', 'original-session'], cwd: '/original',
             markerPath: '/tmp/original-marker',
@@ -3295,9 +5559,11 @@ async function runTmuxBackendChecks() {
     };
     const resumeSnapshotPromise = new backendModule.TmuxRuntimeBackend(resumeSnapshotHarness.dependencies)
         .ensureResume(resumeSnapshotRequest, 'session');
-    resumeSnapshotRequest.identity.projectKey = 'mutated-project';
+    resumeSnapshotRequest.identity.workspaceScopeIdentity = 'mutated-project';
     resumeSnapshotRequest.identity.cwd = '/mutated';
     resumeSnapshotRequest.identity.sessionId = 'mutated-session';
+    resumeSnapshotRequest.projectName = 'Mutated Project';
+    resumeSnapshotRequest.sessionName = 'Mutated Session Name';
     resumeSnapshotRequest.launch.executable = 'mutated-provider';
     resumeSnapshotRequest.launch.args[1] = 'mutated-session';
     resumeSnapshotRequest.launch.cwd = '/mutated';
@@ -3305,8 +5571,15 @@ async function runTmuxBackendChecks() {
     resumeSnapshotRequest.terminalName = 'Codex: Mutated';
     resumeAvailabilityGate.resolve();
     const resumeSnapshotRuntime = await resumeSnapshotPromise;
-    assert.strictEqual(resumeSnapshotRuntime.identity.projectKey, 'snapshot-resume');
+    assert.strictEqual(resumeSnapshotRuntime.identity.workspaceScopeIdentity, 'snapshot-resume');
     assert.strictEqual(resumeSnapshotRuntime.identity.sessionId, 'original-session');
+    assert.deepStrictEqual(resumeSnapshotRuntime.tmux,
+        tmuxNaming.buildReadableTmuxLocator({
+            provider: 'codex', workspaceScopeIdentity: 'snapshot-resume',
+            workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/original'],
+            cwd: '/original', sessionId: 'original-session',
+        }, 'session', { projectName: 'Original Project', sessionName: 'Original Session Name' }),
+    'resume creation must snapshot display context before awaiting availability');
     assert.match(resumeSnapshotHarness.terminals[0].name, /^Project Steward: codex .+ \[tmux\]$/);
     const resumeSnapshotCreate = resumeSnapshotHarness.operations.find(item => item.type === 'new-session');
     assert.strictEqual(resumeSnapshotCreate.cwd, '/original');
@@ -3327,7 +5600,7 @@ async function runTmuxBackendChecks() {
     });
     const pendingSnapshotRequest = {
         identity: {
-            provider: 'kimi', projectKey: 'snapshot-pending', cwd: '/original', pendingId: 'original-pending',
+            provider: 'kimi', workspaceScopeIdentity: 'snapshot-pending', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/original'], cwd: '/original', pendingId: 'original-pending',
         },
         projectName: 'Original Project', terminalName: 'Kimi: Original',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: ['original-exclusion'], title: 'Original title',
@@ -3341,6 +5614,7 @@ async function runTmuxBackendChecks() {
     await pendingSnapshotLockEntered.promise;
     pendingSnapshotRequest.identity.cwd = '/mutated';
     pendingSnapshotRequest.identity.pendingId = 'mutated-pending';
+    pendingSnapshotRequest.projectName = 'Mutated Project';
     pendingSnapshotRequest.launch.executable = 'mutated-provider';
     pendingSnapshotRequest.launch.args[1] = 'mutated-title';
     pendingSnapshotRequest.launch.cwd = '/mutated';
@@ -3351,6 +5625,7 @@ async function runTmuxBackendChecks() {
     releasePendingSnapshotLock.resolve();
     const pendingSnapshotRuntime = await pendingSnapshotPromise;
     assert.strictEqual(pendingSnapshotRuntime.identity.pendingId, 'original-pending');
+    assert.strictEqual(pendingSnapshotRuntime.projectName, 'Original Project');
     assert.deepStrictEqual(pendingSnapshotRuntime.excludedSessionIds, ['original-exclusion']);
     assert.strictEqual(pendingSnapshotRuntime.title, 'Original title');
     assert.match(pendingSnapshotHarness.terminals[0].name, /^Project Steward: kimi .+ \[tmux\]$/);
@@ -3362,7 +5637,7 @@ async function runTmuxBackendChecks() {
     const basePendingNow = Date.parse('2026-07-18T10:00:00Z');
     const futurePendingHarness = createTmuxBackendHarness({ nowMs: () => basePendingNow });
     await assert.rejects(new backendModule.TmuxRuntimeBackend(futurePendingHarness.dependencies).ensurePending({
-        identity: { provider: 'codex', projectKey: 'future', cwd: '/work', pendingId: 'future-pending' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'future', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'future-pending' },
         projectName: 'App', terminalName: 'Codex: Future',
         createdAt: '2026-07-18T10:05:01Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'] },
@@ -3381,7 +5656,7 @@ async function runTmuxBackendChecks() {
         },
     });
     await assert.rejects(new backendModule.TmuxRuntimeBackend(lockExpiryHarness.dependencies).ensurePending({
-        identity: { provider: 'codex', projectKey: 'lock-expiry', cwd: '/work', pendingId: 'lock-expiry' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'lock-expiry', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'lock-expiry' },
         projectName: 'App', terminalName: 'Codex: Lock Expiry',
         createdAt: '2026-07-17T10:00:01Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'] },
@@ -3394,104 +5669,22 @@ async function runTmuxBackendChecks() {
         nowMs: () => acceptedNow,
         afterProviderCreate: async () => { acceptedNow += 2000; },
     });
-    await new backendModule.TmuxRuntimeBackend(acceptedHarness.dependencies).ensurePending({
-        identity: { provider: 'kimi', projectKey: 'accepted', cwd: '/work', pendingId: 'accepted-pending' },
+    const acceptedRequest = {
+        identity: { provider: 'kimi', workspaceScopeIdentity: 'accepted', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'accepted-pending' },
         projectName: 'App', terminalName: 'Kimi: Accepted',
         createdAt: '2026-07-17T10:00:01Z', excludedSessionIds: [],
         launch: { executable: 'kimi', args: ['new'] },
-    }, 'session');
-    assert.strictEqual(acceptedHarness.pending.get('accepted-pending').acceptedAtMs, basePendingNow);
-
-    const globalMismatchRequest = pendingId => ({
-        identity: { provider: 'codex', projectKey: 'global-request', cwd: '/work', pendingId },
-        projectName: 'App', terminalName: 'Codex: Global Pending',
-        createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
-        launch: { executable: 'codex', args: ['new'] },
-    });
-    const globalMismatchCases = [
-        {
-            label: 'promoting',
-            seed(harness, pendingId) {
-                const record = {
-                    pendingId, provider: 'kimi', projectKey: 'other-promoting', cwd: '/other-promoting',
-                };
-                harness.promoting.set('global-mismatch-promoting', record);
-            },
-        },
-        {
-            label: 'consumed',
-            seed(harness, pendingId) {
-                const record = {
-                    pendingId, provider: 'kimi', projectKey: 'other-consumed', cwd: '/other-consumed',
-                };
-                harness.consumed.set('global-mismatch-consumed', record);
-            },
-        },
-        {
-            label: 'ambiguous',
-            seed(harness, pendingId) {
-                const record = {
-                    pendingId, provider: 'kimi', projectKey: 'other-ambiguous', cwd: '/other-ambiguous',
-                };
-                harness.ambiguous.set('global-mismatch-ambiguous', record);
-            },
-        },
-        {
-            label: 'live pending',
-            seed(harness, pendingId) {
-                harness.pending.set(pendingId, {
-                    pendingId, provider: 'kimi', projectKey: 'other-live', cwd: '/other-live',
-                    acceptedAtMs: basePendingNow,
-                });
-            },
-        },
-    ];
-    for (const mismatchCase of globalMismatchCases) {
-        const mismatchHarness = createTmuxBackendHarness();
-        const pendingId = `global-mismatch-${mismatchCase.label.replace(' ', '-')}`;
-        mismatchCase.seed(mismatchHarness, pendingId);
-        await assert.rejects(
-            new backendModule.TmuxRuntimeBackend(mismatchHarness.dependencies)
-                .ensurePending(globalMismatchRequest(pendingId), 'session'),
-            /pending ID.*identity|different.*identity|conflict/i
-        );
-        assert.strictEqual(mismatchHarness.operations.filter(item => item.type === 'new-session').length, 0);
-    }
-
-    for (const promotionMismatchState of ['consumed', 'ambiguous']) {
-        const promotionMismatchHarness = createTmuxBackendHarness();
-        const pendingId = `promotion-global-mismatch-${promotionMismatchState}`;
-        const sourceIdentity = {
-            provider: 'codex', projectKey: 'promotion-global-source', cwd: '/source', pendingId,
-        };
-        const sourceLocator = new tmuxLayout.SessionTmuxLayout().getPendingLocator(sourceIdentity);
-        promotionMismatchHarness.pending.set(pendingId, {
-            version: 1, state: 'pending', ...sourceIdentity,
-            createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
-            acceptedAtMs: basePendingNow, layout: 'session', locator: sourceLocator,
-        });
-        const mismatchedRecord = {
-            pendingId, provider: 'kimi', projectKey: 'promotion-global-other', cwd: '/other',
-        };
-        promotionMismatchHarness[promotionMismatchState].set(
-            `promotion-global-${promotionMismatchState}`, mismatchedRecord
-        );
-        await assert.rejects(
-            new backendModule.TmuxRuntimeBackend(promotionMismatchHarness.dependencies)
-                .promotePending(pendingId, `promotion-global-final-${promotionMismatchState}`),
-            /pending ID.*identity|different.*identity/i
-        );
-        assert.strictEqual(promotionMismatchHarness.operations.some(item =>
-            item.type === 'rename-session' || item.type === 'rename-window'
-            || item.type === 'store-promoting' || item.type === 'store-consumed'), false);
-    }
+    };
+    await new backendModule.TmuxRuntimeBackend(acceptedHarness.dependencies)
+        .ensurePending(acceptedRequest, 'session');
+    assert.strictEqual(Array.from(acceptedHarness.pending.values())[0].acceptedAtMs, basePendingNow);
 
     const concurrentGlobalHarness = createTmuxBackendHarness();
     const concurrentPendingId = 'concurrent-global-pending';
     const concurrentGlobalRequests = [
         {
             identity: {
-                provider: 'codex', projectKey: 'concurrent-global-a', cwd: '/work-a',
+                provider: 'codex', workspaceScopeIdentity: 'concurrent-global-a', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work-a'], cwd: '/work-a',
                 pendingId: concurrentPendingId,
             },
             projectName: 'App A', terminalName: 'Codex: Concurrent Global A',
@@ -3500,57 +5693,141 @@ async function runTmuxBackendChecks() {
         },
         {
             identity: {
-                provider: 'kimi', projectKey: 'concurrent-global-b', cwd: '/work-b',
+                provider: 'codex', workspaceScopeIdentity: 'concurrent-global-b', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work-b'], cwd: '/work-b',
                 pendingId: concurrentPendingId,
             },
-            projectName: 'App B', terminalName: 'Kimi: Concurrent Global B',
+            projectName: 'App B', terminalName: 'Codex: Concurrent Global B',
             createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
-            launch: { executable: 'kimi', args: ['new'], cwd: '/work-b' },
+            launch: { executable: 'codex', args: ['new'], cwd: '/work-b' },
         },
     ];
     const concurrentGlobalResults = await Promise.allSettled(concurrentGlobalRequests.map(request =>
         new backendModule.TmuxRuntimeBackend(concurrentGlobalHarness.dependencies)
             .ensurePending(request, 'session')));
-    assert.strictEqual(concurrentGlobalResults.filter(result => result.status === 'fulfilled').length, 1);
-    assert.strictEqual(concurrentGlobalResults.filter(result => result.status === 'rejected').length, 1);
-    assert.match(concurrentGlobalResults.find(result => result.status === 'rejected').reason.message,
-        /pending ID.*identity|different.*identity|conflict/i);
-    assert.strictEqual(concurrentGlobalHarness.operations.filter(item => item.type === 'new-session').length, 1);
-    assert.strictEqual(concurrentGlobalHarness.operations.filter(item =>
-        item.type === 'lock' && item.key === `pending:${concurrentPendingId}`).length, 2);
-    const concurrentGlobalBinding = concurrentGlobalHarness.pending.get(concurrentPendingId);
-    assert.ok(concurrentGlobalBinding);
-    const winningRequest = concurrentGlobalResults[0].status === 'fulfilled'
-        ? concurrentGlobalRequests[0] : concurrentGlobalRequests[1];
-    assert.strictEqual(concurrentGlobalBinding.provider, winningRequest.identity.provider);
-    assert.strictEqual(concurrentGlobalBinding.projectKey, winningRequest.identity.projectKey);
-    assert.strictEqual(concurrentGlobalBinding.cwd, winningRequest.identity.cwd);
+    assert.strictEqual(concurrentGlobalResults.filter(result => result.status === 'fulfilled').length, 2);
+    assert.strictEqual(concurrentGlobalHarness.operations.filter(item => item.type === 'new-session').length, 2);
+    assert.strictEqual(concurrentGlobalHarness.pending.size, 2);
+    for (const request of concurrentGlobalRequests) {
+        assert.ok(concurrentGlobalHarness.operations.some(item => item.type === 'lock'
+            && item.key === `pending:${tmuxLayout.getTmuxRuntimeKey(request.identity)}`));
+        const binding = Array.from(concurrentGlobalHarness.pending.values()).find(record =>
+            record.provider === request.identity.provider
+            && record.workspaceScopeIdentity === request.identity.workspaceScopeIdentity);
+        assert.ok(binding);
+        assert.strictEqual(binding.cwd, request.identity.cwd);
+    }
+    const concurrentBackend = new backendModule.TmuxRuntimeBackend(concurrentGlobalHarness.dependencies);
+    const promotedScopedPending = await concurrentBackend.promotePending(
+        concurrentGlobalRequests[0].identity, 'concurrent-final-a', 'Concurrent Final A'
+    );
+    assert.strictEqual(promotedScopedPending.length, 1);
+    assert.strictEqual(promotedScopedPending[0].identity.workspaceScopeIdentity, 'concurrent-global-a');
+    assert.strictEqual(concurrentGlobalHarness.pending.size, 1);
+    assert.strictEqual(Array.from(concurrentGlobalHarness.pending.values())[0].workspaceScopeIdentity,
+        'concurrent-global-b');
 
     const pendingHarness = createTmuxBackendHarness();
     const pendingBackend = new backendModule.TmuxRuntimeBackend(pendingHarness.dependencies);
     const pendingRequest = {
-        identity: { provider: 'claude', projectKey: 'pk', cwd: '/work', pendingId: 'pending-1' },
-        projectName: 'App', terminalName: 'Claude: New',
+        identity: { provider: 'claude', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-1' },
+        projectName: 'RedDB DTS Dual Active', terminalName: 'Claude: New',
         createdAt: '2026-07-18T09:59:00Z',
         excludedSessionIds: ['old'],
-        title: 'New work',
-        launch: { executable: 'claude', args: ['--name', 'New work'], markerPath: '/tmp/pending' },
+        title: 'Investigate lag',
+        launch: { executable: 'claude', args: ['--name', 'Investigate lag'], markerPath: '/tmp/pending' },
     };
     const pendingRuntime = await pendingBackend.ensurePending(pendingRequest, 'session');
+    assert.strictEqual(pendingRuntime.projectName, 'RedDB DTS Dual Active');
+    assert.match(pendingRuntime.tmux.sessionName,
+        /^ps-RedDB-DTS-Dual-Active-Investigate-lag-[0-9a-f]{8}$/);
+    assert.match(pendingRuntime.tmux.windowName, /^claude-Investigate-lag-[0-9a-f]{8}$/);
     const pendingSessionReadIndex = pendingHarness.operations.findIndex(item => item.type === 'get-session-options');
     const pendingWindowReadIndex = pendingHarness.operations.findIndex(item => item.type === 'get-window-options');
     const pendingStoreIndex = pendingHarness.operations.findIndex(item => item.type === 'store-pending');
     assert.ok(pendingSessionReadIndex >= 0 && pendingSessionReadIndex < pendingStoreIndex);
     assert.ok(pendingWindowReadIndex >= 0 && pendingWindowReadIndex < pendingStoreIndex);
     assert.strictEqual(pendingBackend.getPending().length, 1);
-    const promoted = await pendingBackend.promotePending('pending-1', 'final-1');
+    assert.strictEqual(pendingBackend.getPending()[0].projectName, 'RedDB DTS Dual Active');
+    const fallbackPendingHarness = createTmuxBackendHarness();
+    const fallbackPending = await new backendModule.TmuxRuntimeBackend(
+        fallbackPendingHarness.dependencies
+    ).ensurePending({
+        identity: {
+            provider: 'codex', workspaceScopeIdentity: 'fallback-pending',
+            workspaceNavigationIdentity: 'nav-fallback-pending', workspaceRootHostPaths: ['/work'],
+            cwd: '/work', pendingId: 'fallback-pending-id',
+        },
+        projectName: 'RedDB DTS Dual Active', terminalName: 'Codex: New',
+        createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [], title: '   ',
+        launch: { executable: 'codex', args: ['new'] },
+    }, 'project');
+    assert.match(fallbackPending.tmux.sessionName,
+        /^ps-RedDB-DTS-Dual-Active-[0-9a-f]{8}$/);
+    assert.match(fallbackPending.tmux.windowName, /^codex-new-session-[0-9a-f]{8}$/);
+
+    const readableRecoveryHarness = createTmuxBackendHarness({ failSetPendingCount: 1 });
+    const readableRecoveryRequest = {
+        identity: {
+            provider: 'kimi', workspaceScopeIdentity: 'readable-pending-recovery',
+            workspaceNavigationIdentity: 'nav-readable-pending-recovery',
+            workspaceRootHostPaths: ['/work'], cwd: '/work',
+            pendingId: 'readable-pending-recovery-id',
+        },
+        projectName: 'Original Card', terminalName: 'Kimi: Recover Readable',
+        createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: ['old'], title: 'Recover lag',
+        launch: { executable: 'kimi', args: ['new'], markerPath: '/tmp/readable-recovery' },
+    };
+    await assert.rejects(new backendModule.TmuxRuntimeBackend(
+        readableRecoveryHarness.dependencies
+    ).ensurePending(readableRecoveryRequest, 'session'), /pending persistence failed/);
+    const readableRecoveryAmbiguous = Array.from(readableRecoveryHarness.ambiguous.values())[0];
+    assert.strictEqual(readableRecoveryAmbiguous.projectName, 'Original Card');
+    const recoveredReadablePending = await new backendModule.TmuxRuntimeBackend(
+        readableRecoveryHarness.dependencies
+    ).ensurePending({ ...readableRecoveryRequest, projectName: 'Renamed Card' }, 'session');
+    assert.strictEqual(recoveredReadablePending.projectName, 'Original Card');
+    assert.deepStrictEqual(recoveredReadablePending.tmux,
+        tmuxNaming.buildReadableTmuxLocator(readableRecoveryRequest.identity, 'session', {
+            projectName: 'Original Card', sessionName: 'Recover lag',
+        }), 'ambiguous retry must reuse the accepted creation-time readable locator');
+    assert.strictEqual(readableRecoveryHarness.operations.filter(item =>
+        item.type === 'new-session').length, 1,
+    'display-only card changes must not redispatch an ambiguous provider request');
+
+    const renameCountBeforeInvalidPromotion = pendingHarness.operations.filter(item =>
+        item.type === 'rename-session' || item.type === 'rename-window').length;
+    assert.deepStrictEqual(await pendingBackend.promotePending(
+        pendingRequest.identity, 'final-1', ''
+    ), []);
+    assert.strictEqual(pendingHarness.operations.filter(item =>
+        item.type === 'rename-session' || item.type === 'rename-window').length,
+    renameCountBeforeInvalidPromotion);
+    const promoted = await pendingBackend.promotePending(
+        pendingRequest.identity, 'final-1', 'New work'
+    );
     assert.strictEqual(promoted.length, 1);
     assert.strictEqual(promoted[0].identity.sessionId, 'final-1');
+    assert.match(promoted[0].tmux.sessionName,
+        /^ps-RedDB-DTS-Dual-Active-New-work-[0-9a-f]{8}$/);
+    assert.match(promoted[0].tmux.windowName, /^claude-New-work-[0-9a-f]{8}$/);
     assert.strictEqual(pendingHarness.pending.size, 0);
     assert.strictEqual(pendingHarness.consumed.size, 1);
     assert.ok(pendingHarness.known.has('claude:final-1'));
+    assert.deepStrictEqual(pendingHarness.known.get('claude:final-1').locator, promoted[0].tmux);
+    assert.deepStrictEqual(Array.from(pendingHarness.consumed.values())[0].finalLocator,
+        promoted[0].tmux);
+    const promotedAttachBinding = pendingHarness.attachBindings.get(await pendingRuntime.terminal.processId);
+    assert.strictEqual(promotedAttachBinding.sessionName, promoted[0].tmux.sessionName);
+    assert.strictEqual(promotedAttachBinding.windowName, promoted[0].tmux.windowName);
+    assert.strictEqual(promotedAttachBinding.sessionId, 'final-1');
+    const pendingRecoveryToken = pendingRuntime.terminal.creationOptions.env
+        .PROJECT_STEWARD_TMUX_ATTACH_ID;
+    assert.strictEqual(pendingHarness.attachRecoveries.get(pendingRecoveryToken)
+        .binding.sessionId, 'final-1',
+    'promotion must migrate the stable terminal recovery binding to the final identity');
     assert.strictEqual(pendingHarness.operations.filter(item => item.type === 'clear-pending').length, 1);
     assert.strictEqual(pendingHarness.operations.filter(item => item.type === 'rename-session').length, 1);
+    assert.strictEqual(pendingHarness.operations.filter(item => item.type === 'rename-window').length, 1);
     assert.strictEqual(pendingHarness.operations.filter(item => item.type === 'new-session').length, 1);
     assert.ok(pendingHarness.operations.findIndex(item => item.type === 'store-promoting')
         < pendingHarness.operations.findIndex(item => item.type === 'rename-session'));
@@ -3562,10 +5839,10 @@ async function runTmuxBackendChecks() {
     assert.ok(pendingHarness.operations.findIndex(item => item.type === 'store-consumed')
         < pendingHarness.operations.findIndex(item => item.type === 'remove-pending'));
     assert.ok(pendingHarness.operations.some(item => item.type === 'lock' && item.key === tmuxLayout.getTmuxRuntimeKey({
-        provider: 'claude', projectKey: 'pk', cwd: '/work', sessionId: 'final-1',
+        provider: 'claude', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'final-1',
     })));
     assert.ok(pendingHarness.operations.some(item =>
-        item.type === 'lock' && item.key === 'pending:pending-1'));
+        item.type === 'lock' && item.key === `pending:${tmuxLayout.getTmuxRuntimeKey(pendingRequest.identity)}`));
     const pendingCreateCount = pendingHarness.operations.filter(item => item.type === 'new-session').length;
     await assert.rejects(
         new backendModule.TmuxRuntimeBackend(pendingHarness.dependencies).ensurePending(pendingRequest, 'session'),
@@ -3576,7 +5853,7 @@ async function runTmuxBackendChecks() {
 
     const corruptPendingHarness = createTmuxBackendHarness({ corruptPendingMetadata: true });
     await assert.rejects(new backendModule.TmuxRuntimeBackend(corruptPendingHarness.dependencies).ensurePending({
-        identity: { provider: 'codex', projectKey: 'corrupt', cwd: '/work', pendingId: 'corrupt-pending' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'corrupt', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'corrupt-pending' },
         projectName: 'App', terminalName: 'Codex: Corrupt',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'] },
@@ -3588,7 +5865,7 @@ async function runTmuxBackendChecks() {
     const pendingRecoveryHarness = createTmuxBackendHarness({ failSetPendingCount: 1 });
     const pendingRecoveryRequest = {
         identity: {
-            provider: 'kimi', projectKey: 'pending-recovery', cwd: '/work', pendingId: 'recover-pending',
+            provider: 'kimi', workspaceScopeIdentity: 'pending-recovery', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'recover-pending',
         },
         projectName: 'App', terminalName: 'Kimi: Recover',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: ['old'], title: 'Recover',
@@ -3608,8 +5885,17 @@ async function runTmuxBackendChecks() {
         /ambiguous|request/i
     );
     const recoveredPendingRuntime = await new backendModule.TmuxRuntimeBackend(pendingRecoveryHarness.dependencies)
-        .ensurePending(pendingRecoveryRequest, 'session');
+        .ensurePending({
+            ...pendingRecoveryRequest,
+            projectName: 'Renamed Workspace Card',
+        }, 'session');
     assert.strictEqual(recoveredPendingRuntime.identity.pendingId, 'recover-pending');
+    assert.strictEqual(recoveredPendingRuntime.projectName, 'App',
+        'ambiguous retries must retain the accepted creation-time project display context');
+    assert.deepStrictEqual(recoveredPendingRuntime.tmux,
+        tmuxNaming.buildReadableTmuxLocator(pendingRecoveryRequest.identity, 'session', {
+            projectName: 'App', sessionName: 'Recover',
+        }), 'ambiguous retries must recover the creation-time locator after a card rename');
     assert.strictEqual(pendingRecoveryHarness.pending.size, 1);
     assert.strictEqual(pendingRecoveryHarness.ambiguous.size, 0);
     assert.strictEqual(pendingRecoveryHarness.operations.filter(item => item.type === 'new-session').length, 1);
@@ -3618,7 +5904,7 @@ async function runTmuxBackendChecks() {
     const projectPromotionBackend = new backendModule.TmuxRuntimeBackend(projectPromotionHarness.dependencies);
     const projectPending = await projectPromotionBackend.ensurePending({
         identity: {
-            provider: 'kimi', projectKey: 'project-promotion', cwd: '/work', pendingId: 'project-pending',
+            provider: 'kimi', workspaceScopeIdentity: 'project-promotion', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'project-pending',
         },
         projectName: 'App', terminalName: 'AI Sessions: Project Promotion',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
@@ -3629,7 +5915,9 @@ async function runTmuxBackendChecks() {
         .identity.pendingId, 'project-pending');
     const deferredPromotionQuery = projectPromotionHarness.deferNextActiveWindow();
     const stalePromotionSync = projectPromotionBackend.syncFocusedRuntime(projectPromotionTerminal);
-    const projectPromoted = await projectPromotionBackend.promotePending('project-pending', 'project-final');
+    const projectPromoted = await projectPromotionBackend.promotePending(
+        projectPending.identity, 'project-final', 'Project Final'
+    );
     deferredPromotionQuery.resolve();
     assert.deepStrictEqual(await stalePromotionSync, {
         monitored: true, changed: false, identity: { ...projectPromoted[0].identity },
@@ -3641,17 +5929,25 @@ async function runTmuxBackendChecks() {
         .windowName, projectPromoted[0].tmux.windowName);
     assert.strictEqual(projectPromoted.length, 1);
     assert.strictEqual(projectPromoted[0].identity.sessionId, 'project-final');
+    assert.strictEqual(projectPromoted[0].tmux.sessionName, projectPending.tmux.sessionName,
+        'project promotion must retain its creation-time project container');
+    assert.match(projectPromoted[0].tmux.windowName,
+        /^kimi-Project-Final-[0-9a-f]{8}$/);
     assert.strictEqual(projectPromotionHarness.operations.filter(item => item.type === 'rename-window').length, 1);
+    assert.strictEqual(projectPromotionHarness.operations.filter(item => item.type === 'rename-session').length, 0);
     assert.strictEqual(projectPromotionHarness.operations.filter(item => item.type === 'clear-pending').length, 1);
     assert.strictEqual(projectPromotionHarness.pending.size, 0);
     assert.strictEqual(projectPromotionHarness.consumed.size, 1);
-    assert.notStrictEqual(projectPromoted[0].tmux.windowName, projectPending.tmux.windowName);
+    assert.deepStrictEqual(projectPromotionHarness.known.get('kimi:project-final').locator,
+        projectPromoted[0].tmux);
+    assert.deepStrictEqual(Array.from(projectPromotionHarness.consumed.values())[0].finalLocator,
+        projectPromoted[0].tmux);
 
     for (const recoveryLayout of ['session', 'project']) {
         const recoveryHarness = createTmuxBackendHarness({ failSetConsumedCount: 1 });
         const recoveryRequest = {
             identity: {
-                provider: 'claude', projectKey: `promotion-recovery-${recoveryLayout}`, cwd: '/work',
+                provider: 'claude', workspaceScopeIdentity: `promotion-recovery-${recoveryLayout}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                 pendingId: `promotion-recovery-pending-${recoveryLayout}`,
             },
             projectName: 'App', terminalName: `Claude: Promotion Recovery ${recoveryLayout}`,
@@ -3661,11 +5957,23 @@ async function runTmuxBackendChecks() {
         const recoveryBackend = new backendModule.TmuxRuntimeBackend(recoveryHarness.dependencies);
         await recoveryBackend.ensurePending(recoveryRequest, recoveryLayout);
         await assert.rejects(recoveryBackend.promotePending(
-            recoveryRequest.identity.pendingId, `promotion-recovery-final-${recoveryLayout}`
+            recoveryRequest.identity,
+            `promotion-recovery-final-${recoveryLayout}`,
+            'Recover promotion'
         ), /consumed persistence failed/);
         assert.strictEqual(recoveryHarness.promoting.size, 1);
         assert.strictEqual(recoveryHarness.pending.size, 1);
         assert.strictEqual(recoveryHarness.consumed.size, 0);
+        const recoveryIntent = Array.from(recoveryHarness.promoting.values())[0];
+        assert.strictEqual(recoveryIntent.finalSessionName, 'Recover promotion');
+        assert.deepStrictEqual(recoveryIntent.finalLocator,
+            tmuxNaming.buildReadableTmuxLocator({
+                ...recoveryRequest.identity,
+                pendingId: undefined,
+                sessionId: `promotion-recovery-final-${recoveryLayout}`,
+            }, recoveryLayout, {
+                projectName: 'App', sessionName: 'Recover promotion',
+            }));
         const createCountBeforeBlockedEnsure = recoveryHarness.operations.filter(item =>
             item.type === 'new-session' || item.type === 'new-window').length;
         await assert.rejects(
@@ -3678,7 +5986,11 @@ async function runTmuxBackendChecks() {
         const availabilityBeforeRecoveredPromotion = recoveryHarness.operations.filter(item =>
             item.type === 'availability').length;
         const recoveredPromotion = await new backendModule.TmuxRuntimeBackend(recoveryHarness.dependencies)
-            .promotePending(recoveryRequest.identity.pendingId, `promotion-recovery-final-${recoveryLayout}`);
+            .promotePending(
+                recoveryRequest.identity,
+                `promotion-recovery-final-${recoveryLayout}`,
+                'Recover promotion'
+            );
         assert.strictEqual(recoveredPromotion.length, 1);
         assert.strictEqual(recoveryHarness.operations.filter(item =>
             item.type === 'availability').length, availabilityBeforeRecoveredPromotion + 1);
@@ -3686,73 +5998,12 @@ async function runTmuxBackendChecks() {
         assert.strictEqual(recoveryHarness.pending.size, 0);
         assert.strictEqual(recoveryHarness.consumed.size, 1);
         assert.strictEqual(recoveryHarness.operations.filter(item =>
-            item.type === 'rename-session' || item.type === 'rename-window').length, 1);
+            item.type === 'rename-session' || item.type === 'rename-window').length,
+        recoveryLayout === 'session' ? 2 : 1);
+        assert.strictEqual(recoveryHarness.operations.filter(item =>
+            item.type === 'new-session' || item.type === 'new-window').length,
+        createCountBeforeBlockedEnsure);
     }
-
-    const intentLiveHarness = createTmuxBackendHarness({ failSetConsumedCount: 1 });
-    const intentLiveRequest = {
-        identity: {
-            provider: 'codex', projectKey: 'intent-live-a', cwd: '/work-a',
-            pendingId: 'intent-live-shared-pending',
-        },
-        projectName: 'App A', terminalName: 'Codex: Intent Live A',
-        createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: ['a'], title: 'Contract A',
-        launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/intent-live-a' },
-    };
-    const intentLiveFinalId = 'intent-live-final';
-    const intentLiveBackend = new backendModule.TmuxRuntimeBackend(intentLiveHarness.dependencies);
-    await intentLiveBackend.ensurePending(intentLiveRequest, 'session');
-    await assert.rejects(intentLiveBackend.promotePending(
-        intentLiveRequest.identity.pendingId, intentLiveFinalId
-    ), /consumed persistence failed/);
-    const intentA = JSON.parse(JSON.stringify(Array.from(intentLiveHarness.promoting.values())[0]));
-    const bindingA = intentLiveHarness.pending.get(intentLiveRequest.identity.pendingId);
-    const identityB = {
-        provider: 'kimi', projectKey: 'intent-live-b', cwd: '/work-b',
-        pendingId: intentLiveRequest.identity.pendingId,
-    };
-    const bindingB = {
-        ...bindingA,
-        ...identityB,
-        excludedSessionIds: ['b'],
-        title: 'Contract B',
-        acceptedAtMs: bindingA.acceptedAtMs + 1,
-        locator: new tmuxLayout.SessionTmuxLayout().getPendingLocator(identityB),
-    };
-    intentLiveHarness.pending.set(identityB.pendingId, bindingB);
-    const promotionMutationTypes = new Set([
-        'rename-session', 'rename-window', 'session-options', 'window-options', 'clear-pending',
-        'store-known', 'store-consumed', 'remove-pending', 'remove-promoting', 'reconcile-known',
-    ]);
-    const intentLiveMutationCount = () => intentLiveHarness.operations.filter(item =>
-        promotionMutationTypes.has(item.type)).length;
-    const mutationsBeforeIntentLiveRetry = intentLiveMutationCount();
-    const knownBeforeIntentLiveRetry = JSON.stringify(Array.from(intentLiveHarness.known.entries()));
-    const removePendingBeforeIntentLiveRetry = intentLiveHarness.operations.filter(item =>
-        item.type === 'remove-pending').length;
-    const removeIntentBeforeIntentLiveRetry = intentLiveHarness.operations.filter(item =>
-        item.type === 'remove-promoting').length;
-    const operationsBeforeIntentLiveRetry = intentLiveHarness.operations.length;
-    const availabilityBeforeIntentLiveRetry = intentLiveHarness.operations.filter(item =>
-        item.type === 'availability').length;
-    await assert.rejects(
-        new backendModule.TmuxRuntimeBackend(intentLiveHarness.dependencies)
-            .promotePending(identityB.pendingId, intentLiveFinalId),
-        /conflicting.*(binding|contract|promotion)|intent.*live/i
-    );
-    assert.strictEqual(intentLiveHarness.operations.filter(item =>
-        item.type === 'availability').length, availabilityBeforeIntentLiveRetry);
-    assert.deepStrictEqual(intentLiveHarness.operations.slice(operationsBeforeIntentLiveRetry)
-        .map(item => item.type), ['lock-queued', 'lock']);
-    assert.deepStrictEqual(Array.from(intentLiveHarness.promoting.values())[0], intentA);
-    assert.deepStrictEqual(intentLiveHarness.pending.get(identityB.pendingId), bindingB);
-    assert.strictEqual(intentLiveHarness.consumed.size, 0);
-    assert.strictEqual(JSON.stringify(Array.from(intentLiveHarness.known.entries())), knownBeforeIntentLiveRetry);
-    assert.strictEqual(intentLiveMutationCount(), mutationsBeforeIntentLiveRetry);
-    assert.strictEqual(intentLiveHarness.operations.filter(item => item.type === 'remove-pending').length,
-        removePendingBeforeIntentLiveRetry);
-    assert.strictEqual(intentLiveHarness.operations.filter(item => item.type === 'remove-promoting').length,
-        removeIntentBeforeIntentLiveRetry);
 
     for (const ambiguousPromotionLayout of ['session', 'project']) {
         const ambiguousPromotionHarness = createTmuxBackendHarness({
@@ -3762,7 +6013,7 @@ async function runTmuxBackendChecks() {
         });
         const ambiguousPromotionRequest = {
             identity: {
-                provider: 'kimi', projectKey: `ambiguous-promotion-${ambiguousPromotionLayout}`, cwd: '/work',
+                provider: 'kimi', workspaceScopeIdentity: `ambiguous-promotion-${ambiguousPromotionLayout}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                 pendingId: `ambiguous-promotion-pending-${ambiguousPromotionLayout}`,
             },
             projectName: 'App', terminalName: `Kimi: Ambiguous Promotion ${ambiguousPromotionLayout}`,
@@ -3774,24 +6025,113 @@ async function runTmuxBackendChecks() {
         );
         await ambiguousPromotionBackend.ensurePending(ambiguousPromotionRequest, ambiguousPromotionLayout);
         await assert.rejects(ambiguousPromotionBackend.promotePending(
-            ambiguousPromotionRequest.identity.pendingId,
-            `ambiguous-promotion-final-${ambiguousPromotionLayout}`
+            ambiguousPromotionRequest.identity,
+            `ambiguous-promotion-final-${ambiguousPromotionLayout}`,
+            'Ambiguous promotion'
         ), /timeout/);
         assert.strictEqual(ambiguousPromotionHarness.promoting.size, 1);
         assert.strictEqual(ambiguousPromotionHarness.pending.size, 1);
         const recoveredAmbiguousPromotion = await new backendModule.TmuxRuntimeBackend(
             ambiguousPromotionHarness.dependencies
         ).promotePending(
-            ambiguousPromotionRequest.identity.pendingId,
-            `ambiguous-promotion-final-${ambiguousPromotionLayout}`
+            ambiguousPromotionRequest.identity,
+            `ambiguous-promotion-final-${ambiguousPromotionLayout}`,
+            'Ambiguous promotion'
         );
         assert.strictEqual(recoveredAmbiguousPromotion.length, 1);
         assert.strictEqual(ambiguousPromotionHarness.promoting.size, 0);
         assert.strictEqual(ambiguousPromotionHarness.pending.size, 0);
         assert.strictEqual(ambiguousPromotionHarness.consumed.size, 1);
         assert.strictEqual(ambiguousPromotionHarness.operations.filter(item =>
-            item.type === 'rename-session' || item.type === 'rename-window').length, 1);
+            item.type === 'rename-session' || item.type === 'rename-window').length,
+        ambiguousPromotionLayout === 'session' ? 2 : 1);
     }
+
+    const fullyRenamedHarness = createTmuxBackendHarness({ ambiguousRenameWindowCount: 1 });
+    const fullyRenamedRequest = {
+        identity: {
+            provider: 'claude', workspaceScopeIdentity: 'fully-renamed-promotion',
+            workspaceNavigationIdentity: 'nav-fully-renamed-promotion',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'fully-renamed-pending',
+        },
+        projectName: 'RedDB', terminalName: 'Claude: Fully renamed promotion',
+        createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [], title: 'Investigate replication',
+        launch: { executable: 'claude', args: ['new'], markerPath: '/tmp/fully-renamed' },
+    };
+    const fullyRenamedBackend = new backendModule.TmuxRuntimeBackend(fullyRenamedHarness.dependencies);
+    await fullyRenamedBackend.ensurePending(fullyRenamedRequest, 'session');
+    const fullyRenamedCreates = fullyRenamedHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length;
+    await assert.rejects(fullyRenamedBackend.promotePending(
+        fullyRenamedRequest.identity, 'fully-renamed-final', 'Investigate replication'
+    ), /timeout/);
+    const fullyRenamedIntent = Array.from(fullyRenamedHarness.promoting.values())[0];
+    assert.ok(fullyRenamedHarness.windows.some(row =>
+        row.sessionName === fullyRenamedIntent.finalLocator.sessionName
+        && row.windowName === fullyRenamedIntent.finalLocator.windowName),
+    'an ambiguous second rename must leave an exact fully-renamed state for recovery');
+    const fullyRenamedRecovered = await promoteWithRestartedCoordinator(
+        fullyRenamedHarness, fullyRenamedRequest.identity,
+        'fully-renamed-final', 'Investigate replication'
+    );
+    assert.deepStrictEqual(fullyRenamedRecovered[0].tmux, fullyRenamedIntent.finalLocator);
+    assert.strictEqual(fullyRenamedHarness.operations.filter(item =>
+        item.type === 'rename-session' || item.type === 'rename-window').length, 2);
+    assert.strictEqual(fullyRenamedHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length, fullyRenamedCreates);
+
+    const partialRenameHarness = createTmuxBackendHarness({ failRenameWindowCount: 1 });
+    const partialRenameRequest = {
+        identity: {
+            provider: 'codex', workspaceScopeIdentity: 'partial-readable-promotion',
+            workspaceNavigationIdentity: 'nav-partial-readable-promotion',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'partial-readable-pending',
+        },
+        projectName: 'RedDB', terminalName: 'Codex: Partial readable promotion',
+        createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [], title: 'Repair replication',
+        launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/partial-readable' },
+    };
+    const partialRenameBackend = new backendModule.TmuxRuntimeBackend(partialRenameHarness.dependencies);
+    await partialRenameBackend.ensurePending(partialRenameRequest, 'session');
+    const partialRenameCreates = partialRenameHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length;
+    await assert.rejects(partialRenameBackend.promotePending(
+        partialRenameRequest.identity, 'partial-readable-final', 'Repair replication'
+    ), /rename window failed/);
+    const partialIntent = Array.from(partialRenameHarness.promoting.values())[0];
+    assert.strictEqual(partialIntent.finalSessionName, 'Repair replication');
+    assert.ok(partialRenameHarness.windows.some(row =>
+        row.sessionName === partialIntent.finalLocator.sessionName
+        && row.windowName === partialIntent.sourceLocator.windowName),
+    'a failed second rename must retain the exact final-session/source-window intermediate state');
+    const partialMutationsBeforeMismatch = partialRenameHarness.operations.filter(item =>
+        item.type === 'rename-session' || item.type === 'rename-window'
+        || item.type === 'session-options' || item.type === 'window-options'
+        || item.type === 'clear-pending').length;
+    await assert.rejects(new backendModule.TmuxRuntimeBackend(partialRenameHarness.dependencies)
+        .promotePending(partialRenameRequest.identity, 'partial-readable-final', 'Different display name'),
+    /conflicting promotion/i);
+    assert.strictEqual(partialRenameHarness.operations.filter(item =>
+        item.type === 'rename-session' || item.type === 'rename-window'
+        || item.type === 'session-options' || item.type === 'window-options'
+        || item.type === 'clear-pending').length, partialMutationsBeforeMismatch,
+    'a replay with a different display name must fail closed before any mutation');
+    const partialRestarted = createRestartedRuntime(partialRenameHarness);
+    const partialTerminal = partialRenameHarness.terminals[0];
+    await partialRestarted.tmux.restoreAttachTerminals([partialTerminal]);
+    const partialRecovered = await partialRestarted.coordinator.promotePending(
+        partialRenameRequest.identity, 'partial-readable-final', 'Repair replication'
+    );
+    assert.deepStrictEqual(partialRecovered[0].tmux, partialIntent.finalLocator);
+    assert.strictEqual(partialRenameHarness.operations.filter(item => item.type === 'rename-session').length, 1,
+        'partial recovery must not rename the already-final session again');
+    assert.strictEqual(partialRenameHarness.operations.filter(item => item.type === 'rename-window').length, 2);
+    const partialAttach = partialRenameHarness.attachBindings.get(await partialTerminal.processId);
+    assert.strictEqual(partialAttach.sessionName, partialIntent.finalLocator.sessionName);
+    assert.strictEqual(partialAttach.windowName, partialIntent.finalLocator.windowName);
+    assert.strictEqual(partialRenameHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length, partialRenameCreates,
+    'partial recovery must never redispatch the provider command');
 
     for (const transitionLayout of ['session', 'project']) {
         for (const transitionFailure of ['mid-final-write', 'before-pending-clear']) {
@@ -3802,7 +6142,7 @@ async function runTmuxBackendChecks() {
             });
             const transitionRequest = {
                 identity: {
-                    provider: 'codex', projectKey: `transition-${transitionLayout}-${transitionFailure}`, cwd: '/work',
+                    provider: 'codex', workspaceScopeIdentity: `transition-${transitionLayout}-${transitionFailure}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                     pendingId: `transition-pending-${transitionLayout}-${transitionFailure}`,
                 },
                 projectName: 'App', terminalName: `Codex: ${transitionFailure}`,
@@ -3817,7 +6157,7 @@ async function runTmuxBackendChecks() {
             const createsBeforePromotion = transitionHarness.operations.filter(item =>
                 item.type === 'new-session' || item.type === 'new-window').length;
             await assert.rejects(transitionBackend.promotePending(
-                transitionRequest.identity.pendingId, finalSessionId
+                transitionRequest.identity, finalSessionId, 'Transition'
             ), transitionFailure === 'mid-final-write'
                 ? /final metadata identity write failed/
                 : /promotion pending clear failed/);
@@ -3829,16 +6169,328 @@ async function runTmuxBackendChecks() {
             if (transitionFailure === 'before-pending-clear' || transitionLayout === 'session') {
                 assert.strictEqual(transitionRow.metadata.sessionId, finalSessionId);
             }
-            const recoveredTransition = await new backendModule.TmuxRuntimeBackend(transitionHarness.dependencies)
-                .promotePending(transitionRequest.identity.pendingId, finalSessionId);
+            const recoveredTransition = await promoteWithRestartedCoordinator(
+                transitionHarness, transitionRequest.identity, finalSessionId, 'Transition'
+            );
             assert.strictEqual(recoveredTransition.length, 1);
             assert.strictEqual(transitionHarness.promoting.size, 0);
             assert.strictEqual(transitionHarness.pending.size, 0);
             assert.strictEqual(transitionHarness.consumed.size, 1);
             assert.strictEqual(transitionHarness.operations.filter(item =>
-                item.type === 'rename-session' || item.type === 'rename-window').length, 1);
+                item.type === 'rename-session' || item.type === 'rename-window').length,
+            transitionLayout === 'session' ? 2 : 1);
             assert.strictEqual(transitionHarness.operations.filter(item =>
                 item.type === 'new-session' || item.type === 'new-window').length, createsBeforePromotion);
+        }
+    }
+
+    for (const productRecoveryCase of [{
+        label: 'partial-rename', layout: 'session',
+        harnessOptions: { failRenameWindowCount: 1 }, failure: /rename window failed/,
+    }, {
+        label: 'fully-renamed', layout: 'session',
+        harnessOptions: { ambiguousRenameWindowCount: 1 }, failure: /timeout/,
+    }, {
+        label: 'metadata-transition', layout: 'session',
+        harnessOptions: { failFinalMetadataIdentityWriteCount: 1 },
+        failure: /final metadata identity write failed/,
+    }]) {
+        const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(),
+            `project-steward-product-promotion-${productRecoveryCase.label}-`));
+        try {
+            const harness = createTmuxBackendHarness(productRecoveryCase.harnessOptions);
+            const attachState = createPersistedAttachState();
+            const initial = createFreshPersistedRuntime(harness, runtimeRoot, attachState);
+            const request = {
+                identity: {
+                    provider: 'codex',
+                    workspaceScopeIdentity: `product-recovery-${productRecoveryCase.label}`,
+                    workspaceNavigationIdentity: `nav-product-recovery-${productRecoveryCase.label}`,
+                    workspaceRootHostPaths: ['/work'], cwd: '/work',
+                    pendingId: `product-recovery-pending-${productRecoveryCase.label}`,
+                },
+                projectName: 'Product Recovery', terminalName: 'Codex: Product recovery',
+                createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
+                launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/product-recovery' },
+            };
+            const finalSessionId = `product-recovery-final-${productRecoveryCase.label}`;
+            const pendingRuntime = await initial.tmux.ensurePending(request, productRecoveryCase.layout);
+            const providerDispatches = harness.operations.filter(operation =>
+                operation.type === 'new-session' || operation.type === 'new-window').length;
+            await assert.rejects(initial.tmux.promotePending(
+                request.identity, finalSessionId, 'First frozen name'
+            ), productRecoveryCase.failure);
+            const frozenIntent = await initial.runtimeStore.getPromoting(request.identity);
+            assert.strictEqual(frozenIntent.finalSessionName, 'First frozen name');
+            await initial.attachStore.flush();
+
+            const restartedAttachState = clonePersistedAttachState(attachState);
+            const restarted = createFreshPersistedRuntime(
+                harness, runtimeRoot, restartedAttachState
+            );
+            await restarted.tmux.restoreAttachTerminals([pendingRuntime.terminal]);
+            await assert.rejects(restarted.coordinator.promotePending(
+                request.identity, finalSessionId, 'Second current name'
+            ), /conflicting promotion|different promotion/i,
+            'an explicit replay with a different current display name must remain fail closed');
+            const controller = createPromotionController(restarted.coordinator);
+            await controller.promote({
+                scopeIdentity: request.identity.workspaceScopeIdentity,
+                navigationIdentity: request.identity.workspaceNavigationIdentity,
+            }, {
+                codex: {
+                    available: true, scannedFiles: 1, parsedFiles: 1,
+                    sessions: [{
+                        id: finalSessionId, name: 'Second current name', cwd: '/work',
+                        updatedAt: '2026-07-18T10:00:01.000Z',
+                    }],
+                },
+            }, `restart-${productRecoveryCase.label}`);
+
+            const consumed = await restarted.runtimeStore.getConsumed(request.identity);
+            assert.ok(consumed,
+                'automatic recovery must replay the frozen durable display name');
+            assert.strictEqual(consumed.finalSessionName, 'First frozen name');
+            assert.deepStrictEqual(consumed.finalLocator, frozenIntent.finalLocator);
+            assert.strictEqual(await restarted.runtimeStore.getPromoting(request.identity), null);
+            assert.strictEqual(await restarted.runtimeStore.getPending(request.identity), null);
+            assert.strictEqual(harness.operations.filter(operation =>
+                operation.type === 'new-session' || operation.type === 'new-window').length,
+            providerDispatches, 'product-entry recovery must not redispatch the provider command');
+            const restoredAttach = restarted.attachStore.get(await pendingRuntime.terminal.processId);
+            assert.strictEqual(restoredAttach.sessionId, finalSessionId);
+            assert.deepStrictEqual({
+                layout: restoredAttach.layout,
+                sessionName: restoredAttach.sessionName,
+                windowName: restoredAttach.windowName,
+            }, consumed.finalLocator);
+        } finally {
+            fs.rmSync(runtimeRoot, { recursive: true, force: true });
+        }
+    }
+
+    {
+        const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(),
+            'project-steward-stale-consumed-attach-'));
+        try {
+            const harness = createTmuxBackendHarness();
+            const attachState = createPersistedAttachState();
+            const initial = createFreshPersistedRuntime(harness, runtimeRoot, attachState);
+            const request = {
+                identity: {
+                    provider: 'codex', workspaceScopeIdentity: 'stale-consumed-attach',
+                    workspaceNavigationIdentity: 'nav-stale-consumed-attach',
+                    workspaceRootHostPaths: ['/work'], cwd: '/work',
+                    pendingId: 'stale-consumed-attach-pending',
+                },
+                projectName: 'Stale Attach', terminalName: 'Codex: Stale attach',
+                createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [], title: 'Stale attach',
+                launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/stale-attach' },
+            };
+            const pendingRuntime = await initial.tmux.ensurePending(request, 'session');
+            const pendingBinding = await initial.runtimeStore.getPending(request.identity);
+            const absentFinalLocator = tmuxNaming.buildReadableTmuxLocator({
+                ...request.identity, pendingId: undefined, sessionId: 'stale-attach-final',
+            }, 'session', { projectName: request.projectName, sessionName: 'Stale attach' });
+            await initial.runtimeStore.setConsumed({
+                version: 2, state: 'consumed', ...request.identity,
+                finalSessionId: 'stale-attach-final', finalSessionName: 'Stale attach',
+                layout: 'session', finalLocator: absentFinalLocator,
+                consumedAtMs: harness.dependencies.nowMs(),
+            });
+            harness.windows.length = 0;
+            await initial.attachStore.flush();
+
+            const restartedAttachState = clonePersistedAttachState(attachState);
+            const restarted = createFreshPersistedRuntime(
+                harness, runtimeRoot, restartedAttachState
+            );
+            await restarted.tmux.restoreAttachTerminals([pendingRuntime.terminal]);
+            assert.strictEqual(restarted.attachStore.get(await pendingRuntime.terminal.processId), null,
+                'a consumed pending attach without its exact final runtime must be deleted on reload');
+            assert.ok(pendingBinding);
+            harness.windows.push({
+                sessionName: absentFinalLocator.sessionName,
+                windowName: absentFinalLocator.windowName,
+                windowId: '@stale-final', active: false,
+                sessionMetadata: {
+                    managed: '1', version: '2', layout: 'session',
+                    workspaceScopeIdentity: request.identity.workspaceScopeIdentity,
+                    workspaceNavigationIdentity: request.identity.workspaceNavigationIdentity,
+                    workspaceRootHostPaths: JSON.stringify(request.identity.workspaceRootHostPaths),
+                    cwd: request.identity.cwd, provider: request.identity.provider,
+                    sessionId: 'stale-attach-final', createdAt: request.createdAt,
+                    marker: request.launch.markerPath,
+                },
+                windowMetadata: { managed: '1', version: '2', layout: 'session' },
+                metadata: {},
+            });
+            const secondRestart = createFreshPersistedRuntime(harness, runtimeRoot,
+                clonePersistedAttachState(restartedAttachState));
+            await secondRestart.tmux.restoreAttachTerminals([pendingRuntime.terminal]);
+            assert.strictEqual(secondRestart.tmux.getFocusedRuntime(pendingRuntime.terminal), null,
+                'a later runtime with the same identity must not reclaim a deleted stale terminal binding');
+        } finally {
+            fs.rmSync(runtimeRoot, { recursive: true, force: true });
+        }
+    }
+
+    for (const crashLayout of ['session', 'project']) {
+        for (const crashFailure of [{
+            label: 'remove-pending', message: /post-consumed pending removal failed/,
+        }, {
+            label: 'refresh', message: /post-consumed discovery refresh failed/,
+        }, {
+            label: 'attach-migrate', message: /attach migration failed/,
+        }]) {
+            const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(),
+                `project-steward-post-consumed-${crashLayout}-${crashFailure.label}-`));
+            try {
+                const crashHarness = createTmuxBackendHarness();
+                const attachState = createPersistedAttachState();
+                const initial = createFreshPersistedRuntime(crashHarness, runtimeRoot, attachState);
+                const crashRequest = {
+                    identity: {
+                        provider: 'codex',
+                        workspaceScopeIdentity: `promotion-crash-${crashLayout}-${crashFailure.label}`,
+                        workspaceNavigationIdentity: `nav-promotion-crash-${crashLayout}`,
+                        workspaceRootHostPaths: ['/work'], cwd: '/work',
+                        pendingId: `promotion-crash-pending-${crashLayout}-${crashFailure.label}`,
+                    },
+                    projectName: 'Crash Project', terminalName: `Codex: ${crashFailure.label}`,
+                    createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [], title: 'Crash recovery',
+                    launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/crash-recovery' },
+                };
+                const crashFinalId = `promotion-crash-final-${crashLayout}-${crashFailure.label}`;
+                const crashPending = await initial.tmux.ensurePending(crashRequest, crashLayout);
+                await initial.attachStore.flush();
+                const crashCreates = crashHarness.operations.filter(item =>
+                    item.type === 'new-session' || item.type === 'new-window').length;
+
+                if (crashFailure.label === 'remove-pending') {
+                    const removePending = initial.runtimeStore.removePending.bind(initial.runtimeStore);
+                    let failed = false;
+                    initial.runtimeStore.removePending = async identity => {
+                        if (!failed && await initial.runtimeStore.getConsumed(identity)) {
+                            failed = true;
+                            throw new Error('post-consumed pending removal failed');
+                        }
+                        return removePending(identity);
+                    };
+                } else if (crashFailure.label === 'refresh') {
+                    const refresh = initial.discovery.refresh.bind(initial.discovery);
+                    let failed = false;
+                    initial.discovery.refresh = async force => {
+                        if (!failed && await initial.runtimeStore.getConsumed(crashRequest.identity)) {
+                            failed = true;
+                            throw new Error('post-consumed discovery refresh failed');
+                        }
+                        return refresh(force);
+                    };
+                } else {
+                    const setAttach = initial.attachStore.set.bind(initial.attachStore);
+                    const setAttachRecovery = initial.attachStore.setRecovery
+                        .bind(initial.attachStore);
+                    const flushAttach = initial.attachStore.flush.bind(initial.attachStore);
+                    let droppedFinalAttach = false;
+                    let failed = false;
+                    initial.attachStore.set = (processId, binding) => {
+                        if (!failed && binding.sessionId === crashFinalId) {
+                            droppedFinalAttach = true;
+                            return;
+                        }
+                        setAttach(processId, binding);
+                    };
+                    initial.attachStore.setRecovery = (token, processId, binding) => {
+                        if (!failed && binding.sessionId === crashFinalId) {
+                            droppedFinalAttach = true;
+                            return;
+                        }
+                        setAttachRecovery(token, processId, binding);
+                    };
+                    initial.attachStore.flush = async () => {
+                        if (!failed && droppedFinalAttach) {
+                            failed = true;
+                            throw new Error('attach migration failed');
+                        }
+                        return flushAttach();
+                    };
+                }
+
+                await assert.rejects(initial.tmux.promotePending(
+                    crashRequest.identity, crashFinalId, 'Crash recovery'
+                ), crashFailure.message);
+                const crashConsumed = await initial.runtimeStore.getConsumed(crashRequest.identity);
+                assert.ok(crashConsumed, 'post-consumed crash must retain its durable commit record');
+                assert.strictEqual(crashConsumed.finalSessionId, crashFinalId);
+                assert.strictEqual(crashConsumed.finalSessionName, 'Crash recovery');
+                assert.ok(await initial.runtimeStore.getPromoting(crashRequest.identity),
+                    'the intent must remain until attach migration and cleanup are durable');
+                assert.strictEqual(!!await initial.runtimeStore.getPending(crashRequest.identity),
+                    crashFailure.label !== 'refresh',
+                    'the pending binding may be absent only after cleanup reached its refresh step');
+                await initial.attachStore.flush();
+
+                const restarted = createFreshPersistedRuntime(
+                    crashHarness, runtimeRoot, clonePersistedAttachState(attachState)
+                );
+                await restarted.tmux.restoreAttachTerminals([crashPending.terminal]);
+                assert.ok(restarted.coordinator.getActive().some(runtime =>
+                    runtime.identity.sessionId === crashFinalId),
+                'the final runtime must already be active and therefore claimed by the controller');
+                await assert.rejects(restarted.coordinator.promotePending(
+                    crashRequest.identity, crashFinalId, 'Crash---recovery'
+                ), /conflicting promotion|different promotion|consumed/i,
+                'explicit recovery with a different raw display name must remain fail closed');
+                const promotionAttempts = [];
+                const promotePending = restarted.coordinator.promotePending.bind(
+                    restarted.coordinator
+                );
+                restarted.coordinator.promotePending = async (identity, sessionId, sessionName) => {
+                    promotionAttempts.push({ sessionId, sessionName });
+                    return promotePending(identity, sessionId, sessionName);
+                };
+                const controller = createPromotionController(restarted.coordinator);
+                const workspace = {
+                    scopeIdentity: crashRequest.identity.workspaceScopeIdentity,
+                    navigationIdentity: crashRequest.identity.workspaceNavigationIdentity,
+                };
+                const newerSession = {
+                    id: `${crashFinalId}-newer`, name: 'Newer same-cwd session', cwd: '/work',
+                    updatedAt: '2026-07-18T10:00:02.000Z',
+                };
+                const targetSession = {
+                    id: crashFinalId, name: 'Changed provider display', cwd: '/work',
+                    updatedAt: '2026-07-18T10:00:01.000Z',
+                };
+                const sessionResult = sessions => ({
+                    codex: { available: true, scannedFiles: 2, parsedFiles: 2, sessions },
+                });
+                if (crashLayout === 'session' && crashFailure.label === 'attach-migrate') {
+                    await controller.promote(workspace, sessionResult([newerSession]),
+                        'post-consumed-target-missing');
+                    assert.deepStrictEqual(promotionAttempts, [],
+                        'an absent durable target must not fall back to a newer same-cwd session');
+                    assert.ok(await restarted.runtimeStore.getPromoting(crashRequest.identity));
+                    assert.ok(await restarted.runtimeStore.getPending(crashRequest.identity));
+                }
+                await controller.promote(workspace, sessionResult([newerSession, targetSession]),
+                    'post-consumed-recovery');
+                assert.deepStrictEqual(promotionAttempts, [{
+                    sessionId: crashFinalId, sessionName: 'Crash recovery',
+                }], 'the real controller must replay the exact frozen durable promotion once');
+                assert.strictEqual(await restarted.runtimeStore.getPromoting(crashRequest.identity), null);
+                assert.strictEqual(await restarted.runtimeStore.getPending(crashRequest.identity), null);
+                const recoveredAttach = restarted.attachStore.get(await crashPending.terminal.processId);
+                assert.strictEqual(recoveredAttach.sessionName, crashConsumed.finalLocator.sessionName);
+                assert.strictEqual(recoveredAttach.windowName, crashConsumed.finalLocator.windowName);
+                assert.strictEqual(recoveredAttach.sessionId, crashFinalId);
+                assert.strictEqual(crashHarness.operations.filter(item =>
+                    item.type === 'new-session' || item.type === 'new-window').length, crashCreates,
+                'real-controller crash recovery must never redispatch the provider command');
+            } finally {
+                fs.rmSync(runtimeRoot, { recursive: true, force: true });
+            }
         }
     }
 
@@ -3852,7 +6504,7 @@ async function runTmuxBackendChecks() {
         });
         const expiredIntentRequest = {
             identity: {
-                provider: 'claude', projectKey: `expired-intent-${expiredIntentLayout}`, cwd: '/work',
+                provider: 'claude', workspaceScopeIdentity: `expired-intent-${expiredIntentLayout}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                 pendingId: `expired-intent-pending-${expiredIntentLayout}`,
             },
             projectName: 'App', terminalName: `Claude: Expired Intent ${expiredIntentLayout}`,
@@ -3863,12 +6515,12 @@ async function runTmuxBackendChecks() {
         const expiredIntentBackend = new backendModule.TmuxRuntimeBackend(expiredIntentHarness.dependencies);
         await expiredIntentBackend.ensurePending(expiredIntentRequest, expiredIntentLayout);
         await assert.rejects(expiredIntentBackend.promotePending(
-            expiredIntentRequest.identity.pendingId, expiredIntentFinalId
+            expiredIntentRequest.identity, expiredIntentFinalId, 'Expired intent'
         ), /consumed persistence failed/);
         assert.ok(Array.from(expiredIntentHarness.promoting.values())[0].pendingBinding);
         movingNowMs = acceptedNowMs + (24 * 60 * 60 * 1000) + 1;
         assert.strictEqual(await expiredIntentHarness.runtimeStore.getPending(
-            expiredIntentRequest.identity.pendingId
+            expiredIntentRequest.identity
         ), null);
         const expiredEnsureCreateCount = expiredIntentHarness.operations.filter(item =>
             item.type === 'new-session' || item.type === 'new-window').length;
@@ -3877,13 +6529,14 @@ async function runTmuxBackendChecks() {
         assert.strictEqual(expiredIntentHarness.operations.filter(item =>
             item.type === 'new-session' || item.type === 'new-window').length, expiredEnsureCreateCount);
         const expiredIntentRecovered = await new backendModule.TmuxRuntimeBackend(expiredIntentHarness.dependencies)
-            .promotePending(expiredIntentRequest.identity.pendingId, expiredIntentFinalId);
+            .promotePending(expiredIntentRequest.identity, expiredIntentFinalId, 'Expired intent');
         assert.strictEqual(expiredIntentRecovered.length, 1);
         assert.strictEqual(expiredIntentHarness.promoting.size, 0);
         assert.strictEqual(expiredIntentHarness.pending.size, 0);
         assert.strictEqual(expiredIntentHarness.consumed.size, 1);
         assert.strictEqual(expiredIntentHarness.operations.filter(item =>
-            item.type === 'rename-session' || item.type === 'rename-window').length, 1);
+            item.type === 'rename-session' || item.type === 'rename-window').length,
+        expiredIntentLayout === 'session' ? 2 : 1);
     }
 
     for (const occupiedExpiredLayout of ['session', 'project']) {
@@ -3896,7 +6549,7 @@ async function runTmuxBackendChecks() {
         });
         const occupiedExpiredRequest = {
             identity: {
-                provider: 'codex', projectKey: `occupied-expired-${occupiedExpiredLayout}`, cwd: '/work',
+                provider: 'codex', workspaceScopeIdentity: `occupied-expired-${occupiedExpiredLayout}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                 pendingId: `occupied-expired-pending-${occupiedExpiredLayout}`,
             },
             projectName: 'App', terminalName: `Codex: Occupied Expired ${occupiedExpiredLayout}`,
@@ -3907,7 +6560,7 @@ async function runTmuxBackendChecks() {
         const occupiedExpiredBackend = new backendModule.TmuxRuntimeBackend(occupiedExpiredHarness.dependencies);
         await occupiedExpiredBackend.ensurePending(occupiedExpiredRequest, occupiedExpiredLayout);
         await assert.rejects(occupiedExpiredBackend.promotePending(
-            occupiedExpiredRequest.identity.pendingId, occupiedExpiredFinalId
+            occupiedExpiredRequest.identity, occupiedExpiredFinalId, 'Occupied expired intent'
         ), /consumed persistence failed/);
         const occupiedExpiredIntent = Array.from(occupiedExpiredHarness.promoting.values())[0];
         const renamedRow = occupiedExpiredHarness.windows.find(row =>
@@ -3919,22 +6572,30 @@ async function runTmuxBackendChecks() {
         if (occupiedExpiredLayout === 'project') {
             renamedRow.windowName = occupiedExpiredIntent.sourceLocator.windowName;
             renamedRow.sessionMetadata = {
-                managed: '1', version: '1', layout: 'project',
-                projectKey: occupiedExpiredIntent.projectKey,
+                managed: '1', version: '2', layout: 'project',
+                workspaceScopeIdentity: occupiedExpiredIntent.workspaceScopeIdentity,
             };
             renamedRow.windowMetadata = {
-                managed: '1', version: '1', layout: 'project', provider: occupiedExpiredIntent.provider,
+                managed: '1', version: '2', layout: 'project', provider: occupiedExpiredIntent.provider,
+                workspaceScopeIdentity: occupiedExpiredIntent.workspaceScopeIdentity,
+                workspaceNavigationIdentity: occupiedExpiredIntent.workspaceNavigationIdentity,
+                workspaceRootHostPaths: JSON.stringify(occupiedExpiredIntent.workspaceRootHostPaths),
+                cwd: occupiedExpiredIntent.cwd,
                 createdAt: occupiedExpiredIntent.createdAt, pendingId: occupiedExpiredIntent.pendingId,
                 marker: occupiedExpiredIntent.markerPath,
             };
         } else {
+            renamedRow.windowName = occupiedExpiredIntent.sourceLocator.windowName || 'ai-session';
             renamedRow.sessionMetadata = {
-                managed: '1', version: '1', layout: 'session', provider: occupiedExpiredIntent.provider,
-                projectKey: occupiedExpiredIntent.projectKey,
+                managed: '1', version: '2', layout: 'session', provider: occupiedExpiredIntent.provider,
+                workspaceScopeIdentity: occupiedExpiredIntent.workspaceScopeIdentity,
+                workspaceNavigationIdentity: occupiedExpiredIntent.workspaceNavigationIdentity,
+                workspaceRootHostPaths: JSON.stringify(occupiedExpiredIntent.workspaceRootHostPaths),
+                cwd: occupiedExpiredIntent.cwd,
                 createdAt: occupiedExpiredIntent.createdAt, pendingId: occupiedExpiredIntent.pendingId,
                 marker: occupiedExpiredIntent.markerPath,
             };
-            renamedRow.windowMetadata = { managed: '1', version: '1', layout: 'session' };
+            renamedRow.windowMetadata = { managed: '1', version: '2', layout: 'session' };
         }
         renamedRow.metadata = { ...renamedRow.sessionMetadata, ...renamedRow.windowMetadata };
         occupiedExpiredHarness.windows.push({
@@ -3945,7 +6606,7 @@ async function runTmuxBackendChecks() {
         });
         movingNowMs = acceptedNowMs + (24 * 60 * 60 * 1000) + 1;
         assert.strictEqual(await occupiedExpiredHarness.runtimeStore.getPending(
-            occupiedExpiredRequest.identity.pendingId
+            occupiedExpiredRequest.identity
         ), null);
         const promotionMutations = () => occupiedExpiredHarness.operations.filter(item => [
             'rename-session', 'rename-window', 'session-options', 'window-options', 'clear-pending',
@@ -3954,7 +6615,9 @@ async function runTmuxBackendChecks() {
         const mutationsBeforeOccupiedRetry = promotionMutations();
         const occupiedExpiredResult = await new backendModule.TmuxRuntimeBackend(
             occupiedExpiredHarness.dependencies
-        ).promotePending(occupiedExpiredRequest.identity.pendingId, occupiedExpiredFinalId);
+        ).promotePending(
+            occupiedExpiredRequest.identity, occupiedExpiredFinalId, 'Occupied expired intent'
+        );
         assert.strictEqual(occupiedExpiredResult.length, 1);
         assert.strictEqual(occupiedExpiredResult[0].state, 'conflict');
         assert.strictEqual(occupiedExpiredResult[0].identity.pendingId,
@@ -3968,10 +6631,10 @@ async function runTmuxBackendChecks() {
         let gatePromotion = false;
         let promotionLockHeld = false;
         const delayedIdentity = {
-            provider: 'codex', projectKey: `delayed-${delayedLayout}`, cwd: '/work',
+            provider: 'codex', workspaceScopeIdentity: `delayed-${delayedLayout}`, workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
             pendingId: `delayed-pending-${delayedLayout}`,
         };
-        const delayedLockKey = `pending:${delayedIdentity.pendingId}`;
+        const delayedLockKey = `pending:${tmuxLayout.getTmuxRuntimeKey(delayedIdentity)}`;
         const delayedHarness = createTmuxBackendHarness({
             onLockAcquired: async key => {
                 if (gatePromotion && !promotionLockHeld && key === delayedLockKey) {
@@ -3991,7 +6654,7 @@ async function runTmuxBackendChecks() {
         await delayedBackend.ensurePending(delayedRequest, delayedLayout);
         gatePromotion = true;
         const promotionPromise = delayedBackend.promotePending(
-            delayedIdentity.pendingId, `delayed-final-${delayedLayout}`
+            delayedIdentity, `delayed-final-${delayedLayout}`, 'Delayed final'
         );
         await pendingLockEntered.promise;
         const queuedBeforeEnsure = delayedHarness.operations.filter(item =>
@@ -4011,69 +6674,92 @@ async function runTmuxBackendChecks() {
 
     const failedPromotionHarness = createTmuxBackendHarness({ failRenameSessionCount: 1 });
     const failedPromotionBackend = new backendModule.TmuxRuntimeBackend(failedPromotionHarness.dependencies);
-    await failedPromotionBackend.ensurePending({
+    const failedPromotionRequest = {
         identity: {
-            provider: 'kimi', projectKey: 'failed-promotion', cwd: '/work', pendingId: 'failed-pending',
+            provider: 'kimi', workspaceScopeIdentity: 'failed-promotion', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'failed-pending',
         },
         projectName: 'App', terminalName: 'Kimi: Failed Promotion',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
         launch: { executable: 'kimi', args: ['new'] },
-    }, 'session');
-    await assert.rejects(failedPromotionBackend.promotePending('failed-pending', 'failed-final'),
+    };
+    await failedPromotionBackend.ensurePending(failedPromotionRequest, 'session');
+    const failedPromotionCreates = failedPromotionHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length;
+    await assert.rejects(failedPromotionBackend.promotePending(
+        failedPromotionRequest.identity, 'failed-final', 'Failed final'
+    ),
         /rename session failed/);
     assert.strictEqual(failedPromotionHarness.consumed.size, 0);
-    assert.strictEqual(failedPromotionHarness.pending.has('failed-pending'), true);
+    assert.strictEqual(failedPromotionHarness.pending.size, 1);
     assert.strictEqual(failedPromotionHarness.promoting.size, 0);
+    const retriedFailedPromotion = await new backendModule.TmuxRuntimeBackend(
+        failedPromotionHarness.dependencies
+    ).promotePending(failedPromotionRequest.identity, 'failed-final', 'Failed final');
+    assert.match(retriedFailedPromotion[0].tmux.sessionName,
+        /^ps-App-Failed-final-[0-9a-f]{8}$/);
+    assert.match(retriedFailedPromotion[0].tmux.windowName,
+        /^kimi-Failed-final-[0-9a-f]{8}$/);
+    assert.strictEqual(failedPromotionHarness.operations.filter(item => item.type === 'rename-session').length, 2);
+    assert.strictEqual(failedPromotionHarness.operations.filter(item => item.type === 'rename-window').length, 1);
+    assert.strictEqual(failedPromotionHarness.operations.filter(item =>
+        item.type === 'new-session' || item.type === 'new-window').length, failedPromotionCreates,
+    'pre-rename recovery must never redispatch the provider command');
 
     const unknownPromotionHarness = createTmuxBackendHarness();
     const unknownPromotionBackend = new backendModule.TmuxRuntimeBackend(unknownPromotionHarness.dependencies);
-    await unknownPromotionBackend.ensurePending({
+    const unknownPromotionRequest = {
         identity: {
-            provider: 'codex', projectKey: 'unknown-promotion', cwd: '/work', pendingId: 'unknown-pending',
+            provider: 'codex', workspaceScopeIdentity: 'unknown-promotion', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'unknown-pending',
         },
         projectName: 'App', terminalName: 'Codex: Unknown Promotion',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'] },
-    }, 'session');
-    const unknownFinalIdentity = {
-        provider: 'codex', projectKey: 'unknown-promotion', cwd: '/work', sessionId: 'unknown-final',
     };
-    const unknownFinalLocator = new tmuxLayout.SessionTmuxLayout().getLocator(unknownFinalIdentity);
+    await unknownPromotionBackend.ensurePending(unknownPromotionRequest, 'session');
+    const unknownFinalIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'unknown-promotion', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'unknown-final',
+    };
+    const unknownFinalLocator = tmuxNaming.buildReadableTmuxLocator(
+        unknownFinalIdentity, 'session', { projectName: 'App', sessionName: 'Unknown final' }
+    );
     unknownPromotionHarness.windows.push({
         ...unknownFinalLocator, windowName: 'shell', windowId: '@unknown-promotion', active: false,
         sessionMetadata: {}, windowMetadata: {}, metadata: {},
     });
     const unknownPromotionResult = await unknownPromotionBackend.promotePending(
-        'unknown-pending', 'unknown-final'
+        unknownPromotionRequest.identity, 'unknown-final', 'Unknown final'
     );
     assert.strictEqual(unknownPromotionResult.length, 1);
     assert.strictEqual(unknownPromotionResult[0].state, 'conflict');
     assert.strictEqual(unknownPromotionHarness.operations.some(item => item.type === 'rename-session'), false);
-    assert.strictEqual(unknownPromotionHarness.pending.has('unknown-pending'), true);
+    assert.strictEqual(unknownPromotionHarness.pending.size, 1);
 
     const collisionHarness = createTmuxBackendHarness();
     const collisionBackend = new backendModule.TmuxRuntimeBackend(collisionHarness.dependencies);
     await collisionBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'collision', cwd: '/work', sessionId: 'final' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'collision', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'final' },
         projectName: 'App', terminalName: 'AI Sessions: Collision',
         launch: { executable: 'codex', args: ['resume', 'final'], markerPath: '/tmp/final' },
     }, 'project');
-    await collisionBackend.ensurePending({
-        identity: { provider: 'codex', projectKey: 'collision', cwd: '/work', pendingId: 'pending' },
+    const collisionPendingRequest = {
+        identity: { provider: 'codex', workspaceScopeIdentity: 'collision', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending' },
         projectName: 'App', terminalName: 'AI Sessions: Collision',
         createdAt: '2026-07-18T09:58:00Z', excludedSessionIds: [],
         launch: { executable: 'codex', args: ['new'], markerPath: '/tmp/pending-collision' },
-    }, 'project');
-    const collisionResult = await collisionBackend.promotePending('pending', 'final');
+    };
+    await collisionBackend.ensurePending(collisionPendingRequest, 'project');
+    const collisionResult = await collisionBackend.promotePending(
+        collisionPendingRequest.identity, 'final', 'Collision final'
+    );
     assert.strictEqual(collisionResult.length, 2);
     assert.ok(collisionResult.every(runtime => runtime.state === 'conflict'));
     assert.strictEqual(collisionHarness.operations.filter(item => item.type === 'rename-window').length, 0);
-    assert.strictEqual(collisionHarness.pending.has('pending'), true);
+    assert.strictEqual(collisionHarness.pending.size, 1);
 
     const attachFailureHarness = createTmuxBackendHarness({ failAttachCount: 1 });
     const attachFailureBackend = new backendModule.TmuxRuntimeBackend(attachFailureHarness.dependencies);
     const attachFailureRequest = {
-        identity: { provider: 'kimi', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'kimi', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Kimi: s1',
         launch: { executable: 'kimi', args: ['--resume', 's1'], markerPath: '/tmp/k1' },
     };
@@ -4100,7 +6786,7 @@ async function runTmuxBackendChecks() {
     const ambiguousHarness = createTmuxBackendHarness({ ambiguousCreateCount: 1 });
     const ambiguousBackend = new backendModule.TmuxRuntimeBackend(ambiguousHarness.dependencies);
     const ambiguousRequest = {
-        identity: { provider: 'codex', projectKey: 'ambiguous', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'ambiguous', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: s1',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/a1' },
     };
@@ -4114,11 +6800,12 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(ambiguousHarness.pending.size, 0);
     const recoveredAmbiguousRow = ambiguousHarness.windows[0];
     recoveredAmbiguousRow.sessionMetadata = {
-        managed: '1', version: '1', layout: 'session', projectKey: 'ambiguous',
+        managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'ambiguous',
+        workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
         provider: 'codex', sessionId: 's1', marker: '/tmp/a1',
     };
     recoveredAmbiguousRow.windowMetadata = {
-        managed: '1', version: '1', layout: 'session',
+        managed: '1', version: '2', layout: 'session',
     };
     recoveredAmbiguousRow.metadata = {
         ...recoveredAmbiguousRow.sessionMetadata, ...recoveredAmbiguousRow.windowMetadata,
@@ -4127,11 +6814,15 @@ async function runTmuxBackendChecks() {
         .ensureResume(ambiguousRequest, 'session');
     assert.strictEqual(recoveredAmbiguous.identity.sessionId, 's1');
     assert.deepStrictEqual(ambiguousHarness.known.get('codex:s1'), {
-        version: 1, state: 'known', provider: 'codex', sessionId: 's1',
-        projectKey: 'ambiguous', layout: 'session',
-        locator: { layout: 'session', sessionName: recoveredAmbiguousRow.sessionName },
+        version: 2, state: 'known', provider: 'codex', sessionId: 's1',
+        workspaceScopeIdentity: 'ambiguous', workspaceNavigationIdentity: 'nav-1',
+        workspaceRootHostPaths: ['/work'], cwd: '/work', layout: 'session',
+        locator: {
+            layout: 'session', sessionName: recoveredAmbiguousRow.sessionName,
+            windowName: recoveredAmbiguousRow.windowName,
+        },
         lastSeenAtMs: Date.parse('2026-07-18T10:00:00Z'),
-    }, 'ambiguous recovery without createdAt must fall back to a legacy known hint');
+    }, 'ambiguous recovery without createdAt must retain a v2 known hint');
     assert.strictEqual(ambiguousHarness.ambiguous.size, 0);
     assert.strictEqual(ambiguousHarness.operations.filter(item => item.type === 'new-session').length, 1);
 
@@ -4139,16 +6830,17 @@ async function runTmuxBackendChecks() {
         ambiguousCreateCount: 1,
         prepareAmbiguousWindow: row => {
             row.sessionMetadata = {
-                managed: '1', version: '1', layout: 'session', projectKey: 'ambiguous-lifecycle',
+                managed: '1', version: '2', layout: 'session', workspaceScopeIdentity: 'ambiguous-lifecycle',
+                workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: '["/work"]', cwd: '/work',
                 provider: 'codex', sessionId: 's2',
                 createdAt: '2026-07-18T09:59:00.000Z', marker: '/tmp/a2',
             };
-            row.windowMetadata = { managed: '1', version: '1', layout: 'session' };
+            row.windowMetadata = { managed: '1', version: '2', layout: 'session' };
             row.metadata = { ...row.sessionMetadata, ...row.windowMetadata };
         },
     });
     const ambiguousLifecycleRequest = {
-        identity: { provider: 'codex', projectKey: 'ambiguous-lifecycle', cwd: '/work', sessionId: 's2' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'ambiguous-lifecycle', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's2' },
         projectName: 'App', terminalName: 'Codex: s2',
         launch: { executable: 'codex', args: ['resume', 's2'], markerPath: '/tmp/a2' },
     };
@@ -4158,9 +6850,13 @@ async function runTmuxBackendChecks() {
     const recoveredLifecycleRow = ambiguousLifecycleHarness.windows[0];
     assert.strictEqual(recoveredLifecycle.identity.sessionId, 's2');
     assert.deepStrictEqual(ambiguousLifecycleHarness.known.get('codex:s2'), {
-        version: 1, state: 'known', provider: 'codex', sessionId: 's2',
-        projectKey: 'ambiguous-lifecycle', layout: 'session',
-        locator: { layout: 'session', sessionName: recoveredLifecycleRow.sessionName },
+        version: 2, state: 'known', provider: 'codex', sessionId: 's2',
+        workspaceScopeIdentity: 'ambiguous-lifecycle', workspaceNavigationIdentity: 'nav-1',
+        workspaceRootHostPaths: ['/work'], layout: 'session',
+        locator: {
+            layout: 'session', sessionName: recoveredLifecycleRow.sessionName,
+            windowName: recoveredLifecycleRow.windowName,
+        },
         lastSeenAtMs: Date.parse('2026-07-18T10:00:00Z'),
         cwd: '/work', markerPath: '/tmp/a2',
         runStartedAtMs: Date.parse('2026-07-18T09:59:00.000Z'),
@@ -4169,7 +6865,7 @@ async function runTmuxBackendChecks() {
     const ambiguousPendingHarness = createTmuxBackendHarness({ ambiguousCreateCount: 1 });
     const ambiguousPendingRequest = {
         identity: {
-            provider: 'claude', projectKey: 'ambiguous-pending', cwd: '/work', pendingId: 'pending-ambiguous',
+            provider: 'claude', workspaceScopeIdentity: 'ambiguous-pending', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-ambiguous',
         },
         projectName: 'App', terminalName: 'Claude: Ambiguous',
         createdAt: '2026-07-18T09:59:00Z', excludedSessionIds: [],
@@ -4190,7 +6886,7 @@ async function runTmuxBackendChecks() {
 
     const nonzeroSessionHarness = createTmuxBackendHarness({ failCreateSessionNonzeroCount: 1 });
     const nonzeroSessionRequest = {
-        identity: { provider: 'codex', projectKey: 'nonzero-session', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'nonzero-session', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: Nonzero',
         launch: { executable: 'codex', args: ['resume', 's1'] },
     };
@@ -4206,7 +6902,7 @@ async function runTmuxBackendChecks() {
 
     const nonzeroProjectHarness = createTmuxBackendHarness({ failCreateWindowNonzeroCount: 1 });
     const nonzeroProjectRequest = {
-        identity: { provider: 'claude', projectKey: 'nonzero-project', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'claude', workspaceScopeIdentity: 'nonzero-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Claude: Nonzero',
         launch: { executable: 'claude', args: ['--resume', 's1'] },
     };
@@ -4222,8 +6918,10 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(nonzeroProjectHarness.operations.filter(item => item.type === 'new-window').length, 2);
 
     const occupiedHarness = createTmuxBackendHarness();
-    const occupiedIdentity = { provider: 'codex', projectKey: 'occupied', cwd: '/work', sessionId: 's1' };
-    const occupiedLocator = new tmuxLayout.SessionTmuxLayout().getLocator(occupiedIdentity);
+    const occupiedIdentity = { provider: 'codex', workspaceScopeIdentity: 'occupied', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' };
+    const occupiedLocator = tmuxNaming.buildReadableTmuxLocator(
+        occupiedIdentity, 'session', { projectName: 'App', sessionName: 's1' }
+    );
     occupiedHarness.windows.push({
         ...occupiedLocator, windowName: 'shell', windowId: '@occupied', active: true,
         sessionMetadata: {}, windowMetadata: {}, metadata: {},
@@ -4238,18 +6936,23 @@ async function runTmuxBackendChecks() {
     const occupiedProjectHarness = createTmuxBackendHarness();
     const occupiedProjectBackend = new backendModule.TmuxRuntimeBackend(occupiedProjectHarness.dependencies);
     await occupiedProjectBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'occupied-project', cwd: '/work', sessionId: 'existing' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'occupied-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'existing' },
         projectName: 'App', terminalName: 'AI Sessions: Occupied',
         launch: { executable: 'codex', args: ['resume', 'existing'] },
     }, 'project');
     const unknownProjectIdentity = {
-        provider: 'claude', projectKey: 'occupied-project', cwd: '/work', sessionId: 'unknown',
+        provider: 'claude', workspaceScopeIdentity: 'occupied-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'unknown',
     };
-    const unknownProjectLocator = new tmuxLayout.ProjectTmuxLayout().getLocator(unknownProjectIdentity);
+    const unknownProjectLocator = {
+        ...tmuxNaming.buildReadableTmuxLocator(
+            unknownProjectIdentity, 'project', { projectName: 'App', sessionName: 'unknown' }
+        ),
+        sessionName: occupiedProjectBackend.getActive()[0].tmux.sessionName,
+    };
     occupiedProjectHarness.windows.push({
         ...unknownProjectLocator, windowId: '@occupied-project', active: false,
         sessionMetadata: {
-            managed: '1', version: '1', layout: 'project', projectKey: 'occupied-project',
+            managed: '1', version: '2', layout: 'project', workspaceScopeIdentity: 'occupied-project',
         },
         windowMetadata: {}, metadata: {},
     });
@@ -4264,7 +6967,7 @@ async function runTmuxBackendChecks() {
     });
     const unavailablePosixBackend = new backendModule.TmuxRuntimeBackend(unavailablePosixHarness.dependencies);
     await assert.rejects(unavailablePosixBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: s1',
         launch: { executable: 'codex', args: ['resume', 's1'] },
     }, 'session'), /tmux unavailable/);
@@ -4273,7 +6976,7 @@ async function runTmuxBackendChecks() {
     const unavailableHarness = createTmuxBackendHarness({ platform: 'win32' });
     const unavailableBackend = new backendModule.TmuxRuntimeBackend(unavailableHarness.dependencies);
     await assert.rejects(unavailableBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Codex: s1',
         launch: { executable: 'codex', args: ['resume', 's1'] },
     }, 'session'), /POSIX/);
@@ -4282,7 +6985,7 @@ async function runTmuxBackendChecks() {
     const restoreHarness = createTmuxBackendHarness();
     const restoreBackend = new backendModule.TmuxRuntimeBackend(restoreHarness.dependencies);
     const restorable = await restoreBackend.ensureResume({
-        identity: { provider: 'codex', projectKey: 'restore', cwd: '/work', sessionId: 's1' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'restore', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'AI Sessions: Restore',
         launch: { executable: 'codex', args: ['resume', 's1'], markerPath: '/tmp/r1' },
     }, 'project');
@@ -4290,24 +6993,102 @@ async function runTmuxBackendChecks() {
     const originalProcessId = await originalTerminal.processId;
     await restoreHarness.attachStore.flush();
     const persistedBinding = restoreHarness.attachBindings.get(originalProcessId);
+    const recoveryToken = originalTerminal.creationOptions.env.PROJECT_STEWARD_TMUX_ATTACH_ID;
     restoreBackend.handleClosedTerminal(originalTerminal);
     await restoreHarness.attachStore.flush();
+    const restoredProcessId = originalProcessId + 100;
     const restoredTerminal = {
-        name: originalTerminal.name,
-        creationOptions: {},
-        processId: Promise.resolve(originalProcessId),
+        name: restorable.tmux.windowName,
+        creationOptions: {
+            ...originalTerminal.creationOptions,
+            shellArgs: ['attach-session', '-t', 'obsolete-pending-session-name'],
+        },
+        processId: Promise.resolve(restoredProcessId),
         shown: false,
         disposed: false,
         show() { this.shown = true; },
         dispose() { this.disposed = true; },
     };
     restoreHarness.attachBindings.set(originalProcessId, persistedBinding);
+    restoreHarness.attachRecoveries.set(recoveryToken, {
+        processId: originalProcessId, binding: persistedBinding,
+    });
+    assert.strictEqual(restoreBackend.isAttachTerminalCandidate(restoredTerminal), true,
+        'late terminal-open events must identify managed tmux attach launch options');
     await restoreBackend.restoreAttachTerminals([restoredTerminal]);
     assert.ok(restoreBackend.getActive().every(runtime => runtime.terminal === restoredTerminal));
+    assert.ok(restoreHarness.attachBindings.has(restoredProcessId),
+        'reload must recreate the attach binding when VS Code reports a new terminal process ID');
+    assert.strictEqual(restoreHarness.attachBindings.has(originalProcessId), false,
+        'recovery must remove the stale pre-reload process binding');
+    const createdTerminalCount = restoreHarness.operations
+        .filter(item => item.type === 'create-terminal').length;
+    await restoreBackend.focus(restoreBackend.find(restorable.identity)[0]);
+    assert.strictEqual(restoreHarness.operations
+        .filter(item => item.type === 'create-terminal').length, createdTerminalCount,
+    'focusing after reload must reuse the restored tmux terminal even when tmux changed its title');
     restoreBackend.handleClosedTerminal(restoredTerminal);
     assert.ok(restoreBackend.getActive().every(runtime => !runtime.terminal));
+    await restoreHarness.attachStore.flush();
 
-    const reusedPidTerminal = { ...restoredTerminal, name: 'Unrelated shell' };
+    restoreHarness.attachBindings.set(restoredProcessId, persistedBinding);
+    restoreHarness.attachRecoveries.set(recoveryToken, {
+        processId: restoredProcessId, binding: persistedBinding,
+    });
+    const concurrentRestoreBackend = new backendModule.TmuxRuntimeBackend(
+        restoreHarness.dependencies
+    );
+    await Promise.all([
+        concurrentRestoreBackend.restoreAttachTerminals([restoredTerminal]),
+        concurrentRestoreBackend.restoreAttachTerminals([restoredTerminal]),
+    ]);
+    await restoreHarness.attachStore.flush();
+    assert.ok(restoreHarness.attachBindings.has(restoredProcessId),
+        'overlapping activation and terminal-open restoration must preserve the recovered binding');
+    concurrentRestoreBackend.handleClosedTerminal(restoredTerminal);
+    await restoreHarness.attachStore.flush();
+
+    const racingProcessId = restoredProcessId + 1;
+    const racingProcessIdDeferred = deferred();
+    const racingTerminal = {
+        ...restoredTerminal,
+        processId: racingProcessIdDeferred.promise,
+        shown: false,
+        disposed: false,
+    };
+    restoreHarness.attachBindings.set(restoredProcessId, persistedBinding);
+    restoreHarness.attachRecoveries.set(recoveryToken, {
+        processId: restoredProcessId, binding: persistedBinding,
+    });
+    const racingRestoreBackend = new backendModule.TmuxRuntimeBackend(
+        restoreHarness.dependencies
+    );
+    const racingRestore = racingRestoreBackend.restoreAttachTerminals([racingTerminal]);
+    await new Promise(resolve => setImmediate(resolve));
+    const createCountBeforeRacingFocus = restoreHarness.operations
+        .filter(item => item.type === 'create-terminal').length;
+    const racingFocus = racingRestoreBackend.focus(
+        racingRestoreBackend.find(restorable.identity)[0]
+    );
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(restoreHarness.operations
+        .filter(item => item.type === 'create-terminal').length, createCountBeforeRacingFocus,
+    'focusing during reload recovery must wait instead of opening a duplicate tmux terminal');
+    racingProcessIdDeferred.resolve(racingProcessId);
+    await Promise.all([racingRestore, racingFocus]);
+    assert.strictEqual(racingTerminal.shown, true,
+        'focusing during reload recovery must reveal the recovered terminal');
+    racingRestoreBackend.handleClosedTerminal(racingTerminal);
+    await restoreHarness.attachStore.flush();
+
+    const reusedPidTerminal = {
+        ...restoredTerminal,
+        name: 'Unrelated shell',
+        processId: Promise.resolve(originalProcessId),
+        creationOptions: { name: 'Unrelated shell', shellPath: '/bin/bash' },
+    };
+    assert.strictEqual(restoreBackend.isAttachTerminalCandidate(reusedPidTerminal), false,
+        'ordinary terminal-open events must not trigger tmux attachment recovery');
     restoreHarness.attachBindings.set(originalProcessId, persistedBinding);
     await restoreBackend.restoreAttachTerminals([reusedPidTerminal]);
     await restoreHarness.attachStore.flush();
@@ -4316,7 +7097,7 @@ async function runTmuxBackendChecks() {
 
 function fakeRuntime(backend, sessionId, overrides = {}) {
     return {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId },
         backend,
         state: 'active',
         markerPath: '/tmp/m',
@@ -4328,22 +7109,25 @@ function fakeRuntime(backend, sessionId, overrides = {}) {
 
 function fakeResumeRequest(sessionId) {
     return {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId },
         projectName: 'App',
+        sessionName: `Session ${sessionId}`,
         terminalName: 'Codex: App',
         launch: { executable: 'codex', args: ['resume', sessionId], markerPath: '/tmp/m' },
+        directoryScope: createDirectoryScope('/work'),
     };
 }
 
 function fakeCreateRequest(pendingId) {
     return {
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId },
         projectName: 'App',
         terminalName: 'Codex: App',
         createdAt: '2026-07-18T10:00:00.000Z',
         excludedSessionIds: ['old'],
         title: 'New work',
         launch: { executable: 'codex', args: [], markerPath: '/tmp/pending' },
+        directoryScope: createDirectoryScope('/work'),
     };
 }
 
@@ -4355,15 +7139,20 @@ function fakeUnavailableError() {
 
 function createFakeRuntimeBackend(backend, options = {}) {
     let remainingEnsureErrors = options.ensureErrorCount || 0;
+    const focusErrors = [...(options.focusErrors || [])];
     const fake = {
         backend,
         active: [],
         pending: [],
         conflicts: [],
         lifecycleBlockers: [],
+        recoverablePending: [],
         refreshCalls: [],
         ensureResumeCalls: 0,
+        ensureResumeRequests: [],
+        ensureResumeLayouts: [],
         ensurePendingCalls: 0,
+        focusAttempts: [],
         focusCalls: [],
         detachCalls: [],
         closed: [],
@@ -4384,6 +7173,11 @@ function createFakeRuntimeBackend(backend, options = {}) {
         identity: { ...runtime.identity },
         excludedSessionIds: runtime.excludedSessionIds.slice(),
     }));
+    fake.listRecoverablePending = async () => fake.recoverablePending.map(runtime => ({
+        ...runtime,
+        identity: { ...runtime.identity },
+        excludedSessionIds: runtime.excludedSessionIds.slice(),
+    }));
     fake.getConflicts = () => fake.conflicts.map(runtime => ({
         ...runtime,
         identity: { ...runtime.identity },
@@ -4396,11 +7190,18 @@ function createFakeRuntimeBackend(backend, options = {}) {
     }));
     fake.find = identity => fake.getActive().filter(item =>
         item.identity.provider === identity.provider
+        && item.identity.workspaceScopeIdentity === identity.workspaceScopeIdentity
         && item.identity.sessionId === identity.sessionId);
-    fake.focus = async runtime => { fake.focusCalls.push(runtime); };
+    fake.focus = async runtime => {
+        fake.focusAttempts.push(runtime);
+        if (focusErrors.length) throw focusErrors.shift();
+        fake.focusCalls.push(runtime);
+    };
     fake.detach = async runtime => { fake.detachCalls.push(runtime); };
     fake.ensureResume = async (request, layout) => {
         fake.ensureResumeCalls++;
+        fake.ensureResumeRequests.push(request);
+        fake.ensureResumeLayouts.push(layout);
         if (options.resumeGate) await options.resumeGate.promise;
         if (remainingEnsureErrors > 0) {
             remainingEnsureErrors--;
@@ -4432,25 +7233,33 @@ function createFakeRuntimeBackend(backend, options = {}) {
         fake.pending.push(runtime);
         return runtime;
     };
-    fake.promotePending = async (pendingId, sessionId) => {
-        fake.promoted.push({ pendingId, sessionId });
-        return [fakeRuntime(backend, sessionId)];
+    fake.promotePending = async (identity, sessionId, sessionName) => {
+        fake.promoted.push({ identity: { ...identity }, sessionId, sessionName });
+        return [{ ...fakeRuntime(backend, sessionId), identity: { ...identity, pendingId: undefined, sessionId } }];
     };
     fake.handleClosedTerminal = terminal => { fake.closed.push(terminal); };
     return fake;
 }
 
-// SESSION-DIRECT-BACKEND-001
 async function runDirectBackendChecks() {
     const terminalA = { name: 'Codex: Existing' };
     const terminalPending = { name: 'Codex: Pending' };
     const terminals = [{
         provider: 'codex', sessionId: 'existing', terminal: terminalA,
         markerPath: '/tmp/existing', runStartedAtMs: 10, cwd: '/work',
+        runtimeIdentity: {
+            provider: 'codex', workspaceScopeIdentity: '/work', workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'existing',
+        },
     }];
     const pending = [{
         provider: 'codex', terminal: terminalPending, markerPath: '/tmp/pending', cwd: '/work',
-        createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: ['old'], title: 'New work',
+        createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: ['old'],
+        projectName: 'Existing Workspace Card', title: 'New work',
+        runtimeIdentity: {
+            provider: 'codex', workspaceScopeIdentity: '/work', workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: '2026-07-18T10:00:00.000Z',
+        },
     }];
     const operations = [];
     let nextTerminal = 1;
@@ -4502,11 +7311,12 @@ async function runDirectBackendChecks() {
     const projected = backend.getActive();
     assert.strictEqual(projected.length, 1);
     assert.deepStrictEqual(projected[0].identity, {
-        provider: 'codex', projectKey: '/work', cwd: '/work', sessionId: 'existing',
+        provider: 'codex', workspaceScopeIdentity: '/work', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'existing',
     });
     projected[0].identity.sessionId = 'mutated';
     assert.strictEqual(backend.getActive()[0].identity.sessionId, 'existing');
     assert.strictEqual(backend.getPending()[0].identity.pendingId, '2026-07-18T10:00:00.000Z');
+    assert.strictEqual(backend.getPending()[0].projectName, 'Existing Workspace Card');
 
     const resumed = await backend.ensureResume(fakeResumeRequest('fresh'));
     assert.strictEqual(resumed.backend, 'vscode');
@@ -4522,6 +7332,10 @@ async function runDirectBackendChecks() {
     terminals.push({
         provider: 'codex', sessionId: 'completed', terminal: completedTerminal,
         markerPath: '/tmp/complete', runStartedAtMs: 20, cwd: '/work',
+        runtimeIdentity: {
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'completed',
+        },
     });
     const createCountBeforeCompleted = operations.filter(item => item.type === 'create').length;
     await assert.rejects(backend.ensureResume(fakeResumeRequest('completed')),
@@ -4540,6 +7354,10 @@ async function runDirectBackendChecks() {
     terminals.push({
         provider: 'codex', sessionId: 'completed', terminal: duplicateCompletedTerminal,
         markerPath: '/tmp/duplicate-active', runStartedAtMs: 21, cwd: '/work',
+        runtimeIdentity: {
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1',
+            workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 'completed',
+        },
     });
     await assert.rejects(backend.ensureResume(fakeResumeRequest('completed')), /Multiple Direct Terminal/);
     assert.strictEqual(operations.filter(item => item.type === 'create').length, createCountBeforeCompleted);
@@ -4550,7 +7368,7 @@ async function runDirectBackendChecks() {
     cwdRejectedRequest.launch.cwd = '/work';
     await backend.ensureResume(cwdRejectedRequest);
     const cwdRejectedLaunch = operations.filter(item => item.type === 'launch').pop().launch;
-    assert.strictEqual(Object.prototype.hasOwnProperty.call(cwdRejectedLaunch, 'cwd'), false);
+    assert.strictEqual(cwdRejectedLaunch.cwd, '/work');
     assert.strictEqual(cwdRejectedRequest.launch.cwd, '/work');
 
     rejectNextCwd = true;
@@ -4558,17 +7376,27 @@ async function runDirectBackendChecks() {
     pendingCwdRejectedRequest.launch.cwd = '/work';
     await backend.ensurePending(pendingCwdRejectedRequest);
     const pendingCwdRejectedLaunch = operations.filter(item => item.type === 'launch').pop().launch;
-    assert.strictEqual(Object.prototype.hasOwnProperty.call(pendingCwdRejectedLaunch, 'cwd'), false);
+    assert.strictEqual(pendingCwdRejectedLaunch.cwd, '/work');
     assert.strictEqual(pendingCwdRejectedRequest.launch.cwd, '/work');
 
     const created = await backend.ensurePending(fakeCreateRequest('pending-1'));
     assert.strictEqual(created.identity.pendingId, 'pending-1');
+    assert.strictEqual(created.projectName, 'App');
     assert.strictEqual(operations.filter(item => item.type === 'track-pending').length, 2);
     assert.deepStrictEqual(operations.filter(item => item.type === 'launch').pop().options, {
         persistPendingBeforeLaunch: true,
     });
-    const promoted = await backend.promotePending('pending-1', 'new-session');
+    for (const invalidDisplayName of ['', 'x'.repeat(201), 'bad\nname']) {
+        assert.deepStrictEqual(await backend.promotePending(
+            created.identity, 'new-session', invalidDisplayName
+        ), [], 'Direct promotion must reject invalid display names without consuming the pending runtime');
+        assert.strictEqual(backend.getPending().some(item => item.identity.pendingId === 'pending-1'), true);
+    }
+    const promoted = await backend.promotePending(
+        created.identity, 'new-session', 'Readable Direct Session'
+    );
     assert.strictEqual(promoted[0].identity.sessionId, 'new-session');
+    assert.strictEqual(promoted[0].terminal, created.terminal);
     assert.strictEqual(backend.getPending().some(item => item.identity.pendingId === 'pending-1'), false);
 
     await backend.focus(promoted[0]);
@@ -4579,7 +7407,6 @@ async function runDirectBackendChecks() {
     assert.strictEqual(operations.filter(item => item.type === 'closed').length, 1);
 }
 
-// RUNTIME-RUNTIME-COORDINATOR-001
 async function runRuntimeCoordinatorChecks() {
     const direct = createFakeRuntimeBackend('vscode');
     const tmux = createFakeRuntimeBackend('tmux');
@@ -4595,6 +7422,38 @@ async function runRuntimeCoordinatorChecks() {
         chooseTmuxFallback: async () => 'cancel',
     });
 
+    const nestedCwd = '/work/api/packages/service';
+    for (const expected of [
+        { mode: 'vscode', tmuxLayout: 'project', backend: 'vscode', layout: undefined },
+        { mode: 'tmux', tmuxLayout: 'project', backend: 'tmux', layout: 'project' },
+        { mode: 'tmux', tmuxLayout: 'session', backend: 'tmux', layout: 'session' },
+    ]) {
+        const modeDirect = createFakeRuntimeBackend('vscode');
+        const modeTmux = createFakeRuntimeBackend('tmux');
+        const modeCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+            direct: modeDirect,
+            tmux: modeTmux,
+            getConfiguration: () => ({ ...expected, tmuxPath: 'tmux' }),
+            chooseTmuxFallback: async () => 'cancel',
+        });
+        const request = fakeResumeRequest(`nested-${expected.mode}-${expected.tmuxLayout}`);
+        request.identity.workspaceRootHostPaths = ['/work/api', '/work/web'];
+        request.identity.cwd = nestedCwd;
+        request.launch.cwd = nestedCwd;
+        request.directoryScope = {
+            ...createDirectoryScope(nestedCwd, ['/work/web']),
+            workspaceRootHostPaths: ['/work/api', '/work/web'],
+            primaryRootId: 'root-api',
+        };
+        await modeCoordinator.resume(request);
+        const selectedBackend = expected.backend === 'vscode' ? modeDirect : modeTmux;
+        assert.strictEqual(selectedBackend.ensureResumeRequests[0].identity.cwd, nestedCwd);
+        assert.strictEqual(selectedBackend.ensureResumeRequests[0].launch.cwd, nestedCwd);
+        assert.strictEqual(selectedBackend.ensureResumeRequests[0].directoryScope.primaryCwd, nestedCwd);
+        assert.strictEqual(selectedBackend.ensureResumeLayouts[0], expected.layout,
+            `${expected.mode}/${expected.tmuxLayout} must consume the exact nested launch scope`);
+    }
+
     for (const operation of ['focus', 'detach']) {
         const isolatedDirect = createFakeRuntimeBackend('vscode');
         isolatedDirect.active.push(fakeRuntime('vscode', `direct-${operation}`));
@@ -4609,7 +7468,7 @@ async function runRuntimeCoordinatorChecks() {
             hasLiveTmuxOwnership: async () => false,
         });
         await isolatedCoordinator[operation]({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: `direct-${operation}`,
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: `direct-${operation}`,
         });
         assert.deepStrictEqual(isolatedDirect.refreshCalls, [true]);
         assert.deepStrictEqual(unavailableTmux.refreshCalls, [],
@@ -4757,7 +7616,7 @@ async function runRuntimeCoordinatorChecks() {
             backend.conflicts = [{
                 ...fakeRuntime('tmux', undefined, { state: 'conflict', attached: false }),
                 identity: {
-                    provider: 'codex', projectKey: 'pk', cwd: '/work',
+                    provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
                     pendingId: 'fresh-pending-collision',
                 },
                 tmux: { layout: 'project', sessionName: 'pending-collision', windowName: 'occupied' },
@@ -4815,6 +7674,9 @@ async function runRuntimeCoordinatorChecks() {
     for (const operation of ['focus', 'detach']) {
         let firstRefresh = true;
         const guardedTmux = createFakeRuntimeBackend('tmux', {
+            ...(operation === 'focus' ? {
+                focusErrors: [new runtimeTypesModule.AiSessionRuntimeTargetChangedError()],
+            } : {}),
             onRefresh: backend => {
                 if (firstRefresh) {
                     firstRefresh = false;
@@ -4836,7 +7698,7 @@ async function runRuntimeCoordinatorChecks() {
             chooseTmuxFallback: async () => 'cancel',
         });
         await guardedActionCoordinator[operation]({
-            provider: 'codex', projectKey: 'pk', cwd: '/work', sessionId: `guarded-${operation}`,
+            provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: `guarded-${operation}`,
         });
         assert.deepStrictEqual(guardedTmux[`${operation}Calls`], [],
             `${operation} must not act on a runtime replaced by a fresh collision`);
@@ -4853,7 +7715,7 @@ async function runRuntimeCoordinatorChecks() {
         chooseTmuxFallback: async () => 'cancel',
     });
     assert.strictEqual((await duplicateCoordinator.resume(fakeResumeRequest('duplicate'))).status, 'conflict');
-    assert.strictEqual(duplicateCoordinator.getById('codex', 'duplicate'), null);
+    assert.strictEqual(duplicateCoordinator.getById('codex', 'duplicate', 'pk'), null);
 
     configuration = { ...configuration, mode: 'tmux', tmuxLayout: 'session' };
     direct.active.push(fakeRuntime('vscode', 'existing-direct'));
@@ -4880,9 +7742,80 @@ async function runRuntimeCoordinatorChecks() {
     assert.strictEqual(guardedDirect.ensureResumeCalls, 1);
     gate.resolve();
     const sharedResults = await Promise.all([first, second]);
+    assert.deepStrictEqual(sharedResults.map(result => result.status), ['started', 'focused'],
+        'only the request that owns the launch may receive a started result');
     assert.strictEqual(sharedResults[0].runtime.identity.sessionId, 'single');
     sharedResults[0].runtime.identity.sessionId = 'changed';
     assert.strictEqual(sharedResults[1].runtime.identity.sessionId, 'single');
+
+    const scopedGate = deferred();
+    const scopedDirect = createFakeRuntimeBackend('vscode', { resumeGate: scopedGate });
+    const scopedCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: scopedDirect,
+        tmux: createFakeRuntimeBackend('tmux'),
+        getConfiguration: () => ({ mode: 'vscode', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    const scopedWorkspaceTarget = {
+        cardId: 'scoped-workspace',
+        workspace: {
+            displayName: 'Scoped Workspace',
+            navigationIdentity: 'navigation:scoped-workspace',
+            scopeIdentity: 'scope:scoped-workspace',
+            roots: [],
+        },
+        sessions: {
+            sessionsByProvider: {
+                codex: [{ id: 'scoped-session', cwd: '/work/first' }],
+            },
+            activeSessions: [],
+        },
+    };
+    const firstScope = Object.freeze({
+        ...createDirectoryScope('/work/first', ['/work/second']),
+        workspaceScopeIdentity: 'scope:scoped-workspace',
+    });
+    const secondScope = Object.freeze({
+        ...createDirectoryScope('/work/second', ['/work/first']),
+        workspaceScopeIdentity: 'scope:scoped-workspace',
+    });
+    const rememberedScopes = [];
+    const createScopedResumeController = directoryScope => new ResumeController({
+        getWorkspaceTarget: cardId => cardId === scopedWorkspaceTarget.cardId
+            ? scopedWorkspaceTarget
+            : null,
+        getProvider: () => ({
+            label: 'Codex',
+            terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: sessionId => ({
+                executable: 'codex', args: ['resume', sessionId], cwd: directoryScope.primaryCwd,
+            }),
+        }),
+        resolveWorkspaceDirectoryScope: async () => directoryScope,
+        rememberDirectoryScope: scope => { rememberedScopes.push(scope); },
+        runtimeCoordinator: scopedCoordinator,
+        getTerminalName: () => 'Codex: Scoped Session',
+        getMarkerPath: () => '/tmp/scoped.marker',
+        showWarningMessage: () => undefined,
+        announceStatus: async () => undefined,
+        refresh: () => undefined,
+        showActiveTab: async () => undefined,
+    });
+    const firstScopedResume = createScopedResumeController(firstScope)
+        .resumeProjectSession(scopedWorkspaceTarget.cardId, 'codex', 'scoped-session');
+    const secondScopedResume = createScopedResumeController(secondScope)
+        .resumeProjectSession(scopedWorkspaceTarget.cardId, 'codex', 'scoped-session');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(scopedDirect.ensureResumeCalls, 1,
+        'concurrent resume requests for one session must launch exactly once');
+    assert.deepStrictEqual(scopedDirect.ensureResumeRequests[0].directoryScope, firstScope,
+        'the first request scope snapshot must own the single launch');
+    assert.notStrictEqual(scopedDirect.ensureResumeRequests[0].directoryScope, firstScope,
+        'the launch scope must be a defensive snapshot');
+    scopedGate.resolve();
+    await Promise.all([firstScopedResume, secondScopedResume]);
+    assert.deepStrictEqual(rememberedScopes, [firstScope],
+        'only the scope used by the actual launch may be persisted');
 
     const pendingGate = deferred();
     const guardedPending = createFakeRuntimeBackend('vscode', { pendingGate });
@@ -4921,7 +7854,7 @@ async function runRuntimeCoordinatorChecks() {
     for (const backend of [pendingConflictDirect, pendingConflictTmux]) {
         backend.pending.push({
             ...fakeRuntime(backend.backend, undefined),
-            identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'action-conflict' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'action-conflict' },
             state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: ['old'],
         });
     }
@@ -5249,7 +8182,7 @@ async function runRuntimeCoordinatorChecks() {
         const promoteDirect = createFakeRuntimeBackend('vscode');
         promoteDirect.pending.push({
             ...fakeRuntime('vscode', undefined),
-            identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'guarded-promote' },
+            identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'guarded-promote' },
             state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
         });
         const promoteCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
@@ -5260,12 +8193,116 @@ async function runRuntimeCoordinatorChecks() {
             hasLiveTmuxOwnership: async () => false,
         });
         await assert.rejects(
-            promoteCoordinator.promotePending('guarded-promote', 'must-not-promote'),
+            promoteCoordinator.promotePending(
+                promoteDirect.pending[0].identity, 'must-not-promote', 'Must not promote'
+            ),
             error => error === promoteRefreshError
         );
         assert.deepStrictEqual(promoteDirect.promoted, [],
             'promotion must fail closed when either forced refresh outcome is not safe');
     }
+
+    const fastDirect = createFakeRuntimeBackend('vscode');
+    const fastTmux = createFakeRuntimeBackend('tmux');
+    fastTmux.active.push(fakeRuntime('tmux', 'fast-focus'));
+    const fastCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastDirect,
+        tmux: fastTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await fastCoordinator.focus(fakeResumeRequest('fast-focus').identity);
+    assert.deepStrictEqual(fastDirect.refreshCalls, [],
+        'healthy tmux focus must not refresh Direct Terminal discovery');
+    assert.deepStrictEqual(fastTmux.refreshCalls, [],
+        'healthy tmux focus must not refresh global tmux discovery');
+    assert.strictEqual(fastTmux.focusCalls.length, 1);
+
+    const changedTargetError = () => new runtimeTypesModule.AiSessionRuntimeTargetChangedError();
+    const fastPathRetryDirect = createFakeRuntimeBackend('vscode');
+    const fastPathRetryTmux = createFakeRuntimeBackend('tmux', { focusErrors: [changedTargetError()] });
+    fastPathRetryTmux.active.push(fakeRuntime('tmux', 'retry-focus'));
+    const fastPathRetryCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastPathRetryDirect,
+        tmux: fastPathRetryTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await fastPathRetryCoordinator.focus(fakeResumeRequest('retry-focus').identity);
+    assert.deepStrictEqual(fastPathRetryDirect.refreshCalls, [true]);
+    assert.deepStrictEqual(fastPathRetryTmux.refreshCalls, [true]);
+    assert.strictEqual(fastPathRetryTmux.focusAttempts.length, 2,
+        'one changed target must reconcile and retry exactly once');
+    assert.strictEqual(fastPathRetryTmux.focusCalls.length, 1);
+
+    const fastPathMissingDirect = createFakeRuntimeBackend('vscode');
+    const fastPathMissingTmux = createFakeRuntimeBackend('tmux', {
+        focusErrors: [changedTargetError()],
+        onRefresh: fake => { fake.active = []; },
+    });
+    fastPathMissingTmux.active.push(fakeRuntime('tmux', 'missing-after-refresh'));
+    const fastPathMissingCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastPathMissingDirect,
+        tmux: fastPathMissingTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await fastPathMissingCoordinator.focus(fakeResumeRequest('missing-after-refresh').identity);
+    assert.strictEqual(fastPathMissingTmux.focusAttempts.length, 1,
+        'a target removed by reconciliation must not be retried');
+    assert.strictEqual(fastPathMissingTmux.focusCalls.length, 0);
+
+    const fastPathDuplicateDirect = createFakeRuntimeBackend('vscode', {
+        onRefresh: fake => { fake.active.push(fakeRuntime('vscode', 'duplicate-after-refresh')); },
+    });
+    const fastPathDuplicateTmux = createFakeRuntimeBackend('tmux', {
+        focusErrors: [changedTargetError()],
+    });
+    fastPathDuplicateTmux.active.push(fakeRuntime('tmux', 'duplicate-after-refresh'));
+    const fastPathDuplicateCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastPathDuplicateDirect,
+        tmux: fastPathDuplicateTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await fastPathDuplicateCoordinator.focus(fakeResumeRequest('duplicate-after-refresh').identity);
+    assert.strictEqual(fastPathDuplicateTmux.focusAttempts.length, 1,
+        'a cross-backend duplicate discovered during reconciliation must not be focused');
+    assert.strictEqual(fastPathDuplicateTmux.focusCalls.length, 0);
+    assert.strictEqual(fastPathDuplicateDirect.focusCalls.length, 0);
+
+    const fastPathRepeatedDirect = createFakeRuntimeBackend('vscode');
+    const fastPathRepeatedTmux = createFakeRuntimeBackend('tmux', {
+        focusErrors: [changedTargetError(), changedTargetError()],
+    });
+    fastPathRepeatedTmux.active.push(fakeRuntime('tmux', 'repeated-change'));
+    const fastPathRepeatedCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastPathRepeatedDirect,
+        tmux: fastPathRepeatedTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await fastPathRepeatedCoordinator.focus(fakeResumeRequest('repeated-change').identity);
+    assert.strictEqual(fastPathRepeatedTmux.focusAttempts.length, 2,
+        'a second target change must stop without an unbounded retry loop');
+    assert.strictEqual(fastPathRepeatedTmux.focusCalls.length, 0);
+    assert.deepStrictEqual(fastPathRepeatedTmux.refreshCalls, [true]);
+
+    const operationalError = new Error('focus operation failed');
+    const fastPathFailedDirect = createFakeRuntimeBackend('vscode');
+    const fastPathFailedTmux = createFakeRuntimeBackend('tmux', { focusErrors: [operationalError] });
+    fastPathFailedTmux.active.push(fakeRuntime('tmux', 'operational-failure'));
+    const fastPathFailedCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: fastPathFailedDirect,
+        tmux: fastPathFailedTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await assert.rejects(fastPathFailedCoordinator.focus(fakeResumeRequest('operational-failure').identity),
+        error => error === operationalError);
+    assert.deepStrictEqual(fastPathFailedDirect.refreshCalls, []);
+    assert.deepStrictEqual(fastPathFailedTmux.refreshCalls, [],
+        'operational failures must not be mistaken for stale-target recovery');
 
     const routedDirect = createFakeRuntimeBackend('vscode');
     const routedTmux = createFakeRuntimeBackend('tmux');
@@ -5279,34 +8316,149 @@ async function runRuntimeCoordinatorChecks() {
     routedTmux.active.push(fakeRuntime('tmux', 'tmux-route'));
     routedTmux.pending.push({
         ...fakeRuntime('tmux', undefined),
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-route' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-route' },
         state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
     });
     await routed.focus(fakeResumeRequest('tmux-route').identity);
-    await routed.focus({ provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-route' });
+    await routed.focus({ provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-route' });
     await routed.detach(fakeResumeRequest('direct-route').identity);
     assert.strictEqual(routedTmux.focusCalls.length, 2);
     assert.strictEqual(routedDirect.detachCalls.length, 1);
     routedDirect.pending.push({
         ...fakeRuntime('vscode', undefined),
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-conflict' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-conflict' },
         state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
     });
     routedTmux.pending.push({
         ...fakeRuntime('tmux', undefined),
-        identity: { provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-conflict' },
+        identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-conflict' },
         state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
     });
-    await routed.focus({ provider: 'codex', projectKey: 'pk', cwd: '/work', pendingId: 'pending-conflict' });
+    await routed.focus({ provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', pendingId: 'pending-conflict' });
     assert.strictEqual(routedDirect.focusCalls.length, 0);
     assert.strictEqual(routedTmux.focusCalls.length, 2);
-    const promotedPending = await routed.promotePending('pending-route', 'promoted-route');
+    const promotedPending = await routed.promotePending(
+        routedTmux.pending[0].identity, 'promoted-route', 'Readable Promoted Session'
+    );
     assert.strictEqual(promotedPending[0].identity.sessionId, 'promoted-route');
-    assert.deepStrictEqual(routedTmux.promoted, [{ pendingId: 'pending-route', sessionId: 'promoted-route' }]);
-    const conflictedPromotion = await routed.promotePending('pending-conflict', 'never-promoted');
+    assert.deepStrictEqual(routedTmux.promoted, [{
+        identity: routedTmux.pending[0].identity,
+        sessionId: 'promoted-route',
+        sessionName: 'Readable Promoted Session',
+    }]);
+    const conflictedPromotion = await routed.promotePending(
+        routedTmux.pending[1].identity, 'never-promoted', 'Never promoted'
+    );
     assert.strictEqual(conflictedPromotion.length, 2);
     assert.ok(conflictedPromotion.every(runtime => runtime.state === 'conflict'));
     assert.strictEqual(routedDirect.promoted.length, 0);
+
+    const durableConflictDirect = createFakeRuntimeBackend('vscode');
+    const durableConflictTmux = createFakeRuntimeBackend('tmux');
+    const durableConflictPending = {
+        ...fakeRuntime('vscode', undefined),
+        identity: {
+            provider: 'codex', workspaceScopeIdentity: 'durable-conflict',
+            workspaceNavigationIdentity: 'nav-durable-conflict', workspaceRootHostPaths: ['/work'],
+            cwd: '/work', pendingId: 'durable-conflict-pending',
+        },
+        state: 'pending', createdAt: '2026-07-18T10:00:00.000Z', excludedSessionIds: [],
+    };
+    durableConflictDirect.pending.push({
+        ...durableConflictPending,
+        promotionRecoveryDisplayName: 'Forged ordinary display',
+        recoverySessionId: 'forged-ordinary-session',
+    });
+    durableConflictTmux.recoverablePending.push({
+        ...durableConflictPending,
+        backend: 'tmux',
+        promotionRecoveryDisplayName: 'Durable conflict',
+        recoverySessionId: 'durable-conflict-final',
+        identity: { ...durableConflictPending.identity },
+    });
+    durableConflictTmux.getRecoverablePending = async () => ({
+        ...durableConflictPending,
+        backend: 'tmux',
+        identity: { ...durableConflictPending.identity },
+    });
+    const durableConflictCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: durableConflictDirect,
+        tmux: durableConflictTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    const durablePromotionCandidates = await durableConflictCoordinator.getPendingForPromotion();
+    assert.strictEqual(durablePromotionCandidates.length, 2,
+        'promotion enumeration must preserve cross-backend identity conflicts');
+    const ordinaryPromotionCandidate = durablePromotionCandidates.find(candidate =>
+        candidate.backend === 'vscode');
+    assert.strictEqual(ordinaryPromotionCandidate.promotionRecoveryDisplayName, undefined);
+    assert.strictEqual(ordinaryPromotionCandidate.recoverySessionId, undefined,
+        'ordinary pending snapshots must not forge durable recovery inputs');
+    await createPromotionController(durableConflictCoordinator).promote({
+        scopeIdentity: durableConflictPending.identity.workspaceScopeIdentity,
+        navigationIdentity: durableConflictPending.identity.workspaceNavigationIdentity,
+    }, {
+        codex: {
+            available: true, scannedFiles: 1, parsedFiles: 1,
+            sessions: [{
+                id: 'durable-conflict-final', name: 'Durable conflict', cwd: '/work',
+                updatedAt: '2026-07-18T10:00:01.000Z',
+            }],
+        },
+    }, 'durable-conflict');
+    assert.strictEqual(durableConflictDirect.promoted.length, 0);
+    assert.strictEqual(durableConflictTmux.promoted.length, 0,
+        'the product promotion entry point must not choose between backend conflicts');
+    const durableConflictResult = await durableConflictCoordinator.promotePending(
+        durableConflictPending.identity, 'durable-conflict-final', 'Durable conflict'
+    );
+    assert.strictEqual(durableConflictResult.length, 2);
+    assert.ok(durableConflictResult.every(runtime => runtime.state === 'conflict'));
+    assert.strictEqual(durableConflictDirect.promoted.length, 0);
+    assert.strictEqual(durableConflictTmux.promoted.length, 0,
+        'a durable tmux candidate must not bypass a projected Direct pending conflict');
+
+    const invalidDurableCandidateTmux = createFakeRuntimeBackend('tmux');
+    invalidDurableCandidateTmux.recoverablePending.push({
+        ...durableConflictPending,
+        backend: 'tmux',
+        promotionRecoveryDisplayName: 'Durable recovery',
+        recoverySessionId: 'bad recovery',
+        identity: { ...durableConflictPending.identity },
+    });
+    const invalidDurableCandidateCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: createFakeRuntimeBackend('vscode'),
+        tmux: invalidDurableCandidateTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await assert.rejects(invalidDurableCandidateCoordinator.getPendingForPromotion(),
+        /durable pending promotion snapshot is invalid/,
+    'invalid durable snapshots must fail closed at the coordinator boundary');
+    const mismatchedDurableCandidateTmux = createFakeRuntimeBackend('tmux');
+    mismatchedDurableCandidateTmux.recoverablePending.push({
+        ...durableConflictPending,
+        backend: 'tmux',
+        promotionRecoveryDisplayName: 'Durable recovery',
+        recoverySessionId: 'durable-final-one',
+        identity: { ...durableConflictPending.identity },
+    }, {
+        ...durableConflictPending,
+        backend: 'tmux',
+        promotionRecoveryDisplayName: 'Durable recovery',
+        recoverySessionId: 'durable-final-two',
+        identity: { ...durableConflictPending.identity },
+    });
+    const mismatchedDurableCandidateCoordinator = new coordinatorModule.AiSessionRuntimeCoordinator({
+        direct: createFakeRuntimeBackend('vscode'),
+        tmux: mismatchedDurableCandidateTmux,
+        getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'session', tmuxPath: 'tmux' }),
+        chooseTmuxFallback: async () => 'cancel',
+    });
+    await assert.rejects(mismatchedDurableCandidateCoordinator.getPendingForPromotion(),
+        /disagree within one backend/,
+    'durable candidates with different frozen final IDs must fail closed');
     const closedTerminal = { name: 'closed' };
     routed.handleClosedTerminal(closedTerminal);
     assert.deepStrictEqual(routedDirect.closed, [closedTerminal]);
@@ -5332,7 +8484,7 @@ async function runRuntimeCoordinatorChecks() {
         getConfiguration: () => ({ mode: 'tmux', tmuxLayout: 'project', tmuxPath: 'tmux' }),
         chooseTmuxFallback: async () => 'cancel',
     });
-    const choices = choiceCoordinator.getActiveCandidates('codex', 'choice');
+    const choices = choiceCoordinator.getActiveCandidates('codex', 'choice', 'pk');
     assert.strictEqual(choices.length, 2);
     assert.ok(choices.every(runtime => runtime.state === 'conflict'));
     assert.strictEqual(await choiceCoordinator.focusSelected(choices[0]), true);
@@ -5343,7 +8495,7 @@ async function runRuntimeCoordinatorChecks() {
     assert.strictEqual(choiceTmux.focusCalls.length, 1,
         'an exact tmux conflict choice must focus its selected locator');
 
-    const staleChoice = choiceCoordinator.getActiveCandidates('codex', 'choice')[0];
+    const staleChoice = choiceCoordinator.getActiveCandidates('codex', 'choice', 'pk')[0];
     choiceDirect.refresh = async force => {
         choiceDirect.refreshCalls.push(force);
         choiceDirect.active[0] = {
@@ -5369,11 +8521,11 @@ async function runRuntimeCoordinatorChecks() {
         chooseTmuxFallback: async () => 'cancel',
     });
     assert.deepStrictEqual(
-        collisionOnlyCoordinator.getActiveCandidates('codex', 'collision-only'), [],
+        collisionOnlyCoordinator.getActiveCandidates('codex', 'collision-only', 'pk'), [],
         'metadata/name collision diagnostics must not become chooser candidates'
     );
     assert.deepStrictEqual(
-        collisionOnlyCoordinator.getUnverifiedConflicts('codex', 'collision-only'),
+        collisionOnlyCoordinator.getUnverifiedConflicts('codex', 'collision-only', 'pk'),
         [collisionDiagnostic]
     );
     assert.strictEqual(await collisionOnlyCoordinator.focusSelected(collisionDiagnostic), false,
@@ -5398,7 +8550,7 @@ async function runRuntimeCoordinatorChecks() {
         chooseTmuxFallback: async () => 'cancel',
     });
     const verifiedChoices = verifiedWithCollisionCoordinator.getActiveCandidates(
-        'codex', 'verified-with-collision'
+        'codex', 'verified-with-collision', 'pk'
     );
     assert.strictEqual(verifiedChoices.length, 1,
         'a collision diagnostic must not hide a separately verified active runtime');
@@ -5408,12 +8560,1284 @@ async function runRuntimeCoordinatorChecks() {
     assert.strictEqual(verifiedWithCollisionTmux.focusCalls.length, 0);
 }
 
+async function runRuntimeControllerChecks() {
+    const project = {
+        id: 'project', name: 'Project', path: '/work',
+        codexSessions: [{ id: 'direct-session' }, { id: 'tmux-session' }],
+        kimiSessions: [], claudeSessions: [],
+    };
+    const otherProject = {
+        id: 'other-project', name: 'Other Project', path: '/other',
+        codexSessions: [{ id: 'direct-session' }, { id: 'tmux-session' }, { id: 'legacy-session' }],
+        kimiSessions: [], claudeSessions: [],
+    };
+    const directTerminalHandle = { name: 'direct-terminal-handle' };
+    const direct = {
+        identity: { provider: 'codex', sessionId: 'direct-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/direct.done',
+        runStartedAtMs: 1, attached: true, terminal: directTerminalHandle,
+    };
+    const tmux = {
+        identity: { provider: 'codex', sessionId: 'tmux-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
+        backend: 'tmux', state: 'active', markerPath: '/tmp/tmux.done',
+        runStartedAtMs: 2, attached: false,
+        tmux: { layout: 'project', sessionName: 'project-steward-p-a', windowName: 'ai-codex-a' },
+    };
+    const otherScope = {
+        identity: { provider: 'codex', sessionId: 'legacy-session', workspaceScopeIdentity: 'other-scope', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/legacy.done',
+        runStartedAtMs: 3, attached: true, terminal: { name: 'legacy-terminal-handle' },
+    };
+    const runtimes = [direct, tmux, otherScope];
+    const coordinator = {
+        focused: [], detached: [],
+        getById(provider, sessionId) {
+            return runtimes.find(runtime => runtime.identity.provider === provider
+                && runtime.identity.sessionId === sessionId) || null;
+        },
+        getPending: () => [],
+        focus: async identity => coordinator.focused.push({ ...identity }),
+        detach: async identity => coordinator.detached.push({ ...identity }),
+    };
+    const confirmations = [];
+    const controller = new TerminalCommandController({
+        isProviderId: value => value === 'codex' || value === 'kimi' || value === 'claude',
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk')
+            : cardId === otherProject.id ? createWorkspaceActionTarget(otherProject, 'other-pk') : null,
+        runtimeCoordinator: coordinator,
+        confirmRuntimeClose: async (message, action) => {
+            confirmations.push([message, action]);
+            return action;
+        },
+        announceStatus: async () => undefined,
+        showErrorMessage: async () => undefined,
+        getProviderLabel: provider => provider.toUpperCase(),
+        refresh: () => undefined,
+    });
+
+    await controller.focusActive('project', 'codex', 'direct-session');
+    assert.deepStrictEqual(coordinator.focused, [{
+        provider: 'codex', sessionId: 'direct-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work',
+    }]);
+    await controller.focusActive('other-project', 'codex', 'direct-session');
+    assert.strictEqual(coordinator.focused.length, 1,
+        'duplicate history must not override an authoritative runtime project identity');
+    await controller.focusActive('other-project', 'codex', 'legacy-session');
+    assert.strictEqual(coordinator.focused.length, 1,
+        'runtime lookup must not cross workspaceScopeIdentity even when cwd and history match');
+    await controller.closeTerminal({
+        projectId: 'other-project', providerId: 'codex', sessionId: 'direct-session',
+    });
+    assert.strictEqual(coordinator.detached.length, 0,
+        'duplicate history must not authorize detach from the wrong project');
+    const directRequest = Object.freeze({
+        projectId: 'project', providerId: 'codex', sessionId: 'direct-session',
+    });
+    await controller.closeTerminal(directRequest);
+    assert.deepStrictEqual(directRequest, {
+        projectId: 'project', providerId: 'codex', sessionId: 'direct-session',
+    });
+    assert.deepStrictEqual(confirmations[0], [
+        'Closing this CODEX terminal may interrupt a running AI task.', 'Close Terminal',
+    ]);
+    assert.strictEqual(coordinator.detached.length, 1);
+
+    await controller.closeTerminal({
+        projectId: 'project', providerId: 'codex', sessionId: 'tmux-session',
+    });
+    assert.deepStrictEqual(confirmations[1], [
+        'Detaching this CODEX terminal will leave the AI task running in tmux.', 'Detach Terminal',
+    ]);
+    assert.strictEqual(coordinator.detached.length, 2);
+    await controller.closeTerminal({
+        projectId: 'project', providerId: 'codex', sessionId: 'direct-session',
+        expectedBackend: 'tmux',
+    });
+    await controller.closeTerminal({
+        projectId: 'project', providerId: 'codex', sessionId: 'tmux-session',
+        expectedBackend: 'vscode',
+    });
+    assert.strictEqual(confirmations.length, 2,
+        'a forged backend-specific route must be rejected before confirmation');
+    assert.strictEqual(coordinator.detached.length, 2,
+        'a forged backend-specific route must not detach the resolved runtime');
+    assert.deepStrictEqual(runtimes, [direct, tmux, otherScope], 'controller calls must not mutate runtime snapshots');
+
+    const conflictDirect = {
+        ...direct,
+        identity: { ...direct.identity, sessionId: 'conflict-session' },
+        state: 'conflict',
+    };
+    const conflictTmux = {
+        ...tmux,
+        identity: { ...tmux.identity, sessionId: 'conflict-session' },
+        state: 'conflict',
+    };
+    project.codexSessions.push({ id: 'conflict-session' });
+    const conflictCandidates = [conflictDirect, conflictTmux];
+    const selectedConflicts = [];
+    const chooserSelections = [conflictDirect, conflictTmux, undefined, conflictDirect];
+    let selectedFocusResult = true;
+    let chooserThrows = false;
+    const conflictCoordinator = {
+        getById: () => null,
+        getActiveCandidates: () => conflictCandidates.map(runtime => ({
+            ...runtime,
+            identity: { ...runtime.identity },
+            ...(runtime.tmux ? { tmux: { ...runtime.tmux } } : {}),
+        })),
+        getPending: () => [],
+        focus: async () => { throw new Error('ambiguous identity focus must not be used'); },
+        focusSelected: async runtime => {
+            selectedConflicts.push(runtime);
+            return selectedFocusResult;
+        },
+        detach: async () => undefined,
+    };
+    const conflictAnnouncements = [];
+    const conflictErrors = [];
+    const conflictController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
+        runtimeCoordinator: conflictCoordinator,
+        chooseRuntimeConflict: async candidates => {
+            assert.strictEqual(candidates.length, 2);
+            if (chooserThrows) throw new Error('raw quick pick failure');
+            return chooserSelections.shift();
+        },
+        confirmRuntimeClose: async () => undefined,
+        announceStatus: async (projectId, message) => conflictAnnouncements.push([projectId, message]),
+        showErrorMessage: async message => conflictErrors.push(message),
+        getProviderLabel: () => 'CODEX',
+        refresh: () => undefined,
+    });
+    await conflictController.focusActive('project', 'codex', 'conflict-session');
+    await conflictController.focusActive('project', 'codex', 'conflict-session');
+    await conflictController.focusActive('project', 'codex', 'conflict-session');
+    assert.deepStrictEqual(selectedConflicts.map(runtime => runtime.backend), ['vscode', 'tmux'],
+        'the chooser must route exact Direct and tmux conflict selections');
+    selectedFocusResult = false;
+    await conflictController.focusActive('project', 'codex', 'conflict-session');
+    assert.strictEqual(selectedConflicts.length, 3,
+        'cancel must perform zero selected-runtime focus actions');
+    assert.deepStrictEqual(conflictAnnouncements, [[
+        'project', 'The selected AI session runtime changed before it could be focused.',
+    ]], 'a stale selection must announce the safe no-action result');
+    chooserThrows = true;
+    await conflictController.focusActive('project', 'codex', 'conflict-session');
+    assert.deepStrictEqual(conflictErrors, ['Could not choose an AI session runtime.']);
+    assert.strictEqual(selectedConflicts.length, 3,
+        'a rejected QuickPick boundary must perform zero focus actions');
+
+    project.codexSessions.push({ id: 'collision-only' });
+    const controllerCollisionDiagnostic = {
+        ...conflictTmux,
+        identity: { ...conflictTmux.identity, sessionId: 'collision-only' },
+        state: 'conflict',
+    };
+    let collisionChooserCalls = 0;
+    let collisionFocusCalls = 0;
+    const collisionOnlyAnnouncements = [];
+    const collisionOnlyController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
+        runtimeCoordinator: {
+            getById: () => null,
+            getActiveCandidates: () => [],
+            getUnverifiedConflicts: () => [controllerCollisionDiagnostic],
+            getPending: () => [],
+            focus: async () => { collisionFocusCalls++; },
+            focusSelected: async () => { collisionFocusCalls++; return true; },
+            detach: async () => undefined,
+        },
+        chooseRuntimeConflict: async () => { collisionChooserCalls++; return controllerCollisionDiagnostic; },
+        confirmRuntimeClose: async () => undefined,
+        announceStatus: async (projectId, message) => collisionOnlyAnnouncements.push([projectId, message]),
+        showErrorMessage: async () => undefined,
+        getProviderLabel: () => 'CODEX',
+        refresh: () => undefined,
+    });
+    await collisionOnlyController.focusActive('project', 'codex', 'collision-only');
+    assert.strictEqual(collisionChooserCalls, 0,
+        'a lone unverified collision must not open the runtime chooser');
+    assert.strictEqual(collisionFocusCalls, 0);
+    assert.deepStrictEqual(collisionOnlyAnnouncements, [[
+        'project',
+        'The conflicting AI session target could not be verified as a managed runtime and was not focused.',
+    ]]);
+
+    const otherProjectCollision = {
+        ...controllerCollisionDiagnostic,
+        identity: {
+            ...controllerCollisionDiagnostic.identity,
+            workspaceScopeIdentity: 'other-pk',
+            cwd: '/other',
+        },
+    };
+    let crossProjectFocusCalls = 0;
+    const crossProjectAnnouncements = [];
+    const crossProjectCollisionController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk')
+            : cardId === otherProject.id ? createWorkspaceActionTarget(otherProject, 'other-pk') : null,
+        runtimeCoordinator: {
+            getById: () => direct,
+            getActiveCandidates: () => [direct],
+            getUnverifiedConflicts: () => [otherProjectCollision],
+            getPending: () => [],
+            focus: async () => { crossProjectFocusCalls++; },
+            focusSelected: async () => { throw new Error('cross-project collision must not change routing'); },
+            detach: async () => undefined,
+        },
+        chooseRuntimeConflict: async () => { throw new Error('cross-project collision must not open chooser'); },
+        confirmRuntimeClose: async () => undefined,
+        announceStatus: async (projectId, message) => crossProjectAnnouncements.push([projectId, message]),
+        showErrorMessage: async () => undefined,
+        getProviderLabel: () => 'CODEX',
+        refresh: () => undefined,
+    });
+    await crossProjectCollisionController.focusActive('project', 'codex', 'direct-session');
+    assert.strictEqual(crossProjectFocusCalls, 1,
+        'a collision owned by another project must not alter the current project focus route');
+    assert.deepStrictEqual(crossProjectAnnouncements, []);
+
+    project.codexSessions.push({ id: 'verified-with-collision' });
+    const verifiedControllerRuntime = {
+        ...conflictDirect,
+        identity: { ...conflictDirect.identity, sessionId: 'verified-with-collision' },
+        state: 'active',
+    };
+    let verifiedCollisionChooserCalls = 0;
+    const verifiedCollisionFocuses = [];
+    const verifiedCollisionController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
+        runtimeCoordinator: {
+            getById: () => null,
+            getActiveCandidates: () => [verifiedControllerRuntime],
+            getUnverifiedConflicts: () => [controllerCollisionDiagnostic],
+            getPending: () => [],
+            focus: async () => { throw new Error('identity focus must remain ambiguity-safe'); },
+            focusSelected: async runtime => { verifiedCollisionFocuses.push(runtime); return true; },
+            detach: async () => undefined,
+        },
+        chooseRuntimeConflict: async () => { verifiedCollisionChooserCalls++; return undefined; },
+        confirmRuntimeClose: async () => undefined,
+        announceStatus: async () => undefined,
+        showErrorMessage: async () => undefined,
+        getProviderLabel: () => 'CODEX',
+        refresh: () => undefined,
+    });
+    await verifiedCollisionController.focusActive('project', 'codex', 'verified-with-collision');
+    assert.strictEqual(verifiedCollisionChooserCalls, 0);
+    assert.strictEqual(verifiedCollisionFocuses.length, 1,
+        'one verified runtime must remain focusable despite a separate unverified collision');
+
+    const normalizeCanonicalPath = value => value
+        .replace(/\\/g, '/')
+        .replace(/\/+$/, '')
+        .toLowerCase();
+    const requestedFallbackProject = {
+        id: 'repo-project', name: 'Repo Project', path: '/REPO/',
+        codexSessions: [
+            { id: 'legacy-inferred-session' },
+            { id: 'key-owned-by-other-session' },
+            { id: 'cwd-owned-by-other-session' },
+        ],
+        kimiSessions: [], claudeSessions: [],
+    };
+    const explicitOtherProject = {
+        id: 'other-repo-project', name: 'Other Repo Project', path: '/OTHER-REPO/',
+        codexSessions: [], kimiSessions: [], claudeSessions: [],
+    };
+    const inferredRuntime = {
+        identity: {
+            provider: 'codex', sessionId: 'legacy-inferred-session',
+            workspaceScopeIdentity: 'scope-current', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/repo/subdir'], cwd: '/repo/subdir',
+        },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/legacy-inferred.done',
+        runStartedAtMs: 4, attached: true, terminal: { name: 'legacy-inferred-terminal' },
+    };
+    const keyOwnedByOtherRuntime = {
+        identity: {
+            provider: 'codex', sessionId: 'key-owned-by-other-session',
+            workspaceScopeIdentity: 'scope-other', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/repo/subdir'], cwd: '/repo/subdir',
+        },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/key-owned-other.done',
+        runStartedAtMs: 5, attached: true, terminal: { name: 'key-owned-other-terminal' },
+    };
+    const cwdOwnedByOtherRuntime = {
+        identity: {
+            provider: 'codex', sessionId: 'cwd-owned-by-other-session',
+            workspaceScopeIdentity: 'scope-current', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/other-repo'], cwd: '/other-repo',
+        },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/cwd-owned-other.done',
+        runStartedAtMs: 6, attached: true, terminal: { name: 'cwd-owned-other-terminal' },
+    };
+    const fallbackRuntimes = [inferredRuntime, keyOwnedByOtherRuntime, cwdOwnedByOtherRuntime];
+    const fallbackFocused = [];
+    const fallbackDetached = [];
+    const fallbackConfirmations = [];
+    const fallbackCoordinator = {
+        getById: (provider, sessionId) => fallbackRuntimes.find(runtime => {
+            return runtime.identity.provider === provider && runtime.identity.sessionId === sessionId;
+        }) || null,
+        getPending: () => [],
+        focus: async identity => fallbackFocused.push({ ...identity }),
+        detach: async identity => fallbackDetached.push({ ...identity }),
+    };
+    const fallbackController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === requestedFallbackProject.id
+            ? createWorkspaceActionTarget(requestedFallbackProject, 'scope-current')
+            : cardId === explicitOtherProject.id
+                ? createWorkspaceActionTarget(explicitOtherProject, 'scope-other')
+                : null,
+        runtimeCoordinator: fallbackCoordinator,
+        confirmRuntimeClose: async (_message, action) => {
+            fallbackConfirmations.push(action);
+            return action;
+        },
+        announceStatus: async () => undefined,
+        showErrorMessage: async () => undefined,
+        getProviderLabel: provider => provider.toUpperCase(),
+        refresh: () => undefined,
+    });
+
+    await fallbackController.focusActive('repo-project', 'codex', 'legacy-inferred-session');
+    assert.deepStrictEqual(fallbackFocused, [{ ...inferredRuntime.identity }],
+        'v2 runtime lookup accepts an exact workspace scope and session assignment');
+    await fallbackController.closeTerminal({
+        projectId: 'repo-project', providerId: 'codex', sessionId: 'legacy-inferred-session',
+    });
+    assert.deepStrictEqual(fallbackDetached, [{ ...inferredRuntime.identity }],
+        'v2 runtime detach accepts an exact workspace scope and session assignment');
+    assert.deepStrictEqual(fallbackConfirmations, ['Close Terminal']);
+
+    await fallbackController.focusActive('repo-project', 'codex', 'key-owned-by-other-session');
+    await fallbackController.closeTerminal({
+        projectId: 'repo-project', providerId: 'codex', sessionId: 'key-owned-by-other-session',
+    });
+    assert.strictEqual(fallbackFocused.length, 1,
+        'history must not override a workspaceScopeIdentity owned by another workspace');
+    assert.strictEqual(fallbackDetached.length, 1,
+        'detach must reject a workspaceScopeIdentity owned by another workspace');
+    assert.strictEqual(fallbackConfirmations.length, 1,
+        'wrong-project runtime must be rejected before confirmation');
+
+    await fallbackController.focusActive('repo-project', 'codex', 'cwd-owned-by-other-session');
+    assert.strictEqual(fallbackFocused.length, 2,
+        'immutable workspace scope ownership must not be reclassified from the current cwd');
+    await fallbackController.focusActive('other-repo-project', 'codex', 'key-owned-by-other-session');
+    await fallbackController.focusActive('other-repo-project', 'codex', 'cwd-owned-by-other-session');
+    assert.deepStrictEqual(fallbackFocused.slice(2), [],
+        'runtime ownership must never fall back to cwd or another workspace history');
+
+    const directRaceRuntime = terminal => ({
+        identity: { provider: 'codex', sessionId: 'race-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
+        backend: 'vscode', state: 'active', markerPath: '/tmp/race.done',
+        runStartedAtMs: 1, attached: true, terminal,
+    });
+    const tmuxRaceRuntime = (sessionName = 'managed-a', windowName = 'window-a') => ({
+        identity: { provider: 'codex', sessionId: 'race-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
+        backend: 'tmux', state: 'active', markerPath: '/tmp/race.done',
+        runStartedAtMs: 1, attached: false,
+        tmux: { layout: 'project', sessionName, windowName },
+    });
+    async function runDetachRaceCase(initialRuntime, mutateDuringConfirm, options = {}) {
+        const state = {
+            active: initialRuntime.identity.sessionId ? initialRuntime : null,
+            pending: initialRuntime.identity.pendingId ? [initialRuntime] : [],
+            conflict: false,
+        };
+        const detached = [];
+        const detachObservedRuntimes = [];
+        const announced = [];
+        const refreshed = [];
+        const errors = [];
+        let activeLookups = 0;
+        const raceCoordinator = {
+            getById: (provider, sessionId) => {
+                activeLookups++;
+                const selected = !state.conflict && state.active
+                    && state.active.identity.provider === provider
+                    && state.active.identity.sessionId === sessionId ? state.active : null;
+                if (selected && options.mutateAfterResolve && activeLookups === 2) {
+                    Promise.resolve().then(() => { state.active = options.mutateAfterResolve; });
+                }
+                return selected;
+            },
+            getPending: () => state.pending.slice(),
+            focus: async () => undefined,
+            detach: async identity => {
+                detachObservedRuntimes.push(state.active || state.pending[0] || null);
+                detached.push({ ...identity });
+            },
+        };
+        const raceController = new TerminalCommandController({
+            isProviderId: value => value === 'codex',
+            getWorkspaceTarget: cardId => cardId === project.id
+                ? createWorkspaceActionTarget({
+                    ...project, codexSessions: [{ id: 'race-session' }],
+                }, 'pk') : null,
+            runtimeCoordinator: raceCoordinator,
+            confirmRuntimeClose: async (_message, action) => {
+                if (options.confirmError) {
+                    throw new Error('confirm failed');
+                }
+                if (mutateDuringConfirm) {
+                    mutateDuringConfirm(state);
+                }
+                return options.cancel ? undefined : action;
+            },
+            announceStatus: async (projectId, message) => announced.push([projectId, message]),
+            showErrorMessage: async message => errors.push(message),
+            getProviderLabel: () => 'CODEX',
+            refresh: () => refreshed.push('refresh'),
+        });
+        const request = initialRuntime.identity.pendingId
+            ? { projectId: 'project', providerId: 'codex', pendingCreatedAt: initialRuntime.createdAt }
+            : { projectId: 'project', providerId: 'codex', sessionId: initialRuntime.identity.sessionId };
+        await raceController.closeTerminal(request);
+        return { detached, detachObservedRuntimes, announced, refreshed, errors };
+    }
+
+    const staleRaceCases = [
+        ['disappeared', tmuxRaceRuntime(), state => { state.active = null; }],
+        ['conflict', tmuxRaceRuntime(), state => { state.conflict = true; }],
+        ['tmux-to-direct', tmuxRaceRuntime(), state => {
+            state.active = directRaceRuntime({ handle: 'replacement-direct' });
+        }],
+        ['direct-to-tmux', directRaceRuntime({ handle: 'source-direct' }), state => {
+            state.active = tmuxRaceRuntime();
+        }],
+        ['direct-handle', directRaceRuntime({ handle: 'source-direct' }), state => {
+            state.active = directRaceRuntime({ handle: 'replacement-direct' });
+        }],
+        ['tmux-locator', tmuxRaceRuntime(), state => {
+            state.active = tmuxRaceRuntime('managed-b', 'window-b');
+        }],
+    ];
+    for (const [label, initialRuntime, mutate] of staleRaceCases) {
+        const outcome = await runDetachRaceCase(initialRuntime, mutate);
+        assert.strictEqual(outcome.detached.length, 0, `${label} confirmation race must not detach`);
+        assert.strictEqual(outcome.refreshed.length, 1, `${label} confirmation race must refresh`);
+        assert.deepStrictEqual(outcome.announced, [[
+            'project', 'The AI session runtime changed before terminal confirmation.',
+        ]], `${label} confirmation race must announce the safe state`);
+    }
+    const stableRace = await runDetachRaceCase(tmuxRaceRuntime(), null);
+    assert.strictEqual(stableRace.detached.length, 1, 'an unchanged tmux selection detaches exactly once');
+    const noAwaitSource = directRaceRuntime({ handle: 'no-await-source' });
+    const noAwaitRace = await runDetachRaceCase(noAwaitSource, null, {
+        mutateAfterResolve: directRaceRuntime({ handle: 'no-await-replacement' }),
+    });
+    assert.strictEqual(noAwaitRace.detachObservedRuntimes[0], noAwaitSource,
+        'the coordinator detach call must happen synchronously after the confirmed runtime is resolved');
+    const cancelledRace = await runDetachRaceCase(tmuxRaceRuntime(), null, { cancel: true });
+    assert.strictEqual(cancelledRace.detached.length, 0);
+    assert.strictEqual(cancelledRace.refreshed.length, 0);
+    const confirmErrorRace = await runDetachRaceCase(tmuxRaceRuntime(), null, { confirmError: true });
+    assert.strictEqual(confirmErrorRace.detached.length, 0);
+    assert.deepStrictEqual(confirmErrorRace.errors, ['Could not confirm the AI session terminal action.']);
+    const pendingRaceRuntime = {
+        identity: { provider: 'codex', pendingId: 'race-pending', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
+        backend: 'tmux', state: 'pending', markerPath: '/tmp/pending.done',
+        runStartedAtMs: 1, attached: false, createdAt: '2026-07-19T05:00:00.000Z',
+        excludedSessionIds: [], tmux: { layout: 'session', sessionName: 'pending-managed-a' },
+    };
+    const pendingRace = await runDetachRaceCase(pendingRaceRuntime, null);
+    assert.strictEqual(pendingRace.detached.length, 1, 'an unchanged pending selection detaches exactly once');
+
+    const createRequests = [];
+    const createdAt = '2026-07-19T04:00:00.000Z';
+    const creation = new CreationController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
+        pickWorkspaceRoot: async () => undefined,
+        pickProvider: async () => 'codex',
+        getProviderLabel: () => 'Codex',
+        getProvider: () => ({
+            label: 'Codex', terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: (scope, title, markerPath) => ({
+                executable: 'codex', args: ['new', title], cwd: scope.primaryCwd, markerPath,
+            }),
+        }),
+        createPendingId: () => 'pending-controller',
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
+        getUsableTerminalCwd: cwd => cwd,
+        showInputBox: async () => 'Title',
+        showActiveTab: async () => undefined,
+        announceStatus: async () => undefined,
+        showWarningMessage: async () => undefined,
+        refresh: () => undefined,
+        getExistingSessionIdsForCwd: () => ['old'],
+        getPendingMarkerPath: () => '/tmp/pending.done',
+        scheduleNewSessionRefresh: () => undefined,
+        normalizeProjectPath: value => value,
+        setTimeout: () => ({}),
+        clearTimeout: () => undefined,
+        bindingTimeoutMs: 15_000,
+        nowMs: () => Date.parse(createdAt),
+        runtimeCoordinator: {
+            create: async request => {
+                createRequests.push(request);
+                return {
+                    status: 'started',
+                    runtime: {
+                        identity: { ...request.identity }, backend: 'tmux', state: 'pending',
+                        markerPath: request.launch.markerPath, runStartedAtMs: Date.parse(request.createdAt),
+                        attached: false, createdAt: request.createdAt,
+                        excludedSessionIds: [...request.excludedSessionIds], title: request.title,
+                    },
+                };
+            },
+            getActive: () => [],
+            getPending: () => [],
+            focus: async () => undefined,
+        },
+    });
+    await creation.createSession('project');
+    assert.strictEqual(createRequests.length, 1);
+    assert.strictEqual(createRequests[0].identity.pendingId, 'pending-controller');
+    assert.strictEqual(createRequests[0].createdAt, createdAt);
+
+    const resumeRequests = [];
+    const resume = new ResumeController({
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
+        getProvider: () => ({
+            label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: (sessionId, scope, markerPath) => ({
+                executable: 'codex', args: ['resume', sessionId], cwd: scope.primaryCwd, markerPath,
+            }),
+        }),
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
+        getTerminalName: () => 'Codex: Tmux session',
+        getComparableCwd: () => '/work',
+        getUsableTerminalCwd: cwd => cwd,
+        normalizeProjectPath: value => value,
+        getMarkerPath: () => '/tmp/resume.done',
+        showWarningMessage: () => undefined,
+        announceStatus: async () => undefined,
+        refresh: () => undefined,
+        showActiveTab: () => undefined,
+        runtimeCoordinator: {
+            resume: async request => {
+                resumeRequests.push(request);
+                return { status: 'focused', runtime: tmux };
+            },
+        },
+    });
+    await resume.resumeProjectSession('project', 'codex', 'tmux-session');
+    assert.deepStrictEqual(resumeRequests[0].identity, {
+        provider: 'codex', sessionId: 'tmux-session', workspaceScopeIdentity: 'scope:/work', workspaceNavigationIdentity: 'navigation:/work', workspaceRootHostPaths: ['/work'], cwd: '/work',
+    });
+
+    let collisionResumeCalls = 0;
+    const collisionLookups = [];
+    const collisionAnnouncements = [];
+    const collisionRefreshes = [];
+    const controllerCollisionSnapshot = {
+        identity: { provider: 'codex', sessionId: 'tmux-session', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work' },
+        backend: 'tmux', state: 'conflict', markerPath: '', runStartedAtMs: 0,
+        attached: false, tmux: { layout: 'session', sessionName: 'collision' },
+    };
+    const collisionResume = new ResumeController({
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
+        getProvider: () => ({
+            label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: (sessionId, scope, markerPath) => ({
+                executable: 'codex', args: ['resume', sessionId], cwd: scope.primaryCwd, markerPath,
+            }),
+        }),
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
+        getTerminalName: () => 'Codex: Collision',
+        getMarkerPath: () => '/tmp/collision.done',
+        showWarningMessage: () => undefined,
+        announceStatus: async (_projectId, message) => { collisionAnnouncements.push(message); },
+        refresh: () => { collisionRefreshes.push('refresh'); },
+        showActiveTab: () => undefined,
+        getRuntimeConflict: (...identity) => {
+            collisionLookups.push(identity);
+            return controllerCollisionSnapshot;
+        },
+        runtimeCoordinator: {
+            resume: async () => { collisionResumeCalls++; return { status: 'started' }; },
+        },
+    });
+    await collisionResume.resumeProjectSession('project', 'codex', 'tmux-session');
+    assert.strictEqual(collisionResumeCalls, 0,
+        'a discovery locator collision must block resume dispatch');
+    assert.deepStrictEqual(collisionLookups, [[
+        'codex', 'tmux-session', 'scope:/work',
+    ]], 'resume collision lookup must use the resolved workspaceScopeIdentity');
+    assert.deepStrictEqual(collisionRefreshes, ['refresh']);
+    assert.deepStrictEqual(collisionAnnouncements, [
+        'Multiple live runtimes match this AI session.',
+    ]);
+
+    const actionErrors = [];
+    const actionRefreshes = [];
+    const actionFailures = [];
+    const failingActionController = new TerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
+        runtimeCoordinator: {
+            getById: () => tmux,
+            getPending: () => [],
+            focus: async () => { throw new Error('raw focus timeout'); },
+            detach: async () => { throw new Error('raw detach timeout'); },
+        },
+        confirmRuntimeClose: async (_message, action) => action,
+        announceStatus: async () => undefined,
+        showErrorMessage: async message => { actionErrors.push(message); },
+        logRuntimeFailure: (operation, error, backend) => {
+            actionFailures.push([operation, error.message, backend]);
+        },
+        getProviderLabel: () => 'Codex',
+        refresh: () => { actionRefreshes.push('refresh'); },
+    });
+    await failingActionController.focusActive('project', 'codex', 'tmux-session');
+    await failingActionController.closeTerminal({
+        projectId: 'project', providerId: 'codex', sessionId: 'tmux-session',
+    });
+    assert.deepStrictEqual(actionErrors, [
+        'Could not focus the AI session terminal.',
+        'Could not detach the AI session terminal.',
+    ]);
+    assert.deepStrictEqual(actionRefreshes, ['refresh', 'refresh']);
+    assert.deepStrictEqual(actionFailures, [
+        ['focus-runtime', 'raw focus timeout', 'tmux'],
+        ['detach-runtime', 'raw detach timeout', 'tmux'],
+    ]);
+
+    const createErrors = [];
+    const createFailures = [];
+    const createRefreshes = [];
+    const rejectedCreation = new CreationController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
+        pickWorkspaceRoot: async () => undefined,
+        pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
+        getProvider: () => ({
+            label: 'Codex', terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: (scope, title, markerPath) => ({
+                executable: 'codex', args: ['new', title], cwd: scope.primaryCwd, markerPath,
+            }),
+        }),
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
+        createPendingId: () => 'rejected-pending', showInputBox: async () => '',
+        showActiveTab: async () => undefined, announceStatus: async () => undefined,
+        showWarningMessage: async () => undefined,
+        showErrorMessage: async message => { createErrors.push(message); },
+        logRuntimeFailure: (operation, error, backend) => {
+            createFailures.push([operation, error.message, backend]);
+        },
+        refresh: () => { createRefreshes.push('refresh'); },
+        getExistingSessionIdsForCwd: () => [], getPendingMarkerPath: () => '/tmp/rejected',
+        scheduleNewSessionRefresh: () => undefined, normalizeProjectPath: value => value,
+        setTimeout: () => ({}), clearTimeout: () => undefined,
+        bindingTimeoutMs: 15_000, nowMs: () => Date.parse(createdAt),
+        runtimeCoordinator: {
+            create: async () => { throw new Error('raw create timeout'); },
+            getActive: () => [], getPending: () => [], focus: async () => undefined,
+        },
+    });
+    await rejectedCreation.createSession('project');
+    assert.deepStrictEqual(createErrors, ['Could not start the AI session runtime.']);
+    assert.deepStrictEqual(createRefreshes, ['refresh']);
+    assert.deepStrictEqual(createFailures, [['create-runtime', 'raw create timeout', 'tmux']]);
+
+    const resumeErrors = [];
+    const resumeFailures = [];
+    const resumeRefreshes = [];
+    const rejectedResume = new ResumeController({
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget({
+                ...project,
+                codexSessions: project.codexSessions.concat({
+                    id: 'rejected', name: 'Rejected', cwd: '/work', updatedAt: createdAt,
+                }),
+            }, 'pk') : null,
+        getProvider: () => ({
+            label: 'Codex', terminalEnvKey: 'CODEX_SESSION_ID',
+            buildResumeLaunchSpec: (sessionId, scope, markerPath) => ({
+                executable: 'codex', args: ['resume', sessionId], cwd: scope.primaryCwd, markerPath,
+            }),
+        }),
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
+        getTerminalName: () => 'Codex: Rejected', getMarkerPath: () => '/tmp/rejected',
+        showWarningMessage: () => undefined,
+        showErrorMessage: async message => { resumeErrors.push(message); },
+        logRuntimeFailure: (operation, error, backend) => {
+            resumeFailures.push([operation, error.message, backend]);
+        },
+        announceStatus: async () => undefined,
+        refresh: () => { resumeRefreshes.push('refresh'); }, showActiveTab: () => undefined,
+        runtimeCoordinator: {
+            resume: async () => { throw new Error('raw resume timeout'); },
+        },
+    });
+    await rejectedResume.resumeProjectSession('project', 'codex', 'tmux-session');
+    assert.deepStrictEqual(resumeErrors, ['Could not resume the AI session runtime.']);
+    assert.deepStrictEqual(resumeRefreshes, ['refresh']);
+    assert.deepStrictEqual(resumeFailures, [['resume-runtime', 'raw resume timeout', 'tmux']]);
+
+    const pendingTimeouts = [];
+    const pendingErrors = [];
+    const pendingFailures = [];
+    const pendingRefreshes = [];
+    let retainedPending;
+    const pendingFocusCreation = new CreationController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: cardId => cardId === project.id
+            ? createWorkspaceActionTarget(project, 'pk') : null,
+        pickWorkspaceRoot: async () => undefined,
+        pickProvider: async () => 'codex', getProviderLabel: () => 'Codex',
+        getProvider: () => ({
+            label: 'Codex', terminalNamePrefix: 'Codex',
+            buildNewSessionLaunchSpec: (scope, title, markerPath) => ({
+                executable: 'codex', args: ['new', title], cwd: scope.primaryCwd, markerPath,
+            }),
+        }),
+        resolveWorkspaceDirectoryScope: () => createDirectoryScope('/work'),
+        createPendingId: () => 'timeout-pending', showInputBox: async () => '',
+        showActiveTab: async () => undefined, announceStatus: async () => undefined,
+        showWarningMessage: async (_message, ...items) => items.includes('Focus Terminal')
+            ? 'Focus Terminal' : undefined,
+        showErrorMessage: async message => { pendingErrors.push(message); },
+        logRuntimeFailure: (operation, error, backend) => {
+            pendingFailures.push([operation, error.message, backend]);
+        },
+        refresh: () => { pendingRefreshes.push('refresh'); },
+        getExistingSessionIdsForCwd: () => [], getPendingMarkerPath: () => '/tmp/timeout',
+        scheduleNewSessionRefresh: () => undefined, normalizeProjectPath: value => value,
+        setTimeout: callback => { pendingTimeouts.push(callback); return {}; },
+        clearTimeout: () => undefined, bindingTimeoutMs: 15_000,
+        nowMs: () => Date.parse(createdAt),
+        runtimeCoordinator: {
+            create: async request => {
+                retainedPending = {
+                    identity: { ...request.identity }, backend: 'tmux', state: 'pending',
+                    markerPath: request.launch.markerPath, runStartedAtMs: Date.parse(request.createdAt),
+                    attached: false, createdAt: request.createdAt, excludedSessionIds: [],
+                    tmux: { layout: 'session', sessionName: 'pending-timeout' },
+                };
+                return { status: 'started', runtime: retainedPending };
+            },
+            getActive: () => [], getPending: () => retainedPending ? [retainedPending] : [],
+            focus: async () => { throw new Error('raw pending focus timeout'); },
+        },
+    });
+    await pendingFocusCreation.createSession('project');
+    assert.strictEqual(pendingTimeouts.length, 0,
+        'runtime pending sessions must not be removed by an elapsed-time callback');
+    assert.strictEqual(retainedPending.identity.pendingId, 'timeout-pending');
+    assert.deepStrictEqual(pendingErrors, []);
+    assert.deepStrictEqual(pendingFailures, []);
+    assert.strictEqual(pendingRefreshes.length, 1,
+        'creating a retained pending runtime refreshes the visible runtime state once');
+}
+
+function runHostRuntimeCompositionChecks() {
+    const dashboardSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard.ts'), 'utf8');
+    assert.ok(dashboardSource.includes('new TmuxRuntimeBindingStore'));
+    assert.ok(dashboardSource.includes('new TmuxAttachBindingStore(context.workspaceState'));
+    assert.ok(dashboardSource.includes('new TmuxClient'));
+    assert.ok(dashboardSource.includes('new TmuxRuntimeDiscovery'));
+    assert.ok(dashboardSource.includes('new DirectTerminalRuntimeBackend'));
+    assert.ok(dashboardSource.includes('new TmuxRuntimeBackend'));
+    assert.ok(dashboardSource.includes('new AiSessionRuntimeCoordinator'));
+    assert.ok(dashboardSource.includes('onDidChangeConfiguration'));
+    assert.ok(dashboardSource.includes("affectsConfiguration('projectSteward.aiSession"));
+    assert.ok(dashboardSource.includes('runtimeCoordinator: aiSessionRuntimeCoordinator'));
+    assert.ok(dashboardSource.includes("path.join(context.globalStoragePath, 'ai-session-tmux-runtimes')"));
+    assert.ok(dashboardSource.includes("'runtime-binding-final-records'"));
+    assert.ok(dashboardSource.includes('runtimeCoordinator: aiSessionRuntimeCoordinator'));
+    assert.ok(dashboardSource.includes('getActiveRuntimes: () => aiSessionRuntimeCoordinator.getActive()'));
+    assert.ok(dashboardSource.includes('getPendingRuntimes: () => aiSessionRuntimeCoordinator.getPending()'));
+    assert.ok(dashboardSource.includes('findTmuxCollisionRuntime('));
+    assert.ok(dashboardSource.includes('getRuntimeConflict: getAiSessionRuntimeCollision'));
+    assert.ok(dashboardSource.includes('getFocusedAiSessionRuntimeIdentity()'));
+    assert.ok(dashboardSource.includes('tmuxRuntimeBackend.getFocusedRuntime(activeTerminal)'));
+    assert.ok(dashboardSource.includes('getAttachTerminalName: getAiSessionTmuxAttachTerminalName'));
+    assert.ok(dashboardSource.includes('markerIsCurrent: isCurrentRuntimeMarker'));
+    assert.ok(dashboardSource.includes("'Use VS Code Terminal This Time'"));
+    assert.ok(dashboardSource.includes("'Resume in VS Code Anyway'"));
+    assert.ok(dashboardSource.includes("'Open Settings'"));
+    assert.match(dashboardSource, /fallback\.knownHint[\s\S]*?showWarningMessage\([\s\S]*?\{ modal: true \}/);
+    assert.ok(dashboardSource.includes('tmuxClient.setExecutablePath(nextConfiguration.tmuxPath)'));
+    assert.ok(dashboardSource.includes('tmuxRuntimeDiscovery.invalidate()'));
+    assert.ok(dashboardSource.includes('await aiSessionRuntimeCoordinator.refreshForHost(true)'));
+    assert.ok(dashboardSource.includes('await tmuxRuntimeDiscovery.loadPersistedInactive()'));
+    assert.ok(dashboardSource.includes("category: 'unexpected'"));
+    const runtimeFailureBody = dashboardSource.slice(
+        dashboardSource.indexOf('function logAiSessionRuntimeFailure('),
+        dashboardSource.indexOf('async function chooseAiSessionTmuxFallback(')
+    );
+    assert.ok(!runtimeFailureBody.includes('error.message'));
+    assert.ok(!runtimeFailureBody.includes('String(error)'));
+    assert.ok(!runtimeFailureBody.includes('logError('));
+    assert.ok(!dashboardSource.includes(
+        'getTerminalById: (providerId, sessionId) => aiSessionTerminalService.getActiveById'
+    ));
+    assert.ok(!dashboardSource.includes(
+        'getActiveTerminal: (providerId, sessionId) => aiSessionTerminalService.getActiveById'
+    ));
+    assert.match(dashboardSource,
+        /'close-ai-session-terminal':[\s\S]*?expectedBackend: 'vscode'[\s\S]*?'detach-ai-session-terminal':[\s\S]*?expectedBackend: 'tmux'/,
+        'host routes must constrain close/detach to the requested runtime backend');
+    assert.ok(dashboardSource.includes('chooseRuntimeConflict:'));
+    assert.ok(dashboardSource.includes('vscode.window.showQuickPick'));
+    assert.ok(dashboardSource.includes("runtime.backend === 'tmux'"));
+    assert.ok(dashboardSource.includes("runtime.attached ? 'attached' : 'detached'"));
+    const directRestore = dashboardSource.indexOf(
+        'await aiSessionTerminalService.restorePersistedTerminals(vscode.window.terminals)'
+    );
+    const tmuxRestore = dashboardSource.indexOf(
+        'await tmuxRuntimeBackend.restoreAttachTerminals(vscode.window.terminals)'
+    );
+    const hydrationConstruction = dashboardSource.indexOf(
+        'const workspaceSessionHydrationController = new WorkspaceSessionHydrationController'
+    );
+    assert.ok(directRestore >= 0 && tmuxRestore > directRestore && hydrationConstruction > tmuxRestore,
+        'Direct and tmux attachment restoration must finish before first hydration is possible');
+}
+
+function runTmuxWebviewExperienceChecks() {
+    const projectWithTmuxRuntimeFixture = {
+        id: 'p', name: 'App', path: '/work/app', activeAiSessionTab: 'active',
+        activeAiSessions: [{
+            key: 'codex:s1', provider: 'codex', sessionId: 's1', name: 'One',
+            executionState: 'running', status: 'running', focused: false, needsAttention: false, pending: false,
+            backend: 'tmux', tmuxLayout: 'project', attached: false, stale: true,
+        }],
+        codexSessions: [{ id: 's1', name: 'One', active: true }],
+        kimiSessions: [], claudeSessions: [],
+    };
+    const projectWithDirectRuntimeFixture = {
+        ...projectWithTmuxRuntimeFixture,
+        activeAiSessions: [{
+            ...projectWithTmuxRuntimeFixture.activeAiSessions[0],
+            backend: 'vscode', tmuxLayout: undefined, attached: true, stale: false,
+        }],
+    };
+    const projectWithConflictFixture = {
+        ...projectWithTmuxRuntimeFixture,
+        activeAiSessions: [{
+            ...projectWithTmuxRuntimeFixture.activeAiSessions[0],
+            status: 'conflict', conflict: true, stale: false,
+        }],
+    };
+
+    const tmuxRow = webviewContentModule.getAiSessionsDiv(projectWithTmuxRuntimeFixture);
+    assert.ok(tmuxRow.includes('data-session-backend="tmux"'));
+    assert.ok(tmuxRow.includes('data-tmux-layout="project"'));
+    assert.ok(tmuxRow.includes('data-session-attached="false"'));
+    assert.ok(tmuxRow.includes('role="group"'));
+    assert.ok(tmuxRow.includes('class="ai-session-primary-action"'));
+    assert.ok(tmuxRow.includes('type="button"'));
+    assert.ok(tmuxRow.includes('aria-label="Attach or focus Codex session One using tmux project layout, detached, runtime status is stale"'));
+    assert.strictEqual(/class="codex-session-row[^>]*tabindex=/.test(tmuxRow), false,
+        'the group row itself must not be a focusable clickable div');
+    assert.match(tmuxRow,
+        /class="ai-session-primary-action"[\s\S]*?<\/button>[\s\S]*?<span class="codex-session-actions">/,
+        'the primary button and row actions must be siblings');
+    assert.ok(tmuxRow.includes('ai-session-runtime-badge'));
+    assert.ok(tmuxRow.includes('data-session-stale'));
+    assert.ok(tmuxRow.includes('ai-session-stale-status'));
+    assert.ok(tmuxRow.includes('Runtime status is stale'));
+    assert.ok(tmuxRow.includes('tmux'));
+    assert.ok(tmuxRow.includes('Detach Terminal…'));
+    assert.ok(tmuxRow.includes('data-action="detach-ai-session-terminal"'));
+    assert.ok(tmuxRow.includes('aria-label="Detach Terminal"'));
+    assert.strictEqual((tmuxRow.match(/data-session-backend="tmux"/g) || []).length, 2,
+        'matching active history rows must preserve the tmux backend for context actions');
+
+    const directRow = webviewContentModule.getAiSessionsDiv(projectWithDirectRuntimeFixture);
+    assert.ok(directRow.includes('data-session-backend="vscode"'));
+    assert.ok(directRow.includes('data-session-attached="true"'));
+    assert.ok(directRow.includes('aria-label="Focus Codex session One using Direct VS Code terminal, attached"'));
+    assert.ok(directRow.includes('Close Terminal…'));
+    assert.ok(directRow.includes('data-action="close-ai-session-terminal"'));
+    assert.ok(!directRow.includes('data-action="detach-ai-session-terminal"'));
+    assert.strictEqual((directRow.match(/data-session-backend="vscode"/g) || []).length, 2);
+
+    const conflictRow = webviewContentModule.getAiSessionsDiv(projectWithConflictFixture);
+    assert.ok(conflictRow.includes('data-session-conflict'));
+    assert.ok(conflictRow.includes('Runtime conflict'));
+    assert.ok(conflictRow.includes('aria-label="Choose runtime for Codex session One, runtime conflict"'));
+    assert.ok(!conflictRow.includes('data-action="close-ai-session-terminal"'));
+    assert.ok(!conflictRow.includes('data-action="detach-ai-session-terminal"'));
+
+    const projectScript = fs.readFileSync(
+        path.join(__dirname, '..', 'src', 'webview', 'webviewProjectScripts.js'), 'utf8'
+    );
+    assert.ok(projectScript.includes("'detach-ai-session-terminal'"));
+    assert.ok(projectScript.includes("data-session-backend"));
+    assert.ok(projectScript.includes("contextMenuAiSessionBackend"));
+    assert.ok(projectScript.includes(".ai-session-primary-action"));
+    const styles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.scss'), 'utf8');
+    assert.ok(styles.includes('.ai-session-runtime-badge'));
+    assert.ok(styles.includes('.ai-session-stale-status'));
+    assert.ok(styles.includes('&:focus-visible'));
+    assert.ok(styles.includes('&[data-session-conflict]'));
+    assert.ok(styles.includes('@media (forced-colors: active)'));
+    const compiledStyles = fs.readFileSync(path.join(__dirname, '..', 'media', 'styles.css'), 'utf8');
+    assert.ok(compiledStyles.includes('body.steward-sidebar .project .ai-session-primary-action:focus-visible'),
+        'generated styles must give the native primary button a visible keyboard focus outline');
+}
+
+async function runRealTmuxSmokeHarnessSourceChecks() {
+    const smokePath = path.join(__dirname, 'run-ai-session-tmux-smoke-checks.js');
+    assert.ok(fs.existsSync(smokePath), 'the isolated real tmux smoke harness must exist');
+    const source = fs.readFileSync(smokePath, 'utf8');
+    assert.ok(source.includes('execFileSync'));
+    assert.ok(source.includes('project-steward-test-'));
+    assert.ok(source.includes("'-L'"));
+    assert.ok(source.includes("'-f'"));
+    assert.ok(source.includes("'/dev/null'"));
+    assert.ok(source.includes('finally'));
+    assert.ok(source.includes("'kill-server'"));
+    assert.ok(source.includes("'list-sessions'"),
+        'cleanup must verify the isolated server no longer answers');
+    assert.ok(source.includes('#{socket_path}'),
+        'cleanup must capture the exact isolated socket before stopping the server');
+    assert.ok(source.includes('unlinkSync'),
+        'cleanup must remove only its own stale isolated socket');
+    assert.ok(source.includes('TMUX_TMPDIR'));
+    assert.ok(source.includes('realpathSync'));
+    assert.ok(source.includes('PROJECT_STEWARD_TMUX_PATH'));
+    assert.ok(source.includes('appendFileSync'));
+    assert.ok(source.includes('invocationId'));
+    assert.ok(source.includes('readProviderInvocations'));
+    assert.ok(source.includes('collectTrackedProviderPids'));
+    assert.strictEqual(source.includes("'SIGTERM'"), false);
+    assert.strictEqual(source.includes("'SIGKILL'"), false);
+    assert.strictEqual(source.includes('new AggregateError'), false,
+        'the smoke harness must remain compatible with Node runtimes before global AggregateError');
+    assert.ok(source.includes('assert.deepStrictEqual(projectOne.tmux, concurrentProjectOne.tmux)'));
+    assert.ok(source.includes("assert.strictEqual(projectInvocationRecords.length, 1"));
+    assert.ok(source.includes("assert.strictEqual(sessionRows.length, 2"));
+    assert.strictEqual(/\bexecFile\s*\(/.test(source), false);
+    assert.strictEqual(/\bexecSync\s*\(/.test(source), false);
+    assert.strictEqual(/\bspawn(?:Sync)?\s*\(/.test(source), false);
+
+    const smokeHarness = require(smokePath);
+    const cleanupStages = [
+        'captureSocket', 'killServer', 'verifyStopped',
+        'removeSocket', 'terminateProviders', 'removeFixtures',
+    ];
+    for (const failingStage of cleanupStages) {
+        const calls = [];
+        const stages = Object.fromEntries(cleanupStages.map(stage => [stage, async (...values) => {
+            calls.push([stage, ...values]);
+            if (stage === failingStage) throw new Error(`${stage} failed`);
+            return stage === 'captureSocket' ? '/owned/socket' : undefined;
+        }]));
+        await assert.rejects(
+            smokeHarness.runBestEffortCleanup(stages),
+            error => error && error.name === 'CleanupAggregateError'
+                && Array.isArray(error.errors)
+                && error.errors.some(item => item.message === `${failingStage} failed`)
+        );
+        const expectedCalls = failingStage === 'killServer'
+            ? ['captureSocket', 'killServer', 'killServer', 'verifyStopped',
+                'removeSocket', 'terminateProviders', 'removeFixtures']
+            : cleanupStages;
+        assert.deepStrictEqual(calls.map(call => call[0]), expectedCalls,
+            `${failingStage} failure must not skip any later cleanup stage`);
+        assert.strictEqual(calls.find(call => call[0] === 'removeSocket')[1],
+            failingStage === 'captureSocket' || failingStage === 'verifyStopped'
+                ? null : '/owned/socket',
+            'socket unlink must require both a captured owned path and proof the server stopped');
+        assert.strictEqual(calls.find(call => call[0] === 'removeFixtures')[1],
+            failingStage === 'verifyStopped' ? false : true,
+            'a live or unverifiable server must retain its owned tmux root while other fixtures clean up');
+        assert.strictEqual(calls.find(call => call[0] === 'removeFixtures')[2],
+            failingStage === 'terminateProviders' ? false : true,
+            'an unverifiable provider set must retain its fixture root');
+    }
+
+    const noServerError = Object.assign(new Error('raw no server path'), {
+        status: 1,
+        stderr: 'no server running on /private/test/socket',
+    });
+    let noServerKillCalls = 0;
+    smokeHarness.killIsolatedServer(() => {
+        noServerKillCalls++;
+        throw noServerError;
+    }, {});
+    assert.strictEqual(noServerKillCalls, 1,
+        'an explicit no-server result must be treated as already stopped without retry');
+
+    const exitedServerError = Object.assign(new Error('raw exited server path'), {
+        status: 1,
+        stderr: 'server exited unexpectedly\n',
+    });
+    smokeHarness.assertIsolatedServerStopped(() => { throw exitedServerError; }, {});
+
+    const ordinaryKillError = () => Object.assign(new Error('raw secret /private/work'), {
+        status: 1,
+        stderr: 'permission denied: /private/work',
+    });
+    let ordinaryKillCalls = 0;
+    await assert.rejects(smokeHarness.runBestEffortCleanup({
+        captureSocket: async () => '/owned/socket',
+        killServer: async () => smokeHarness.killIsolatedServer(() => {
+            ordinaryKillCalls++;
+            if (ordinaryKillCalls === 1) throw ordinaryKillError();
+        }, {}),
+        verifyStopped: async () => undefined,
+        removeSocket: async () => undefined,
+        terminateProviders: async () => undefined,
+        removeFixtures: async () => undefined,
+    }), error => error && error.name === 'CleanupAggregateError'
+        && !JSON.stringify(error.errors.map(item => item.message)).includes('/private/work'));
+    assert.strictEqual(ordinaryKillCalls, 2,
+        'an ordinary numeric kill failure must reach the orchestrator retry');
+
+    let repeatedKillCalls = 0;
+    const repeatedCleanupCalls = [];
+    await assert.rejects(smokeHarness.runBestEffortCleanup({
+        captureSocket: async () => '/owned/socket',
+        killServer: async () => {
+            repeatedKillCalls++;
+            smokeHarness.killIsolatedServer(() => { throw ordinaryKillError(); }, {});
+        },
+        verifyStopped: async () => {
+            repeatedCleanupCalls.push('verifyStopped');
+            throw new Error('server status unavailable');
+        },
+        removeSocket: async socketPath => repeatedCleanupCalls.push(['removeSocket', socketPath]),
+        terminateProviders: async () => undefined,
+        removeFixtures: async (serverStopped, providersStopped) => {
+            repeatedCleanupCalls.push(['removeFixtures', serverStopped, providersStopped]);
+        },
+    }), error => error && error.name === 'CleanupAggregateError' && error.errors.length >= 3);
+    assert.strictEqual(repeatedKillCalls, 2);
+    assert.deepStrictEqual(repeatedCleanupCalls, [
+        'verifyStopped', ['removeSocket', null], ['removeFixtures', false, true],
+    ], 'two ordinary kill failures must still verify and retain the tmux root');
+
+    const evidenceFixtures = [
+        {
+            invocationId: 'fixture-one', pidPath: '/private/one.pid',
+            invocationLogPath: '/private/shared.jsonl', stopPath: '/private/one.stop',
+        },
+        {
+            invocationId: 'fixture-two', pidPath: '/private/two.pid',
+            invocationLogPath: '/private/shared.jsonl', stopPath: '/private/two.stop',
+        },
+    ];
+    const assertMissingProviderEvidence = operation => assert.throws(operation, error => {
+        const messages = [error.message, ...(error.errors || []).map(item => item.message)];
+        return error && error.name === 'CleanupAggregateError'
+            && !messages.join(' ').includes('/private/')
+            && !messages.join(' ').includes('fixture-one')
+            && !messages.join(' ').includes('fixture-two');
+    });
+    assertMissingProviderEvidence(() => smokeHarness.collectTrackedProviderPids(
+        [evidenceFixtures[0]],
+        { readInvocations: () => [], readFallbackPid: () => null }
+    ));
+    assertMissingProviderEvidence(() => smokeHarness.collectTrackedProviderPids(
+        evidenceFixtures,
+        {
+            readInvocations: () => [{ invocationId: 'fixture-one', pid: 201 }],
+            readFallbackPid: () => null,
+        }
+    ));
+    assertMissingProviderEvidence(() => smokeHarness.collectTrackedProviderPids(
+        evidenceFixtures,
+        {
+            readInvocations: () => [
+                { invocationId: 'fixture-one', pid: 201 },
+                { invocationId: 'fixture-one', pid: 202 },
+                { invocationId: 'fixture-two', pid: -1 },
+            ],
+            readFallbackPid: () => null,
+        }
+    ));
+    assert.deepStrictEqual(smokeHarness.collectTrackedProviderPids([], {
+        readInvocations: () => { throw new Error('empty fixtures must not read evidence'); },
+        readFallbackPid: () => { throw new Error('empty fixtures must not read evidence'); },
+    }), [], 'an empty fixture set requires no provider PID evidence');
+    smokeHarness.stopAndVerifyProviderFixtures([], {
+        writeStop: () => { throw new Error('empty fixtures must not write stop files'); },
+        readInvocations: () => { throw new Error('empty fixtures must not read evidence'); },
+        readFallbackPid: () => { throw new Error('empty fixtures must not read evidence'); },
+        probe: () => { throw new Error('empty fixtures must not probe processes'); },
+    });
+    assert.deepStrictEqual(smokeHarness.collectTrackedProviderPids([
+        { invocationId: 'one', pidPath: '/one.pid', invocationLogPath: '/shared.jsonl' },
+        { invocationId: 'two', pidPath: '/two.pid', invocationLogPath: '/shared.jsonl' },
+        { invocationId: 'three', pidPath: '/three.pid', invocationLogPath: '/missing.jsonl' },
+    ], {
+        readInvocations: logPath => logPath === '/shared.jsonl' ? [
+            { invocationId: 'one', pid: 101 },
+            { invocationId: 'one', pid: 102 },
+            { invocationId: 'two', pid: 102 },
+            { invocationId: 'foreign', pid: 999 },
+            { invocationId: 'two', pid: -1 },
+        ] : [],
+        readFallbackPid: pidPath => pidPath === '/three.pid' ? 103
+            : pidPath === '/one.pid' ? 102 : null,
+    }), [101, 102, 103],
+    'cleanup must track every ledger PID, deduplicate it, ignore foreign/invalid rows, and retain pidPath fallback');
+    const probeCalls = [];
+    const probeCounts = new Map();
+    let probeNow = 0;
+    smokeHarness.waitForTrackedProviderExit([101, 102], {
+        probe: pid => {
+            probeCalls.push(pid);
+            const count = (probeCounts.get(pid) || 0) + 1;
+            probeCounts.set(pid, count);
+            if (pid === 102 || count > 1) {
+                const error = new Error('gone');
+                error.code = 'ESRCH';
+                throw error;
+            }
+        },
+        now: () => probeNow,
+        wait: delayMs => { probeNow += delayMs; },
+        timeoutMs: 100,
+        pollIntervalMs: 10,
+    });
+    assert.deepStrictEqual(probeCalls, [101, 102, 101],
+        'provider cleanup must verify every ledger PID until all report ESRCH');
+
+    const reusedPidProbes = [];
+    let timeoutNow = 0;
+    assert.throws(() => smokeHarness.waitForTrackedProviderExit([777], {
+        probe: pid => { reusedPidProbes.push(pid); },
+        now: () => timeoutNow,
+        wait: delayMs => { timeoutNow += delayMs; },
+        timeoutMs: 20,
+        pollIntervalMs: 10,
+    }), error => error && error.name === 'CleanupAggregateError');
+    assert.ok(reusedPidProbes.length >= 2,
+        'a stale or reused PID must only be observed until the bounded timeout');
+
+    const stopWrites = [];
+    assert.throws(() => smokeHarness.writeProviderStopFiles([
+        { stopPath: '/stop/one' }, { stopPath: '/stop/two' }, { stopPath: '/stop/three' },
+    ], {
+        writeStop: stopPath => {
+            stopWrites.push(stopPath);
+            if (stopPath === '/stop/two') throw new Error('write failed');
+        },
+    }), error => error && error.name === 'CleanupAggregateError');
+    assert.deepStrictEqual(stopWrites, ['/stop/one', '/stop/two', '/stop/three'],
+        'provider cleanup must request every controlled stop file even when one write fails');
+
+    const missingEvidenceFixtureProofs = [];
+    await assert.rejects(smokeHarness.runBestEffortCleanup({
+        captureSocket: async () => null,
+        killServer: async () => undefined,
+        verifyStopped: async () => undefined,
+        removeSocket: async () => undefined,
+        terminateProviders: async () => smokeHarness.stopAndVerifyProviderFixtures(
+            [evidenceFixtures[0]],
+            {
+                writeStop: () => undefined,
+                readInvocations: () => [],
+                readFallbackPid: () => null,
+                probe: () => { throw new Error('missing evidence must not probe'); },
+            }
+        ),
+        removeFixtures: async (serverStopped, providersStopped) => {
+            missingEvidenceFixtureProofs.push([serverStopped, providersStopped]);
+        },
+    }), error => error && error.name === 'CleanupAggregateError');
+    assert.deepStrictEqual(missingEvidenceFixtureProofs, [[true, false]],
+        'zero provider evidence must retain the provider fixture root');
+
+    const partialEvidenceStopWrites = [];
+    const partialEvidenceProbes = [];
+    const partialEvidenceEvents = [];
+    const partialEvidenceFixtureProofs = [];
+    await assert.rejects(smokeHarness.runBestEffortCleanup({
+        captureSocket: async () => '/owned/socket',
+        killServer: async () => undefined,
+        verifyStopped: async () => undefined,
+        removeSocket: async () => undefined,
+        terminateProviders: async () => smokeHarness.stopAndVerifyProviderFixtures(
+            evidenceFixtures,
+            {
+                writeStop: stopPath => {
+                    partialEvidenceStopWrites.push(stopPath);
+                    partialEvidenceEvents.push(['write', stopPath]);
+                },
+                readInvocations: () => [{ invocationId: 'fixture-one', pid: 201 }],
+                readFallbackPid: () => null,
+                probe: pid => {
+                    partialEvidenceProbes.push(pid);
+                    partialEvidenceEvents.push(['probe', pid]);
+                    const error = new Error('gone');
+                    error.code = 'ESRCH';
+                    throw error;
+                },
+            }
+        ),
+        removeFixtures: async (serverStopped, providersStopped) => {
+            partialEvidenceFixtureProofs.push([serverStopped, providersStopped]);
+        },
+    }), error => error && error.name === 'CleanupAggregateError');
+    assert.deepStrictEqual(partialEvidenceStopWrites,
+        ['/private/one.stop', '/private/two.stop'],
+        'all provider stop files must be attempted before evidence validation');
+    assert.deepStrictEqual(partialEvidenceProbes, [201],
+        'known provider PIDs must still receive signal-0 verification when another fixture lacks evidence');
+    assert.deepStrictEqual(partialEvidenceEvents, [
+        ['write', '/private/one.stop'], ['write', '/private/two.stop'], ['probe', 201],
+    ], 'all controlled stop requests must precede provider process observation');
+    assert.deepStrictEqual(partialEvidenceFixtureProofs, [[true, false]],
+        'partial provider evidence must retain the provider fixture root');
+
+    const completeEvidenceProbes = [];
+    smokeHarness.stopAndVerifyProviderFixtures(evidenceFixtures, {
+        writeStop: () => undefined,
+        readInvocations: () => [
+            { invocationId: 'fixture-one', pid: 201 },
+            { invocationId: 'fixture-two', pid: 202 },
+        ],
+        readFallbackPid: () => null,
+        probe: pid => {
+            completeEvidenceProbes.push(pid);
+            const error = new Error('gone');
+            error.code = 'ESRCH';
+            throw error;
+        },
+    });
+    assert.deepStrictEqual(completeEvidenceProbes.sort(), [201, 202],
+        'complete per-fixture evidence must verify every provider and succeed');
+}
+
 async function main() {
+    runRuntimeConfigurationChecks();
+    runLaunchSpecChecks();
+    runTmuxLayoutChecks();
+    await runTmuxClientChecks();
     await runTmuxDiscoveryChecks();
     await runTmuxStoreChecks();
     await runTmuxBackendChecks();
     await runDirectBackendChecks();
     await runRuntimeCoordinatorChecks();
+    await runRuntimeControllerChecks();
+    runHostRuntimeCompositionChecks();
+    runTmuxWebviewExperienceChecks();
+    await runRealTmuxSmokeHarnessSourceChecks();
     console.log('AI session tmux checks passed.');
 }
 

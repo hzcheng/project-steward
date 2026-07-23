@@ -14,19 +14,29 @@ const {
     makeRegistration,
 } = require('./helpers');
 
-const OpenProjectBridgeClient = loadWithFakeVscode('../../../out/openProjects/bridgeClient').default;
+const OpenWorkspaceBridgeClient = loadWithFakeVscode('../../../out/openWorkspaces/bridgeClient').default;
+
+function handshakeResponse() {
+    return {
+        accepted: true,
+        protocolVersion: 3,
+        bridgeExtensionVersion: '0.1.4',
+        capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
+    };
+}
 
 test('OPEN-BRIDGE-CLIENT-001 sequences changes and focus publications while suppressing unchanged metadata', async t => {
     const clock = createFakeClock(1000);
     const commands = createCommandRegistry();
     const publications = [];
     const aggregates = [];
-    commands.register('_projectStewardOpenProjects.bridge.publish', publication => {
+    commands.register('_projectStewardOpenWorkspaces.bridge.publish', publication => {
         publications.push(publication);
     });
-    commands.register('_projectStewardOpenProjects.bridge.unregister', () => undefined);
-    const client = new OpenProjectBridgeClient(
-        [makeRecord()],
+    commands.register('_projectStewardOpenWorkspaces.bridge.unregister', () => undefined);
+    commands.register('_projectStewardOpenWorkspaces.bridge.handshake', handshakeResponse);
+    const client = new OpenWorkspaceBridgeClient(
+        makeRecord(),
         aggregate => aggregates.push(aggregate),
         error => { throw error; },
         {
@@ -44,10 +54,10 @@ test('OPEN-BRIDGE-CLIENT-001 sequences changes and focus publications while supp
     });
     await flushAsync();
 
-    await client.publish([makeRecord()]);
-    await client.publish([makeRecord()], true);
-    await client.publish([makeRecord({ name: 'Changed' })]);
-    await client.publish([makeRecord({ name: 'Changed' })]);
+    await client.publish(makeRecord());
+    await client.publish(makeRecord(), true);
+    await client.publish(makeRecord({ name: 'Changed' }));
+    await client.publish(makeRecord({ name: 'Changed' }));
 
     assert.deepEqual(publications.map(value => value.sequence), [1, 2, 3]);
     assert.deepEqual(publications.map(value => value.followsFocusEvent), [false, true, false]);
@@ -58,10 +68,10 @@ test('OPEN-BRIDGE-CLIENT-001 sequences changes and focus publications while supp
     assert.equal(publications.at(-1).sequence, 4);
     assert.equal(publications.at(-1).followsFocusEvent, false);
 
-    const aggregateCommand = commands.handlers.get('_projectStewardOpenProjects.workspace.aggregate');
+    const aggregateCommand = commands.handlers.get('_projectStewardOpenWorkspaces.workspace.aggregate');
     const aggregate = makeAggregate([makeRegistration()]);
-    aggregateCommand(aggregate);
-    aggregateCommand({
+    await aggregateCommand(aggregate);
+    await aggregateCommand({
         ...aggregate,
         observedAtMs: 6000,
         registrations: [{ ...aggregate.registrations[0], sequence: 99, leaseUpdatedAtMs: 5999 }],
@@ -72,9 +82,10 @@ test('OPEN-BRIDGE-CLIENT-001 sequences changes and focus publications while supp
 test('OPEN-BRIDGE-CLIENT-001 retries the same semantic publication after command delivery fails', async t => {
     const errors = [];
     const attempts = [];
+    const retries = [];
     let rejectNext = true;
-    const client = new OpenProjectBridgeClient(
-        [makeRecord()],
+    const client = new OpenWorkspaceBridgeClient(
+        makeRecord(),
         () => undefined,
         error => errors.push(error),
         {
@@ -82,7 +93,10 @@ test('OPEN-BRIDGE-CLIENT-001 retries the same semantic publication after command
             now: () => 1000,
             registerCommand: () => ({ dispose: () => undefined }),
             executeCommand: async (command, publication) => {
-                if (command !== '_projectStewardOpenProjects.bridge.publish') return;
+                if (command === '_projectStewardOpenWorkspaces.bridge.handshake') {
+                    return handshakeResponse();
+                }
+                if (command !== '_projectStewardOpenWorkspaces.bridge.publish') return;
                 attempts.push(publication);
                 if (rejectNext) {
                     rejectNext = false;
@@ -91,12 +105,19 @@ test('OPEN-BRIDGE-CLIENT-001 retries the same semantic publication after command
             },
             setInterval: () => 'heartbeat',
             clearInterval: () => undefined,
+            setTimeout: callback => {
+                retries.push(callback);
+                return retries.length;
+            },
+            clearTimeout: () => undefined,
         }
     );
     t.after(() => client.dispose());
     await flushAsync();
 
-    assert.equal(await client.publish([makeRecord()]), true);
+    assert.equal(attempts.length, 1);
+    retries.shift()();
+    await flushAsync();
     assert.deepEqual(attempts.map(value => value.sequence), [1, 2]);
     assert.equal(errors.length, 1);
 });
@@ -108,7 +129,7 @@ test('OPEN-DASHBOARD-BRIDGE-LIFECYCLE-001 publishes a focus marker only when the
         checkDataMigration: async () => undefined,
         applyProjectColorToCurrentWindow: () => undefined,
         refresh: () => undefined,
-        publishOpenProjects: followsFocusEvent => publications.push(followsFocusEvent || false),
+        publishOpenWorkspace: followsFocusEvent => publications.push(followsFocusEvent || false),
         evaluateAiSessionAttention: () => { attentionEvaluations += 1; },
     });
 

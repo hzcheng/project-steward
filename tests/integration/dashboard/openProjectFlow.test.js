@@ -10,18 +10,18 @@ const {
     OTHER,
     createCommandRegistry,
     createFakeClock,
-    createSyntheticOpenProjectStore,
+    createSyntheticOpenWorkspaceStore,
     flushAsync,
     loadWithFakeVscode,
     makeAggregate,
     makeRecord,
     makeRegistration,
 } = require('../../contract/openProjects/helpers');
-const { projectOpenProjectCards } = require('../../../out/openProjects/projection');
-const { OpenProjectCoordinator } = require('../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectCoordinator');
+const { projectOpenWorkspaceCards } = require('../../../out/openWorkspaces/projection');
+const { OpenWorkspaceCoordinator } = require('../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceCoordinator');
 
-const OpenProjectBridgeClient = loadWithFakeVscode(
-    '../../../out/openProjects/bridgeClient'
+const OpenWorkspaceBridgeClient = loadWithFakeVscode(
+    '../../../out/openWorkspaces/bridgeClient'
 ).default;
 
 const repositoryRoot = path.join(__dirname, '..', '..', '..');
@@ -52,23 +52,32 @@ function createClassList() {
     };
 }
 
-function createOpenProjectUpdateVm(wrapper, catalogs) {
+function createOpenWorkspaceUpdateVm(wrapper, catalogs) {
     const document = {
         activeElement: null,
         body: {
             classList: createClassList(),
             style: { setProperty: () => undefined },
         },
-        querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null,
+        querySelector: selector => {
+            if (selector === '.sticky-groups-wrapper') return wrapper;
+            if (selector === '.sticky-groups-wrapper .open-other-windows-group[data-other-windows-status]'
+                && wrapper.innerHTML.includes('data-other-windows-status="ready"')) {
+                return { getAttribute: () => 'ready' };
+            }
+            return null;
+        },
         querySelectorAll: selector => {
             const projectTags = Array.from(wrapper.innerHTML.matchAll(/<div class="([^"]*)"[^>]*data-id=[^>]*>/g))
                 .filter(match => hasClassTokens(match[1], 'project', 'steward-item-card'))
                 .map(match => match[0]);
-            if (selector === '.sticky-groups-wrapper .project[data-id]') {
-                return projectTags.map(() => ({}));
+            if (selector === '.sticky-groups-wrapper .workspace-card[data-current-workspace][data-workspace-scope-identity]') {
+                return projectTags.filter(tag => tag.includes('data-current-workspace')
+                    && tag.includes('data-workspace-scope-identity')).map(() => ({}));
             }
-            if (selector === '.sticky-groups-wrapper .project[data-project-navigation][data-id]') {
-                return projectTags.filter(tag => tag.includes('data-project-navigation')).map(() => ({}));
+            if (selector === '.sticky-groups-wrapper .workspace-card[data-other-workspace][data-workspace-navigation-identity]') {
+                return projectTags.filter(tag => tag.includes('data-other-workspace')
+                    && tag.includes('data-workspace-navigation-identity')).map(() => ({}));
             }
             if (selector === '.sticky-groups-wrapper .open-other-windows-group') {
                 return wrapper.innerHTML.includes('open-other-windows-group') ? [{}] : [];
@@ -79,12 +88,13 @@ function createOpenProjectUpdateVm(wrapper, catalogs) {
     const context = {
         document,
         normalizeDashboardSearchCatalog: value => value
+            && value.version === 2
             && Array.isArray(value.sessions)
-            && Array.isArray(value.openProjects)
+            && Array.isArray(value.openWorkspaces)
             && Array.isArray(value.savedProjects)
             && Array.isArray(value.todos)
             ? value
-            : { sessions: [], openProjects: [], savedProjects: [], todos: [] },
+            : { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: [] },
         window: {
             __projectStewardDashboard: {
                 replaceSearchCatalog: catalog => catalogs.push(catalog),
@@ -122,10 +132,10 @@ function createFilterVm(input) {
 test('ARCH-COORDINATOR-WIRING-001 carries sequenced publications through the bridge into dashboard cards', async t => {
     const clock = createFakeClock(1000);
     const commands = createCommandRegistry();
-    const store = createSyntheticOpenProjectStore();
+    const store = createSyntheticOpenWorkspaceStore();
     const aggregates = [];
     let fireWatcher;
-    const coordinator = new OpenProjectCoordinator('/synthetic-open-project-root', {
+    const coordinator = new OpenWorkspaceCoordinator('/synthetic-open-project-root', {
         now: () => clock.nowMs,
         setInterval: clock.setInterval,
         clearInterval: clock.clearInterval,
@@ -135,15 +145,21 @@ test('ARCH-COORDINATOR-WIRING-001 carries sequenced publications through the bri
         },
         createStore: () => store,
         deliverAggregate: aggregate => commands.execute(
-            '_projectStewardOpenProjects.workspace.aggregate',
+            '_projectStewardOpenWorkspaces.workspace.aggregate',
             aggregate
         ),
     });
-    commands.register('_projectStewardOpenProjects.bridge.publish', raw => coordinator.publish(raw));
-    commands.register('_projectStewardOpenProjects.bridge.unregister', raw => coordinator.unregister(raw));
+    commands.register('_projectStewardOpenWorkspaces.bridge.publish', raw => coordinator.publish(raw));
+    commands.register('_projectStewardOpenWorkspaces.bridge.unregister', raw => coordinator.unregister(raw));
+    commands.register('_projectStewardOpenWorkspaces.bridge.handshake', () => ({
+        accepted: true,
+        protocolVersion: 3,
+        bridgeExtensionVersion: '0.1.4',
+        capabilities: { workspaces: true, atomicReplace: true, focusLeases: true },
+    }));
 
-    const client = new OpenProjectBridgeClient(
-        [makeRecord({ name: 'Current', uri: '/work/current' })],
+    const client = new OpenWorkspaceBridgeClient(
+        makeRecord({ name: 'Current', uri: '/work/current' }),
         aggregate => aggregates.push(aggregate),
         error => { throw error; },
         {
@@ -159,26 +175,25 @@ test('ARCH-COORDINATOR-WIRING-001 carries sequenced publications through the bri
     await flushAsync();
 
     clock.advanceBy(1000);
-    await client.publish([makeRecord({ name: 'Current', uri: '/work/current' })], true);
+    await client.publish(makeRecord({ name: 'Current', uri: '/work/current' }), true);
     store.seed(makeRegistration(OTHER, 1500, 'vscode-remote://ssh-remote+host/work/shared'));
     fireWatcher();
     await flushAsync();
 
     const publications = commands.calls.filter(call =>
-        call.command === '_projectStewardOpenProjects.bridge.publish'
+        call.command === '_projectStewardOpenWorkspaces.bridge.publish'
     );
     assert.deepEqual(publications.map(call => call.argument.sequence), [1, 2]);
     assert.equal(publications[1].argument.followsFocusEvent, true);
     assert.equal(aggregates.at(-1).registrations[0].lastFocusedAtMs, 2000);
 
-    const cards = projectOpenProjectCards([{
-        id: '__openProjects-0',
-        name: 'Current',
-        description: 'Workspace folder',
-        path: '/work/current',
-    }], aggregates.at(-1), SELF);
-    assert.deepEqual(cards.map(card => card.name), ['Current', 'Shared']);
-    assert.equal(cards[1].path, 'vscode-remote://ssh-remote+host/work/shared');
+    const cards = projectOpenWorkspaceCards(
+        makeRecord({ name: 'Current', uri: '/work/current' }),
+        aggregates.at(-1),
+        SELF
+    );
+    assert.deepEqual(cards.map(card => card.name), ['Shared']);
+    assert.equal(cards[0].kind, 'navigation');
 });
 
 test('OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001 excludes the current card and deduplicates peer windows by focus order', () => {
@@ -189,53 +204,57 @@ test('OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001 excludes the current card and 
         makeRegistration(SELF, 4000, '/work/current'),
     ]);
 
-    const cards = projectOpenProjectCards([{
-        id: '__openProjects-0',
-        name: 'Current',
-        description: 'Workspace folder',
-        path: '/work/current/',
-    }], aggregate, SELF);
+    const cards = projectOpenWorkspaceCards(
+        makeRecord({ name: 'Current', uri: '/work/current' }),
+        aggregate,
+        SELF
+    );
 
-    assert.deepEqual(cards.map(card => card.name), ['Current', 'Shared']);
-    assert.equal(cards[1].openProjectSourceInstanceId, OTHER);
-    assert.equal(cards[1].path, remoteUri);
+    assert.deepEqual(cards.map(card => card.name), ['Shared']);
+    assert.equal(cards[0].kind, 'navigation');
+    assert.equal(cards[0].navigationIdentity, makeRecord({ uri: remoteUri }).navigationIdentity);
 });
 
 test('OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001 applies consistent updates and rolls back DOM that loses peer cards', () => {
     const wrapper = { innerHTML: '<div>old</div>' };
     const catalogs = [];
-    const context = createOpenProjectUpdateVm(wrapper, catalogs);
-    assert.equal(typeof context.applyOpenProjectsUpdate, 'function');
+    const context = createOpenWorkspaceUpdateVm(wrapper, catalogs);
+    assert.equal(typeof context.applyOpenWorkspacesUpdate, 'function');
     const catalog = {
+        version: 2,
         sessions: [],
-        openProjects: [
-            { projectId: 'current', action: 'open-current' },
-            { projectId: 'other', action: 'switch-open' },
+        openWorkspaces: [
+            { workspaceId: 'current', action: 'show-current-workspace' },
+            { workspaceId: 'other', action: 'switch-open-workspace' },
         ],
         savedProjects: [],
         todos: [{ todoId: 'preserved' }],
     };
     const validHtml = [
-        '<div class="group open-current-workspace-group"><div class="project steward-item-card" data-id="current"></div></div>',
-        '<div class="group open-other-windows-group"><div class="project steward-item-card" data-project-navigation data-id="other"></div></div>',
+        '<div class="group open-current-workspace-group"><div class="workspace-card project steward-item-card" data-id="current" data-current-workspace data-workspace-scope-identity="scope"></div></div>',
+        '<div class="group open-other-windows-group" data-other-windows-status="ready"><div class="workspace-card project steward-item-card" data-id="other" data-other-workspace data-workspace-navigation-identity="navigation"></div></div>',
     ].join('');
 
-    assert.equal(context.applyOpenProjectsUpdate({
-        type: 'open-projects-updated',
-        version: 1,
+    assert.equal(context.applyOpenWorkspacesUpdate({
+        type: 'open-workspaces-updated',
+        version: 2,
         semanticRevision: 'valid',
-        projectCount: 2,
+        currentWorkspaceCount: 1,
+        navigationWorkspaceCount: 1,
+        otherWindowsStatus: 'ready',
         html: validHtml,
         searchCatalog: catalog,
     }), true);
     assert.equal(catalogs[0].todos[0].todoId, 'preserved');
 
-    assert.equal(context.applyOpenProjectsUpdate({
-        type: 'open-projects-updated',
-        version: 1,
+    assert.equal(context.applyOpenWorkspacesUpdate({
+        type: 'open-workspaces-updated',
+        version: 2,
         semanticRevision: 'lost-peer',
-        projectCount: 2,
-        html: '<div class="project steward-item-card" data-id="current"></div>',
+        currentWorkspaceCount: 1,
+        navigationWorkspaceCount: 1,
+        otherWindowsStatus: 'ready',
+        html: '<div class="workspace-card project steward-item-card" data-id="current" data-current-workspace data-workspace-scope-identity="scope"></div>',
         searchCatalog: catalog,
     }), false);
     assert.equal(wrapper.innerHTML, validHtml);

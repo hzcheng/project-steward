@@ -57,6 +57,7 @@ export default class AiSessionExecutionMonitor {
         for (const key of this.entries.keys()) {
             if (!seen.has(key)) {
                 this.entries.delete(key);
+                changed.add(key);
             }
         }
         return Array.from(changed);

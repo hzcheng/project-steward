@@ -172,14 +172,20 @@ for (const [providerId, sessionsKey] of [
         assert.equal(getRuntimeById(wrongProviderId, 'session'), null,
             'the runtime fixture must reject a different provider identity');
         runtimeLookups.length = 0;
-        const project = {
-            id: 'project', path: '/fixtures/project',
-            codexSessions: [], kimiSessions: [], claudeSessions: [],
+        const workspace = {
+            navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
+            kind: 'singleFolder', displayName: 'Fixture', navigationUri: 'file:///fixtures/project',
+            environment: 'local', roots: [{
+                id: 'root:fixture', name: 'Fixture', uri: 'file:///fixtures/project',
+                hostPath: '/fixtures/project', ordinal: 0,
+            }],
         };
-        project[sessionsKey] = [{ id: 'session' }];
+        const sessionsByProvider = { codex: [], kimi: [], claude: [] };
+        sessionsByProvider[providerId] = [{ id: 'session', primaryRootId: 'root:fixture' }];
+        const workspaceSessions = { sessionsByProvider };
         const controller = new AiSessionAttentionController({
             isEnabled: () => true,
-            getOpenProjects: () => [project],
+            getWorkspaceTarget: () => ({ cardId: 'workspace:fixture', workspace, sessions: workspaceSessions }),
             getProviders: () => [{
                 id: 'codex', projectSessionsKey: 'codexSessions',
                 service: { getLifecycleSignals: () => ({}) },
@@ -188,7 +194,6 @@ for (const [providerId, sessionsKey] of [
             }, {
                 id: 'claude', projectSessionsKey: 'claudeSessions', service: { getLifecycleSignals: () => ({}) },
             }],
-            getProjectKey: value => attentionProject.getAttentionProjectKey(value.path),
             getRuntimeById,
             isRuntimeComplete: value => value.state === 'completed',
             publish: async items => { publications.push(items.map(item => ({ ...item }))); return true; },

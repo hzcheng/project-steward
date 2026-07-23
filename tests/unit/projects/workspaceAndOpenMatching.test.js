@@ -133,38 +133,9 @@ test('PROJECT-WORKSPACE-HELPER-001 resolves one unambiguous legacy remote-path m
     );
 });
 
-test('PROJECT-WORKSPACE-HELPER-001 builds current workspace cards from workspace files and folders', () => {
-    const saved = [{
-        id: 'saved', name: 'Saved App', description: 'Saved', path: '/work/app', favorite: true, color: '#abc',
-    }];
+test('PROJECT-WORKSPACE-HELPER-001 delegates workspace navigation to the current workspace URI', () => {
     const folders = [{ uri: FakeUri.file('/work/app'), name: 'app' }];
-    const open = service.getOpenProjectsFromWorkspace(null, folders, {
-        savedProjects: saved,
-        currentRemoteName: undefined,
-        isFolderGitRepo: value => value === '/work/app',
-    });
-
-    assert.equal(open.length, 1);
-    assert.deepEqual({
-        id: open[0].id,
-        name: open[0].name,
-        description: open[0].description,
-        path: open[0].path,
-        favorite: open[0].favorite,
-        showSaveAction: open[0].showSaveAction,
-        isGitRepo: open[0].isGitRepo,
-    }, {
-        id: '__openProjects-0',
-        name: 'Saved App',
-        description: 'Saved',
-        path: '/work/app',
-        favorite: true,
-        showSaveAction: false,
-        isGitRepo: true,
-    });
-
     const workspaceFile = FakeUri.file('/work/app.code-workspace');
     assert.equal(service.getWorkspaceUri(workspaceFile, folders), workspaceFile);
-    assert.equal(service.getOpenProjectUri('__openProjects-0', workspaceFile, folders), workspaceFile);
-    assert.equal(service.getOpenProjectUri('__openProjects-1', workspaceFile, folders), null);
+    assert.deepEqual(service.getWorkspaceUris(null, folders), [folders[0].uri]);
 });

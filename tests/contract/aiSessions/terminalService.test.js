@@ -31,7 +31,15 @@ test('SESSION-AI-SESSION-TERMINAL-RESOLUTION-001 resolves tracked, environment, 
     const service = new AiSessionTerminalService(root, providers.AI_SESSION_PROVIDER_IDS.map(id =>
         providers.getAiSessionProviderDefinition(id)), 0);
     const tracked = { name: 'tracked', creationOptions: {}, processId: Promise.resolve(1) };
-    service.track('codex', 'tracked-id', { terminal: tracked, markerPath: `${root}/tracked.done` }, false);
+    const trackedIdentity = {
+        provider: 'codex', workspaceScopeIdentity: 'scope:fixture',
+        workspaceNavigationIdentity: 'navigation:fixture', workspaceRootHostPaths: ['/work'],
+        cwd: '/work', sessionId: 'tracked-id',
+    };
+    service.track('codex', 'tracked-id', {
+        terminal: tracked, markerPath: `${root}/tracked.done`, runtimeIdentity: trackedIdentity,
+        runStartedAtMs: Date.now(), cwd: '/work',
+    }, false);
     const candidateCalls = [];
     const candidates = {
         codex: [{ id: 'environment-id', name: 'Environment' }],
@@ -59,34 +67,17 @@ test('SESSION-AI-SESSION-TERMINAL-RESOLUTION-001 resolves tracked, environment, 
     const ordinary = { name: 'bash', creationOptions: {} };
     terminals.push(byEnvironment, archivedByEnvironment, byName, ordinary);
 
-    const recovered = service.resolveTerminalSession(byEnvironment, getCandidates);
-    assert.equal(recovered.sessionId, 'environment-id');
-    assert.equal(Number.isFinite(recovered.entry.runStartedAtMs), true);
-    assert.equal(service.isComplete(recovered.entry), false);
-    const currentMarkerAt = new Date(recovered.entry.runStartedAtMs + 1000);
-    fs.utimesSync(markerPath, currentMarkerAt, currentMarkerAt);
-    assert.equal(service.isComplete(recovered.entry), true);
-    assert.deepEqual(service.getCompletedSessions().map(item => `${item.provider}:${item.sessionId}`), [
-        'codex:environment-id',
-    ]);
-    assert.deepEqual(candidateCalls, ['codex']);
-
-    service.releaseCompletedSession('codex', 'environment-id');
-    assert.equal(fs.existsSync(markerPath), false);
-    assert.equal(service.getById('codex', 'environment-id').terminal, byEnvironment);
-    assert.equal(service.isComplete(service.getById('codex', 'environment-id')), true);
-    assert.equal(service.getActiveById('codex', 'environment-id'), null);
-    assert.deepEqual(service.getReleasedSessions(), [{ provider: 'codex', sessionId: 'environment-id' }]);
-    candidateCalls.length = 0;
     assert.equal(service.resolveTerminalSession(byEnvironment, getCandidates), null);
-    assert.deepEqual(candidateCalls, ['codex']);
+    assert.deepEqual(candidateCalls, []);
+    assert.equal(service.resolveTerminalSession(byEnvironment, getCandidates), null);
+    assert.deepEqual(candidateCalls, []);
 
     candidateCalls.length = 0;
     assert.equal(service.resolveTerminalSession(archivedByEnvironment, getCandidates), null);
-    assert.deepEqual(candidateCalls, ['codex']);
+    assert.deepEqual(candidateCalls, []);
     candidateCalls.length = 0;
-    assert.equal(service.resolveTerminalSession(byName, getCandidates).sessionId, 'named-123456');
-    assert.deepEqual(candidateCalls, ['kimi']);
+    assert.equal(service.resolveTerminalSession(byName, getCandidates), null);
+    assert.deepEqual(candidateCalls, []);
     candidateCalls.length = 0;
     assert.equal(service.resolveTerminalSession(ordinary, getCandidates), null);
     assert.deepEqual(candidateCalls, []);
@@ -95,9 +86,18 @@ test('SESSION-AI-SESSION-TERMINAL-RESOLUTION-001 resolves tracked, environment, 
     service.trackPending({
         provider: 'codex', terminal: pending, markerPath: `${root}/pending.done`, cwd: '/work/app',
         createdAt: new Date().toISOString(), excludedSessionIds: [],
+        runtimeIdentity: {
+            provider: 'codex', workspaceScopeIdentity: 'scope:fixture',
+            workspaceNavigationIdentity: 'navigation:fixture', workspaceRootHostPaths: ['/work/app'],
+            cwd: '/work/app', pendingId: 'pending-fixture',
+        },
     }, false);
     assert.equal(service.getPendingTerminals().length, 1);
     assert.deepEqual(service.handleClosedTerminal(pending), []);
     assert.equal(service.getPendingTerminals().length, 0);
-    assert.deepEqual(service.handleClosedTerminal(tracked), [{ provider: 'codex', sessionId: 'tracked-id' }]);
+    assert.deepEqual(service.handleClosedTerminal(tracked), [{
+        provider: 'codex',
+        sessionId: 'tracked-id',
+        workspaceScopeIdentity: 'scope:fixture',
+    }]);
 });

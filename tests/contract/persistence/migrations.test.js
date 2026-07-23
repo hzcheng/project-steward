@@ -76,7 +76,7 @@ function makeStartupController(migrateDataIfNeeded, events) {
         isExtensionInstalled: () => false,
         migrateDataIfNeeded,
         refreshDashboard: async () => events.push('refresh'),
-        publishOpenProjects: () => events.push('publish'),
+        publishOpenWorkspace: () => events.push('publish'),
         showInformationMessage: message => events.push(['information', message]),
         showErrorMessage: message => events.push(['error', message]),
         logError: (message, error) => events.push(['log', message, error]),

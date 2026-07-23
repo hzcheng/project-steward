@@ -13,10 +13,10 @@ const {
     makeTmuxDiscoveryRow,
 } = require('../../helpers/runtimeContract');
 const {
-    OpenProjectCoordinator,
-} = require('../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectCoordinator');
+    OpenWorkspaceCoordinator,
+} = require('../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceCoordinator');
 const {
-    createSyntheticOpenProjectStore,
+    createSyntheticOpenWorkspaceStore,
     makePublication,
 } = require('../../contract/openProjects/helpers');
 
@@ -37,7 +37,7 @@ function makeStartupController(migrateDataIfNeeded, events) {
         isExtensionInstalled: () => false,
         migrateDataIfNeeded,
         refreshDashboard: async () => events.push('refresh'),
-        publishOpenProjects: () => events.push('publish'),
+        publishOpenWorkspace: () => events.push('publish'),
         showInformationMessage: () => events.push('information'),
         showErrorMessage: message => events.push(['error', message]),
         logError: (message, error) => events.push(['log', message, error]),
@@ -164,7 +164,7 @@ test('ARCH-COORDINATOR-001 retries bridge delivery after an unchanged publicatio
     let resolveSecondAttempt;
     const secondAttempt = new Promise(resolve => { resolveSecondAttempt = resolve; });
     const attempts = [];
-    const coordinator = new OpenProjectCoordinator('/synthetic-error-recovery', {
+    const coordinator = new OpenWorkspaceCoordinator('/synthetic-error-recovery', {
         now: () => 1000,
         setInterval: () => 'error-recovery-interval',
         clearInterval: () => undefined,
@@ -172,7 +172,7 @@ test('ARCH-COORDINATOR-001 retries bridge delivery after an unchanged publicatio
             fireWatcher = callback;
             return { close() {} };
         },
-        createStore: () => createSyntheticOpenProjectStore(),
+        createStore: () => createSyntheticOpenWorkspaceStore(),
         deliverAggregate: aggregate => {
             attempts.push(aggregate);
             if (attempts.length === 1) throw new Error('bridge unavailable');
@@ -219,7 +219,7 @@ test('PERSIST-DASHBOARD-LIFECYCLE-CONTROLLER-001 allows a later configuration mi
         },
         applyProjectColorToCurrentWindow: () => events.push('color'),
         refresh: reason => events.push(['refresh', reason]),
-        publishOpenProjects: () => events.push('publish'),
+        publishOpenWorkspace: () => events.push('publish'),
         evaluateAiSessionAttention: () => undefined,
     });
     const change = makeConfigurationEvent('projectSteward.storeProjectsInSettings');
@@ -241,7 +241,7 @@ test('PERSIST-DASHBOARD-LIFECYCLE-CONTROLLER-001 routes workspace, configuration
         checkDataMigration: async openAfter => events.push(['migrate', openAfter]),
         applyProjectColorToCurrentWindow: () => events.push('color'),
         refresh: reason => events.push(['refresh', reason]),
-        publishOpenProjects: followsFocus => events.push(['publish', followsFocus]),
+        publishOpenWorkspace: followsFocus => events.push(['publish', followsFocus]),
         evaluateAiSessionAttention: () => events.push('attention'),
     });
 

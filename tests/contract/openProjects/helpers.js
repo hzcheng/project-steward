@@ -1,54 +1,70 @@
 'use strict';
 
 const Module = require('node:module');
+const crypto = require('node:crypto');
 const { createFakeClock } = require('../../helpers/fakeClock');
 
-const OPEN_PROJECT_LEASE_MS = 30_000;
+const OPEN_WORKSPACE_LEASE_MS = 30_000;
 const SELF = '1'.repeat(32);
 const OLDER = '2'.repeat(32);
 const NEWER = '3'.repeat(32);
 const OTHER = '4'.repeat(32);
 
 function makeRecord(overrides = {}) {
-    return {
-        localProjectId: '__openProjects-0',
+    const sourceUri = overrides.navigationUri || overrides.uri || '/work/shared';
+    const navigationUri = sourceUri.includes(':') ? sourceUri : `file://${sourceUri}`;
+    const environment = overrides.environment || ({
+        ssh: 'ssh', wsl: 'wsl', devContainer: 'devContainer', remote: 'remote', local: 'local',
+    }[overrides.remoteType] || 'local');
+    const navigationIdentity = overrides.navigationIdentity
+        || crypto.createHash('sha256').update(`navigation:${navigationUri}`).digest('hex');
+    const scopeIdentity = overrides.scopeIdentity
+        || crypto.createHash('sha256').update(`scope:${navigationUri}`).digest('hex');
+    const roots = overrides.roots || [{
+        id: crypto.createHash('sha256').update(`root:${navigationUri}`).digest('hex'),
+        name: overrides.name || 'Shared',
+        uri: navigationUri,
         ordinal: 0,
-        name: 'Shared',
-        description: 'Workspace folder',
-        uri: '/work/shared',
-        remoteType: 'local',
-        color: '#222',
-        ...overrides,
+    }];
+    return {
+        navigationIdentity,
+        scopeIdentity,
+        kind: overrides.kind || 'singleFolder',
+        displayName: overrides.displayName || overrides.name || 'Shared',
+        navigationUri,
+        environment,
+        runningAiSessionCount: overrides.runningAiSessionCount ?? overrides.activeSessionCount ?? 0,
+        roots,
     };
 }
 
 function makePublication(overrides = {}) {
     return {
-        protocolVersion: 1,
+        protocolVersion: 3,
         instanceId: SELF,
         sequence: 1,
         followsFocusEvent: false,
-        projects: [makeRecord()],
-        ...overrides,
+        workspace: overrides.workspace || overrides.projects?.[0] || makeRecord(),
+        ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== 'projects')),
     };
 }
 
 function makeRegistration(instanceId = SELF, lastFocusedAtMs = 4000, uri = '/work/shared', overrides = {}) {
     return {
-        protocolVersion: 1,
+        protocolVersion: 3,
         instanceId,
         sequence: 1,
         lastFocusedAtMs,
         leaseUpdatedAtMs: 4500,
-        projects: [makeRecord({ uri })],
-        ...overrides,
+        workspace: overrides.workspace || overrides.projects?.[0] || makeRecord({ uri }),
+        ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== 'projects')),
     };
 }
 
 function makeAggregate(registrations, overrides = {}) {
     return {
-        protocolVersion: 1,
-        semanticRevision: 'revision',
+        protocolVersion: 3,
+        semanticRevision: 'a'.repeat(64),
         observedAtMs: 5000,
         registrations,
         ...overrides,
@@ -79,7 +95,7 @@ function createCommandRegistry() {
     return { calls, execute, handlers, register };
 }
 
-function createSyntheticOpenProjectStore(initialRegistrations = []) {
+function createSyntheticOpenWorkspaceStore(initialRegistrations = []) {
     const registrations = new Map(initialRegistrations.map(value => [value.instanceId, value]));
     return {
         seed(registration) {
@@ -98,7 +114,7 @@ function createSyntheticOpenProjectStore(initialRegistrations = []) {
         async scan(nowMs) {
             let expired = 0;
             for (const [instanceId, registration] of registrations) {
-                if (nowMs - registration.leaseUpdatedAtMs > OPEN_PROJECT_LEASE_MS) {
+                if (nowMs - registration.leaseUpdatedAtMs > OPEN_WORKSPACE_LEASE_MS) {
                     registrations.delete(instanceId);
                     expired += 1;
                 }
@@ -145,12 +161,12 @@ async function flushAsync(turns = 6) {
 module.exports = {
     NEWER,
     OLDER,
-    OPEN_PROJECT_LEASE_MS,
+    OPEN_WORKSPACE_LEASE_MS,
     OTHER,
     SELF,
     createCommandRegistry,
     createFakeClock,
-    createSyntheticOpenProjectStore,
+    createSyntheticOpenWorkspaceStore,
     flushAsync,
     loadWithFakeVscode,
     makeAggregate,

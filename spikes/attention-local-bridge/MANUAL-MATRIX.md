@@ -6,8 +6,8 @@ These disposable probes must be installed manually. The packaging script never i
 
 Use this exact order for every fresh build and for each matrix row:
 
-1. Install the UI Bridge `0.1.3`; uninstall an older Workspace Probe from every tested Workspace host or force-install the new Workspace patch.
-2. Reload the local UI Bridge host after installing `artifacts/project-steward-attention-ui-bridge-0.1.3.vsix`.
+1. Install the UI Bridge `0.1.4`; uninstall an older Workspace Probe from every tested Workspace host or force-install the new Workspace patch.
+2. Reload the local UI Bridge host after installing `artifacts/project-steward-attention-ui-bridge-0.1.4.vsix`.
 3. Open the target Local, Remote SSH, WSL, or Dev Container fixture window.
 4. Install `artifacts/project-steward-attention-workspace-probe-0.0.5.vsix` in the Workspace host. For remote fixtures, use the remote `code-server --install-extension <absolute-vsix> --force`.
 5. Restart only the target fixture Extension Host after the Workspace install. In the Local row this is also the UI host, so do not perform an additional UI-host restart.

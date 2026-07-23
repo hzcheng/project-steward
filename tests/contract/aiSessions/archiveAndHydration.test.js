@@ -3,8 +3,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const archive = require('../../../out/aiSessions/archiveBatch');
-const { hydrateOpenProjectsWithAiSessions } = require('../../../out/aiSessions/projectHydration');
-const { getAttentionProjectKey, getAttentionSessionLookupKey } = require('../../../out/aiSessions/attentionProject');
+const { hydrateWorkspaceAiSessions } = require('../../../out/workspaces/sessionHydration');
+const { getAttentionProjectKeys } = require('../../../out/aiSessions/attentionProject');
 
 test('PERSIST-BATCH-AI-SESSION-ARCHIVE-001 RUNTIME-AI-SESSION-ARCHIVE-RUNTIME-001 rejects running items and cleans every successful archive side effect', () => {
     const effects = [];
@@ -46,36 +46,55 @@ test('PERSIST-BATCH-AI-SESSION-ARCHIVE-HOST-001 emits one terminal completion fo
 });
 
 test('PERSIST-AI-SESSION-PROJECT-HYDRATION-001 projects assignment, pin, alias, provider availability, and attention without input mutation leaks', () => {
-    const project = { id: 'p', path: '/work/app' };
+    const workspace = {
+        navigationIdentity: 'navigation:fixture',
+        scopeIdentity: 'scope:fixture',
+        kind: 'singleFolder',
+        displayName: 'App',
+        navigationUri: 'file:///work/app',
+        environment: 'local',
+        roots: [{
+            id: 'root:fixture', name: 'app', uri: 'file:///work/app',
+            hostPath: '/work/app', ordinal: 0,
+        }],
+    };
     const session = { id: 's', name: 'Original', cwd: '/work/app', updatedAt: '2026-01-01T00:00:00Z' };
-    const projectAttentionKey = getAttentionProjectKey(project.path);
-    const attentionKey = getAttentionSessionLookupKey(projectAttentionKey, 'codex:s');
-    const result = hydrateOpenProjectsWithAiSessions({
-        projects: [project],
-        providers: [{ id: 'codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexUnavailable' }],
+    const projectAttentionKey = getAttentionProjectKeys(['file:///work/app'])[0];
+    const result = hydrateWorkspaceAiSessions({
+        workspace,
+        providers: [{ id: 'codex', label: 'Codex' }],
         sessionResults: { codex: { available: true, sessions: [session] } },
-        assignments: { codex: new Map([['p', [session]]]) }, expandedProjects: new Set(['/work/app']),
-        activeProviders: {}, pinnedSessions: new Set(['codex:s']), aliases: { 'codex:s': 'Alias' },
-        aggregateByProjectAndSession: new Map([[attentionKey, {
-            projectId: projectAttentionKey, sessionKey: 'codex:s', reasons: ['completed'], eventIds: ['event'], observedAtMs: 1,
-        }]]),
-        localAttentionBySession: {}, includeLocalAttention: false, getProjectKey: value => value.path,
+        getSessionComparableCwd: (_provider, value) => value.cwd,
+        expanded: true,
+        pinnedSessions: new Set(['codex:s']),
+        aliases: { 'codex:s': 'Alias' },
+        attentionAggregate: {
+            protocolVersion: 1,
+            aggregateRevision: 'a'.repeat(64),
+            generatedAtMs: 1,
+            sessions: [{
+                projectId: projectAttentionKey, sessionKey: 'codex:s',
+                reasons: ['completed'], eventIds: ['event'], observedAtMs: 1,
+            }],
+        },
     });
-    assert.equal(result[0].codexSessionsExpanded, true);
-    assert.equal(result[0].activeAiSessionProvider, 'codex');
-    assert.deepEqual(result[0].codexSessions.map(item => ({ name: item.name, pinned: item.pinned, attention: item.attention })), [{
+    assert.equal(result.expanded, true);
+    assert.equal(result.activeProvider, 'codex');
+    assert.deepEqual(result.sessionsByProvider.codex.map(item => ({
+        name: item.name, pinned: item.pinned, attention: item.attention,
+    })), [{
         name: 'Alias', pinned: true, attention: { eventId: 'event', reason: 'completed', unread: true },
     }]);
     assert.equal(session.name, 'Original');
 
-    const unavailable = hydrateOpenProjectsWithAiSessions({
-        projects: [{ id: 'empty', path: '/empty' }],
-        providers: [{ id: 'codex', projectSessionsKey: 'codexSessions', projectSessionsUnavailableKey: 'codexUnavailable' }],
-        sessionResults: { codex: { available: false, sessions: [] } }, assignments: { codex: new Map() },
-        expandedProjects: new Set(), activeProviders: {}, pinnedSessions: new Set(), aliases: {},
-        aggregateByProjectAndSession: new Map(), localAttentionBySession: {}, includeLocalAttention: true,
-        getProjectKey: value => value.path,
+    const unavailable = hydrateWorkspaceAiSessions({
+        workspace,
+        providers: [{ id: 'codex', label: 'Codex' }],
+        sessionResults: { codex: { available: false, sessions: [] } },
+        getSessionComparableCwd: () => '',
+        pinnedSessions: new Set(),
+        aliases: {},
     });
-    assert.equal(unavailable[0].codexUnavailable, true);
-    assert.deepEqual(unavailable[0].codexSessions, []);
+    assert.deepEqual(unavailable.unavailableProviders, ['codex']);
+    assert.deepEqual(unavailable.sessionsByProvider.codex, []);
 });

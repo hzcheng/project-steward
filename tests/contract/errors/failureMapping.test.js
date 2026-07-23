@@ -18,6 +18,7 @@ const { AddProjectsFromFolderController } = require('../../../out/projects/addPr
 const REQUIRED_TMUX_COMMANDS = [
     'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
     'select-window', 'attach-session', 'has-session', 'rename-session', 'rename-window',
+    'display-message',
 ];
 
 function makeAvailableRunner(runCommand) {
@@ -110,6 +111,9 @@ test('PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001 skips timed-out process IDs 
     const store = new AiSessionTerminalBindingStore(state, error => errors.push(error), () => 1000, 5);
     store.setPending(new Promise(() => {}), {
         providerId: 'codex',
+        pendingId: 'timed-out',
+        workspaceScopeIdentity: 'scope:fixture', workspaceNavigationIdentity: 'navigation:fixture',
+        workspaceRootHostPaths: ['/work'],
         markerPath: '/tmp/timed-out.done',
         cwd: '/work',
         createdAt: '2026-07-23T00:00:00.000Z',
@@ -118,12 +122,16 @@ test('PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001 skips timed-out process IDs 
     store.setBound(Promise.reject(new Error('process disappeared')), {
         providerId: 'codex',
         sessionId: 'rejected',
+        workspaceScopeIdentity: 'scope:fixture', workspaceNavigationIdentity: 'navigation:fixture',
+        workspaceRootHostPaths: ['/work'], cwd: '/work',
         markerPath: '/tmp/rejected.done',
         runStartedAtMs: 1,
     });
     store.setBound(42001, {
         providerId: 'codex',
         sessionId: 'survives',
+        workspaceScopeIdentity: 'scope:fixture', workspaceNavigationIdentity: 'navigation:fixture',
+        workspaceRootHostPaths: ['/work'], cwd: '/work',
         markerPath: '/tmp/survives.done',
         runStartedAtMs: 1,
     });
@@ -145,7 +153,7 @@ test('ERROR-DASHBOARD-DIAGNOSTICS-001 keeps the output channel usable after diag
         now: () => new Date('2026-07-23T00:00:00.000Z'),
     });
 
-    assert.doesNotThrow(() => diagnostics.logOpenProjectDiagnostic('Bridge', { event: 'retry' }));
+    assert.doesNotThrow(() => diagnostics.logOpenWorkspaceDiagnostic('Bridge', { event: 'retry' }));
     diagnostics.logDashboardDiagnostic({ event: 'still-running' });
     assert.ok(lines.some(line => line.includes('Failed to persist diagnostic:')));
     assert.ok(lines.some(line => line.includes('"event":"still-running"')));
@@ -159,21 +167,21 @@ test('ERROR-DASHBOARD-DIAGNOSTICS-001 writes bounded diagnostics and contains se
         outputChannel: { appendLine: line => lines.push(line) },
         globalStoragePath: root,
         now: () => new Date(nowMs),
-        maxOpenProjectDiagnosticBytes: 120,
+        maxOpenWorkspaceDiagnosticBytes: 120,
     });
 
     diagnostics.logError('Failed action.', new Error('synthetic failure'));
     diagnostics.logAiSessionDiagnostic({ event: 'scan', count: 1 });
     diagnostics.logDashboardDiagnostic({ event: 'refresh' });
-    diagnostics.logOpenProjectDiagnostic('Workspace', { event: 'snapshot' });
-    const diagnosticPath = path.join(root, 'open-project-diagnostics.jsonl');
+    diagnostics.logOpenWorkspaceDiagnostic('Workspace', { event: 'snapshot' });
+    const diagnosticPath = path.join(root, 'open-workspace-diagnostics.jsonl');
     assert.deepEqual(
         fs.readFileSync(diagnosticPath, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line).component),
         ['Workspace']
     );
 
     nowMs += 1000;
-    diagnostics.logOpenProjectDiagnostic('Bridge', { event: 'large', payload: 'x'.repeat(100) });
+    diagnostics.logOpenWorkspaceDiagnostic('Bridge', { event: 'large', payload: 'x'.repeat(100) });
     const persisted = fs.readFileSync(diagnosticPath, 'utf8').trim().split(/\r?\n/)
         .map(line => JSON.parse(line));
     assert.deepEqual(persisted.map(item => item.component), ['Bridge']);
@@ -181,8 +189,8 @@ test('ERROR-DASHBOARD-DIAGNOSTICS-001 writes bounded diagnostics and contains se
 
     const circular = {};
     circular.self = circular;
-    assert.doesNotThrow(() => diagnostics.logOpenProjectDiagnostic('Renderer', circular));
-    assert.ok(lines.some(line => line.includes('[OpenProjects][Renderer] Failed to serialize diagnostic:')));
+    assert.doesNotThrow(() => diagnostics.logOpenWorkspaceDiagnostic('Renderer', circular));
+    assert.ok(lines.some(line => line.includes('[OpenWorkspaces][Renderer] Failed to serialize diagnostic:')));
 });
 
 test('PROJECT-ADD-PROJECTS-FROM-FOLDER-CONTROLLER-001 treats user cancellation as a no-op', async () => {

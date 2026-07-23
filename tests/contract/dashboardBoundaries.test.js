@@ -87,8 +87,8 @@ function runtimeHarness(overrides = {}) {
         logDashboardDiagnostic: value => events.push(['diagnostic', value]),
         executeCommand: async (command, ...args) => events.push(['command', command, ...args]),
         viewType: 'fixture.view',
-        publishOpenProjects: () => events.push(['publish']),
-        getOpenProjects: () => [{ id: 'project', path: '/work' }],
+        publishOpenWorkspace: () => events.push(['publish']),
+        getCurrentSavedProject: () => ({ id: 'project', path: '/work' }),
         syncProjectColorToCurrentWindow: async project => events.push(['color', project?.id || null]),
         postMessage: async message => events.push(['message', message]),
         logError: (message, error) => events.push(['error', message, error.message]),
@@ -140,11 +140,9 @@ test('RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001 refreshes and reveals only throug
     await assert.doesNotReject(revealThrows.controller.revealSidebarSteward());
 });
 
-test('RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001 publishes exact attention, batch, terminal, mutation, and color effects', async () => {
+test('RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001 publishes exact batch, terminal, mutation, color, and visibility effects', async () => {
     const harness = runtimeHarness();
-    const attention = [{ projectKey: 'key', count: 2 }];
     const batch = { type: 'ai-session-batch-archive-completed', archived: 2 };
-    harness.controller.postAttentionProjectsUpdated(attention);
     harness.controller.postBatchArchiveCompletion(batch);
     harness.controller.postActiveAiSessionTerminalChanged({ provider: 'codex', sessionId: 's1' });
     harness.controller.postActiveAiSessionTerminalChanged(null);
@@ -154,23 +152,24 @@ test('RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001 publishes exact attention, batch,
     await flushAsync();
 
     assert.deepEqual(harness.events, [
-        ['message', { type: 'ai-session-attention-projects-updated', projects: attention }],
         ['message', batch],
         ['message', { type: 'active-ai-session-terminal-changed', provider: 'codex', sessionId: 's1' }],
         ['message', { type: 'active-ai-session-terminal-changed', provider: null, sessionId: null }],
         ['color', 'project'],
-        ['color', null],
+        ['color', 'save'],
         ['color', 'project'],
         ['diagnostic', { event: 'full-refresh', reason: 'saved' }],
         ['refresh'],
         ['publish'],
     ]);
 
-    harness.setVisible(false);
-    harness.controller.postAttentionProjectsUpdated([{ projectKey: 'hidden' }]);
-    await flushAsync();
-    assert.equal(harness.events.some(entry => entry[0] === 'message'
-        && entry[1]?.projects?.[0]?.projectKey === 'hidden'), false);
+    const visibleEffects = [];
+    const visibility = runtimeHarness({
+        refreshAiSessionRuntimes: async (reason, force) => visibleEffects.push([reason, force]),
+    });
+    await visibility.controller.handleAiSessionViewVisibilityChanged(false);
+    await visibility.controller.handleAiSessionViewVisibilityChanged(true);
+    assert.deepEqual(visibleEffects, [['dashboard-visible', true]]);
 });
 
 test('RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001 maps rejected promises and synchronous throws to stable diagnostics', async () => {
@@ -183,18 +182,16 @@ test('RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001 maps rejected promises and synchr
         };
         const controller = new DashboardRuntimeController({
             isVisible: () => true, refreshProvider() {}, logDashboardDiagnostic() {},
-            executeCommand: async () => undefined, viewType: 'fixture.view', publishOpenProjects() {},
-            getOpenProjects: () => [{ id: 'project' }], syncProjectColorToCurrentWindow: fail,
+            executeCommand: async () => undefined, viewType: 'fixture.view', publishOpenWorkspace() {},
+            getCurrentSavedProject: () => ({ id: 'project' }), syncProjectColorToCurrentWindow: fail,
             postMessage: fail,
             logError: (message, error) => errors.push([message, error.message]),
         });
-        controller.postAttentionProjectsUpdated([]);
         controller.postBatchArchiveCompletion({ type: 'batch' });
         controller.postActiveAiSessionTerminalChanged(null);
         controller.applyProjectColorToCurrentWindow();
         await flushAsync();
         assert.deepEqual(errors, [
-            ['Failed to post AI session attention projects.', `${mode} failure`],
             ['Failed to post batch AI session archive completion.', `${mode} failure`],
             ['Failed to post the active AI session terminal.', `${mode} failure`],
             ['Failed to apply project color to current window.', `${mode} failure`],

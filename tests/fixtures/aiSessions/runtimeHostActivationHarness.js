@@ -26,7 +26,8 @@ function createVscode() {
             createOutputChannel: () => ({ appendLine() {}, dispose() {} }),
             createTerminal: options => ({ name: options.name || 'fixture', processId: Promise.resolve(1), show() {}, dispose() {}, sendText() {} }),
             registerWebviewViewProvider: () => disposable(),
-            onDidChangeActiveTerminal: () => disposable(), onDidCloseTerminal: () => disposable(),
+            onDidChangeActiveTerminal: () => disposable(), onDidOpenTerminal: () => disposable(),
+            onDidCloseTerminal: () => disposable(),
             onDidChangeWindowState: () => disposable(), onDidChangeVisibleTextEditors: () => disposable(),
             onDidChangeActiveTextEditor: () => disposable(),
             showErrorMessage: async () => undefined, showWarningMessage: async () => undefined,
@@ -71,11 +72,11 @@ async function main() {
     Module._load = function (request, parent, isMain) {
         if (request === 'vscode') return vscode;
         const loaded = previousLoad.call(this, request, parent, isMain);
-        if (parent?.filename === dashboardPath && request === './aiSessions/projectHydrationController') {
-            const Original = loaded.AiSessionProjectHydrationController;
+        if (parent?.filename === dashboardPath && request === './workspaces/sessionHydrationController') {
+            const Original = loaded.WorkspaceSessionHydrationController;
             return {
                 ...loaded,
-                AiSessionProjectHydrationController: class extends Original {
+                WorkspaceSessionHydrationController: class extends Original {
                     constructor(...args) {
                         events.push('hydration-constructed');
                         super(...args);

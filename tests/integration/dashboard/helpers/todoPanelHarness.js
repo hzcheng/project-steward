@@ -27,7 +27,8 @@ function createVscode(listeners, commands) {
                 listeners.viewProvider = provider;
                 return disposable();
             },
-            onDidChangeActiveTerminal: () => disposable(), onDidCloseTerminal: () => disposable(),
+            onDidChangeActiveTerminal: () => disposable(), onDidOpenTerminal: () => disposable(),
+            onDidCloseTerminal: () => disposable(),
             onDidChangeWindowState: () => disposable(), onDidChangeVisibleTextEditors: () => disposable(),
             onDidChangeActiveTextEditor: () => disposable(),
             showErrorMessage: async () => undefined, showWarningMessage: async () => undefined,

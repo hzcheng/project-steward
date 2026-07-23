@@ -5,7 +5,8 @@ const test = require('node:test');
 const { createFakeClock } = require('../../helpers/fakeClock');
 const { loadFreshWithFakeVscode } = require('../../helpers/runtimeContract');
 const { AI_SESSION_PROVIDER_DEFINITIONS } = require('../../../out/aiSessions/providers');
-const { applyAiSessionRuntimeProjection } = require('../../../out/aiSessions/activeSessionProjection');
+const { hydrateWorkspaceAiSessions } = require('../../../out/workspaces/sessionHydration');
+const { getAttentionProjectKeys } = require('../../../out/aiSessions/attentionProject');
 const { getAiSessionTerminalCandidates } = require('../../../out/aiSessions/terminalCandidates');
 const ActiveAiSessionTerminalHighlighter = require('../../../out/aiSessions/activeTerminalHighlight').default;
 
@@ -24,30 +25,58 @@ test('PROJECT-TERMINAL-CANDIDATE-001 reads provider sessions through the termina
 });
 
 test('PROJECT-ACTIVE-AI-SESSION-PROJECTION-001 OPEN-OPEN-PROJECT-AI-SESSION-VIEW-MODEL-BUILDER-001 RUNTIME-RUNTIME-PROJECTION-001 projects Direct, tmux, pending, attention, conflict, and stale runtime state', () => {
-    const projects = [{
-        id: 'app', path: '/fixtures/app',
-        codexSessions: [{ id: 'direct', name: 'Direct' }],
-        kimiSessions: [{
-            id: 'tmux', name: 'Tmux',
-            attention: { eventId: 'attention', reason: 'input-required', unread: true },
+    const workspace = {
+        navigationIdentity: 'navigation:app',
+        scopeIdentity: 'scope:app',
+        kind: 'singleFolder',
+        displayName: 'App',
+        navigationUri: 'file:///fixtures/app',
+        environment: 'local',
+        roots: [{
+            id: 'root:app',
+            name: 'app',
+            uri: 'file:///fixtures/app',
+            hostPath: '/fixtures/app',
+            ordinal: 0,
         }],
-        claudeSessions: [],
-    }];
-    const projected = applyAiSessionRuntimeProjection({
-        projects,
-        providers: AI_SESSION_PROVIDER_DEFINITIONS,
+    };
+    const runtimeIdentity = (provider, id, pending = false) => ({
+        provider,
+        workspaceScopeIdentity: workspace.scopeIdentity,
+        workspaceNavigationIdentity: workspace.navigationIdentity,
+        workspaceRootHostPaths: ['/fixtures/app'],
+        cwd: '/fixtures/app',
+        ...(pending ? { pendingId: id } : { sessionId: id }),
+    });
+    const projected = hydrateWorkspaceAiSessions({
+        workspace,
+        providers: Object.values(AI_SESSION_PROVIDER_DEFINITIONS),
+        sessionResults: {
+            codex: {
+                available: true,
+                sessions: [{ id: 'direct', name: 'Direct', cwd: '/fixtures/app' }],
+            },
+            kimi: {
+                available: true,
+                sessions: [{ id: 'tmux', name: 'Tmux', cwd: '/fixtures/app' }],
+            },
+            claude: { available: true, sessions: [] },
+        },
+        getSessionComparableCwd: (_provider, session) => session.cwd,
+        pinnedSessions: new Set(),
+        aliases: {},
         activeRuntimes: [{
-            identity: { provider: 'codex', sessionId: 'direct', projectKey: '/fixtures/app', cwd: '/fixtures/app' },
+            identity: runtimeIdentity('codex', 'direct'),
             backend: 'vscode', state: 'active', markerPath: '/tmp/direct.done',
             runStartedAtMs: 10, attached: true,
         }, {
-            identity: { provider: 'kimi', sessionId: 'tmux', projectKey: '/fixtures/app', cwd: '/fixtures/app' },
+            identity: runtimeIdentity('kimi', 'tmux'),
             backend: 'tmux', state: 'conflict', markerPath: '/tmp/tmux.done',
             runStartedAtMs: 20, attached: false, stale: true,
             tmux: { layout: 'project', sessionName: 'managed', windowName: 'ai-kimi-tmux' },
         }],
         pendingRuntimes: [{
-            identity: { provider: 'claude', pendingId: 'pending', projectKey: '/fixtures/app', cwd: '/fixtures/app' },
+            identity: runtimeIdentity('claude', 'pending', true),
             backend: 'tmux', state: 'pending', markerPath: '/tmp/pending.done',
             runStartedAtMs: 30, attached: false, createdAt: '2026-07-18T10:00:00.000Z',
             excludedSessionIds: [], tmux: { layout: 'session', sessionName: 'pending-managed' },
@@ -56,12 +85,22 @@ test('PROJECT-ACTIVE-AI-SESSION-PROJECTION-001 OPEN-OPEN-PROJECT-AI-SESSION-VIEW
             'codex:direct': { state: 'running', stateChangedAt: 100 },
             'kimi:tmux': { state: 'stopped', stateChangedAt: 200 },
         },
-        focusedIdentity: { provider: 'codex', sessionId: 'direct' },
-        getProjectCwd: project => project.path,
-        normalizePath: value => value,
+        focusedIdentity: runtimeIdentity('codex', 'direct'),
+        attentionAggregate: {
+            protocolVersion: 1,
+            aggregateRevision: 'a'.repeat(64),
+            generatedAtMs: 1,
+            sessions: [{
+                projectId: getAttentionProjectKeys(['file:///fixtures/app'])[0],
+                sessionKey: 'kimi:tmux',
+                reasons: ['input-required'],
+                eventIds: ['attention'],
+                observedAtMs: 1,
+            }],
+        },
     });
 
-    assert.deepEqual(projected[0].activeAiSessions.map(runtime => ({
+    assert.deepEqual(projected.activeSessions.map(runtime => ({
         provider: runtime.provider,
         backend: runtime.backend,
         status: runtime.status,
@@ -78,7 +117,8 @@ test('PROJECT-ACTIVE-AI-SESSION-PROJECTION-001 OPEN-OPEN-PROJECT-AI-SESSION-VIEW
         provider: 'claude', backend: 'tmux', status: 'starting', attached: false,
         conflict: false, stale: false,
     }]);
-    assert.equal(projects[0].codexSessions[0].active, undefined);
+    assert.equal(projected.sessionsByProvider.codex[0].active, true);
+    assert.equal(projected.sessionsByProvider.kimi[0].attention.eventId, 'attention');
 });
 
 test('WEBVIEW-AI-SESSION-DASHBOARD-WATCHER-COALESCING-001 coalesces watcher refreshes and preserves attention refresh priority', async () => {
@@ -94,7 +134,7 @@ test('WEBVIEW-AI-SESSION-DASHBOARD-WATCHER-COALESCING-001 coalesces watcher refr
         invalidateCache: () => undefined,
         watchSessionChanges: () => ({ dispose() {} }),
         getGroups: () => [], getTodoSearchItems: () => [], getCards: () => [],
-        getOpenProjectAiSessionViewModel: project => project,
+        getRunningCardAnimation: () => undefined,
         nextSequence: () => messages.length + 1,
         postMessage: message => { messages.push(message); return Promise.resolve(true); },
         refresh: () => undefined,
@@ -141,7 +181,7 @@ test('WEBVIEW-AI-SESSION-DASHBOARD-CONTROLLER-001 invalidates and refreshes for 
         invalidateCache: providerId => invalidated.push(providerId),
         watchSessionChanges: () => ({ dispose() {} }), getGroups: () => [],
         getTodoSearchItems: () => [{ todoId: 'fixture-todo' }], getCards: () => [],
-        getOpenProjectAiSessionViewModel: project => project,
+        getRunningCardAnimation: () => undefined,
         nextSequence: () => messages.length + 1,
         postMessage: message => { messages.push(message); return Promise.resolve(true); },
         refresh: () => undefined,
@@ -175,7 +215,7 @@ test('WEBVIEW-AI-SESSION-DASHBOARD-UNCHANGED-MESSAGE-SKIP-001 retries an unchang
         providerIds: ['codex'], isVisible: () => true, invalidateCache: () => undefined,
         watchSessionChanges: () => ({ dispose() {} }), getGroups: () => [],
         getTodoSearchItems: () => [], getCards: () => [],
-        getOpenProjectAiSessionViewModel: project => project,
+        getRunningCardAnimation: () => undefined,
         nextSequence: () => deliveries.length + 1,
         postMessage: message => { deliveries.push(message); return Promise.resolve(delivered); },
         refresh: () => undefined,
@@ -205,7 +245,13 @@ test('WEBVIEW-ACTIVE-AI-SESSION-TERMINAL-HIGHLIGHT-001 ATTENTION-AI-SESSION-ATTE
         isVisible: () => true,
         getActiveTerminal: () => activeTerminal,
         resolveTerminal: value => value === terminal
-            ? { terminal, provider: 'codex', sessionId: 'session', entry: { markerPath: '/tmp/marker' } }
+            ? {
+                terminal,
+                provider: 'codex',
+                sessionId: 'session',
+                workspaceScopeIdentity: 'scope:fixture',
+                entry: { markerPath: '/tmp/marker' },
+            }
             : null,
         isComplete: () => complete,
         publish: identity => publications.push(identity),
@@ -215,7 +261,11 @@ test('WEBVIEW-ACTIVE-AI-SESSION-TERMINAL-HIGHLIGHT-001 ATTENTION-AI-SESSION-ATTE
     });
 
     highlighter.sync();
-    assert.deepEqual(publications.pop(), { provider: 'codex', sessionId: 'session' });
+    assert.deepEqual(publications.pop(), {
+        provider: 'codex',
+        sessionId: 'session',
+        workspaceScopeIdentity: 'scope:fixture',
+    });
     highlighter.handleTerminalClosed(terminal);
     assert.equal(publications.pop(), null);
     assert.equal(completionCount, 0);

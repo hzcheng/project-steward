@@ -5,6 +5,8 @@ const fs = require('fs');
 const Module = require('module');
 const path = require('path');
 const vm = require('vm');
+const CleanCSS = require('clean-css');
+const sass = require('sass');
 const dashboardErrorContent = require('../out/dashboard/errorContent');
 const dashboardConfiguration = require('../out/dashboard/configuration');
 const dashboardStartup = require('../out/dashboard/startup');
@@ -26,13 +28,20 @@ const { TodoService } = require('../out/todos/service');
 const { deleteTodoWithConfirmation, runTodoMutation } = require('../out/todos/hostMutation');
 const todoViewModel = require('../out/todos/viewModel');
 const todoWebviewContent = require('../out/todos/webviewContent');
-const { buildDashboardSearchCatalog } = require('../out/webview/dashboardViewModel');
+const { buildWorkspaceDashboardSearchCatalog } = require('../out/webview/dashboardViewModel');
 const AsyncFunction = Object.getPrototypeOf(async function () { return undefined; }).constructor;
 
 const root = path.join(__dirname, '..');
 const dashboardScriptPath = path.join(root, 'src', 'webview', 'webviewDashboardScripts.js');
 const projectScriptPath = path.join(root, 'src', 'webview', 'webviewProjectScripts.js');
 const extensionHostPath = path.join(root, 'src', 'dashboard.ts');
+
+function compileDashboardStyles(source) {
+    return sass.compileString(source, {
+        loadPaths: [path.join(root, 'media'), path.join(root, 'node_modules')],
+        style: 'expanded',
+    }).css;
+}
 
 function extractFunctionBody(source, functionName) {
     const start = source.indexOf(`function ${functionName}(`);
@@ -84,16 +93,133 @@ function extractHtmlElementBody(source, openingTag) {
     throw new Error(`Unterminated HTML element ${openingTag}`);
 }
 
+function extractDirectHtmlChildOpeningTags(source) {
+    const children = [];
+    const tagPattern = /<\/?([a-z][\w-]*)\b[^>]*>/gi;
+    let depth = 0;
+    let match;
+    while ((match = tagPattern.exec(source))) {
+        const tag = match[0];
+        if (tag.startsWith('</')) {
+            depth -= 1;
+        } else {
+            if (depth === 0) children.push(tag);
+            if (!tag.endsWith('/>')) depth += 1;
+        }
+    }
+    assert.strictEqual(depth, 0, 'HTML fragment must contain balanced child elements');
+    return children;
+}
+
+function extractCssRule(source, selector) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = source.match(new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{`, 'm'));
+    assert.ok(match, `Missing CSS rule ${selector}`);
+    const start = match.index + match[0].lastIndexOf(selector);
+    const braceStart = source.indexOf('{', start);
+    let depth = 0;
+    for (let index = braceStart; index < source.length; index += 1) {
+        if (source[index] === '{') depth += 1;
+        if (source[index] === '}') depth -= 1;
+        if (depth === 0) return source.slice(braceStart + 1, index);
+    }
+    throw new Error(`Unterminated CSS rule ${selector}`);
+}
+
+function extractCssRules(source, selector) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const selectorPattern = new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{`, 'gm');
+    const rules = [];
+    let match;
+    while ((match = selectorPattern.exec(source))) {
+        const braceStart = source.indexOf('{', match.index);
+        let depth = 0;
+        for (let index = braceStart; index < source.length; index += 1) {
+            if (source[index] === '{') depth += 1;
+            if (source[index] === '}') depth -= 1;
+            if (depth === 0) {
+                rules.push(source.slice(braceStart + 1, index));
+                selectorPattern.lastIndex = index + 1;
+                break;
+            }
+        }
+    }
+    assert.ok(rules.length > 0, `Missing CSS rules ${selector}`);
+    return rules;
+}
+
+function extractCssRulesContainingSelector(source, selector) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const selectorPattern = new RegExp(`(^|\\n)[^{}]*${escapedSelector}(?![\\w-])[^{}]*\\{`, 'gm');
+    const rules = [];
+    let match;
+    while ((match = selectorPattern.exec(source))) {
+        const braceStart = source.indexOf('{', match.index);
+        let depth = 0;
+        for (let index = braceStart; index < source.length; index += 1) {
+            if (source[index] === '{') depth += 1;
+            if (source[index] === '}') depth -= 1;
+            if (depth === 0) {
+                rules.push(source.slice(braceStart + 1, index));
+                selectorPattern.lastIndex = index + 1;
+                break;
+            }
+        }
+    }
+    assert.ok(rules.length > 0, `Missing CSS rules containing ${selector}`);
+    return rules;
+}
+
+function extractCompiledCssRulesContainingSelector(source, selector) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const selectorPattern = new RegExp(`${escapedSelector}(?![\\w-])`);
+    const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
+    const rules = [];
+    let match;
+    while ((match = rulePattern.exec(source))) {
+        const selectors = match[1].split(',').map(value => value.trim()).filter(Boolean);
+        if (selectors.some(value => selectorPattern.test(value))) {
+            rules.push({ selectors, body: match[2] });
+        }
+    }
+    assert.ok(rules.length > 0, `Missing compiled CSS rules containing ${selector}`);
+    return rules;
+}
+
+function cssRuleIncludesDeclaration(rule, declaration) {
+    const escapedDeclaration = declaration.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[;{}\\n])\\s*${escapedDeclaration}`).test(rule);
+}
+
+function cssRuleIncludesTopLevelDeclaration(rule, declaration) {
+    let depth = 0;
+    let topLevelRule = '';
+    for (const character of rule) {
+        if (character === '{') {
+            depth += 1;
+        } else if (character === '}') {
+            depth -= 1;
+        } else if (depth === 0) {
+            topLevelRule += character;
+        }
+    }
+    return cssRuleIncludesDeclaration(topLevelRule, declaration);
+}
+
 function makeDashboardCatalog() {
     return {
+        version: 2,
         sessions: [{
-            key: 'codex:c1', searchText: 'fix dashboard codex c1', projectId: 'current',
-            projectName: 'Dashboard', provider: 'codex', sessionId: 'c1', name: 'Fix dashboard', active: true,
+            key: 'codex:c1', searchText: 'fix dashboard codex c1', workspaceId: 'workspace-current',
+            workspaceNavigationIdentity: 'navigation-current', workspaceName: 'Dashboard Workspace',
+            provider: 'codex', sessionId: 'c1', name: 'Fix dashboard', active: true,
+            action: 'reveal-workspace-session',
         }],
-        openProjects: [{
-            key: 'open:/work/dashboard', identity: '/work/dashboard', searchText: 'dashboard current',
-            projectId: 'current', name: 'Dashboard', description: 'Current',
-            action: 'open-current', groupLabels: [],
+        openWorkspaces: [{
+            key: 'workspace:navigation-current', navigationIdentity: 'navigation-current',
+            searchText: 'dashboard workspace local app api', workspaceId: 'workspace-current',
+            name: 'Dashboard Workspace', description: '2 folders', environmentLabel: 'Local',
+            action: 'show-current-workspace', current: true,
         }],
         savedProjects: [{
             key: 'saved:/work/dashboard', identity: '/work/dashboard', searchText: 'dashboard tools',
@@ -112,13 +238,39 @@ function makeUpdatedDashboardCatalog() {
     return {
         ...catalog,
         sessions: catalog.sessions.concat({
-            key: 'kimi:k1', searchText: 'review dashboard kimi k1', projectId: 'current',
-            projectName: 'Dashboard', provider: 'kimi', sessionId: 'k1', name: 'Review dashboard',
+            key: 'kimi:k1', searchText: 'review dashboard kimi k1', workspaceId: 'workspace-current',
+            workspaceNavigationIdentity: 'navigation-current', workspaceName: 'Dashboard Workspace',
+            provider: 'kimi', sessionId: 'k1', name: 'Review dashboard',
+            action: 'reveal-workspace-session',
         }),
     };
 }
 
-// WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001
+function makeWorkspaceDashboardCatalog() {
+    return {
+        version: 2,
+        sessions: [{
+            key: 'codex:c1', searchText: 'fix dashboard codex c1', workspaceId: 'workspace-current',
+            workspaceNavigationIdentity: 'navigation-current', workspaceName: 'Dashboard Workspace',
+            provider: 'codex', sessionId: 'c1', name: 'Fix dashboard', active: true,
+            action: 'reveal-workspace-session',
+        }],
+        openWorkspaces: [{
+            key: 'workspace:navigation-current', navigationIdentity: 'navigation-current',
+            searchText: 'dashboard workspace local app api', workspaceId: 'workspace-current',
+            name: 'Dashboard Workspace', description: '2 folders', environmentLabel: 'Local',
+            action: 'show-current-workspace', current: true,
+        }, {
+            key: 'workspace:navigation-other', navigationIdentity: 'navigation-other',
+            searchText: 'other workspace ssh other', workspaceId: 'workspace-other',
+            name: 'Other Workspace', description: '1 folder', environmentLabel: 'SSH',
+            action: 'switch-open-workspace', current: false,
+        }],
+        savedProjects: makeDashboardCatalog().savedProjects,
+        todos: makeDashboardCatalog().todos,
+    };
+}
+
 function runDashboardUpdateMessageChecks() {
     const previousModuleLoad = Module._load;
     let dashboardUpdateMessages;
@@ -134,27 +286,574 @@ function runDashboardUpdateMessageChecks() {
         Module._load = previousModuleLoad;
     }
     const todoSearchItems = makeDashboardCatalog().todos;
-    const openMessage = dashboardUpdateMessages.buildOpenProjectsUpdatedMessage({
-        groups: [],
-        cards: [],
-        collapsed: false,
-        stewardInfos: { openProjectsGroupCollapsed: false, config: {} },
-        semanticRevision: 'todo-catalog-open',
-        todoSearchItems,
-    });
+    const workspaceCard = makeWorkspaceCardFixture(3);
     const aiMessage = dashboardUpdateMessages.buildAiSessionsUpdatedMessage({
         groups: [],
-        cards: [],
+        cards: [workspaceCard],
         sequence: 7,
         generatedAt: '2026-07-17T00:00:00.000Z',
-        openProjects: [],
         todoSearchItems,
+        runningCardAnimation: 'ripple',
     });
+    const workspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({
+        card: workspaceCard,
+        runningCardAnimation: 'sweep',
+    });
+    const navigationCard = {
+        ...makeWorkspaceCardFixture(2),
+        id: 'workspace-other',
+        kind: 'navigation',
+        navigationIdentity: 'navigation-other',
+        scopeIdentity: 'scope-other',
+        name: 'Other Workspace',
+        environment: 'ssh',
+        environmentLabel: 'SSH',
+        aiSessions: undefined,
+    };
+    const openWorkspacesMessage = dashboardUpdateMessages.buildOpenWorkspacesUpdatedMessage({
+        groups: [],
+        cards: [workspaceCard, navigationCard],
+        collapsed: false,
+        semanticRevision: 'b'.repeat(64),
+        otherWindowsStatus: 'ready',
+        todoSearchItems,
+        runningCardAnimation: 'halo',
+    });
+    const workspaceSearchCatalog = buildWorkspaceDashboardSearchCatalog([], [workspaceCard], todoSearchItems);
 
-    assert.deepStrictEqual(openMessage.searchCatalog.todos, todoSearchItems,
-        'OPEN incremental catalog rebuilds must preserve real TODO search items');
     assert.deepStrictEqual(aiMessage.searchCatalog.todos, todoSearchItems,
         'AI incremental catalog rebuilds must preserve real TODO search items');
+    assert.strictEqual(aiMessage.version, 2);
+    assert.strictEqual(aiMessage.currentWorkspaceCount, 1);
+    assert.strictEqual(aiMessage.searchCatalog.version, 2);
+    assert.deepStrictEqual(aiMessage.searchCatalog.openWorkspaces.map(item => item.current), [true]);
+    assert.ok(aiMessage.html.includes('data-current-workspace'));
+    assert.ok(aiMessage.html.includes('data-session-fx="ripple"'),
+        'AI session incremental updates must use the configured running animation');
+    assert.strictEqual(workspaceMessage.type, 'workspace-updated');
+    assert.strictEqual(workspaceMessage.version, 2);
+    assert.strictEqual(workspaceSearchCatalog.version, 2);
+    assert.deepStrictEqual(workspaceSearchCatalog.openWorkspaces.map(item => item.current), [true]);
+    assert.deepStrictEqual(workspaceSearchCatalog.sessions.map(item => item.action), ['reveal-workspace-session']);
+    assert.deepStrictEqual(workspaceSearchCatalog.todos, todoSearchItems);
+    assert.strictEqual(workspaceMessage.currentWorkspaceCount, 1);
+    assert.ok(workspaceMessage.html.includes('data-workspace-scope-identity="scope-dashboard"'));
+    assert.ok(workspaceMessage.html.includes('data-session-fx="sweep"'),
+        'workspace incremental updates must use the configured running animation');
+    const emptyWorkspaceMessage = dashboardUpdateMessages.buildWorkspaceUpdatedMessage({ card: null });
+    assert.strictEqual(emptyWorkspaceMessage.currentWorkspaceCount, 0);
+    assert.strictEqual(emptyWorkspaceMessage.html.includes('class="workspace-card'), false);
+    assert.strictEqual(openWorkspacesMessage.type, 'open-workspaces-updated');
+    assert.strictEqual(openWorkspacesMessage.version, 2);
+    assert.strictEqual(openWorkspacesMessage.currentWorkspaceCount, 1);
+    assert.strictEqual(openWorkspacesMessage.navigationWorkspaceCount, 1);
+    assert.strictEqual(openWorkspacesMessage.searchCatalog.version, 2);
+    assert.strictEqual(openWorkspacesMessage.otherWindowsStatus, 'ready');
+    assert.deepStrictEqual(
+        openWorkspacesMessage.searchCatalog.openWorkspaces.map(item => item.action),
+        ['show-current-workspace', 'switch-open-workspace'],
+    );
+    assert.ok(openWorkspacesMessage.html.includes('OTHER WINDOWS'));
+    assert.ok(openWorkspacesMessage.html.includes('data-session-fx="halo"'),
+        'open-workspace incremental updates must use the configured running animation');
+}
+
+function makeWorkspaceCardFixture(rootCount) {
+    const roots = [
+        { id: 'root-app', name: 'App', ordinal: 0 },
+        { id: 'root-api', name: 'API', ordinal: 1 },
+        { id: 'root-docs', name: 'Docs', ordinal: 2 },
+    ].slice(0, rootCount);
+    return {
+        id: 'workspace-dashboard',
+        kind: 'current',
+        workspaceKind: 'savedMultiRoot',
+        showSaveAction: false,
+        runningSessionCount: 0,
+        navigationIdentity: 'navigation-dashboard',
+        scopeIdentity: 'scope-dashboard',
+        name: 'Dashboard',
+        environment: 'local',
+        environmentLabel: 'Local',
+        roots,
+        attentionCount: 1,
+        aiSessions: {
+            workspaceScopeIdentity: 'scope-dashboard',
+            workspaceNavigationIdentity: 'navigation-dashboard',
+            activeProvider: 'codex',
+            expanded: true,
+            providers: [
+                { id: 'codex', label: 'Codex', count: 1 },
+                { id: 'kimi', label: 'Kimi', count: 0 },
+                { id: 'claude', label: 'Claude', count: 0 },
+            ],
+            sessionsByProvider: {
+                codex: [{
+                    id: 'session-api', name: 'API work', provider: 'codex',
+                    primaryRootId: 'root-api', primaryRootLabel: 'API',
+                }],
+                kimi: [],
+                claude: [],
+            },
+            unavailableProviders: [],
+            aiSessionCount: 1,
+            attentionCount: 0,
+            defaultTab: 'sessions',
+            activeSessions: [{
+                key: 'codex:session-api', provider: 'codex', sessionId: 'session-api', name: 'API work',
+                executionState: 'running', focused: false, needsAttention: false, pending: false,
+                backend: 'vscode', attached: true, primaryRootId: 'root-api', primaryRootLabel: 'API',
+            }],
+            activeSessionCount: 1,
+            activeAttentionCount: 0,
+        },
+    };
+}
+
+function runWorkspaceCardRenderingChecks() {
+    const previousModuleLoad = Module._load;
+    let webviewContent;
+    try {
+        Module._load = function (request, parent, isMain) {
+            if (request === 'vscode') return {};
+            return previousModuleLoad.call(this, request, parent, isMain);
+        };
+        webviewContent = require('../out/webview/webviewContent');
+    } finally {
+        Module._load = previousModuleLoad;
+    }
+    const icons = require('../out/webview/webviewIcons');
+
+    const emptyHtml = webviewContent.getCurrentWorkspaceGroupContent(null, false);
+    assert.strictEqual((emptyHtml.match(/class="workspace-card/g) || []).length, 0);
+
+    const emptyRootsHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(0), false);
+    assert.strictEqual((emptyRootsHtml.match(/class="workspace-card/g) || []).length, 0,
+        'a non-null invalid zero-root snapshot must render the empty current-workspace state');
+
+    const collapsedSingleCard = makeWorkspaceCardFixture(1);
+    collapsedSingleCard.aiSessions.expanded = false;
+    const singleHtml = webviewContent.getCurrentWorkspaceGroupContent(collapsedSingleCard, false);
+    assert.strictEqual((singleHtml.match(/class="workspace-card/g) || []).length, 1);
+    assert.strictEqual((singleHtml.match(/class="codex-sessions"/g) || []).length, 1);
+    assert.ok(singleHtml.includes(icons.folder));
+    assert.ok(singleHtml.includes('title="Local Project"'));
+    assert.ok(singleHtml.includes('<h2 class="project-header">App</h2>'));
+    assert.ok(singleHtml.includes('<p class="project-description workspace-metadata">1 folder</p>'));
+    assert.strictEqual(singleHtml.includes('Local ·'), false,
+        'the environment icon already identifies local workspaces');
+    assert.strictEqual(singleHtml.includes('class="ai-session-root-chip"'), false,
+        'single-root workspaces must not repeat the only root on every session row');
+    assert.ok(singleHtml.includes('class="codex-sessions" data-ai-session-region'),
+        'the existing AI Sessions root must define the non-toggle click boundary');
+    assert.strictEqual(singleHtml.includes('workspace-card-summary'), false,
+        'the click boundary must not add a summary wrapper that could alter card layout');
+    const coloredCurrentCard = makeWorkspaceCardFixture(1);
+    coloredCurrentCard.color = '#123456';
+    const coloredCurrentHtml = webviewContent.getCurrentWorkspaceGroupContent(coloredCurrentCard, false);
+    assert.ok(coloredCurrentHtml.includes('style="--project-color: #123456;"'));
+    assert.ok(coloredCurrentHtml.includes('class="project-border steward-item-accent" style="background: #123456;"'));
+    assert.strictEqual(singleHtml.includes('--project-color:'), false,
+        'an unmatched current workspace must not synthesize a foreground-colored accent');
+    assert.ok(singleHtml.includes('data-has-ai-session-badge'),
+        'current workspace cards must declare when their AI session summary badge is present');
+    assert.strictEqual(singleHtml.includes('data-codex-expanded'), false,
+        'the collapsed-card fixture must keep its AI session module hidden');
+    const collapsedCardStart = singleHtml.indexOf('<div class="workspace-card');
+    const collapsedCardOpeningEnd = singleHtml.indexOf('>', collapsedCardStart);
+    const collapsedCardOpeningTag = singleHtml.slice(collapsedCardStart, collapsedCardOpeningEnd + 1);
+    const collapsedCardBody = extractHtmlElementBody(singleHtml, collapsedCardOpeningTag);
+    const collapsedSessionIndex = collapsedCardBody.indexOf('<div class="codex-sessions"');
+    assert.ok(collapsedSessionIndex >= 0, 'collapsed current workspace cards must retain the hidden session module');
+    const collapsedCardSummary = collapsedCardBody.slice(0, collapsedSessionIndex);
+    const collapsedContentChildren = extractDirectHtmlChildOpeningTags(collapsedCardSummary).filter(tag =>
+        !/class="[^"]*\b(?:project-aura|steward-item-accent|project-session-fx|project-codex-badge)\b/.test(tag)
+    );
+    assert.deepStrictEqual(collapsedContentChildren, [
+        '<div class="fitty-container project-title-row">',
+        '<p class="project-description workspace-metadata">',
+    ], 'collapsed current workspace cards must have only title and description rows before the session module');
+
+    const runningCard = makeWorkspaceCardFixture(1);
+    runningCard.aiSessions.activeSessions.push(
+        {
+            key: 'codex:session-starting', provider: 'codex', sessionId: 'session-starting', name: 'Starting',
+            executionState: 'starting', focused: false, needsAttention: false, pending: true,
+            backend: 'vscode', attached: true,
+        },
+        {
+            key: 'codex:session-stopped', provider: 'codex', sessionId: 'session-stopped', name: 'Stopped',
+            executionState: 'stopped', focused: false, needsAttention: false, pending: false,
+            backend: 'vscode', attached: true,
+        },
+    );
+    const orbitHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, 'orbit');
+    assert.ok(orbitHtml.includes('class="workspace-card project steward-item-card session-running"'));
+    assert.ok(orbitHtml.includes('data-session-fx="orbit"'));
+    assert.ok(orbitHtml.includes('<div class="project-session-fx"></div>'));
+    assert.ok(orbitHtml.indexOf('project-session-fx') > orbitHtml.indexOf('steward-item-accent'));
+    assert.ok(orbitHtml.includes('title="Workspace — 1 active session running"'));
+
+    for (const animation of ['current', 'sweep', 'orbit', 'halo', 'ripple', 'breath']) {
+        const animationHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, animation);
+        assert.ok(animationHtml.includes(`data-session-fx="${animation}"`),
+            `the current workspace card must accept the ${animation} running animation`);
+        assert.ok(animationHtml.includes('<div class="project-session-fx"></div>'));
+    }
+    const noneHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, 'none');
+    assert.ok(noneHtml.includes('class="workspace-card project steward-item-card session-running"'));
+    assert.ok(noneHtml.includes('data-session-fx="none"'));
+    assert.strictEqual(noneHtml.includes('project-session-fx'), false,
+        'none must retain static running state without an animation layer');
+    const invalidHtml = webviewContent.getCurrentWorkspaceGroupContent(runningCard, false, 'invalid');
+    assert.ok(invalidHtml.includes('data-session-fx="current"'),
+        'an invalid animation value must fail safely to current');
+
+    const idleCard = makeWorkspaceCardFixture(1);
+    idleCard.aiSessions.activeSessions = runningCard.aiSessions.activeSessions.filter(
+        session => session.executionState !== 'running'
+    );
+    const idleHtml = webviewContent.getCurrentWorkspaceGroupContent(idleCard, false, 'halo');
+    assert.strictEqual(idleHtml.includes('session-running'), false,
+        'starting and stopped sessions must not activate the card running state');
+    assert.strictEqual(idleHtml.includes('data-session-fx'), false);
+    assert.strictEqual(idleHtml.includes('active session running'), false);
+    const unhydratedCard = makeWorkspaceCardFixture(1);
+    delete unhydratedCard.aiSessions;
+    unhydratedCard.attentionCount = 0;
+    const unhydratedHtml = webviewContent.getCurrentWorkspaceGroupContent(unhydratedCard, false);
+    assert.strictEqual((unhydratedHtml.match(/class="codex-sessions"/g) || []).length, 1,
+        'a current card must keep one AI module while hydration is temporarily unavailable');
+    assert.strictEqual(unhydratedHtml.includes('data-has-ai-session-badge'), false,
+        'badge-free current workspace cards must keep their full title and description width');
+
+    const multiHtml = webviewContent.getCurrentWorkspaceGroupContent(makeWorkspaceCardFixture(3), false);
+    assert.strictEqual((multiHtml.match(/class="workspace-card/g) || []).length, 1);
+    assert.strictEqual((multiHtml.match(/class="codex-sessions"/g) || []).length, 1);
+    assert.ok(multiHtml.includes('<p class="project-description workspace-metadata">3 folders</p>'));
+    assert.strictEqual(multiHtml.includes('class="workspace-root-tags"'), false);
+    assert.strictEqual(multiHtml.includes('class="workspace-root-tag"'), false);
+    assert.ok(multiHtml.includes('data-primary-root-id="root-api"'));
+    assert.ok(multiHtml.includes('class="ai-session-root-chip"'));
+    assert.ok(multiHtml.includes('data-action="create-ai-session"'));
+    assert.strictEqual(multiHtml.includes('data-action="open-new-session-in"'), false);
+    assert.strictEqual(multiHtml.includes('data-action="new-session-in"'), false);
+    assert.strictEqual(multiHtml.includes('data-action="selected-project"'), false);
+    assert.strictEqual(multiHtml.includes('data-project-navigation'), false);
+    assert.strictEqual(multiHtml.includes('data-has-save-action'), false);
+
+    const untitledWorkspaceCard = makeWorkspaceCardFixture(3);
+    untitledWorkspaceCard.workspaceKind = 'untitledMultiRoot';
+    untitledWorkspaceCard.showSaveAction = true;
+    const untitledWorkspaceHtml = webviewContent.getCurrentWorkspaceGroupContent(
+        untitledWorkspaceCard,
+        false,
+    );
+    assert.ok(untitledWorkspaceHtml.includes('data-has-save-action'));
+    assert.strictEqual(
+        (untitledWorkspaceHtml.match(/data-action="save-current-workspace"/g) || []).length,
+        1,
+        'an untitled current multi-root workspace must expose exactly one save action',
+    );
+    assert.ok(untitledWorkspaceHtml.includes('title="Save Workspace"'));
+    const projectActionMessages = [];
+    const triggerProjectAction = new Function(
+        'target',
+        'projectId',
+        'window',
+        extractFunctionBody(fs.readFileSync(projectScriptPath, 'utf8'), 'onTriggerProjectAction'),
+    );
+    assert.strictEqual(triggerProjectAction({
+        closest: selector => selector === '[data-action]'
+            ? { getAttribute: attribute => attribute === 'data-action' ? 'save-current-workspace' : null }
+            : null,
+    }, untitledWorkspaceCard.id, {
+        vscode: { postMessage: message => projectActionMessages.push(message) },
+    }), true);
+    assert.deepStrictEqual(projectActionMessages, [{
+        type: 'save-current-workspace',
+        projectId: untitledWorkspaceCard.id,
+    }], 'the save badge must use its dedicated workspace-only host route');
+    const unregisteredSavedWorkspace = makeWorkspaceCardFixture(3);
+    unregisteredSavedWorkspace.showSaveAction = true;
+    const unregisteredSavedWorkspaceHtml = webviewContent.getCurrentWorkspaceGroupContent(
+        unregisteredSavedWorkspace,
+        false,
+    );
+    assert.ok(unregisteredSavedWorkspaceHtml.includes('data-action="save-current-workspace"'),
+        'a saved workspace missing from Saved Projects must retain the save action');
+
+    const devContainerCard = makeWorkspaceCardFixture(1);
+    devContainerCard.environment = 'devContainer';
+    devContainerCard.environmentLabel = 'Dev Container';
+    const devContainerHtml = webviewContent.getCurrentWorkspaceGroupContent(devContainerCard, false);
+    assert.ok(devContainerHtml.includes(icons.container));
+    assert.ok(devContainerHtml.includes('title="Dev Container Project"'));
+    assert.strictEqual(devContainerHtml.includes('class="workspace-root-tags"'), false);
+    assert.strictEqual(devContainerHtml.includes('class="workspace-root-tag"'), false);
+
+    const outsideWorkspaceCard = makeWorkspaceCardFixture(3);
+    outsideWorkspaceCard.aiSessions.sessionsByProvider.codex[0].primaryRootId = undefined;
+    outsideWorkspaceCard.aiSessions.sessionsByProvider.codex[0].primaryRootLabel = 'Outside workspace';
+    outsideWorkspaceCard.aiSessions.activeSessions[0].primaryRootId = undefined;
+    outsideWorkspaceCard.aiSessions.activeSessions[0].primaryRootLabel = 'Outside workspace';
+    const outsideWorkspaceHtml = webviewContent.getCurrentWorkspaceGroupContent(outsideWorkspaceCard, false);
+    assert.strictEqual((outsideWorkspaceHtml.match(/>Outside workspace<\/span>/g) || []).length, 2,
+        'history and active rows must render the removed-root continuity chip');
+
+    const navigationCard = {
+        ...makeWorkspaceCardFixture(1),
+        id: 'workspace-other',
+        kind: 'navigation',
+        navigationIdentity: 'navigation-other',
+        scopeIdentity: 'scope-other',
+        name: 'App [Dev Container: Existing Dockerfile]',
+        environment: 'devContainer',
+        environmentLabel: 'Dev Container',
+        runningSessionCount: 2,
+        color: '#abcdef',
+        aiSessions: runningCard.aiSessions,
+    };
+    const workspaceHtml = webviewContent.getOpenWorkspacesGroupContent(
+        [makeWorkspaceCardFixture(3), navigationCard],
+        false,
+        'ready',
+        'halo',
+    );
+    const otherWindowsHtml = workspaceHtml.slice(workspaceHtml.indexOf('OTHER WINDOWS'));
+    assert.strictEqual((otherWindowsHtml.match(/class="workspace-card/g) || []).length, 1);
+    assert.ok(otherWindowsHtml.includes('data-other-workspace'));
+    assert.ok(otherWindowsHtml.includes('style="--project-color: #abcdef;"'));
+    assert.ok(otherWindowsHtml.includes('class="project-border steward-item-accent" style="background: #abcdef;"'));
+    assert.ok(otherWindowsHtml.includes('class="workspace-card project steward-item-card session-running"'));
+    assert.ok(otherWindowsHtml.includes('data-session-fx="halo"'));
+    assert.ok(otherWindowsHtml.includes('title="Workspace — 2 active sessions running"'));
+    assert.ok(otherWindowsHtml.includes('<span class="ai-session-active-count" aria-label="2 active AI sessions">●2</span>'));
+    assert.ok(otherWindowsHtml.includes('<h2 class="project-header">App</h2>'));
+    assert.ok(otherWindowsHtml.includes('<p class="project-description workspace-metadata">1 folder</p>'));
+    assert.strictEqual(otherWindowsHtml.includes('[Dev Container:'), false,
+        'navigation cards must not repeat VS Code remote window decorations in their title');
+    assert.strictEqual(otherWindowsHtml.includes('Dev Container ·'), false,
+        'navigation cards must not repeat their icon environment in metadata');
+    assert.ok(otherWindowsHtml.includes(
+        '<span class="project-ai-attention-badge" title="1 item needs attention" aria-label="1 item needs attention">1</span>'
+    ));
+    assert.strictEqual((otherWindowsHtml.match(/class="project-codex-badge"/g) || []).length, 1,
+        'a running navigation workspace must expose one compact active-session badge');
+    const untitledNavigationHtml = webviewContent.getOpenWorkspacesGroupContent([{
+        ...navigationCard,
+        workspaceKind: 'untitledMultiRoot',
+    }], false);
+    assert.strictEqual(untitledNavigationHtml.includes('data-action="save-current-workspace"'), false,
+        'OTHER WINDOWS cards must never expose a save action');
+    for (const privateDetail of [
+        'data-ai-session-total-count',
+        'data-ai-session-attention-count',
+        'Codex',
+        'Kimi',
+        'Claude',
+    ]) {
+        assert.strictEqual(otherWindowsHtml.includes(privateDetail), false,
+            `OTHER WINDOWS attention badges must omit ${privateDetail}`);
+    }
+    assert.strictEqual(otherWindowsHtml.includes('class="codex-sessions"'), false,
+        'OTHER WINDOWS must never render session/provider controls');
+    assert.strictEqual(otherWindowsHtml.includes('data-workspace-root-id'), false,
+        'OTHER WINDOWS roots are aggregate metadata, not expandable rows');
+    assert.strictEqual((otherWindowsHtml.match(/active session/g) || []).length, 1,
+        'OTHER WINDOWS must render only its protocol count, not injected aiSessions details');
+
+    const updateRequiredHtml = webviewContent.getOpenWorkspacesGroupContent(
+        [makeWorkspaceCardFixture(3)],
+        true,
+        'update-required',
+    );
+    const updateRequiredGroupIndex = updateRequiredHtml.indexOf('<div class="group steward-section open-other-windows-group');
+    const updateRequiredCurrentHtml = updateRequiredHtml.slice(0, updateRequiredGroupIndex);
+    const updateRequiredOtherHtml = updateRequiredHtml.slice(updateRequiredGroupIndex);
+    assert.ok(updateRequiredOtherHtml.includes('data-other-windows-status="update-required"'));
+    assert.strictEqual(updateRequiredOtherHtml.includes('open-other-windows-group collapsed'), false,
+        'an actionable bridge upgrade state must not be hidden by the saved collapse state');
+    assert.ok(updateRequiredOtherHtml.includes('Update the Project Steward UI Bridge'));
+    assert.ok(updateRequiredOtherHtml.includes('data-action="open-bridge-extension"'),
+        'the bridge mismatch state must include an actionable upgrade control');
+    assert.strictEqual(updateRequiredOtherHtml.includes('class="codex-sessions"'), false,
+        'the bridge mismatch state must not create a session expander');
+    assert.ok(updateRequiredCurrentHtml.includes('data-current-workspace'));
+    assert.ok(updateRequiredCurrentHtml.includes('data-action="create-ai-session"'),
+        'the local current workspace NEW action must remain enabled during bridge degradation');
+    assert.strictEqual(updateRequiredCurrentHtml.includes('data-action="new-session-in"'), false);
+
+    const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
+    const consistencyBody = extractFunctionBody(projectSource, 'isWorkspaceUpdateDomConsistent');
+    assert.ok(consistencyBody.includes('currentWorkspaceCount'));
+    assert.strictEqual(/rootCount|sessionCount|aiSessionCount/.test(consistencyBody), false,
+        'current-card DOM consistency must not equate card count with roots or sessions');
+    const stateBody = extractFunctionBody(projectSource, 'getWorkspaceUpdateDomState');
+    assert.ok(stateBody.includes('.open-current-workspace-group'));
+    assert.ok(stateBody.includes('.workspace-card[data-workspace-scope-identity]'));
+    assert.strictEqual(/workspace-root|codex-session-row/.test(stateBody), false);
+
+    let createdReplacementHolder = false;
+    const currentCard = {};
+    const duplicateCardOutsideCurrentGroup = {};
+    const currentGroup = {
+        contains: card => card === currentCard,
+    };
+    const wrapper = {
+        querySelector: selector => selector === '.open-current-workspace-group' ? currentGroup : null,
+        querySelectorAll: selector => selector === '.workspace-card[data-current-workspace][data-workspace-scope-identity]'
+            ? [currentCard, duplicateCardOutsideCurrentGroup]
+            : [],
+    };
+    const context = {
+        document: {
+            querySelector: selector => selector === '.sticky-groups-wrapper' ? wrapper : null,
+            createElement: () => {
+                createdReplacementHolder = true;
+                throw new Error('a duplicate current card must be rejected before parsing replacement HTML');
+            },
+        },
+        window: {},
+    };
+    vm.runInNewContext(projectSource, context);
+    assert.strictEqual(context.applyWorkspaceUpdate({
+        type: 'workspace-updated', version: 2, currentWorkspaceCount: 1, html: '<div></div>',
+    }), false);
+    assert.strictEqual(createdReplacementHolder, false,
+        'the v2 handler must not mount another current card when one exists outside the owned group');
+
+    const preservedOtherNavigationCard = {
+        matches: selector => selector === '.workspace-card[data-other-workspace]',
+        textContent: 'Other Workspace · SSH · 2 folders',
+    };
+    const preservedOtherWindowsGroup = {
+        matches: selector => selector === '.open-other-windows-group',
+        children: [preservedOtherNavigationCard],
+        querySelector: selector => selector === '.workspace-card[data-other-workspace]'
+            ? preservedOtherNavigationCard
+            : null,
+    };
+    const replacementCard = {};
+    const replacementGroup = {
+        matches: selector => selector === '.open-current-workspace-group',
+        querySelectorAll: selector => selector === '.workspace-card[data-workspace-scope-identity]'
+            ? [replacementCard]
+            : [],
+    };
+    let mountedCurrentGroup;
+    let successfulWrapper;
+    const replaceableCurrentGroup = {
+        matches: selector => selector === '.open-current-workspace-group',
+        contains: card => card === currentCard,
+        replaceWith: replacement => {
+            const currentIndex = successfulWrapper.children.indexOf(replaceableCurrentGroup);
+            assert.notStrictEqual(currentIndex, -1, 'the fake current group must be mounted before replacement');
+            successfulWrapper.children.splice(currentIndex, 1, replacement);
+            mountedCurrentGroup = replacement;
+        },
+    };
+    successfulWrapper = {
+        children: [replaceableCurrentGroup, preservedOtherWindowsGroup],
+        querySelector(selector) {
+            if (selector === '.open-current-workspace-group') {
+                return this.children.find(node => node.matches?.(selector)) || null;
+            }
+            if (selector === '.open-other-windows-group') {
+                return this.children.find(node => node.matches?.(selector)) || null;
+            }
+            if (selector === '.workspace-card[data-other-workspace]') {
+                return this.querySelector('.open-other-windows-group')?.querySelector(selector) || null;
+            }
+            return null;
+        },
+        querySelectorAll: selector => selector === '.workspace-card[data-current-workspace][data-workspace-scope-identity]'
+            ? [currentCard]
+            : [],
+    };
+    const successfulContext = {
+        document: {
+            querySelector: selector => selector === '.sticky-groups-wrapper' ? successfulWrapper : null,
+            createElement: () => ({
+                children: [replacementGroup],
+                firstElementChild: replacementGroup,
+                set innerHTML(_value) {},
+            }),
+        },
+        window: {},
+    };
+    vm.runInNewContext(projectSource, successfulContext);
+    assert.strictEqual(successfulContext.applyWorkspaceUpdate({
+        type: 'workspace-updated', version: 2, currentWorkspaceCount: 1,
+        html: '<div class="open-current-workspace-group"></div>',
+    }), true);
+    assert.strictEqual(mountedCurrentGroup, replacementGroup,
+        'a valid current-group update must replace the current group');
+    assert.deepStrictEqual(successfulWrapper.children, [replacementGroup, preservedOtherWindowsGroup],
+        'a current-group update must replace one child while preserving the real OTHER WINDOWS sibling');
+    assert.strictEqual(successfulWrapper.querySelector('.open-other-windows-group'), preservedOtherWindowsGroup,
+        'the same OTHER WINDOWS node must remain mounted');
+    assert.strictEqual(
+        successfulWrapper.querySelector('.workspace-card[data-other-workspace]'),
+        preservedOtherNavigationCard,
+        'the same other-window navigation card must survive current-group replacement',
+    );
+    assert.ok(preservedOtherNavigationCard.textContent.includes('Other Workspace · SSH · 2 folders'),
+        'the surviving navigation card must retain its content');
+
+    const stableCardId = '__currentWorkspace-stable-scope';
+    let persistedState = {};
+    const vscodeApi = {
+        getState: () => persistedState,
+        setState: state => { persistedState = state; },
+    };
+    function makeTabSurface(cardId) {
+        const attributes = {};
+        const sessionSection = { setAttribute: (name, value) => { attributes[name] = value; } };
+        const tabs = ['active', 'sessions'].map(tab => {
+            const values = { 'data-ai-session-tab': tab };
+            return {
+                getAttribute: name => values[name] || null,
+                setAttribute: (name, value) => { values[name] = value; },
+            };
+        });
+        const panels = ['active', 'sessions'].map(tab => ({
+            getAttribute: name => name === 'data-ai-session-panel' ? tab : null,
+            toggleAttribute: (name, enabled) => { attributes[`${tab}:${name}`] = enabled; },
+        }));
+        return {
+            attributes,
+            getAttribute: name => name === 'data-id' ? cardId : null,
+            querySelector: selector => selector === '.codex-sessions' ? sessionSection : null,
+            querySelectorAll: selector => selector === '[data-ai-session-tab]'
+                ? tabs
+                : selector === '[data-ai-session-panel]' ? panels : [],
+        };
+    }
+    const untitledSurface = makeTabSurface(stableCardId);
+    const savedSurface = makeTabSurface(stableCardId);
+    const stateContext = { document: {}, window: {} };
+    vm.runInNewContext(projectSource, stateContext);
+    const zeroRootCurrentGroup = {
+        matches: selector => selector === '.open-current-workspace-group',
+        querySelectorAll: selector => selector === '.workspace-card[data-workspace-scope-identity]' ? [] : [],
+    };
+    assert.strictEqual(stateContext.isWorkspaceUpdateDomConsistent({ currentWorkspaceCount: 0 }, zeroRootCurrentGroup), true,
+        'a zero-root resolver message must be DOM-consistent with an empty current group');
+    assert.strictEqual(stateContext.isWorkspaceUpdateDomConsistent({ currentWorkspaceCount: 1 }, zeroRootCurrentGroup), false,
+        'the incremental consistency guard must reject a declared 1/rendered 0 split');
+    stateContext.writeAiSessionTabState(vscodeApi, stableCardId, 'active');
+    stateContext.restoreAiSessionTabsFromState({
+        querySelectorAll: () => [savedSurface],
+    }, vscodeApi);
+    assert.strictEqual(savedSurface.attributes['data-selected-ai-session-tab'], 'active',
+        'ACTIVE tab state must survive untitled-to-saved navigation identity changes');
+    stateContext.writeAiSessionTabState(vscodeApi, stableCardId, 'sessions');
+    stateContext.restoreAiSessionTabsFromState({
+        querySelectorAll: () => [untitledSurface],
+    }, vscodeApi);
+    assert.strictEqual(untitledSurface.attributes['data-selected-ai-session-tab'], 'sessions',
+        'SESSIONS tab state must remain keyed by the stable scope-owned card ID');
 }
 
 function createSearchResultElement(tagName) {
@@ -196,47 +895,6 @@ function createSearchResultElement(tagName) {
     return element;
 }
 
-// TODO-TODO-SEARCH-RESULT-RENDERING-001
-function runTodoSearchResultRenderingChecks(source) {
-    const context = {
-        document: { createElement: createSearchResultElement },
-    };
-    vm.runInNewContext(source, context);
-    const container = createSearchResultElement('div');
-    context.renderDashboardSearchResults(container, [{
-        id: 'todos',
-        title: 'TODO RESULTS',
-        type: 'todo',
-        items: [{
-            ...makeDashboardCatalog().todos[0],
-            completed: true,
-            notesSearchText: 'A concise release note summary',
-        }],
-    }]);
-
-    const section = container.children[0];
-    const button = section.children[1];
-    assert.strictEqual(button.dataset.todoId, 't1');
-    assert.strictEqual(button.dataset.groupId, 'todo-group-a');
-    assert.strictEqual(button.classList.contains('completed'), true,
-        'completed TODO search results need an explicit state class');
-    assert.ok(button.children.some(child =>
-        child.className === 'dashboard-search-result-notes'
-        && child.textContent === 'A concise release note summary'
-    ), 'TODO search results must render the notes search summary');
-    const metadata = button.children.find(child => child.className === 'dashboard-search-result-meta');
-    assert.ok(metadata.children.some(child =>
-        child.className.includes('dashboard-search-result-group') && child.textContent === 'Planning'
-    ), 'TODO search results must render the group badge');
-    assert.ok(metadata.children.some(child =>
-        child.className.includes('dashboard-search-result-priority') && child.textContent === 'HIGH'
-    ), 'TODO search results must render textual priority metadata');
-    assert.ok(metadata.children.some(child =>
-        child.className.includes('dashboard-search-result-status') && child.textContent === 'Completed'
-    ), 'completed TODO search results must expose completed metadata');
-}
-
-// ERROR-ERROR-CONTENT-001
 function runErrorContentChecks() {
     const html = dashboardErrorContent.getErrorContent(new Error('<script>alert("x")</script>'));
     assert.ok(html.includes('Project Steward could not render this view.'));
@@ -262,14 +920,67 @@ function makeWorkspaceConfiguration(values, inspectedKeys = Object.keys(values),
     };
 }
 
-// WEBVIEW-WEBVIEW-OPTIONS-001
+function runConfigurationChecks() {
+    const primary = makeWorkspaceConfiguration({ customCss: '.primary{}' });
+    const legacy = makeWorkspaceConfiguration({ customCss: '.legacy{}', displayProjectPath: false });
+    const config = dashboardConfiguration.createStewardConfiguration(primary, legacy);
+
+    assert.strictEqual(config.get('customCss'), '.primary{}');
+    assert.strictEqual(config.get('displayProjectPath'), false);
+    assert.strictEqual(config.get('missing', 'default'), 'default');
+    assert.strictEqual(config.customCss, '.primary{}');
+    assert.strictEqual(config.displayProjectPath, false);
+    assert.strictEqual(config.passthrough, 'primary-passthrough');
+    assert.strictEqual(config.update(), 'primary-update');
+    assert.strictEqual(dashboardConfiguration.hasConfiguredValue(primary, 'customCss'), true);
+    assert.strictEqual(dashboardConfiguration.hasConfiguredValue(primary, 'missing'), false);
+}
+
+function runStartupChecks() {
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        reopenReason: 1,
+        openOnStartup: 'never',
+        workspaceName: 'project',
+        visibleEditorLanguageIds: ['typescript'],
+    }), true);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'always',
+        workspaceName: 'project',
+        visibleEditorLanguageIds: ['typescript'],
+    }), true);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'never',
+        workspaceName: '',
+        visibleEditorLanguageIds: [],
+    }), false);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'empty workspace',
+        workspaceName: '',
+        visibleEditorLanguageIds: [],
+    }), true);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'empty workspace',
+        workspaceName: '',
+        visibleEditorLanguageIds: ['code-runner-output'],
+    }), true);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'empty workspace',
+        workspaceName: 'project',
+        visibleEditorLanguageIds: [],
+    }), false);
+    assert.strictEqual(dashboardStartup.shouldOpenStewardOnStartup({
+        openOnStartup: 'empty workspace',
+        workspaceName: '',
+        visibleEditorLanguageIds: ['typescript'],
+    }), false);
+}
+
 function runWebviewOptionsChecks() {
     const options = dashboardWebviewOptions.getDashboardWebviewOptions('/extensions/project-steward', value => ({ uri: value }));
     assert.strictEqual(options.enableScripts, true);
     assert.deepStrictEqual(options.localResourceRoots, [{ uri: path.join('/extensions/project-steward', 'media') }]);
 }
 
-// TODO-GROUP-COLLAPSE-CONTROLLER-001
 async function runGroupCollapseControllerChecks() {
     const updates = [];
     const groups = new Map([
@@ -289,17 +1000,17 @@ async function runGroupCollapseControllerChecks() {
     });
 
     assert.strictEqual(controller.getFavoritesCollapsed(), true);
-    assert.strictEqual(controller.getOpenProjectsCollapsed(), undefined);
+    assert.strictEqual(controller.getOpenWorkspacesCollapsed(), undefined);
 
     await controller.collapseGroup('__favorites', true);
-    await controller.collapseGroup('__openProjects', false);
+    await controller.collapseGroup('__openWorkspaces', false);
     await controller.collapseGroup('group-a');
     await controller.collapseGroup('group-b', false);
     await controller.collapseGroup('missing-group', true);
 
     assert.deepStrictEqual(updates, [
         ['favoritesGroupCollapsed', true],
-        ['openProjectsGroupCollapsed', false],
+        ['openWorkspacesGroupCollapsed.v2', false],
     ]);
     assert.deepStrictEqual(projectServiceUpdates, [
         ['group-a', { id: 'group-a', groupName: 'A', collapsed: true }],
@@ -307,7 +1018,6 @@ async function runGroupCollapseControllerChecks() {
     ]);
 }
 
-// TODO-GROUP-PROMPT-001
 async function runGroupPromptChecks() {
     const calls = [];
     const groupName = await queryGroupName(
@@ -333,7 +1043,6 @@ async function runGroupPromptChecks() {
     );
 }
 
-// TODO-GROUP-COMMAND-CONTROLLER-001
 async function runGroupCommandControllerChecks() {
     const groups = new Map([['group-a', { id: 'group-a', groupName: 'Old' }]]);
     const actions = [];
@@ -392,7 +1101,6 @@ async function runGroupCommandControllerChecks() {
     assert.strictEqual(actions.filter(action => action[0] === 'remove').length, 1);
 }
 
-// TODO-TODO-STORE-001
 async function runTodoStoreChecks() {
     assert.deepStrictEqual(todoTypes.normalizeTodoData(null), { version: 1, groups: [], todos: [] });
     assert.throws(
@@ -575,7 +1283,6 @@ async function runTodoStoreChecks() {
     }
 }
 
-// TODO-TODO-ORDERING-MUTATION-001
 async function runTodoOrderingMutationChecks() {
     let storedData = {
         version: 1,
@@ -657,7 +1364,6 @@ async function runTodoOrderingMutationChecks() {
     assert.strictEqual(writes.length, previousWrites + 1, 'bulk TODO collapse must use one persisted mutation');
 }
 
-// TODO-TODO-INSERTION-ORDER-NORMALIZATION-001
 async function runTodoInsertionOrderNormalizationChecks() {
     const scenarios = [
         { name: 'gapped target orders', orders: [0, 2] },
@@ -774,7 +1480,6 @@ function makeTodoServiceStorageHarness(useSettingsStorage, initialGlobalData, in
     return { service, updates, values };
 }
 
-// TODO-TODO-STORAGE-RESOLUTION-001
 async function runTodoStorageResolutionChecks() {
     const primarySettingsData = makeStoredTodoData('settings-group');
     const globalData = makeStoredTodoData('global-group');
@@ -892,7 +1597,6 @@ async function runTodoStorageResolutionChecks() {
         'a rejected primary settings write must not advance storage provenance');
 }
 
-// TODO-TODO-MIGRATION-001
 async function runTodoMigrationChecks() {
     const globalSource = makeTodoServiceStorageHarness(true, makeStoredTodoData('global-source'), null);
     assert.strictEqual(await globalSource.service.migrateDataIfNeeded(), true);
@@ -1055,7 +1759,6 @@ async function runTodoMigrationChecks() {
     assert.deepStrictEqual(futureSource.service.getSearchItems().map(item => item.todoId), ['selected-todo']);
 }
 
-// TODO-TODO-BACKEND-SWITCH-BARRIER-001
 async function runTodoBackendSwitchBarrierChecks() {
     let useSettingsStorage = false;
     let storageProvenance;
@@ -1185,7 +1888,6 @@ async function runTodoBackendSwitchBarrierChecks() {
     }
 }
 
-// TODO-TODO-VIEW-STATE-001
 async function runTodoViewStateChecks() {
     const values = new Map([['todoViewState', { showCompleted: true }]]);
     const updates = [];
@@ -1209,7 +1911,6 @@ async function runTodoViewStateChecks() {
     assert.deepStrictEqual(syncUpdates, [], 'TODO view state must remain local and must not be registered for sync');
 }
 
-// TODO-TODO-MUTATION-SERIALIZATION-001
 async function runTodoMutationSerializationChecks() {
     let storedData = { version: 1, groups: [], todos: [] };
     const writes = [];
@@ -1268,7 +1969,6 @@ async function runTodoMutationSerializationChecks() {
     assert.deepStrictEqual(recoveringService.getData().groups.map(group => group.title), ['Recovered']);
 }
 
-// TODO-TODO-REVEAL-SINGLE-WRITE-001
 async function runTodoRevealSingleWriteChecks() {
     const makeRevealData = collapsed => ({
         version: 1,
@@ -1426,7 +2126,6 @@ async function runTodoRevealSingleWriteChecks() {
     assert.strictEqual(queuedData.groups[0].collapsed, true);
 }
 
-// TODO-DASHBOARD-TODO-MIGRATION-SEQUENCING-001
 async function runDashboardTodoMigrationSequencingChecks() {
     const extensionHostSource = fs.readFileSync(extensionHostPath, 'utf8');
     const migrationBody = extractAsyncArrowPropertyBody(extensionHostSource, 'migrateDataIfNeeded');
@@ -1536,7 +2235,7 @@ async function runDashboardTodoMigrationSequencingChecks() {
                 gate
             ),
             refreshDashboard: async () => { refreshes.push('refreshed'); },
-            publishOpenProjects: () => publications.push('published'),
+            publishOpenWorkspace: () => publications.push('published'),
             showInformationMessage: () => undefined,
             showErrorMessage: message => errors.push(message),
             logError: (message, error) => logs.push([message, error]),
@@ -1663,7 +2362,6 @@ async function runDashboardTodoMigrationSequencingChecks() {
     }
 }
 
-// TODO-TODO-HOST-MUTATION-001
 async function runTodoHostMutationChecks() {
     const hostModulePath = path.join(root, 'out', 'todos', 'hostMutation.js');
     assert.ok(fs.existsSync(hostModulePath), 'TODO host mutation error boundary must exist');
@@ -1962,7 +2660,6 @@ function makeTodoBoundaryData(todoCount) {
     };
 }
 
-// TODO-TODO-VIEW-MODEL-001
 function runTodoViewModelChecks() {
     const hiddenCompleted = todoViewModel.buildTodoViewModel(makeTodoData(), { showCompleted: false });
     assert.strictEqual(hiddenCompleted.groups.length, 2);
@@ -2123,12 +2820,13 @@ function runTodoViewModelChecks() {
     assert.strictEqual(emptyGroupHtml.includes('No todos yet'), false);
 
     const dashboardViewModel = require('../out/webview/dashboardViewModel');
-    const catalog = dashboardViewModel.buildDashboardSearchCatalog([], [], todoTypes.buildTodoSearchItems(makeTodoData()));
+    const catalog = dashboardViewModel.buildWorkspaceDashboardSearchCatalog(
+        [], [], todoTypes.buildTodoSearchItems(makeTodoData())
+    );
     assert.strictEqual(catalog.todos.length, 2);
     assert.ok(dashboardViewModel.serializeDashboardSearchCatalog(catalog).includes('Write TODO') === false);
 }
 
-// TODO-TODO-ORDERING-INTERACTION-001
 function runTodoOrderingInteractionChecks() {
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const projectContext = {};
@@ -2250,7 +2948,6 @@ function runTodoOrderingInteractionChecks() {
     assert.strictEqual(dndRoot.__projectStewardDnD, undefined);
 }
 
-// PROJECT-ADD-PROJECTS-FROM-FOLDER-CONTROLLER-001
 async function runAddProjectsFromFolderControllerChecks() {
     const actions = [];
     const errors = [];
@@ -2302,7 +2999,6 @@ async function runAddProjectsFromFolderControllerChecks() {
     assert.deepStrictEqual(errors.slice(-1), ['An error occured while adding the projects.']);
 }
 
-// PROJECT-FAVORITE-PROJECT-CONTROLLER-001
 async function runFavoriteProjectControllerChecks() {
     let groups = [{
         id: 'group-a',
@@ -2342,7 +3038,6 @@ async function runFavoriteProjectControllerChecks() {
     assert.deepStrictEqual(actions, ['refresh', 'refresh']);
 }
 
-// PROJECT-PROJECT-ORDER-CONTROLLER-001
 async function runProjectOrderControllerChecks() {
     const groups = [
         {
@@ -2387,7 +3082,6 @@ async function runProjectOrderControllerChecks() {
     assert.deepStrictEqual(actions, ['refresh']);
 }
 
-// PROJECT-PROJECT-REMOVAL-CONTROLLER-001
 async function runProjectRemovalControllerChecks() {
     const projects = new Map([['project-a', { id: 'project-a', name: 'Alpha' }]]);
     const actions = [];
@@ -2415,7 +3109,119 @@ async function runProjectRemovalControllerChecks() {
     ]);
 }
 
-// WEBVIEW-DASHBOARD-STARTUP-CONTROLLER-001
+async function runDashboardRuntimeControllerChecks() {
+    const commands = [];
+    const refreshes = [];
+    const diagnostics = [];
+    const published = [];
+    const posted = [];
+    const colorSyncs = [];
+    const errors = [];
+    const projects = [{ id: 'project-a', path: '/work/a' }];
+    let visible = true;
+    let focusFails = true;
+    const baseOptions = {
+        isVisible: () => visible,
+        refreshProvider: () => refreshes.push('refresh'),
+        logDashboardDiagnostic: event => diagnostics.push(event),
+        executeCommand: (command, ...args) => {
+            commands.push([command, ...args]);
+            if (command.endsWith('.focus') && focusFails) {
+                focusFails = false;
+                return Promise.reject(new Error('focus failed once'));
+            }
+            return Promise.resolve();
+        },
+        viewType: 'project-steward.views.sidebar',
+        publishOpenWorkspace: () => published.push('open-workspace'),
+        getCurrentSavedProject: () => projects[0],
+        syncProjectColorToCurrentWindow: project => {
+            colorSyncs.push(project);
+            return Promise.resolve();
+        },
+        postMessage: message => {
+            posted.push(message);
+            return Promise.resolve(true);
+        },
+        logError: (message, error) => errors.push([message, error?.message]),
+    };
+    const controller = new DashboardRuntimeController(baseOptions);
+
+    controller.refresh('manual');
+    assert.deepStrictEqual(refreshes, ['refresh']);
+    assert.deepStrictEqual(diagnostics, [{ event: 'full-refresh', reason: 'manual' }]);
+
+    visible = false;
+    controller.refresh('hidden');
+    assert.deepStrictEqual(refreshes, ['refresh']);
+
+    visible = true;
+    await controller.showSteward();
+    assert.deepStrictEqual(published, ['open-workspace']);
+    assert.deepStrictEqual(commands, [
+        ['workbench.view.extension.project-steward'],
+        ['project-steward.views.sidebar.focus'],
+        ['project-steward.views.sidebar.focus'],
+    ]);
+    assert.deepStrictEqual(diagnostics.slice(-1), [{ event: 'full-refresh', reason: 'show-steward' }]);
+
+    await controller.openSettings();
+    assert.deepStrictEqual(commands[commands.length - 1], ['workbench.action.openSettings', '@ext:hzcheng.project-steward']);
+
+    controller.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
+    controller.postActiveAiSessionTerminalChanged({ provider: 'codex', sessionId: 's1' });
+    controller.postActiveAiSessionTerminalChanged(null);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(posted.map(message => message.type), [
+        'ai-session-batch-archive-completed',
+        'active-ai-session-terminal-changed',
+        'active-ai-session-terminal-changed',
+    ]);
+    assert.deepStrictEqual(posted[1], { type: 'active-ai-session-terminal-changed', provider: 'codex', sessionId: 's1' });
+    assert.deepStrictEqual(posted[2], { type: 'active-ai-session-terminal-changed', provider: null, sessionId: null });
+
+    controller.applyProjectColorToCurrentWindow();
+    controller.applyProjectColorToCurrentWindow({ id: 'save', showSaveAction: true });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(colorSyncs, [projects[0], { id: 'save', showSaveAction: true }]);
+
+    controller.refreshAfterMutation();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(colorSyncs, [projects[0], { id: 'save', showSaveAction: true }, projects[0]]);
+    assert.deepStrictEqual(diagnostics.slice(-1), [{ event: 'full-refresh', reason: 'project-mutation' }]);
+    assert.deepStrictEqual(published, ['open-workspace', 'open-workspace']);
+
+    const failingController = new DashboardRuntimeController({
+        ...baseOptions,
+        syncProjectColorToCurrentWindow: () => Promise.reject(new Error('color failed')),
+        postMessage: () => Promise.reject(new Error('post failed')),
+    });
+    failingController.applyProjectColorToCurrentWindow(projects[0]);
+    failingController.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(errors.slice(-2).map(item => item[0]), [
+        'Failed to apply project color to current window.',
+        'Failed to post batch AI session archive completion.',
+    ]);
+
+    const syncThrowErrors = [];
+    const syncThrowController = new DashboardRuntimeController({
+        ...baseOptions,
+        executeCommand: () => { throw new Error('command threw'); },
+        syncProjectColorToCurrentWindow: () => { throw new Error('color threw'); },
+        postMessage: () => { throw new Error('post threw'); },
+        logError: (message, error) => syncThrowErrors.push([message, error?.message]),
+    });
+    await syncThrowController.revealSidebarSteward();
+    syncThrowController.applyProjectColorToCurrentWindow(projects[0]);
+    syncThrowController.postBatchArchiveCompletion({ type: 'ai-session-batch-archive-completed', projectId: 'p', provider: 'codex', status: 'finished' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(syncThrowErrors, [
+        ['Failed to apply project color to current window.', 'color threw'],
+        ['Failed to post batch AI session archive completion.', 'post threw'],
+    ]);
+}
+
 async function runDashboardStartupControllerChecks() {
     const extensionChecks = [];
     const publications = [];
@@ -2447,7 +3253,7 @@ async function runDashboardStartupControllerChecks() {
         },
         migrateDataIfNeeded: async () => migrationResult(migrated),
         refreshDashboard: () => undefined,
-        publishOpenProjects: () => publications.push('published'),
+        publishOpenWorkspace: () => publications.push('published'),
         showInformationMessage: message => informationMessages.push(message),
         showSteward: () => { showStewardCalls += 1; },
         applyProjectColorToCurrentWindow: () => colorApplications.push('applied'),
@@ -2491,6 +3297,70 @@ async function runDashboardStartupControllerChecks() {
     await controller.startUp();
     assert.strictEqual(showStewardCalls, 3);
 
+    const startupOrdering = [];
+    const orderedController = new DashboardStartupController({
+        stewardInfos: {
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            config: { openOnStartup: 'never' },
+        },
+        isExtensionInstalled: () => false,
+        migrateDataIfNeeded: async () => {
+            startupOrdering.push('project-migration');
+            return migrationResult(true, false);
+        },
+        afterProjectMigrationSucceeded: async () => {
+            startupOrdering.push('pending-workspace-save');
+        },
+        refreshDashboard: () => startupOrdering.push('refresh'),
+        publishOpenWorkspace: () => startupOrdering.push('publish'),
+        showInformationMessage: () => undefined,
+        showErrorMessage: () => undefined,
+        logError: () => undefined,
+        showSteward: () => undefined,
+        applyProjectColorToCurrentWindow: () => startupOrdering.push('color'),
+        getReopenReason: () => 0,
+        updateReopenReason: () => undefined,
+        reopenNoneValue: 0,
+        getWorkspaceName: () => 'workspace',
+        getVisibleEditorLanguageIds: () => [],
+    });
+    await orderedController.startUp();
+    assert.deepStrictEqual(startupOrdering, [
+        'project-migration', 'refresh', 'publish', 'pending-workspace-save', 'color',
+    ], 'pending workspace save completion must run once after successful project migration');
+
+    const failedProjectMigration = new Error('project migration failed');
+    const failedProjectOrdering = [];
+    const failedProjectController = new DashboardStartupController({
+        stewardInfos: {
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
+            config: { openOnStartup: 'never' },
+        },
+        isExtensionInstalled: () => false,
+        migrateDataIfNeeded: async () => ({
+            projects: { migrated: false, error: failedProjectMigration },
+            todos: { migrated: false },
+        }),
+        afterProjectMigrationSucceeded: async () => {
+            failedProjectOrdering.push('pending-workspace-save');
+        },
+        refreshDashboard: () => undefined,
+        publishOpenWorkspace: () => undefined,
+        showInformationMessage: () => undefined,
+        showErrorMessage: () => undefined,
+        logError: () => undefined,
+        showSteward: () => undefined,
+        applyProjectColorToCurrentWindow: () => failedProjectOrdering.push('color'),
+        getReopenReason: () => 0,
+        updateReopenReason: () => undefined,
+        reopenNoneValue: 0,
+        getWorkspaceName: () => 'workspace',
+        getVisibleEditorLanguageIds: () => [],
+    });
+    await failedProjectController.startUp();
+    assert.deepStrictEqual(failedProjectOrdering, ['color'],
+        'project migration failure must retain pending intent while allowing the remaining startup behavior');
+
     let deferredTodoData = { version: 1, groups: [], todos: [] };
     const deferredTodoService = new TodoService({
         globalState: {
@@ -2505,11 +3375,11 @@ async function runDashboardStartupControllerChecks() {
     const refreshGate = new Promise(resolve => { releaseRefresh = resolve; });
     const provider = {
         refresh: async () => {
-            rebuiltCatalogs.push(buildDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
+            rebuiltCatalogs.push(buildWorkspaceDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
             await refreshGate;
         },
     };
-    rebuiltCatalogs.push(buildDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
+    rebuiltCatalogs.push(buildWorkspaceDashboardSearchCatalog([], [], deferredTodoService.getSearchItems()));
     assert.deepStrictEqual(rebuiltCatalogs[0].todos, [],
         'the provider may render its initial search catalog before TODO migration settles');
 
@@ -2524,7 +3394,7 @@ async function runDashboardStartupControllerChecks() {
         isExtensionInstalled: () => false,
         migrateDataIfNeeded: () => deferredMigration,
         refreshDashboard: () => provider.refresh(),
-        publishOpenProjects: () => undefined,
+        publishOpenWorkspace: () => undefined,
         showInformationMessage: () => undefined,
         showErrorMessage: () => undefined,
         logError: () => undefined,
@@ -2584,7 +3454,7 @@ async function runDashboardStartupControllerChecks() {
                 : Promise.resolve(migrationResult(false, true));
         },
         refreshDashboard: () => retryRefreshes.push('refreshed'),
-        publishOpenProjects: () => retryPublications.push('published'),
+        publishOpenWorkspace: () => retryPublications.push('published'),
         showInformationMessage: () => undefined,
         showErrorMessage: message => migrationErrors.push(message),
         logError: (message, error) => migrationLogs.push([message, error]),
@@ -2617,14 +3487,13 @@ async function runDashboardStartupControllerChecks() {
         'a successful retry must resume post-migration publication');
 }
 
-// PERSIST-DASHBOARD-LIFECYCLE-CONTROLLER-001
 async function runDashboardLifecycleControllerChecks() {
     const events = [];
     const controller = new DashboardLifecycleController({
         checkDataMigration: async openStewardAfterMigrate => events.push(['migrate', openStewardAfterMigrate]),
         applyProjectColorToCurrentWindow: () => events.push(['color']),
         refresh: reason => events.push(['refresh', reason]),
-        publishOpenProjects: followsFocusEvent => events.push(['publish', followsFocusEvent]),
+        publishOpenWorkspace: followsFocusEvent => events.push(['publish', followsFocusEvent]),
         evaluateAiSessionAttention: () => events.push(['attention']),
     });
     const makeConfigurationEvent = affectedSections => ({
@@ -2677,6 +3546,153 @@ async function runDashboardLifecycleControllerChecks() {
     ]);
 }
 
+async function runDashboardCommandRegistrationChecks() {
+    const registered = [];
+    const subscriptions = [];
+    const calls = [];
+    const registration = new DashboardCommandRegistration({
+        registerCommand: (command, callback) => {
+            const disposable = { command, dispose: () => undefined };
+            registered.push([command, callback]);
+            return disposable;
+        },
+        pushSubscription: disposable => subscriptions.push(disposable),
+        handlers: {
+            open: () => calls.push('open'),
+            addProject: async () => calls.push('addProject'),
+            saveProject: async () => calls.push('saveProject'),
+            removeProject: async () => calls.push('removeProject'),
+            editProjects: async () => calls.push('editProjects'),
+            addGroup: async () => calls.push('addGroup'),
+            removeGroup: async () => calls.push('removeGroup'),
+            addProjectsFromFolder: async () => calls.push('addProjectsFromFolder'),
+            addFileToActiveTerminal: async () => calls.push('addFileToActiveTerminal'),
+        },
+    });
+
+    registration.register();
+
+    assert.deepStrictEqual(registered.map(([command]) => command), [
+        'projectSteward.open',
+        'projectSteward.addProject',
+        'projectSteward.saveProject',
+        'projectSteward.removeProject',
+        'projectSteward.editProjects',
+        'projectSteward.addGroup',
+        'projectSteward.removeGroup',
+        'projectSteward.addProjectsFromFolder',
+        'projectSteward.addFileToActiveTerminal',
+    ]);
+    assert.deepStrictEqual(subscriptions.map(disposable => disposable.command), registered.map(([command]) => command));
+
+    for (const [, callback] of registered) {
+        await callback();
+    }
+
+    assert.deepStrictEqual(calls, [
+        'open',
+        'addProject',
+        'saveProject',
+        'removeProject',
+        'editProjects',
+        'addGroup',
+        'removeGroup',
+        'addProjectsFromFolder',
+        'addFileToActiveTerminal',
+    ]);
+}
+
+async function runActiveTerminalFileReferenceChecks() {
+    const sent = [];
+    const warnings = [];
+    let terminalShowCalls = 0;
+    const terminal = {
+        sendText: (text, addNewLine) => sent.push([text, addNewLine]),
+        show: () => { terminalShowCalls += 1; },
+    };
+    const controller = new activeTerminalFileReference.ActiveTerminalFileReferenceController({
+        getActiveTextEditor: () => ({
+            document: { uri: { scheme: 'file', fsPath: '/repo/src/dashboard.ts' } },
+            selection: {
+                isEmpty: false,
+                start: { line: 9 },
+                end: { line: 14 },
+            },
+        }),
+        getActiveTerminal: () => terminal,
+        asRelativePath: uri => uri.fsPath.replace('/repo/', ''),
+        showWarningMessage: message => warnings.push(message),
+    });
+
+    assert.strictEqual(activeTerminalFileReference.formatFileReference('src/dashboard.ts', null), 'src/dashboard.ts');
+    assert.strictEqual(activeTerminalFileReference.formatFileReference('src/dashboard.ts', { startLine: 10, endLine: 10 }), 'src/dashboard.ts:10');
+    assert.strictEqual(activeTerminalFileReference.formatFileReference('src/dashboard.ts', { startLine: 10, endLine: 15 }), 'src/dashboard.ts:10-15');
+    assert.deepStrictEqual(activeTerminalFileReference.getPrimarySelectionLineRange({
+        isEmpty: false,
+        start: { line: 14 },
+        end: { line: 9 },
+    }), { startLine: 10, endLine: 15 });
+
+    await controller.addFileToActiveTerminal();
+    assert.deepStrictEqual(sent, [['src/dashboard.ts:10-15', false]]);
+    assert.strictEqual(terminalShowCalls, 1);
+    assert.deepStrictEqual(warnings, []);
+
+    const emptySelectionController = new activeTerminalFileReference.ActiveTerminalFileReferenceController({
+        getActiveTextEditor: () => ({
+            document: { uri: { scheme: 'file', fsPath: '/repo/src/models.ts' } },
+            selection: { isEmpty: true, start: { line: 0 }, end: { line: 0 } },
+        }),
+        getActiveTerminal: () => terminal,
+        asRelativePath: uri => uri.fsPath.replace('/repo/', ''),
+        showWarningMessage: message => warnings.push(message),
+    });
+    await emptySelectionController.addFileToActiveTerminal();
+    assert.deepStrictEqual(sent[1], ['src/models.ts', false]);
+    assert.strictEqual(terminalShowCalls, 2);
+
+    const remoteFileController = new activeTerminalFileReference.ActiveTerminalFileReferenceController({
+        getActiveTextEditor: () => ({
+            document: { uri: { scheme: 'vscode-remote', fsPath: '/repo/src/remote.ts', path: '/repo/src/remote.ts' } },
+            selection: { isEmpty: true, start: { line: 0 }, end: { line: 0 } },
+        }),
+        getActiveTerminal: () => terminal,
+        asRelativePath: uri => uri.path.replace('/repo/', ''),
+        showWarningMessage: message => warnings.push(message),
+    });
+    await remoteFileController.addFileToActiveTerminal();
+    assert.deepStrictEqual(sent[2], ['src/remote.ts', false]);
+    assert.strictEqual(terminalShowCalls, 3);
+
+    const missingTerminalController = new activeTerminalFileReference.ActiveTerminalFileReferenceController({
+        getActiveTextEditor: () => ({
+            document: { uri: { scheme: 'file', fsPath: '/repo/src/models.ts' } },
+            selection: { isEmpty: true, start: { line: 0 }, end: { line: 0 } },
+        }),
+        getActiveTerminal: () => null,
+        asRelativePath: uri => uri.fsPath.replace('/repo/', ''),
+        showWarningMessage: message => warnings.push(message),
+    });
+    await missingTerminalController.addFileToActiveTerminal();
+    assert.ok(warnings.includes('No active terminal to receive the file reference.'));
+    assert.strictEqual(sent.length, 3);
+    assert.strictEqual(terminalShowCalls, 3);
+
+    const untitledController = new activeTerminalFileReference.ActiveTerminalFileReferenceController({
+        getActiveTextEditor: () => ({
+            document: { uri: { scheme: 'untitled', fsPath: '' } },
+            selection: { isEmpty: true, start: { line: 0 }, end: { line: 0 } },
+        }),
+        getActiveTerminal: () => terminal,
+        asRelativePath: uri => uri.fsPath,
+        showWarningMessage: message => warnings.push(message),
+    });
+    await untitledController.addFileToActiveTerminal();
+    assert.ok(warnings.includes('Open a saved file before adding it to the active terminal.'));
+    assert.strictEqual(sent.length, 3);
+    assert.strictEqual(terminalShowCalls, 3);
+}
+
 function createClassList(initialValues = []) {
     const values = new Set(initialValues);
     return {
@@ -2705,7 +3721,315 @@ function createElement(id) {
     };
 }
 
-// TODO-TODO-EDIT-RESET-INTERACTION-001
+function runControllerChecks(source) {
+    const openButton = createElement('dashboard-tab-open-button');
+    openButton.setAttribute('data-dashboard-tab', 'open');
+    const projectsButton = createElement('dashboard-tab-projects-button');
+    projectsButton.setAttribute('data-dashboard-tab', 'projects');
+    const todoButton = createElement('dashboard-tab-todo-button');
+    todoButton.setAttribute('data-dashboard-tab', 'todo');
+    const openPanel = createElement('dashboard-tab-open');
+    const projectsPanel = createElement('dashboard-tab-projects');
+    const todoPanel = createElement('dashboard-tab-todo');
+    const searchResults = createSearchResultElement('div');
+    const searchResultListeners = {};
+    searchResults.id = 'dashboard-search-results';
+    searchResults.hidden = false;
+    searchResults.addEventListener = (type, listener) => { searchResultListeners[type] = listener; };
+    searchResults.dispatch = (type, event = {}) => searchResultListeners[type] && searchResultListeners[type](event);
+    const elements = {
+        'dashboard-tab-open': openPanel,
+        'dashboard-tab-projects': projectsPanel,
+        'dashboard-tab-todo': todoPanel,
+        'dashboard-search-results': searchResults,
+    };
+    const messages = [];
+    const storage = new Map([['projectSteward.activeDashboardTab', 'open']]);
+    const windowListeners = {};
+    const context = {
+        document: {
+            body: { classList: createClassList() },
+            createElement: createSearchResultElement,
+            getElementById: id => elements[id] || null,
+            querySelectorAll: selector => selector === '[data-dashboard-tab]'
+                ? [openButton, projectsButton, todoButton]
+                : [],
+        },
+        sessionStorage: {
+            getItem: key => storage.get(key) || null,
+            setItem: (key, value) => storage.set(key, value),
+        },
+        window: {
+            scrollY: 11,
+            scrollTo: (_x, y) => { context.window.scrollY = y; },
+            addEventListener: (type, listener) => { windowListeners[type] = listener; },
+        },
+        requestAnimationFrame: callback => callback(),
+    };
+    vm.runInNewContext(source, context);
+
+    assert.strictEqual(context.normalizeDashboardTab('projects'), 'projects');
+    assert.strictEqual(context.normalizeDashboardTab('todo'), 'todo');
+    assert.strictEqual(context.normalizeDashboardTab('invalid'), 'open');
+    assert.strictEqual(context.getAdjacentDashboardTab('open', 'ArrowRight'), 'projects');
+    assert.strictEqual(context.getAdjacentDashboardTab('projects', 'ArrowRight'), 'todo');
+    assert.strictEqual(context.getAdjacentDashboardTab('todo', 'ArrowLeft'), 'projects');
+    assert.strictEqual(context.getAdjacentDashboardTab('projects', 'ArrowLeft'), 'open');
+    assert.strictEqual(context.validateProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 2, html: '<div></div>',
+    }), true);
+    assert.strictEqual(context.validateProjectsPanelMessage({
+        type: 'projects-panel-content', version: 2, requestId: 2, html: '<div></div>',
+    }), false);
+    assert.strictEqual(context.validateTodoPanelMessage({
+        type: 'todo-panel-content', version: 1, requestId: 2, html: '<div></div>',
+    }), true);
+    assert.strictEqual(context.validateTodoPanelMessage({
+        type: 'todo-panel-content', version: 2, requestId: 2, html: '<div></div>',
+    }), false);
+    assert.strictEqual(context.globToDashboardRegex('dash*').test('dashboard'), true);
+    assert.strictEqual(context.globToDashboardRegex('data?').test('data1'), true);
+    const workspaceSections = context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'dashboard');
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(workspaceSections.map(section => section.title))),
+        ['AI SESSIONS', 'OPEN WORKSPACES', 'SAVED PROJECTS']
+    );
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(workspaceSections.map(section => section.id))),
+        ['ai-sessions', 'open-workspaces', 'saved-projects']
+    );
+    const workspaceTodoSections = context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'ship');
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(workspaceTodoSections.map(section => section.title))),
+        ['TODO RESULTS'],
+        'v2 search must preserve searchable TODO results beside workspace-first sections'
+    );
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(workspaceTodoSections.map(section => section.id))),
+        ['todos']
+    );
+    assert.strictEqual(context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'missing').length, 0);
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(context.normalizeDashboardSearchCatalog(null))),
+        { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: [] }
+    );
+    assert.strictEqual(
+        context.normalizeDashboardSearchCatalog(makeWorkspaceDashboardCatalog()).version,
+        2
+    );
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(context.normalizeDashboardSearchCatalog({
+            ...makeDashboardCatalog(),
+            openWorkspaces: null,
+        }))),
+        { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: [] },
+        'a malformed v2 catalog must fail closed'
+    );
+    const state = {
+        activeTab: 'projects',
+        searchQuery: 'dash',
+        scrollPositions: { open: 12, projects: 34, todo: 56 },
+        catalog: makeDashboardCatalog(),
+    };
+    const nextState = context.replaceDashboardSearchCatalogState(state, makeUpdatedDashboardCatalog());
+    assert.strictEqual(nextState.activeTab, 'projects');
+    assert.strictEqual(nextState.searchQuery, 'dash');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(nextState.scrollPositions)), { open: 12, projects: 34, todo: 56 });
+    assert.notStrictEqual(nextState.catalog, state.catalog);
+
+    let mounted = 0;
+    let todoMounted = 0;
+    const controller = context.initDashboard({
+        postMessage: message => messages.push(message),
+        onProjectsMounted: panel => {
+            assert.strictEqual(panel, projectsPanel);
+            mounted += 1;
+        },
+        onTodoMounted: panel => {
+            assert.strictEqual(panel, todoPanel);
+            todoMounted += 1;
+        },
+    });
+    assert.strictEqual(controller.getActiveTab(), 'open');
+    assert.strictEqual(openPanel.hidden, false);
+    assert.strictEqual(projectsPanel.hidden, true);
+    assert.strictEqual(todoPanel.hidden, true);
+    assert.strictEqual(openButton.getAttribute('aria-selected'), 'true');
+    assert.strictEqual(projectsButton.getAttribute('tabindex'), '-1');
+
+    context.window.scrollY = 37;
+    controller.activateTab('projects');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [
+        { type: 'request-projects-panel', version: 1, requestId: 1 },
+    ]);
+    assert.strictEqual(controller.getProjectsState(), 'loading');
+    assert.strictEqual(controller.getScrollPosition('open'), 37);
+    controller.ensureProjectsPanel();
+    assert.strictEqual(messages.length, 1, 'PROJECTS must be requested only once while loading');
+    assert.strictEqual(controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 0, html: '<div>stale</div>',
+    }), false);
+    assert.strictEqual(projectsPanel.innerHTML, '');
+    controller.activateTab('open');
+    const openScrollBeforeResponse = context.window.scrollY;
+    assert.strictEqual(controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '<div>projects</div>',
+    }), true);
+    assert.strictEqual(context.window.scrollY, openScrollBeforeResponse, 'background PROJECTS mount must not move OPEN scroll');
+    assert.strictEqual(projectsPanel.innerHTML, '<div>projects</div>');
+    assert.strictEqual(controller.getProjectsState(), 'mounted');
+    assert.strictEqual(mounted, 1);
+    controller.ensureProjectsPanel();
+    assert.strictEqual(messages.length, 1, 'mounted PROJECTS must not be requested again');
+    context.window.scrollY = 41;
+    controller.activateTab('todo');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.slice(1))), [
+        { type: 'request-todo-panel', version: 1, requestId: 1 },
+    ]);
+    assert.strictEqual(controller.getTodoState(), 'loading');
+    assert.strictEqual(controller.applyTodoPanelMessage({
+        type: 'todo-panel-content', version: 1, requestId: 1, html: '<div>todo</div>',
+    }), true);
+    assert.strictEqual(todoPanel.innerHTML, '<div>todo</div>');
+    assert.strictEqual(controller.getTodoState(), 'mounted');
+    assert.strictEqual(todoMounted, 1);
+    assert.strictEqual(typeof windowListeners.message, 'function');
+
+    let showCompletedFocusCalls = 0;
+    const oldShowCompletedToggle = {
+        getAttribute: name => name === 'data-action' ? 'todo-toggle-show-completed' : null,
+    };
+    const newShowCompletedToggle = {
+        focus: () => {
+            showCompletedFocusCalls += 1;
+            context.document.activeElement = newShowCompletedToggle;
+        },
+    };
+    todoPanel.contains = element => element === oldShowCompletedToggle;
+    todoPanel.querySelector = selector => selector === '[data-action="todo-toggle-show-completed"]'
+        ? newShowCompletedToggle
+        : null;
+    context.document.activeElement = oldShowCompletedToggle;
+    assert.strictEqual(controller.applyTodoPanelUpdatedMessage({
+        type: 'todo-panel-updated',
+        version: 1,
+        html: '<div>show completed updated</div>',
+        searchCatalog: makeDashboardCatalog(),
+    }), true);
+    assert.strictEqual(showCompletedFocusCalls, 1,
+        'replacing TODO HTML must restore focus to the Show Completed control');
+    assert.strictEqual(context.document.activeElement, newShowCompletedToggle);
+
+    let todoItemMounted = false;
+    let todoFocusCalls = 0;
+    let todoScrollCalls = 0;
+    const pendingTodoFrames = [];
+    context.requestAnimationFrame = callback => pendingTodoFrames.push(callback);
+    const todoGroup = {
+        classList: createClassList(),
+        querySelector: selector => selector === '[data-action="todo-collapse-group"]'
+            ? { setAttribute: () => undefined }
+            : null,
+    };
+    const todoItem = {
+        isConnected: true,
+        getAttribute: name => name === 'data-todo-id' ? 't1' : null,
+        setAttribute: () => undefined,
+        removeAttribute: () => undefined,
+        closest: selector => selector === '.todo-group' ? todoGroup : null,
+        focus: () => {
+            todoFocusCalls += 1;
+            context.document.activeElement = todoItem;
+        },
+        scrollIntoView: () => { todoScrollCalls += 1; },
+        addEventListener: () => undefined,
+    };
+    todoPanel.querySelectorAll = selector => selector === '.todo-item[data-todo-id]' && todoItemMounted
+        ? [todoItem]
+        : [];
+    const todoSearchResult = {
+        dataset: {
+            searchAction: 'show-todo',
+            todoId: 't1',
+            groupId: 'todo-group-a',
+        },
+    };
+    todoSearchResult.closest = selector => selector === '.dashboard-search-result[data-search-action]'
+        ? todoSearchResult
+        : null;
+    const messageCountBeforeReveal = messages.length;
+    searchResults.dispatch('click', { target: todoSearchResult });
+    assert.strictEqual(messages.length, messageCountBeforeReveal,
+        'pending TODO targets must wait for requestAnimationFrame before querying the DOM');
+    assert.strictEqual(pendingTodoFrames.length, 2,
+        'tab scroll restoration and pending TODO resolution should each use their own frame');
+    while (pendingTodoFrames.length) pendingTodoFrames.shift()();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages.slice(messageCountBeforeReveal))), [{
+        type: 'todo-reveal',
+        todoId: 't1',
+        groupId: 'todo-group-a',
+    }], 'a hidden TODO search target must be revealed by the host');
+    assert.strictEqual(todoFocusCalls, 0, 'a pending target must wait for mounted TODO HTML');
+    todoItemMounted = true;
+    assert.strictEqual(controller.applyTodoPanelUpdatedMessage({
+        type: 'todo-panel-updated',
+        version: 1,
+        html: '<div>revealed todo</div>',
+        searchCatalog: makeDashboardCatalog(),
+    }), true);
+    assert.strictEqual(todoMounted, 3, 'updated TODO HTML must invoke onTodoMounted');
+    assert.strictEqual(pendingTodoFrames.length, 1);
+    todoItemMounted = false;
+    pendingTodoFrames.shift()();
+    assert.strictEqual(todoFocusCalls, 0,
+        'a DOM replacement before the frame must not focus the detached search target');
+    todoItemMounted = true;
+    assert.strictEqual(controller.applyTodoPanelUpdatedMessage({
+        type: 'todo-panel-updated',
+        version: 1,
+        html: '<div>revealed todo after mutation</div>',
+        searchCatalog: makeDashboardCatalog(),
+    }), true);
+    assert.strictEqual(pendingTodoFrames.length, 1,
+        'a later TODO mount must retry a pending target lost to DOM replacement');
+    pendingTodoFrames.shift()();
+    assert.strictEqual(todoFocusCalls, 1, 'the mounted pending TODO target must receive focus');
+    assert.strictEqual(todoScrollCalls, 1, 'the mounted pending TODO target must scroll into view');
+    assert.strictEqual(context.document.activeElement, todoItem);
+    assert.strictEqual(controller.applyTodoPanelUpdatedMessage({
+        type: 'todo-panel-updated',
+        version: 1,
+        html: '<div>post-focus mutation</div>',
+        searchCatalog: makeDashboardCatalog(),
+    }), true);
+    assert.strictEqual(pendingTodoFrames.length, 0,
+        'a successfully focused TODO target must clear pending state exactly once');
+
+    storage.set('projectSteward.activeDashboardTab', 'projects');
+    const searchMessages = [];
+    const workspaceRevealCalls = [];
+    context.window.__projectStewardRevealWorkspaceSession = (...args) => workspaceRevealCalls.push(args);
+    const workspaceSearchController = context.initDashboard({
+        initialSearchQuery: 'dashboard',
+        clearSearch: () => undefined,
+        postMessage: message => searchMessages.push(message),
+    });
+    workspaceSearchController.replaceSearchCatalog(makeWorkspaceDashboardCatalog());
+    const workspaceSessionSection = searchResults.children.find(section => section.dataset.sectionType === 'session');
+    const workspaceSessionResult = workspaceSessionSection.children[1];
+    assert.strictEqual(workspaceSessionResult.dataset.searchAction, 'reveal-workspace-session');
+    assert.strictEqual(workspaceSessionResult.dataset.workspaceNavigationIdentity, 'navigation-current');
+    workspaceSessionResult.closest = selector => selector === '.dashboard-search-result[data-search-action]'
+        ? workspaceSessionResult
+        : null;
+    searchResults.dispatch('click', { target: workspaceSessionResult });
+    assert.deepStrictEqual(workspaceRevealCalls, [[
+        'navigation-current', 'codex', 'c1',
+    ]], 'workspace session search must reveal its workspace row instead of resuming a root-owned session');
+    assert.deepStrictEqual(searchMessages, [], 'workspace session reveal must not post a resume action');
+
+}
+
 function runTodoEditResetInteractionChecks() {
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const setTodoEditingBody = extractFunctionBody(projectSource, 'setTodoEditing');
@@ -2843,7 +4167,6 @@ function createTodoComposeFormState() {
     return form;
 }
 
-// TODO-TODO-COMPOSE-PENDING-INTERACTION-001
 function runTodoComposePendingInteractionChecks() {
     const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
     const context = {};
@@ -2946,7 +4269,716 @@ function runTodoComposePendingInteractionChecks() {
     assert.strictEqual(successForm.submitButton.getAttribute('aria-busy'), 'true');
 }
 
-// WEBVIEW-DASHBOARD-MESSAGE-ROUTER-001
+function runSourceContractChecks(source) {
+    const projectSource = fs.readFileSync(projectScriptPath, 'utf8');
+    const dndSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewDnDScripts.js'), 'utf8');
+    const filterSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewFilterScripts.js'), 'utf8');
+    const extensionHostSource = fs.readFileSync(extensionHostPath, 'utf8');
+    assert.strictEqual(extensionHostSource.includes('buildTodoSearchItems(todoService.getData())'), false,
+        'initial and incremental Dashboard catalogs must not parse unsupported TODO data directly');
+    assert.ok(extensionHostSource.includes('todoService.getSearchItems()'),
+        'Dashboard catalog call sites must use the future-version-safe TODO catalog');
+    const todoPanelBody = extractFunctionBody(extensionHostSource, 'postTodoPanelContent');
+    assert.ok(todoPanelBody.includes('UnsupportedTodoDataVersionError'));
+    assert.ok(todoPanelBody.includes('getUnsupportedTodoVersionPanelContent'));
+    assert.ok(todoPanelBody.includes('todoService.getUnsupportedVersionError()'),
+        'TODO panel rendering must live-probe both backends instead of caching unsupported errors');
+    assert.strictEqual(todoPanelBody.includes('todoStorageMigration.error'), false,
+        'a corrected future-version value must not leave a stale cached TODO panel error');
+    const webviewContentSource = fs.readFileSync(path.join(root, 'src', 'webview', 'webviewContent.ts'), 'utf8');
+    const stylesPath = path.join(root, 'media', 'styles.scss');
+    const generatedStylesPath = path.join(root, 'media', 'styles.css');
+    const styles = fs.readFileSync(stylesPath, 'utf8');
+    assert.strictEqual(styles.includes('.workspace-root-tags'), false);
+    assert.strictEqual(styles.includes('.workspace-root-tag'), false);
+    assert.ok(styles.includes('@media (max-width: 280px)'));
+    assert.ok(styles.includes('min-width: 0'));
+    assert.ok(styles.includes('text-overflow: ellipsis'));
+    assert.ok(styles.includes('overflow-x: hidden'));
+    const compiledStyles = compileDashboardStyles(styles);
+    const generatedStyles = fs.readFileSync(generatedStylesPath, 'utf8');
+    const minifiedCompiledStyles = new CleanCSS({ rebaseTo: path.dirname(generatedStylesPath) }).minify({
+        [generatedStylesPath]: { styles: compiledStyles },
+    });
+    assert.deepStrictEqual(minifiedCompiledStyles.errors, [], 'compiled dashboard styles must minify without errors');
+    assert.deepStrictEqual(minifiedCompiledStyles.warnings, [], 'compiled dashboard styles must minify without warnings');
+    assert.strictEqual(
+        minifiedCompiledStyles.styles,
+        generatedStyles,
+        'generated media/styles.css must match compiled and minified media/styles.scss'
+    );
+    const packageJson = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
+    const updateMessagePath = path.join(root, 'src', 'dashboard', 'webviewUpdateMessages.ts');
+    assert.ok(fs.existsSync(updateMessagePath));
+    const updateMessages = fs.readFileSync(updateMessagePath, 'utf8');
+    assert.ok(updateMessages.includes('export function buildOpenWorkspacesUpdatedMessage('));
+    assert.ok(!updateMessages.includes('export function buildOpenProjectsUpdatedMessage('));
+    assert.ok(updateMessages.includes('export function buildAiSessionsUpdatedMessage('));
+    assert.ok(updateMessages.includes("type: 'open-workspaces-updated'"));
+    assert.ok(!updateMessages.includes("type: 'open-projects-updated'"));
+    assert.ok(updateMessages.includes("type: 'ai-sessions-updated'"));
+    assert.ok(updateMessages.includes('version: 2'));
+    const viewProviderPath = path.join(root, 'src', 'dashboard', 'viewProvider.ts');
+    assert.ok(fs.existsSync(viewProviderPath));
+    const viewProviderSource = fs.readFileSync(viewProviderPath, 'utf8');
+    assert.ok(viewProviderSource.includes('export class SidebarStewardViewProvider implements vscode.WebviewViewProvider'));
+    assert.ok(viewProviderSource.includes('refresh()'));
+    assert.ok(viewProviderSource.includes('postMessage(message: unknown)'));
+    const routerPath = path.join(root, 'src', 'dashboard', 'messageRouter.ts');
+    assert.ok(fs.existsSync(routerPath));
+    const routerSource = fs.readFileSync(routerPath, 'utf8');
+    assert.ok(routerSource.includes('export interface DashboardMessageHandlers'));
+    assert.ok(routerSource.includes('handlers: Record<string, DashboardMessageHandler>'));
+    assert.ok(routerSource.includes('createAiSession?: DashboardAiSessionCreateMessageHandler'));
+    assert.ok(routerSource.includes('resumeAiSession?: DashboardAiSessionLaunchMessageHandler'));
+    assert.ok(routerSource.includes('archiveAiSession?: DashboardAiSessionMessageHandler'));
+    assert.ok(routerSource.includes('export function createDashboardMessageRouter('));
+    assert.strictEqual(routerSource.includes('handleRawMessage'), false);
+
+    assert.ok(source.includes("projectSteward.activeDashboardTab"));
+    assert.ok(webviewContentSource.includes('class="group steward-section'));
+    assert.ok(webviewContentSource.includes('class="group-title steward-section-header steward-group-header"'));
+    assert.ok(webviewContentSource.includes('class="project steward-item-card"'));
+    assert.ok(webviewContentSource.includes('class="project-border steward-item-accent"'));
+    assert.ok(webviewContentSource.includes('onTodoMounted: () =>'));
+    assert.ok(webviewContentSource.includes("window.__projectStewardSyncCollapseButton('todo')"));
+    assert.ok(source.includes("setAttribute('aria-selected'"));
+    assert.ok(source.includes("setAttribute('tabindex'"));
+    assert.ok(source.includes('scrollPositions'));
+    assert.ok(source.includes('acceptedProjectsRequestId'));
+    assert.ok(source.includes('pendingScrollRestoreTab'));
+    assert.ok(extensionHostSource.includes("'request-projects-panel': async e =>"));
+    assert.ok(extensionHostSource.includes("'request-todo-panel': async e =>"));
+    assert.ok(packageJson.includes('"projectSteward.maxVisibleTodosPerGroup"'));
+    assert.ok(packageJson.includes('"projectSteward.maxVisibleProjectsPerGroup"'));
+    assert.strictEqual(extensionHostSource.includes('function handleStewardMessage('), false);
+    assert.ok(extensionHostSource.includes('getAiSessionProviderIds: () => getRegisteredAiSessionProviders().map(provider => provider.id)'));
+    assert.ok(extensionHostSource.includes("type: 'projects-panel-content'"));
+    assert.ok(extensionHostSource.includes("type: 'todo-panel-content'"));
+    assert.ok(extensionHostSource.includes('getProjectsPanelContent(projectService.getGroups(), stewardInfos)'));
+    assert.ok(extensionHostSource.includes('getTodoPanelContent(buildTodoViewModel(todoData'));
+    assert.ok(extensionHostSource.includes('getMaxVisibleTodosPerGroup(config)'));
+    assert.ok(webviewContentSource.includes("'maxVisibleProjectsPerGroup',"));
+    assert.ok(webviewContentSource.includes('DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP = 5'));
+    assert.ok(webviewContentSource.includes('--steward-max-visible-projects-per-group: ${maxVisibleProjectsPerGroup};'));
+    const projectGroupListRule = extractCssRule(
+        compiledStyles,
+        'body.steward-sidebar #dashboard-tab-projects .group-list'
+    );
+    assert.ok(projectGroupListRule.includes('max-height: calc(var(--steward-max-visible-projects-per-group, 5) * 65px)'));
+    assert.ok(projectGroupListRule.includes('overflow-y: auto'));
+    assert.ok(projectSource.includes("e.target.closest('[data-action=\"add-project\"]')"));
+    assert.ok(projectSource.includes("e.target.closest('[data-action=\"import-from-other-storage\"]')"));
+    assert.ok(projectSource.includes("e.target.closest('[data-action=\"todo-add\"]')"));
+    assert.ok(projectSource.includes("type: 'todo-add'"));
+    assert.ok(projectSource.includes("type: 'todo-toggle'"));
+    assert.ok(projectSource.includes("type: 'todo-delete'"));
+    assert.ok(projectSource.includes("type: 'todo-delete-group'"));
+    assert.ok(projectSource.includes("type: 'todo-collapse-group'"));
+    assert.ok(projectSource.includes("type: 'todo-rename-group'"));
+    assert.ok(projectSource.includes("type: 'todo-collapse-groups'"));
+    assert.ok(projectSource.includes("type: 'todo-sort-priority'"));
+    assert.ok(projectSource.includes("type: 'todo-toggle-show-completed'"));
+    assert.ok(projectSource.includes("type: 'todo-update'"));
+    assert.ok(projectSource.includes('function syncTodoPrioritySegment('));
+    assert.ok(extractFunctionBody(projectSource, 'onChangeEvent').includes('syncTodoPrioritySegment('));
+    assert.ok(projectSource.includes('function onTodoFormSubmit('));
+    const todoActionBody = extractFunctionBody(projectSource, 'onTodoAction');
+    const todoFormSubmitBody = extractFunctionBody(projectSource, 'onTodoFormSubmit');
+    const todoComposeSubmitBody = extractFunctionBody(projectSource, 'submitTodoComposeForm');
+    assert.ok(todoActionBody.includes('data-action="todo-cancel-add"'));
+    assert.ok(todoActionBody.includes('setTodoAddFormVisible('));
+    assert.ok(todoActionBody.includes('syncTodoGroupCollapseControl(todoGroup);'),
+        'single-group collapse must synchronize class and accessible button state together');
+    assert.ok(todoFormSubmitBody.includes('submitTodoComposeForm(addForm'));
+    assert.ok(todoComposeSubmitBody.includes("type: 'todo-add'"));
+    assert.ok(todoComposeSubmitBody.includes("groupId: getTodoFormValue(form, 'groupId')"));
+    assert.ok(todoComposeSubmitBody.includes('requestId'));
+    assert.strictEqual(todoComposeSubmitBody.includes('form.reset()'), false,
+        'TODO add submissions must retain form values until the host refresh succeeds');
+    assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"add-project\"]')"), false);
+    assert.strictEqual(projectSource.includes(".querySelectorAll('[data-action=\"import-from-other-storage\"]')"), false);
+    assert.ok(extensionHostSource.includes("'todo-add': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-toggle': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-delete': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-delete-group': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-collapse-group': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-rename-group': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-reorder-groups': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-reorder-items': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-collapse-groups': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-sort-priority': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-toggle-show-completed': async e =>"));
+    assert.ok(extensionHostSource.includes("'todo-reveal': async e =>"));
+    const todoShowCompletedHandler = extensionHostSource.slice(
+        extensionHostSource.indexOf("'todo-toggle-show-completed': async e =>"),
+        extensionHostSource.indexOf("'todo-reveal': async e =>")
+    );
+    const todoRevealHandler = extensionHostSource.slice(
+        extensionHostSource.indexOf("'todo-reveal': async e =>"),
+        extensionHostSource.indexOf("'todo-update': async e =>")
+    );
+    assert.ok(todoRevealHandler.includes('await todoService.revealTodo('),
+        'host reveal must delegate parsing and the optional group write to one TodoService queue operation');
+    assert.strictEqual(todoRevealHandler.includes('todoService.getData()'), false,
+        'host reveal must not parse stale TODO/group state outside the service queue');
+    assert.strictEqual(todoRevealHandler.includes('todoService.setShowCompleted('), false);
+    assert.strictEqual(todoRevealHandler.includes('todoService.setGroupCollapsed('), false);
+    assert.ok(todoRevealHandler.indexOf('await todoService.revealTodo(')
+        < todoRevealHandler.indexOf('revealedTodoId = e.todoId as string;'),
+    'host must set the temporary target only after the queued reveal operation succeeds');
+    assert.ok(todoShowCompletedHandler.indexOf('await todoService.setShowCompleted(')
+        < todoShowCompletedHandler.indexOf('revealedTodoId = undefined;'),
+    'an explicit completed toggle must clear the temporary target only after persistence succeeds');
+    assert.strictEqual((extensionHostSource.match(/revealedTodoId = undefined;/g) || []).length, 1,
+        'the temporary target must persist until an explicit toggle or a later reveal replaces it');
+    assert.ok(extensionHostSource.includes('buildTodoViewModel(todoData, todoViewState, revealedTodoId)'),
+        'all TODO panel refreshes must project the temporary reveal target');
+    assert.ok(extensionHostSource.includes("'todo-update': async e =>"));
+    assert.ok(extensionHostSource.includes('async function postTodoPanelContent('));
+    assert.ok(extensionHostSource.includes("from './todos/hostMutation'"));
+    assert.ok(extensionHostSource.includes('const todoViewState = todoService.getViewState();'));
+    assert.ok(extensionHostSource.includes(
+        'const projectMigration = settleMigration(() => projectService.migrateDataIfNeeded())'));
+    assert.ok(extensionHostSource.includes(
+        'const todoMigration = settleMigration(() => todoService.migrateDataIfNeeded())'));
+    assert.strictEqual(
+        (extensionHostSource.match(/await runTodoPanelMutation\(/g) || []).length,
+        10,
+        'every non-prompt direct TODO mutation handler must use the write-error boundary'
+    );
+    assert.ok(extensionHostSource.includes('await runTodoRequestMutation({'),
+        'compose mutations must use the request-correlated write-error boundary');
+    assert.ok(extensionHostSource.includes('await runTodoPromptMutation({'),
+        'add-group mutations must use the retrying prompt error boundary');
+    assert.ok(extensionHostSource.includes('await renameTodoGroupWithPrompt({'),
+        'rename-group mutations must check group existence before entering the retrying prompt boundary');
+    assert.ok(dndSource.includes('function initDnD(root)'));
+    assert.ok(dndSource.includes('function disposeDnD(root)'));
+    assert.ok(dndSource.includes('root.__projectStewardDnDInitialized'));
+    assert.ok(dndSource.includes('const todoGroupsContainerSelector = ".todo-groups"'));
+    assert.ok(dndSource.includes('const todoItemsContainerSelector = ".todo-list"'));
+    assert.ok(dndSource.includes("type: 'todo-reorder-groups'"));
+    assert.ok(dndSource.includes("type: 'todo-reorder-items'"));
+    assert.strictEqual((dndSource.match(/type: 'todo-reorder-groups'/g) || []).length, 1,
+        'a TODO group drop must have one reorder message send point');
+    assert.strictEqual((dndSource.match(/type: 'todo-reorder-items'/g) || []).length, 1,
+        'a TODO item drop must have one reorder message send point');
+    assert.strictEqual(dndSource.includes('document.querySelectorAll(`${groupsContainerSelector}'), false);
+    assert.ok(projectSource.includes("'collapse-group'"));
+    const onWindowMessageBody = extractFunctionBody(projectSource, 'onWindowMessage');
+    assert.ok(onWindowMessageBody.includes('applyTodoMutationResult(message, document);'));
+    assert.ok(onWindowMessageBody.includes('disposeDnD(todoRoot);'));
+    assert.ok(onWindowMessageBody.includes('initDnD(todoRoot);'));
+    assert.ok(projectSource.includes('Collapse Other Windows'));
+    assert.ok(projectSource.includes('Expand Other Windows'));
+    assert.ok(projectSource.includes('aria-disabled'));
+
+    const projectContext = {};
+    vm.runInNewContext(projectSource, projectContext);
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(projectContext.getCollapseButtonState('open', []))),
+        { disabled: true, collapsed: false, title: 'No other windows to collapse' }
+    );
+    assert.strictEqual(projectContext.getCollapseButtonState('open', [false]).title, 'Collapse Other Windows');
+    assert.strictEqual(projectContext.getCollapseButtonState('open', [true]).title, 'Expand Other Windows');
+    assert.strictEqual(projectContext.getCollapseButtonState('projects', [false, true]).title, 'Collapse All Groups');
+    assert.strictEqual(projectContext.getCollapseButtonState('projects', [true, true]).title, 'Expand All Groups');
+    assert.strictEqual(projectContext.getCollapseButtonState('todo', [false, true]).title, 'Collapse TODO Groups');
+    assert.strictEqual(projectContext.getCollapseButtonState('todo', [true, true]).title, 'Expand TODO Groups');
+
+    const renderSearchBody = extractFunctionBody(source, 'renderDashboardSearchResults');
+    assert.ok(renderSearchBody.includes('textContent'));
+    assert.ok(renderSearchBody.includes("createElement('button')"));
+    assert.strictEqual(renderSearchBody.includes('innerHTML'), false);
+    assert.strictEqual(renderSearchBody.includes('project-ai-attention-badge'), false);
+    assert.strictEqual(renderSearchBody.includes('data-current-workspace'), false);
+    assert.strictEqual(renderSearchBody.includes('dashboard-search-result-notes'), false);
+    assert.ok(filterSource.includes('ctrlKey'));
+    assert.ok(filterSource.includes('metaKey'));
+    assert.ok(filterSource.includes('Escape'));
+    assert.ok(source.includes('initialSearchQuery'));
+    assert.ok(source.includes('replaceSearchCatalog'));
+    assert.ok(source.includes('isSearchActive'));
+    assert.ok(source.includes("title: 'TODO RESULTS'"));
+    assert.ok(renderSearchBody.includes("button.classList.toggle('completed'"));
+    assert.ok(renderSearchBody.includes('dashboard-search-result-priority'));
+    assert.ok(source.includes("title: 'OPEN WORKSPACES'"));
+    assert.ok(projectSource.includes('__projectStewardAcknowledgeSession'));
+    assert.strictEqual(projectSource.includes('__projectStewardShowCurrentProject'), false);
+    assert.ok(projectSource.includes('__projectStewardRevealWorkspaceSession'));
+    const refreshStewardViewsBody = extractFunctionBody(extensionHostSource, 'refreshStewardViews');
+    const aiSessionsMessageBody = extractFunctionBody(extensionHostSource, 'getAiSessionsUpdatedMessage');
+    const openWorkspacesMessageBody = extractFunctionBody(extensionHostSource, 'postOpenWorkspacesUpdated');
+    const openWorkspaceControllerSource = fs.readFileSync(path.join(root, 'src', 'openWorkspaces', 'dashboardController.ts'), 'utf8');
+    const aiSessionControllerSource = fs.readFileSync(path.join(root, 'src', 'aiSessions', 'dashboardController.ts'), 'utf8');
+    const dashboardDiagnosticsSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'diagnostics.ts'), 'utf8');
+    const dashboardErrorContentSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'errorContent.ts'), 'utf8');
+    const dashboardRuntimeControllerSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'runtimeController.ts'), 'utf8');
+    const baseServiceSource = fs.readFileSync(path.join(root, 'src', 'services', 'baseService.ts'), 'utf8');
+    assert.ok(refreshStewardViewsBody.includes('dashboardRuntimeController.refresh(reason);'));
+    assert.ok(dashboardRuntimeControllerSource.includes('this.options.refreshProvider();'));
+    assert.ok(dashboardRuntimeControllerSource.includes('this.options.logDashboardDiagnostic({'));
+    assert.ok(extensionHostSource.includes('new DashboardDiagnostics({'));
+    assert.ok(!extensionHostSource.includes('function logDashboardDiagnostic('));
+    assert.ok(dashboardDiagnosticsSource.includes('logDashboardDiagnostic('));
+    assert.ok(extensionHostSource.includes("from './dashboard/errorContent'"));
+    assert.ok(!extensionHostSource.includes('function getErrorContent('));
+    assert.ok(!extensionHostSource.includes('function escapeHtml('));
+    assert.ok(dashboardErrorContentSource.includes('export function getErrorContent('));
+    assert.ok(dashboardErrorContentSource.includes('Project Steward could not render this view.'));
+    const dashboardConfigurationSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'configuration.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './dashboard/configuration'"));
+    assert.ok(!extensionHostSource.includes('function getStewardConfiguration('));
+    assert.ok(!extensionHostSource.includes('function hasConfiguredValue('));
+    assert.ok(dashboardConfigurationSource.includes('export function createStewardConfiguration('));
+    assert.ok(dashboardConfigurationSource.includes('export function hasConfiguredValue('));
+    assert.ok(baseServiceSource.includes("from '../dashboard/configuration'"));
+    assert.strictEqual(baseServiceSource.includes('private hasConfiguredValue('), false);
+    const dashboardStartupSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'startup.ts'), 'utf8');
+    const dashboardStartupControllerSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'startupController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './dashboard/startupController'"));
+    assert.ok(!extensionHostSource.includes('function showStewardOnOpenIfNeeded('));
+    assert.ok(dashboardStartupSource.includes('export function shouldOpenStewardOnStartup('));
+    assert.ok(dashboardStartupSource.includes('code-runner-output'));
+    assert.ok(dashboardStartupControllerSource.includes('export class DashboardStartupController'));
+    assert.ok(dashboardStartupControllerSource.includes('shouldOpenStewardOnStartup({'));
+    const dashboardWebviewOptionsSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'webviewOptions.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './dashboard/webviewOptions'"));
+    assert.ok(!extensionHostSource.includes('function getWebviewOptions('));
+    assert.ok(dashboardWebviewOptionsSource.includes('export function getDashboardWebviewOptions('));
+    const groupCollapseControllerSource = fs.readFileSync(path.join(root, 'src', 'dashboard', 'groupCollapseController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './dashboard/groupCollapseController'"));
+    assert.ok(!extensionHostSource.includes('async function collapseGroup('));
+    assert.ok(!extensionHostSource.includes('context.globalState.update(FAVORITES_GROUP_COLLAPSED_KEY'));
+    assert.ok(!extensionHostSource.includes('context.globalState.update(OPEN_WORKSPACES_GROUP_COLLAPSED_KEY'));
+    assert.ok(groupCollapseControllerSource.includes('export class GroupCollapseController'));
+    assert.ok(groupCollapseControllerSource.includes('collapseGroup('));
+    const groupPromptsSource = fs.readFileSync(path.join(root, 'src', 'projects', 'groupPrompts.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/groupPrompts'"));
+    assert.ok(!extensionHostSource.includes('async function queryGroupFields('));
+    assert.ok(groupPromptsSource.includes('export async function queryGroupName('));
+    const groupCommandControllerSource = fs.readFileSync(path.join(root, 'src', 'projects', 'groupCommandController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/groupCommandController'"));
+    assert.ok(!extensionHostSource.includes('async function addGroup('));
+    assert.ok(!extensionHostSource.includes('async function editGroup('));
+    assert.ok(!extensionHostSource.includes('async function removeGroup('));
+    assert.ok(groupCommandControllerSource.includes('export class GroupCommandController'));
+    const addProjectsFromFolderControllerSource = fs.readFileSync(path.join(root, 'src', 'projects', 'addProjectsFromFolderController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/addProjectsFromFolderController'"));
+    assert.ok(!extensionHostSource.includes('async function addProjectsFromFolder('));
+    assert.ok(addProjectsFromFolderControllerSource.includes('export class AddProjectsFromFolderController'));
+    const favoriteProjectControllerSource = fs.readFileSync(path.join(root, 'src', 'projects', 'favoriteProjectController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/favoriteProjectController'"));
+    assert.ok(!extensionHostSource.includes('async function toggleProjectFavorite('));
+    assert.ok(!extensionHostSource.includes('async function reorderFavoriteProjects('));
+    assert.ok(!extensionHostSource.includes('withFavoriteProjectOrder(groups, projectIds)'));
+    assert.ok(!extensionHostSource.includes('withToggledProjectFavorite(groups, projectId)'));
+    assert.ok(favoriteProjectControllerSource.includes('export class FavoriteProjectController'));
+    const projectOrderControllerSource = fs.readFileSync(path.join(root, 'src', 'projects', 'projectOrderController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/projectOrderController'"));
+    assert.ok(!extensionHostSource.includes('async function reorderGroups('));
+    assert.ok(projectOrderControllerSource.includes('export class ProjectOrderController'));
+    const projectRemovalControllerSource = fs.readFileSync(path.join(root, 'src', 'projects', 'projectRemovalController.ts'), 'utf8');
+    assert.ok(extensionHostSource.includes("from './projects/projectRemovalController'"));
+    assert.ok(!extensionHostSource.includes('async function removeProject('));
+    assert.ok(projectRemovalControllerSource.includes('export class ProjectRemovalController'));
+    assert.ok(openWorkspacesMessageBody.includes('openWorkspaceDashboardController.postUpdated()'));
+    assert.ok(extensionHostSource.includes('function scheduleAttentionViewsRefresh()'));
+    const attentionBridgeWiring = extensionHostSource.slice(
+        extensionHostSource.indexOf('new AttentionBridgeClient('),
+        extensionHostSource.indexOf('const aiSessionAttentionInterval')
+    );
+    assert.ok(attentionBridgeWiring.includes('scheduleAttentionViewsRefresh()'));
+    assert.ok(openWorkspaceControllerSource.includes('buildOpenWorkspacesUpdatedMessage({'));
+    assert.ok(openWorkspaceControllerSource.includes('groups: this.options.getGroups()'));
+    assert.ok(openWorkspaceControllerSource.includes('cards: this.getCards()'));
+    assert.ok(openWorkspaceControllerSource.includes('semanticRevision,'));
+    assert.ok(openWorkspaceControllerSource.includes('otherWindowsStatus: this.bridgeStatus'));
+    assert.ok(openWorkspaceControllerSource.includes('getViewSemanticRevision()'));
+    assert.ok(aiSessionsMessageBody.includes('aiSessionDashboardController.getUpdatedMessage()'));
+    assert.ok(aiSessionControllerSource.includes('buildAiSessionsUpdatedMessage({'));
+    assert.ok(aiSessionControllerSource.includes('groups: this.options.getGroups()'));
+    assert.ok(aiSessionControllerSource.includes('cards'));
+    assert.ok(aiSessionControllerSource.includes('sequence: this.options.nextSequence()'));
+    assert.ok(projectSource.includes('replaceSearchCatalog(message.searchCatalog)'));
+    assert.ok(projectSource.includes("type: 'open-bridge-extension'"));
+    assert.ok(extensionHostSource.includes("'workbench.extensions.action.showExtensionsWithIds'"));
+    assert.ok(extensionHostSource.includes("'hzcheng.project-steward-attention-ui-bridge'"));
+    assert.strictEqual(projectSource.includes("sessionStorage.setItem('projectSteward.activeDashboardTab', 'open')"), false);
+    for (const selector of [
+        '.steward-section', '.steward-section-header', '.steward-card',
+        '.steward-icon-button', '.steward-badge', '.steward-meta',
+        '.steward-item-card', '.steward-item-accent',
+        '.dashboard-tab-list', '.dashboard-tab-button', '.dashboard-tab-panel',
+        '.dashboard-tab-button::before',
+        '.dashboard-search-results', '.dashboard-search-section', '.dashboard-search-result',
+        '.dashboard-search-section[data-section-type="todo"]',
+        '.open-current-workspace-group', '.open-other-windows-group', '.dashboard-projects-loading',
+        '.dashboard-todo-loading', '.todo-panel', '.todo-item', '.todo-priority-high',
+        '.todo-empty-state', '.todo-edit-form', '.steward-group-header', '.todo-page-header',
+        '.todo-edit-panel', '.todo-priority-segment',
+    ]) {
+        assert.ok(styles.includes(selector), `missing ${selector}`);
+    }
+    const sidebarStyles = extractCssRule(styles, 'body.steward-sidebar');
+    const projectContainerRule = extractCssRule(sidebarStyles, '.project-container');
+    for (const declaration of [
+        'box-sizing: border-box',
+        'min-width: 0',
+        'max-width: 100%',
+        'padding: 0 2px',
+    ]) {
+        assert.ok(cssRuleIncludesTopLevelDeclaration(projectContainerRule, declaration),
+            `project container is missing ${declaration}`);
+    }
+    const sharedItemCardRules = extractCssRules(sidebarStyles, '.steward-item-card');
+    const sharedItemCardRule = sharedItemCardRules.join('\n');
+    for (const declaration of [
+        'min-width: 0',
+        'width: 100%',
+        'max-width: 100%',
+        'height: 58px',
+        'margin: 0 0 7px',
+        'padding: 8px 10px 8px 15px',
+        'border: 1px solid var(--vscode-panel-border)',
+        'border-radius: 18px',
+        'background: var(',
+        'box-shadow:',
+    ]) {
+        assert.ok(sharedItemCardRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, declaration)),
+            `shared item card is missing ${declaration}`);
+    }
+
+    const todoItemRules = extractCssRules(styles, '.todo-item');
+    for (const forbidden of ['border:', 'border-radius:', 'background:', 'box-shadow:']) {
+        assert.strictEqual(todoItemRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, forbidden)), false,
+            `TODO item must not own ${forbidden}`);
+    }
+
+    const sidebarProjectRules = extractCssRules(sidebarStyles, '.project');
+    const workspaceProjectRule = sidebarProjectRules.find(rule =>
+        rule.includes('&[data-current-workspace][data-has-ai-session-badge]')
+    );
+    assert.ok(workspaceProjectRule, 'workspace project styles must define the badge-present state');
+    const badgePresentWorkspaceRule = extractCssRule(
+        workspaceProjectRule,
+        '&[data-current-workspace][data-has-ai-session-badge]'
+    );
+    const sessionSurfaceRules = extractCssRules(workspaceProjectRule, '.codex-sessions');
+    const collapsedSessionSurfaceRule = sessionSurfaceRules.find(rule =>
+        cssRuleIncludesTopLevelDeclaration(rule, 'max-height: 0')
+    );
+    assert.ok(collapsedSessionSurfaceRule, 'collapsed workspace sessions must use a measurable zero-height surface');
+    for (const declaration of [
+        'display: block',
+        'overflow: hidden',
+        'opacity: 0',
+        'visibility: hidden',
+        'pointer-events: none',
+        'margin-top: 0',
+        'padding-top: 0',
+        'transition:',
+    ]) {
+        assert.ok(cssRuleIncludesTopLevelDeclaration(collapsedSessionSurfaceRule, declaration),
+            `collapsed workspace sessions are missing ${declaration}`);
+    }
+    assert.ok(collapsedSessionSurfaceRule.includes('max-height')
+        && collapsedSessionSurfaceRule.includes('opacity')
+        && collapsedSessionSurfaceRule.includes('margin-top')
+        && collapsedSessionSurfaceRule.includes('padding-top'),
+    'workspace session motion must transition measurable height, opacity, and spacing');
+    const expandedSessionSurfaceRule = sessionSurfaceRules.find(rule =>
+        cssRuleIncludesTopLevelDeclaration(rule, 'max-height: 1000px')
+    );
+    assert.ok(expandedSessionSurfaceRule, 'expanded workspace sessions must open to the bounded surface height');
+    for (const declaration of [
+        'opacity: 1',
+        'visibility: visible',
+        'pointer-events: auto',
+        'margin-top: 8px',
+        'padding-top: 7px',
+    ]) {
+        assert.ok(cssRuleIncludesTopLevelDeclaration(expandedSessionSurfaceRule, declaration),
+            `expanded workspace sessions are missing ${declaration}`);
+    }
+    assert.ok(badgePresentWorkspaceRule.includes('width: calc(100% - 60px)'),
+        'badge-present workspace cards must reserve title and description width');
+
+    const compiledBadgeSelector =
+        'body.steward-sidebar .project[data-current-workspace][data-has-ai-session-badge]';
+    const compiledBadgeRules = extractCompiledCssRulesContainingSelector(compiledStyles, compiledBadgeSelector);
+    for (const suffix of ['.fitty-container', '.project-description']) {
+        const exactSelector = `${compiledBadgeSelector} ${suffix}`;
+        assert.ok(compiledBadgeRules.some(rule =>
+            rule.selectors.includes(exactSelector)
+            && rule.body.includes('width: calc(100% - 60px)')
+        ), `compiled badge-present workspace styles must reserve width for ${suffix}`);
+    }
+    const compiledPlainSelector = 'body.steward-sidebar .project[data-current-workspace]';
+    const compiledCurrentWorkspaceRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledPlainSelector
+    );
+    assert.strictEqual(compiledCurrentWorkspaceRules.some(rule =>
+        ['.fitty-container', '.project-description'].some(suffix =>
+            rule.selectors.includes(`${compiledPlainSelector} ${suffix}`)
+        ) && rule.body.includes('width: calc(100% - 60px)')
+    ), false, 'compiled plain current-workspace styles must not reserve badge width');
+    const compiledSessionSurfaceSelector = 'body.steward-sidebar .project .codex-sessions';
+    const compiledSessionSurfaceRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledSessionSurfaceSelector,
+    ).filter(rule => rule.selectors.includes(compiledSessionSurfaceSelector));
+    assert.ok(compiledSessionSurfaceRules.some(rule =>
+        rule.body.includes('max-height: 0')
+        && rule.body.includes('opacity: 0')
+        && rule.body.includes('overflow: hidden')
+    ), 'compiled collapsed session surface must preserve the motion contract');
+    const compiledExpandedSessionSelector =
+        'body.steward-sidebar .project[data-current-workspace][data-codex-expanded] .codex-sessions';
+    const compiledExpandedSessionRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledExpandedSessionSelector,
+    );
+    assert.ok(compiledExpandedSessionRules.some(rule =>
+        rule.selectors.includes(compiledExpandedSessionSelector)
+        && rule.body.includes('max-height: 1000px')
+        && rule.body.includes('opacity: 1')
+    ), 'compiled expanded session surface must preserve the motion contract');
+
+    for (const forbidden of ['height: 58px', 'border-radius: 18px', 'background: var(', 'box-shadow:']) {
+        assert.strictEqual(sidebarProjectRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, forbidden)), false,
+            `project domain rule must not duplicate ${forbidden}`);
+    }
+
+    const sharedAccentRule = extractCssRule(sidebarStyles, '.steward-item-accent');
+    assert.ok(sharedAccentRule.includes('left: 7px'));
+    assert.ok(sharedAccentRule.includes('width: 4px'));
+    assert.ok(sharedAccentRule.includes('border-radius: 999px'));
+    assert.ok(sharedAccentRule.includes('background: var(--project-color, transparent)'));
+    assert.ok(sharedAccentRule.includes('box-shadow: 0 0 12px var(--project-color, transparent)'));
+    assert.ok(sharedItemCardRule.includes('&.completed'));
+    assert.ok(sharedItemCardRule.includes('&.selected'));
+    assert.ok(sharedItemCardRule.includes('&[data-current-workspace]'));
+    assert.strictEqual(sharedItemCardRule.includes('&.selected,\n        &[data-current-workspace]'), false,
+        'CURRENT WINDOW location must replace the permanent selected shell treatment');
+    assert.strictEqual(sharedItemCardRule.includes('&.selected:focus-within,\n        &[data-current-workspace]:hover'), false,
+        'current workspace hover must use the same shared card shell as Projects');
+    assert.ok(sharedItemCardRule.includes('&[data-codex-expanded]:hover'));
+    const currentWorkspaceShellRule = extractCssRule(sharedItemCardRule, '&[data-current-workspace]');
+    assert.ok(cssRuleIncludesTopLevelDeclaration(currentWorkspaceShellRule, 'height: auto'),
+        'CURRENT WORKSPACE must remain intrinsically sized while its child collapses');
+    assert.ok(cssRuleIncludesTopLevelDeclaration(currentWorkspaceShellRule, 'min-height: 58px'));
+    assert.strictEqual(
+        cssRuleIncludesTopLevelDeclaration(currentWorkspaceShellRule, 'height: 58px'),
+        false,
+        'CURRENT WORKSPACE must not switch to the fixed collapsed shell height',
+    );
+    const compiledCurrentWorkspaceShellSelector =
+        'body.steward-sidebar .steward-item-card[data-current-workspace]';
+    const compiledCurrentWorkspaceShellRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        compiledCurrentWorkspaceShellSelector,
+    ).filter(rule => rule.selectors.includes(compiledCurrentWorkspaceShellSelector));
+    assert.ok(compiledCurrentWorkspaceShellRules.some(rule =>
+        rule.body.includes('height: auto') && rule.body.includes('min-height: 58px')
+    ), 'compiled CURRENT WORKSPACE shell must remain intrinsic in collapsed and expanded states');
+    assert.strictEqual(styles.includes('.steward-card-compact'), false);
+
+    const reducedMotionRule = extractCssRule(styles, '@media (prefers-reduced-motion: reduce)');
+    assert.ok(reducedMotionRule.includes('.steward-item-card'));
+    assert.ok(reducedMotionRule.includes('.steward-item-accent'));
+    assert.ok(reducedMotionRule.includes('.codex-sessions'));
+    assert.ok(reducedMotionRule.includes('transition: none'));
+
+    const sharedGroupHeaderRule = extractCssRule(sidebarStyles, '.steward-group-header');
+    for (const declaration of [
+        'display: flex',
+        'width: 100%',
+        'padding: 4px 6px',
+        'border: 1px solid var(--vscode-panel-border)',
+        'border-radius: 7px',
+        'background: var(--vscode-list-inactiveSelectionBackground, transparent)',
+        'font-size: 15px',
+    ]) {
+        assert.ok(sharedGroupHeaderRule.includes(declaration), `shared group header is missing ${declaration}`);
+    }
+    const sharedDangerActionRule = extractCssRule(sharedGroupHeaderRule, '.group-actions > .danger');
+    assert.ok(sharedDangerActionRule.includes('&:hover')
+        && sharedDangerActionRule.includes('&:focus-visible')
+        && sharedDangerActionRule.includes('color: var(--vscode-errorForeground)'),
+        'shared group header danger actions must retain their danger color on hover and keyboard focus');
+
+    const todoPageHeaderRules = extractCssRulesContainingSelector(styles, '.todo-page-header').join('\n');
+    for (const forbidden of [
+        'display:', 'width:', 'padding:', 'border:', 'border-radius:', 'background:', 'box-shadow:',
+        'font-family:', 'font-size:', 'font-weight:', 'line-height:', 'box-sizing:',
+    ]) {
+        assert.strictEqual(cssRuleIncludesDeclaration(todoPageHeaderRules, forbidden), false,
+            `TODO page header must not own ${forbidden}`);
+    }
+
+    for (const selector of ['.todo-group-action', '.todo-square-button', '.todo-square-toggle']) {
+        const todoActionRules = extractCssRulesContainingSelector(styles, selector).join('\n');
+        for (const forbidden of ['display:', 'width:', 'height:', 'min-width:', 'min-height:', 'place-items:', 'padding:']) {
+            assert.strictEqual(cssRuleIncludesDeclaration(todoActionRules, forbidden), false,
+                `${selector} must not own ${forbidden}`);
+        }
+    }
+    const todoCompletedToggleFocusRule = extractCssRule(styles, '.todo-square-toggle:focus-within');
+    assert.ok(todoCompletedToggleFocusRule.includes('outline: 1px solid var(--vscode-focusBorder)')
+        && todoCompletedToggleFocusRule.includes('outline-offset: 1px'),
+    'the hidden Show Completed checkbox must expose a visible focus ring on its label');
+    assert.ok(compiledStyles.includes('.todo-square-toggle:focus-within {')
+        && compiledStyles.includes('outline: 1px solid var(--vscode-focusBorder);'),
+    'compiled dashboard CSS must retain the Show Completed focus-within ring');
+
+    const todoGroupHeaderRule = extractCssRule(styles, '.todo-group-header');
+    for (const forbidden of ['border:', 'border-radius:', 'background:', 'box-shadow:']) {
+        assert.strictEqual(todoGroupHeaderRule.includes(forbidden), false, `TODO group header must not own ${forbidden}`);
+    }
+    assert.strictEqual(styles.includes('.todo-group-strip'), false);
+    const todoGroupCountRule = extractCssRule(styles, '.todo-group-count');
+    assert.ok(todoGroupCountRule.includes('color: currentColor')
+        && todoGroupCountRule.includes('background: transparent')
+        && todoGroupCountRule.includes('opacity: .55'),
+        'todo group counts should not introduce a separate badge color language');
+    const todoTitleRule = extractCssRule(styles, '.todo-title-text');
+    assert.ok(todoTitleRule.includes('display: block')
+        && todoTitleRule.includes('white-space: nowrap')
+        && todoTitleRule.includes('text-overflow: ellipsis')
+        && !todoTitleRule.includes('-webkit-line-clamp'),
+        'todo item titles should stay on one line and ellipsize');
+    const todoPriorityChoiceRule = extractCssRule(styles, '.todo-priority-choice');
+    assert.ok(todoPriorityChoiceRule.includes('transition:'),
+        'todo priority choices should animate visual selected-state changes');
+    assert.ok(styles.includes('.todo-priority-choice input:checked + span'),
+        'todo priority selected state should be driven by the radio checked state');
+    const todoListRules = extractCssRules(styles, '.todo-list');
+    const todoListRule = todoListRules.join('\n');
+    assert.ok(todoListRule.includes('max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px))')
+        && todoListRule.includes('overflow-y: auto'),
+        'todo lists should scroll inside each group when they exceed the configured collapsed-card count');
+    assert.ok(todoListRule.includes('var(--todo-list-expanded-extra-height, 0px)'),
+        'todo lists should add expanded-card content to the collapsed-card viewport height');
+    assert.ok(todoListRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, 'gap: 0')),
+        'shared item card margins should be the only spacing source inside TODO lists');
+    const todoLastItemRule = extractCssRule(styles, '.todo-list > .steward-item-card:last-child');
+    assert.ok(cssRuleIncludesTopLevelDeclaration(todoLastItemRule, 'margin-bottom: 0'),
+        'the final configured TODO card should not add trailing margin beyond the max-height budget');
+    const todoListEditingRule = extractCssRule(styles, '.todo-list.has-editing-item');
+    assert.ok(todoListEditingRule.includes('max-height: none')
+        && todoListEditingRule.includes('overflow-y: visible'),
+        'editing a todo should remove the group list viewport limit so the full editor is visible');
+    assert.ok(styles.includes('.todo-item:not(.expanded)'),
+        'todo items should have a collapsed state that controls the visible-count height');
+    assert.ok(sharedItemCardRule.includes('&.expanded')
+        && sharedItemCardRule.includes('&.editing'),
+        'shared item cards should own expanded and editing states');
+    assert.ok(sharedItemCardRule.includes('height: 58px'),
+        'collapsed todo items should keep the same normal card height as current workspace cards');
+    assert.ok(sharedItemCardRule.includes('height: auto')
+        && sharedItemCardRule.includes('min-height: 58px'),
+        'expanded todo items should open from the normal collapsed card height');
+    assert.ok(styles.includes('.todo-item.editing .todo-edit-form'),
+        'editing todo items should force the edit form to render');
+    const collapsedNotesRule = extractCssRule(styles, '.todo-item:not(.expanded) .todo-notes');
+    assert.ok(collapsedNotesRule.includes('white-space: nowrap'));
+    assert.ok(collapsedNotesRule.includes('text-overflow: ellipsis'));
+    assert.strictEqual(collapsedNotesRule.includes('display: none'), false);
+
+    const collapsedFooterRule = extractCssRule(styles, '.todo-item:not(.expanded) .todo-item-footer');
+    assert.ok(collapsedFooterRule.includes('display: none'));
+
+    const expandedNotesRule = extractCssRule(styles, '.todo-item.expanded .todo-notes,\n.todo-item.editing .todo-notes');
+    assert.ok(expandedNotesRule.includes('white-space: pre-wrap'));
+
+    assert.ok(compiledStyles.includes('.group.collapsed .collapse-icon svg'),
+        'collapsed groups must keep the existing SVG rotation path');
+    assert.strictEqual(
+        compiledStyles.includes('.todo-group-collapse-button[aria-expanded=false] .collapse-icon'),
+        false,
+        'TODO group collapse must not add a parent transform on top of the existing SVG rotation'
+    );
+    assert.ok(compiledStyles.includes('.todo-expand-control[aria-expanded=false] svg'),
+        'the independent TODO expand control must retain its own SVG rotation');
+
+    const completedRules = extractCompiledCssRulesContainingSelector(
+        compiledStyles,
+        '.todo-item.completed'
+    );
+    for (const completedRule of completedRules) {
+        assert.strictEqual(
+            cssRuleIncludesDeclaration(completedRule.body, 'background:'),
+            false,
+            'completed TODO selectors must not own card backgrounds'
+        );
+        if (cssRuleIncludesDeclaration(completedRule.body, 'opacity:')) {
+            assert.deepStrictEqual(
+                completedRule.selectors,
+                ['.todo-item.completed .todo-priority-badge'],
+                'only the completed priority badge selector may own opacity'
+            );
+        }
+    }
+    assert.strictEqual(
+        completedRules.some(rule => rule.selectors.some(selector => selector.includes('::before'))),
+        false,
+        'completed TODO selectors must not own a ::before layer'
+    );
+
+    assert.ok(styles.includes('.todo-list.has-editing-item'));
+    assert.ok(styles.includes('.todo-item.editing .todo-edit-form'));
+    assert.strictEqual(styles.includes('.todo-empty-orb'), false);
+    assert.strictEqual(styles.includes('.todo-empty-primary'), false);
+    assert.strictEqual(styles.includes('.todo-empty-secondary'), false);
+    assert.ok(projectSource.includes('function toggleTodoItemExpanded('),
+        'todo cards should have a click-driven expanded/collapsed helper');
+    assert.ok(projectSource.includes('function syncTodoListExpandedHeight('),
+        'todo card expansion should keep the full expanded card visible inside its scrolling list');
+    assert.ok(projectSource.includes('function isTodoInteractiveTarget('),
+        'todo card expansion should ignore nested controls');
+    assert.ok(extractFunctionBody(projectSource, 'toggleTodoItemExpanded').includes('syncTodoExpandControl(item, nextExpanded);'),
+        'todo expansion must synchronize aria-expanded, title, and aria-label');
+    const setTodoEditingBody = extractFunctionBody(projectSource, 'setTodoEditing');
+    assert.ok(setTodoEditingBody.includes('data-expanded-before-edit'),
+        'editing must record whether the TODO was expanded before editing');
+    assert.ok(setTodoEditingBody.includes('removeAttribute(\'data-expanded-before-edit\')'),
+        'canceling edit must clear the saved pre-edit expansion state');
+    assert.ok(setTodoEditingBody.includes('expandedBeforeEdit'),
+        'canceling edit must restore the saved pre-edit expansion state');
+    assert.ok(setTodoEditingBody.includes("toggleTodoItemExpanded(item, editing ? true : expandedBeforeEdit === 'true')"),
+        'editing a todo should force the card into expanded state');
+    assert.ok(setTodoEditingBody.includes("item.classList.toggle('editing', editing)"),
+        'editing a todo should mark the whole card as editing');
+    assert.ok(setTodoEditingBody.includes("list.classList.toggle('has-editing-item'"),
+        'editing a todo should make its group list fully expand until editing ends');
+    assert.ok(setTodoEditingBody.includes('view.hidden = false'),
+        'editing should retain the normal todo card header above the expanded form');
+    const onMouseEventBody = extractFunctionBody(projectSource, 'onMouseEvent');
+    assert.ok(onMouseEventBody.includes(".todo-item[data-todo-id]"),
+        'clicking a todo card should toggle its expanded/collapsed state');
+    assert.ok(onMouseEventBody.includes("!todoItem.classList.contains('editing')"),
+        'clicking an editing card should not collapse its active edit form');
+    assert.ok(projectSource.includes("data-action=\"todo-toggle-expanded\""),
+        'TODO cards need an independent focusable expand control');
+    assert.ok(projectSource.includes("e.target.closest('[data-action=\"todo-toggle-expanded\"]')"),
+        'the expand control must preserve the existing interactive-target guard');
+    assert.ok(projectSource.includes("e.target.closest('.todo-edit-form')"),
+        'Escape handling must detect the active TODO edit form');
+    assert.ok(projectSource.includes("setTodoEditing(editForm.getAttribute('data-todo-id'), false)"),
+        'Escape must cancel the active TODO edit form');
+    const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+    assert.ok(changelog.includes('Add a global `TODO` Dashboard tab'));
+    assert.strictEqual((source.match(/type: 'request-projects-panel'/g) || []).length, 1);
+    assert.strictEqual((source.match(/type: 'request-todo-panel'/g) || []).length, 1);
+    assert.ok(extractFunctionBody(source, 'ensureProjectsPanel').includes("type: 'request-projects-panel'"));
+    assert.ok(extractFunctionBody(source, 'ensureTodoPanel').includes("type: 'request-todo-panel'"));
+    assert.strictEqual(extractFunctionBody(source, 'renderSearchMode').includes('ensureProjectsPanel()'), false);
+    assert.ok(source.includes("document.body.classList.toggle('dashboard-search-active'"));
+}
+
 async function runDashboardMessageRouterChecks() {
     const routerModule = require(path.join(root, 'out', 'dashboard', 'messageRouter.js'));
     const calls = [];
@@ -2963,11 +4995,17 @@ async function runDashboardMessageRouterChecks() {
                 calls.push(['selected-project', message.projectId]);
             },
         },
-        resumeAiSession: (message, providerId) => {
-            calls.push(['resume-ai-session', providerId, message.sessionId]);
+        createAiSession: message => {
+            calls.push(['create-ai-session', message.projectId]);
+        },
+        resumeAiSession: (message, providerId, rootId) => {
+            calls.push(['resume-ai-session', providerId, message.sessionId, rootId]);
         },
         archiveAiSession: (message, providerId) => {
             calls.push(['archive-ai-session', providerId, message.sessionId]);
+        },
+        saveCurrentWorkspace: message => {
+            calls.push(['save-current-workspace', message.type, message.requestId]);
         },
     });
 
@@ -2979,26 +5017,50 @@ async function runDashboardMessageRouterChecks() {
     await router({ type: 'request-projects-panel', requestId: 7 });
     await router({ type: 'request-todo-panel', requestId: 8 });
     await router({ type: 'selected-project', projectId: 'project-a' });
+    await router({ type: 'create-ai-session', projectId: 'workspace-a', rootId: 'root-api' });
+    await router({ type: 'new-session-in', projectId: 'workspace-a' });
+    await router({ type: 'new-session-in', projectId: 'workspace-a', rootId: 'root-api' });
     await router({ type: 'resume-ai-session', provider: 'codex', sessionId: 'c1' });
+    await router({ type: 'resume-ai-session', provider: 'codex', sessionId: 'c2', rootId: 'root-web' });
     await router({ type: 'resume-ai-session', provider: 'unknown', sessionId: 'invalid' });
     await router({ type: 'resume-kimi-session', sessionId: 'k1' });
     await router({ type: 'archive-claude-session', sessionId: 'a1' });
     await router({ type: 'resume-unknown-session', sessionId: 'ignored' });
+    await router({ type: 'save-current-workspace', requestId: 9 });
+    await router({ type: 'save-project', projectId: '__currentWorkspace-transient-card-id' });
 
     assert.deepStrictEqual(calls, [
         ['request-projects-panel', 7],
         ['request-todo-panel', 8],
         ['selected-project', 'project-a'],
-        ['resume-ai-session', 'codex', 'c1'],
-        ['resume-ai-session', null, 'invalid'],
-        ['resume-ai-session', 'kimi', 'k1'],
+        ['create-ai-session', 'workspace-a'],
+        ['resume-ai-session', 'codex', 'c1', null],
+        ['resume-ai-session', 'codex', 'c2', 'root-web'],
+        ['resume-ai-session', null, 'invalid', null],
+        ['resume-ai-session', 'kimi', 'k1', null],
         ['archive-ai-session', 'claude', 'a1'],
+        ['save-current-workspace', 'save-current-workspace', 9],
+        ['save-current-workspace', 'save-project', undefined],
     ]);
+
+    const genericSaveCalls = [];
+    const routerWithoutSaveHandler = routerModule.createDashboardMessageRouter({
+        handlers: {
+            'save-current-workspace': message => genericSaveCalls.push(message.requestId),
+        },
+    });
+    await routerWithoutSaveHandler({ type: 'save-current-workspace', requestId: 10 });
+    await routerWithoutSaveHandler({ type: 'save-project', projectId: '__currentWorkspace-stale' });
+    assert.deepStrictEqual(genericSaveCalls, [],
+        'workspace save messages must remain reserved routes when their dedicated handler is unavailable');
+
 }
 
 async function main() {
     const source = fs.readFileSync(dashboardScriptPath, 'utf8');
     runErrorContentChecks();
+    runConfigurationChecks();
+    runStartupChecks();
     runWebviewOptionsChecks();
     await runGroupCollapseControllerChecks();
     await runGroupPromptChecks();
@@ -3007,8 +5069,11 @@ async function main() {
     await runFavoriteProjectControllerChecks();
     await runProjectOrderControllerChecks();
     await runProjectRemovalControllerChecks();
+    await runDashboardRuntimeControllerChecks();
     await runDashboardStartupControllerChecks();
     await runDashboardLifecycleControllerChecks();
+    await runDashboardCommandRegistrationChecks();
+    await runActiveTerminalFileReferenceChecks();
     await runTodoStoreChecks();
     await runTodoInsertionOrderNormalizationChecks();
     await runTodoOrderingMutationChecks();
@@ -3021,11 +5086,13 @@ async function main() {
     await runDashboardTodoMigrationSequencingChecks();
     await runTodoHostMutationChecks();
     runDashboardUpdateMessageChecks();
+    runWorkspaceCardRenderingChecks();
     runTodoViewModelChecks();
     runTodoOrderingInteractionChecks();
-    runTodoSearchResultRenderingChecks(source);
+    runControllerChecks(source);
     runTodoEditResetInteractionChecks();
     runTodoComposePendingInteractionChecks();
+    runSourceContractChecks(source);
     await runDashboardMessageRouterChecks();
     console.log('Dashboard Webview checks passed.');
 }

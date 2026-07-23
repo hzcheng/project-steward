@@ -11,7 +11,7 @@ const {
 } = require('../../helpers/runtimeContract');
 const AiSessionAliasStore = require('../../../out/aiSessions/aliasStore').default;
 const AiSessionPinStore = require('../../../out/aiSessions/pinStore').default;
-const AiSessionProjectStateStore = require('../../../out/aiSessions/projectStateStore').default;
+const AiSessionWorkspaceStateStore = require('../../../out/aiSessions/workspaceStateStore').default;
 const {
     AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX,
 } = require('../../../out/aiSessions/terminalBindingStore');
@@ -22,10 +22,10 @@ const {
     ProductionAttentionStore,
 } = require('../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/productionAttentionStore');
 const {
-    OpenProjectStore,
-} = require('../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectStore');
+    OpenWorkspaceStore,
+} = require('../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceStore');
 const {
-    OPEN_PROJECT_LEASE_MS,
+    OPEN_WORKSPACE_LEASE_MS,
     SELF,
     makeRegistration,
 } = require('../openProjects/helpers');
@@ -104,31 +104,31 @@ test('PERSIST-PIN-STORE-001 makes duplicate writes idempotent and never resurrec
     assert.deepEqual(Array.from(store.getAll()), ['codex:duplicate']);
 });
 
-test('PERSIST-PROJECT-STATE-STORE-001 sanitizes legacy project state and ignores invalid writes', async () => {
+test('PERSIST-PROJECT-STATE-STORE-001 sanitizes workspace state and ignores invalid writes', async () => {
     const state = makeState({
-        openProjectsExpandedCodexSessions: ['project-a', '', 7, 'project-a', 'project-b'],
-        openProjectsActiveAiSessionProvider: {
-            'project-a': 'codex',
-            'project-b': 'unknown',
-            'project-c': 'kimi',
+        'workspaceExpandedAiSessions.v2': ['scope-a', '', 7, 'scope-a', 'scope-b'],
+        'workspaceActiveAiSessionProvider.v2': {
+            'scope-a': 'codex',
+            'scope-b': 'unknown',
+            'scope-c': 'kimi',
         },
     });
-    const store = new AiSessionProjectStateStore(
+    const store = new AiSessionWorkspaceStateStore(
         state.memento,
         value => value === 'codex' || value === 'kimi' || value === 'claude'
     );
 
-    assert.deepEqual(Array.from(store.getExpandedProjects()), ['project-a', 'project-b']);
-    assert.deepEqual(store.getActiveProviders(), { 'project-a': 'codex', 'project-c': 'kimi' });
-    await store.setExpanded('project-c', true);
+    assert.deepEqual(Array.from(store.getExpandedWorkspaces()), ['scope-a', 'scope-b']);
+    assert.deepEqual(store.getActiveProviders(), { 'scope-a': 'codex', 'scope-c': 'kimi' });
+    await store.setExpanded('scope-c', true);
     await store.setExpanded('', true);
-    await store.setActiveProvider('project-d', 'claude');
-    await store.setActiveProvider('project-e', 'unknown');
-    assert.deepEqual(state.values.openProjectsExpandedCodexSessions, [
-        'project-a', 'project-b', 'project-c',
+    await store.setActiveProvider('scope-d', 'claude');
+    await store.setActiveProvider('scope-e', 'unknown');
+    assert.deepEqual(state.values['workspaceExpandedAiSessions.v2'], [
+        'scope-a', 'scope-b', 'scope-c',
     ]);
-    assert.deepEqual(state.values.openProjectsActiveAiSessionProvider, {
-        'project-a': 'codex', 'project-c': 'kimi', 'project-d': 'claude',
+    assert.deepEqual(state.values['workspaceActiveAiSessionProvider.v2'], {
+        'scope-a': 'codex', 'scope-c': 'kimi', 'scope-d': 'claude',
     });
 });
 
@@ -160,10 +160,16 @@ test('TODO-TODO-STORE-001 preserves unversioned V1 data while dropping duplicate
     assert.throws(() => normalizeTodoData({ version: 2 }), /Unsupported TODO data version/);
 });
 
-test('PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001 PERSIST-AI-SESSION-TERMINAL-PERSISTENCE-001 accepts legacy bound records and rejects missing or oversized fields', async () => {
+test('PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001 PERSIST-AI-SESSION-TERMINAL-PERSISTENCE-001 preserves workspace-bound records and rejects missing or oversized fields', async () => {
     const processId = 42001;
     const legacyProcessId = 42002;
     const missingProcessId = 42003;
+    const workspaceIdentity = {
+        workspaceScopeIdentity: 'scope:fixture',
+        workspaceNavigationIdentity: 'navigation:fixture',
+        workspaceRootHostPaths: ['/work/project'],
+        cwd: '/work/project',
+    };
     const state = makeState({
         [`${AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX}${legacyProcessId}`]: {
             version: 2,
@@ -173,6 +179,7 @@ test('PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001 PERSIST-AI-SESSION-TERMINAL-
             markerPath: '/tmp/legacy.done',
             runStartedAtMs: 1,
             updatedAtMs: 2,
+            ...workspaceIdentity,
         },
         [`${AI_SESSION_TERMINAL_PROCESS_BINDING_KEY_PREFIX}${missingProcessId}`]: {
             version: 2,
@@ -190,7 +197,8 @@ test('PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001 PERSIST-AI-SESSION-TERMINAL-
     store.setPending(processId, {
         providerId: 'codex',
         markerPath: '/tmp/valid.done',
-        cwd: '/work/project',
+        ...workspaceIdentity,
+        pendingId: 'pending-valid',
         createdAt: '2026-07-18T10:00:00.000Z',
         excludedSessionIds: ['older'],
         title: 'Valid pending binding',
@@ -202,13 +210,14 @@ test('PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001 PERSIST-AI-SESSION-TERMINAL-
         sessionId: 'valid',
         markerPath: '/tmp/valid.done',
         runStartedAtMs: NOW,
-        cwd: '/work/project',
+        ...workspaceIdentity,
     });
     store.setBound(42004, {
         providerId: 'codex',
         sessionId: 'oversized',
         markerPath: `/${'x'.repeat(4097)}`,
         runStartedAtMs: NOW,
+        ...workspaceIdentity,
     });
     await store.flush();
     assert.equal(new AiSessionTerminalBindingStore(state.memento).get(processId).sessionId, 'valid');
@@ -218,6 +227,7 @@ test('PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001 PERSIST-AI-SESSION-TERMINAL-
         providerId: 'codex',
         sessionId: 'valid',
         markerPath: '/tmp/valid.done',
+        ...workspaceIdentity,
     });
     await store.flush();
     assert.equal(store.get(processId).state, 'released');
@@ -273,32 +283,32 @@ test('ATTENTION-PRODUCTION-ATTENTION-STORE-CLOCK-001 expires attention by receip
     assert.deepEqual((await store.scan(NOW + 90_001)).snapshots, []);
 });
 
-test('PERSIST-STORE-001 counts corrupt and oversized open-project records, ignores partial writes, and expires stale leases', async t => {
-    const root = makeTempDirectory(t, 'project-steward-persistence-open-project-');
+test('PERSIST-STORE-001 counts corrupt and oversized open-workspace records, ignores partial writes, and expires stale leases', async t => {
+    const root = makeTempDirectory(t, 'project-steward-persistence-open-workspace-');
     const registration = makeRegistration(SELF, NOW, '/work/project', {
         leaseUpdatedAtMs: NOW,
         sequence: 2,
     });
-    const store = new OpenProjectStore(root, SELF);
+    const store = new OpenWorkspaceStore(root, SELF);
     await store.write(registration);
     assert.deepEqual((await store.scan(NOW)).registrations, [registration]);
     await assert.rejects(store.write({ ...registration, sequence: 1 }), /sequence decreased/);
 
-    const instances = path.join(root, 'open-projects', 'v1', 'instances');
+    const instances = path.join(root, 'open-workspaces', 'v3', 'instances');
     const ownerPath = path.join(instances, `${SELF}.json`);
     fs.writeFileSync(ownerPath, '{"protocolVersion":1', 'utf8');
     fs.writeFileSync(path.join(instances, `${SELF}.partial.tmp`), '{}', 'utf8');
-    const corrupt = await new OpenProjectStore(root, SELF).scan(NOW);
+    const corrupt = await new OpenWorkspaceStore(root, SELF).scan(NOW);
     assert.deepEqual(corrupt.registrations, []);
     assert.equal(corrupt.counters.parseErrors, 1);
 
     fs.writeFileSync(ownerPath, 'x'.repeat(256 * 1024 + 1), 'utf8');
-    const oversized = await new OpenProjectStore(root, SELF).scan(NOW);
+    const oversized = await new OpenWorkspaceStore(root, SELF).scan(NOW);
     assert.deepEqual(oversized.registrations, []);
     assert.equal(oversized.counters.oversizedFiles, 1);
 
     fs.writeFileSync(ownerPath, `${JSON.stringify(registration)}\n`, 'utf8');
-    const stale = await new OpenProjectStore(root, SELF).scan(NOW + OPEN_PROJECT_LEASE_MS + 1);
+    const stale = await new OpenWorkspaceStore(root, SELF).scan(NOW + OPEN_WORKSPACE_LEASE_MS + 1);
     assert.deepEqual(stale.registrations, []);
     assert.equal(stale.counters.expired, 1);
 });

@@ -7,7 +7,9 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const { createFakeVscode } = require('../../helpers/fakeVscode');
-const { buildDashboardSearchCatalog } = require('../../../out/webview/dashboardViewModel');
+const {
+    buildWorkspaceDashboardSearchCatalog,
+} = require('../../../out/webview/dashboardViewModel');
 const { getDashboardWebviewOptions } = require('../../../out/dashboard/webviewOptions');
 
 const root = path.join(__dirname, '..', '..', '..');
@@ -103,14 +105,17 @@ function createSearchElement(tagName = 'div') {
 
 function makeCatalog(suffix = '') {
     return {
+        version: 2,
         sessions: [{
             key: `codex:c${suffix}`, searchText: `dashboard session ${suffix}`,
-            projectId: 'current', projectName: 'Dashboard', provider: 'codex',
-            sessionId: `c${suffix}`, name: 'Session',
+            workspaceId: 'current', workspaceNavigationIdentity: 'navigation:current',
+            workspaceName: 'Dashboard', action: 'reveal-workspace-session',
+            provider: 'codex', sessionId: `c${suffix}`, name: 'Session',
         }],
-        openProjects: [{
-            key: `open:${suffix}`, identity: '/work/dashboard', searchText: `dashboard open ${suffix}`,
-            projectId: 'current', name: 'Dashboard', description: 'Current', action: 'open-current',
+        openWorkspaces: [{
+            key: `workspace:navigation:${suffix}`, navigationIdentity: `navigation:${suffix}`,
+            searchText: `dashboard open ${suffix}`, workspaceId: 'current',
+            name: 'Dashboard', description: '1 folder', action: 'show-current-workspace', current: true,
         }],
         savedProjects: [],
         todos: [{
@@ -118,6 +123,26 @@ function makeCatalog(suffix = '') {
             searchText: `ship todo ${suffix}`, title: 'Ship TODO', groupTitle: 'Planning',
             priority: 'high', completed: false, notesSearchText: 'Release notes',
         }],
+    };
+}
+
+function makeWorkspaceCard(overrides = {}) {
+    const kind = overrides.kind || 'current';
+    return {
+        id: overrides.id || (kind === 'current' ? 'current' : 'navigation'),
+        kind,
+        workspaceKind: 'singleFolder',
+        showSaveAction: false,
+        runningSessionCount: 0,
+        navigationIdentity: overrides.navigationIdentity || `navigation:${kind}`,
+        scopeIdentity: overrides.scopeIdentity || `scope:${kind}`,
+        name: overrides.name || (kind === 'current' ? 'Current' : 'Other'),
+        environment: 'local',
+        environmentLabel: 'Local',
+        color: overrides.color || '#00aacc',
+        roots: [{ id: `root:${kind}`, name: overrides.rootName || 'work', ordinal: 0 }],
+        attentionCount: overrides.attentionCount || 0,
+        ...(overrides.aiSessions ? { aiSessions: overrides.aiSessions } : {}),
     };
 }
 
@@ -215,16 +240,21 @@ function loadWebviewModules() {
 const webviewModules = loadWebviewModules();
 
 test('WEBVIEW-DASHBOARD-SEARCH-CATALOG-001 de-duplicates saved path identities while retaining the favorite representative', () => {
-    const catalog = buildDashboardSearchCatalog([{
+    const catalog = buildWorkspaceDashboardSearchCatalog([{
         id: 'tools', groupName: 'TOOLS', projects: [
             { id: 'saved', name: 'Dashboard', path: '/work/dashboard', favorite: true },
             { id: 'duplicate', name: 'Dashboard copy', path: '/work/dashboard/' },
             { id: 'other', name: 'Other', path: '/work/other' },
         ],
-    }], [{
-        id: 'open', name: 'Dashboard', path: '/work/dashboard', openProjectCardKind: 'current',
-        codexSessions: [{ id: 'c1', name: 'Fix dashboard' }],
-    }], makeCatalog().todos);
+    }], [makeWorkspaceCard({
+        id: 'open',
+        name: 'Dashboard',
+        navigationIdentity: 'navigation:dashboard',
+        aiSessions: {
+            sessionsByProvider: { codex: [{ id: 'c1', name: 'Fix dashboard' }] },
+            activeSessions: [], unavailableProviders: [], activeProvider: 'codex', expanded: true,
+        },
+    })], makeCatalog().todos);
 
     assert.deepEqual(catalog.sessions.map(item => item.key), ['codex:c1']);
     assert.deepEqual(catalog.savedProjects.map(item => item.projectId), ['saved', 'other']);
@@ -234,14 +264,14 @@ test('WEBVIEW-DASHBOARD-SEARCH-CATALOG-001 de-duplicates saved path identities w
 
 test('WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001 preserves TODO catalog entries in incremental messages', () => {
     const todoSearchItems = makeCatalog().todos;
-    const openMessage = webviewModules.updateMessages.buildOpenProjectsUpdatedMessage({
+    const cards = [makeWorkspaceCard()];
+    const openMessage = webviewModules.updateMessages.buildOpenWorkspacesUpdatedMessage({
         groups: [], cards: [], collapsed: false,
-        stewardInfos: { openProjectsGroupCollapsed: false, config: {} },
-        semanticRevision: 'revision', todoSearchItems,
+        semanticRevision: 'revision', otherWindowsStatus: 'ready', todoSearchItems,
     });
     const sessionsMessage = webviewModules.updateMessages.buildAiSessionsUpdatedMessage({
         groups: [], cards: [], sequence: 7, generatedAt: NOW,
-        openProjects: [], todoSearchItems,
+        cards, todoSearchItems,
     });
     assert.deepEqual(openMessage.searchCatalog.todos, todoSearchItems);
     assert.deepEqual(sessionsMessage.searchCatalog.todos, todoSearchItems);
@@ -257,23 +287,23 @@ test('WEBVIEW-WEBVIEW-OPTIONS-001 enables scripts and limits local resources to 
 
 test('WEBVIEW-CURRENT-WORKSPACE-RENDERING-001 WEBVIEW-DISPLAY-001 distinguishes current and navigation OPEN cards', () => {
     const config = { get: (_key, fallback) => fallback };
-    const html = webviewModules.content.getOpenProjectsGroupContent([
-        {
-            id: 'current', name: 'Current', path: '/work/current', color: '#00aacc',
-            openProjectCardKind: 'current', codexSessions: [{ id: 'c1', name: 'Session' }],
-        },
-        {
-            id: 'navigation', name: 'Other', path: '/work/other',
-            openProjectCardKind: 'projectNavigation', codexSessions: [{ id: 'leak', name: 'Leaked' }],
-        },
-    ], false, { config });
+    const html = webviewModules.content.getOpenWorkspacesGroupContent([
+        makeWorkspaceCard({
+            id: 'current',
+            aiSessions: {
+                sessionsByProvider: { codex: [{ id: 'c1', name: 'Session' }] },
+                activeSessions: [], unavailableProviders: [], activeProvider: 'codex', expanded: true,
+            },
+        }),
+        makeWorkspaceCard({ id: 'navigation', kind: 'navigation', name: 'Other' }),
+    ], false, 'ready');
 
     const currentTag = html.match(/<div class="[^"]*project[^"]*"[^>]*data-id="current"[^>]*>/)[0];
     const navigationTag = html.match(/<div class="[^"]*project[^"]*"[^>]*data-id="navigation"[^>]*>/)[0];
     assert.match(currentTag, /data-current-workspace/);
-    assert.match(currentTag, /data-open-project/);
-    assert.doesNotMatch(navigationTag, /data-current-workspace|data-open-project/);
-    assert.match(navigationTag, /data-project-navigation/);
+    assert.match(currentTag, /data-workspace-scope-identity/);
+    assert.doesNotMatch(navigationTag, /data-current-workspace/);
+    assert.match(navigationTag, /data-workspace-navigation/);
     assert.match(navigationTag, /data-readonly-project/);
     assert.equal((html.match(/class="codex-sessions"/g) || []).length, 1);
     assert.equal(html.includes('Leaked'), false);
@@ -336,10 +366,11 @@ test('WEBVIEW-WEBVIEW-CONTENT-001 renders OPEN PROJECTS and lazy PROJECTS TODO t
             config,
             relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
             otherStorageHasData: false,
-            openProjects: [{ id: 'current', name: 'Current', path: '/current', openProjectCardKind: 'current' }],
             todoSearchItems: makeCatalog().todos,
         },
-        true
+        true,
+        [makeWorkspaceCard()],
+        'ready',
     );
     for (const tab of ['open', 'projects', 'todo']) {
         assert.match(html, new RegExp(`data-dashboard-tab="${tab}"`));
@@ -480,12 +511,13 @@ function createProjectVm({ querySelector, querySelectorAll, activeElement, sourc
     let webviewState = { unrelated: 'preserved' };
     const context = {
         normalizeDashboardSearchCatalog: value => value
+            && value.version === 2
             && Array.isArray(value.sessions)
-            && Array.isArray(value.openProjects)
+            && Array.isArray(value.openWorkspaces)
             && Array.isArray(value.savedProjects)
             && Array.isArray(value.todos)
             ? value
-            : { sessions: [], openProjects: [], savedProjects: [], todos: [] },
+            : { version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: [] },
         document: {
             activeElement: activeElement || null,
             body: {
@@ -611,18 +643,21 @@ test('WEBVIEW-COLLAPSE-BUTTON-STATE-001 exposes disabled and exact action labels
 
 test('WEBVIEW-BATCH-AI-SESSION-WEBVIEW-001 rejects stale AI session update sequences', () => {
     const harness = createProjectVm();
+    harness.context.applyWorkspaceUpdate = () => true;
     harness.windowListeners.message({ data: {
         type: 'ai-sessions-updated',
-        version: 1,
+        version: 2,
         sequence: 2,
-        openProjects: [],
+        currentWorkspaceCount: 0,
+        html: '<div class="open-current-workspace-group"></div>',
         searchCatalog: makeCatalog('new'),
     } });
     harness.windowListeners.message({ data: {
         type: 'ai-sessions-updated',
-        version: 1,
+        version: 2,
         sequence: 1,
-        openProjects: [],
+        currentWorkspaceCount: 0,
+        html: '<div class="open-current-workspace-group"></div>',
         searchCatalog: makeCatalog('stale'),
     } });
 
@@ -630,21 +665,19 @@ test('WEBVIEW-BATCH-AI-SESSION-WEBVIEW-001 rejects stale AI session update seque
     assert.equal(harness.replacedCatalogs[0].todos[0].todoId, 'tnew');
 });
 
-test('WEBVIEW-BATCH-AI-SESSION-WEBVIEW-001 requests full refresh when an incremental target is missing', () => {
+test('WEBVIEW-BATCH-AI-SESSION-WEBVIEW-001 requests full refresh when the workspace replacement is invalid', () => {
     const harness = createProjectVm();
+    harness.context.applyWorkspaceUpdate = () => false;
     harness.windowListeners.message({ data: {
         type: 'ai-sessions-updated',
-        version: 1,
+        version: 2,
         sequence: 1,
-        openProjects: [{
-            projectId: 'missing',
-            expanded: true,
-            sessionSectionHtml: '<div class="codex-sessions"></div>',
-        }],
+        currentWorkspaceCount: 1,
+        html: '<div class="invalid-workspace"></div>',
         searchCatalog: makeCatalog(),
     } });
     assert.deepEqual(toPlain(harness.messages), [{
-        type: 'request-full-refresh', reason: 'missing-open-project',
+        type: 'request-full-refresh', reason: 'invalid-ai-session-workspace-update',
     }]);
     assert.deepEqual(harness.replacedCatalogs, []);
 });

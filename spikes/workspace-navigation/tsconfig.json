@@ -1,0 +1,20 @@
+{
+    "compilerOptions": {
+        "module": "commonjs",
+        "target": "es6",
+        "outDir": "dist",
+        "rootDir": ".",
+        "lib": [
+            "es6"
+        ],
+        "sourceMap": true,
+        "strict": true,
+        "esModuleInterop": true,
+        "allowJs": true,
+        "checkJs": true
+    },
+    "include": [
+        "extension.ts",
+        "outcomeClassifier.js"
+    ]
+}

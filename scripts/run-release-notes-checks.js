@@ -10,6 +10,36 @@ const repositoryRoot = path.resolve(__dirname, '..');
 const extractorPath = path.join(__dirname, 'extract-release-notes.js');
 const workflowPath = path.join(repositoryRoot, '.github', 'workflows', 'release-vsix.yml');
 
+function runWorkspaceFirstReleaseContentChecks() {
+    const read = relativePath => fs.readFileSync(path.join(repositoryRoot, relativePath), 'utf8');
+    const readme = read('README.md');
+    const changelog = read('CHANGELOG.md');
+    const packageMetadata = JSON.parse(read('package.json'));
+    assert.strictEqual(packageMetadata.version, '2.1.4',
+        'the workspace-first release must increment the Project Steward patch version');
+    const currentReleaseMarker = `## [${packageMetadata.version}]`;
+    assert.ok(changelog.includes(currentReleaseMarker),
+        'CHANGELOG must contain the package.json release version');
+    const currentRelease = changelog.split(currentReleaseMarker)[1].split(/\n## \[/)[0];
+    const requiredReleaseFacts = [
+        ['one card per non-empty VS Code workspace', /one card per non-empty VS Code workspace/i],
+        ['all roots with provider-native --add-dir', /all (?:workspace )?roots[\s\S]{0,160}--add-dir/i],
+        ['trust and capability preflight', /Restricted Mode[\s\S]{0,200}(?:capability|--add-dir)/i],
+        ['safe other-window navigation fallback', /navigation[\s\S]{0,200}(?:Switch Window|save it first)/i],
+        ['saved-project preservation', /saved projects[\s\S]{0,160}(?:preserv|unchanged)/i],
+        ['v3 UI Bridge requirement', /(?:UI Bridge|bridge)[\s\S]{0,80}v3/i],
+        ['intentional legacy runtime non-adoption', /legacy[\s\S]{0,160}(?:runtime|terminal|tmux)[\s\S]{0,160}(?:not adopted|not migrated|recreate|resume)/i],
+    ];
+
+    for (const [label, pattern] of requiredReleaseFacts) {
+        assert.match(readme, pattern, `README must document ${label}`);
+        assert.match(currentRelease, pattern, `current CHANGELOG release must document ${label}`);
+    }
+
+    assert.match(packageMetadata.description, /workspace/i,
+        'package metadata must describe the workspace-first product boundary');
+}
+
 function runExtractor(version, changelogPath) {
     return spawnSync(process.execPath, [extractorPath, version, changelogPath], {
         cwd: repositoryRoot,
@@ -80,8 +110,8 @@ function runWorkflowChecks() {
     assert.match(workflow, /--notes-file release-notes\.md/);
     assert.strictEqual(workflow.includes('--notes "VSIX package for'), false);
     assert.match(workflow, /- name: Verify release notes\n\s+run: npm run test:release-notes/);
-    assert.match(workflow, /- name: Verify release packaging\n\s+run: npm run test:release-packaging/);
-    assert.match(workflow, /run: npm run package:release/);
+    assert.match(workflow, /- name: Package and verify release VSIX files\n\s+run: npm run test:release-packaging/);
+    assert.strictEqual(workflow.includes('run: npm run package:release'), false);
     assert.match(workflow, /bridge_vsix_file=/);
     assert.match(workflow, /gh release create "\$TAG" "\$BRIDGE_VSIX_FILE" "\$MAIN_VSIX_FILE"/);
     assert.strictEqual(
@@ -92,4 +122,5 @@ function runWorkflowChecks() {
 
 runExtractionChecks();
 runWorkflowChecks();
+runWorkspaceFirstReleaseContentChecks();
 console.log('Release notes checks passed.');

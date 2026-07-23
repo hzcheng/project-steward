@@ -20,12 +20,20 @@ test('RUNTIME-TMUX-STORE-001 persists pending and final lifecycle records as def
 
     assert.equal(await store.setPending(pending), true);
     await store.setKnown(known);
-    const pendingCopy = await store.getPending('pending-one');
+    const pendingIdentity = {
+        provider: pending.provider,
+        workspaceScopeIdentity: pending.workspaceScopeIdentity,
+        workspaceNavigationIdentity: pending.workspaceNavigationIdentity,
+        workspaceRootHostPaths: pending.workspaceRootHostPaths,
+        cwd: pending.cwd,
+        pendingId: pending.pendingId,
+    };
+    const pendingCopy = await store.getPending(pendingIdentity);
     const knownCopy = await store.getKnown('codex', 'session-one');
     pendingCopy.excludedSessionIds.push('mutated');
     knownCopy.locator.windowName = 'mutated';
 
-    assert.deepEqual(await store.getPending('pending-one'), pending);
+    assert.deepEqual(await store.getPending(pendingIdentity), pending);
     assert.deepEqual(await store.getKnown('codex', 'session-one'), known);
     assert.ok((await require('node:fs').promises.readdir(filesystem.root))
         .every(name => !name.endsWith('.tmp')));

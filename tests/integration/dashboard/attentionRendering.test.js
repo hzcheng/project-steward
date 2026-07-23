@@ -31,6 +31,36 @@ const config = {
 };
 
 function stewardContent(openProjects) {
+    const cards = openProjects.map(project => ({
+        id: project.id,
+        kind: 'current',
+        workspaceKind: 'singleFolder',
+        showSaveAction: false,
+        runningSessionCount: 0,
+        navigationIdentity: `navigation:${project.id}`,
+        scopeIdentity: `scope:${project.id}`,
+        name: project.name,
+        environment: 'local',
+        environmentLabel: 'Local',
+        color: project.color,
+        roots: [{ id: `root:${project.id}`, name: project.name, ordinal: 0 }],
+        attentionCount: (project.activeAiSessions || [])
+            .filter(session => session.needsAttention && !session.stale)
+            .length,
+        aiSessions: {
+            activeProvider: 'codex',
+            expanded: true,
+            sessionsByProvider: {
+                codex: project.codexSessions || [],
+                kimi: [],
+                claude: [],
+            },
+            unavailableProviders: [],
+            activeSessions: project.activeAiSessions || [],
+            aiSessionCount: (project.codexSessions || []).length,
+            activeSessionCount: (project.activeAiSessions || []).length,
+        },
+    }));
     return renderer.getStewardContent(
         { extensionPath: '/extension' },
         { cspSource: 'test-source', asWebviewUri: uri => uri.toString() },
@@ -39,9 +69,10 @@ function stewardContent(openProjects) {
             config,
             relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: false },
             otherStorageHasData: false,
-            openProjects,
         },
-        true
+        true,
+        cards,
+        'ready',
     );
 }
 

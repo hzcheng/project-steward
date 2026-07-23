@@ -8,6 +8,14 @@ const { serializeDirectLaunchCommand } = require('../../../out/aiSessions/launch
 // SESSION-COMMAND-BUILDER-001
 
 const cwd = '/fixtures/project';
+const directoryScope = Object.freeze({
+    workspaceNavigationIdentity: 'navigation:/fixtures/project',
+    workspaceScopeIdentity: 'scope:/fixtures/project',
+    workspaceRootHostPaths: Object.freeze([cwd]),
+    primaryRootId: 'root:/fixtures/project',
+    primaryCwd: cwd,
+    additionalDirectories: Object.freeze([]),
+});
 const markerPath = '/fixtures/markers/session.done';
 const sessionId = '11111111-1111-4111-8111-111111111111';
 const title = "Fixture owner's request";
@@ -57,21 +65,21 @@ const providers = [{
 
 for (const provider of providers) {
     test(`SESSION-COMMAND-BUILDER-001 [${provider.id}] builds resume and new launch specs`, () => {
-        assert.deepEqual(provider.resumeSpec(sessionId, cwd, markerPath), provider.expectedResume);
-        assert.deepEqual(provider.newSpec(cwd, title, markerPath), provider.expectedNew);
+        assert.deepEqual(provider.resumeSpec(sessionId, directoryScope, markerPath), provider.expectedResume);
+        assert.deepEqual(provider.newSpec(directoryScope, title, markerPath), provider.expectedNew);
     });
 
     test(`SESSION-COMMAND-BUILDER-001 [${provider.id}] serializes quoted POSIX commands`, () => {
-        const resume = provider.resumeSpec(sessionId, cwd, null);
-        const create = provider.newSpec(cwd, title, null);
+        const resume = provider.resumeSpec(sessionId, directoryScope, null);
+        const create = provider.newSpec(directoryScope, title, null);
         assert.equal(serializeDirectLaunchCommand(resume, 'linux'), provider.resumeCommand);
         assert.equal(serializeDirectLaunchCommand(create, 'linux'), provider.newCommand);
     });
 
     test(`SESSION-COMMAND-BUILDER-001 [${provider.id}] wraps terminal marker lifecycle commands`, () => {
         for (const spec of [
-            provider.resumeSpec(sessionId, cwd, markerPath),
-            provider.newSpec(cwd, title, markerPath),
+            provider.resumeSpec(sessionId, directoryScope, markerPath),
+            provider.newSpec(directoryScope, title, markerPath),
         ]) {
             const command = serializeDirectLaunchCommand(spec, 'linux');
             assert.ok(command.startsWith('sh -lc '));

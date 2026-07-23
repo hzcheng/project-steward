@@ -4,32 +4,32 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { makeTempDirectory } = require('../../helpers/tempDirectory');
 const {
-    validateOpenProjectAggregate,
-} = require('../../../out/openProjects/protocol');
+    validateOpenWorkspaceAggregate,
+} = require('../../../out/openWorkspaces/protocol');
 const {
-    OpenProjectCoordinator,
-} = require('../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectCoordinator');
+    OpenWorkspaceCoordinator,
+} = require('../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceCoordinator');
 const {
-    OpenProjectStore,
-} = require('../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openProjectStore');
+    OpenWorkspaceStore,
+} = require('../../../extensions/attention-ui-bridge/out/extensions/attention-ui-bridge/src/openWorkspaceStore');
 const {
-    OPEN_PROJECT_LEASE_MS,
+    OPEN_WORKSPACE_LEASE_MS,
     OTHER,
     SELF,
-    createSyntheticOpenProjectStore,
+    createSyntheticOpenWorkspaceStore,
     flushAsync,
     makePublication,
     makeRegistration,
 } = require('./helpers');
 
 function createCoordinator(root, overrides = {}) {
-    const store = overrides.store || createSyntheticOpenProjectStore();
+    const store = overrides.store || createSyntheticOpenWorkspaceStore();
     const deliveries = [];
     const diagnostics = [];
     let nowMs = 1000;
     let fireInterval;
     let fireWatcher;
-    const coordinator = new OpenProjectCoordinator(root, {
+    const coordinator = new OpenWorkspaceCoordinator(root, {
         now: () => nowMs,
         setInterval: callback => {
             fireInterval = callback;
@@ -57,21 +57,21 @@ function createCoordinator(root, overrides = {}) {
 }
 
 test('PERSIST-STORE-001 preserves sequence monotonicity and expires a registration immediately after its lease', async t => {
-    const root = makeTempDirectory(t, 'open-project-focused-store-');
+    const root = makeTempDirectory(t, 'open-workspace-focused-store-');
     const registration = makeRegistration(SELF, 900, '/work/owned', {
         sequence: 2,
         leaseUpdatedAtMs: 1000,
     });
-    const store = new OpenProjectStore(root, SELF);
+    const store = new OpenWorkspaceStore(root, SELF);
 
     await store.write(registration);
-    assert.deepEqual((await store.scan(1000 + OPEN_PROJECT_LEASE_MS)).registrations, [registration]);
+    assert.deepEqual((await store.scan(1000 + OPEN_WORKSPACE_LEASE_MS)).registrations, [registration]);
     await assert.rejects(
         store.write({ ...registration, sequence: 1 }),
         /sequence decreased/
     );
 
-    const expired = await store.scan(1000 + OPEN_PROJECT_LEASE_MS + 1);
+    const expired = await store.scan(1000 + OPEN_WORKSPACE_LEASE_MS + 1);
     assert.deepEqual(expired.registrations, []);
     assert.equal(expired.counters.expired, 1);
 });
@@ -101,7 +101,7 @@ test('ARCH-COORDINATOR-001 preserves focus order across heartbeat publications a
 test('ARCH-COORDINATOR-001 retries an unchanged semantic revision after delivery failure', async t => {
     let fireWatcher;
     const attempts = [];
-    const coordinator = new OpenProjectCoordinator('/synthetic-delivery-retry', {
+    const coordinator = new OpenWorkspaceCoordinator('/synthetic-delivery-retry', {
         now: () => 1000,
         setInterval: () => 'retry-interval',
         clearInterval: () => undefined,
@@ -109,7 +109,7 @@ test('ARCH-COORDINATOR-001 retries an unchanged semantic revision after delivery
             fireWatcher = callback;
             return { close: () => undefined };
         },
-        createStore: () => createSyntheticOpenProjectStore(),
+        createStore: () => createSyntheticOpenWorkspaceStore(),
         deliverAggregate: aggregate => {
             attempts.push(aggregate);
             if (attempts.length === 1) throw new Error('delivery unavailable');
@@ -139,7 +139,7 @@ test('ARCH-COORDINATOR-AGGREGATE-BOUNDARY-001 deterministically keeps the 100 mo
         .map(registration => registration.instanceId);
     const deliverFromScan = async scanRegistrations => {
         const deliveries = [];
-        const coordinator = new OpenProjectCoordinator('/synthetic-boundary', {
+        const coordinator = new OpenWorkspaceCoordinator('/synthetic-boundary', {
             now: () => 5000,
             setInterval: () => 'boundary-interval',
             clearInterval: () => undefined,
@@ -162,7 +162,7 @@ test('ARCH-COORDINATOR-AGGREGATE-BOUNDARY-001 deterministically keeps the 100 mo
     const forward = await deliverFromScan(registrations);
     const reverse = await deliverFromScan(registrations.slice().reverse());
 
-    assert.deepEqual(validateOpenProjectAggregate(forward), forward);
+    assert.deepEqual(validateOpenWorkspaceAggregate(forward), forward);
     assert.deepEqual(forward.registrations.map(value => value.instanceId), expectedInstanceIds);
     assert.deepEqual(reverse, forward);
     assert.ok(forward.registrations.some(value => value.instanceId === registrations[100].instanceId));
@@ -170,7 +170,7 @@ test('ARCH-COORDINATOR-AGGREGATE-BOUNDARY-001 deterministically keeps the 100 mo
 });
 
 test('ARCH-COORDINATOR-001 suppresses aggregate delivery when only sequence and lease timestamps change', async t => {
-    const store = createSyntheticOpenProjectStore();
+    const store = createSyntheticOpenWorkspaceStore();
     const harness = createCoordinator('/synthetic-semantic-revision', { store });
     t.after(() => harness.coordinator.dispose());
     await harness.coordinator.publish(makePublication());

@@ -25,6 +25,7 @@ function createHarnessVscode(listeners, commands) {
             createTerminal: () => ({ name: 'fixture', show: () => undefined, dispose: () => undefined, sendText: () => undefined }),
             registerWebviewViewProvider: () => disposable(),
             onDidChangeActiveTerminal: callback => { listeners.activeTerminal = callback; return disposable(); },
+            onDidOpenTerminal: () => disposable(),
             onDidCloseTerminal: callback => { listeners.closeTerminal = callback; return disposable(); },
             onDidChangeWindowState: callback => { listeners.windowState = callback; return disposable(); },
             onDidChangeVisibleTextEditors: () => disposable(), onDidChangeActiveTextEditor: () => disposable(),

@@ -10,8 +10,8 @@ const {
 } = require('../../../out/models');
 const { loadWithFakeVscode } = require('./helpers');
 const {
-    OpenProjectWorkspaceController,
-} = loadWithFakeVscode('../../../out/openProjects/workspaceController');
+    OpenWorkspaceController,
+} = loadWithFakeVscode('../../../out/openWorkspaces/workspaceController');
 const {
     CurrentProjectDetailsResolver,
 } = loadWithFakeVscode('../../../out/projects/currentProjectDetails');
@@ -41,64 +41,65 @@ function parseUri(value) {
 }
 
 function createWorkspaceController(overrides = {}) {
-    const workspaceUri = fileUri('/work/shared');
-    return new OpenProjectWorkspaceController({
-        getWorkspaceFile: () => null,
-        getWorkspaceFolders: () => [{ uri: workspaceUri, name: 'shared' }],
-        getSavedProjects: () => [],
-        getCurrentRemoteName: () => undefined,
-        isFolderGitRepo: () => false,
-        publishRecords: () => undefined,
+    const workspace = {
+        navigationIdentity: 'a'.repeat(64),
+        scopeIdentity: 'b'.repeat(64),
+        kind: 'singleFolder',
+        displayName: 'Shared',
+        navigationUri: 'file:///work/shared',
+        environment: 'local',
+        roots: [{
+            id: 'c'.repeat(64),
+            name: 'shared',
+            uri: 'file:///work/shared',
+            hostPath: '/work/shared',
+            ordinal: 0,
+        }],
+    };
+    return new OpenWorkspaceController({
+        getWorkspace: () => workspace,
+        getRunningAiSessionCount: () => 0,
+        publishWorkspace: () => undefined,
         ...overrides,
     });
 }
 
-test('PROJECT-WORKSPACE-CONTROLLER-RECORD-001 includes live session counts except in the initial publication', () => {
+test('PROJECT-WORKSPACE-CONTROLLER-RECORD-001 includes the live session count in every publication snapshot', () => {
     const controller = createWorkspaceController({
-        getActiveSessionCounts: () => new Map([['__openProjects-0', 2]]),
+        getRunningAiSessionCount: () => 2,
     });
 
-    assert.equal(controller.getOpenProjectRecords()[0].activeSessionCount, 2);
-    assert.equal(controller.getOpenProjectRecords(false)[0].activeSessionCount, undefined);
+    assert.equal(controller.getPublication().runningAiSessionCount, 2);
+    assert.equal(controller.getPublication().runningAiSessionCount, 2);
 });
 
-test('OPEN-OPEN-PROJECT-WORKSPACE-CONTROLLER-001 publishes saved metadata and focus intent for workspace folders', () => {
-    const workspaceUri = fileUri('/work/shared');
-    const saved = new Project('Saved Shared', '/work/shared', 'Saved description');
-    saved.color = '#123456';
+test('OPEN-OPEN-PROJECT-WORKSPACE-CONTROLLER-001 refreshes workspace metadata and preserves focus intent', () => {
     const publications = [];
+    let name = 'Shared';
     const controller = createWorkspaceController({
-        getWorkspaceFolders: () => [{ uri: workspaceUri, name: 'shared' }],
-        getSavedProjects: () => [saved],
-        isFolderGitRepo: projectPath => projectPath === '/work/shared',
-        publishRecords: (records, followsFocusEvent) => publications.push({ records, followsFocusEvent }),
+        getWorkspace: () => ({
+            navigationIdentity: 'a'.repeat(64),
+            scopeIdentity: 'b'.repeat(64),
+            kind: 'singleFolder',
+            displayName: name,
+            navigationUri: 'file:///work/shared',
+            environment: 'local',
+            roots: [{
+                id: 'c'.repeat(64), name: 'shared', uri: 'file:///work/shared',
+                hostPath: '/work/shared', ordinal: 0,
+            }],
+        }),
+        publishWorkspace: (workspace, followsFocusEvent) => publications.push({ workspace, followsFocusEvent }),
     });
 
-    const projects = controller.getRawOpenProjects();
+    assert.equal(controller.getCurrentWorkspace().displayName, 'Shared');
+    name = 'Renamed';
+    assert.equal(controller.getCurrentWorkspace().displayName, 'Shared', 'reads are stable until refresh');
     controller.publish(true);
 
-    assert.deepEqual(projects.map(project => ({
-        id: project.id,
-        name: project.name,
-        description: project.description,
-        path: project.path,
-        isGitRepo: project.isGitRepo,
-    })), [{
-        id: '__openProjects-0',
-        name: 'Saved Shared',
-        description: 'Saved description',
-        path: '/work/shared',
-        isGitRepo: true,
-    }]);
-    assert.equal(controller.getOpenProjectUri('__openProjects-0'), workspaceUri);
-    assert.equal(controller.getOpenProjectUri('__openProjects-1'), null);
     assert.equal(publications[0].followsFocusEvent, true);
-    assert.deepEqual(publications[0].records.map(record => ({
-        id: record.localProjectId,
-        name: record.name,
-        uri: record.uri,
-        color: record.color,
-    })), [{ id: '__openProjects-0', name: 'Saved Shared', uri: '/work/shared', color: '#123456' }]);
+    assert.equal(publications[0].workspace.displayName, 'Renamed');
+    assert.equal(controller.getCurrentWorkspace().displayName, 'Renamed');
 });
 
 test('OPEN-CURRENT-PROJECT-DETAILS-RESOLVER-001 resolves workspace metadata and returns null without a workspace', async () => {

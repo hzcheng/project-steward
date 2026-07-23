@@ -12,6 +12,17 @@ const sessionId = 'session "quoted" & 100%';
 const value = 'Owner\'s "quoted" & 100%';
 const markerPath = 'C:\\fixtures\\marker\'s & 100%.done';
 
+function directoryScope(primaryCwd) {
+    return Object.freeze({
+        workspaceNavigationIdentity: `navigation:${primaryCwd || 'empty'}`,
+        workspaceScopeIdentity: `scope:${primaryCwd || 'empty'}`,
+        workspaceRootHostPaths: Object.freeze(primaryCwd ? [primaryCwd] : []),
+        primaryRootId: `root:${primaryCwd || 'empty'}`,
+        primaryCwd,
+        additionalDirectories: Object.freeze([]),
+    });
+}
+
 function decodePowerShellPayload(command) {
     const prefix = 'powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ';
     assert.ok(command.startsWith(prefix));
@@ -56,15 +67,18 @@ const providers = [{
 
 for (const provider of providers) {
     test(`SESSION-COMMAND-BUILDER-001 [${provider.id}] quotes Windows current-shell resume values`, () => {
-        assert.equal(provider.resumeCommand(sessionId, cwd, null, 'win32'), provider.currentShellResume);
+        assert.equal(
+            provider.resumeCommand(sessionId, directoryScope(cwd), null, 'win32'),
+            provider.currentShellResume
+        );
     });
 
     test(`SESSION-COMMAND-BUILDER-001 [${provider.id}] preserves special values in marked PowerShell commands`, () => {
         const resumePayload = decodePowerShellPayload(
-            provider.resumeCommand(value, quotedCwd, markerPath, 'win32')
+            provider.resumeCommand(value, directoryScope(quotedCwd), markerPath, 'win32')
         );
         const newPayload = decodePowerShellPayload(
-            provider.newCommand(quotedCwd, value, markerPath, 'win32')
+            provider.newCommand(directoryScope(quotedCwd), value, markerPath, 'win32')
         );
         const markerLiteral = "'C:\\fixtures\\marker''s & 100%.done'";
 
@@ -82,14 +96,18 @@ for (const provider of providers) {
     });
 
     test(`SESSION-COMMAND-BUILDER-001 [${provider.id}] serializes empty Windows command values`, () => {
-        const resumeSpec = provider.resumeSpec('', '', null);
-        const newSpec = provider.newSpec('', '', null);
+        const emptyScope = directoryScope('');
+        const resumeSpec = provider.resumeSpec('', emptyScope, null);
+        const newSpec = provider.newSpec(emptyScope, '', null);
         assert.equal(resumeSpec.args[resumeSpec.args.length - 1], '');
         assert.equal(resumeSpec.cwd, undefined);
         assert.equal(newSpec.cwd, undefined);
         assert.equal(newSpec.args.includes(''), false);
-        assert.equal(provider.resumeCommand('', '', null, 'win32'), provider.emptyResume);
-        assert.equal(decodePowerShellPayload(provider.newCommand('', '', null, 'win32')), provider.emptyNew);
+        assert.equal(provider.resumeCommand('', emptyScope, null, 'win32'), provider.emptyResume);
+        assert.equal(
+            decodePowerShellPayload(provider.newCommand(emptyScope, '', null, 'win32')),
+            provider.emptyNew
+        );
     });
 }
 

@@ -23,15 +23,15 @@ function writeFixture(t, files) {
 function copyGuardFixture(t, mutationPath, mutate = source => source) {
     const relativePaths = [
         'src/dashboard.ts',
-        'src/aiSessions/projectHydrationController.ts',
+        'src/workspaces/sessionHydrationController.ts',
         'src/aiSessions/dashboardController.ts',
         'src/aiSessions/providers.ts',
         'src/aiSessions/attentionAggregate.ts',
-        'src/openProjects/protocol.ts',
-        'src/openProjects/bridgeClient.ts',
+        'src/openWorkspaces/protocol.ts',
+        'src/openWorkspaces/bridgeClient.ts',
         'src/aiSessions/attentionPayload.ts',
         'src/aiSessions/attentionBridgeClient.ts',
-        'extensions/attention-ui-bridge/src/openProjectCoordinator.ts',
+        'extensions/attention-ui-bridge/src/openWorkspaceCoordinator.ts',
         'extensions/attention-ui-bridge/src/extension.ts',
         'package.json',
         'extensions/attention-ui-bridge/package.json',
@@ -69,7 +69,7 @@ test('ARCH-AI-SESSION-SCAN-BOUNDARY-001 reports the ID and unbounded-scan risk',
 
 test('ARCH-PROTOCOL-001 reports the ID and compatibility risk for an unstable protocol', t => {
     const root = writeFixture(t, {
-        'src/openProjects/protocol.ts': 'export const OPEN_PROJECT_PROTOCOL_VERSION = 2;\n',
+        'src/openWorkspaces/protocol.ts': 'export const OPEN_WORKSPACE_PROTOCOL_VERSION = 4;\n',
     });
     assert.throws(
         () => validateArchitectureGuards(root, { ids: ['ARCH-PROTOCOL-001'] }),
@@ -137,11 +137,11 @@ for (const mutation of [
     },
     {
         id: 'ARCH-PROTOCOL-001',
-        file: 'src/openProjects/protocol.ts',
-        expectedDetail: 'open-project protocol version must remain 1 until an explicit migration exists',
+        file: 'src/openWorkspaces/protocol.ts',
+        expectedDetail: 'open-workspace protocol version must remain 3 until an explicit migration exists',
         mutate: source => replaceFixtureSource(source,
-            'OPEN_PROJECT_PROTOCOL_VERSION = 1', 'OPEN_PROJECT_PROTOCOL_VERSION = 2',
-            '\nconst OLD_OPEN_PROJECT_PROTOCOL_VERSION = 1;\n'),
+            'OPEN_WORKSPACE_PROTOCOL_VERSION = 3', 'OPEN_WORKSPACE_PROTOCOL_VERSION = 4',
+            '\nconst OLD_OPEN_WORKSPACE_PROTOCOL_VERSION = 3;\n'),
     },
     {
         id: 'ARCH-PROTOCOL-001',
