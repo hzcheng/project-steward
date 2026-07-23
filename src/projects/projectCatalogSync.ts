@@ -78,6 +78,15 @@ function dominates(left: Record<string, number>, right: Record<string, number>):
         (left && left[actorId] || 0) >= (right[actorId] || 0));
 }
 
+function strictlyDominates(
+    left: Record<string, number>,
+    right: Record<string, number>
+): boolean {
+    return dominates(left, right)
+        && Object.keys({ ...(left || {}), ...(right || {}) }).some(actorId =>
+            (left && left[actorId] || 0) > (right && right[actorId] || 0));
+}
+
 function mergeVectors(
     left: Record<string, number>,
     right: Record<string, number>
@@ -367,6 +376,11 @@ export function applyProjectCatalogSnapshot(
     }
     for (const groupId of options.deletedGroupIds || []) {
         delete desiredGroups[groupId];
+        for (const projectId of Object.keys(desiredProjects)) {
+            if (desiredProjects[projectId].groupId === groupId) {
+                delete desiredProjects[projectId];
+            }
+        }
     }
 
     const desiredGroupIds = requestedGroupIds.filter(groupId => desiredGroups[groupId]);
@@ -490,9 +504,11 @@ export function mergeProjectCatalogDocuments(
         const rightRecord = right.groups[groupId];
         if (leftRecord && rightRecord) {
             groups[groupId] = chooseRecord(leftRecord, rightRecord);
-        } else if (leftRecord && !dominates(right.versionVector, leftRecord.version.vector)) {
+        } else if (leftRecord
+            && !strictlyDominates(right.versionVector, leftRecord.version.vector)) {
             groups[groupId] = clone(leftRecord);
-        } else if (rightRecord && !dominates(left.versionVector, rightRecord.version.vector)) {
+        } else if (rightRecord
+            && !strictlyDominates(left.versionVector, rightRecord.version.vector)) {
             groups[groupId] = clone(rightRecord);
         }
     }
@@ -505,10 +521,12 @@ export function mergeProjectCatalogDocuments(
         const rightRecord = right.projects[projectId];
         if (leftRecord && rightRecord) {
             projects[projectId] = chooseRecord(leftRecord, rightRecord);
-        } else if (leftRecord && !dominates(right.versionVector, leftRecord.version.vector)) {
+        } else if (leftRecord
+            && !strictlyDominates(right.versionVector, leftRecord.version.vector)) {
             projects[projectId] = clone(leftRecord);
             conflictProjectIds.add(projectId);
-        } else if (rightRecord && !dominates(left.versionVector, rightRecord.version.vector)) {
+        } else if (rightRecord
+            && !strictlyDominates(left.versionVector, rightRecord.version.vector)) {
             projects[projectId] = clone(rightRecord);
             conflictProjectIds.add(projectId);
         }

@@ -303,6 +303,48 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 model keeps a concurrent live update and
     assert.deepEqual(merged.conflictProjectIds, ['project-existing']);
 });
 
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 model preserves same-actor concurrent additions with equal causal counters', () => {
+    const {
+        applyProjectCatalogSnapshot,
+        materializeProjectCatalog,
+        mergeProjectCatalogDocuments,
+        migrateLegacyProjectCatalog,
+    } = loadProjectCatalogSyncModel();
+    const base = migrateLegacyProjectCatalog(makeCatalogGroups(), 'actor-shared');
+    const left = applyProjectCatalogSnapshot(
+        base,
+        makeCatalogGroups([{
+            id: 'project-left-window',
+            name: 'Left window',
+            path: '/work/left-window',
+            color: '#111111',
+        }]),
+        'actor-shared'
+    );
+    const right = applyProjectCatalogSnapshot(
+        base,
+        makeCatalogGroups([{
+            id: 'project-right-window',
+            name: 'Right window',
+            path: '/work/right-window',
+            color: '#222222',
+        }]),
+        'actor-shared'
+    );
+
+    const merged = mergeProjectCatalogDocuments(left, right);
+
+    assert.deepEqual(projectIds(materializeProjectCatalog(merged.document)), [
+        'project-existing',
+        'project-left-window',
+        'project-right-window',
+    ]);
+    assert.deepEqual(merged.conflictProjectIds, [
+        'project-left-window',
+        'project-right-window',
+    ]);
+});
+
 test('PROJECT-CATALOG-SYNC-CONFLICT-001 model does not grow history across repeated fixed-actor mutations', () => {
     const {
         applyProjectCatalogSnapshot,
@@ -337,6 +379,26 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 model does not grow history across repea
         assert.equal(Object.prototype.hasOwnProperty.call(document, forbidden), false);
     }
     assert.equal(Object.keys(document.projects).length, 1);
+});
+
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 model removes a deleted group project records without orphan metadata', () => {
+    const {
+        applyProjectCatalogSnapshot,
+        materializeProjectCatalog,
+        migrateLegacyProjectCatalog,
+    } = loadProjectCatalogSyncModel();
+    const document = migrateLegacyProjectCatalog(makeCatalogGroups(), 'actor-a');
+
+    const deleted = applyProjectCatalogSnapshot(
+        document,
+        [],
+        'actor-a',
+        { deletedGroupIds: ['group-main'] }
+    );
+
+    assert.deepEqual(materializeProjectCatalog(deleted), []);
+    assert.deepEqual(Object.keys(deleted.groups), []);
+    assert.deepEqual(Object.keys(deleted.projects), []);
 });
 
 test('PROJECT-CATALOG-SYNC-CONFLICT-001 persistence writes shadow before sync data and compatibility projection', async () => {
@@ -431,7 +493,46 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 hardening repairs malformed sync data wi
             && event.source === 'projectSyncData'),
         true
     );
+    const reconciliation = harness.diagnostics.find(event =>
+        event.event === 'project-catalog-sync-reconciled');
+    assert.equal(reconciliation.actorId, 'actor-b');
+    assert.deepEqual(reconciliation.causalVersionVector, recovered.versionVector);
+    assert.equal(reconciliation.repairReasons.includes('invalid-sync-data'), true);
+    assert.deepEqual(reconciliation.affectedProjectIds, []);
     assert.equal(JSON.stringify(harness.diagnostics).includes('private project description'), false);
+});
+
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 hardening migrates valid legacy data when sync is malformed and no shadow exists', async () => {
+    const legacyProject = {
+        id: 'project-legacy-recovery',
+        name: 'Legacy recovery',
+        path: '/work/legacy-recovery',
+        color: '#246810',
+    };
+    const harness = makeSyncPersistenceHarness({
+        legacyGroups: makeCatalogGroups([legacyProject]),
+        syncData: { schemaVersion: 1, malformed: true },
+        localState: null,
+    });
+
+    await harness.service.reconcile();
+
+    assert.deepEqual(projectIds(harness.service.getGroups()), [
+        'project-existing',
+        'project-legacy-recovery',
+    ]);
+    assert.deepEqual(projectIds(
+        loadProjectCatalogSyncModel().materializeProjectCatalog(harness.values.syncData)
+    ), [
+        'project-existing',
+        'project-legacy-recovery',
+    ]);
+    assert.equal(
+        harness.diagnostics.some(event =>
+            event.event === 'project-catalog-sync-invalid-source'
+            && event.source === 'projectSyncData'),
+        true
+    );
 });
 
 test('PROJECT-CATALOG-SYNC-CONFLICT-001 hardening imports a legacy-client addition without accepting legacy omissions', async () => {
@@ -468,6 +569,34 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 hardening imports a legacy-client additi
         'project-existing',
         'project-legacy-client',
     ]);
+});
+
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 hardening does not resurrect a canonical deletion from legacy data without a confirmed baseline', async () => {
+    const {
+        applyProjectCatalogSnapshot,
+        migrateLegacyProjectCatalog,
+    } = loadProjectCatalogSyncModel();
+    const baseline = makeCatalogGroups();
+    const baseDocument = migrateLegacyProjectCatalog(baseline, 'actor-a');
+    const deletedDocument = applyProjectCatalogSnapshot(
+        baseDocument,
+        [],
+        'actor-a',
+        {
+            deletedGroupIds: ['group-main'],
+            deletedProjectIds: ['project-existing'],
+        }
+    );
+    const harness = makeSyncPersistenceHarness({
+        legacyGroups: baseline,
+        syncData: deletedDocument,
+        localState: null,
+    });
+
+    await harness.service.reconcile();
+
+    assert.deepEqual(harness.service.getGroups(), []);
+    assert.deepEqual(harness.values.legacyGroups, []);
 });
 
 test('PROJECT-CATALOG-SYNC-CONFLICT-001 hardening aborts before settings when shadow fails and retries later settings failures', async () => {

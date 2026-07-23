@@ -1,6 +1,6 @@
 'use strict';
 
-import type { Group } from '../models';
+import type { Group, Project } from '../models';
 import {
     applyProjectCatalogSnapshot,
     materializeProjectCatalog,
@@ -79,7 +79,7 @@ function parseLocalState(value: ProjectCatalogLocalStateV1 | null): ProjectCatal
 
 interface CatalogProject {
     groupId: string;
-    value: Record<string, unknown>;
+    value: Project;
 }
 
 function groupValue(group: Group): Record<string, unknown> {
@@ -98,7 +98,7 @@ function projectMap(groups: Group[]): Map<string, CatalogProject> {
             if (project && project.id) {
                 result.set(project.id, {
                     groupId: group.id,
-                    value: clone(project) as unknown as Record<string, unknown>,
+                    value: clone(project),
                 });
             }
         }
@@ -124,25 +124,33 @@ function ensureGroup(candidate: Group[], legacyGroup: Group): Group {
 function replaceProject(
     candidate: Group[],
     legacyGroup: Group,
-    project: Record<string, unknown>
+    project: Project
 ): void {
     for (const group of candidate) {
         group.projects = (group.projects || []).filter(item => item.id !== project.id);
     }
-    ensureGroup(candidate, legacyGroup).projects.push(clone(project) as never);
+    ensureGroup(candidate, legacyGroup).projects.push(clone(project));
 }
 
 function importLegacyChanges(
     document: ProjectCatalogSyncDocumentV1,
     legacyGroups: Group[],
     legacyProjection: Group[] | null,
-    actorId: string
+    actorId: string,
+    discardedProjects: Map<string, CatalogProject>
 ): { document: ProjectCatalogSyncDocumentV1; conflictProjectIds: string[] } {
     const canonicalGroups = materializeProjectCatalog(document);
-    if (legacyProjection && equals(legacyGroups, legacyProjection)) {
+    if (!legacyProjection || equals(legacyGroups, legacyProjection)) {
         return { document, conflictProjectIds: [] };
     }
-    if (legacyProjection && equals(canonicalGroups, legacyProjection)) {
+    const legacyProjects = projectMap(legacyGroups);
+    const repeatsDiscardedProject = Array.from(discardedProjects).some(
+        ([projectId, discardedProject]) => {
+            const legacyProject = legacyProjects.get(projectId);
+            return legacyProject && equals(legacyProject, discardedProject);
+        }
+    );
+    if (equals(canonicalGroups, legacyProjection) && !repeatsDiscardedProject) {
         return {
             document: applyProjectCatalogSnapshot(document, legacyGroups, actorId),
             conflictProjectIds: [],
@@ -151,7 +159,7 @@ function importLegacyChanges(
 
     const candidate = clone(canonicalGroups);
     const canonicalProjects = projectMap(canonicalGroups);
-    const baselineProjects = projectMap(legacyProjection || []);
+    const baselineProjects = projectMap(legacyProjection);
     const conflictProjectIds = new Set<string>();
 
     for (const legacyGroup of legacyGroups) {
@@ -184,10 +192,18 @@ function importLegacyChanges(
             }
             const legacyValue: CatalogProject = {
                 groupId: legacyGroup.id,
-                value: clone(legacyProject) as unknown as Record<string, unknown>,
+                value: clone(legacyProject),
             };
             const canonicalValue = canonicalProjects.get(legacyProject.id);
             const baselineValue = baselineProjects.get(legacyProject.id);
+            const discardedProject = discardedProjects.get(legacyProject.id);
+
+            if (discardedProject && equals(legacyValue, discardedProject)) {
+                continue;
+            }
+            if (discardedProject) {
+                conflictProjectIds.add(legacyProject.id);
+            }
 
             if (!baselineValue) {
                 if (!canonicalValue) {
@@ -267,11 +283,25 @@ export class ProjectCatalogSyncService {
         const initialized = !syncData && !localState;
         let document: ProjectCatalogSyncDocumentV1;
         let conflictProjectIds: string[] = [];
+        const discardedProjects = new Map<string, CatalogProject>();
 
         if (syncData && localState) {
             const merged = mergeProjectCatalogDocuments(localState.document, syncData);
             document = merged.document;
             conflictProjectIds = merged.conflictProjectIds;
+            for (const source of [localState.document, syncData]) {
+                for (const projectId of Object.keys(source.projects)) {
+                    if (!document.projects[projectId]) {
+                        discardedProjects.set(
+                            projectId,
+                            {
+                                groupId: source.projects[projectId].groupId,
+                                value: clone(source.projects[projectId].value),
+                            }
+                        );
+                    }
+                }
+            }
         } else if (localState) {
             document = localState.document;
         } else if (syncData) {
@@ -288,7 +318,8 @@ export class ProjectCatalogSyncService {
                 document,
                 legacyGroups,
                 legacyProjection,
-                actorId
+                actorId,
+                discardedProjects
             );
             document = imported.document;
             conflictProjectIds = Array.from(new Set([
@@ -330,18 +361,33 @@ export class ProjectCatalogSyncService {
         const writeLocal = !current.localState || !equals(current.localState, localState);
         const writeSync = !current.syncData || !equals(current.syncData, document);
         const writeLegacy = forceProjection || !equals(current.legacyGroups, groups);
+        const repairReasons = new Set<string>();
 
         if (current.invalidSyncData) {
+            repairReasons.add('invalid-sync-data');
             this.options.onDiagnostic?.({
                 event: 'project-catalog-sync-invalid-source',
                 source: 'projectSyncData',
             });
         }
         if (current.invalidLocalState) {
+            repairReasons.add('invalid-local-shadow');
             this.options.onDiagnostic?.({
                 event: 'project-catalog-sync-invalid-source',
                 source: 'localShadow',
             });
+        }
+        if (writeLocal && !current.localState && !current.invalidLocalState) {
+            repairReasons.add('missing-local-shadow');
+        }
+        if (writeSync && !current.invalidSyncData) {
+            repairReasons.add(current.syncData ? 'stale-sync-data' : 'missing-sync-data');
+        }
+        if (writeLegacy) {
+            repairReasons.add('stale-compatibility-projection');
+        }
+        if (current.conflictProjectIds.length) {
+            repairReasons.add('conflict-recovery');
         }
         if (writeLocal) {
             await this.options.updateLocalState(localState);
@@ -358,6 +404,7 @@ export class ProjectCatalogSyncService {
         };
         const acknowledgeLegacyProjection = !equals(localState, confirmedLocalState);
         if (acknowledgeLegacyProjection) {
+            repairReasons.add('compatibility-baseline-confirmed');
             await this.options.updateLocalState(confirmedLocalState);
         }
 
@@ -372,6 +419,9 @@ export class ProjectCatalogSyncService {
             this.options.onDiagnostic?.({
                 event: 'project-catalog-sync-reconciled',
                 actorId: current.actorId,
+                causalVersionVector: clone(document.versionVector),
+                repairReasons: Array.from(repairReasons).sort(),
+                affectedProjectIds: [...current.conflictProjectIds],
                 repaired: writeSync || writeLegacy,
                 conflictProjectIds: current.conflictProjectIds,
             });
