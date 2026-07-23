@@ -198,40 +198,53 @@ The UI uses VS Code theme colors by default, so it should fit both light and dar
 
 ## Development
 
-Install dependencies:
+CI and local verification use Node.js 22.12 or newer. Install the locked dependencies:
 
 ```bash
-npm install
+npm ci
 ```
 
-Compile TypeScript:
+For a quick feedback loop, compile once and run the smallest owning test file. Test names include their behavior-contract ID:
 
 ```bash
 npm run test-compile
+node --test tests/unit/projects/projectPathUtils.test.js
 ```
 
-Build webview styles:
+Run all deterministic unit, contract, and integration suites:
 
 ```bash
-npx gulp buildStyles
+npm run test:deterministic
 ```
 
-Run webpack for local extension development:
+The weekly/manual macOS workflow also runs a real Extension Host smoke against pinned VS Code Stable `1.130.0`. It loads both the main workspace extension and the UI bridge from this checkout, activates them, and verifies the main command/view lifecycle with isolated temporary user data, extensions, workspace, home, and provider directories:
 
 ```bash
-npm run webpack
+npm run test:extension-host
 ```
 
-Run the fake-tmux suite used by ordinary safety CI:
+This downloads the fixed VS Code test build when it is not cached and requires a host capable of launching Electron. A worker watchdog covers download, Electron startup, and test-suite loading; on macOS/Linux it terminates the owned worker process group after eight minutes. The scheduled job retains a separate 15-minute hard timeout. The scenario is intentionally scheduled rather than part of the Linux pull-request gate.
 
-```bash
-npm run test:tmux
-```
-
-Run the opt-in real tmux smoke test against a unique isolated server (never the user's default tmux server):
+Run the real-tmux smoke test on a POSIX host with tmux installed. The harness uses and cleans up a uniquely named test server; it never uses the default tmux server:
 
 ```bash
 PROJECT_STEWARD_TMUX_PATH=/usr/bin/tmux npm run test:tmux:smoke
+```
+
+Run the Linux CI-equivalent quality gate:
+
+```bash
+npm run test:ci:linux
+```
+
+Before fixing a regression, add or update a focused test that names a stable behavior ID and run it to observe the failure. Apply the smallest fix, rerun that focused test, then run the relevant full gate. Update [`docs/testing/behavior-contracts.json`](docs/testing/behavior-contracts.json) when behavior ownership changes. See [`docs/testing/README.md`](docs/testing/README.md) for catalog rules, focused commands, CI coverage, and the manual environment matrix.
+
+Other useful development commands:
+
+```bash
+npx gulp buildStyles
+npm run webpack
+npm run test:tmux
 ```
 
 Package, test, and install locally:

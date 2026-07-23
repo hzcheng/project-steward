@@ -1,0 +1,31 @@
+{
+  "src/aiSessions/attentionAggregate.ts": {
+    "curly": 10
+  },
+  "src/aiSessions/attentionBridgeClient.ts": {
+    "curly": 15
+  },
+  "src/aiSessions/attentionPayload.ts": {
+    "curly": 23
+  },
+  "src/constants.ts": {
+    "semicolon": 1
+  },
+  "src/dashboard.ts": {
+    "semicolon": 6,
+    "triple-equals": 1
+  },
+  "src/services/colorService.ts": {
+    "curly": 3,
+    "semicolon": 5,
+    "triple-equals": 3
+  },
+  "src/services/ntc.ts": {
+    "curly": 8,
+    "semicolon": 1,
+    "triple-equals": 9
+  },
+  "src/services/projectService.ts": {
+    "triple-equals": 15
+  }
+}

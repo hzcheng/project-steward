@@ -23,6 +23,13 @@ const tmuxBackendModule = require('../out/aiSessions/tmuxRuntimeBackend');
 const WorkspacePendingSessionPromotionController = require(
     '../out/workspaces/pendingSessionPromotionController'
 ).WorkspacePendingSessionPromotionController;
+
+function encodeExpectedTmuxMetadata(value) {
+    const payload = Buffer.from(value, 'utf8').toString('base64url');
+    const checksum = crypto.createHash('sha256').update(value, 'utf8')
+        .digest('hex').slice(0, 16);
+    return `psb64v1.${payload}.${checksum}`;
+}
 const CreationController = require('../out/aiSessions/creationController').AiSessionCreationController;
 const ResumeController = require('../out/aiSessions/resumeController').AiSessionResumeController;
 const TerminalCommandController = require('../out/aiSessions/terminalCommandController').AiSessionTerminalCommandController;
@@ -1209,7 +1216,7 @@ function runTmuxLayoutChecks() {
 
 async function runTmuxClientChecks() {
     const requiredCommands = [
-        'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
+        'new-session', 'new-window', 'list-windows', 'list-panes', 'set-option', 'show-options',
         'select-window', 'attach-session', 'has-session', 'rename-session', 'rename-window',
         'display-message',
     ];
@@ -1268,8 +1275,8 @@ async function runTmuxClientChecks() {
     let activeWindowResult = {
         exitCode: 0,
         stdout: [
-            'project-session\u001fbase\u001f@1\u001f0',
-            'project-session\u001fai-codex-a\u001f@2\u001f1',
+            'project-session|:ps-field:|base|:ps-field:|@1|:ps-field:|0',
+            'project-session|:ps-field:|ai-codex-a|:ps-field:|@2|:ps-field:|1',
         ].join('\n') + '\n',
         stderr: '',
     };
@@ -1288,7 +1295,7 @@ async function runTmuxClientChecks() {
     });
     assert.deepStrictEqual(activeWindowCalls.slice(-1)[0], [
         'list-windows', '-t', 'project-session', '-F',
-        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}',
+        '#{session_name}|:ps-field:|#{window_name}|:ps-field:|#{window_id}|:ps-field:|#{window_active}',
     ]);
 
     activeWindowResult = { exitCode: 0, stdout: '', stderr: '' };
@@ -1297,8 +1304,8 @@ async function runTmuxClientChecks() {
     activeWindowResult = {
         exitCode: 0,
         stdout: [
-            'project-session\u001fa\u001f@1\u001f1',
-            'project-session\u001fb\u001f@2\u001f1',
+            'project-session|:ps-field:|a|:ps-field:|@1|:ps-field:|1',
+            'project-session|:ps-field:|b|:ps-field:|@2|:ps-field:|1',
         ].join('\n') + '\n',
         stderr: '',
     };
@@ -1307,7 +1314,7 @@ async function runTmuxClientChecks() {
 
     activeWindowResult = {
         exitCode: 0,
-        stdout: 'foreign-session\u001fa\u001f@1\u001f1\n',
+        stdout: 'foreign-session|:ps-field:|a|:ps-field:|@1|:ps-field:|1\n',
         stderr: '',
     };
     await assert.rejects(activeWindowClient.getActiveWindow('project-session'), error =>
@@ -1345,7 +1352,7 @@ async function runTmuxClientChecks() {
         .map(key => targetMetadata[key] || '');
     let targetResult = {
         exitCode: 0,
-        stdout: ['managed-session', 'ai-codex-1', '@42', ...targetFields].join('\u001f') + '\n',
+        stdout: ['managed-session', 'ai-codex-1', '@42', ...targetFields].join('|:ps-field:|') + '\n',
         stderr: '',
     };
     const targetCalls = [];
@@ -1374,7 +1381,7 @@ async function runTmuxClientChecks() {
         'display-message', '-p', '-t', 'managed-session:ai-codex-1',
     ]);
     const targetFormat = targetCalls.slice(-1)[0][4];
-    assert.ok(targetFormat.startsWith('#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f'));
+    assert.ok(targetFormat.startsWith('#{session_name}|:ps-field:|#{window_name}|:ps-field:|#{window_id}|:ps-field:|'));
     for (const option of Object.values(tmuxLayout.TMUX_METADATA_OPTIONS)) {
         assert.ok(targetFormat.includes(`#{${option}}`));
     }
@@ -1399,7 +1406,7 @@ async function runTmuxClientChecks() {
     targetResult = { exitCode: 1, stdout: '', stderr: "can't find window: ai-codex-1" };
     assert.strictEqual(await targetClient.getTargetWindow(targetLocator), null);
 
-    targetResult = { exitCode: 0, stdout: 'too\u001ffew\n', stderr: '' };
+    targetResult = { exitCode: 0, stdout: 'too|:ps-field:|few\n', stderr: '' };
     await assert.rejects(targetClient.getTargetWindow(targetLocator), error =>
         error.operation === 'get-target-window' && error.category === 'invalid-output');
 
@@ -1407,7 +1414,7 @@ async function runTmuxClientChecks() {
     oversizedTargetFields[Object.keys(tmuxLayout.TMUX_METADATA_OPTIONS).indexOf('marker')] = 'x'.repeat(4097);
     targetResult = {
         exitCode: 0,
-        stdout: ['managed-session', 'ai-codex-1', '@42', ...oversizedTargetFields].join('\u001f') + '\n',
+        stdout: ['managed-session', 'ai-codex-1', '@42', ...oversizedTargetFields].join('|:ps-field:|') + '\n',
         stderr: '',
     };
     await assert.rejects(targetClient.getTargetWindow(targetLocator), error =>
@@ -1463,8 +1470,18 @@ async function runTmuxClientChecks() {
                 return {
                     exitCode: 0,
                     stdout: [
-                        'session-a\u001fwindow-a\u001f@12\u001f1',
-                        'session-a\u001fwindow-a\u001f@13\u001f0',
+                        'session-a|:ps-field:|window-a|:ps-field:|@12|:ps-field:|1',
+                        'session-a|:ps-field:|window-a|:ps-field:|@13|:ps-field:|0',
+                    ].join('\n') + '\n',
+                    stderr: '',
+                };
+            }
+            if (args[0] === 'list-panes') {
+                return {
+                    exitCode: 0,
+                    stdout: [
+                        '@12|:ps-field:|%20|:ps-field:|1|:ps-field:|4312',
+                        '@13|:ps-field:|%21|:ps-field:|1|:ps-field:|4313',
                     ].join('\n') + '\n',
                     stderr: '',
                 };
@@ -1488,6 +1505,7 @@ async function runTmuxClientChecks() {
             windowName: 'window-a',
             windowId: '@12',
             active: true,
+            panePid: 4312,
             sessionMetadata: {
                 managed: '1',
                 version: '2',
@@ -1526,6 +1544,7 @@ async function runTmuxClientChecks() {
             windowName: 'window-a',
             windowId: '@13',
             active: false,
+            panePid: 4313,
             sessionMetadata: {
                 managed: '1',
                 version: '2',
@@ -1583,10 +1602,12 @@ async function runTmuxClientChecks() {
         layout: 'session', sessionName: 'session-a', windowName: 'readable-window',
     });
     assert.ok(metadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
-        'set-option', '-t', 'session-a', '@project-steward-managed', '1',
+        'set-option', '-t', 'session-a', '@project-steward-managed',
+        encodeExpectedTmuxMetadata('1'),
     ])));
     assert.ok(metadataCalls.some(call => JSON.stringify(call.args) === JSON.stringify([
-        'set-option', '-w', '-t', 'session-a:window-a', '@project-steward-session-id', 'session-id',
+        'set-option', '-w', '-t', 'session-a:window-a',
+        '@project-steward-session-id', encodeExpectedTmuxMetadata('session-id'),
     ])));
     assert.deepStrictEqual(metadataCalls.slice(-6).map(call => call.args), [
         ['set-option', '-w', '-t', 'session-a:window-a', 'automatic-rename', 'off'],

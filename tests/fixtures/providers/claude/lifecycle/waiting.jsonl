@@ -1,0 +1,1 @@
+{"timestamp":"2026-07-20T00:00:02.000Z","type":"assistant","uuid":"fixture-waiting","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion","id":"fixture-question"}]}}

@@ -1,9 +1,12 @@
 .vscode/**
 .vscode-test/**
 .github/**
+.ci/**
 .superpowers/**
 docs/**
 docs/superpowers/**
+tests/**
+coverage/**
 out/**
 !out/workspaces/*.js
 !out/openWorkspaces/*.js

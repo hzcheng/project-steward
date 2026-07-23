@@ -2,6 +2,25 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
+## [2.1.5] 2026-07-23
+
+### Added
+
+-   Add cross-platform CI quality gates on Linux and Windows, plus an isolated real-tmux smoke gate for every pull request.
+-   Add a behavior-contract catalog, main-capability traceability, architecture guards, deterministic provider fixtures, and coverage baselines to prevent established behavior from regressing.
+-   Add weekly macOS Extension Host verification after the reusable Linux, Windows, and tmux gates pass.
+
+### Changed
+
+-   Refactor the regression suite into focused unit, contract, integration, platform, Extension Host, and real-runtime layers with explicit behavior ownership.
+-   Make release packaging deterministic and reject tests, coverage output, source maps, documentation, and stale build files from production VSIX archives.
+
+### Fixed
+
+-   Rebind a managed tmux pane when Codex switches to a new root thread/session, keeping the replacement session in `ACTIVE` with its running animation while rejecting subagents and ambiguous process evidence.
+-   Preserve `OTHER WINDOWS` navigation identity and privacy guarantees through incremental rendering updates.
+-   Stabilize attention cleanup synchronization under full Linux CI load.
+
 ## [2.1.4] 2026-07-22
 
 ### Added

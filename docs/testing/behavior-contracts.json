@@ -1,0 +1,2589 @@
+[
+  {
+    "id": "PROJECT-PATH-001",
+    "domain": "project",
+    "title": "Path behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/projects/projectPathUtils.test.js"
+    ],
+    "evidence": [
+      "src/projects/projectPathUtils.ts"
+    ]
+  },
+  {
+    "id": "PROJECT-PATH-002",
+    "domain": "project",
+    "title": "Path match score behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/projects/projectPathUtils.test.js"
+    ],
+    "evidence": [
+      "src/projects/projectPathUtils.ts"
+    ]
+  },
+  {
+    "id": "PROJECT-PATH-003",
+    "domain": "project",
+    "title": "Remote authority normalization behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/projects/projectPathUtils.test.js"
+    ],
+    "evidence": [
+      "src/projects/projectPathUtils.ts"
+    ]
+  },
+  {
+    "id": "PROJECT-PATH-004",
+    "domain": "project",
+    "title": "Remote authority encoding behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/projects/projectPathUtils.test.js"
+    ],
+    "evidence": [
+      "src/projects/projectPathUtils.ts"
+    ]
+  },
+  {
+    "id": "PROJECT-ASSIGNMENT-001",
+    "domain": "project",
+    "title": "Assignment behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-DASHBOARD-SEARCH-CATALOG-001",
+    "domain": "webview",
+    "title": "Dashboard Search Catalog behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ERROR-DASHBOARD-DIAGNOSTICS-001",
+    "domain": "error",
+    "title": "Dashboard Diagnostics behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/errors/failureMapping.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-ATTENTION-PROJECTION-001",
+    "domain": "attention",
+    "title": "Attention Projection behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-FAVORITE-PROJECT-ORDER-001",
+    "domain": "project",
+    "title": "Favorite Project Order behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/projects/orderAndFavorites.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "OPEN-OPEN-PROJECT-RUNTIME-IDENTITY-001",
+    "domain": "open-project",
+    "title": "Open Project Runtime Identity behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/runtimeIdentity.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-WORKSPACE-HELPER-001",
+    "domain": "project",
+    "title": "Workspace Helper behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/projects/workspaceAndOpenMatching.test.js",
+      "tests/platform/windows/projectPaths.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-CANDIDATE-FILTER-001",
+    "domain": "project",
+    "title": "Candidate Filter behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-PROJECT-CANDIDATE-001",
+    "domain": "project",
+    "title": "Project Candidate behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-SESSION-PATH-001",
+    "domain": "project",
+    "title": "Session Path behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-PENDING-TERMINAL-MATCHER-001",
+    "domain": "session",
+    "title": "Pending Terminal Matcher behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-TERMINAL-CANDIDATE-001",
+    "domain": "project",
+    "title": "Terminal Candidate behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/sessionRuntimeFlow.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-PENDING-TERMINAL-RESOLVER-001",
+    "domain": "session",
+    "title": "Pending Terminal Resolver behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-SCAN-OPTION-001",
+    "domain": "session",
+    "title": "Scan Option behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-TERMINAL-CWD-001",
+    "domain": "session",
+    "title": "Terminal Cwd behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-DISPLAY-001",
+    "domain": "webview",
+    "title": "Display behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-PIN-STORE-001",
+    "domain": "persistence",
+    "title": "Pin Store behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/persistence/stores.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-PIN-CONTROLLER-001",
+    "domain": "session",
+    "title": "Pin Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/controllerBoundaries.test.js",
+      "tests/contract/errors/failureMapping.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-ALIAS-STORE-001",
+    "domain": "persistence",
+    "title": "Alias Store behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/persistence/stores.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-ALIAS-CONTROLLER-001",
+    "domain": "session",
+    "title": "Alias Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/controllerBoundaries.test.js",
+      "tests/contract/errors/failureMapping.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-PROJECT-STATE-STORE-001",
+    "domain": "persistence",
+    "title": "Project State Store behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/persistence/stores.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-ACTIVE-AI-SESSION-PROJECTION-001",
+    "domain": "project",
+    "title": "Active AI Session Projection behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/sessionRuntimeFlow.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-AI-SESSION-COMMAND-CONTROLLER-001",
+    "domain": "session",
+    "title": "AI Session Command Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/controllerBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-AI-SESSION-CREATION-CONTROLLER-001",
+    "domain": "session",
+    "title": "AI Session Creation Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/sessionControllers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-AI-SESSION-PROVIDER-AVAILABILITY-001",
+    "domain": "session",
+    "title": "AI Session Provider Availability behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-AI-SESSION-RESUME-CONTROLLER-001",
+    "domain": "session",
+    "title": "AI Session Resume Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/sessionControllers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-AI-SESSION-TERMINAL-COMMAND-CONTROLLER-001",
+    "domain": "session",
+    "title": "AI Session Terminal Command Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/sessionControllers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-AI-SESSION-RUNTIME-CONTROLLER-001",
+    "domain": "runtime",
+    "title": "AI Session Runtime Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimeCoordinator.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001",
+    "domain": "attention",
+    "title": "AI Session Attention Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js",
+      "tests/integration/dashboard/sessionRuntimeFlow.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-AI-SESSION-EXECUTION-CONTROLLER-001",
+    "domain": "session",
+    "title": "AI Session Execution Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/sessionControllers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-SIDEBAR-STEWARD-VIEW-PROVIDER-ORDERING-001",
+    "domain": "session",
+    "title": "Sidebar Steward View Provider Ordering behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/errorRecovery.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-AI-SESSION-ARCHIVE-RUNTIME-001",
+    "domain": "runtime",
+    "title": "AI Session Archive Runtime behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/archiveAndHydration.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-AI-SESSION-PROJECT-HYDRATION-CONTROLLER-001",
+    "domain": "persistence",
+    "title": "AI Session Project Hydration Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/projectHydrationController.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-AI-SESSION-PROJECT-HYDRATION-PROMOTION-001",
+    "domain": "persistence",
+    "title": "AI Session Project Hydration Promotion behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/projectHydrationPromotion.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-KEY-001",
+    "domain": "session",
+    "title": "Key behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/sessionBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-ACTIVE-AI-SESSION-TERMINAL-HIGHLIGHT-001",
+    "domain": "webview",
+    "title": "Active AI Session Terminal Highlight behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/sessionRuntimeFlow.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-FOCUSED-RUNTIME-MONITOR-001",
+    "domain": "runtime",
+    "title": "Tmux Focused Runtime Monitor behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/tmuxDiscovery.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-AI-SESSION-TERMINAL-RESOLUTION-001",
+    "domain": "session",
+    "title": "AI Session Terminal Resolution behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/terminalService.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-AI-SESSION-TERMINAL-BINDING-STORE-001",
+    "domain": "persistence",
+    "title": "AI Session Terminal Binding Store behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/persistence/stores.test.js",
+      "tests/contract/errors/failureMapping.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-AI-SESSION-TERMINAL-PERSISTENCE-001",
+    "domain": "persistence",
+    "title": "AI Session Terminal Persistence behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/persistence/stores.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-BATCH-AI-SESSION-ARCHIVE-001",
+    "domain": "persistence",
+    "title": "Batch AI Session Archive behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/archiveAndHydration.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-BATCH-AI-SESSION-ARCHIVE-HOST-001",
+    "domain": "persistence",
+    "title": "Batch AI Session Archive Host behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/archiveAndHydration.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-WEBVIEW-CONTENT-001",
+    "domain": "webview",
+    "title": "Webview Content behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-SMOKE-HARNESS-SAFETY-001",
+    "domain": "runtime",
+    "title": "Tmux Smoke Harness Safety behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/tooling/ciContracts.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-CURRENT-WORKSPACE-RENDERING-001",
+    "domain": "webview",
+    "title": "Current Workspace Rendering behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-FAVORITE-RENDERING-001",
+    "domain": "webview",
+    "title": "Favorite Rendering behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-ATTENTION-PROJECT-RENDERING-001",
+    "domain": "attention",
+    "title": "Attention Project Rendering behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/attentionRendering.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-FAVORITE-DND-001",
+    "domain": "webview",
+    "title": "Favorite Dnd behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-BATCH-AI-SESSION-WEBVIEW-001",
+    "domain": "webview",
+    "title": "Batch AI Session Webview behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ARCH-AI-SESSION-INCREMENTAL-REFRESH-SOURCE-001",
+    "domain": "architecture",
+    "title": "AI Session Incremental Refresh Source behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "scripts/run-architecture-guards.js"
+    ],
+    "evidence": [
+      "src/aiSessions/dashboardController.ts"
+    ]
+  },
+  {
+    "id": "ARCH-AI-SESSION-READ-COORDINATOR-001",
+    "domain": "architecture",
+    "title": "AI Session Read Coordinator behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/controllerBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "OPEN-OPEN-PROJECT-AI-SESSION-VIEW-MODEL-BUILDER-001",
+    "domain": "open-project",
+    "title": "Open Project AI Session View Model Builder behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/sessionRuntimeFlow.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-AI-SESSION-PROJECT-HYDRATION-001",
+    "domain": "persistence",
+    "title": "AI Session Project Hydration behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/archiveAndHydration.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-AI-SESSION-DASHBOARD-CONTROLLER-001",
+    "domain": "webview",
+    "title": "AI Session Dashboard Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/sessionRuntimeFlow.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-AI-SESSION-DASHBOARD-WATCHER-COALESCING-001",
+    "domain": "webview",
+    "title": "AI Session Dashboard Watcher Coalescing behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/sessionRuntimeFlow.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-AI-SESSION-DASHBOARD-UNCHANGED-MESSAGE-SKIP-001",
+    "domain": "webview",
+    "title": "AI Session Dashboard Unchanged Message Skip behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/sessionRuntimeFlow.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-GIT-REPOSITORY-DETECTOR-001",
+    "domain": "project",
+    "title": "Git Repository Detector behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/controllerBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-CODEX-SUBAGENT-SESSION-FILTER-001",
+    "domain": "session",
+    "title": "Codex Subagent Session Filter behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/providerSpecificBehavior.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-CODEX-SESSION-ACTIVITY-TIMESTAMP-001",
+    "domain": "session",
+    "title": "Codex Session Activity Timestamp behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/providerSpecificBehavior.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-CODEX-SESSION-META-CACHE-001",
+    "domain": "persistence",
+    "title": "Codex Session Meta Cache behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/providerSpecificBehavior.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-KIMI-NESTED-SUBAGENT-BOUNDARY-001",
+    "domain": "session",
+    "title": "Kimi Nested Subagent Boundary behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/providerSpecificBehavior.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-CLAUDE-SESSION-001",
+    "domain": "session",
+    "title": "Claude Session behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/providerSpecificBehavior.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-AI-SESSION-PROVIDER-MAX-FILES-001",
+    "domain": "session",
+    "title": "AI Session Provider Max Files behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/providers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-PROVIDER-001",
+    "domain": "session",
+    "title": "Provider behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/providers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-PROVIDER-LIFECYCLE-SERVICE-001",
+    "domain": "persistence",
+    "title": "Provider Lifecycle Service behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/providers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-COMMAND-BUILDER-001",
+    "domain": "session",
+    "title": "Command Builder behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/commandBuilders.test.js",
+      "tests/platform/windows/commandBuilders.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-LIFECYCLE-PARSER-001",
+    "domain": "persistence",
+    "title": "Lifecycle Parser behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/providers.test.js",
+      "tests/unit/aiSessions/lifecycle.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-INCREMENTAL-JSONL-LIFECYCLE-READER-001",
+    "domain": "persistence",
+    "title": "Incremental Jsonl Lifecycle Reader behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/incrementalJsonlLifecycleReader.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-ATTENTION-MONITOR-001",
+    "domain": "attention",
+    "title": "Attention Monitor behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-AI-SESSION-EXECUTION-MONITOR-001",
+    "domain": "session",
+    "title": "AI Session Execution Monitor behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/controllerBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-ATTENTION-PAYLOAD-001",
+    "domain": "attention",
+    "title": "Attention Payload behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-PRODUCTION-ATTENTION-STORE-CLOCK-001",
+    "domain": "attention",
+    "title": "Production Attention Store Clock behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js",
+      "tests/contract/persistence/stores.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-PRODUCTION-ATTENTION-STORE-LIFECYCLE-001",
+    "domain": "attention",
+    "title": "Production Attention Store Lifecycle behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js",
+      "tests/contract/persistence/stores.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-PRODUCTION-ATTENTION-STORE-UNREGISTER-PROPAGATION-001",
+    "domain": "attention",
+    "title": "Production Attention Store Unregister Propagation behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-PRODUCTION-ATTENTION-STORE-TOMBSTONE-REACTIVATION-RACE-001",
+    "domain": "attention",
+    "title": "Production Attention Store Tombstone Reactivation Race behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-ATTENTION-BRIDGE-CLIENT-PRIVACY-001",
+    "domain": "attention",
+    "title": "Attention Bridge Client Privacy behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-PRODUCTION-ATTENTION-BRIDGE-INTEGRATION-001",
+    "domain": "attention",
+    "title": "Production Attention Bridge Integration behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/productionAttentionBridge.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-ATTENTION-BRIDGE-CLIENT-LIFECYCLE-001",
+    "domain": "attention",
+    "title": "Attention Bridge Client Lifecycle behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-ATTENTION-PROJECT-001",
+    "domain": "attention",
+    "title": "Attention Project behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "RELEASE-VSIX-PACKAGING-001",
+    "domain": "release",
+    "title": "Vsix Packaging behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/tooling/ciContracts.test.js",
+      "tests/unit/tooling/packageScripts.test.js"
+    ],
+    "evidence": [
+      "scripts/run-release-packaging-checks.js",
+      "scripts/seed-release-packaging-stale-output.js",
+      ".vscodeignore"
+    ]
+  },
+  {
+    "id": "RUNTIME-RUNTIME-CONFIGURATION-001",
+    "domain": "runtime",
+    "title": "Runtime Configuration behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimePrimitives.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-LAUNCH-SPEC-001",
+    "domain": "runtime",
+    "title": "Launch Spec behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimePrimitives.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-LAYOUT-001",
+    "domain": "runtime",
+    "title": "Tmux Layout behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimePrimitives.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-CLIENT-001",
+    "domain": "runtime",
+    "title": "Tmux Client behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/tmuxClientBehavior.test.js",
+      "tests/contract/errors/failureMapping.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-FOCUS-TARGET-001",
+    "domain": "runtime",
+    "title": "Tmux focus reads one exact atomic target snapshot and fails closed",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/tmuxClientBehavior.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/tmuxClient.ts",
+      "src/aiSessions/tmuxRuntimeBackend.ts"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-FOCUS-FAST-PATH-001",
+    "domain": "runtime",
+    "title": "Tmux focus uses the cached target and reconciles at most once",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimeCoordinator.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/runtimeCoordinator.ts"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-NAMING-001",
+    "domain": "runtime",
+    "title": "Readable tmux names remain bounded, stable, and identity-safe",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/tmuxNaming.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/tmuxNaming.ts"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-DISCOVERY-001",
+    "domain": "runtime",
+    "title": "Tmux Discovery behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/tmuxDiscovery.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-STORE-001",
+    "domain": "runtime",
+    "title": "Tmux Store behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/tmuxStore.test.js",
+      "tests/contract/persistence/stores.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-BACKEND-001",
+    "domain": "runtime",
+    "title": "Tmux Backend behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimeBackends.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-DIRECT-BACKEND-001",
+    "domain": "session",
+    "title": "Direct Backend behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimeBackends.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-RUNTIME-COORDINATOR-001",
+    "domain": "runtime",
+    "title": "Runtime Coordinator behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimeCoordinator.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-RUNTIME-PROJECTION-001",
+    "domain": "runtime",
+    "title": "Runtime Projection behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/sessionRuntimeFlow.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-RUNTIME-CONTROLLER-001",
+    "domain": "runtime",
+    "title": "Runtime Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimeCoordinator.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-HOST-RUNTIME-COMPOSITION-001",
+    "domain": "runtime",
+    "title": "Host Runtime Composition behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimeComposition.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-WEBVIEW-EXPERIENCE-001",
+    "domain": "runtime",
+    "title": "Tmux Webview Experience behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-REAL-TMUX-SMOKE-HARNESS-SOURCE-001",
+    "domain": "runtime",
+    "title": "Real Tmux Smoke Harness Source behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/tmuxSmokeHarness.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-REAL-TMUX-SMOKE-CLEANUP-001",
+    "domain": "runtime",
+    "title": "Real tmux smoke verifies launched providers and cleans proven-unlaunched fixtures",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/tmuxSmokeHarness.test.js"
+    ],
+    "evidence": [
+      "scripts/run-ai-session-tmux-smoke-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-REAL-TMUX-CI-GATE-001",
+    "domain": "runtime",
+    "title": "Pull requests run the isolated real tmux smoke gate",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/tooling/ciContracts.test.js"
+    ],
+    "evidence": [
+      ".github/workflows/verify.yml",
+      "scripts/lib/ciContracts.js"
+    ]
+  },
+  {
+    "id": "ARCH-PROTOCOL-001",
+    "domain": "architecture",
+    "title": "Protocol behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js",
+      "scripts/run-architecture-guards.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-OPEN-PROJECT-PUBLICATION-001",
+    "domain": "open-project",
+    "title": "Open Project Publication behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/projection.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "OPEN-PROTOCOL-001",
+    "domain": "open-project",
+    "title": "Open project publication round-trip behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-PROTOCOL-002",
+    "domain": "open-project",
+    "title": "Open project protocol exact-key behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-PROTOCOL-003",
+    "domain": "open-project",
+    "title": "Open project protocol duplicate-instance behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-PROTOCOL-004",
+    "domain": "open-project",
+    "title": "Open project protocol record-limit behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-PROTOCOL-005",
+    "domain": "open-project",
+    "title": "Open project semantic revision stability behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-PROTOCOL-006",
+    "domain": "open-project",
+    "title": "Open project semantic revision registration-order behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/protocol.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/protocol.ts"
+    ]
+  },
+  {
+    "id": "ATTENTION-REMOTE-ATTENTION-IDENTITY-001",
+    "domain": "attention",
+    "title": "Remote Attention Identity behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/projection.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-IDENTITY-001",
+    "domain": "session",
+    "title": "Identity behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/projection.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-RECORD-001",
+    "domain": "session",
+    "title": "Record behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/projection.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-WORKSPACE-CONTROLLER-RECORD-001",
+    "domain": "project",
+    "title": "Workspace Controller Record behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/workspaceController.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-PROJECTION-001",
+    "domain": "project",
+    "title": "Projection behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/projection.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "OPEN-BRIDGE-CLIENT-001",
+    "domain": "open-project",
+    "title": "Bridge Client behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/bridgeClient.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "OPEN-DASHBOARD-BRIDGE-LIFECYCLE-001",
+    "domain": "open-project",
+    "title": "Dashboard Bridge Lifecycle behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/bridgeClient.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "OPEN-OPEN-PROJECT-WORKSPACE-CONTROLLER-001",
+    "domain": "open-project",
+    "title": "Open Project Workspace Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/workspaceController.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "OPEN-CURRENT-PROJECT-DETAILS-RESOLVER-001",
+    "domain": "open-project",
+    "title": "Current Project Details Resolver behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/workspaceController.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "OPEN-PROJECT-OPEN-CONTROLLER-001",
+    "domain": "open-project",
+    "title": "Project Open Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/workspaceController.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-WEBVIEW-REFRESH-FOCUS-001",
+    "domain": "webview",
+    "title": "Webview Refresh Focus behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/openProjectFlow.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001",
+    "domain": "open-project",
+    "title": "Open Project Dashboard Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/dashboardController.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001",
+    "domain": "open-project",
+    "title": "Open Project Incremental Rendering behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/openProjectFlow.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-DASHBOARD-MIGRATION-PUBLICATION-001",
+    "domain": "persistence",
+    "title": "Dashboard Migration Publication behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/dashboardController.test.js",
+      "tests/contract/persistence/migrations.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-STORE-001",
+    "domain": "persistence",
+    "title": "Store behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/persistence/stores.test.js"
+    ],
+    "evidence": [
+      "scripts/run-open-project-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ARCH-COORDINATOR-001",
+    "domain": "architecture",
+    "title": "Coordinator behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/coordinator.test.js"
+    ],
+    "evidence": [
+      "extensions/attention-ui-bridge/src/openWorkspaceCoordinator.ts"
+    ]
+  },
+  {
+    "id": "ARCH-COORDINATOR-AGGREGATE-BOUNDARY-001",
+    "domain": "architecture",
+    "title": "Coordinator Aggregate Boundary behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/coordinator.test.js"
+    ],
+    "evidence": [
+      "extensions/attention-ui-bridge/src/openWorkspaceCoordinator.ts"
+    ]
+  },
+  {
+    "id": "ARCH-COORDINATOR-WIRING-001",
+    "domain": "architecture",
+    "title": "Coordinator Wiring behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/openProjectFlow.test.js"
+    ],
+    "evidence": [
+      "extensions/attention-ui-bridge/src/extension.ts"
+    ]
+  },
+  {
+    "id": "WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001",
+    "domain": "webview",
+    "title": "Dashboard Update Message behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-SEARCH-RESULT-RENDERING-001",
+    "domain": "todo",
+    "title": "Todo Search Result Rendering behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js",
+      "tests/unit/todos/types.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "ERROR-ERROR-CONTENT-001",
+    "domain": "error",
+    "title": "Error Content behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/errorRecovery.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-CONFIGURATION-001",
+    "domain": "session",
+    "title": "Configuration behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/dashboardBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-STARTUP-001",
+    "domain": "session",
+    "title": "Startup behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/dashboardBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-WEBVIEW-OPTIONS-001",
+    "domain": "webview",
+    "title": "Webview Options behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-GROUP-COLLAPSE-CONTROLLER-001",
+    "domain": "todo",
+    "title": "Group Collapse Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/projects/controllers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-GROUP-PROMPT-001",
+    "domain": "todo",
+    "title": "Group Prompt behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/projects/controllers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-GROUP-COMMAND-CONTROLLER-001",
+    "domain": "todo",
+    "title": "Group Command Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/projects/controllers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-STORE-001",
+    "domain": "todo",
+    "title": "Todo Store behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/todos/types.test.js",
+      "tests/contract/persistence/stores.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-ORDERING-MUTATION-001",
+    "domain": "todo",
+    "title": "Todo Ordering Mutation behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/service.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-INSERTION-ORDER-NORMALIZATION-001",
+    "domain": "todo",
+    "title": "Todo Insertion Order Normalization behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/todos/types.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-STORAGE-RESOLUTION-001",
+    "domain": "todo",
+    "title": "Todo Storage Resolution behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/service.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-MIGRATION-001",
+    "domain": "todo",
+    "title": "Todo Migration behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/persistence/migrations.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-BACKEND-SWITCH-BARRIER-001",
+    "domain": "todo",
+    "title": "Todo Backend Switch Barrier behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/service.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-VIEW-STATE-001",
+    "domain": "todo",
+    "title": "Todo View State behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/service.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-MUTATION-SERIALIZATION-001",
+    "domain": "todo",
+    "title": "Todo Mutation Serialization behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/service.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-REVEAL-SINGLE-WRITE-001",
+    "domain": "todo",
+    "title": "Todo Reveal Single Write behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/service.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-DASHBOARD-TODO-MIGRATION-SEQUENCING-001",
+    "domain": "todo",
+    "title": "Dashboard Todo Migration Sequencing behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/persistence/migrations.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-HOST-MUTATION-001",
+    "domain": "todo",
+    "title": "Todo Host Mutation behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/service.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-VIEW-MODEL-001",
+    "domain": "todo",
+    "title": "Todo View Model behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/todos/types.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-ORDERING-INTERACTION-001",
+    "domain": "todo",
+    "title": "Todo Ordering Interaction behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-ADD-PROJECTS-FROM-FOLDER-CONTROLLER-001",
+    "domain": "project",
+    "title": "Add Projects From Folder Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/projects/controllers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-FAVORITE-PROJECT-CONTROLLER-001",
+    "domain": "project",
+    "title": "Favorite Project Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/projects/controllers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-PROJECT-ORDER-CONTROLLER-001",
+    "domain": "project",
+    "title": "Project Order Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/projects/controllers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "PROJECT-PROJECT-REMOVAL-CONTROLLER-001",
+    "domain": "project",
+    "title": "Project Removal Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/projects/controllers.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-DASHBOARD-RUNTIME-CONTROLLER-001",
+    "domain": "runtime",
+    "title": "Dashboard Runtime Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/dashboardBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-DASHBOARD-STARTUP-CONTROLLER-001",
+    "domain": "webview",
+    "title": "Dashboard Startup Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/service.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "PERSIST-DASHBOARD-LIFECYCLE-CONTROLLER-001",
+    "domain": "persistence",
+    "title": "Dashboard Lifecycle Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/errorRecovery.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-DASHBOARD-COMMAND-REGISTRATION-001",
+    "domain": "webview",
+    "title": "Dashboard Command Registration behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/dashboardBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-ACTIVE-TERMINAL-FILE-REFERENCE-001",
+    "domain": "session",
+    "title": "Active Terminal File Reference behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/dashboardBoundaries.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "SESSION-CONTROLLER-001",
+    "domain": "session",
+    "title": "Controller behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-EDIT-RESET-INTERACTION-001",
+    "domain": "todo",
+    "title": "Todo Edit Reset Interaction behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-COMPOSE-PENDING-INTERACTION-001",
+    "domain": "todo",
+    "title": "Todo Compose Pending Interaction behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "ARCH-AI-SESSION-SCAN-BOUNDARY-001",
+    "domain": "architecture",
+    "title": "AI session discovery keeps a bounded scan budget",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "scripts/run-architecture-guards.js",
+      "tests/unit/tooling/architectureGuards.test.js"
+    ],
+    "evidence": [
+      "src/workspaces/sessionHydrationController.ts"
+    ]
+  },
+  {
+    "id": "ARCH-AI-SESSION-FALLBACK-REASON-001",
+    "domain": "architecture",
+    "title": "Runtime fallback paths retain explicit diagnostic reasons",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "scripts/run-architecture-guards.js"
+    ],
+    "evidence": [
+      "src/dashboard.ts"
+    ]
+  },
+  {
+    "id": "ARCH-PROVIDER-REGISTRY-COMPLETENESS-001",
+    "domain": "architecture",
+    "title": "Provider registry covers every supported provider",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "scripts/run-architecture-guards.js"
+    ],
+    "evidence": [
+      "src/aiSessions/providers.ts"
+    ]
+  },
+  {
+    "id": "ARCH-RELEASE-IDENTITY-001",
+    "domain": "architecture",
+    "title": "Main and UI Bridge release identities remain connected",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "scripts/run-architecture-guards.js"
+    ],
+    "evidence": [
+      "package.json",
+      "extensions/attention-ui-bridge/package.json"
+    ]
+  },
+  {
+    "id": "ARCH-CI-QUALITY-GATE-001",
+    "domain": "architecture",
+    "title": "Linux quality gate runs architecture guards after one compile",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/tooling/ciContracts.test.js"
+    ],
+    "evidence": [
+      "package.json",
+      "scripts/lib/ciContracts.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-STYLES-ARTIFACT-001",
+    "domain": "webview",
+    "title": "Committed dashboard CSS matches its SCSS source",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss",
+      "media/styles.css"
+    ]
+  },
+  {
+    "id": "WEBVIEW-REDUCED-MOTION-001",
+    "domain": "webview",
+    "title": "Reduced-motion mode disables dashboard and session motion",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "TODO-KEYBOARD-FOCUS-001",
+    "domain": "todo",
+    "title": "TODO hidden controls retain a visible keyboard focus ring",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "TODO-RESPONSIVE-LAYOUT-001",
+    "domain": "todo",
+    "title": "TODO cards ellipsize, scroll, and reveal editing content",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "WEBVIEW-SHARED-CARD-STATE-001",
+    "domain": "webview",
+    "title": "Shared dashboard headers and cards retain geometry and interaction states",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss",
+      "media/styles.css"
+    ]
+  },
+  {
+    "id": "WEBVIEW-ACTION-ACCESSIBILITY-001",
+    "domain": "webview",
+    "title": "Danger actions expose matching hover and keyboard focus feedback",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss",
+      "media/styles.css"
+    ]
+  },
+  {
+    "id": "TODO-VISUAL-STATE-001",
+    "domain": "todo",
+    "title": "TODO count priority spacing expansion completion states remain distinct",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss",
+      "media/styles.css"
+    ]
+  },
+  {
+    "id": "WEBVIEW-COLLAPSE-PRESENTATION-001",
+    "domain": "webview",
+    "title": "Group and TODO collapse indicators preserve their rotation state",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/styles.test.js"
+    ],
+    "evidence": [
+      "media/styles.scss",
+      "media/styles.css"
+    ]
+  },
+  {
+    "id": "TODO-FUTURE-VERSION-DASHBOARD-001",
+    "domain": "todo",
+    "title": "Dashboard live-probes unsupported TODO versions and recovers without stale errors",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoPanelFutureVersion.test.js"
+    ],
+    "evidence": [
+      "src/dashboard.ts"
+    ]
+  },
+  {
+    "id": "WEBVIEW-COLLAPSE-BUTTON-STATE-001",
+    "domain": "webview",
+    "title": "Dashboard collapse controls expose exact disabled and action states",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewProjectScripts.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-TERMINAL-CLOSE-WIRING-001",
+    "domain": "attention",
+    "title": "Production terminal close wiring preserves unread attention",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/terminalCloseWiring.test.js"
+    ],
+    "evidence": [
+      "src/dashboard.ts"
+    ]
+  },
+  {
+    "id": "WEBVIEW-DASHBOARD-MESSAGE-ROUTER-001",
+    "domain": "webview",
+    "title": "Dashboard Message Router behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/messageRouter.test.js"
+    ],
+    "evidence": [
+      "src/dashboard/messageRouter.ts"
+    ]
+  },
+  {
+    "id": "OPEN-MULTI-WINDOW-001",
+    "domain": "open-project",
+    "title": "Two local windows aggregate and focus their existing project windows",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires two interactive VS Code UI windows and observable operating-system focus changes."
+  },
+  {
+    "id": "OPEN-SAME-WORKSPACE-WINDOWS-001",
+    "domain": "open-project",
+    "title": "Two windows for the same workspace retain distinct live identities",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires two interactive VS Code windows for one workspace and human confirmation of focus identity."
+  },
+  {
+    "id": "OPEN-REMOTE-SSH-MANUAL-001",
+    "domain": "open-project",
+    "title": "Remote SSH publications preserve authority and recover after reconnect",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires a separately provisioned SSH host and interactive local and remote extension hosts."
+  },
+  {
+    "id": "OPEN-REMOTE-WSL-MANUAL-001",
+    "domain": "open-project",
+    "title": "WSL publications preserve Linux path and remote authority identity",
+    "priority": "P1",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires a Windows host with WSL and interactive UI/remote extension-host placement."
+  },
+  {
+    "id": "OPEN-DEV-CONTAINER-MANUAL-001",
+    "domain": "open-project",
+    "title": "Dev Container publications follow rebuild and stop lifecycle",
+    "priority": "P1",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires a container runtime, interactive VS Code UI, and a real Dev Container lifecycle."
+  },
+  {
+    "id": "ATTENTION-UI-VISUAL-001",
+    "domain": "attention",
+    "title": "Attention lifecycle remains visually distinct and accessible",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Color, contrast, animation, and theme presentation require human visual review in the VS Code UI."
+  },
+  {
+    "id": "SESSION-TERMINAL-FOCUS-MANUAL-001",
+    "domain": "session",
+    "title": "Selecting a session focuses only its intended live terminal",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires interactive VS Code terminal focus observation across multiple live terminals."
+  },
+  {
+    "id": "RELEASE-SCHEDULED-EXTENSION-HOST-001",
+    "domain": "release",
+    "title": "Scheduled macOS verification activates both production extensions in pinned stable VS Code",
+    "priority": "P0",
+    "status": "scheduled",
+    "owners": [
+      "tests/extension-host/suite/index.js"
+    ],
+    "evidence": [
+      ".github/workflows/scheduled-verification.yml",
+      "scripts/run-extension-host-tests.js",
+      "scripts/run-extension-host-worker.js",
+      "tests/unit/tooling/extensionHostLauncher.test.js",
+      "tests/unit/tooling/extensionHostSuite.test.js",
+      "tests/integration/dashboard/todoPanelFutureVersion.test.js",
+      "package.json",
+      "extensions/attention-ui-bridge/package.json"
+    ]
+  },
+  {
+    "id": "OPEN-OTHER-WINDOWS-PRIVACY-001",
+    "domain": "open-project",
+    "title": "OTHER WINDOWS cards expose only privacy-bounded workspace summaries",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/projection.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/projection.ts",
+      "src/openWorkspaces/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-OTHER-WINDOWS-SUMMARY-001",
+    "domain": "open-project",
+    "title": "OTHER WINDOWS incremental summaries preserve identity, counts, attention, and rollback",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/attentionRendering.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/projection.ts",
+      "src/webview/webviewContent.ts",
+      "src/webview/webviewProjectScripts.js"
+    ]
+  },
+  {
+    "id": "SESSION-WORKSPACE-SCOPE-001",
+    "domain": "session",
+    "title": "Workspace session scope preserves root precedence and provider directory arguments",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/workspaces/sessionScope.test.js"
+    ],
+    "evidence": [
+      "src/workspaces/sessionScope.ts",
+      "src/aiSessions/commandController.ts",
+      "src/aiSessions/commandBuilders.ts"
+    ]
+  },
+  {
+    "id": "PERSIST-WORKSPACE-SAVE-001",
+    "domain": "persistence",
+    "title": "Workspace saves serialize after migration without mutating existing records",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/workspaces/workspaceSave.test.js"
+    ],
+    "evidence": [
+      "src/workspaces/savedWorkspaceProjectAdapter.ts",
+      "src/workspaces/pendingWorkspaceSaveStore.ts",
+      "src/dashboard/startupController.ts"
+    ]
+  },
+  {
+    "id": "OPEN-WORKSPACE-NAVIGATION-001",
+    "domain": "open-project",
+    "title": "Workspace navigation uses exact URIs and fails closed without root substitution",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/openWorkspaces/navigationOutcome.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/navigationController.ts"
+    ]
+  },
+  {
+    "id": "ARCH-MAIN-CAPABILITY-COVERAGE-001",
+    "domain": "architecture",
+    "title": "Every main capability has reachable automated regression coverage",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/tooling/mainCapabilityCoverage.test.js"
+    ],
+    "evidence": [
+      "scripts/lib/mainCapabilityCoverage.js",
+      "docs/testing/main-capability-coverage.json",
+      ".github/workflows/verify.yml"
+    ]
+  },
+  {
+    "id": "RUNTIME-SLEEP-DISCONNECT-RECOVERY-001",
+    "domain": "runtime",
+    "title": "Sleep and remote disconnect recover without duplicate or stale runtime state",
+    "priority": "P0",
+    "status": "manual",
+    "owners": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "evidence": [
+      "docs/manual-tests/cross-platform-remote-matrix.md"
+    ],
+    "manualReason": "Requires real operating-system sleep and remote transport interruption outside deterministic CI control."
+  }
+]

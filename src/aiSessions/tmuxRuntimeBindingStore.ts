@@ -86,6 +86,15 @@ export interface TmuxInactiveRuntimeBinding {
 }
 
 export type TmuxInactiveAcknowledgementResult = 'acknowledged' | 'stale' | 'missing';
+export type TmuxKnownRebindResult = 'rebound' | 'stale' | 'missing';
+
+interface TmuxKnownRebindIntent {
+    version: 1;
+    state: 'rebind-known';
+    expected: TmuxKnownRuntimeBinding;
+    replacement: TmuxKnownRuntimeBinding;
+    recordedAtMs: number;
+}
 
 export interface TmuxConsumedPendingBinding {
     version: 2;
@@ -161,7 +170,8 @@ export type TmuxAmbiguousRuntimeBinding = TmuxAmbiguousRuntimeBindingBase & (
 type TmuxFinalRuntimeBinding = TmuxKnownRuntimeBinding | TmuxInactiveRuntimeBinding;
 
 type TmuxRuntimeBinding = TmuxPendingRuntimeBinding | TmuxFinalRuntimeBinding
-    | TmuxAmbiguousRuntimeBinding | TmuxConsumedPendingBinding | TmuxPromotingRuntimeBinding;
+    | TmuxAmbiguousRuntimeBinding | TmuxConsumedPendingBinding | TmuxPromotingRuntimeBinding
+    | TmuxKnownRebindIntent;
 
 export type TmuxFinalRecordLock = <T>(operation: () => Promise<T>) => Promise<T>;
 
@@ -405,6 +415,56 @@ export class TmuxRuntimeBindingStore {
         });
     }
 
+    rebindKnown(
+        expected: TmuxKnownRuntimeBinding,
+        nextSessionId: string
+    ): Promise<TmuxKnownRebindResult> {
+        const validated = validateKnownRecord(expected);
+        if (!validated || isKnownExpired(validated, this.now())
+            || !isBoundedString(nextSessionId, MAX_ID_LENGTH)
+            || nextSessionId === validated.sessionId) {
+            return Promise.resolve('stale');
+        }
+        return this.serializeFinal(async () => {
+            const oldPath = this.recordPath('known', validated.provider,
+                validated.workspaceScopeIdentity, validated.sessionId);
+            const current = validateFinalRuntimeRecord(await readJsonRegularFile(oldPath), this.now());
+            if (!current) {
+                return await pathEntryExists(oldPath) ? 'stale' : 'missing';
+            }
+            if (current.state !== 'known' || !knownBindingsEqual(current, validated)
+                || !isCanonicalRecordPath(oldPath, current)) {
+                return 'stale';
+            }
+
+            const replacement = validateKnownRecord({
+                ...validated,
+                sessionId: nextSessionId,
+            });
+            if (!replacement) {
+                return 'stale';
+            }
+            const replacementPath = this.recordPath('known', replacement.provider,
+                replacement.workspaceScopeIdentity, replacement.sessionId);
+            if (await pathEntryExists(replacementPath)) {
+                return 'stale';
+            }
+            const intent: TmuxKnownRebindIntent = {
+                version: 1,
+                state: 'rebind-known',
+                expected: cloneKnown(validated),
+                replacement: cloneKnown(replacement),
+                recordedAtMs: this.now(),
+            };
+            const intentPath = this.rebindIntentPath(intent);
+            await this.writeRecord(intentPath, intent);
+            await this.writeRecord(replacementPath, replacement);
+            await removeFileDurably(oldPath);
+            await removeFileDurably(intentPath);
+            return 'rebound';
+        });
+    }
+
     setInactive(record: TmuxInactiveRuntimeBinding): Promise<void> {
         const validated = validateInactiveRecord(record, this.now());
         if (!validated || isInactiveExpired(validated, this.now())) {
@@ -552,7 +612,51 @@ export class TmuxRuntimeBindingStore {
     }
 
     private serializeFinal<T>(operation: () => Promise<T>): Promise<T> {
-        return this.serialize(() => this.withFinalRecordLock(operation));
+        return this.serialize(() => this.withFinalRecordLock(async () => {
+            await this.recoverRebindIntentsUnlocked();
+            return operation();
+        }));
+    }
+
+    private async recoverRebindIntentsUnlocked(): Promise<void> {
+        for (const filePath of await listJsonFiles(this.root)) {
+            if (!path.basename(filePath).startsWith('rebind-')) {
+                continue;
+            }
+            const intent = validateKnownRebindIntent(await readJsonRegularFile(filePath));
+            if (!intent || filePath !== this.rebindIntentPath(intent)) {
+                await removeFileDurably(filePath);
+                continue;
+            }
+            const oldPath = this.recordPath('known', intent.expected.provider,
+                intent.expected.workspaceScopeIdentity, intent.expected.sessionId);
+            const replacementPath = this.recordPath('known', intent.replacement.provider,
+                intent.replacement.workspaceScopeIdentity, intent.replacement.sessionId);
+            const oldRecord = validateFinalRuntimeRecord(
+                await readJsonRegularFile(oldPath), this.now()
+            );
+            const replacementRecord = validateFinalRuntimeRecord(
+                await readJsonRegularFile(replacementPath), this.now()
+            );
+            const oldMatches = oldRecord?.state === 'known'
+                && knownBindingsEqual(oldRecord, intent.expected);
+            const replacementMatches = replacementRecord?.state === 'known'
+                && knownBindingsEqual(replacementRecord, intent.replacement);
+
+            if (oldMatches && (!replacementRecord || replacementMatches)) {
+                if (!replacementMatches) {
+                    await this.writeRecord(replacementPath, intent.replacement);
+                }
+                await removeFileDurably(oldPath);
+                await removeFileDurably(filePath);
+                continue;
+            }
+            if (!oldRecord && replacementMatches) {
+                await removeFileDurably(filePath);
+                continue;
+            }
+            await removeFileDurably(filePath);
+        }
     }
 
     private async listPendingUnlocked(): Promise<TmuxPendingRuntimeBinding[]> {
@@ -706,10 +810,19 @@ export class TmuxRuntimeBindingStore {
     }
 
     private recordPath(
-        kind: 'pending' | 'known' | 'ambiguous' | 'consumed' | 'promoting',
+        kind: 'pending' | 'known' | 'ambiguous' | 'consumed' | 'promoting' | 'rebind',
         ...identity: string[]
     ): string {
         return path.join(this.root, getRecordFilename(kind, ...identity));
+    }
+
+    private rebindIntentPath(intent: TmuxKnownRebindIntent): string {
+        return this.recordPath(
+            'rebind',
+            intent.expected.provider,
+            intent.expected.workspaceScopeIdentity,
+            JSON.stringify(intent.expected.locator)
+        );
     }
 
     private async writeRecord(filePath: string, record: TmuxRuntimeBinding): Promise<void> {
@@ -812,6 +925,9 @@ function isUnsupportedNoFollowError(error: unknown): boolean {
 }
 
 function isCanonicalRecordPath(filePath: string, record: TmuxRuntimeBinding): boolean {
+    if (record.state === 'rebind-known') {
+        return false;
+    }
     let identity: string[];
     if (record.state === 'pending') {
         identity = pendingRecordIdentityParts(record);
@@ -828,7 +944,7 @@ function isCanonicalRecordPath(filePath: string, record: TmuxRuntimeBinding): bo
 }
 
 function getRecordFilename(
-    kind: 'pending' | 'known' | 'ambiguous' | 'consumed' | 'promoting',
+    kind: 'pending' | 'known' | 'ambiguous' | 'consumed' | 'promoting' | 'rebind',
     ...identity: string[]
 ): string {
     const digest = createHash('sha256')
@@ -1140,6 +1256,31 @@ function validateKnownRecord(value: unknown): TmuxKnownRuntimeBinding | null {
     };
 }
 
+function validateKnownRebindIntent(value: unknown): TmuxKnownRebindIntent | null {
+    if (!isObject(value)) {
+        return null;
+    }
+    const record = value as Record<string, unknown>;
+    const expected = validateKnownRecord(record.expected);
+    const replacement = validateKnownRecord(record.replacement);
+    if (!hasExactKeys(record, [
+        'version', 'state', 'expected', 'replacement', 'recordedAtMs',
+    ]) || record.version !== 1 || record.state !== 'rebind-known'
+        || !expected || !replacement
+        || expected.sessionId === replacement.sessionId
+        || !knownBindingsEqualExceptSessionId(expected, replacement)
+        || !isFiniteNonNegative(record.recordedAtMs)) {
+        return null;
+    }
+    return {
+        version: 1,
+        state: 'rebind-known',
+        expected: cloneKnown(expected),
+        replacement: cloneKnown(replacement),
+        recordedAtMs: record.recordedAtMs as number,
+    };
+}
+
 function validateInactiveRecord(
     value: unknown,
     nowMs: number = Date.now()
@@ -1278,6 +1419,26 @@ function inactiveBindingsEqual(
     return inactiveBindingsMatchRun(left, right)
         && left.state === right.state
         && left.detectedAtMs === right.detectedAtMs;
+}
+
+function knownBindingsEqual(
+    left: TmuxKnownRuntimeBinding,
+    right: TmuxKnownRuntimeBinding
+): boolean {
+    return left.sessionId === right.sessionId
+        && knownBindingsEqualExceptSessionId(left, right);
+}
+
+function knownBindingsEqualExceptSessionId(
+    left: TmuxKnownRuntimeBinding,
+    right: TmuxKnownRuntimeBinding
+): boolean {
+    return bindingIdentitiesEqual(left, right)
+        && left.layout === right.layout
+        && locatorsEqual(left.locator, right.locator)
+        && left.lastSeenAtMs === right.lastSeenAtMs
+        && left.markerPath === right.markerPath
+        && left.runStartedAtMs === right.runStartedAtMs;
 }
 
 function clonePending(record: TmuxPendingRuntimeBinding): TmuxPendingRuntimeBinding {

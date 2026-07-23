@@ -21,11 +21,133 @@ const WAIT_TIMEOUT_MS = 8_000;
 const POLL_INTERVAL_MS = 25;
 const PROVIDER_EXIT_TIMEOUT_MS = 2_000;
 const FINAL_RECORD_LOCK_KEY = 'runtime-binding-final-records';
+const OWNED_TEMP_PREFIXES = new Set([
+    'project-steward-tmux-smoke-',
+    'project-steward-tmux-server-',
+]);
+const ownedTemporaryRoots = new WeakMap();
 const configuredTmuxPath = process.env.PROJECT_STEWARD_TMUX_PATH || 'tmux';
 const serverName = `project-steward-test-${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
 const isolatedPrefix = ['-L', serverName, '-f', '/dev/null'];
 const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
 let tmuxTempRoot = null;
+
+function createOwnedTemporaryRoot(prefix) {
+    if (!OWNED_TEMP_PREFIXES.has(prefix)) {
+        throw new Error('Refusing to create an unexpected smoke temporary root.');
+    }
+    const parentPath = fs.realpathSync(os.tmpdir());
+    const rootPath = fs.mkdtempSync(path.join(parentPath, prefix));
+    const stat = fs.lstatSync(rootPath);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error('The created smoke temporary root was not a real directory.');
+    }
+    const descriptor = Object.freeze({ path: rootPath, prefix });
+    const quarantinePath = path.join(parentPath,
+        `.${path.basename(rootPath)}.quarantine-${crypto.randomBytes(16).toString('hex')}`);
+    ownedTemporaryRoots.set(descriptor, {
+        rootPath,
+        quarantinePath,
+        parentPath,
+        prefix,
+        device: stat.dev,
+        inode: stat.ino,
+        state: 'active',
+    });
+    return descriptor;
+}
+
+function validateOwnedTemporaryRoot(ownership, fileSystem = fs, candidatePath) {
+    const metadata = ownership && ownedTemporaryRoots.get(ownership);
+    if (!metadata) {
+        throw new Error(
+            'Cleanup requires a validated owned temporary root: the exact registered owned temporary root object.'
+        );
+    }
+    let temporaryParentPath;
+    try {
+        temporaryParentPath = fileSystem.realpathSync(os.tmpdir());
+    } catch (error) {
+        throw new Error('The owned temporary root identity could not be verified.');
+    }
+    if (!OWNED_TEMP_PREFIXES.has(metadata.prefix)
+        || !path.isAbsolute(metadata.rootPath)
+        || path.dirname(metadata.rootPath) !== metadata.parentPath
+        || path.dirname(metadata.quarantinePath) !== metadata.parentPath
+        || temporaryParentPath !== metadata.parentPath
+        || !path.basename(metadata.rootPath).startsWith(metadata.prefix)
+        || metadata.quarantinePath === metadata.rootPath) {
+        throw new Error('The owned temporary root failed path validation.');
+    }
+    const verifiedPath = candidatePath || (metadata.state === 'quarantined'
+        ? metadata.quarantinePath : metadata.rootPath);
+    let stat;
+    let realPath;
+    try {
+        stat = fileSystem.lstatSync(verifiedPath);
+        realPath = fileSystem.realpathSync(verifiedPath);
+    } catch (error) {
+        throw new Error('The owned temporary root identity could not be verified.');
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()
+        || realPath !== verifiedPath
+        || stat.dev !== metadata.device || stat.ino !== metadata.inode) {
+        throw new Error('The owned temporary root identity changed before cleanup.');
+    }
+    return metadata;
+}
+
+function tryRestoreUnexpectedQuarantine(fileSystem, metadata) {
+    try {
+        if (fileSystem.existsSync(metadata.quarantinePath)
+            && !fileSystem.existsSync(metadata.rootPath)) {
+            fileSystem.renameSync(metadata.quarantinePath, metadata.rootPath);
+        }
+    } catch (error) {
+        // Fail closed: leave both paths untouched for diagnosis rather than deleting either.
+    }
+}
+
+function removeOwnedTemporaryRoot(ownership, dependencies = {}) {
+    const fileSystem = dependencies.fileSystem || fs;
+    const metadata = validateOwnedTemporaryRoot(ownership, fileSystem);
+    if (metadata.state === 'active') {
+        try {
+            fileSystem.renameSync(metadata.rootPath, metadata.quarantinePath);
+        } catch (error) {
+            throw new Error('The owned temporary root could not be quarantined.');
+        }
+        try {
+            validateOwnedTemporaryRoot(ownership, fileSystem, metadata.quarantinePath);
+        } catch (error) {
+            tryRestoreUnexpectedQuarantine(fileSystem, metadata);
+            throw new Error('The owned temporary root identity changed after quarantine rename.');
+        }
+        metadata.state = 'quarantined';
+    }
+    try {
+        fileSystem.rmSync(metadata.quarantinePath, { recursive: true, force: true });
+    } catch (error) {
+        try {
+            if (!fileSystem.existsSync(metadata.quarantinePath)) {
+                ownedTemporaryRoots.delete(ownership);
+            }
+        } catch (statusError) {
+            // Retain registration when the final quarantine state cannot be verified.
+        }
+        throw new Error('The quarantined owned temporary root could not be removed.');
+    }
+    let quarantineStillExists;
+    try {
+        quarantineStillExists = fileSystem.existsSync(metadata.quarantinePath);
+    } catch (error) {
+        throw new Error('The quarantined owned temporary root state could not be verified.');
+    }
+    if (quarantineStillExists) {
+        throw new Error('The quarantined owned temporary root remained after cleanup.');
+    }
+    ownedTemporaryRoots.delete(ownership);
+}
 
 class CleanupAggregateError extends Error {
     constructor(errors, message) {
@@ -165,6 +287,7 @@ function providerFixture(root, name, payload, fixtureRegistry) {
         invocationId,
         markerPath,
         payload,
+        launchState: { phase: 'planned' },
         launch: {
             executable: process.execPath,
             args: ['-e', program, pidPath, stopPath, invocationLogPath, invocationId, payload],
@@ -173,6 +296,16 @@ function providerFixture(root, name, payload, fixtureRegistry) {
     };
     fixtureRegistry.push(fixture);
     return fixture;
+}
+
+async function runTrackedProviderLaunch(fixture, operation) {
+    if (!fixture || !fixture.launchState || fixture.launchState.phase !== 'planned') {
+        throw new Error('Provider fixture launch state was invalid before dispatch.');
+    }
+    fixture.launchState.phase = 'launching';
+    const result = await operation();
+    fixture.launchState.phase = 'launched';
+    return result;
 }
 
 function readProviderInvocations(invocationLogPath) {
@@ -292,12 +425,18 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
         'claude', workspaceScopeIdentity, cwd, 'session-two.special', fixtures.projectTwo,
         'Project Steward: Smoke Project [tmux]'
     );
-    const [projectOne, concurrentProjectOne] = await Promise.all([
-        contextA.backend.ensureResume(projectOneRequest, 'project'),
-        contextB.backend.ensureResume(projectOneRequest, 'project'),
-    ]);
+    const [projectOne, concurrentProjectOne] = await runTrackedProviderLaunch(
+        fixtures.projectOne,
+        () => Promise.all([
+            contextA.backend.ensureResume(projectOneRequest, 'project'),
+            contextB.backend.ensureResume(projectOneRequest, 'project'),
+        ])
+    );
     assert.deepStrictEqual(projectOne.tmux, concurrentProjectOne.tmux);
-    const projectTwo = await contextA.backend.ensureResume(projectTwoRequest, 'project');
+    const projectTwo = await runTrackedProviderLaunch(
+        fixtures.projectTwo,
+        () => contextA.backend.ensureResume(projectTwoRequest, 'project')
+    );
 
     await waitFor(() => Object.values(fixtures).slice(0, 2)
         .every(fixture => fs.existsSync(fixture.pidPath)), 'project providers to start');
@@ -357,8 +496,14 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
         'codex', 'session-layout-project', cwd, 'codex:isolated.two', fixtures.sessionTwo,
         'Codex: isolated two [tmux]'
     );
-    const sessionOne = await contextA.backend.ensureResume(sessionOneRequest, 'session');
-    const sessionTwo = await contextA.backend.ensureResume(sessionTwoRequest, 'session');
+    const sessionOne = await runTrackedProviderLaunch(
+        fixtures.sessionOne,
+        () => contextA.backend.ensureResume(sessionOneRequest, 'session')
+    );
+    const sessionTwo = await runTrackedProviderLaunch(
+        fixtures.sessionTwo,
+        () => contextA.backend.ensureResume(sessionTwoRequest, 'session')
+    );
     await waitFor(() => fs.existsSync(fixtures.sessionOne.pidPath)
         && fs.existsSync(fixtures.sessionTwo.pidPath), 'session-layout providers to start');
     rows = await client.listWindows();
@@ -379,22 +524,23 @@ async function runSmoke(root, runner, client, fixtureRegistry) {
 
     const pendingId = 'pending:create.special';
     const pendingCreatedAt = new Date().toISOString();
-    const pending = await contextA.backend.ensurePending({
-        identity: {
-            provider: 'claude',
-            workspaceScopeIdentity,
-            workspaceNavigationIdentity: workspaceScopeIdentity,
-            workspaceRootHostPaths: [cwd],
-            cwd,
-            pendingId,
-        },
-        projectName: 'Smoke Project',
-        terminalName: 'Project Steward: Smoke Project [tmux]',
-        createdAt: pendingCreatedAt,
-        excludedSessionIds: ['existing:one', 'existing:two'],
-        title: "Title with 'quotes' ; $HOME",
-        launch: { ...fixtures.pending.launch, cwd },
-    }, 'project');
+    const pending = await runTrackedProviderLaunch(fixtures.pending, () =>
+        contextA.backend.ensurePending({
+            identity: {
+                provider: 'claude',
+                workspaceScopeIdentity,
+                workspaceNavigationIdentity: workspaceScopeIdentity,
+                workspaceRootHostPaths: [cwd],
+                cwd,
+                pendingId,
+            },
+            projectName: 'Smoke Project',
+            terminalName: 'Project Steward: Smoke Project [tmux]',
+            createdAt: pendingCreatedAt,
+            excludedSessionIds: ['existing:one', 'existing:two'],
+            title: "Title with 'quotes' ; $HOME",
+            launch: { ...fixtures.pending.launch, cwd },
+        }, 'project'));
     await waitFor(() => fs.existsSync(fixtures.pending.pidPath), 'pending provider to start');
     const invocationRecords = readProviderInvocations(fixtures.projectOne.invocationLogPath);
     assert.strictEqual(invocationRecords.length, Object.keys(fixtures).length,
@@ -654,21 +800,37 @@ function writeProviderStopFiles(fixtures, dependencies = {}) {
 
 function stopAndVerifyProviderFixtures(fixtures, dependencies = {}) {
     const errors = [];
+    const fixturesRequiringVerification = [];
+    for (const fixture of fixtures) {
+        const phase = fixture.launchState ? fixture.launchState.phase : 'launched';
+        if (phase === 'planned') {
+            fixture.launchState.phase = 'verified-unlaunched';
+        } else if (phase !== 'verified-unlaunched' && phase !== 'verified-stopped') {
+            fixturesRequiringVerification.push(fixture);
+        }
+    }
     try {
-        writeProviderStopFiles(fixtures, dependencies);
+        writeProviderStopFiles(fixturesRequiringVerification, dependencies);
     } catch (error) {
         errors.push(error);
     }
     let pids = [];
+    let evidenceVerified = false;
     try {
-        const evidence = inspectTrackedProviderPidEvidence(fixtures, dependencies);
+        const evidence = inspectTrackedProviderPidEvidence(fixturesRequiringVerification, dependencies);
         pids = evidence.pids;
         errors.push(...evidence.errors);
+        evidenceVerified = evidence.errors.length === 0;
     } catch (error) {
         errors.push(new Error('Provider process evidence could not be read.'));
     }
     try {
         waitForTrackedProviderExit(pids, dependencies);
+        if (evidenceVerified) {
+            for (const fixture of fixturesRequiringVerification) {
+                if (fixture.launchState) fixture.launchState.phase = 'verified-stopped';
+            }
+        }
     } catch (error) {
         errors.push(error);
     }
@@ -678,15 +840,15 @@ function stopAndVerifyProviderFixtures(fixtures, dependencies = {}) {
     }
 }
 
-function removeFixtureRoots(root, isolatedRoot, serverStopped, providersStopped) {
+function removeFixtureRoots(rootOwnership, isolatedRootOwnership, serverStopped, providersStopped) {
     const errors = [];
     const fixtureRoots = [
-        ...(providersStopped ? [root] : []),
-        ...(serverStopped ? [isolatedRoot] : []),
+        ...(providersStopped && rootOwnership ? [rootOwnership] : []),
+        ...(serverStopped && isolatedRootOwnership ? [isolatedRootOwnership] : []),
     ];
     for (const fixtureRoot of fixtureRoots) {
         try {
-            fs.rmSync(fixtureRoot, { recursive: true, force: true });
+            removeOwnedTemporaryRoot(fixtureRoot);
         } catch (error) {
             errors.push(error);
         }
@@ -740,52 +902,88 @@ async function runBestEffortCleanup(stages) {
     }
 }
 
-async function main() {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-tmux-smoke-'));
-    tmuxTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'project-steward-tmux-server-'));
-    const ownedTmuxTempRoot = tmuxTempRoot;
-    const fixtures = [];
-    const runner = new IsolatedSyncTmuxRunner();
-    const client = new TmuxClient(configuredTmuxPath, runner);
-    let primaryError = null;
-    let cleanupError = null;
-    try {
-        try {
-            const availability = await client.checkAvailability();
-            assert.ok(availability.available, availability.message);
-            await runSmoke(root, runner, client, fixtures);
-        } catch (error) {
-            primaryError = error;
-        }
-    } finally {
-        try {
-            await runBestEffortCleanup({
-                captureSocket: captureIsolatedSocketPath,
-                killServer: killIsolatedServer,
-                verifyStopped: assertIsolatedServerStopped,
-                removeSocket: removeOwnStaleSocket,
-                terminateProviders: () => stopAndVerifyProviderFixtures(fixtures),
-                removeFixtures: (serverStopped, providersStopped) => removeFixtureRoots(
-                    root, ownedTmuxTempRoot, serverStopped, providersStopped
-                ),
-            });
-        } catch (error) {
-            cleanupError = error;
-        }
-    }
+function reportSmokeOutcome(primaryError, cleanupError) {
     if (primaryError && cleanupError) {
         throw new CleanupAggregateError([primaryError, cleanupError],
             'The tmux smoke test and cleanup both failed.');
     }
     if (primaryError) throw primaryError;
     if (cleanupError) throw cleanupError;
-    console.log('AI session tmux smoke checks passed.');
+}
+
+async function runSmokeHarness(dependencies = {}) {
+    let rootOwnership = null;
+    let tmuxTempRootOwnership = null;
+    const fixtures = [];
+    let primaryError = null;
+    let cleanupError = null;
+    const previousTmuxTempRoot = tmuxTempRoot;
+    try {
+        try {
+            rootOwnership = createOwnedTemporaryRoot('project-steward-tmux-smoke-');
+            tmuxTempRootOwnership = createOwnedTemporaryRoot('project-steward-tmux-server-');
+            const root = rootOwnership.path;
+            tmuxTempRoot = tmuxTempRootOwnership.path;
+            if (dependencies.onRootsCreated) {
+                dependencies.onRootsCreated({
+                    fixture: rootOwnership,
+                    tmux: tmuxTempRootOwnership,
+                });
+            }
+            const createRunner = dependencies.createRunner
+                || (() => new IsolatedSyncTmuxRunner());
+            const createClient = dependencies.createClient
+                || (runnerValue => new TmuxClient(configuredTmuxPath, runnerValue));
+            const runner = createRunner();
+            const client = createClient(runner);
+            const availability = await client.checkAvailability();
+            assert.ok(availability.available, availability.message);
+            await (dependencies.runSmoke || runSmoke)(root, runner, client, fixtures);
+        } catch (error) {
+            primaryError = error;
+        }
+    } finally {
+        try {
+            const tmuxRootWasCreated = Boolean(tmuxTempRootOwnership);
+            await runBestEffortCleanup({
+                captureSocket: tmuxRootWasCreated
+                    ? (dependencies.captureSocket || captureIsolatedSocketPath) : () => null,
+                killServer: tmuxRootWasCreated
+                    ? (dependencies.killServer || killIsolatedServer) : () => undefined,
+                verifyStopped: tmuxRootWasCreated
+                    ? (dependencies.verifyStopped || assertIsolatedServerStopped) : () => undefined,
+                removeSocket: tmuxRootWasCreated
+                    ? (dependencies.removeSocket || removeOwnStaleSocket) : () => undefined,
+                terminateProviders: () => stopAndVerifyProviderFixtures(fixtures),
+                removeFixtures: (serverStopped, providersStopped) => removeFixtureRoots(
+                    rootOwnership, tmuxTempRootOwnership, serverStopped, providersStopped
+                ),
+            });
+        } catch (error) {
+            cleanupError = error;
+        }
+    }
+    try {
+        reportSmokeOutcome(primaryError, cleanupError);
+    } finally {
+        tmuxTempRoot = previousTmuxTempRoot;
+    }
+}
+
+async function main() {
+    await runSmokeHarness();
+    console.log(`AI session tmux smoke checks passed (${serverName}).`);
 }
 
 module.exports = {
     assertIsolatedServerStopped,
     collectTrackedProviderPids,
+    createOwnedTemporaryRoot,
     killIsolatedServer,
+    removeOwnedTemporaryRoot,
+    reportSmokeOutcome,
+    runSmokeHarness,
+    runTrackedProviderLaunch,
     runBestEffortCleanup,
     stopAndVerifyProviderFixtures,
     waitForTrackedProviderExit,

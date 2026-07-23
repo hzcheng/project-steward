@@ -3801,8 +3801,12 @@ function runControllerChecks(source) {
     const workspaceTodoSections = context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'ship');
     assert.deepStrictEqual(
         JSON.parse(JSON.stringify(workspaceTodoSections.map(section => section.title))),
-        [],
-        'v2 search must expose exactly AI SESSIONS, OPEN WORKSPACES, and SAVED PROJECTS'
+        ['TODO RESULTS'],
+        'v2 search must preserve searchable TODO results beside workspace-first sections'
+    );
+    assert.deepStrictEqual(
+        JSON.parse(JSON.stringify(workspaceTodoSections.map(section => section.id))),
+        ['todos']
     );
     assert.strictEqual(context.filterDashboardCatalog(makeWorkspaceDashboardCatalog(), 'missing').length, 0);
     assert.deepStrictEqual(
@@ -4496,7 +4500,9 @@ function runSourceContractChecks(source) {
     assert.ok(source.includes('initialSearchQuery'));
     assert.ok(source.includes('replaceSearchCatalog'));
     assert.ok(source.includes('isSearchActive'));
-    assert.strictEqual(source.includes("title: 'TODO RESULTS'"), false);
+    assert.ok(source.includes("title: 'TODO RESULTS'"));
+    assert.ok(renderSearchBody.includes("button.classList.toggle('completed'"));
+    assert.ok(renderSearchBody.includes('dashboard-search-result-priority'));
     assert.ok(source.includes("title: 'OPEN WORKSPACES'"));
     assert.ok(projectSource.includes('__projectStewardAcknowledgeSession'));
     assert.strictEqual(projectSource.includes('__projectStewardShowCurrentProject'), false);

@@ -83,6 +83,7 @@ function filterDashboardCatalog(catalog, query) {
         { id: 'ai-sessions', title: 'AI SESSIONS', type: 'session', items: catalog.sessions },
         { id: 'open-workspaces', title: 'OPEN WORKSPACES', type: 'open-workspace', items: catalog.openWorkspaces },
         { id: 'saved-projects', title: 'SAVED PROJECTS', type: 'saved-project', items: catalog.savedProjects },
+        { id: 'todos', title: 'TODO RESULTS', type: 'todo', items: catalog.todos },
     ];
     return sections
         .map(section => ({
@@ -152,6 +153,25 @@ function renderDashboardSearchResults(container, sections) {
                     ? 'show-current-workspace'
                     : 'switch-open-workspace';
                 metadata.textContent = [item.description, item.environmentLabel].filter(Boolean).join(' · ');
+            } else if (section.type === 'todo') {
+                button.dataset.searchAction = 'show-todo';
+                button.dataset.todoId = String(item.todoId || '');
+                button.dataset.groupId = String(item.groupId || '');
+                button.classList.toggle('completed', item.completed === true);
+                var groupBadge = document.createElement('span');
+                groupBadge.className = 'dashboard-search-result-group steward-badge';
+                groupBadge.textContent = String(item.groupTitle || '');
+                metadata.appendChild(groupBadge);
+                var priority = document.createElement('span');
+                priority.className = 'dashboard-search-result-priority';
+                priority.textContent = String(item.priority || '').toUpperCase();
+                metadata.appendChild(priority);
+                if (item.completed === true) {
+                    var status = document.createElement('span');
+                    status.className = 'dashboard-search-result-status';
+                    status.textContent = 'Completed';
+                    metadata.appendChild(status);
+                }
             } else {
                 button.dataset.searchAction = 'open-saved-project';
                 metadata.textContent = [item.description].concat(item.groupLabels || []).filter(Boolean).join(' · ');

@@ -6,6 +6,7 @@ const fs = require('fs');
 const Module = require('module');
 const os = require('os');
 const path = require('path');
+const { validateSafetyScripts } = require('./lib/ciContracts');
 const vm = require('vm');
 const commands = require('../out/aiSessions/commandBuilders');
 const launchSpec = require('../out/aiSessions/launchSpec');
@@ -5429,11 +5430,7 @@ function runWebviewContentChecks() {
 
 function runTmuxSmokeHarnessSafetyChecks() {
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-    const safetyScript = packageJson.scripts['test:safety'];
-    assert.ok(safetyScript.includes('node scripts/run-ai-session-tmux-checks.js'),
-        'ordinary safety CI must run the pure fake-tmux checks');
-    assert.strictEqual(safetyScript.includes('run-ai-session-tmux-smoke-checks.js'), false,
-        'ordinary safety CI must never start a real tmux server');
+    validateSafetyScripts(packageJson.scripts);
     assert.strictEqual(packageJson.scripts['test:tmux:smoke'],
         'npm run test-compile && node scripts/run-ai-session-tmux-smoke-checks.js');
 
@@ -8733,28 +8730,39 @@ async function runProductionAttentionStoreUnregisterPropagationChecks() {
             'strict validation must ignore a malformed removal marker');
 
         let releaseRead;
+        let signalReadEntered;
         let readEntered = false;
         const readGate = new Promise(resolve => { releaseRead = resolve; });
+        const readEnteredGate = new Promise(resolve => { signalReadEntered = resolve; });
         const originalReadFile = fs.promises.readFile;
         fs.promises.readFile = async (...args) => {
             const value = await originalReadFile.apply(fs.promises, args);
             if (String(args[0]) === ownerPath && !readEntered) {
                 readEntered = true;
+                signalReadEntered();
                 await readGate;
             }
             return value;
         };
         try {
             const racingScan = storeA.scan(2000);
-            for (let attempt = 0; attempt < 50 && !readEntered; attempt += 1) {
-                await new Promise(resolve => setImmediate(resolve));
-            }
+            let timeout;
+            await Promise.race([
+                readEnteredGate,
+                new Promise((_, reject) => {
+                    timeout = setTimeout(
+                        () => reject(new Error('attention owner read did not start within 2 seconds')),
+                        2000
+                    );
+                }),
+            ]).finally(() => clearTimeout(timeout));
             assert.strictEqual(readEntered, true);
             const racingRemove = storeA.remove(instanceId, 2001);
             await new Promise(resolve => setImmediate(resolve));
             releaseRead();
             await Promise.all([racingScan, racingRemove]);
         } finally {
+            releaseRead();
             fs.promises.readFile = originalReadFile;
         }
         assert.deepStrictEqual((await storeA.scan(2002)).snapshots, [],

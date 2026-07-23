@@ -1,5 +1,9 @@
 # AI Session tmux Runtime Acceptance Record
 
+Acceptance record version: 1
+
+The canonical repeatable manual scenarios for multi-window, SSH, WSL, Dev Container, attention visuals, terminal focus, and sleep/disconnect recovery are owned by [the cross-platform and remote matrix](./cross-platform-remote-matrix.md). Completed runs must copy its environment, execution-date, result, and evidence fields rather than treating the historical `NOT RUN` rows below as current evidence.
+
 Date: 2026-07-20
 
 Feature branch: `feat/session-tmux-support`
