@@ -259,7 +259,9 @@
             ],
             "behaviors": [
                 "RUNTIME-RUNTIME-COORDINATOR-001",
-                "RUNTIME-TMUX-CLIENT-001"
+                "RUNTIME-TMUX-CLIENT-001",
+                "RUNTIME-TMUX-FOCUS-TARGET-001",
+                "RUNTIME-TMUX-FOCUS-FAST-PATH-001"
             ],
             "prGates": [
                 "test:deterministic:run"
@@ -296,6 +298,7 @@
             ],
             "behaviors": [
                 "RUNTIME-TMUX-LAYOUT-001",
+                "RUNTIME-TMUX-NAMING-001",
                 "RUNTIME-TMUX-DISCOVERY-001",
                 "RUNTIME-TMUX-STORE-001"
             ],

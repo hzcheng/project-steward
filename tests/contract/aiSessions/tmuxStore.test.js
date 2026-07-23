@@ -8,6 +8,7 @@ const {
     makeTmuxKnownBinding,
     makeTmuxPendingBinding,
 } = require('../../helpers/runtimeContract');
+const { buildReadableTmuxLocator } = require('../../../out/aiSessions/tmuxNaming');
 const { TmuxRuntimeBindingStore } = require('../../../out/aiSessions/tmuxRuntimeBindingStore');
 
 const NOW = Date.parse('2026-07-18T10:00:00.000Z');
@@ -37,6 +38,45 @@ test('RUNTIME-TMUX-STORE-001 persists pending and final lifecycle records as def
     assert.deepEqual(await store.getKnown('codex', 'session-one'), known);
     assert.ok((await require('node:fs').promises.readdir(filesystem.root))
         .every(name => !name.endsWith('.tmp')));
+});
+
+test('RUNTIME-TMUX-STORE-001 persists readable pending and final locators across restart', async t => {
+    const filesystem = createRuntimeFilesystemFixture(t, 'project-steward-readable-tmux-store-');
+    const store = new TmuxRuntimeBindingStore(filesystem.root, () => NOW);
+    const pending = makeTmuxPendingBinding('pending-readable', {
+        acceptedAtMs: NOW,
+        title: 'Repair replication',
+    });
+    pending.locator = buildReadableTmuxLocator({
+        provider: pending.provider,
+        workspaceScopeIdentity: pending.workspaceScopeIdentity,
+        workspaceNavigationIdentity: pending.workspaceNavigationIdentity,
+        workspaceRootHostPaths: pending.workspaceRootHostPaths,
+        cwd: pending.cwd,
+        pendingId: pending.pendingId,
+    }, pending.layout, {
+        projectName: 'RedDB',
+        sessionName: pending.title,
+    });
+    const known = makeTmuxKnownBinding('session-readable', { lastSeenAtMs: NOW });
+    known.locator = buildReadableTmuxLocator({
+        provider: known.provider,
+        workspaceScopeIdentity: known.workspaceScopeIdentity,
+        workspaceNavigationIdentity: known.workspaceNavigationIdentity,
+        workspaceRootHostPaths: known.workspaceRootHostPaths,
+        cwd: known.cwd,
+        sessionId: known.sessionId,
+    }, known.layout, {
+        projectName: 'RedDB',
+        sessionName: 'Repair replication',
+    });
+
+    assert.equal(await store.setPending(pending), true);
+    await store.setKnown(known);
+
+    const restarted = new TmuxRuntimeBindingStore(filesystem.root, () => NOW);
+    assert.deepEqual((await restarted.listPending())[0].locator, pending.locator);
+    assert.deepEqual((await restarted.listKnown())[0].locator, known.locator);
 });
 
 test('RUNTIME-TMUX-STORE-001 atomically transitions known runtimes to retained completed or stopped records', async t => {

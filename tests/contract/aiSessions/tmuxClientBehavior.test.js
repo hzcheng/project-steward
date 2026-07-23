@@ -271,6 +271,101 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
     });
 });
 
+test('RUNTIME-TMUX-FOCUS-TARGET-001 reads one exact atomic target snapshot and fails closed', async () => {
+    const calls = [];
+    const metadata = {
+        managed: '1',
+        version: '2',
+        layout: 'project',
+        workspaceScopeIdentity: 'scope:fixture',
+        workspaceNavigationIdentity: 'navigation:fixture',
+        workspaceRootHostPaths: '["/work"]',
+        cwd: '/work',
+        provider: 'codex',
+        sessionId: 'session',
+        createdAt: '2026-07-18T10:00:00.000Z',
+        marker: '/tmp/runtime.done',
+    };
+    const metadataKeys = Object.keys(TMUX_METADATA_OPTIONS);
+    let result = {
+        exitCode: 0,
+        stdout: [
+            'managed-session',
+            'codex-session',
+            '@42',
+            ...metadataKeys.map(key => metadata[key] || ''),
+        ].join('\u001f') + '\n',
+        stderr: '',
+    };
+    const client = new TmuxClient('/private/tmux', {
+        run: async (_file, args) => {
+            calls.push(args);
+            return availabilityResult(args) || result;
+        },
+    });
+    const locator = {
+        layout: 'project',
+        sessionName: 'managed-session',
+        windowName: 'codex-session',
+    };
+
+    assert.deepEqual(await client.getTargetWindow(locator), {
+        sessionName: 'managed-session',
+        windowName: 'codex-session',
+        windowId: '@42',
+        metadata,
+    });
+    const snapshots = calls.filter(args => args[0] === 'display-message');
+    assert.equal(snapshots.length, 1);
+    assert.deepEqual(snapshots[0].slice(0, 4), [
+        'display-message', '-p', '-t', 'managed-session:codex-session',
+    ]);
+    for (const option of Object.values(TMUX_METADATA_OPTIONS)) {
+        assert.ok(snapshots[0][4].includes(`#{${option}}`), option);
+    }
+    assert.equal(calls.some(args => args[0] === 'list-windows'), false);
+    assert.equal(calls.some(args => args[0] === 'show-options'), false);
+
+    result = {
+        exitCode: 1,
+        stdout: '',
+        stderr: "can't find window: codex-session",
+    };
+    assert.equal(await client.getTargetWindow(locator), null);
+
+    for (const stdout of [
+        '',
+        'managed-session\u001fcodex-session\u001fnot-a-window-id',
+        'managed-session\u001fcodex-session\u001f@42\nsecond-row',
+        `${'x'.repeat(1024 * 1024 + 1)}`,
+    ]) {
+        result = { exitCode: 0, stdout, stderr: '' };
+        await assert.rejects(
+            client.getTargetWindow(locator),
+            error => error instanceof TmuxClientError
+                && error.operation === 'get-target-window'
+                && error.category === 'invalid-output'
+        );
+    }
+
+    result = {
+        exitCode: 2,
+        stdout: 'secret stdout',
+        stderr: 'secret stderr managed-session /private/tmux',
+    };
+    await assert.rejects(client.getTargetWindow(locator), error => {
+        const publicError = `${error.message} ${JSON.stringify(error)}`;
+        for (const secret of [
+            'secret stdout', 'secret stderr', 'managed-session', '/private/tmux',
+        ]) {
+            assert.equal(publicError.includes(secret), false);
+        }
+        return error instanceof TmuxClientError
+            && error.operation === 'get-target-window'
+            && error.category === 'nonzero-exit';
+    });
+});
+
 test('RUNTIME-TMUX-CLIENT-001 rejects malformed runner results and sanitizes forged error objects', async () => {
     const missingSession = new TmuxClient('tmux', {
         run: async (_file, args) => availabilityResult(args) || {

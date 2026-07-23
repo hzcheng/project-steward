@@ -8,6 +8,7 @@ const {
     makeTmuxDiscoveryRow,
     makeTmuxKnownBinding,
 } = require('../../helpers/runtimeContract');
+const { buildReadableTmuxLocator } = require('../../../out/aiSessions/tmuxNaming');
 const {
     TmuxRuntimeDiscovery,
     findTmuxCollisionRuntime,
@@ -105,6 +106,76 @@ test('RUNTIME-TMUX-DISCOVERY-001 isolates locator collisions as stale-safe confl
     fail = true;
     await assert.rejects(discovery.refresh(true), /collision refresh failed/);
     assert.equal(findTmuxCollisionRuntime(discovery.getDiagnostics(), 'claude', 'same', 'scope:fixture').stale, true);
+});
+
+test('RUNTIME-TMUX-DISCOVERY-001 recovers readable and renamed project containers by stable identity suffix', async () => {
+    const runtimeIdentity = {
+        provider: 'codex',
+        workspaceScopeIdentity: 'scope:fixture',
+        workspaceNavigationIdentity: 'navigation:fixture',
+        workspaceRootHostPaths: ['/work'],
+        cwd: '/work',
+        sessionId: 'readable',
+    };
+    const locator = buildReadableTmuxLocator(runtimeIdentity, 'project', {
+        projectName: 'RedDB',
+        sessionName: 'Repair replication',
+    });
+    const row = makeTmuxDiscoveryRow({
+        sessionId: runtimeIdentity.sessionId,
+        locator,
+    });
+    const known = makeTmuxKnownBinding(runtimeIdentity.sessionId, { locator });
+    const exact = new TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [row] },
+        bindingStore: createSyntheticTmuxStore({ known: [known] }),
+        markerIsCurrent: () => false,
+        nowMs: () => 2000,
+        cacheTtlMs: 0,
+    });
+    await exact.refresh(true);
+    assert.deepEqual(exact.getActive().map(runtime => runtime.tmux), [locator]);
+
+    const suffix = locator.sessionName.match(/([0-9a-f]{8})$/)[1];
+    const renamedRow = {
+        ...row,
+        sessionName: `ps-Renamed-${suffix}`,
+    };
+    const renamed = new TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [renamedRow] },
+        bindingStore: createSyntheticTmuxStore({ known: [known] }),
+        markerIsCurrent: () => false,
+        nowMs: () => 2000,
+        cacheTtlMs: 0,
+    });
+    await renamed.refresh(true);
+    assert.deepEqual(
+        renamed.getActive().map(runtime => runtime.tmux),
+        [{ ...locator, sessionName: renamedRow.sessionName }]
+    );
+
+    const foreignRow = {
+        ...row,
+        sessionName: 'ps-Renamed-00000000',
+    };
+    const foreign = new TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [foreignRow] },
+        bindingStore: createSyntheticTmuxStore({ known: [known] }),
+        markerIsCurrent: () => false,
+        nowMs: () => 2000,
+        cacheTtlMs: 0,
+    });
+    await foreign.refresh(true);
+    assert.deepEqual(foreign.getActive(), []);
+    assert.equal(
+        findTmuxCollisionRuntime(
+            foreign.getDiagnostics(),
+            runtimeIdentity.provider,
+            runtimeIdentity.sessionId,
+            runtimeIdentity.workspaceScopeIdentity
+        ).state,
+        'conflict'
+    );
 });
 
 test('RUNTIME-TMUX-DISCOVERY-001 classifies vanished runtimes as completed or stopped and retains them', async () => {

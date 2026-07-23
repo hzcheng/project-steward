@@ -568,9 +568,10 @@ Create `tests/unit/aiSessions/tmuxNaming.test.js` from the observable cases in
 - fallback components;
 - project and session layouts;
 - duplicate readable names with distinct eight-hex suffixes;
-- pending and promoted locators;
+- pending locators and stable readable identity suffixes;
 - 95-character boundary and astral Unicode length;
-- exact identity match and mismatched provider/scope/root/cwd/ID rejection;
+- exact and renamed readable components with stable suffixes, plus mismatched
+  provider/scope/ID rejection;
 - legacy locator read compatibility without generating new legacy names.
 
 - [ ] **Step 2: Verify naming RED/GREEN**
@@ -590,14 +591,18 @@ contract to 95 and verify GREEN.
 Extend `tmuxClientBehavior.test.js` so `getTargetWindow`:
 
 - sends the exact session/window target;
-- reads the fixed metadata option set concurrently;
-- accepts only one valid identity;
+- reads one atomic `display-message` snapshot containing the fixed metadata
+  option set;
+- accepts only one well-formed snapshot;
 - returns null when the target vanished;
-- rejects malformed, duplicated, foreign, or renamed project containers;
+- rejects malformed or duplicated output;
 - redacts runner paths/errors.
 
-Use a deferred fake runner and assert peak metadata reads equals the fixed
-option count, not total server window count.
+Assert that the snapshot format contains every fixed metadata option and that
+the client does not enumerate windows or issue per-option reads. Full
+navigation/root/cwd ownership validation remains the runtime backend's
+responsibility; locator matching intentionally permits readable component
+renames when the stable identity suffix is unchanged.
 
 - [ ] **Step 4: Add coordinator fast-path contract**
 
@@ -627,7 +632,8 @@ Extend store/discovery tests for:
 - legacy tombstone ignore;
 - empty-server creation;
 - reload terminal reuse;
-- renamed project container rejection.
+- renamed readable project-container recovery by stable identity suffix and
+  foreign-suffix rejection.
 
 - [ ] **Step 6: Register behavior IDs, verify, and commit**
 

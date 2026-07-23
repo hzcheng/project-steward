@@ -1154,6 +1154,46 @@
     ]
   },
   {
+    "id": "RUNTIME-TMUX-FOCUS-TARGET-001",
+    "domain": "runtime",
+    "title": "Tmux focus reads one exact atomic target snapshot and fails closed",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/tmuxClientBehavior.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/tmuxClient.ts",
+      "src/aiSessions/tmuxRuntimeBackend.ts"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-FOCUS-FAST-PATH-001",
+    "domain": "runtime",
+    "title": "Tmux focus uses the cached target and reconciles at most once",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimeCoordinator.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/runtimeCoordinator.ts"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-NAMING-001",
+    "domain": "runtime",
+    "title": "Readable tmux names remain bounded, stable, and identity-safe",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/aiSessions/tmuxNaming.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/tmuxNaming.ts"
+    ]
+  },
+  {
     "id": "RUNTIME-TMUX-DISCOVERY-001",
     "domain": "runtime",
     "title": "Tmux Discovery behavior",

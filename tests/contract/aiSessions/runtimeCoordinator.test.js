@@ -11,7 +11,10 @@ const {
     workspaceIdentity,
 } = require('../../helpers/runtimeContract');
 const { AiSessionRuntimeCoordinator } = require('../../../out/aiSessions/runtimeCoordinator');
-const { TmuxRuntimeUnavailableError } = require('../../../out/aiSessions/runtimeTypes');
+const {
+    AiSessionRuntimeTargetChangedError,
+    TmuxRuntimeUnavailableError,
+} = require('../../../out/aiSessions/runtimeTypes');
 
 function createCoordinator(direct, tmux, overrides = {}) {
     return new AiSessionRuntimeCoordinator({
@@ -125,4 +128,52 @@ test('RUNTIME-RUNTIME-COORDINATOR-001 promotes the unique pending backend and pr
     );
     assert.equal(conflicted.length, 2);
     assert.ok(conflicted.every(runtime => runtime.state === 'conflict'));
+});
+
+test('RUNTIME-TMUX-FOCUS-FAST-PATH-001 focuses a unique cached tmux target without full discovery', async () => {
+    const direct = createFakeRuntimeBackend('vscode');
+    const tmux = createFakeRuntimeBackend('tmux');
+    const runtime = fakeRuntime('tmux', 'focused', {
+        attached: false,
+        tmux: {
+            layout: 'project',
+            sessionName: 'managed',
+            windowName: 'codex-focused',
+        },
+    });
+    tmux.active.push(runtime);
+    const coordinator = createCoordinator(direct, tmux);
+
+    await coordinator.focus(runtime.identity);
+
+    assert.equal(tmux.focusCalls.length, 1);
+    assert.deepEqual(tmux.refreshCalls, []);
+    assert.deepEqual(direct.refreshCalls, []);
+});
+
+test('RUNTIME-TMUX-FOCUS-FAST-PATH-001 reconciles and retries one changed target only once', async () => {
+    const direct = createFakeRuntimeBackend('vscode');
+    const tmux = createFakeRuntimeBackend('tmux');
+    const runtime = fakeRuntime('tmux', 'changed', {
+        attached: false,
+        tmux: {
+            layout: 'project',
+            sessionName: 'managed',
+            windowName: 'codex-changed',
+        },
+    });
+    tmux.active.push(runtime);
+    let focusAttempts = 0;
+    tmux.focus = async value => {
+        tmux.focusCalls.push(value);
+        focusAttempts += 1;
+        throw new AiSessionRuntimeTargetChangedError();
+    };
+    const coordinator = createCoordinator(direct, tmux);
+
+    await coordinator.focus(runtime.identity);
+
+    assert.equal(focusAttempts, 2);
+    assert.deepEqual(tmux.refreshCalls, [true]);
+    assert.deepEqual(direct.refreshCalls, [true]);
 });
