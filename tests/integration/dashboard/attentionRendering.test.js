@@ -190,3 +190,36 @@ test('OPEN-OTHER-WINDOWS-SUMMARY-001 renders shared attention as a summary witho
     assert.doesNotMatch(otherCard, /shared-session|Private Session|data-session-provider|data-session-id/);
     assert.equal((html.match(/data-session-event-id="shared-event"/g) || []).length, 1);
 });
+
+test('RUNTIME-TMUX-THREAD-SWITCH-001 renders the rebound root as the only running Active Session', () => {
+    const html = stewardContent([{
+        id: 'current',
+        name: 'Current',
+        color: '#00aacc',
+        runningSessionCount: 1,
+        codexSessions: [
+            { id: 'new-root', name: 'New work', active: true },
+            { id: 'old-root', name: 'Old work', active: false },
+        ],
+        activeAiSessions: [{
+            key: 'codex:new-root',
+            provider: 'codex',
+            sessionId: 'new-root',
+            name: 'New work',
+            executionState: 'running',
+            focused: false,
+            needsAttention: false,
+            pending: false,
+            backend: 'tmux',
+            tmuxLayout: 'project',
+            attached: false,
+            stale: false,
+        }],
+    }]);
+
+    assert.match(html, /class="workspace-card project steward-item-card session-running"/);
+    assert.match(html, /data-session-fx="current"/);
+    assert.match(html, /data-execution-state="running"[^>]*data-session-id="new-root"/);
+    assert.doesNotMatch(html, /data-execution-state="[^"]+"[^>]*data-session-id="old-root"/);
+    assert.match(html, />Old work</);
+});

@@ -98,3 +98,84 @@ test('PERSIST-AI-SESSION-PROJECT-HYDRATION-001 projects assignment, pin, alias, 
     assert.deepEqual(unavailable.unavailableProviders, ['codex']);
     assert.deepEqual(unavailable.sessionsByProvider.codex, []);
 });
+
+test('RUNTIME-TMUX-THREAD-SWITCH-001 keeps the old root in History and projects the rebound root as running', () => {
+    const workspace = {
+        navigationIdentity: 'navigation:fixture',
+        scopeIdentity: 'scope:fixture',
+        kind: 'singleFolder',
+        displayName: 'App',
+        navigationUri: 'file:///work',
+        environment: 'local',
+        roots: [{
+            id: 'root:fixture', name: 'work', uri: 'file:///work',
+            hostPath: '/work', ordinal: 0,
+        }],
+    };
+    const result = hydrateWorkspaceAiSessions({
+        workspace,
+        providers: [{ id: 'codex', label: 'Codex' }],
+        sessionResults: {
+            codex: {
+                available: true,
+                sessions: [
+                    {
+                        id: 'new-root', name: 'New work', cwd: '/work',
+                        updatedAt: '2026-07-23T06:30:00Z',
+                    },
+                    {
+                        id: 'old-root', name: 'Old work', cwd: '/work',
+                        updatedAt: '2026-07-22T14:40:03Z',
+                    },
+                ],
+            },
+        },
+        getSessionComparableCwd: (_provider, session) => session.cwd,
+        pinnedSessions: new Set(),
+        aliases: {},
+        activeRuntimes: [{
+            identity: {
+                provider: 'codex',
+                sessionId: 'new-root',
+                workspaceScopeIdentity: workspace.scopeIdentity,
+                workspaceNavigationIdentity: workspace.navigationIdentity,
+                workspaceRootHostPaths: ['/work'],
+                cwd: '/work',
+            },
+            backend: 'tmux',
+            state: 'active',
+            markerPath: '/tmp/root.done',
+            runStartedAtMs: 1,
+            attached: false,
+            tmux: {
+                layout: 'project',
+                sessionName: 'ps-work-stable',
+                windowName: 'codex-old-readable-stable',
+            },
+        }],
+        executionSnapshot: {
+            'codex:new-root': {
+                state: 'running',
+                token: 'run',
+                occurredAtMs: 2,
+            },
+        },
+    });
+
+    assert.deepEqual(result.activeSessions.map(session => ({
+        sessionId: session.sessionId,
+        name: session.name,
+        executionState: session.executionState,
+    })), [{
+        sessionId: 'new-root',
+        name: 'New work',
+        executionState: 'running',
+    }]);
+    assert.deepEqual(result.sessionsByProvider.codex.map(session => ({
+        id: session.id,
+        active: session.active,
+    })), [
+        { id: 'new-root', active: true },
+        { id: 'old-root', active: false },
+    ]);
+});

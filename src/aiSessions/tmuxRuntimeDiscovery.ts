@@ -2,6 +2,7 @@
 
 import { existsSync, statSync } from 'fs';
 
+import type { CodexRootThreadObserver } from './codexRootThreadObserver';
 import type {
     AiSessionManagedTmuxMetadata,
     AiSessionPendingRuntimeSnapshot,
@@ -23,6 +24,7 @@ import {
 import type {
     TmuxInactiveAcknowledgementResult,
     TmuxInactiveRuntimeBinding,
+    TmuxKnownRebindResult,
     TmuxKnownRuntimeBinding,
     TmuxPendingRuntimeBinding,
 } from './tmuxRuntimeBindingStore';
@@ -35,6 +37,7 @@ interface DiscoveryWindowRecord {
     windowName: string;
     windowId: string;
     active: boolean;
+    panePid: number;
     metadata: Record<string, string>;
     sessionMetadata: Record<string, string>;
     windowMetadata: Record<string, string>;
@@ -57,6 +60,10 @@ interface TmuxDiscoveryBindingStore {
         expected: TmuxInactiveRuntimeBinding
     ): Promise<TmuxInactiveAcknowledgementResult>;
     reconcileKnown(live: readonly AiSessionRuntimeSnapshot[]): Promise<void>;
+    rebindKnown?(
+        expected: TmuxKnownRuntimeBinding,
+        nextSessionId: string
+    ): Promise<TmuxKnownRebindResult>;
     removeKnown?(
         provider: AiSessionRuntimeIdentity['provider'],
         sessionId: string,
@@ -67,6 +74,7 @@ interface TmuxDiscoveryBindingStore {
 export interface TmuxRuntimeDiscoveryOptions {
     client: TmuxDiscoveryClient;
     bindingStore: TmuxDiscoveryBindingStore;
+    codexRootThreadObserver?: CodexRootThreadObserver;
     markerIsCurrent: (markerPath: string, runStartedAtMs: number) => boolean | Promise<boolean>;
     nowMs?: () => number;
     cacheTtlMs?: number;
@@ -398,12 +406,50 @@ export class TmuxRuntimeDiscovery {
                 continue;
             }
 
+            const locatorKnown = findKnownBindingForManagedRow(knownBindings, parsed, actual);
+            let projectedIdentity = locatorKnown ? {
+                ...identity,
+                sessionId: locatorKnown.sessionId,
+            } : identity;
+            let markerPath = locatorKnown?.markerPath || parsed.marker || '';
+            let runStartedAtMs = locatorKnown?.runStartedAtMs
+                || (parsed.createdAt ? Date.parse(parsed.createdAt) : 0);
+
+            if (locatorKnown
+                && projectedIdentity.provider === 'codex'
+                && Number.isSafeInteger(row.panePid)
+                && row.panePid > 0
+                && this.options.codexRootThreadObserver
+                && this.options.bindingStore.rebindKnown) {
+                let observedSessionId: string | null = null;
+                try {
+                    observedSessionId = await this.options.codexRootThreadObserver.observe({
+                        panePid: row.panePid,
+                        currentSessionId: locatorKnown.sessionId,
+                        runStartedAtMs,
+                    });
+                } catch (e) {
+                    observedSessionId = null;
+                }
+                if (observedSessionId && observedSessionId !== locatorKnown.sessionId) {
+                    const rebound = await this.options.bindingStore.rebindKnown(
+                        locatorKnown, observedSessionId
+                    );
+                    if (rebound === 'rebound') {
+                        projectedIdentity = {
+                            ...projectedIdentity,
+                            sessionId: observedSessionId,
+                        };
+                    }
+                }
+            }
+
             const snapshot: AiSessionRuntimeSnapshot = {
-                identity,
+                identity: projectedIdentity,
                 backend: 'tmux',
                 state: 'active',
-                markerPath: parsed.marker || '',
-                runStartedAtMs: parsed.createdAt ? Date.parse(parsed.createdAt) : 0,
+                markerPath,
+                runStartedAtMs,
                 attached: false,
                 tmux: { ...actual },
             };
@@ -771,6 +817,23 @@ function findPendingBinding(
         && binding.pendingId === metadata.pendingId
         && binding.layout === metadata.layout
         && locatorsEqual(binding.locator, locator));
+}
+
+function findKnownBindingForManagedRow(
+    bindings: readonly TmuxKnownRuntimeBinding[],
+    metadata: NonNullable<ReturnType<typeof parseManagedTmuxMetadata>>,
+    locator: AiSessionTmuxLocator
+): TmuxKnownRuntimeBinding | undefined {
+    const matches = bindings.filter(binding =>
+        binding.provider === metadata.provider
+        && binding.workspaceScopeIdentity === metadata.workspaceScopeIdentity
+        && binding.workspaceNavigationIdentity === metadata.workspaceNavigationIdentity
+        && JSON.stringify(binding.workspaceRootHostPaths.slice().sort())
+            === JSON.stringify(metadata.workspaceRootHostPaths.slice().sort())
+        && binding.cwd === metadata.cwd
+        && binding.layout === metadata.layout
+        && locatorsEqual(binding.locator, locator));
+    return matches.length === 1 ? matches[0] : undefined;
 }
 
 function finalIdentityMatchesKnown(

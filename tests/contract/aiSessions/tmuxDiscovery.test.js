@@ -209,3 +209,131 @@ test('RUNTIME-TMUX-DISCOVERY-001 classifies vanished runtimes as completed or st
     await stopped.refresh(true);
     assert.deepEqual(stopped.getInactive().map(runtime => runtime.state), ['stopped']);
 });
+
+test('RUNTIME-TMUX-THREAD-SWITCH-001 rebinds one managed locator to its observed Codex root thread', async () => {
+    const row = makeTmuxDiscoveryRow({
+        sessionId: 'old-root',
+        panePid: 4321,
+    });
+    const locator = {
+        layout: 'project',
+        sessionName: row.sessionName,
+        windowName: row.windowName,
+    };
+    const known = makeTmuxKnownBinding('old-root', { locator });
+    const store = createSyntheticTmuxStore({ known: [known] });
+    const observed = [];
+    const observer = {
+        observe: async request => {
+            observed.push(request);
+            return 'new-root';
+        },
+    };
+    const discovery = new TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [row] },
+        bindingStore: store,
+        codexRootThreadObserver: observer,
+        markerIsCurrent: () => false,
+        nowMs: () => 2000,
+        cacheTtlMs: 0,
+    });
+
+    await discovery.refresh(true);
+    assert.deepEqual(observed, [{
+        panePid: 4321,
+        currentSessionId: 'old-root',
+        runStartedAtMs: known.runStartedAtMs,
+    }]);
+    assert.deepEqual(discovery.getActive().map(runtime => runtime.identity.sessionId), ['new-root']);
+    assert.equal(store.known.has('codex:old-root'), false);
+    assert.equal(store.known.get('codex:new-root').locator.windowName, row.windowName);
+
+    const restarted = new TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [row] },
+        bindingStore: store,
+        codexRootThreadObserver: observer,
+        markerIsCurrent: () => false,
+        nowMs: () => 2001,
+        cacheTtlMs: 0,
+    });
+    await restarted.refresh(true);
+    assert.deepEqual(restarted.getActive().map(runtime => runtime.identity.sessionId), ['new-root']);
+});
+
+test('RUNTIME-TMUX-THREAD-SWITCH-001 preserves the durable projection when observation cannot commit', async () => {
+    const row = makeTmuxDiscoveryRow({ sessionId: 'old-root', panePid: 4321 });
+    const locator = {
+        layout: 'project',
+        sessionName: row.sessionName,
+        windowName: row.windowName,
+    };
+    for (const failure of ['observer', 'stale', 'missing']) {
+        const store = createSyntheticTmuxStore({
+            known: [makeTmuxKnownBinding('old-root', { locator })],
+        });
+        if (failure !== 'observer') {
+            store.rebindKnown = async () => failure;
+        }
+        const discovery = new TmuxRuntimeDiscovery({
+            client: { listWindows: async () => [row] },
+            bindingStore: store,
+            codexRootThreadObserver: {
+                observe: async () => {
+                    if (failure === 'observer') throw new Error('controlled observer race');
+                    return 'new-root';
+                },
+            },
+            markerIsCurrent: () => false,
+            nowMs: () => 2000,
+            cacheTtlMs: 0,
+        });
+        await discovery.refresh(true);
+        assert.deepEqual(
+            discovery.getActive().map(runtime => runtime.identity.sessionId),
+            ['old-root'],
+            failure
+        );
+    }
+});
+
+test('RUNTIME-TMUX-THREAD-SWITCH-001 rejects ambiguous locator authority and non-Codex observation', async () => {
+    const row = makeTmuxDiscoveryRow({ sessionId: 'old-root', panePid: 4321 });
+    const locator = {
+        layout: 'project',
+        sessionName: row.sessionName,
+        windowName: row.windowName,
+    };
+    const duplicate = makeTmuxKnownBinding('other-root', { locator });
+    const ambiguousStore = createSyntheticTmuxStore({
+        known: [makeTmuxKnownBinding('old-root', { locator }), duplicate],
+    });
+    let observations = 0;
+    const ambiguous = new TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [row] },
+        bindingStore: ambiguousStore,
+        codexRootThreadObserver: {
+            observe: async () => { observations += 1; return 'new-root'; },
+        },
+        markerIsCurrent: () => false,
+        cacheTtlMs: 0,
+    });
+    await ambiguous.refresh(true);
+    assert.equal(observations, 0);
+    assert.deepEqual(ambiguous.getActive().map(runtime => runtime.identity.sessionId), ['old-root']);
+
+    const kimiRow = makeTmuxDiscoveryRow({
+        provider: 'kimi', sessionId: 'kimi-root', panePid: 4322,
+    });
+    const kimi = new TmuxRuntimeDiscovery({
+        client: { listWindows: async () => [kimiRow] },
+        bindingStore: createSyntheticTmuxStore(),
+        codexRootThreadObserver: {
+            observe: async () => { observations += 1; return 'wrong'; },
+        },
+        markerIsCurrent: () => false,
+        cacheTtlMs: 0,
+    });
+    await kimi.refresh(true);
+    assert.equal(observations, 0);
+    assert.deepEqual(kimi.getActive().map(runtime => runtime.identity.sessionId), ['kimi-root']);
+});

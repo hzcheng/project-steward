@@ -23,6 +23,7 @@ import { buildTodoViewModel } from './todos/viewModel';
 import { getTodoPanelContent, getUnsupportedTodoVersionPanelContent } from './todos/webviewContent';
 import FileService from './services/fileService';
 import CodexSessionService from './services/codexSessionService';
+import { ProcCodexRootThreadObserver } from './aiSessions/codexRootThreadObserver';
 import KimiSessionService from './services/kimiSessionService';
 import ClaudeSessionService from './services/claudeSessionService';
 import ProjectWindowColorService from './services/projectWindowColorService';
@@ -361,6 +362,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const tmuxRuntimeDiscovery = new TmuxRuntimeDiscovery({
         client: tmuxClient,
         bindingStore: tmuxRuntimeStore,
+        codexRootThreadObserver: new ProcCodexRootThreadObserver(),
         markerIsCurrent: isCurrentRuntimeMarker,
     });
     try {
