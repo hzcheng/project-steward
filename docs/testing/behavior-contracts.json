@@ -2586,7 +2586,8 @@
     ],
     "evidence": [
       "src/services/projectService.ts",
-      "src/projects/projectCatalogSync.ts"
+      "src/projects/projectCatalogSync.ts",
+      "src/services/projectCatalogSyncService.ts"
     ]
   },
   {

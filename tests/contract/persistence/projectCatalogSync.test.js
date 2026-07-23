@@ -93,6 +93,43 @@ function loadProjectCatalogSyncModel() {
     return require('../../../out/projects/projectCatalogSync');
 }
 
+function loadProjectCatalogSyncService() {
+    return require('../../../out/services/projectCatalogSyncService').ProjectCatalogSyncService;
+}
+
+function makeSyncPersistenceHarness({ legacyGroups, syncData = null, localState = null } = {}) {
+    const values = {
+        legacyGroups: clone(legacyGroups || makeCatalogGroups()),
+        syncData: clone(syncData),
+        localState: clone(localState),
+    };
+    const writes = [];
+    const conflicts = [];
+    const diagnostics = [];
+    const ProjectCatalogSyncService = loadProjectCatalogSyncService();
+    const service = new ProjectCatalogSyncService({
+        getSyncData: () => clone(values.syncData),
+        updateSyncData: async value => {
+            writes.push('settings:projectSyncData');
+            values.syncData = clone(value);
+        },
+        getLegacyGroups: () => clone(values.legacyGroups),
+        updateLegacyGroups: async groups => {
+            writes.push('settings:projectData');
+            values.legacyGroups = clone(groups);
+        },
+        getLocalState: () => clone(values.localState),
+        updateLocalState: async value => {
+            writes.push('globalState:projectCatalogSyncLocal.v1');
+            values.localState = clone(value);
+        },
+        createActorId: () => 'actor-local',
+        onDiagnostic: event => diagnostics.push(clone(event)),
+        onConflict: projectIds => conflicts.push([...projectIds]),
+    });
+    return { conflicts, diagnostics, service, values, writes };
+}
+
 test('PROJECT-CATALOG-SYNC-CONFLICT-001 preserves a project when a stale client submits an older full snapshot', async () => {
     const initialGroups = [{
         id: 'group-main',
@@ -221,4 +258,54 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 model does not grow history across repea
         assert.equal(Object.prototype.hasOwnProperty.call(document, forbidden), false);
     }
     assert.equal(Object.keys(document.projects).length, 1);
+});
+
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 persistence writes shadow before sync data and compatibility projection', async () => {
+    const harness = makeSyncPersistenceHarness();
+
+    const result = await harness.service.reconcile();
+
+    assert.deepEqual(projectIds(harness.service.getGroups()), ['project-existing']);
+    assert.deepEqual(harness.writes, [
+        'globalState:projectCatalogSyncLocal.v1',
+        'settings:projectSyncData',
+        'settings:projectData',
+    ]);
+    assert.equal(result.repaired, true);
+    harness.writes.length = 0;
+    await harness.service.reconcile();
+    assert.deepEqual(harness.writes, []);
+});
+
+test('PROJECT-CATALOG-SYNC-CONFLICT-001 persistence reads merged shadow state before asynchronous repair', () => {
+    const {
+        applyProjectCatalogSnapshot,
+        migrateLegacyProjectCatalog,
+    } = loadProjectCatalogSyncModel();
+    const base = migrateLegacyProjectCatalog(makeCatalogGroups(), 'actor-a');
+    const addedProject = {
+        id: 'project-build-your-own-x',
+        name: 'build-your-own-x',
+        path: '/work/build-your-own-x',
+        color: '#445566',
+    };
+    const withAdded = applyProjectCatalogSnapshot(
+        base,
+        makeCatalogGroups([addedProject]),
+        'actor-b'
+    );
+    const harness = makeSyncPersistenceHarness({
+        syncData: base,
+        localState: {
+            schemaVersion: 1,
+            actorId: 'actor-b',
+            document: withAdded,
+        },
+    });
+
+    assert.deepEqual(projectIds(harness.service.getGroups()), [
+        'project-build-your-own-x',
+        'project-existing',
+    ]);
+    assert.deepEqual(harness.writes, []);
 });

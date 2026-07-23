@@ -18,6 +18,8 @@ export const INBUILT_COLOR_DEFAULTS = [
 ];
 
 export const PROJECTS_KEY = 'projects';
+export const PROJECT_SYNC_DATA_KEY = 'projectSyncData';
+export const PROJECT_SYNC_LOCAL_STATE_KEY = 'projectCatalogSyncLocal.v1';
 export const TODO_DATA_KEY = 'todos';
 export const TODO_SETTINGS_KEY = 'todoData';
 export const TODO_VIEW_STATE_KEY = 'todoViewState';

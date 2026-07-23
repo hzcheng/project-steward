@@ -90,6 +90,14 @@
                     "markdownDescription": "Stores the Project Steward data if the ```projectSteward.storeProjectsInSettings``` option is set to ```true```. The raw data can be edited by using the command ```Project Steward: Edit Projects```.",
                     "default": null
                 },
+                "projectSteward.projectSyncData": {
+                    "type": [
+                        "object",
+                        "null"
+                    ],
+                    "markdownDescription": "Versioned Project Steward sync metadata. Use Project Steward commands to edit projects.",
+                    "default": null
+                },
                 "projectSteward.todoData": {
                     "type": [
                         "object",
