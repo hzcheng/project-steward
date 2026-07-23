@@ -661,7 +661,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/aiSessions/attention.test.js"
+      "tests/integration/dashboard/attentionRendering.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
@@ -1055,7 +1055,7 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/contract/aiSessions/attention.test.js"
+      "tests/integration/dashboard/productionAttentionBridge.test.js"
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"

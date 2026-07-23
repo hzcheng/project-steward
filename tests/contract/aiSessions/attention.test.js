@@ -120,7 +120,7 @@ test('ATTENTION-ATTENTION-PAYLOAD-001 validates privacy-safe owner snapshots and
     }), /privacy-safe/);
 });
 
-test('ATTENTION-ATTENTION-PROJECT-001 ATTENTION-ATTENTION-PROJECTION-001 ATTENTION-ATTENTION-PROJECT-RENDERING-001 maps aggregate ownership onto immutable project views', () => {
+test('ATTENTION-ATTENTION-PROJECT-001 ATTENTION-ATTENTION-PROJECTION-001 maps aggregate ownership onto immutable project views', () => {
     const projectPath = 'file:///fixtures/project';
     const projectKey = attentionProject.getAttentionProjectKey('/fixtures/project');
     assert.equal(attentionProject.resolveAttentionProjectKey({ path: projectPath }), projectKey);
@@ -367,7 +367,3 @@ test('ATTENTION-ATTENTION-BRIDGE-CLIENT-LIFECYCLE-001 ATTENTION-ATTENTION-BRIDGE
     client.dispose();
     await flushAsync();
 });
-
-// ATTENTION-PRODUCTION-ATTENTION-BRIDGE-INTEGRATION-001 is exercised by the real
-// aggregate validator/client-store lifecycle cases above: malformed or stale owner
-// input is rejected before the latest privacy-safe snapshot is published.
