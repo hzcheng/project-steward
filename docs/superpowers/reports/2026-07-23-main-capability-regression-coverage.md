@@ -3,7 +3,7 @@
 Date: 2026-07-23
 Branch: `feat/refactor-and-ci`
 Audited main head: `e9145123b3ad1cdcbc625e52291ae053e8acbce5`
-Verification head: `e2eeb5e433fa44b0556aa98264ffb59d6f7bed62`
+Verification head: `2d93d70d55895ce9bec786887444bb7325681769`
 
 ## Result
 
@@ -72,6 +72,14 @@ assignments. Full hashes and requirements are canonical in
    by explicit deferred synchronization with a bounded timeout, the real
    scan/remove behavior was added to the focused contract, and the legacy
    safety check passed three consecutive isolated runs before Linux CI passed.
+8. A live managed tmux pane can outlive one Codex root thread and start another.
+   The durable binding previously remained on the completed thread, so the
+   replacement thread did not render its running animation. The pane PID is now
+   observed through a bounded Linux `/proc` process/fd scan; only an unambiguous
+   root `session_meta` may atomically rebind the exact known locator. Focused
+   tests cover subagent rejection, ambiguity, malformed input, compare-and-swap
+   races, crash recovery, Active/History movement, and running animation
+   projection (`RUNTIME-TMUX-THREAD-SWITCH-001`).
 
 ## Verification Evidence
 
@@ -79,11 +87,11 @@ assignments. Full hashes and requirements are canonical in
 | --- | --- |
 | `npm run test:behavior-contracts` | PASS, 37/37 catalog/manifest mutation tests |
 | `npm run test:deterministic` | PASS before final race case, 426/426 |
-| Final deterministic suite inside `test:ci:linux` | PASS, 427/427: 165 unit, 203 contract, 59 integration |
+| Final deterministic suite inside `test:ci:linux` | PASS, 441/441: 165 unit, 216 contract, 60 integration |
 | `npm run test:ci:windows` | PASS, 26/26 |
-| `npm run test:coverage:run` plus baseline | PASS; statements 78.34%, branches 71.04%, functions 79.47%, lines 78.34% |
+| `npm run test:coverage:run` plus baseline | PASS; statements 78.75%, branches 71.61%, functions 79.90%, lines 78.75% |
 | `npm run test:ci:linux` | PASS, including compile, behavior ownership, lint, deterministic, legacy safety, dashboard, architecture, release notes, VSIX, and coverage |
-| `npm run test:tmux:smoke` | PASS; isolated server `project-steward-test-505542-866ae47c17dc6684` cleaned |
+| `npm run test:tmux:smoke` | PASS; isolated server `project-steward-test-493316-cb55564a4014b91d` cleaned |
 | Default tmux server before/after | Unchanged: the same four user sessions; no harness-owned `/tmp/project-steward-tmux-smoke-*` root remained |
 | `npm run test:extension-host` | BLOCKED: VS Code 1.130.0 binary could not load `libnspr4.so`; exit 127 |
 
@@ -91,11 +99,19 @@ assignments. Full hashes and requirements are canonical in
 
 | Artifact | ZIP entries | SHA-256 |
 | --- | ---: | --- |
-| `artifacts/project-steward-2.1.4.vsix` | 37 | `1fa6b767d557c9d555ebb53496efab3cc5f3a17389c7ab385703f10f4b273e45` |
-| `artifacts/project-steward-attention-ui-bridge-0.1.4.vsix` | 6 | `936f12af7da314cf64cc7c636c4aa776196c0c2c784e1ac0f5d46d26a8ebc0aa` |
+| `artifacts/project-steward-2.1.4.vsix` | 37 | `d782dd9b0dad3783030d1db13538ef2b66de255a452292f92fa2ba29c8a62b84` |
+| `artifacts/project-steward-attention-ui-bridge-0.1.4.vsix` | 6 | `f5268f2e8b1f652cf167bad380da35241f5fa3adc6b5e0e21f423723e60f44fc` |
 
 Both archives passed `unzip -t`. Neither archive contains coverage, tests,
 `.ci`, source maps, documentation, or seeded stale-output probes.
+
+The main VSIX was force-installed as `hzcheng.project-steward@2.1.4` into
+`Dev Container: DevBox @ reddev`. The installed `dist/dashboard.js` SHA-256
+matches the same file inside the VSIX:
+`411218a2e488f50d6af7e418e783b34dd002a4bbd65344861e554e26afc0361f`.
+The already-installed UI bridge remained at version 0.1.4; the tmux thread
+rebinding fix is owned by the workspace extension and does not require a bridge
+update.
 
 ## Repository Integrity
 
