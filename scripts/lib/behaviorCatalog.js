@@ -21,6 +21,71 @@ function loadBehaviorCatalog(filePath) {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
+function inspectRepositoryFile(repositoryRoot, canonicalRepositoryRoot, catalogPath) {
+    const normalizedPath = catalogPath.replaceAll('\\', '/');
+    const resolvedPath = path.resolve(repositoryRoot, normalizedPath);
+    const relativePath = path.relative(repositoryRoot, resolvedPath);
+    if (path.isAbsolute(normalizedPath)
+        || path.win32.isAbsolute(normalizedPath)
+        || relativePath === '..'
+        || relativePath.startsWith(`..${path.sep}`)
+        || path.isAbsolute(relativePath)) {
+        return { error: 'relative' };
+    }
+
+    let stats;
+    try {
+        stats = fs.statSync(resolvedPath);
+    } catch (error) {
+        return error && error.code === 'ENOENT'
+            ? { error: 'missing' }
+            : { error: 'inspect', detail: error.message };
+    }
+    if (!stats.isFile()) {
+        return { error: 'regular-file' };
+    }
+
+    let canonicalPath;
+    try {
+        canonicalPath = fs.realpathSync(resolvedPath);
+    } catch (error) {
+        return { error: 'inspect', detail: error.message };
+    }
+    const canonicalRelativePath = path.relative(canonicalRepositoryRoot, canonicalPath);
+    if (canonicalRelativePath === '..'
+        || canonicalRelativePath.startsWith(`..${path.sep}`)
+        || path.isAbsolute(canonicalRelativePath)) {
+        return { error: 'outside' };
+    }
+
+    return {
+        canonicalCatalogPath: relativePath.split(path.sep).join('/'),
+        resolvedPath,
+    };
+}
+
+function appendRepositoryFileError(errors, label, field, catalogPath, inspection) {
+    switch (inspection.error) {
+        case 'relative':
+            errors.push(`${label} ${field} path must be repository-relative: ${catalogPath}`);
+            break;
+        case 'missing':
+            errors.push(`${label} has missing ${field} path ${catalogPath}`);
+            break;
+        case 'inspect':
+            errors.push(`${label} cannot inspect ${field} path ${catalogPath}: ${inspection.detail}`);
+            break;
+        case 'regular-file':
+            errors.push(`${label} ${field} path must be a regular file: ${catalogPath}`);
+            break;
+        case 'outside':
+            errors.push(`${label} ${field} path resolves outside repository: ${catalogPath}`);
+            break;
+        default:
+            throw new Error(`Unsupported repository file inspection error: ${inspection.error}`);
+    }
+}
+
 function validateBehaviorCatalog(entries, options) {
     const errors = [];
     const repositoryRoot = options && options.repositoryRoot;
@@ -29,6 +94,12 @@ function validateBehaviorCatalog(entries, options) {
     }
     if (!Array.isArray(entries)) {
         return ['behavior catalog must be an array'];
+    }
+    let canonicalRepositoryRoot;
+    try {
+        canonicalRepositoryRoot = fs.realpathSync(repositoryRoot);
+    } catch (error) {
+        return [`cannot inspect repositoryRoot: ${error.message}`];
     }
 
     const seenIds = new Set();
@@ -60,6 +131,15 @@ function validateBehaviorCatalog(entries, options) {
         if (!Array.isArray(entry.evidence) || entry.evidence.length === 0
             || entry.evidence.some(item => typeof item !== 'string' || item.trim() === '')) {
             errors.push(`${label} evidence must contain at least one path`);
+        } else {
+            for (const evidence of entry.evidence) {
+                const inspection = inspectRepositoryFile(
+                    repositoryRoot, canonicalRepositoryRoot, evidence,
+                );
+                if (inspection.error) {
+                    appendRepositoryFileError(errors, label, 'evidence', evidence, inspection);
+                }
+            }
         }
         if (!Array.isArray(entry.owners) || entry.owners.length === 0) {
             errors.push(`${label} owners must contain at least one path`);
@@ -69,40 +149,21 @@ function validateBehaviorCatalog(entries, options) {
                     errors.push(`${label} has an invalid owner path`);
                     continue;
                 }
-                const catalogOwner = owner.replaceAll('\\', '/');
-                const ownerPath = path.resolve(repositoryRoot, catalogOwner);
-                const relativeOwnerPath = path.relative(repositoryRoot, ownerPath);
-                if (path.isAbsolute(catalogOwner)
-                    || path.win32.isAbsolute(catalogOwner)
-                    || relativeOwnerPath === '..'
-                    || relativeOwnerPath.startsWith(`..${path.sep}`)
-                    || path.isAbsolute(relativeOwnerPath)) {
-                    errors.push(`${label} owner path must be repository-relative: ${owner}`);
+                const inspection = inspectRepositoryFile(
+                    repositoryRoot, canonicalRepositoryRoot, owner,
+                );
+                if (inspection.error) {
+                    appendRepositoryFileError(errors, label, 'owner', owner, inspection);
                     continue;
                 }
-                const canonicalOwner = relativeOwnerPath.split(path.sep).join('/');
+                const canonicalOwner = inspection.canonicalCatalogPath;
                 if (entry.status === 'automated' && LEGACY_COMPATIBILITY_OWNERS.has(canonicalOwner)) {
                     errors.push(`${label} legacy compatibility script cannot own automated behavior: ${owner}`);
-                }
-                let ownerStats;
-                try {
-                    ownerStats = fs.statSync(ownerPath);
-                } catch (error) {
-                    if (error && error.code === 'ENOENT') {
-                        errors.push(`${label} has missing owner path ${owner}`);
-                    } else {
-                        errors.push(`${label} cannot inspect owner path ${owner}: ${error.message}`);
-                    }
-                    continue;
-                }
-                if (!ownerStats.isFile()) {
-                    errors.push(`${label} owner path must be a regular file: ${owner}`);
-                    continue;
                 }
                 if (entry.status === 'automated') {
                     let ownerContents;
                     try {
-                        ownerContents = fs.readFileSync(ownerPath, 'utf8');
+                        ownerContents = fs.readFileSync(inspection.resolvedPath, 'utf8');
                     } catch (error) {
                         errors.push(`${label} cannot read owner path ${owner}: ${error.message}`);
                         continue;

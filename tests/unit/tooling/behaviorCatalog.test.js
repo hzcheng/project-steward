@@ -13,6 +13,9 @@ function createRoot(t, contents = "test('PROJECT-PATH-001 normalizes paths', () 
     const testPath = path.join(root, 'tests', 'unit', 'sample.test.js');
     fs.mkdirSync(path.dirname(testPath), { recursive: true });
     fs.writeFileSync(testPath, contents);
+    const evidencePath = path.join(root, 'src', 'projects', 'projectPathUtils.ts');
+    fs.mkdirSync(path.dirname(evidencePath), { recursive: true });
+    fs.writeFileSync(evidencePath, 'export const normalizePath = value => value;\n');
     return root;
 }
 
@@ -135,4 +138,97 @@ test('CATALOG-INTEGRITY-010 rejects Windows drive-absolute owner paths', t => {
         repositoryRoot: root,
     });
     assert.ok(errors.includes(`entry 1 owner path must be repository-relative: ${owner}`));
+});
+
+test('CATALOG-INTEGRITY-011 rejects missing evidence files', t => {
+    const root = createRoot(t);
+    const evidence = 'src/projects/missing.ts';
+    const errors = validateBehaviorCatalog([automatedEntry({ evidence: [evidence] })], {
+        repositoryRoot: root,
+    });
+    assert.ok(errors.includes(`entry 1 has missing evidence path ${evidence}`));
+});
+
+test('CATALOG-INTEGRITY-012 rejects absolute evidence paths across platforms', t => {
+    const root = createRoot(t);
+    for (const evidence of [
+        '/outside/evidence.ts',
+        'C:\\outside\\evidence.ts',
+        '\\\\server\\share\\evidence.ts',
+    ]) {
+        const errors = validateBehaviorCatalog([automatedEntry({ evidence: [evidence] })], {
+            repositoryRoot: root,
+        });
+        assert.ok(errors.includes(`entry 1 evidence path must be repository-relative: ${evidence}`), evidence);
+    }
+});
+
+test('CATALOG-INTEGRITY-013 rejects evidence paths that lexically escape the repository', t => {
+    const root = createRoot(t);
+    const evidence = '../outside/evidence.ts';
+    const errors = validateBehaviorCatalog([automatedEntry({ evidence: [evidence] })], {
+        repositoryRoot: root,
+    });
+    assert.ok(errors.includes(`entry 1 evidence path must be repository-relative: ${evidence}`));
+});
+
+test('CATALOG-INTEGRITY-014 rejects evidence directories', t => {
+    const root = createRoot(t);
+    const evidence = 'src/projects';
+    const errors = validateBehaviorCatalog([automatedEntry({ evidence: [evidence] })], {
+        repositoryRoot: root,
+    });
+    assert.ok(errors.includes(`entry 1 evidence path must be a regular file: ${evidence}`));
+});
+
+test('CATALOG-INTEGRITY-015 rejects evidence symlinks that resolve outside the repository', t => {
+    const root = createRoot(t);
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'behavior-catalog-outside-'));
+    t.after(() => fs.rmSync(outsideRoot, { recursive: true, force: true }));
+    const outsideFile = path.join(outsideRoot, 'evidence.ts');
+    fs.writeFileSync(outsideFile, 'export const outside = true;\n');
+    const evidence = 'src/projects/outside-link.ts';
+    try {
+        fs.symlinkSync(outsideFile, path.join(root, evidence));
+    } catch (error) {
+        if (error && (error.code === 'EPERM' || error.code === 'EACCES')) {
+            t.skip(`symlinks unavailable: ${error.code}`);
+            return;
+        }
+        throw error;
+    }
+
+    const errors = validateBehaviorCatalog([automatedEntry({ evidence: [evidence] })], {
+        repositoryRoot: root,
+    });
+    assert.ok(errors.includes(`entry 1 evidence path resolves outside repository: ${evidence}`));
+});
+
+test('CATALOG-INTEGRITY-016 accepts an inspectable repository-relative regular evidence file', t => {
+    const root = createRoot(t);
+    const errors = validateBehaviorCatalog([automatedEntry()], { repositoryRoot: root });
+    assert.ok(!errors.some(error => error.includes('evidence path')));
+});
+
+test('CATALOG-INTEGRITY-017 rejects owner symlinks that resolve outside the repository', t => {
+    const root = createRoot(t);
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'behavior-owner-outside-'));
+    t.after(() => fs.rmSync(outsideRoot, { recursive: true, force: true }));
+    const outsideFile = path.join(outsideRoot, 'owner.test.js');
+    fs.writeFileSync(outsideFile, '// PROJECT-PATH-001\n');
+    const owner = 'tests/unit/outside-owner.test.js';
+    try {
+        fs.symlinkSync(outsideFile, path.join(root, owner));
+    } catch (error) {
+        if (error && (error.code === 'EPERM' || error.code === 'EACCES')) {
+            t.skip(`symlinks unavailable: ${error.code}`);
+            return;
+        }
+        throw error;
+    }
+
+    const errors = validateBehaviorCatalog([automatedEntry({ owners: [owner] })], {
+        repositoryRoot: root,
+    });
+    assert.ok(errors.includes(`entry 1 owner path resolves outside repository: ${owner}`));
 });

@@ -34,7 +34,7 @@ The validated catalog contains 186 contracts after adding the scheduled Extensio
 | Priority | P0 13; P1 173; P2 0 |
 | Status | automated 177; manual 8; scheduled 1 |
 
-Each catalog entry has one valid `status`; automated owners contain the behavior ID, and every manual entry has a non-empty reason and is owned by the versioned manual matrix.
+Each catalog entry has one valid `status`; every owner and evidence reference resolves inside the repository to an inspectable regular file, automated owners contain the behavior ID, and every manual entry has a non-empty reason and is owned by the versioned manual matrix.
 
 The TSLint baseline contains 100 existing warnings across 8 files and 13 file/rule pairs. CI permits reductions but rejects any new pair or count increase.
 

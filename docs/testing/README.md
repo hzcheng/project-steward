@@ -11,11 +11,11 @@ Use Node.js 22.12 or newer and install dependencies with `npm ci` before running
 - `title` describes the protected behavior.
 - `priority` is `P0`, `P1`, or `P2`.
 - `status` is `automated`, `scheduled`, or `manual`.
-- `owners` contains repository-relative test or manual-document paths. Automated owner files must include the entry ID.
-- `evidence` contains one or more repository-relative source or test paths.
+- `owners` contains repository-relative test or manual-document paths. Each path must resolve inside the repository to an inspectable regular file; automated owner files must include the entry ID.
+- `evidence` contains one or more repository-relative source or test paths. Each path must exist, be inspectable, resolve inside the repository, and identify a regular file. Absolute paths, lexical `..` escapes, directories, and symlinks that escape the repository are rejected.
 - Manual entries also include a non-empty `manualReason`.
 
-Run `npm run test:behavior-contracts` to validate the catalog and its owner references. Focused `node:test` suites own ordinary behavior; the remaining source-level checks are limited to documented architecture risks.
+Run `npm run test:behavior-contracts` to validate the catalog and its owner and evidence references. Focused `node:test` suites own ordinary behavior; the remaining source-level checks are limited to documented architecture risks.
 
 ## Test workflow
 
