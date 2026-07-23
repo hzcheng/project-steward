@@ -124,7 +124,9 @@
             ],
             "behaviors": [
                 "OPEN-OPEN-PROJECT-PUBLICATION-001",
-                "OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001"
+                "OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001",
+                "OPEN-OTHER-WINDOWS-PRIVACY-001",
+                "OPEN-OTHER-WINDOWS-SUMMARY-001"
             ],
             "prGates": [
                 "test:deterministic:run"

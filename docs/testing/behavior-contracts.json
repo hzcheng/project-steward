@@ -2443,6 +2443,35 @@
     ]
   },
   {
+    "id": "OPEN-OTHER-WINDOWS-PRIVACY-001",
+    "domain": "open-project",
+    "title": "OTHER WINDOWS cards expose only privacy-bounded workspace summaries",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/openProjects/projection.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/projection.ts",
+      "src/openWorkspaces/protocol.ts"
+    ]
+  },
+  {
+    "id": "OPEN-OTHER-WINDOWS-SUMMARY-001",
+    "domain": "open-project",
+    "title": "OTHER WINDOWS incremental summaries preserve identity, counts, attention, and rollback",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/attentionRendering.test.js"
+    ],
+    "evidence": [
+      "src/openWorkspaces/projection.ts",
+      "src/webview/webviewContent.ts",
+      "src/webview/webviewProjectScripts.js"
+    ]
+  },
+  {
     "id": "SESSION-WORKSPACE-SCOPE-001",
     "domain": "session",
     "title": "Workspace session scope preserves root precedence and provider directory arguments",

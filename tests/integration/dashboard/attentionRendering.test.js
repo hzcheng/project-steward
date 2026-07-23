@@ -31,36 +31,42 @@ const config = {
 };
 
 function stewardContent(openProjects) {
-    const cards = openProjects.map(project => ({
-        id: project.id,
-        kind: 'current',
-        workspaceKind: 'singleFolder',
-        showSaveAction: false,
-        runningSessionCount: 0,
-        navigationIdentity: `navigation:${project.id}`,
-        scopeIdentity: `scope:${project.id}`,
-        name: project.name,
-        environment: 'local',
-        environmentLabel: 'Local',
-        color: project.color,
-        roots: [{ id: `root:${project.id}`, name: project.name, ordinal: 0 }],
-        attentionCount: (project.activeAiSessions || [])
-            .filter(session => session.needsAttention && !session.stale)
-            .length,
-        aiSessions: {
-            activeProvider: 'codex',
-            expanded: true,
-            sessionsByProvider: {
-                codex: project.codexSessions || [],
-                kimi: [],
-                claude: [],
-            },
-            unavailableProviders: [],
-            activeSessions: project.activeAiSessions || [],
-            aiSessionCount: (project.codexSessions || []).length,
-            activeSessionCount: (project.activeAiSessions || []).length,
-        },
-    }));
+    const cards = openProjects.map(project => {
+        const kind = project.kind || 'current';
+        const activeSessions = project.activeAiSessions || [];
+        return {
+            id: project.id,
+            kind,
+            workspaceKind: 'singleFolder',
+            showSaveAction: false,
+            runningSessionCount: project.runningSessionCount || 0,
+            navigationIdentity: `navigation:${project.id}`,
+            scopeIdentity: `scope:${project.id}`,
+            name: project.name,
+            environment: 'local',
+            environmentLabel: 'Local',
+            color: project.color,
+            roots: [{ id: `root:${project.id}`, name: project.name, ordinal: 0 }],
+            attentionCount: project.attentionCount ?? activeSessions
+                .filter(session => session.needsAttention && !session.stale)
+                .length,
+            ...(kind === 'current' ? {
+                aiSessions: {
+                    activeProvider: 'codex',
+                    expanded: true,
+                    sessionsByProvider: {
+                        codex: project.codexSessions || [],
+                        kimi: [],
+                        claude: [],
+                    },
+                    unavailableProviders: [],
+                    activeSessions,
+                    aiSessionCount: (project.codexSessions || []).length,
+                    activeSessionCount: activeSessions.length,
+                },
+            } : {}),
+        };
+    });
     return renderer.getStewardContent(
         { extensionPath: '/extension' },
         { cspSource: 'test-source', asWebviewUri: uri => uri.toString() },
@@ -137,4 +143,50 @@ test('ATTENTION-ATTENTION-PROJECT-RENDERING-001 OPEN cards render positive count
     assert.ok(staleRow, 'the stale runtime row is rendered');
     assert.doesNotMatch(staleRow, /data-ai-session-attention|data-session-needs-attention/);
     assert.doesNotMatch(staleHtml, /class="ai-session-attention-count"/);
+});
+
+test('OPEN-OTHER-WINDOWS-SUMMARY-001 renders shared attention as a summary without session ownership', () => {
+    const html = stewardContent([{
+        id: 'current',
+        name: 'Current',
+        color: '#00aacc',
+        codexSessions: [{
+            id: 'shared-session',
+            name: 'Private Session',
+            active: true,
+            attention: { eventId: 'shared-event', reason: 'completed', unread: true },
+        }],
+        activeAiSessions: [{
+            key: 'codex:shared-session',
+            provider: 'codex',
+            sessionId: 'shared-session',
+            name: 'Private Session',
+            executionState: 'stopped',
+            focused: false,
+            needsAttention: true,
+            pending: false,
+            backend: 'vscode',
+            attached: true,
+            stale: false,
+        }],
+    }, {
+        id: 'other',
+        kind: 'navigation',
+        name: 'Other Window',
+        color: '#00aacc',
+        attentionCount: 1,
+        runningSessionCount: 1,
+        providerId: 'codex',
+        sessionId: 'shared-session',
+        sessionName: 'Private Session',
+    }]);
+
+    assert.match(html, /data-id="other"[^>]*data-other-workspace/);
+    assert.match(html, /class="project-ai-attention-badge"[^>]*>1<\/span>/);
+    const otherCard = html.match(
+        /<div class="workspace-card project steward-item-card[^"]*"[^>]*data-id="other"[\s\S]*?<\/div>\s*<\/div>/
+    )?.[0];
+    assert.ok(otherCard, 'OTHER WINDOWS summary card is rendered');
+    assert.doesNotMatch(otherCard, /shared-session|Private Session|data-session-provider|data-session-id/);
+    assert.equal((html.match(/data-session-event-id="shared-event"/g) || []).length, 1);
 });

@@ -96,6 +96,90 @@ test('PROJECT-PROJECTION-001 keeps current cards, excludes own and current ident
     assert.match(cards[0].id, /^__openWorkspaceNavigation-[a-f0-9]{24}$/);
 });
 
+test('OPEN-OTHER-WINDOWS-PRIVACY-001 exposes only the latest privacy-bounded workspace summary', () => {
+    const current = makeRecord({ uri: '/work/current' });
+    const sharedIdentity = makeRecord({ uri: '/work/shared' }).navigationIdentity;
+    const latest = makeRecord({
+        uri: '/work/shared',
+        navigationIdentity: sharedIdentity,
+        name: 'Latest Shared',
+        activeSessionCount: 2,
+        providerId: 'codex',
+        sessionId: 'secret-session',
+        sessionName: 'Secret title',
+        cwd: '/private/cwd',
+        markerPath: '/private/marker',
+    });
+    const attention = {
+        protocolVersion: 1,
+        aggregateRevision: 'b'.repeat(64),
+        generatedAtMs: 20,
+        sessions: [{
+            projectId: getAttentionProjectKeys(latest.roots.map(root => root.uri))[0],
+            sessionKey: 'codex:secret-session',
+            eventIds: ['attention-event'],
+            reasons: ['completed'],
+            observedAtMs: 19,
+        }],
+    };
+    const cards = projectOpenWorkspaceCards(current, makeAggregate([
+        makeRegistration(SELF, 9000, '/work/own', {
+            workspace: makeRecord({ uri: '/work/own', name: 'Own instance' }),
+        }),
+        makeRegistration(OLDER, 8000, '/work/current', {
+            workspace: makeRecord({
+                uri: '/work/current',
+                navigationIdentity: current.navigationIdentity,
+                name: 'Current duplicate',
+            }),
+        }),
+        makeRegistration(OLDER, 1000, '/work/shared', {
+            workspace: makeRecord({
+                uri: '/work/shared',
+                navigationIdentity: sharedIdentity,
+                name: 'Older Shared',
+            }),
+        }),
+        makeRegistration(NEWER, 2000, '/work/shared', {
+            workspace: latest,
+            providerId: 'claude',
+            sessionId: 'registration-secret',
+        }),
+    ]), SELF, attention);
+
+    assert.equal(cards.length, 1);
+    assert.equal(cards[0].name, 'Latest Shared');
+    assert.equal(cards[0].runningSessionCount, 2);
+    assert.equal(cards[0].attentionCount, 1);
+    assert.deepEqual(Object.keys(cards[0]).sort(), [
+        'attentionCount',
+        'environment',
+        'environmentLabel',
+        'id',
+        'kind',
+        'name',
+        'navigationIdentity',
+        'roots',
+        'runningSessionCount',
+        'scopeIdentity',
+        'showSaveAction',
+        'workspaceKind',
+    ]);
+    const forbiddenKeys = new Set([
+        'providerId', 'sessionId', 'sessionName', 'sessionTitle', 'cwd', 'markerPath',
+    ]);
+    function assertPrivacyBounded(value) {
+        if (!value || typeof value !== 'object') return;
+        for (const [key, nested] of Object.entries(value)) {
+            assert.equal(forbiddenKeys.has(key), false, `forbidden OTHER WINDOWS key: ${key}`);
+            assertPrivacyBounded(nested);
+        }
+    }
+    assertPrivacyBounded(cards[0]);
+    assert.equal(JSON.stringify(cards[0]).includes('Secret title'), false);
+    assert.equal(JSON.stringify(cards[0]).includes('/private/'), false);
+});
+
 test('ATTENTION-REMOTE-ATTENTION-IDENTITY-001 derives attention identity from the exact remote URI', () => {
     const localPath = '/workspaces/shared';
     const remoteUri = 'vscode-remote://dev-container%2Btarget/workspaces/shared';

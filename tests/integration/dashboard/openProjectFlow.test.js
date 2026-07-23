@@ -77,7 +77,12 @@ function createOpenWorkspaceUpdateVm(wrapper, catalogs) {
             }
             if (selector === '.sticky-groups-wrapper .workspace-card[data-other-workspace][data-workspace-navigation-identity]') {
                 return projectTags.filter(tag => tag.includes('data-other-workspace')
-                    && tag.includes('data-workspace-navigation-identity')).map(() => ({}));
+                    && tag.includes('data-workspace-navigation-identity')).map(tag => ({
+                        getAttribute(name) {
+                            const match = tag.match(new RegExp(`${name}="([^"]*)"`));
+                            return match ? match[1] : null;
+                        },
+                    }));
             }
             if (selector === '.sticky-groups-wrapper .open-other-windows-group') {
                 return wrapper.innerHTML.includes('open-other-windows-group') ? [{}] : [];
@@ -225,14 +230,18 @@ test('OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001 applies consistent updates and
         sessions: [],
         openWorkspaces: [
             { workspaceId: 'current', action: 'show-current-workspace' },
-            { workspaceId: 'other', action: 'switch-open-workspace' },
+            { workspaceId: 'other-a', action: 'switch-open-workspace' },
+            { workspaceId: 'other-b', action: 'switch-open-workspace' },
         ],
         savedProjects: [],
         todos: [{ todoId: 'preserved' }],
     };
     const validHtml = [
         '<div class="group open-current-workspace-group"><div class="workspace-card project steward-item-card" data-id="current" data-current-workspace data-workspace-scope-identity="scope"></div></div>',
-        '<div class="group open-other-windows-group" data-other-windows-status="ready"><div class="workspace-card project steward-item-card" data-id="other" data-other-workspace data-workspace-navigation-identity="navigation"></div></div>',
+        '<div class="group open-other-windows-group" data-other-windows-status="ready">',
+        '<div class="workspace-card project steward-item-card" data-id="other-a" data-other-workspace data-workspace-navigation-identity="navigation-a"></div>',
+        '<div class="workspace-card project steward-item-card" data-id="other-b" data-other-workspace data-workspace-navigation-identity="navigation-b"></div>',
+        '</div>',
     ].join('');
 
     assert.equal(context.applyOpenWorkspacesUpdate({
@@ -240,24 +249,72 @@ test('OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001 applies consistent updates and
         version: 2,
         semanticRevision: 'valid',
         currentWorkspaceCount: 1,
-        navigationWorkspaceCount: 1,
+        navigationWorkspaceCount: 2,
         otherWindowsStatus: 'ready',
         html: validHtml,
         searchCatalog: catalog,
     }), true);
     assert.equal(catalogs[0].todos[0].todoId, 'preserved');
 
+    const attentionHtml = validHtml.replace(
+        'data-id="other-a"',
+        'data-id="other-a" data-attention-count="1"'
+    );
+    assert.equal(context.applyOpenWorkspacesUpdate({
+        type: 'open-workspaces-updated',
+        version: 2,
+        semanticRevision: 'attention-only',
+        currentWorkspaceCount: 1,
+        navigationWorkspaceCount: 2,
+        otherWindowsStatus: 'ready',
+        html: attentionHtml,
+        searchCatalog: catalog,
+    }), true);
+
+    const runningHtml = attentionHtml.replace(
+        'data-id="other-b"',
+        'data-id="other-b" data-running-session-count="2"'
+    );
+    assert.equal(context.applyOpenWorkspacesUpdate({
+        type: 'open-workspaces-updated',
+        version: 2,
+        semanticRevision: 'running-only',
+        currentWorkspaceCount: 1,
+        navigationWorkspaceCount: 2,
+        otherWindowsStatus: 'ready',
+        html: runningHtml,
+        searchCatalog: catalog,
+    }), true);
+    assert.equal(catalogs.length, 3);
+    assert.ok(catalogs.every(value => value.todos[0].todoId === 'preserved'));
+
+    const duplicateIdentityHtml = runningHtml.replace(
+        'data-workspace-navigation-identity="navigation-b"',
+        'data-workspace-navigation-identity="navigation-a"'
+    );
+    assert.equal(context.applyOpenWorkspacesUpdate({
+        type: 'open-workspaces-updated',
+        version: 2,
+        semanticRevision: 'duplicate-navigation',
+        currentWorkspaceCount: 1,
+        navigationWorkspaceCount: 2,
+        otherWindowsStatus: 'ready',
+        html: duplicateIdentityHtml,
+        searchCatalog: catalog,
+    }), false);
+    assert.equal(wrapper.innerHTML, runningHtml);
+
     assert.equal(context.applyOpenWorkspacesUpdate({
         type: 'open-workspaces-updated',
         version: 2,
         semanticRevision: 'lost-peer',
         currentWorkspaceCount: 1,
-        navigationWorkspaceCount: 1,
+        navigationWorkspaceCount: 2,
         otherWindowsStatus: 'ready',
         html: '<div class="workspace-card project steward-item-card" data-id="current" data-current-workspace data-workspace-scope-identity="scope"></div>',
         searchCatalog: catalog,
     }), false);
-    assert.equal(wrapper.innerHTML, validHtml);
+    assert.equal(wrapper.innerHTML, runningHtml);
 });
 
 test('WEBVIEW-WEBVIEW-REFRESH-FOCUS-001 focuses active search on initialization without blurring editor focus', () => {

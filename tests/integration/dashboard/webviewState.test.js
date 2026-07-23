@@ -262,6 +262,69 @@ test('WEBVIEW-DASHBOARD-SEARCH-CATALOG-001 de-duplicates saved path identities w
     assert.deepEqual(catalog.todos, makeCatalog().todos);
 });
 
+test('TODO-TODO-SEARCH-RESULT-RENDERING-001 locks catalog v2 section order and actions', () => {
+    const harness = createDashboardHarness();
+    const catalog = {
+        version: 2,
+        sessions: [{
+            searchText: 'match',
+            name: 'Session',
+            provider: 'codex',
+            sessionId: 'session',
+            workspaceId: 'current',
+            workspaceNavigationIdentity: 'navigation:current',
+            workspaceName: 'Current',
+        }],
+        openWorkspaces: [{
+            searchText: 'match',
+            name: 'Current',
+            workspaceId: 'current',
+            navigationIdentity: 'navigation:current',
+            current: true,
+        }, {
+            searchText: 'match',
+            name: 'Other',
+            workspaceId: 'other',
+            navigationIdentity: 'navigation:other',
+            current: false,
+        }],
+        savedProjects: [{
+            searchText: 'match',
+            name: 'Saved',
+            projectId: 'saved',
+            groupLabels: ['WORK'],
+        }],
+        todos: [{
+            searchText: 'match',
+            title: 'TODO',
+            todoId: 'todo',
+            groupId: 'group',
+            groupTitle: 'Planning',
+            priority: 'high',
+            completed: false,
+        }],
+    };
+    const sections = harness.context.filterDashboardCatalog(catalog, 'match');
+    assert.deepEqual(toPlain(sections.map(section => section.title)), [
+        'AI SESSIONS',
+        'OPEN WORKSPACES',
+        'SAVED PROJECTS',
+        'TODO RESULTS',
+    ]);
+
+    harness.context.renderDashboardSearchResults(harness.searchResults, sections);
+    const actions = harness.searchResults.children.flatMap(section =>
+        section.children.slice(1).map(result => result.dataset.searchAction)
+    );
+    assert.deepEqual(actions, [
+        'reveal-workspace-session',
+        'show-current-workspace',
+        'switch-open-workspace',
+        'open-saved-project',
+        'show-todo',
+    ]);
+});
+
 test('WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001 preserves TODO catalog entries in incremental messages', () => {
     const todoSearchItems = makeCatalog().todos;
     const cards = [makeWorkspaceCard()];

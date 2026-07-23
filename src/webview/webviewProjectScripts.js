@@ -233,13 +233,19 @@ function getOpenWorkspacesUpdateDomState() {
     var otherWindowsGroup = document.querySelector(
         '.sticky-groups-wrapper .open-other-windows-group[data-other-windows-status]'
     );
+    var navigationCards = Array.from(document.querySelectorAll(
+        '.sticky-groups-wrapper .workspace-card[data-other-workspace][data-workspace-navigation-identity]'
+    ));
+    var navigationIdentities = navigationCards.map(card =>
+        card.getAttribute('data-workspace-navigation-identity')
+    );
     return {
         currentWorkspaceCount: document.querySelectorAll(
             '.sticky-groups-wrapper .workspace-card[data-current-workspace][data-workspace-scope-identity]'
         ).length,
-        navigationWorkspaceCount: document.querySelectorAll(
-            '.sticky-groups-wrapper .workspace-card[data-other-workspace][data-workspace-navigation-identity]'
-        ).length,
+        navigationWorkspaceCount: navigationCards.length,
+        hasUniqueNavigationIdentities: navigationIdentities.every(identity => !!identity)
+            && new Set(navigationIdentities).size === navigationIdentities.length,
         hasOtherWindowsGroup: document.querySelectorAll(
             '.sticky-groups-wrapper .open-other-windows-group'
         ).length > 0,
@@ -253,6 +259,7 @@ function isOpenWorkspacesUpdateDomConsistent(message) {
     var rendered = getOpenWorkspacesUpdateDomState();
     return rendered.currentWorkspaceCount === message.currentWorkspaceCount
         && rendered.navigationWorkspaceCount === message.navigationWorkspaceCount
+        && rendered.hasUniqueNavigationIdentities
         && rendered.otherWindowsStatus === message.otherWindowsStatus
         && ((message.navigationWorkspaceCount === 0 && message.otherWindowsStatus === 'ready')
             ? !rendered.hasOtherWindowsGroup
