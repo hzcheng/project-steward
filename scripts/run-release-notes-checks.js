@@ -10,17 +10,22 @@ const repositoryRoot = path.resolve(__dirname, '..');
 const extractorPath = path.join(__dirname, 'extract-release-notes.js');
 const workflowPath = path.join(repositoryRoot, '.github', 'workflows', 'release-vsix.yml');
 
-function runWorkspaceFirstReleaseContentChecks() {
+function runReleaseContentChecks() {
     const read = relativePath => fs.readFileSync(path.join(repositoryRoot, relativePath), 'utf8');
     const readme = read('README.md');
     const changelog = read('CHANGELOG.md');
     const packageMetadata = JSON.parse(read('package.json'));
-    assert.strictEqual(packageMetadata.version, '2.1.4',
-        'the workspace-first release must increment the Project Steward patch version');
+    assert.strictEqual(packageMetadata.version, '2.1.5',
+        'the CI and tmux rebinding release must increment the Project Steward patch version');
     const currentReleaseMarker = `## [${packageMetadata.version}]`;
     assert.ok(changelog.includes(currentReleaseMarker),
         'CHANGELOG must contain the package.json release version');
     const currentRelease = changelog.split(currentReleaseMarker)[1].split(/\n## \[/)[0];
+    const workspaceFirstReleaseMarker = '## [2.1.4]';
+    assert.ok(changelog.includes(workspaceFirstReleaseMarker),
+        'CHANGELOG must retain the workspace-first release');
+    const workspaceFirstRelease =
+        changelog.split(workspaceFirstReleaseMarker)[1].split(/\n## \[/)[0];
     const requiredReleaseFacts = [
         ['one card per non-empty VS Code workspace', /one card per non-empty VS Code workspace/i],
         ['all roots with provider-native --add-dir', /all (?:workspace )?roots[\s\S]{0,160}--add-dir/i],
@@ -33,9 +38,15 @@ function runWorkspaceFirstReleaseContentChecks() {
 
     for (const [label, pattern] of requiredReleaseFacts) {
         assert.match(readme, pattern, `README must document ${label}`);
-        assert.match(currentRelease, pattern, `current CHANGELOG release must document ${label}`);
+        assert.match(workspaceFirstRelease, pattern, `2.1.4 CHANGELOG release must document ${label}`);
     }
 
+    assert.match(currentRelease, /CI[\s\S]{0,160}(?:Linux|Windows|tmux)/i,
+        'current CHANGELOG release must document the cross-platform CI gate');
+    assert.match(currentRelease, /behavior[\s-]+contract/i,
+        'current CHANGELOG release must document behavior contract coverage');
+    assert.match(currentRelease, /rebind[\s\S]{0,80}tmux[\s\S]{0,100}Codex[\s\S]{0,100}(?:thread|session)/i,
+        'current CHANGELOG release must document Codex tmux thread rebinding');
     assert.match(packageMetadata.description, /workspace/i,
         'package metadata must describe the workspace-first product boundary');
 }
@@ -122,5 +133,5 @@ function runWorkflowChecks() {
 
 runExtractionChecks();
 runWorkflowChecks();
-runWorkspaceFirstReleaseContentChecks();
+runReleaseContentChecks();
 console.log('Release notes checks passed.');
