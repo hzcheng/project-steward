@@ -88,8 +88,8 @@ test('RUNTIME-TMUX-CLIENT-001 parses one active window and rejects malformed, fo
     let result = {
         exitCode: 0,
         stdout: [
-            'project-session\u001fbase\u001f@1\u001f0',
-            'project-session\u001fai-codex-a\u001f@2\u001f1',
+            'project-session|:ps-field:|base|:ps-field:|@1|:ps-field:|0',
+            'project-session|:ps-field:|ai-codex-a|:ps-field:|@2|:ps-field:|1',
         ].join('\n') + '\n',
         stderr: '',
     };
@@ -104,15 +104,15 @@ test('RUNTIME-TMUX-CLIENT-001 parses one active window and rejects malformed, fo
     });
     assert.deepEqual(calls.at(-1), [
         'list-windows', '-t', 'project-session', '-F',
-        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}',
+        '#{session_name}|:ps-field:|#{window_name}|:ps-field:|#{window_id}|:ps-field:|#{window_active}',
     ]);
 
     result = { exitCode: 0, stdout: '', stderr: '' };
     assert.equal(await client.getActiveWindow('project-session'), null);
     for (const stdout of [
-        'project-session\u001fa\u001f@1\u001f1\nproject-session\u001fb\u001f@2\u001f1\n',
-        'foreign-session\u001fa\u001f@1\u001f1\n',
-        'project-session\u001fa\u001f@1\u001f2\n',
+        'project-session|:ps-field:|a|:ps-field:|@1|:ps-field:|1\nproject-session|:ps-field:|b|:ps-field:|@2|:ps-field:|1\n',
+        'foreign-session|:ps-field:|a|:ps-field:|@1|:ps-field:|1\n',
+        'project-session|:ps-field:|a|:ps-field:|@1|:ps-field:|2\n',
         'x'.repeat(1024 * 1024 + 1),
     ]) {
         result = { exitCode: 0, stdout, stderr: '' };
@@ -169,8 +169,8 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
                 return {
                     exitCode: 0,
                     stdout: [
-                        'session-a\u001fwindow-a\u001f@12\u001f1',
-                        'session-a\u001fwindow-a\u001f@13\u001f0',
+                        'session-a|:ps-field:|window-a|:ps-field:|@12|:ps-field:|1',
+                        'session-a|:ps-field:|window-a|:ps-field:|@13|:ps-field:|0',
                     ].join('\n') + '\n',
                     stderr: '',
                 };
@@ -179,9 +179,9 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
                 return {
                     exitCode: 0,
                     stdout: [
-                        '@12\u001f%20\u001f0\u001f4311',
-                        '@12\u001f%21\u001f1\u001f4312',
-                        '@13\u001f%22\u001f1\u001f4313',
+                        '@12|:ps-field:|%20|:ps-field:|0|:ps-field:|4311',
+                        '@12|:ps-field:|%21|:ps-field:|1|:ps-field:|4312',
+                        '@13|:ps-field:|%22|:ps-field:|1|:ps-field:|4313',
                     ].join('\n') + '\n',
                     stderr: '',
                 };
@@ -200,7 +200,7 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
     const windows = await client.listWindows();
     assert.deepEqual(calls.find(call => call.args[0] === 'list-panes').args, [
         'list-panes', '-a', '-F',
-        '#{window_id}\u001f#{pane_id}\u001f#{pane_active}\u001f#{pane_pid}',
+        '#{window_id}|:ps-field:|#{pane_id}|:ps-field:|#{pane_active}|:ps-field:|#{pane_pid}',
     ]);
     assert.deepEqual(windows.map(window => ({
         windowId: window.windowId,
@@ -291,7 +291,7 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
 test('RUNTIME-TMUX-CLIENT-001 fails closed on missing, ambiguous, or malformed active pane PIDs', async () => {
     let paneResult = {
         exitCode: 0,
-        stdout: '@12\u001f%20\u001f1\u001f4312\n',
+        stdout: '@12|:ps-field:|%20|:ps-field:|1|:ps-field:|4312\n',
         stderr: '',
     };
     const client = new TmuxClient('/private/tmux', {
@@ -301,7 +301,7 @@ test('RUNTIME-TMUX-CLIENT-001 fails closed on missing, ambiguous, or malformed a
             if (args[0] === 'list-windows') {
                 return {
                     exitCode: 0,
-                    stdout: 'session-a\u001fwindow-a\u001f@12\u001f1\n',
+                    stdout: 'session-a|:ps-field:|window-a|:ps-field:|@12|:ps-field:|1\n',
                     stderr: '',
                 };
             }
@@ -313,11 +313,11 @@ test('RUNTIME-TMUX-CLIENT-001 fails closed on missing, ambiguous, or malformed a
 
     for (const stdout of [
         '',
-        '@12\u001f%20\u001f0\u001f4312\n',
-        '@12\u001f%20\u001f1\u001f4312\n@12\u001f%21\u001f1\u001f4313\n',
-        '@12\u001f%20\u001f1\u001f0\n',
-        '@12\u001f%20\u001f1\u001f2147483648\n',
-        '@99\u001f%20\u001f1\u001f4312\n',
+        '@12|:ps-field:|%20|:ps-field:|0|:ps-field:|4312\n',
+        '@12|:ps-field:|%20|:ps-field:|1|:ps-field:|4312\n@12|:ps-field:|%21|:ps-field:|1|:ps-field:|4313\n',
+        '@12|:ps-field:|%20|:ps-field:|1|:ps-field:|0\n',
+        '@12|:ps-field:|%20|:ps-field:|1|:ps-field:|2147483648\n',
+        '@99|:ps-field:|%20|:ps-field:|1|:ps-field:|4312\n',
         'x'.repeat(1024 * 1024 + 1),
     ]) {
         paneResult = { exitCode: 0, stdout, stderr: '' };
@@ -365,7 +365,7 @@ test('RUNTIME-TMUX-FOCUS-TARGET-001 reads one exact atomic target snapshot and f
             'codex-session',
             '@42',
             ...metadataKeys.map(key => metadata[key] || ''),
-        ].join('\u001f') + '\n',
+        ].join('|:ps-field:|') + '\n',
         stderr: '',
     };
     const client = new TmuxClient('/private/tmux', {
@@ -406,8 +406,8 @@ test('RUNTIME-TMUX-FOCUS-TARGET-001 reads one exact atomic target snapshot and f
 
     for (const stdout of [
         '',
-        'managed-session\u001fcodex-session\u001fnot-a-window-id',
-        'managed-session\u001fcodex-session\u001f@42\nsecond-row',
+        'managed-session|:ps-field:|codex-session|:ps-field:|not-a-window-id',
+        'managed-session|:ps-field:|codex-session|:ps-field:|@42\nsecond-row',
         `${'x'.repeat(1024 * 1024 + 1)}`,
     ]) {
         result = { exitCode: 0, stdout, stderr: '' };

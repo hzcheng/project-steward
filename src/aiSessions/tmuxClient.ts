@@ -6,7 +6,7 @@ import { TMUX_METADATA_OPTIONS } from './tmuxLayout';
 
 const COMMAND_TIMEOUT_MS = 5000;
 const COMMAND_MAX_BUFFER = 1024 * 1024;
-const FIELD_SEPARATOR = '\u001f';
+const FIELD_SEPARATOR = '|:ps-field:|';
 const LIST_WINDOWS_FORMAT = [
     '#{session_name}', '#{window_name}', '#{window_id}', '#{window_active}',
 ].join(FIELD_SEPARATOR);
