@@ -229,6 +229,7 @@ Add this private helper in `src/aiSessions/attentionProject.ts`:
 function summarizeAttentionSessions(
     sourceSessions: readonly AggregatedAttentionSession[]
 ): AttentionSummary {
+    const allEventIds = new Set<string>();
     const sessionEventIds = new Map<string, Set<string>>();
     for (const session of sourceSessions) {
         const sessionKey = getLogicalAttentionSessionKey(session.sessionKey);
@@ -240,6 +241,7 @@ function summarizeAttentionSessions(
         for (const eventId of session.eventIds || []) {
             if (eventId) {
                 events.add(eventId);
+                allEventIds.add(eventId);
             }
         }
     }
@@ -257,7 +259,7 @@ function summarizeAttentionSessions(
 
     return {
         attentionCount: sessions.length,
-        eventIds: Array.from(new Set(sessions.flatMap(session => session.eventIds))).sort(),
+        eventIds: Array.from(allEventIds).sort(),
         sessions,
     };
 }
