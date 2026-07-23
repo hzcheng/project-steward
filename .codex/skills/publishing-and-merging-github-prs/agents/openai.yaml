@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publish And Merge GitHub PRs"
+  short_description: "Push branches, open PRs, and merge safely"
+  default_prompt: "Use $publishing-and-merging-github-prs to publish this branch, create a PR, and merge it after validation."

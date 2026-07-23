@@ -1,0 +1,4 @@
+interface:
+  display_name: "Install VS Code Extensions Locally"
+  short_description: "Build, package, and install local VSIX builds"
+  default_prompt: "Use $installing-vscode-extensions-locally to build and install this VS Code extension in the current environment."
