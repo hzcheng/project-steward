@@ -110,6 +110,8 @@ test('RUNTIME-LAUNCH-SPEC-001 preserves argv boundaries and renders hostile valu
     const payload = decodePowerShellPayload(windows);
     assert.ok(payload.includes("'Prompt \"quoted\"; Set-Content C:\\tmp\\pwned 1; #'"));
     assert.ok(payload.includes("codex --cd 'C:\\work\\O''Brien'"));
+    assert.ok(payload.includes("Remove-Item -LiteralPath 'C:\\tmp\\done'"));
+    assert.ok(payload.includes("New-Item -ItemType File -Force -Path 'C:\\tmp\\done'"));
     for (const hostileSpec of [
         commandBuilders.buildKimiNewSessionLaunchSpec(`C:\\work\\O'Brien`, hostile, `C:\\tmp\\done`),
         commandBuilders.buildClaudeNewSessionLaunchSpec(`C:\\work\\O'Brien`, hostile, `C:\\tmp\\done`),
