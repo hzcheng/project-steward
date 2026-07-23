@@ -41,3 +41,23 @@ test('RUNTIME-REAL-TMUX-SMOKE-CLEANUP-001 removes only registered roots and reta
         'capture', 'kill', 'kill', 'verify', 'socket:/fixture/socket', 'providers', 'roots:true:true',
     ]);
 });
+
+test('RUNTIME-REAL-TMUX-SMOKE-CLEANUP-001 proves planned and launched fixtures safe but retains ambiguous roots', () => {
+    const result = runHarnessScenario('fixture-states');
+    assert.deepEqual(result.calls, [
+        'stop:/virtual/launched.stop',
+        'probe:4242',
+        'stop:/virtual/ambiguous.stop',
+    ]);
+    assert.deepEqual(result.phases, {
+        planned: 'verified-unlaunched',
+        afterLaunch: 'launched',
+        launched: 'verified-stopped',
+        ambiguous: 'launching',
+    });
+    assert.equal(result.dispatchError, 'dispatch failed');
+    assert.deepEqual(result.ambiguousCleanupError, { name: 'CleanupAggregateError', count: 1 });
+    assert.equal(result.retainedRootExists, true);
+    assert.equal(result.plannedHarnessError, 'smoke failed before dispatch');
+    assert.deepEqual(result.plannedRootsExist, { fixture: false, tmux: false });
+});
