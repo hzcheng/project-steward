@@ -2,7 +2,7 @@
 
 ## Scope and revision
 
-The final local verification was performed on 2026-07-23 against source commit `a634c618dcab5329e20959a5340fa593acd71d6c` on `feat/refactor-and-ci`. This revision includes the scheduled real Extension Host smoke, exact test dependency, lifecycle contract, catalog path hardening, migrated behavior owners, tmux early-failure cleanup, and the generated-coverage ignore rule. The command results below do not claim that the new macOS scenario has already run in GitHub Actions.
+The final local verification was performed on 2026-07-23 against source commit `970012f802be49cba0f974c21609290e7ab36ac2` on `feat/refactor-and-ci`. This revision includes the scheduled real Extension Host smoke, exact test dependency, lifecycle contract, catalog path hardening, migrated behavior owners, focused tmux early/ambiguous-failure cleanup coverage, and the generated-coverage ignore rule. The command results below do not claim that the new macOS scenario has already run in GitHub Actions.
 
 Environment: Linux, Node.js 22.12.0, npm 10.9.0, and tmux 3.2a. The test process used isolated temporary provider roots. This report intentionally omits local absolute paths, provider prompts, session content, and temporary resource names.
 
@@ -13,14 +13,16 @@ All commands below exited 0. Durations are wall-clock measurements from this env
 | Command | Wall time | Result |
 | --- | ---: | --- |
 | `npm ci` | 3.10 s | PASS; 608 locked packages installed |
-| `npm run test:ci:linux` | 35.6 s | PASS; below the five-minute Linux main-gate target |
-| `npm run test:tmux:smoke` | 4.54 s | PASS; isolated real-tmux server cleaned by the harness |
-| `npm run test:release-packaging` | 0.98 s | PASS |
-| `npm run test:architecture-baseline` | 0.94 s | PASS |
-| `git diff --check` | 0.82 s | PASS; generated `coverage/` output is ignored |
+| `npm run test:ci:linux` | 40.49 s | PASS; below the five-minute Linux main-gate target |
+| `npm run test:tmux:smoke` | 8.81 s | PASS; isolated real-tmux server cleaned by the harness |
+| `npm run test:release-packaging` | 0.16 s | PASS |
+| `npm run test:architecture-baseline` | 0.13 s | PASS |
+| `git diff --check` | 0.01 s | PASS; generated `coverage/` output is ignored |
 | `npm run test:behavior-contracts` | 1.06 s | PASS |
 
 The Linux gate covered TypeScript compilation for both extensions, behavior-catalog validation, the TSLint warning ratchet, deterministic unit/contract/integration tests, compatibility safety and Dashboard checks, architecture baseline and guards, release notes and package checks, the production bundle, and the coverage ratchet.
+
+The P0 tmux cleanup owner directly exercises planned fixtures, successful launch-state transitions with PID-ledger proof, and failed dispatches with missing evidence. Three temporary production-code mutations independently broke those branches; each made the focused test fail before the original implementation was restored. The final focused run passed 3/3, including deletion only for proven-safe fixture roots and retention for an ambiguous launch root until explicit test cleanup.
 
 An additional isolation audit ran `test:deterministic:run`, `test:safety:run`, and `test:dashboard:run` with fresh empty Codex, Kimi, and Claude provider roots. All three commands exited 0 (6.63 s, 7.32 s, and 0.18 s). The captured output contained none of the audited home/repository-parent markers or prompt/session canaries, and the empty temporary root was removed. This establishes output and fixture isolation for these suites; it does not claim that external remote environments were exercised.
 
