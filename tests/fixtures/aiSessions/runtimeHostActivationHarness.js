@@ -64,6 +64,7 @@ async function main() {
     const events = [];
     const verified = new Set();
     const aliasRebinds = [];
+    let simulatedAliasRebind = false;
     let dashboardCommandRegistrationInvocations = 0;
     const patch = (prototype, name, replacement) => {
         const original = prototype[name];
@@ -122,10 +123,13 @@ async function main() {
             assert.ok(this.options.client instanceof TmuxClient);
             assert.ok(this.options.bindingStore instanceof TmuxRuntimeBindingStore);
             assert.equal(typeof this.options.onSessionRebound, 'function');
-            this.options.onSessionRebound(
-                { provider: 'codex', sessionId: 'old-root' },
-                { provider: 'codex', sessionId: 'new-root' }
-            );
+            if (!simulatedAliasRebind) {
+                simulatedAliasRebind = true;
+                this.options.onSessionRebound(
+                    { provider: 'codex', sessionId: 'old-root' },
+                    { provider: 'codex', sessionId: 'new-root' }
+                );
+            }
             verified.add('client-store-discovery');
             verified.add('thread-switch-alias-wiring');
             events.push('inactive-restored');

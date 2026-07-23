@@ -335,6 +335,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         aiSessionProviders,
         logAiSessionDiagnostic
     );
+    const aiSessionAliasStore = new AiSessionAliasStore(context.globalStoragePath);
+    const aiSessionAliasController = new AiSessionAliasController({
+        store: aiSessionAliasStore,
+        isProviderId: isAiSessionProviderId,
+        getSessionKey: getAiSessionPinKey,
+        getProviderResult: (providerId, options) => aiSessionReadCoordinator.getProviderResult(providerId, options),
+        logError,
+        showSaveError: () => vscode.window.showErrorMessage("Could not save the chat name."),
+    });
     const aiSessionTerminalBindingStore = new AiSessionTerminalBindingStore(context.workspaceState, error =>
         logError('Failed to persist AI session terminal ownership.', error)
     );
@@ -363,6 +372,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         client: tmuxClient,
         bindingStore: tmuxRuntimeStore,
         codexRootThreadObserver: new ProcCodexRootThreadObserver(),
+        onSessionRebound: (previous, next) => aiSessionAliasController.copyForRebind(
+            previous.provider,
+            previous.sessionId || '',
+            next.sessionId || ''
+        ),
         markerIsCurrent: isCurrentRuntimeMarker,
     });
     try {
@@ -414,15 +428,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     } catch (error) {
         logAiSessionRuntimeFailure('restore-attach-terminals', error);
     }
-    const aiSessionAliasStore = new AiSessionAliasStore(context.globalStoragePath);
-    const aiSessionAliasController = new AiSessionAliasController({
-        store: aiSessionAliasStore,
-        isProviderId: isAiSessionProviderId,
-        getSessionKey: getAiSessionPinKey,
-        getProviderResult: (providerId, options) => aiSessionReadCoordinator.getProviderResult(providerId, options),
-        logError,
-        showSaveError: () => vscode.window.showErrorMessage("Could not save the chat name."),
-    });
     const aiSessionPinStore = new AiSessionPinStore(context.globalStoragePath);
     const aiSessionPinController = new AiSessionPinController({
         store: aiSessionPinStore,

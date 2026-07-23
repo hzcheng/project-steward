@@ -63,6 +63,41 @@ export default class AiSessionAliasController {
         }
     }
 
+    copyForRebind(
+        providerId: AiSessionProviderId,
+        previousSessionId: string,
+        nextSessionId: string
+    ): void {
+        if (!this.options.isProviderId(providerId)
+            || !previousSessionId
+            || !nextSessionId
+            || previousSessionId === nextSessionId) {
+            return;
+        }
+
+        const previousKey = this.options.getSessionKey(providerId, previousSessionId);
+        const nextKey = this.options.getSessionKey(providerId, nextSessionId);
+        try {
+            const aliases = this.options.store.getAll();
+            const previousAlias = sanitizeAiSessionAlias(aliases[previousKey]);
+            const nextAlias = sanitizeAiSessionAlias(aliases[nextKey]);
+            if (!previousAlias || nextAlias) {
+                return;
+            }
+
+            this.options.store.saveAll({
+                ...aliases,
+                [nextKey]: previousAlias,
+            });
+        } catch (error) {
+            this.options.logError(
+                'Failed to preserve AI session alias after runtime rebind.',
+                error
+            );
+            this.options.showSaveError?.();
+        }
+    }
+
     getOriginalName(providerId: AiSessionProviderId, sessionId: string): string {
         let sessionResult = this.options.getProviderResult(providerId, { reason: 'alias-original-name' });
         let session = sessionResult.sessions.find(candidate => candidate.id === sessionId);
