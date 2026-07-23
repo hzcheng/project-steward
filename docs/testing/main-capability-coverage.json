@@ -1,0 +1,365 @@
+{
+    "version": 1,
+    "audit": {
+        "base": "2b34c653119bdf480f2af0330ee3809b51441807",
+        "head": "e9145123b3ad1cdcbc625e52291ae053e8acbce5",
+        "ignoredDocumentationCommits": []
+    },
+    "capabilities": [
+        {
+            "id": "MAIN-WORKSPACE-IDENTITY",
+            "title": "Stable workspace identity",
+            "requirement": "Live workspace context, labels, roots, and navigation identity remain stable across local and remote hosts.",
+            "commits": [
+                "4fa735724677836d19051818414d38ed583ed955",
+                "73a95939be66688b90d231416dd2091d2598a312"
+            ],
+            "behaviors": [
+                "OPEN-OPEN-PROJECT-RUNTIME-IDENTITY-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-WORKSPACE-SCOPE",
+            "title": "Workspace-scoped AI sessions",
+            "requirement": "Session creation and resume use a validated workspace directory scope with provider-specific directory arguments.",
+            "commits": [
+                "7b8c5e195f9988aa25bc086bd9e6cd54c9483936",
+                "910bac8d984eeb7e15e9e1cd88da8523ffe3ddad",
+                "4edd2ce42f4670ab1aaaf54c52fefe7b57f6909c",
+                "b150698874e8d16272975191d0411bd12642e122",
+                "c3ef7798505c31137311971ddfcb8f2fd0a3cee7",
+                "f895d42378fa3b2ab422bbf750558e045f57b533"
+            ],
+            "behaviors": [
+                "PROJECT-ASSIGNMENT-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-RUNTIME-OWNERSHIP",
+            "title": "Workspace runtime ownership",
+            "requirement": "Direct and tmux runtimes retain workspace identity, scope, and display context through their lifecycle.",
+            "commits": [
+                "542070ce2350f7a900f6a0a38b07f6d43c9043a1",
+                "dcd46f63711ea800a07e4bdcba2a123c44c4d64d",
+                "b2f672bd1182df7d1088a2e4c8e3e5f8d3ee7e27",
+                "6b9a8fa2697ab7aa0a79da5a589c538f1e51c564",
+                "7e307205e7ff42e9acb30431051fecd4c379a0ed"
+            ],
+            "behaviors": [
+                "RUNTIME-RUNTIME-PROJECTION-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-WORKSPACE-HYDRATION",
+            "title": "Workspace session hydration",
+            "requirement": "Activation, hydration, pending promotion, and archive behavior expose one coherent workspace session surface.",
+            "commits": [
+                "3bdf33dd2acfb0b6bf23cef589dda639c41deace",
+                "0da6d2f23e951a6db1fc2c010bc58682d2a8856a",
+                "532a89e8251b89ccbde54f4c869bfdd9f566778d",
+                "9f30fe66a1d18df6aa5940361f9197ab108f2496",
+                "aa2b38cebefde3ca2f00dece901106a2cbaeec72",
+                "52e44f13ab7b933c7ef484b112e8b9c5a4ecd6a6",
+                "26681274ff250e21172beb905a99d5fce79a92af"
+            ],
+            "behaviors": [
+                "PERSIST-AI-SESSION-PROJECT-HYDRATION-CONTROLLER-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-OPEN-WORKSPACE-PROTOCOL",
+            "title": "Open workspace protocol and recovery",
+            "requirement": "Workspace publication, storage, acknowledgement, and recovery preserve the latest valid semantic state.",
+            "commits": [
+                "8dce13ca3b40442c928a8ca327c192e4ce6ae8c8",
+                "0749ad3ecaa27dc33775e663b6e1497bad70b1b1",
+                "ae84df5df3cbd068fe5c5a42ab7a2b95a24b3ab7",
+                "4565f2c0ca58d76c129f70d78fca141b81487dbc",
+                "81712b9bbdf07e9ba225f1fad6da8c42728d89bf",
+                "1eb860af0ffe6298345863bd12c6857c1098ae53",
+                "4a04b9456116b4ba713d5228936225bcafcc506f",
+                "2bb717b5e22ad6058124a9475dc9f2e664541a8b",
+                "e9c29252c0ec9edeef3ecfcaf721bb5b6dacd6cf",
+                "36e5ca3c37eb92abd68286025ad8b1efbe7b09ee"
+            ],
+            "behaviors": [
+                "OPEN-PROTOCOL-001",
+                "ARCH-COORDINATOR-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-OTHER-WINDOWS",
+            "title": "OTHER WINDOWS workspace summaries",
+            "requirement": "The dashboard retains one privacy-bounded summary card per other open workspace without leaking session internals.",
+            "commits": [
+                "ba2116e8b56925dc38a73efdeed3101faecaade6",
+                "9f9d5969ace25062b4810605904b0824cc3adbc4",
+                "e02e498cea334e895c96f8427e82df8723cf24a0"
+            ],
+            "behaviors": [
+                "OPEN-OPEN-PROJECT-PUBLICATION-001",
+                "OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-WORKSPACE-NAVIGATION",
+            "title": "Exact workspace navigation",
+            "requirement": "Navigation uses proven exact capabilities, falls back safely, and never substitutes a member root for a workspace.",
+            "commits": [
+                "0242a6c562c1c50be47d6ebf9b47379ae359df57",
+                "e6e65d5623d4737a8123fb05b20466735b5bd375",
+                "91a0f8a50b9bc46431eb41446f3022cf887debac",
+                "3d1588d05d4b7f30b971702e24e55f561786c527",
+                "35a8eba46ff1e7b17dcbfeb020b80caaa3b62d64"
+            ],
+            "behaviors": [
+                "OPEN-OPEN-PROJECT-WORKSPACE-CONTROLLER-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-WORKSPACE-SAVE",
+            "title": "Save workspace as one project",
+            "requirement": "Saved, single-folder, and untitled workspaces persist as one project after migration without duplicate writes.",
+            "commits": [
+                "ef614653b1d628d41c9e7ccfe244884af09c6750",
+                "7c316961b28cf7dbd76a132441eda861728d8dfb",
+                "42e16ba1a9cd1fcd25e03d2bf453aba6fe065563",
+                "982c628a3c57de9c0286c0278c3a5588288adf4e"
+            ],
+            "behaviors": [
+                "OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001",
+                "PERSIST-DASHBOARD-MIGRATION-PUBLICATION-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-WORKSPACE-WEBVIEW",
+            "title": "Workspace card webview behavior",
+            "requirement": "Workspace cards retain their markup, layout, click targets, responsive containment, and running-state animations.",
+            "commits": [
+                "d97793431d296cb625d6fd93bceb1fb27c502465",
+                "e96db2c7fa49c33e1237a50e821dec95b71fdd4d",
+                "b9d25dc84520c656992baa5f308b90b569d2fe78",
+                "58c4b1d4dbde810d4997e54df2daf0d2d492d047",
+                "75c90d861e0b0265df9151136042fdd541c8da36",
+                "89180757aa65789bc7fa4c8c9c8c4eb66d64b520",
+                "8b8c4489a328fbb6f653e982db2ae35abf559390",
+                "c2d668da418cccc9b0530e49be41472234786f98",
+                "e2a2786e609e4207a90ada0f6780aa06599573a7",
+                "58dc3f318baf5875005a35326fc4d920d06b8cbb",
+                "6987e657e8155376a1693b8a521e66986fcda668",
+                "c11f28c83cd6ceaba804eb9b2d03a19674e16ba0",
+                "d632069fea58b3602c9a25676590f5e5936cf6f0",
+                "be6f937a385f3da27faab3293c30efeeb31f5580",
+                "fef633201c415628fd61668641804e343c082c68"
+            ],
+            "behaviors": [
+                "WEBVIEW-CURRENT-WORKSPACE-RENDERING-001",
+                "WEBVIEW-SHARED-CARD-STATE-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [
+                "scheduled-macos"
+            ],
+            "realEnvironmentRequired": true
+        },
+        {
+            "id": "MAIN-WORKSPACE-SEARCH",
+            "title": "Workspace-aware search",
+            "requirement": "Catalog v2 search targets workspace groups while preserving TODO results and actions.",
+            "commits": [
+                "d25128a692e03b99cfad4d0ceec73eb1d69a12d2"
+            ],
+            "behaviors": [
+                "TODO-TODO-SEARCH-RESULT-RENDERING-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-WORKSPACE-ATTENTION",
+            "title": "Workspace attention lifecycle",
+            "requirement": "Attention identity, persistence, projection, acknowledgement, and stale-evidence suppression remain workspace-aware.",
+            "commits": [
+                "da3ea69d4e3e0670fa23cc6a7ea541ed573b2840",
+                "eb8dff1f49206aafe073e465680908de0297a9f2",
+                "7b0970cbebe2baf081f13bc2529ee61b4d5e729d",
+                "f02a330a5e451f82609faf8275f8a87f0ec70846",
+                "63a69455d0c2a950c6a92116eb9bd0bb186d5b8c",
+                "28665b86b56f6962760f7cde8e5670b842852b39"
+            ],
+            "behaviors": [
+                "ATTENTION-ATTENTION-PROJECTION-001",
+                "ATTENTION-ATTENTION-PROJECT-RENDERING-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-TMUX-FOCUS",
+            "title": "Exact and bounded tmux focus",
+            "requirement": "Focus verifies the exact tmux target, uses bounded concurrent metadata reads, and retries only after controlled reconciliation.",
+            "commits": [
+                "47fd52eda4c1c3b1469d5b3cd9b3eb45d098f516",
+                "e2e32b9e3706fc3100667f1236ee56fd90ca27d6",
+                "08f7837ea30b562e6e3a1a705dfac474b6f88a2d",
+                "0aa444ce65cfcd15d442289db8e69d668f0afa95"
+            ],
+            "behaviors": [
+                "RUNTIME-RUNTIME-COORDINATOR-001",
+                "RUNTIME-TMUX-CLIENT-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [
+                "tmux-smoke-linux"
+            ],
+            "realEnvironmentRequired": true
+        },
+        {
+            "id": "MAIN-TMUX-NAMING",
+            "title": "Readable durable tmux names",
+            "requirement": "Tmux names remain readable, bounded, identity-safe, promotable, and recoverable while retaining legacy read compatibility.",
+            "commits": [
+                "839ce9a94a02a3120074963c6761409cdadf2635",
+                "e6a89153b479fa48400c9e40512b51b996678efb",
+                "b2fac7e63997c58de3bc582f6c89be83a1bb3183",
+                "fd0568a4ed95673826a464c73f1a4b1f04cc4279",
+                "2667134b856cf59541794b6f60ec0b4a5b961401",
+                "be487186727405e71a77be33e4864ab978cedfc0",
+                "7da8b787079350d17b3c011cc4c2d6bf076ef21a",
+                "722a2ffbae74e8dfa1a7309129c36e21c77036af",
+                "7ee927c4bbcd79f98c1cf89c2bf762e52867d37d",
+                "35f0761e43814b2f2d93499cd23866b48d061279",
+                "140eeddbd147db009da638cc07c0d30e155e87c7",
+                "d5124c8c37a81b192549a4b8facaf226820cd30c",
+                "79d77dd55d7cecb3ab30319ab5cd9e8f08d5f314",
+                "f34bdb62c7459e415b11b63d8df1f964fe48d9d7",
+                "0d907fc2264932569ab6a8b97a54dabde4943f63",
+                "2142e65dc2f4b127a25182fb1c28e1b5679a2b24",
+                "7665b340ac9a68718205462a2208a14dbc154191",
+                "0e77f61d2236067a3e2a208f8950bfd5dc3ec699",
+                "8e9a82e34f9b5821366ec64dd4231b01c92dcf50"
+            ],
+            "behaviors": [
+                "RUNTIME-TMUX-LAYOUT-001",
+                "RUNTIME-TMUX-DISCOVERY-001",
+                "RUNTIME-TMUX-STORE-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [
+                "tmux-smoke-linux"
+            ],
+            "realEnvironmentRequired": true
+        },
+        {
+            "id": "MAIN-TMUX-CLEANUP",
+            "title": "Isolated tmux smoke cleanup",
+            "requirement": "Real tmux smoke fixtures remain isolated from user servers and remove their owned servers and temporary roots.",
+            "commits": [
+                "2420809684a5529cec89fb8bc34f6324edce5885"
+            ],
+            "behaviors": [
+                "RUNTIME-REAL-TMUX-SMOKE-CLEANUP-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [
+                "tmux-smoke-linux"
+            ],
+            "realEnvironmentRequired": true
+        },
+        {
+            "id": "MAIN-RELEASE-PACKAGING",
+            "title": "Reproducible release packaging",
+            "requirement": "Release metadata, clean builds, bridge compatibility, and exact VSIX allowlists remain reproducible.",
+            "commits": [
+                "88d366ce6292a66ec39c5980d1875bbe5c16d6a1",
+                "1ae927aef9cde0e5a6c9e067dd9de3f8477aceea",
+                "a17c97bc68f44b67a827637788f908e11f5611ed"
+            ],
+            "behaviors": [
+                "RELEASE-VSIX-PACKAGING-001",
+                "ARCH-RELEASE-IDENTITY-001"
+            ],
+            "prGates": [
+                "test:ci:linux"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-CI-WIRING",
+            "title": "Main capability CI wiring",
+            "requirement": "Deterministic, platform, real-tmux, Extension Host, and packaging checks stay connected to enforced workflows.",
+            "commits": [
+                "8ba0e882573a667a98e68b5b6656ba8eae7a3412",
+                "587b4178a4ec63a2734ed2b916494638583e3390",
+                "e9145123b3ad1cdcbc625e52291ae053e8acbce5"
+            ],
+            "behaviors": [
+                "ARCH-CI-QUALITY-GATE-001",
+                "RUNTIME-REAL-TMUX-CI-GATE-001"
+            ],
+            "prGates": [
+                "test:ci:linux"
+            ],
+            "scheduledJobs": [
+                "scheduled-macos",
+                "tmux-smoke-linux"
+            ],
+            "realEnvironmentRequired": true
+        }
+    ]
+}

@@ -2443,6 +2443,21 @@
     ]
   },
   {
+    "id": "ARCH-MAIN-CAPABILITY-COVERAGE-001",
+    "domain": "architecture",
+    "title": "Every main capability has reachable automated regression coverage",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/tooling/mainCapabilityCoverage.test.js"
+    ],
+    "evidence": [
+      "scripts/lib/mainCapabilityCoverage.js",
+      "docs/testing/main-capability-coverage.json",
+      ".github/workflows/verify.yml"
+    ]
+  },
+  {
     "id": "RUNTIME-SLEEP-DISCONNECT-RECOVERY-001",
     "domain": "runtime",
     "title": "Sleep and remote disconnect recover without duplicate or stale runtime state",
