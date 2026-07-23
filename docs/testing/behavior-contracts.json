@@ -1094,10 +1094,13 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
-      "tests/unit/tooling/ciContracts.test.js"
+      "tests/unit/tooling/ciContracts.test.js",
+      "tests/unit/tooling/packageScripts.test.js"
     ],
     "evidence": [
-      "scripts/run-ai-session-safety-checks.js"
+      "scripts/run-release-packaging-checks.js",
+      "scripts/seed-release-packaging-stale-output.js",
+      ".vscodeignore"
     ]
   },
   {

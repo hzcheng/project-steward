@@ -331,7 +331,7 @@
         {
             "id": "MAIN-RELEASE-PACKAGING",
             "title": "Reproducible release packaging",
-            "requirement": "Release metadata, clean builds, bridge compatibility, and exact VSIX allowlists remain reproducible.",
+            "requirement": "Release metadata, clean and repeated builds with residue, bridge compatibility, and exact VSIX allowlists remain reproducible.",
             "commits": [
                 "88d366ce6292a66ec39c5980d1875bbe5c16d6a1",
                 "1ae927aef9cde0e5a6c9e067dd9de3f8477aceea",

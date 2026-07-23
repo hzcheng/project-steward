@@ -5,7 +5,10 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const yaml = require('js-yaml');
-const { validateVerifyWorkflow } = require('./lib/ciContracts');
+const {
+    validateScheduledWorkflow: validateScheduledWorkflowSource,
+    validateVerifyWorkflow,
+} = require('./lib/ciContracts');
 
 const repositoryRoot = path.resolve(__dirname, '..');
 
@@ -62,6 +65,7 @@ function parseWorkflow(source, label) {
 }
 
 function validateScheduledWorkflow(workflow) {
+    validateScheduledWorkflowSource(yaml.safeDump(workflow));
     assert.strictEqual(containsSecretContext(workflow), false,
         'scheduled verification must not reference the GitHub secrets context');
     assertExactKeys(workflow, ['name', 'on', 'permissions', 'jobs'],
@@ -89,11 +93,12 @@ function validateScheduledWorkflow(workflow) {
     assert.deepStrictEqual(workflow.permissions, { contents: 'read' },
         'scheduled verification permissions must be exactly contents: read');
     assert.ok(isMapping(workflow.jobs), 'scheduled verification jobs must be a mapping');
-    assert.deepStrictEqual(Object.keys(workflow.jobs), ['scheduled-macos'],
-        'scheduled verification must contain only the scheduled-macos job');
+    assert.deepStrictEqual(Object.keys(workflow.jobs), ['verify', 'scheduled-macos'],
+        'scheduled verification must contain only verify and scheduled-macos jobs');
+    assertExactKeys(workflow.jobs.verify, ['uses'], 'scheduled verify job');
     const job = workflow.jobs['scheduled-macos'];
     assert.ok(isMapping(job), 'scheduled verification must define scheduled-macos');
-    assertExactKeys(job, ['name', 'runs-on', 'timeout-minutes', 'steps'],
+    assertExactKeys(job, ['name', 'needs', 'runs-on', 'timeout-minutes', 'steps'],
         'scheduled-macos job');
     assert.strictEqual(job.name, 'scheduled-macos',
         'scheduled-macos must keep its stable job name');
@@ -102,7 +107,7 @@ function validateScheduledWorkflow(workflow) {
     assert.strictEqual(containsKey(workflow, 'continue-on-error'), false,
         'scheduled verification must not define continue-on-error');
     assert.ok(Array.isArray(job.steps), 'scheduled-macos steps must be an array');
-    assert.strictEqual(job.steps.length, 9, 'scheduled-macos must define exactly nine allowed steps');
+    assert.strictEqual(job.steps.length, 4, 'scheduled-macos must define exactly four allowed steps');
     const checkout = job.steps[0];
     assertExactKeys(checkout, ['name', 'uses'], 'scheduled-macos checkout step');
     assert.strictEqual(checkout.uses, 'actions/checkout@v4',
@@ -117,11 +122,6 @@ function validateScheduledWorkflow(workflow) {
     assert.strictEqual(setupNode.with.cache, 'npm', 'scheduled-macos must cache npm');
     const commands = [
         'npm ci',
-        'npm run test-compile',
-        'npm run test:behavior-contracts',
-        'npm run test:deterministic:run',
-        'npm run lint:ci',
-        'npm run test:release-packaging',
         'npm run test:extension-host',
     ];
     for (const [index, command] of commands.entries()) {
@@ -296,6 +296,21 @@ function runRealVsixArchiveChecks(mainPackage, bridgePackage) {
         'extension/readme.md',
         'extension/dist/extension.js',
     ];
+    for (const [entries, label] of [
+        [mainEntries, 'main VSIX'],
+        [bridgeEntries, 'UI Bridge VSIX'],
+    ]) {
+        for (const forbiddenPrefix of [
+            'extension/coverage/',
+            'extension/tests/',
+            'extension/.ci/',
+        ]) {
+            assert.ok(
+                [...entries.keys()].every(fileName => !fileName.startsWith(forbiddenPrefix)),
+                `${label} must exclude ${forbiddenPrefix}`
+            );
+        }
+    }
     assertExactEntries(mainEntries, expectedMainEntries, 'main VSIX');
     assertExactEntries(bridgeEntries, expectedBridgeEntries, 'UI Bridge VSIX');
 
