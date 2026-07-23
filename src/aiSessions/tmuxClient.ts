@@ -9,7 +9,9 @@ const COMMAND_MAX_BUFFER = 1024 * 1024;
 const FIELD_SEPARATOR = '\u001f';
 const LIST_WINDOWS_FORMAT = [
     '#{session_name}', '#{window_name}', '#{window_id}', '#{window_active}',
-    '#{pane_pid}',
+].join(FIELD_SEPARATOR);
+const LIST_PANES_FORMAT = [
+    '#{window_id}', '#{pane_id}', '#{pane_active}', '#{pane_pid}',
 ].join(FIELD_SEPARATOR);
 const TARGET_WINDOW_FORMAT = [
     '#{session_name}', '#{window_name}', '#{window_id}',
@@ -25,6 +27,7 @@ const REQUIRED_COMMANDS = [
     'new-session',
     'new-window',
     'list-windows',
+    'list-panes',
     'set-option',
     'show-options',
     'select-window',
@@ -91,6 +94,10 @@ export interface TmuxActiveWindowRecord {
     windowId: string;
 }
 
+interface TmuxWindowIdentityRow extends TmuxActiveWindowRecord {
+    active: boolean;
+}
+
 export interface TmuxTargetWindowRecord {
     sessionName: string;
     windowName: string;
@@ -102,6 +109,7 @@ type TmuxOperation =
     | 'check-version'
     | 'list-commands'
     | 'list-windows'
+    | 'list-panes'
     | 'get-active-window'
     | 'get-target-window'
     | 'has-session'
@@ -218,9 +226,25 @@ export class TmuxClient {
         }
 
         const rows = parseWindowRows(result.stdout);
+        const paneResult = await this.invoke('list-panes', [
+            'list-panes', '-a', '-F', LIST_PANES_FORMAT,
+        ]);
+        if (paneResult.exitCode !== 0) {
+            throw resultError('list-panes', paneResult);
+        }
+        const activePanePids = parseActivePanePids(paneResult.stdout);
+        const windowIds = new Set(rows.map(row => row.windowId));
+        if (activePanePids.size !== windowIds.size
+            || [...activePanePids.keys()].some(windowId => !windowIds.has(windowId))) {
+            throw new TmuxClientError('list-panes', 'invalid-output');
+        }
         const sessionMetadata = new Map<string, Record<string, string>>();
         const records: TmuxWindowRecord[] = [];
         for (const row of rows) {
+            const panePid = activePanePids.get(row.windowId);
+            if (panePid === undefined) {
+                throw new TmuxClientError('list-panes', 'invalid-output');
+            }
             let sessionOptions = sessionMetadata.get(row.sessionName);
             if (!sessionOptions) {
                 sessionOptions = await this.readMetadataOptions(
@@ -233,6 +257,7 @@ export class TmuxClient {
             );
             records.push({
                 ...row,
+                panePid,
                 sessionMetadata: { ...sessionOptions },
                 windowMetadata: { ...windowOptions },
                 metadata: { ...sessionOptions, ...windowOptions },
@@ -642,7 +667,7 @@ function parseCommandNames(stdout: string): Set<string> {
 function parseWindowRows(
     stdout: string,
     operation: TmuxOperation = 'list-windows'
-): Array<Omit<TmuxWindowRecord, 'metadata' | 'sessionMetadata' | 'windowMetadata'>> {
+): TmuxWindowIdentityRow[] {
     if (stdout.length > MAX_LIST_OUTPUT_LENGTH) {
         throw new TmuxClientError(operation, 'invalid-output');
     }
@@ -655,19 +680,48 @@ function parseWindowRows(
     }
     return lines.map(line => {
         const fields = line.split(FIELD_SEPARATOR);
-        if (fields.length !== 5) {
+        if (fields.length !== 4) {
             throw new TmuxClientError(operation, 'invalid-output');
         }
-        const [sessionName, windowName, windowId, active, panePidValue] = fields;
-        const panePid = Number(panePidValue);
+        const [sessionName, windowName, windowId, active] = fields;
         if (!isTargetField(sessionName) || !isTargetField(windowName)
-            || !/^@[0-9]+$/.test(windowId) || (active !== '0' && active !== '1')
+            || !/^@[0-9]+$/.test(windowId) || (active !== '0' && active !== '1')) {
+            throw new TmuxClientError(operation, 'invalid-output');
+        }
+        return { sessionName, windowName, windowId, active: active === '1' };
+    });
+}
+
+function parseActivePanePids(stdout: string): Map<string, number> {
+    if (stdout.length > MAX_LIST_OUTPUT_LENGTH || !stdout) {
+        throw new TmuxClientError('list-panes', 'invalid-output');
+    }
+    const lines = stdout.endsWith('\n') ? stdout.slice(0, -1).split('\n') : stdout.split('\n');
+    if (lines.length > MAX_LIST_ROWS || lines.some(line => !line)) {
+        throw new TmuxClientError('list-panes', 'invalid-output');
+    }
+    const activePanePids = new Map<string, number>();
+    for (const line of lines) {
+        const fields = line.split(FIELD_SEPARATOR);
+        if (fields.length !== 4) {
+            throw new TmuxClientError('list-panes', 'invalid-output');
+        }
+        const [windowId, paneId, active, panePidValue] = fields;
+        const panePid = Number(panePidValue);
+        if (!/^@[0-9]+$/.test(windowId) || !/^%[0-9]+$/.test(paneId)
+            || (active !== '0' && active !== '1')
             || !/^[1-9][0-9]{0,9}$/.test(panePidValue)
             || !Number.isSafeInteger(panePid) || panePid > MAX_PID) {
-            throw new TmuxClientError(operation, 'invalid-output');
+            throw new TmuxClientError('list-panes', 'invalid-output');
         }
-        return { sessionName, windowName, windowId, active: active === '1', panePid };
-    });
+        if (active === '1') {
+            if (activePanePids.has(windowId)) {
+                throw new TmuxClientError('list-panes', 'invalid-output');
+            }
+            activePanePids.set(windowId, panePid);
+        }
+    }
+    return activePanePids;
 }
 
 function parseMetadataOptionValue(stdout: string, operation: TmuxOperation): string | null {

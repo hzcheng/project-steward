@@ -71,6 +71,18 @@ test('RELEASE-VSIX-PACKAGING-001 rejects a Linux gate assigned to the Windows ru
     );
 });
 
+test('ARCH-MAIN-CAPABILITY-COVERAGE-001 requires full Git history in the Linux quality job', () => {
+    const shallowCheckoutWorkflow = verifyWorkflow.replace(
+        '        with:\n          fetch-depth: 0\n',
+        ''
+    );
+
+    assert.throws(
+        () => validateVerifyWorkflow(shallowCheckoutWorkflow),
+        /quality-linux checkout step must fetch full history/
+    );
+});
+
 test('RELEASE-VSIX-PACKAGING-001 requires npm caching in the Windows job itself', () => {
     const cacheMatches = [...verifyWorkflow.matchAll(/          cache: npm/g)];
     assert.ok(cacheMatches.length >= 2);

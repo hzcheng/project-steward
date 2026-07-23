@@ -16,7 +16,7 @@ const { TmuxClient } = require('../../../out/aiSessions/tmuxClient');
 const { AddProjectsFromFolderController } = require('../../../out/projects/addProjectsFromFolderController');
 
 const REQUIRED_TMUX_COMMANDS = [
-    'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
+    'new-session', 'new-window', 'list-windows', 'list-panes', 'set-option', 'show-options',
     'select-window', 'attach-session', 'has-session', 'rename-session', 'rename-window',
     'display-message',
 ];

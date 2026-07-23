@@ -6,7 +6,7 @@ const { TmuxClient, TmuxClientError } = require('../../../out/aiSessions/tmuxCli
 const { TMUX_METADATA_OPTIONS } = require('../../../out/aiSessions/tmuxLayout');
 
 const REQUIRED_COMMANDS = [
-    'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
+    'new-session', 'new-window', 'list-windows', 'list-panes', 'set-option', 'show-options',
     'select-window', 'attach-session', 'has-session', 'rename-session', 'rename-window',
     'display-message',
 ];
@@ -59,7 +59,7 @@ test('RUNTIME-TMUX-CLIENT-001 caches availability and sends exact argv without s
     assert.ok(calls.slice(-3).every(call => call.file === '/new path/tmux'));
     assert.throws(() => client.setExecutablePath('   '), /executable/);
 
-    for (const omitted of ['attach-session', 'has-session', 'rename-session', 'rename-window']) {
+    for (const omitted of ['attach-session', 'has-session', 'list-panes', 'rename-session', 'rename-window']) {
         const missingCapability = new TmuxClient('tmux', {
             run: async (_file, args) => args[0] === '-V'
                 ? { exitCode: 0, stdout: 'tmux 3.4\n', stderr: '' }
@@ -88,8 +88,8 @@ test('RUNTIME-TMUX-CLIENT-001 parses one active window and rejects malformed, fo
     let result = {
         exitCode: 0,
         stdout: [
-            'project-session\u001fbase\u001f@1\u001f0\u001f4320',
-            'project-session\u001fai-codex-a\u001f@2\u001f1\u001f4321',
+            'project-session\u001fbase\u001f@1\u001f0',
+            'project-session\u001fai-codex-a\u001f@2\u001f1',
         ].join('\n') + '\n',
         stderr: '',
     };
@@ -104,19 +104,15 @@ test('RUNTIME-TMUX-CLIENT-001 parses one active window and rejects malformed, fo
     });
     assert.deepEqual(calls.at(-1), [
         'list-windows', '-t', 'project-session', '-F',
-        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}\u001f#{pane_pid}',
+        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}',
     ]);
 
     result = { exitCode: 0, stdout: '', stderr: '' };
     assert.equal(await client.getActiveWindow('project-session'), null);
     for (const stdout of [
-        'project-session\u001fa\u001f@1\u001f1\u001f4321\nproject-session\u001fb\u001f@2\u001f1\u001f4322\n',
-        'foreign-session\u001fa\u001f@1\u001f1\u001f4321\n',
-        'project-session\u001fa\u001f@1\u001f1\u001f0\n',
-        'project-session\u001fa\u001f@1\u001f1\u001f-1\n',
-        'project-session\u001fa\u001f@1\u001f1\u001fpid\n',
-        'project-session\u001fa\u001f@1\u001f1\u001f1.5\n',
-        'project-session\u001fa\u001f@1\u001f1\u001f2147483648\n',
+        'project-session\u001fa\u001f@1\u001f1\nproject-session\u001fb\u001f@2\u001f1\n',
+        'foreign-session\u001fa\u001f@1\u001f1\n',
+        'project-session\u001fa\u001f@1\u001f2\n',
         'x'.repeat(1024 * 1024 + 1),
     ]) {
         result = { exitCode: 0, stdout, stderr: '' };
@@ -173,8 +169,19 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
                 return {
                     exitCode: 0,
                     stdout: [
-                        'session-a\u001fwindow-a\u001f@12\u001f1\u001f4312',
-                        'session-a\u001fwindow-a\u001f@13\u001f0\u001f4313',
+                        'session-a\u001fwindow-a\u001f@12\u001f1',
+                        'session-a\u001fwindow-a\u001f@13\u001f0',
+                    ].join('\n') + '\n',
+                    stderr: '',
+                };
+            }
+            if (args[0] === 'list-panes') {
+                return {
+                    exitCode: 0,
+                    stdout: [
+                        '@12\u001f%20\u001f0\u001f4311',
+                        '@12\u001f%21\u001f1\u001f4312',
+                        '@13\u001f%22\u001f1\u001f4313',
                     ].join('\n') + '\n',
                     stderr: '',
                 };
@@ -191,6 +198,10 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
     };
     const client = new TmuxClient('tmux', runner);
     const windows = await client.listWindows();
+    assert.deepEqual(calls.find(call => call.args[0] === 'list-panes').args, [
+        'list-panes', '-a', '-F',
+        '#{window_id}\u001f#{pane_id}\u001f#{pane_active}\u001f#{pane_pid}',
+    ]);
     assert.deepEqual(windows.map(window => ({
         windowId: window.windowId,
         active: window.active,
@@ -272,6 +283,60 @@ test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner 
         const publicError = `${error.message} ${JSON.stringify(error)}`;
         for (const secret of ['token=secret', '/secret/tmux', 'secret-session', 'secret-window', '/secret/cwd']) {
             assert.equal(publicError.includes(secret), false);
+        }
+        return true;
+    });
+});
+
+test('RUNTIME-TMUX-CLIENT-001 fails closed on missing, ambiguous, or malformed active pane PIDs', async () => {
+    let paneResult = {
+        exitCode: 0,
+        stdout: '@12\u001f%20\u001f1\u001f4312\n',
+        stderr: '',
+    };
+    const client = new TmuxClient('/private/tmux', {
+        run: async (_file, args) => {
+            const available = availabilityResult(args);
+            if (available) return available;
+            if (args[0] === 'list-windows') {
+                return {
+                    exitCode: 0,
+                    stdout: 'session-a\u001fwindow-a\u001f@12\u001f1\n',
+                    stderr: '',
+                };
+            }
+            if (args[0] === 'list-panes') return paneResult;
+            return { exitCode: 0, stdout: '', stderr: '' };
+        },
+    });
+    assert.equal((await client.listWindows())[0].panePid, 4312);
+
+    for (const stdout of [
+        '',
+        '@12\u001f%20\u001f0\u001f4312\n',
+        '@12\u001f%20\u001f1\u001f4312\n@12\u001f%21\u001f1\u001f4313\n',
+        '@12\u001f%20\u001f1\u001f0\n',
+        '@12\u001f%20\u001f1\u001f2147483648\n',
+        '@99\u001f%20\u001f1\u001f4312\n',
+        'x'.repeat(1024 * 1024 + 1),
+    ]) {
+        paneResult = { exitCode: 0, stdout, stderr: '' };
+        await assert.rejects(client.listWindows(), error =>
+            error instanceof TmuxClientError
+            && error.operation === 'list-panes'
+            && error.category === 'invalid-output');
+    }
+
+    paneResult = {
+        exitCode: 2,
+        stdout: 'secret stdout',
+        stderr: 'secret stderr',
+    };
+    await assert.rejects(client.listWindows(), error => {
+        assert.equal(error.operation, 'list-panes');
+        assert.equal(error.category, 'nonzero-exit');
+        for (const secret of ['secret stdout', 'secret stderr', '/private/tmux']) {
+            assert.equal(error.message.includes(secret), false);
         }
         return true;
     });

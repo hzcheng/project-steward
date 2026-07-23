@@ -56,15 +56,27 @@ function findStep(job, predicate) {
     return job.steps.find(predicate);
 }
 
-function validateJob(jobs, jobId, expectedRunner, expectedGate, prerequisiteCommands = []) {
+function validateJob(
+    jobs,
+    jobId,
+    expectedRunner,
+    expectedGate,
+    prerequisiteCommands = [],
+    requiresFullHistory = false
+) {
     const job = jobs[jobId];
     assert.ok(isMapping(job), `GitHub verification workflow must define ${jobId}`);
     assert.equal(job.name, jobId, `${jobId} must expose the stable check name ${jobId}`);
     assert.equal(job['runs-on'], expectedRunner, `${jobId} must use ${expectedRunner}`);
     assert.equal(job['timeout-minutes'], 10, `${jobId} timeout-minutes must be 10`);
 
-    assert.ok(findStep(job, step => isMapping(step) && step.uses === 'actions/checkout@v4'),
-        `${jobId} must use actions/checkout@v4`);
+    const checkout = findStep(job,
+        step => isMapping(step) && step.uses === 'actions/checkout@v4');
+    assert.ok(checkout, `${jobId} must use actions/checkout@v4`);
+    if (requiresFullHistory) {
+        assert.ok(isMapping(checkout.with) && checkout.with['fetch-depth'] === 0,
+            `${jobId} checkout step must fetch full history`);
+    }
     const setupNode = findStep(job,
         step => isMapping(step) && step.uses === 'actions/setup-node@v4');
     assert.ok(setupNode, `${jobId} must use actions/setup-node@v4`);
@@ -94,7 +106,14 @@ function validateVerifyWorkflow(verifyWorkflow) {
     assert.equal(workflow.concurrency['cancel-in-progress'], true,
         'GitHub verification workflow must cancel in-progress runs');
     assert.ok(isMapping(workflow.jobs), 'GitHub verification workflow jobs must be a mapping');
-    validateJob(workflow.jobs, 'quality-linux', 'ubuntu-latest', 'npm run test:ci:linux');
+    validateJob(
+        workflow.jobs,
+        'quality-linux',
+        'ubuntu-latest',
+        'npm run test:ci:linux',
+        [],
+        true
+    );
     validateJob(workflow.jobs, 'platform-windows', 'windows-latest', 'npm run test:ci:windows');
     validateJob(workflow.jobs, 'tmux-smoke-linux', 'ubuntu-latest',
         'npm run test:tmux:smoke', ['sudo apt-get install -y tmux']);

@@ -1209,7 +1209,7 @@ function runTmuxLayoutChecks() {
 
 async function runTmuxClientChecks() {
     const requiredCommands = [
-        'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
+        'new-session', 'new-window', 'list-windows', 'list-panes', 'set-option', 'show-options',
         'select-window', 'attach-session', 'has-session', 'rename-session', 'rename-window',
         'display-message',
     ];
@@ -1268,8 +1268,8 @@ async function runTmuxClientChecks() {
     let activeWindowResult = {
         exitCode: 0,
         stdout: [
-            'project-session\u001fbase\u001f@1\u001f0\u001f4320',
-            'project-session\u001fai-codex-a\u001f@2\u001f1\u001f4321',
+            'project-session\u001fbase\u001f@1\u001f0',
+            'project-session\u001fai-codex-a\u001f@2\u001f1',
         ].join('\n') + '\n',
         stderr: '',
     };
@@ -1288,7 +1288,7 @@ async function runTmuxClientChecks() {
     });
     assert.deepStrictEqual(activeWindowCalls.slice(-1)[0], [
         'list-windows', '-t', 'project-session', '-F',
-        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}\u001f#{pane_pid}',
+        '#{session_name}\u001f#{window_name}\u001f#{window_id}\u001f#{window_active}',
     ]);
 
     activeWindowResult = { exitCode: 0, stdout: '', stderr: '' };
@@ -1297,8 +1297,8 @@ async function runTmuxClientChecks() {
     activeWindowResult = {
         exitCode: 0,
         stdout: [
-            'project-session\u001fa\u001f@1\u001f1\u001f4321',
-            'project-session\u001fb\u001f@2\u001f1\u001f4322',
+            'project-session\u001fa\u001f@1\u001f1',
+            'project-session\u001fb\u001f@2\u001f1',
         ].join('\n') + '\n',
         stderr: '',
     };
@@ -1307,7 +1307,7 @@ async function runTmuxClientChecks() {
 
     activeWindowResult = {
         exitCode: 0,
-        stdout: 'foreign-session\u001fa\u001f@1\u001f1\u001f4321\n',
+        stdout: 'foreign-session\u001fa\u001f@1\u001f1\n',
         stderr: '',
     };
     await assert.rejects(activeWindowClient.getActiveWindow('project-session'), error =>
@@ -1463,8 +1463,18 @@ async function runTmuxClientChecks() {
                 return {
                     exitCode: 0,
                     stdout: [
-                        'session-a\u001fwindow-a\u001f@12\u001f1\u001f4312',
-                        'session-a\u001fwindow-a\u001f@13\u001f0\u001f4313',
+                        'session-a\u001fwindow-a\u001f@12\u001f1',
+                        'session-a\u001fwindow-a\u001f@13\u001f0',
+                    ].join('\n') + '\n',
+                    stderr: '',
+                };
+            }
+            if (args[0] === 'list-panes') {
+                return {
+                    exitCode: 0,
+                    stdout: [
+                        '@12\u001f%20\u001f1\u001f4312',
+                        '@13\u001f%21\u001f1\u001f4313',
                     ].join('\n') + '\n',
                     stderr: '',
                 };

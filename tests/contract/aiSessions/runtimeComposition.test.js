@@ -14,7 +14,7 @@ const { TmuxRuntimeBindingStore } = require('../../../out/aiSessions/tmuxRuntime
 const { TmuxRuntimeDiscovery } = require('../../../out/aiSessions/tmuxRuntimeDiscovery');
 
 const REQUIRED_COMMANDS = [
-    'new-session', 'new-window', 'list-windows', 'set-option', 'show-options',
+    'new-session', 'new-window', 'list-windows', 'list-panes', 'set-option', 'show-options',
     'select-window', 'attach-session', 'has-session', 'rename-session', 'rename-window',
     'display-message',
 ];
