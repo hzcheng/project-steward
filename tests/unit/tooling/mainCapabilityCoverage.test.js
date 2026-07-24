@@ -54,6 +54,7 @@ function validFixture(t) {
             subject: 'feat: model workspace identity',
             files: ['src/identity.ts'],
         }],
+        unauditedCommits: [],
     };
 }
 
@@ -174,4 +175,30 @@ test('ARCH-MAIN-CAPABILITY-COVERAGE-001 reports invalid JSON without masking the
         () => loadMainCapabilityCoverage(manifestPath),
         error => error instanceof SyntaxError
     );
+});
+
+test('ARCH-MAIN-CAPABILITY-CURRENCY-001 permits documentation-only commits after the audit head', t => {
+    const fixture = validFixture(t);
+    fixture.unauditedCommits.push({
+        hash: 'd'.repeat(40),
+        subject: 'docs: record capability audit',
+        files: ['docs/testing/main-capability-coverage.json'],
+    });
+
+    assert.deepEqual(validateMainCapabilityCoverage(fixture.manifest, fixture), []);
+});
+
+test('ARCH-MAIN-CAPABILITY-CURRENCY-001 rejects implementation commits after the audit head', t => {
+    const fixture = validFixture(t);
+    const hash = 'd'.repeat(40);
+    fixture.unauditedCommits.push({
+        hash,
+        subject: 'fix: change unaudited behavior',
+        files: ['src/identity.ts', 'tests/unit/owner.test.js'],
+    });
+
+    const errors = validateMainCapabilityCoverage(fixture.manifest, fixture);
+    assert.ok(errors.some(error =>
+        error.includes(`unaudited implementation commit ${hash}: fix: change unaudited behavior`)
+    ));
 });

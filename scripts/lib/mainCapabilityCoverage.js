@@ -159,6 +159,9 @@ function validateMainCapabilityCoverage(manifest, options) {
         ? options.scripts
         : {};
     const auditedCommits = Array.isArray(options.auditedCommits) ? options.auditedCommits : [];
+    const unauditedCommits = Array.isArray(options.unauditedCommits)
+        ? options.unauditedCommits
+        : [];
     const auditedByHash = new Map(auditedCommits.map(commit => [commit.hash, commit]));
     const workflowJobIds = collectWorkflowJobIds(options.workflows);
     const ignoredDocumentationCommits = manifest.audit?.ignoredDocumentationCommits;
@@ -281,6 +284,11 @@ function validateMainCapabilityCoverage(manifest, options) {
 
     for (const commit of collectUnassignedAuditedCommits(manifest, auditedCommits)) {
         errors.push(`unassigned audited commit ${commit.hash}: ${commit.subject}`);
+    }
+    for (const commit of unauditedCommits) {
+        if (commit.files.some(file => !isDocumentationPath(file))) {
+            errors.push(`unaudited implementation commit ${commit.hash}: ${commit.subject}`);
+        }
     }
     return errors;
 }

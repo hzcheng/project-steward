@@ -2914,6 +2914,21 @@
     ]
   },
   {
+    "id": "ARCH-MAIN-CAPABILITY-CURRENCY-001",
+    "domain": "architecture",
+    "title": "Implementation commits cannot remain beyond the recorded capability audit head",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/tooling/mainCapabilityCoverage.test.js"
+    ],
+    "evidence": [
+      "scripts/check-behavior-contracts.js",
+      "scripts/lib/mainCapabilityCoverage.js",
+      "docs/testing/main-capability-coverage.json"
+    ]
+  },
+  {
     "id": "WEBVIEW-LAZY-PANEL-RECOVERY-001",
     "domain": "webview",
     "title": "Lazy dashboard panels recover from a missing initial response",
