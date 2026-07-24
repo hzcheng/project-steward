@@ -2,7 +2,7 @@
     "version": 1,
     "audit": {
         "base": "2b34c653119bdf480f2af0330ee3809b51441807",
-        "head": "d9c66b32fc2487d7836bf66472ac07f337acc1a5",
+        "head": "f145f294c58791ba8198e322a028e8d0453d6629",
         "ignoredDocumentationCommits": []
     },
     "capabilities": [
@@ -399,13 +399,15 @@
                 "41ab7df268ac2806b9b1dd88259ee38ecb10dfb7",
                 "6a069fc081e0068b776c7001cbc64e006b3418d2",
                 "81fc3d857b021e497e7ca437ae01d35ae09c0aa0",
-                "26183703c4fdd6609518700f269339faa77a1792"
+                "26183703c4fdd6609518700f269339faa77a1792",
+                "f145f294c58791ba8198e322a028e8d0453d6629"
             ],
             "behaviors": [
                 "TODO-COMPLETION-INCREMENTAL-001",
                 "TODO-MAX-VISIBLE-PER-GROUP-001",
                 "TODO-BROWSER-EXPANDED-LAYOUT-001",
-                "TODO-INCREMENTAL-ROOT-001"
+                "TODO-INCREMENTAL-ROOT-001",
+                "TODO-QUICK-CREATE-001"
             ],
             "prGates": [
                 "test:ci:linux"
