@@ -18,7 +18,7 @@ function escapeHtml(value: string): string {
 
 export function getUnsupportedTodoVersionPanelContent(version: unknown): string {
     return `<div class="todo-panel todo-panel-error" data-todo-error="unsupported-version">
-        <header class="todo-page-header group-title steward-group-header">
+        <header class="todo-page-header todo-page-command-bar">
             <div class="todo-summary-copy">
                 <strong>TODO</strong>
                 <span class="todo-summary-meta steward-meta">Read-only</span>
@@ -152,7 +152,7 @@ function renderTodoCommandBar(viewModel: TodoPanelViewModel): string {
         ? 'No groups yet · synced when Project Steward data is synced'
         : `${viewModel.totalIncomplete} open · ${groupCount} ${groupCount === 1 ? 'group' : 'groups'} · ${completedState}`;
 
-    return `<header class="todo-page-header group-title steward-group-header">
+    return `<header class="todo-page-header todo-page-command-bar">
         <div class="todo-summary-copy">
             <strong>TODO</strong>
             <span class="todo-summary-meta steward-meta">${meta}</span>

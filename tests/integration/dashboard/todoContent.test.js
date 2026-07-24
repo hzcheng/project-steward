@@ -4,7 +4,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { getTodoPanelContent } = require('../../../out/todos/webviewContent');
+const {
+    getTodoPanelContent,
+    getUnsupportedTodoVersionPanelContent,
+} = require('../../../out/todos/webviewContent');
 const { buildTodoViewModel } = require('../../../out/todos/viewModel');
 
 const NOW = '2026-07-24T00:00:00.000Z';
@@ -57,6 +60,31 @@ test('TODO-TODO-CONTINUOUS-LAYOUT-001 renders one stable continuous list without
     assert.doesNotMatch(html, /class="todo-detail-surface"/);
     assert.doesNotMatch(html, /--todo-list-max-height/);
     assert.doesNotMatch(html, /maxVisibleTodosPerGroup/);
+});
+
+test('TODO-PAGE-HIERARCHY-001 separates the page command bar from real group headers', () => {
+    const html = renderPanel();
+    const pageHeaderMarkup = html.match(/<header class="todo-page-header[^>]*>[\s\S]*?<\/header>/)[0];
+    const pageHeader = pageHeaderMarkup.match(/<header class="todo-page-header[^"]*"/)[0];
+    const errorPageHeader = getUnsupportedTodoVersionPanelContent(2)
+        .match(/<header class="todo-page-header[^"]*"/)[0];
+
+    assert.match(pageHeader, /todo-page-command-bar/);
+    assert.doesNotMatch(pageHeader, /(?:group-title|steward-group-header)/);
+    assert.match(errorPageHeader, /todo-page-command-bar/);
+    assert.doesNotMatch(errorPageHeader, /(?:group-title|steward-group-header)/);
+    assert.match(html, /class="todo-group-header group-title steward-group-header"/);
+    assert.match(todoScript, /todo-page-header todo-page-command-bar/);
+    assert.doesNotMatch(todoScript, /todo-page-header group-title steward-group-header/);
+    assert.equal((pageHeaderMarkup.match(/<svg /g) || []).length, 3);
+    assert.match(todoScript, /aria-label="Add todo">'\s*\+\s*renderTodoCommandIcon\('add'\)/);
+    assert.match(todoScript, /aria-label="Add group">'\s*\+\s*renderTodoCommandIcon\('group'\)/);
+    assert.match(todoScript, /<span>'\s*\+\s*renderTodoCommandIcon\('completed'\)/);
+    assert.doesNotMatch(todoScript, /aria-label="Add todo">＋<\/button>/);
+    assert.doesNotMatch(todoScript, /aria-label="Add group">☷<\/button>/);
+    assert.match(styles, /\.todo-page-command-bar\s*\{[^}]*border:\s*0[^}]*background:\s*transparent/);
+    assert.match(styles, /\.todo-page-command-bar \.todo-summary-actions\s*\{[^}]*opacity:\s*1[^}]*pointer-events:\s*all/);
+    assert.match(styles, /\.todo-page-command-bar \.todo-summary-actions svg\s*\{[^}]*width:\s*14px[^}]*height:\s*14px/);
 });
 
 test('TODO-TODO-FOCUSED-DETAIL-001 makes the title an inline disclosure and drag a separate affordance', () => {

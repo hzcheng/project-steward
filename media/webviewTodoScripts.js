@@ -141,6 +141,24 @@ function initTodos(options) {
             + '</form>';
     }
 
+    function renderTodoCommandIcon(kind) {
+        if (kind === 'add') {
+            return '<svg viewBox="0 0 512 512"><path d="M416 208H272V64c0-17.67-14.33-32-32-32h-32'
+                + 'c-17.67 0-32 14.33-32 32v144H32c-17.67 0-32 14.33-32 32v32c0 17.67 14.33 32 32 32'
+                + 'h144v144c0 17.67 14.33 32 32 32h32c17.67 0 32-14.33 32-32V304h144c17.67 0 32-14.33'
+                + ' 32-32v-32c0-17.67-14.33-32-32-32z"></path></svg>';
+        }
+        if (kind === 'group') {
+            return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+                + 'stroke-linecap="round" stroke-linejoin="round"><path d="m3.5 6 1.5 1.5L7.5 5"></path>'
+                + '<path d="m3.5 12 1.5 1.5 2.5-2.5"></path><path d="m3.5 18 1.5 1.5L7.5 17"></path>'
+                + '<path d="M10.5 6.5h10M10.5 12.5h10M10.5 18.5h10"></path></svg>';
+        }
+        return '<svg viewBox="0 0 448 512"><path d="M64 32C28.7 32 0 60.7 0 96v320c0 35.3 28.7'
+            + ' 64 64 64h320c35.3 0 64-28.7 64-64V96c0-35.3-28.7-64-64-64H64zm88 200h144c13.3 0'
+            + ' 24 10.7 24 24s-10.7 24-24 24H152c-13.3 0-24-10.7-24-24s10.7-24 24-24z"></path></svg>';
+    }
+
     function renderGroupChevron() {
         return '<span class="todo-group-chevron collapse-icon" aria-hidden="true">'
             + '<svg viewBox="0 0 320 512"><path d="M143 352.3L7 216.3c-9.4-9.4-9.4-24.6 '
@@ -213,18 +231,19 @@ function initTodos(options) {
         var meta = incomplete + ' open · ' + groups.length + (groups.length === 1 ? ' group' : ' groups')
             + ' · ' + (state.snapshot.showCompleted ? completed + ' completed shown' : 'completed hidden');
         return '<div class="todo-list-surface">'
-            + '<header class="todo-page-header group-title steward-group-header">'
+            + '<header class="todo-page-header todo-page-command-bar">'
             + '<div class="todo-summary-copy"><strong>TODO</strong>'
             + '<span class="todo-summary-meta steward-meta">' + meta + '</span></div>'
             + '<div class="todo-summary-actions group-actions right">'
             + '<button class="todo-square-button steward-icon-button" type="button" data-action="todo-add" '
-            + 'title="Add todo" aria-label="Add todo">＋</button>'
+            + 'title="Add todo" aria-label="Add todo">' + renderTodoCommandIcon('add') + '</button>'
             + '<button class="todo-square-button steward-icon-button" type="button" data-action="todo-add-group" '
-            + 'title="Add group" aria-label="Add group">☷</button>'
+            + 'title="Add group" aria-label="Add group">' + renderTodoCommandIcon('group') + '</button>'
             + '<label class="todo-square-toggle steward-icon-button'
             + (state.snapshot.showCompleted ? ' active' : '') + '" title="Show completed" aria-label="Show completed">'
             + '<input type="checkbox" data-action="todo-toggle-show-completed"'
-            + (state.snapshot.showCompleted ? ' checked' : '') + '><span>✓</span></label>'
+            + (state.snapshot.showCompleted ? ' checked' : '') + '><span>'
+            + renderTodoCommandIcon('completed') + '</span></label>'
             + '</div></header>' + renderGlobalCompose()
             + (groups.length
                 ? '<div class="todo-groups">' + groups.map(renderGroup).join('') + '</div>'

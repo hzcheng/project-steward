@@ -1006,13 +1006,50 @@ body .project {
     gap: 6px;
 }
 
-.todo-page-header,
 .todo-group-header {
     justify-content: space-between;
 }
 
-.todo-page-header {
-    min-height: 28px;
+.todo-page-command-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    min-height: 32px;
+    padding: 2px 4px 6px;
+    border: 0;
+    color: var(--steward-foreground);
+    background: transparent;
+    box-shadow: none;
+    box-sizing: border-box;
+}
+
+.todo-page-command-bar .todo-summary-copy strong {
+    font-size: 17px;
+    font-weight: 750;
+    letter-spacing: .02em;
+}
+
+.todo-page-command-bar .todo-summary-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 2px;
+    opacity: 1;
+    pointer-events: all;
+}
+
+.todo-page-command-bar .todo-summary-actions svg {
+    display: block;
+    width: 14px;
+    height: 14px;
+    fill: currentColor;
+}
+
+.todo-page-command-bar .todo-summary-actions svg[fill="none"] {
+    fill: none;
 }
 
 .todo-summary-copy {

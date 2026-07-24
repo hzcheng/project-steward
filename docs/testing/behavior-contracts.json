@@ -1924,6 +1924,21 @@
     ]
   },
   {
+    "id": "TODO-PAGE-HIERARCHY-001",
+    "domain": "todo",
+    "title": "Todo page command bar remains distinct from real group headers",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoContent.test.js"
+    ],
+    "evidence": [
+      "src/todos/webviewContent.ts",
+      "src/webview/webviewTodoScripts.js",
+      "media/styles.scss"
+    ]
+  },
+  {
     "id": "TODO-TODO-CONTINUOUS-LAYOUT-001",
     "domain": "todo",
     "title": "Todo Continuous Page Layout behavior",

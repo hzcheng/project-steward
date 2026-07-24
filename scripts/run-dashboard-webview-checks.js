@@ -2698,7 +2698,8 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('<span class="todo-title-text">Write &lt;spec&gt;</span>'));
     assert.strictEqual(html.includes('Done task'), false);
     assert.ok(html.includes('1 completed hidden'));
-    assert.ok(html.includes('todo-page-header group-title steward-group-header'));
+    assert.ok(html.includes('todo-page-header todo-page-command-bar'));
+    assert.strictEqual(html.includes('todo-page-header group-title steward-group-header'), false);
     assert.ok(html.includes('todo-group-header group-title steward-group-header'));
     assert.ok(html.includes('todo-item steward-item-card'));
     assert.ok(html.includes('todo-item-accent steward-item-accent'));
@@ -4600,7 +4601,7 @@ function runSourceContractChecks(source) {
         '.dashboard-search-section[data-section-type="todo"]',
         '.open-current-workspace-group', '.open-other-windows-group', '.dashboard-projects-loading',
         '.dashboard-todo-loading', '.todo-panel', '.todo-item', '.todo-priority-high',
-        '.todo-empty-state', '.todo-edit-form', '.steward-group-header', '.todo-page-header',
+        '.todo-empty-state', '.todo-edit-form', '.steward-group-header', '.todo-page-command-bar',
         '.todo-edit-panel', '.todo-priority-segment',
     ]) {
         assert.ok(styles.includes(selector), `missing ${selector}`);
@@ -4794,14 +4795,20 @@ function runSourceContractChecks(source) {
         && sharedDangerActionRule.includes('color: var(--vscode-errorForeground)'),
         'shared group header danger actions must retain their danger color on hover and keyboard focus');
 
-    const todoPageHeaderRules = extractCssRulesContainingSelector(styles, '.todo-page-header').join('\n');
-    for (const forbidden of [
-        'display:', 'width:', 'padding:', 'border:', 'border-radius:', 'background:', 'box-shadow:',
-        'font-family:', 'font-size:', 'font-weight:', 'line-height:', 'box-sizing:',
+    const todoPageCommandBarRule = extractCssRule(styles, '.todo-page-command-bar');
+    for (const declaration of [
+        'display: flex',
+        'width: 100%',
+        'min-width: 0',
+        'border: 0',
+        'background: transparent',
+        'box-shadow: none',
     ]) {
-        assert.strictEqual(cssRuleIncludesDeclaration(todoPageHeaderRules, forbidden), false,
-            `TODO page header must not own ${forbidden}`);
+        assert.ok(todoPageCommandBarRule.includes(declaration),
+            `TODO page command bar is missing ${declaration}`);
     }
+    assert.strictEqual(todoPageCommandBarRule.includes('border-radius:'), false,
+        'TODO page command bar must not look like another group shell');
 
     for (const selector of ['.todo-group-action', '.todo-square-button', '.todo-square-toggle']) {
         const todoActionRules = extractCssRulesContainingSelector(styles, selector).join('\n');
