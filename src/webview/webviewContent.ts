@@ -107,6 +107,11 @@ export function getStewardContent(
         webview,
         'webviewDashboardScripts.js'
     );
+    var todoScriptsPath = getMediaResource(
+        context,
+        webview,
+        'webviewTodoScripts.js'
+    );
     var filterScriptsPath = getMediaResource(
         context,
         webview,
@@ -194,6 +199,7 @@ export function getStewardContent(
     <script src="${autoScrollerPath}"></script>
     <script src="${projectScriptsPath}"></script>
     <script src="${dashboardScriptsPath}"></script>
+    <script src="${todoScriptsPath}"></script>
     <script src="${dndScriptsPath}"></script>
     <script src="${filterScriptsPath}"></script>
 
@@ -214,6 +220,13 @@ export function getStewardContent(
                 initProjects();
                 const storedFilter = sessionStorage.getItem('filterValue') || '';
                 let filtering;
+                const todos = initTodos({
+                    postMessage: message => window.vscode.postMessage(message),
+                    onRendered: panel => {
+                        disposeDnD(panel);
+                        initDnD(panel);
+                    },
+                });
                 const dashboard = initDashboard({
                     initialSearchQuery: storedFilter,
                     clearSearch: () => filtering && filtering.clear(),
@@ -223,7 +236,8 @@ export function getStewardContent(
                         initDnD(panel);
                         window.__projectStewardSyncCollapseButton();
                     },
-                    onTodoMounted: () => {
+                    onTodoMounted: (panel, message) => {
+                        todos.mount(panel, message.snapshot);
                         window.__projectStewardSyncCollapseButton('todo');
                     },
                     onActiveTabChanged: activeTab => window.__projectStewardSyncCollapseButton(activeTab),

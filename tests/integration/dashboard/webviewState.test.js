@@ -440,6 +440,8 @@ test('WEBVIEW-WEBVIEW-CONTENT-001 renders OPEN PROJECTS and lazy PROJECTS TODO t
         assert.match(html, new RegExp(`id="dashboard-tab-${tab}"`));
     }
     assert.match(html, /id="dashboard-search-catalog"/);
+    assert.match(html, /webviewTodoScripts\.js/);
+    assert.match(html, /initTodos\(/);
     assert.equal(html.includes('data-id="hidden"'), false);
     assert.match(html, /data-id="current"/);
 });
@@ -944,6 +946,11 @@ function createDndHarness({ projectContainers = [], todoGroups = [], todoLists =
             addEventListener: (type, listener) => { windowListeners[type] = listener; },
             removeEventListener: () => undefined,
             vscode: { postMessage: message => messages.push(message) },
+            __projectStewardTodo: {
+                dispatch(action, payload) {
+                    messages.push({ action, payload });
+                },
+            },
         },
         dragula(containers, options) {
             const handlers = {};
@@ -1035,10 +1042,14 @@ test('TODO-TODO-ORDERING-INTERACTION-001 constrains TODO drag state and posts ex
     const todoGroupElement = { matches: selector => selector === '.todo-group' };
     const todoItemElement = { matches: selector => selector === '.todo-item' };
     const groupHandle = { closest: selector => selector === '[data-drag-todo-group]' ? {} : null };
-    const itemHandle = { closest: () => null };
+    const itemHandle = {
+        closest: selector => selector === '[data-drag-todo-item]' ? {} : null,
+    };
+    const ordinaryItemTarget = { closest: () => null };
     assert.equal(harness.context.canMoveTodoGroup(todoGroupElement, todoGroupsContainer, groupHandle), true);
     assert.equal(harness.context.canAcceptTodoGroup(todoGroupsContainer, todoGroupsContainer), true);
     assert.equal(harness.context.canMoveTodoItem(todoItemElement, todoList, itemHandle), true);
+    assert.equal(harness.context.canMoveTodoItem(todoItemElement, todoList, ordinaryItemTarget), false);
     assert.equal(harness.context.canAcceptTodoItem(todoList, todoList), true);
     assert.equal(harness.context.canAcceptTodoItem({ matches: () => true }, todoList), false);
     assert.deepEqual(
@@ -1051,8 +1062,8 @@ test('TODO-TODO-ORDERING-INTERACTION-001 constrains TODO drag state and posts ex
     harness.drakes[2].handlers.drop();
     harness.drakes[3].handlers.drop({}, todoList, todoList);
     assert.deepEqual(toPlain(harness.messages), [
-        { type: 'todo-reorder-groups', groupIds: ['group-b', 'group-a'] },
-        { type: 'todo-reorder-items', groupId: 'group-a', todoIds: ['todo-b', 'todo-a'] },
+        { action: 'reorder-groups', payload: { groupIds: ['group-b', 'group-a'] } },
+        { action: 'reorder-items', payload: { groupId: 'group-a', todoIds: ['todo-b', 'todo-a'] } },
     ]);
 
     harness.context.disposeDnD(harness.rootElement);

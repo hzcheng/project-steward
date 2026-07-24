@@ -437,6 +437,13 @@ function initProjects() {
     var activeAiSessionTerminalState = { provider: null, sessionId: null };
     var pendingWorkspaceSessionReveal = null;
 
+    function isDedicatedTodoTarget(target) {
+        return Boolean(window.__projectStewardTodo
+            && target
+            && target.closest
+            && target.closest('#dashboard-tab-todo'));
+    }
+
     function enter(projectId, provider) {
         if (batchAiSessionState.pending)
             return;
@@ -1216,6 +1223,12 @@ function initProjects() {
     }
 
     function onTodoFormSubmit(e) {
+        if (window.__projectStewardTodo
+            && e.target
+            && e.target.closest
+            && e.target.closest('#dashboard-tab-todo')) {
+            return;
+        }
         var addForm = e.target && e.target.closest ? e.target.closest('.todo-add-form') : null;
         if (addForm) {
             e.preventDefault();
@@ -1575,7 +1588,12 @@ function initProjects() {
         var shouldCollapse = groups.some(group => !group.classList.contains("collapsed"));
 
         if (activeTab === 'todo') {
-            collapseTodoGroups(groups, shouldCollapse, message => window.vscode.postMessage(message));
+            if (window.__projectStewardTodo
+                && typeof window.__projectStewardTodo.dispatch === 'function') {
+                window.__projectStewardTodo.dispatch('collapse-groups', { collapsed: shouldCollapse });
+            } else {
+                collapseTodoGroups(groups, shouldCollapse, message => window.vscode.postMessage(message));
+            }
             syncCollapseButton();
             return;
         }
@@ -1588,6 +1606,8 @@ function initProjects() {
 
     function onMouseEvent(e) {
         if (!e.target || e.target.closest(".disabled"))
+            return;
+        if (isDedicatedTodoTarget(e.target))
             return;
 
         var contextMenuElement = e.target.closest("#projectContextMenu [data-action]");
@@ -1671,6 +1691,8 @@ function initProjects() {
 
     function onChangeEvent(e) {
         if (!e.target)
+            return;
+        if (isDedicatedTodoTarget(e.target))
             return;
 
         var todoPriorityInput = e.target.closest('.todo-priority-choice input[name="priority"]');

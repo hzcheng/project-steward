@@ -537,7 +537,7 @@ function initDashboard(options) {
         panels.todo.innerHTML = message.html;
         todoState = 'mounted';
         if (typeof options.onTodoMounted === 'function') {
-            options.onTodoMounted(panels.todo);
+            options.onTodoMounted(panels.todo, message);
         }
         if (pendingScrollRestoreTab === 'todo') {
             pendingScrollRestoreTab = null;
@@ -562,7 +562,7 @@ function initDashboard(options) {
         todoState = 'mounted';
         replaceSearchCatalog(message.searchCatalog);
         if (typeof options.onTodoMounted === 'function') {
-            options.onTodoMounted(panels.todo);
+            options.onTodoMounted(panels.todo, message);
         }
         if (restoreShowCompletedFocus) {
             var showCompletedToggle = panels.todo.querySelector('[data-action="todo-toggle-show-completed"]');

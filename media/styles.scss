@@ -1308,14 +1308,6 @@ body .project {
     }
 }
 
-.todo-expand-control[aria-expanded="false"] svg {
-    transform: rotate(-90deg);
-}
-
-.todo-expand-control svg {
-    transition: transform 120ms ease;
-}
-
 .todo-group-header h2 {
     min-width: 0;
     margin: 0;

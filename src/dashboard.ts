@@ -20,7 +20,7 @@ import {
     runTodoRequestMutation,
 } from './todos/hostMutation';
 import { UnsupportedTodoDataVersionError } from './todos/types';
-import { buildTodoViewModel } from './todos/viewModel';
+import { buildTodoPanelSnapshot, buildTodoViewModel } from './todos/viewModel';
 import { getTodoPanelContent, getUnsupportedTodoVersionPanelContent } from './todos/webviewContent';
 import FileService from './services/fileService';
 import CodexSessionService from './services/codexSessionService';
@@ -1933,6 +1933,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     async function postTodoPanelContent(requestId?: number) {
         let html: string;
+        let snapshot: ReturnType<typeof buildTodoPanelSnapshot> | undefined;
         try {
             await todoStorageMigration.ready;
             const unsupportedVersionError = todoService.getUnsupportedVersionError();
@@ -1940,6 +1941,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 throw unsupportedVersionError;
             }
             const todoData = todoService.getData();
+            snapshot = buildTodoPanelSnapshot(todoData, todoViewState, revealedTodoId);
             const config = getStewardConfiguration();
             const todoRenderOptions = {
                 maxVisibleTodosPerGroup: getMaxVisibleTodosPerGroup(config),
@@ -1957,11 +1959,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 version: 1,
                 requestId,
                 html,
+                ...(snapshot ? { snapshot } : {}),
             }
             : {
                 type: 'todo-panel-updated',
                 version: 1,
                 html,
+                ...(snapshot ? { snapshot } : {}),
                 searchCatalog: buildWorkspaceDashboardSearchCatalog(
                     projectService.getGroups(),
                     getOpenWorkspaceCards(),

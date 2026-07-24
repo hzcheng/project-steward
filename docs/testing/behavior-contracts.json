@@ -1939,6 +1939,72 @@
     ]
   },
   {
+    "id": "TODO-FOCUSED-DETAIL-001",
+    "domain": "todo",
+    "title": "Todo Focused Detail Navigation behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js"
+    ]
+  },
+  {
+    "id": "TODO-INCREMENTAL-ROOT-001",
+    "domain": "todo",
+    "title": "Todo Stable Incremental Root behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js",
+      "src/webview/webviewDashboardScripts.js"
+    ]
+  },
+  {
+    "id": "TODO-OPTIMISTIC-ROLLBACK-001",
+    "domain": "todo",
+    "title": "Todo Optimistic Rollback behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js"
+    ]
+  },
+  {
+    "id": "TODO-STALE-RESULT-001",
+    "domain": "todo",
+    "title": "Todo Stale Command Result behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js"
+    ]
+  },
+  {
+    "id": "TODO-QUICK-CREATE-001",
+    "domain": "todo",
+    "title": "Todo Group Quick Create behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js"
+    ]
+  },
+  {
     "id": "TODO-TODO-PRIORITY-SIGNAL-001",
     "domain": "todo",
     "title": "Todo Exceptional Priority Signal behavior",

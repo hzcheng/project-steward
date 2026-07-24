@@ -40,7 +40,16 @@ function canMoveTodoItem(el, source, handle) {
     return Boolean(el && source && handle
         && el.matches('.todo-item')
         && source.matches('.todo-list')
-        && !handle.closest('button, input, textarea, select, label, a, [data-action], .todo-edit-form'));
+        && handle.closest('[data-drag-todo-item]'));
+}
+
+function dispatchTodoDragCommand(action, payload, legacyMessage) {
+    if (window.__projectStewardTodo
+        && typeof window.__projectStewardTodo.dispatch === 'function') {
+        window.__projectStewardTodo.dispatch(action, payload);
+        return;
+    }
+    window.vscode.postMessage(legacyMessage);
 }
 
 function getTodoGroupIds(root) {
@@ -126,9 +135,10 @@ function initDnD(root) {
         : null;
     if (todoGroupsDrake) {
         todoGroupsDrake.on('drop', function () {
-            window.vscode.postMessage({
+            var groupIds = getTodoGroupIds(root);
+            dispatchTodoDragCommand('reorder-groups', { groupIds }, {
                 type: 'todo-reorder-groups',
-                groupIds: getTodoGroupIds(root),
+                groupIds,
             });
         });
     }
@@ -150,10 +160,12 @@ function initDnD(root) {
             if (!todoGroup) {
                 return;
             }
-            window.vscode.postMessage({
+            var groupId = todoGroup.getAttribute('data-todo-group-id');
+            var todoIds = getTodoIds(source);
+            dispatchTodoDragCommand('reorder-items', { groupId, todoIds }, {
                 type: 'todo-reorder-items',
-                groupId: todoGroup.getAttribute('data-todo-group-id'),
-                todoIds: getTodoIds(source),
+                groupId,
+                todoIds,
             });
         });
     }
