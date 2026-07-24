@@ -1,10 +1,6 @@
 import { TodoGroupViewModel, TodoItemViewModel, TodoPanelViewModel } from './viewModel';
 import * as Icons from '../webview/webviewIcons';
 
-const DEFAULT_MAX_VISIBLE_TODOS_PER_GROUP = 5;
-const TODO_COLLAPSED_ITEM_HEIGHT_PX = 58;
-const TODO_LIST_GAP_PX = 7;
-
 const PRIORITIES = [
     { value: 'high', label: 'HIGH' },
     { value: 'medium', label: 'MED' },
@@ -39,17 +35,6 @@ export function getUnsupportedTodoVersionPanelContent(version: unknown): string 
     </div>`;
 }
 
-function normalizeMaxVisibleTodosPerGroup(value: unknown): number {
-    const visibleItems = Math.floor(Number(value));
-    return Number.isFinite(visibleItems) && visibleItems > 0 ? visibleItems : DEFAULT_MAX_VISIBLE_TODOS_PER_GROUP;
-}
-
-function getTodoPanelStyle(options: TodoPanelRenderOptions = {}): string {
-    const visibleItems = normalizeMaxVisibleTodosPerGroup(options.maxVisibleTodosPerGroup);
-    const listMaxHeight = (visibleItems * TODO_COLLAPSED_ITEM_HEIGHT_PX) + (Math.max(visibleItems - 1, 0) * TODO_LIST_GAP_PX);
-    return ` style="--todo-visible-items: ${visibleItems}; --todo-collapsed-item-height: ${TODO_COLLAPSED_ITEM_HEIGHT_PX}px; --todo-list-max-height: ${listMaxHeight}px;"`;
-}
-
 function renderPriorityOptions(selected: string): string {
     return PRIORITIES.map(priority =>
         `<option value="${priority.value}"${priority.value === selected ? ' selected' : ''}>${priority.label}</option>`
@@ -78,30 +63,12 @@ function renderTodoAddForm(viewModel: TodoPanelViewModel): string {
     </form>`;
 }
 
-function renderTodoEditForm(todo: TodoItemViewModel): string {
-    return `<form class="todo-edit-form todo-edit-panel" data-todo-form="edit" data-todo-id="${escapeHtml(todo.id)}" hidden>
-        <div class="todo-edit-heading">EDIT TODO</div>
-        <label class="todo-field-label">Title</label>
-        <input class="todo-title-input" type="text" name="title" value="${escapeHtml(todo.title)}" aria-label="Todo title">
-        <label class="todo-field-label">Priority</label>
-        <div class="todo-priority-segment" aria-label="Todo priority">
-            ${PRIORITIES.map(priority => `<label class="todo-priority-choice ${priority.value === todo.priority ? 'active' : ''}">
-                <input type="radio" name="priority" value="${priority.value}"${priority.value === todo.priority ? ' checked' : ''}>
-                <span>${priority.label}</span>
-            </label>`).join('')}
-        </div>
-        <label class="todo-field-label">Notes</label>
-        <textarea class="todo-notes-input" name="notes" rows="4" aria-label="Todo notes">${escapeHtml(todo.notes)}</textarea>
-        <div class="todo-form-row todo-edit-actions">
-            <button class="todo-secondary-button steward-button" type="button" data-action="todo-cancel-edit" data-todo-id="${escapeHtml(todo.id)}">Cancel</button>
-            <button class="todo-primary-button steward-button steward-button-primary" type="submit" data-action="todo-save-edit"><span>${Icons.save}</span>Save</button>
-        </div>
-    </form>`;
-}
-
 function renderTodoItem(todo: TodoItemViewModel): string {
     const completedClass = todo.completed ? ' completed' : '';
     const checked = todo.completed ? ' checked' : '';
+    const priorityBadge = todo.priority === 'medium'
+        ? ''
+        : `<span class="todo-priority-badge steward-badge">${escapeHtml(todo.priorityLabel)}</span>`;
     return `<li class="todo-item steward-item-card todo-priority-${todo.priority}${completedClass}" data-todo-id="${escapeHtml(todo.id)}">
         <span class="todo-item-accent steward-item-accent" aria-hidden="true"></span>
         <div class="todo-item-view">
@@ -112,22 +79,18 @@ function renderTodoItem(todo: TodoItemViewModel): string {
                 </label>
                 <div class="todo-item-content">
                     <div class="todo-title-line">
-                        <span class="todo-title-text" title="${escapeHtml(todo.title)}">${escapeHtml(todo.title)}</span>
-                        <span class="todo-priority-badge steward-badge">${escapeHtml(todo.priorityLabel)}</span>
-                    </div>
-                    ${todo.notes ? `<p class="todo-notes">${escapeHtml(todo.notes)}</p>` : ''}
-                    <div class="todo-item-footer steward-meta">
-                        <span>${todo.completed && todo.completedAt ? `Completed ${escapeHtml(todo.completedAt.slice(0, 10))}` : `Added ${escapeHtml((todo.createdAt || '').slice(0, 10))}`}</span>
+                        <button class="todo-title-button" type="button" data-action="todo-open-detail" data-todo-id="${escapeHtml(todo.id)}" title="Open full todo">
+                            <span class="todo-title-text">${escapeHtml(todo.title)}</span>
+                        </button>
+                        ${priorityBadge}
                     </div>
                 </div>
                 <div class="todo-item-actions">
-                    <button class="todo-icon-button todo-expand-control steward-icon-button" type="button" data-action="todo-toggle-expanded" data-todo-id="${escapeHtml(todo.id)}" aria-expanded="false" title="Expand todo" aria-label="Expand ${escapeHtml(todo.title)}">${Icons.collapse}</button>
-                    <button class="todo-icon-button steward-icon-button" type="button" data-action="todo-edit" data-todo-id="${escapeHtml(todo.id)}" title="Edit todo" aria-label="Edit todo">${Icons.edit}</button>
                     <button class="todo-icon-button steward-icon-button danger" type="button" data-action="todo-delete" data-todo-id="${escapeHtml(todo.id)}" title="Delete todo" aria-label="Delete todo">${Icons.remove}</button>
+                    <button class="todo-drag-handle todo-icon-button steward-icon-button" type="button" draggable="true" data-drag-todo-item="${escapeHtml(todo.id)}" title="Drag to reorder" aria-label="Drag ${escapeHtml(todo.title)}">⋮⋮</button>
                 </div>
             </div>
         </div>
-        ${renderTodoEditForm(todo)}
     </li>`;
 }
 
@@ -150,12 +113,17 @@ function renderTodoGroup(group: TodoGroupViewModel): string {
                 <span class="todo-group-count">${groupMeta}</span>
             </div>
             <div class="todo-group-actions group-actions right">
-                <button class="todo-group-action" type="button" data-action="todo-add" data-group-id="${escapeHtml(group.id)}" title="Add todo" aria-label="Add todo">${Icons.add}</button>
+                <button class="todo-group-action" type="button" data-action="todo-quick-add" data-group-id="${escapeHtml(group.id)}" title="Quick add todo" aria-label="Quick add todo">${Icons.add}</button>
                 <button class="todo-group-action" type="button" data-action="todo-sort-priority" data-group-id="${escapeHtml(group.id)}" title="Sort by priority" aria-label="Sort by priority">${Icons.manage}</button>
                 <button class="todo-group-action" type="button" data-action="todo-rename-group" data-group-id="${escapeHtml(group.id)}" title="Rename todo group" aria-label="Rename todo group">${Icons.edit}</button>
                 <button class="todo-group-action danger" type="button" data-action="todo-delete-group" data-group-id="${escapeHtml(group.id)}" title="Delete todo group" aria-label="Delete todo group">${Icons.remove}</button>
             </div>
         </header>
+        <form class="todo-quick-add-form" data-todo-form="quick-add" data-group-id="${escapeHtml(group.id)}" hidden>
+            <input type="text" name="title" placeholder="Add to ${escapeHtml(group.title)}" aria-label="New todo in ${escapeHtml(group.title)}">
+            <button class="todo-primary-button steward-button steward-button-primary" type="submit">Add</button>
+            <button class="todo-quiet-button" type="button" data-action="todo-cancel-quick-add">Cancel</button>
+        </form>
         ${group.visibleTodos.length
             ? `<ul class="todo-list">${group.visibleTodos.map(renderTodoItem).join('')}</ul>`
             : `<p class="todo-group-empty">No visible todos</p>`}
@@ -164,21 +132,20 @@ function renderTodoGroup(group: TodoGroupViewModel): string {
 }
 
 export function getTodoPanelContent(viewModel: TodoPanelViewModel, options: TodoPanelRenderOptions = {}): string {
-    const panelStyle = getTodoPanelStyle(options);
-    if (viewModel.isEmpty) {
-        return `<div class="todo-panel todo-panel-empty"${panelStyle}>
+    void options;
+    const listContent = viewModel.isEmpty
+        ? '<p class="todo-empty-state steward-empty-state">No todos yet</p>'
+        : `<div class="todo-groups">${viewModel.groups.map(renderTodoGroup).join('')}</div>`;
+
+    return `<div class="todo-panel${viewModel.isEmpty ? ' todo-panel-empty' : ''}">
+        <div class="todo-list-surface">
             ${renderTodoCommandBar(viewModel)}
             ${renderTodoAddForm(viewModel)}
-            <p class="todo-empty-state steward-empty-state">No todos yet</p>
-        </div>`;
-    }
-
-    return `<div class="todo-panel"${panelStyle}>
-        ${renderTodoCommandBar(viewModel)}
-        ${renderTodoAddForm(viewModel)}
-        <div class="todo-groups">
-            ${viewModel.groups.map(renderTodoGroup).join('')}
+            ${listContent}
         </div>
+        <section class="todo-detail-surface" aria-label="Todo details" hidden></section>
+        <div class="todo-undo-region" role="status" aria-live="polite" hidden></div>
+        <div class="todo-live-region" role="status" aria-live="polite" aria-atomic="true"></div>
     </div>`;
 }
 

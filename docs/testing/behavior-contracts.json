@@ -1911,6 +1911,47 @@
     ]
   },
   {
+    "id": "TODO-TODO-CONTINUOUS-LAYOUT-001",
+    "domain": "todo",
+    "title": "Todo Continuous Page Layout behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoContent.test.js"
+    ],
+    "evidence": [
+      "src/todos/webviewContent.ts",
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "TODO-TODO-FOCUSED-DETAIL-001",
+    "domain": "todo",
+    "title": "Todo Focused Detail Entry behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoContent.test.js"
+    ],
+    "evidence": [
+      "src/todos/webviewContent.ts",
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "TODO-TODO-PRIORITY-SIGNAL-001",
+    "domain": "todo",
+    "title": "Todo Exceptional Priority Signal behavior",
+    "priority": "P2",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoContent.test.js"
+    ],
+    "evidence": [
+      "src/todos/webviewContent.ts"
+    ]
+  },
+  {
     "id": "TODO-TODO-UNDO-001",
     "domain": "todo",
     "title": "Todo Timed Exact Undo behavior",

@@ -48,21 +48,19 @@ function validateTodoFocus(source) {
 
 function validateTodoLayout(source) {
     const list = extractBlock(source, '.todo-list');
-    assert.ok(list.includes('max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px))'),
-        'TODO-RESPONSIVE-LAYOUT-001 missing bounded list height');
-    assert.ok(list.includes('overflow-y: auto'), 'TODO-RESPONSIVE-LAYOUT-001 missing list scrolling');
-    const editing = extractBlock(source, '.todo-list.has-editing-item');
-    assert.ok(editing.includes('max-height: none') && editing.includes('overflow-y: visible'),
-        'TODO-RESPONSIVE-LAYOUT-001 editing must reveal the full form');
+    assert.equal(list.includes('max-height'), false,
+        'TODO-RESPONSIVE-LAYOUT-001 list must use the page scroll');
+    assert.ok(list.includes('overflow: visible'), 'TODO-RESPONSIVE-LAYOUT-001 list must remain continuous');
     const title = extractBlock(source, '.todo-title-text');
-    for (const value of ['display: block', 'text-overflow: ellipsis', 'white-space: nowrap']) {
+    for (const value of ['display: -webkit-box', '-webkit-line-clamp: 2', '-webkit-box-orient: vertical',
+        'overflow-wrap: anywhere']) {
         assert.ok(title.includes(value), `TODO-RESPONSIVE-LAYOUT-001 title missing ${value}`);
     }
-    assert.equal(title.includes('-webkit-line-clamp'), false,
-        'TODO-RESPONSIVE-LAYOUT-001 titles must remain single-line');
-    const collapsedNotes = extractBlock(source, '.todo-item:not(.expanded) .todo-notes');
-    assert.ok(collapsedNotes.includes('text-overflow: ellipsis') && collapsedNotes.includes('white-space: nowrap'),
-        'TODO-RESPONSIVE-LAYOUT-001 collapsed notes must ellipsize');
+    assert.equal(title.includes('white-space: nowrap'), false,
+        'TODO-RESPONSIVE-LAYOUT-001 titles must use both available lines');
+    const detailTitle = extractBlock(source, '.todo-detail-title');
+    assert.ok(detailTitle.includes('white-space: pre-wrap') && detailTitle.includes('overflow-wrap: anywhere'),
+        'TODO-RESPONSIVE-LAYOUT-001 focused detail must reveal the complete title');
 }
 
 function cssRules(source) {
@@ -117,8 +115,7 @@ function validateTodoVisualState(source) {
         ['border-color: var(--vscode-panel-border)', 'color: var(--vscode-foreground)',
             'background: var(--vscode-list-inactiveSelectionBackground)']);
     assertDeclarations(ruleForSelector(source, '.todo-list > .steward-item-card:last-child'), id, ['margin-bottom: 0']);
-    assertDeclarations(ruleForSelector(source, '.todo-item.expanded .todo-notes'), id, ['white-space: pre-wrap']);
-    assertDeclarations(ruleForSelector(source, '.todo-item:not(.expanded) .todo-item-footer'), id, ['display: none']);
+    assertDeclarations(ruleForSelector(source, '.todo-detail-notes'), id, ['white-space: pre-wrap']);
     const completedRules = cssRules(source).filter(rule =>
         rule.selectors.some(selector => selector.includes('.todo-item.completed')));
     assert.ok(completedRules.length > 0, `${id} must retain completed TODO presentation`);
@@ -130,10 +127,6 @@ function validateCollapsePresentation(source) {
     const id = 'WEBVIEW-COLLAPSE-PRESENTATION-001';
     assertDeclarations(ruleForSelector(source, '.group.collapsed .collapse-icon svg'), id,
         ['transform: rotate(-90deg)']);
-    assertDeclarations(ruleForSelector(source, '.todo-expand-control[aria-expanded=false] svg'), id,
-        ['transform: rotate(-90deg)']);
-    assertDeclarations(ruleForSelector(source, '.todo-expand-control svg'), id,
-        ['transition: transform 120ms ease']);
 }
 
 function compileStyles(source) {
@@ -185,11 +178,11 @@ test('TODO-KEYBOARD-FOCUS-001 keeps the hidden completed toggle keyboard-visible
         /TODO-KEYBOARD-FOCUS-001/);
 });
 
-test('TODO-RESPONSIVE-LAYOUT-001 keeps TODO titles compact, lists scrollable, and editors fully visible', () => {
+test('TODO-RESPONSIVE-LAYOUT-001 keeps TODO titles readable and groups in one page scroll', () => {
     validateTodoLayout(styles);
     assert.throws(() => validateTodoLayout(styles.replace(
-        '.todo-title-text {\n    min-width: 0;\n    overflow: hidden;\n    display: block;\n    color: var(--vscode-foreground);\n    font-size: 13px;\n    font-weight: 600;\n    line-height: 1.35;\n    text-overflow: ellipsis;\n    white-space: nowrap;',
-        '.todo-title-text {\n    min-width: 0;\n    overflow: hidden;\n    display: block;\n    color: var(--vscode-foreground);\n    font-size: 13px;\n    font-weight: 600;\n    line-height: 1.35;\n    text-overflow: ellipsis;\n    white-space: normal;')),
+        'overflow-wrap: anywhere;\n    -webkit-box-orient: vertical;\n    -webkit-line-clamp: 2;',
+        'overflow-wrap: anywhere;\n    -webkit-box-orient: vertical;\n    -webkit-line-clamp: 1;')),
         /TODO-RESPONSIVE-LAYOUT-001/);
 });
 
