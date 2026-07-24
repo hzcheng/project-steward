@@ -2,7 +2,7 @@
     "version": 1,
     "audit": {
         "base": "2b34c653119bdf480f2af0330ee3809b51441807",
-        "head": "e756a78e1fabdec0d7a811260505952c9ff0ba5b",
+        "head": "7ac45e6c37e9aa3a6d1cabcffa0fe5a789a157dd",
         "ignoredDocumentationCommits": []
     },
     "capabilities": [
@@ -593,7 +593,8 @@
                 "1ef9efbcc7812fc8fb6d54b637be5f76daa0f3f5",
                 "56b80868dca5092bc87813d2c8a8e400a93de436",
                 "d51fa0d228e381dafd213b07d8be858281a8d24b",
-                "e756a78e1fabdec0d7a811260505952c9ff0ba5b"
+                "e756a78e1fabdec0d7a811260505952c9ff0ba5b",
+                "7ac45e6c37e9aa3a6d1cabcffa0fe5a789a157dd"
             ],
             "behaviors": [
                 "ARCH-CI-QUALITY-GATE-001",
