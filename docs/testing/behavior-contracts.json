@@ -1897,6 +1897,33 @@
     ]
   },
   {
+    "id": "TODO-TODO-COMMAND-CONTROLLER-001",
+    "domain": "todo",
+    "title": "Todo Incremental Command Coordination behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/commandController.test.js"
+    ],
+    "evidence": [
+      "src/todos/commandController.ts",
+      "src/dashboard.ts"
+    ]
+  },
+  {
+    "id": "TODO-TODO-UNDO-001",
+    "domain": "todo",
+    "title": "Todo Timed Exact Undo behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/commandController.test.js"
+    ],
+    "evidence": [
+      "src/todos/commandController.ts"
+    ]
+  },
+  {
     "id": "TODO-TODO-INSERTION-ORDER-NORMALIZATION-001",
     "domain": "todo",
     "title": "Todo Insertion Order Normalization behavior",

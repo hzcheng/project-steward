@@ -10,6 +10,7 @@ import { USER_CANCELED, RelevantExtensions, REOPEN_KEY, WSL_DEFAULT_REGEX } from
 
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
+import { TodoCommandController } from './todos/commandController';
 import { TodoService } from './todos/service';
 import {
     deleteTodoWithConfirmation,
@@ -215,6 +216,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const todoService = new TodoService(context);
     const todoViewState = todoService.getViewState();
     let revealedTodoId: string | undefined;
+    const todoCommandController = new TodoCommandController({
+        service: todoService,
+        getViewState: () => todoViewState,
+        setShowCompleted: async showCompleted => {
+            const persistedViewState = await todoService.setShowCompleted(showCompleted);
+            todoViewState.showCompleted = persistedViewState.showCompleted;
+            return persistedViewState;
+        },
+        getRevealedTodoId: () => revealedTodoId,
+        clearRevealedTodoId: () => { revealedTodoId = undefined; },
+    });
     const todoStorageMigration = { ready: Promise.resolve<unknown>(undefined) };
     const groupCollapseController = new GroupCollapseController({
         state: context.globalState,
@@ -984,6 +996,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     return;
                 }
                 await postTodoPanelContent(e.requestId as number);
+            },
+            'todo-command': async e => {
+                await todoStorageMigration.ready;
+                const result = await todoCommandController.handle(e);
+                if (result) {
+                    await provider.postMessage(result);
+                }
             },
             'todo-add': async e => {
                 const valid = typeof e.title === 'string' && Boolean(e.title.trim());
