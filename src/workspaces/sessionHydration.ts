@@ -235,7 +235,7 @@ function buildActiveSessions<TTerminal>(input: {
                 ...(session?.pinned !== undefined ? { pinned: session.pinned } : {}),
                 ...(session?.attention?.eventId ? { attentionEventId: session.attention.eventId } : {}),
                 ...rootMetadata(root),
-                activityMs: Math.max(timestamp(session?.updatedAt), finiteNumber(runtime.runStartedAtMs)),
+                activityMs: finiteNumber(runtime.runStartedAtMs),
                 sourceOrder,
             };
         });
@@ -381,21 +381,13 @@ function establishedStatus(needsAttention: boolean, focused: boolean, conflict: 
 }
 
 function compareActiveSessions(left: SortableActiveSession, right: SortableActiveSession): number {
-    const rankDifference = statusRank(left.status) - statusRank(right.status);
-    if (rankDifference !== 0) {
-        return rankDifference;
+    if (left.pending !== right.pending) {
+        return left.pending ? 1 : -1;
     }
     if (left.pending && right.pending) {
         return left.activityMs - right.activityMs || left.sourceOrder - right.sourceOrder;
     }
     return right.activityMs - left.activityMs || left.sourceOrder - right.sourceOrder;
-}
-
-function statusRank(status: ActiveAiSessionStatus): number {
-    return status === 'conflict' ? 0
-        : status === 'needsAttention' ? 1
-            : status === 'focused' ? 2
-                : status === 'running' ? 3 : 4;
 }
 
 function timestamp(value: string | undefined): number {

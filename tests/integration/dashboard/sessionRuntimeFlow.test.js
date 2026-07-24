@@ -121,6 +121,81 @@ test('PROJECT-ACTIVE-AI-SESSION-PROJECTION-001 OPEN-OPEN-PROJECT-AI-SESSION-VIEW
     assert.equal(projected.sessionsByProvider.kimi[0].attention.eventId, 'attention');
 });
 
+test('PROJECT-ACTIVE-AI-SESSION-PROJECTION-001 keeps active session cards stable when terminal focus changes', () => {
+    const workspace = {
+        navigationIdentity: 'navigation:stable',
+        scopeIdentity: 'scope:stable',
+        kind: 'singleFolder',
+        displayName: 'Stable',
+        navigationUri: 'file:///fixtures/stable',
+        environment: 'local',
+        roots: [{
+            id: 'root:stable',
+            name: 'stable',
+            uri: 'file:///fixtures/stable',
+            hostPath: '/fixtures/stable',
+            ordinal: 0,
+        }],
+    };
+    const runtimeIdentity = sessionId => ({
+        provider: 'codex',
+        sessionId,
+        workspaceScopeIdentity: workspace.scopeIdentity,
+        workspaceNavigationIdentity: workspace.navigationIdentity,
+        workspaceRootHostPaths: ['/fixtures/stable'],
+        cwd: '/fixtures/stable',
+    });
+    const activeRuntimes = [{
+        identity: runtimeIdentity('older'),
+        backend: 'vscode',
+        state: 'active',
+        markerPath: '/tmp/older.done',
+        runStartedAtMs: 100,
+        attached: true,
+    }, {
+        identity: runtimeIdentity('newer'),
+        backend: 'vscode',
+        state: 'active',
+        markerPath: '/tmp/newer.done',
+        runStartedAtMs: 200,
+        attached: true,
+    }];
+    const hydrate = (focusedSessionId, olderUpdatedAt) => hydrateWorkspaceAiSessions({
+        workspace,
+        providers: Object.values(AI_SESSION_PROVIDER_DEFINITIONS),
+        sessionResults: {
+            codex: {
+                available: true,
+                sessions: [{
+                    id: 'older',
+                    name: 'Older',
+                    cwd: '/fixtures/stable',
+                    updatedAt: olderUpdatedAt,
+                }, {
+                    id: 'newer',
+                    name: 'Newer',
+                    cwd: '/fixtures/stable',
+                    updatedAt: '2026-07-24T09:00:00.000Z',
+                }],
+            },
+            kimi: { available: true, sessions: [] },
+            claude: { available: true, sessions: [] },
+        },
+        getSessionComparableCwd: (_provider, session) => session.cwd,
+        pinnedSessions: new Set(),
+        aliases: {},
+        activeRuntimes,
+        focusedIdentity: runtimeIdentity(focusedSessionId),
+    });
+
+    const before = hydrate('newer', '2026-07-24T08:00:00.000Z');
+    const after = hydrate('older', '2026-07-24T10:00:00.000Z');
+
+    assert.deepEqual(before.activeSessions.map(session => session.sessionId), ['newer', 'older']);
+    assert.deepEqual(after.activeSessions.map(session => session.sessionId), ['newer', 'older']);
+    assert.equal(after.activeSessions.find(session => session.sessionId === 'older').focused, true);
+});
+
 test('WEBVIEW-AI-SESSION-DASHBOARD-WATCHER-COALESCING-001 coalesces watcher refreshes and preserves attention refresh priority', async () => {
     const clock = createFakeClock(1000);
     const messages = [];
