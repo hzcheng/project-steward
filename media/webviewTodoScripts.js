@@ -352,6 +352,9 @@ function initTodos(options) {
             }
             var expandedExtraHeight = Array.from(list.querySelectorAll('.todo-item.expanded'))
                 .reduce(function (total, item) {
+                    if (item.style && item.style.removeProperty) {
+                        item.style.removeProperty('--todo-expanded-item-height');
+                    }
                     var itemStyle = typeof getComputedStyle === 'function'
                         ? getComputedStyle(item)
                         : null;
@@ -363,6 +366,9 @@ function initTodos(options) {
                         Number(item.offsetHeight) || 0,
                         (Number(item.scrollHeight) || 0) + borderHeight
                     );
+                    if (expandedHeight > 0 && item.style && item.style.setProperty) {
+                        item.style.setProperty('--todo-expanded-item-height', expandedHeight + 'px');
+                    }
                     return total + Math.max(0, expandedHeight - collapsedHeight);
                 }, 0);
             list.style.setProperty(

@@ -1647,7 +1647,7 @@ body .project {
 }
 
 .todo-item.expanded {
-    height: auto !important;
+    height: var(--todo-expanded-item-height, auto) !important;
     cursor: default;
 
     .todo-title-text {

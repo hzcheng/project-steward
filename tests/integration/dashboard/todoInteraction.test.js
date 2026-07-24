@@ -69,13 +69,29 @@ function createHarness(options = {}) {
         className: '',
         innerHTML: '',
         hidden: false,
+        style: {
+            properties: {},
+            setProperty(name, value) {
+                this.properties[name] = value;
+            },
+            removeProperty(name) {
+                delete this.properties[name];
+            },
+        },
         get offsetHeight() {
             if (!layoutVisible) return 0;
+            if (this.className.includes('expanded')) {
+                return parseFloat(this.style.properties['--todo-expanded-item-height']) || 58;
+            }
             return 58;
         },
         get scrollHeight() {
             if (!layoutVisible) return 0;
-            return this.className.includes('expanded') ? expandedTodoHeight : 58;
+            if (!this.className.includes('expanded')) return 58;
+            return Math.max(
+                expandedTodoHeight,
+                parseFloat(this.style.properties['--todo-expanded-item-height']) || 0
+            );
         },
     }]));
     const summaryMeta = { textContent: '' };
@@ -359,7 +375,7 @@ test('TODO-INCREMENTAL-ROOT-001 patches inline details and group disclosure with
     assert.equal(harness.groupButton.attributes['aria-expanded'], 'false');
 });
 
-test('TODO-MAX-VISIBLE-PER-GROUP-001 uses full scroll height when the expanded border box is still collapsed', () => {
+test('TODO-MAX-VISIBLE-PER-GROUP-001 assigns full height to the expanded card before growing its group', () => {
     const harness = createHarness({ targetedPatches: true, maxVisibleTodos: 1 });
     const root = harness.root;
     const mountedRenders = harness.getRenderedCount();
@@ -368,6 +384,10 @@ test('TODO-MAX-VISIBLE-PER-GROUP-001 uses full scroll height when the expanded b
 
     assert.equal(harness.root, root);
     assert.equal(harness.getRenderedCount(), mountedRenders);
+    assert.equal(
+        harness.getTodoNode('todo-a').style.properties['--todo-expanded-item-height'],
+        '180px'
+    );
     assert.equal(
         harness.todoList.style.properties['--todo-list-expanded-extra-height'],
         '122px'
@@ -408,8 +428,24 @@ test('TODO-MAX-VISIBLE-PER-GROUP-001 remeasures wrapped inline detail after side
     harness.notifyResize();
 
     assert.equal(
+        harness.getTodoNode('todo-a').style.properties['--todo-expanded-item-height'],
+        '220px'
+    );
+    assert.equal(
         harness.todoList.style.properties['--todo-list-expanded-extra-height'],
         '162px'
+    );
+
+    harness.setExpandedTodoHeight(140);
+    harness.notifyResize();
+
+    assert.equal(
+        harness.getTodoNode('todo-a').style.properties['--todo-expanded-item-height'],
+        '140px'
+    );
+    assert.equal(
+        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
+        '82px'
     );
 });
 

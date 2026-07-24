@@ -61,8 +61,8 @@ function validateTodoLayout(source) {
     assert.equal(title.includes('white-space: nowrap'), false,
         'TODO-RESPONSIVE-LAYOUT-001 titles must use both available lines');
     const expanded = extractBlock(source, '.todo-item.expanded');
-    assert.ok(expanded.includes('height: auto !important'),
-        'TODO-MAX-VISIBLE-PER-GROUP-001 expanded cards must override the shared collapsed height');
+    assert.ok(expanded.includes('height: var(--todo-expanded-item-height, auto) !important'),
+        'TODO-MAX-VISIBLE-PER-GROUP-001 expanded cards must own their measured content height');
     assert.ok(expanded.includes('-webkit-line-clamp: unset'),
         'TODO-RESPONSIVE-LAYOUT-001 inline detail must reveal the complete title');
     const inlineValue = extractBlock(source, '.todo-inline-value');
