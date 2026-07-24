@@ -2701,6 +2701,19 @@
     ]
   },
   {
+    "id": "ATTENTION-USER-TERMINAL-CLOSE-001",
+    "domain": "attention",
+    "title": "User-closing a managed terminal does not create completion attention",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/terminalCloseWiring.test.js"
+    ],
+    "evidence": [
+      "src/dashboard.ts"
+    ]
+  },
+  {
     "id": "WEBVIEW-DASHBOARD-MESSAGE-ROUTER-001",
     "domain": "webview",
     "title": "Dashboard Message Router behavior",

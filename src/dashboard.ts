@@ -136,6 +136,9 @@ const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
 const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
 const AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS = 10000;
 const AI_SESSION_INCREMENTAL_SCAN_MAX_FILES = 2000;
+// Mirrors vscode.TerminalExitReason.User. The extension's minimum VS Code typings
+// predate TerminalExitStatus.reason, while supported hosts expose it at runtime.
+const USER_TERMINAL_EXIT_REASON = 3;
 let activeAiSessionAttentionBridgeClient: AttentionBridgeClient | null = null;
 
 function resolveAiProviderExecutable(commandName: string): string | null {
@@ -1578,13 +1581,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }));
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(terminal => {
-            const closedSessions = aiSessionRuntimeCoordinator.getActive()
+            const closedRuntimes = aiSessionRuntimeCoordinator.getActive()
                 .filter(runtime => runtime.backend === 'vscode' && runtime.terminal === terminal
-                    && Boolean(runtime.identity.sessionId))
-                .map(runtime => ({
-                    provider: runtime.identity.provider,
-                    sessionId: runtime.identity.sessionId as string,
-                }));
+                    && Boolean(runtime.identity.sessionId));
+            const exitStatus = terminal.exitStatus as
+                (vscode.TerminalExitStatus & { reason?: number }) | undefined;
+            const userClosedTerminal = exitStatus?.reason === USER_TERMINAL_EXIT_REASON;
+            if (userClosedTerminal) {
+                for (const runtime of closedRuntimes) {
+                    aiSessionAttentionController.suppressRuntimeCompletion(
+                        getAttentionRuntimeSessionKey({
+                            workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+                            provider: runtime.identity.provider,
+                            sessionId: runtime.identity.sessionId as string,
+                            runStartedAtMs: runtime.runStartedAtMs,
+                            backend: runtime.backend,
+                        })
+                    );
+                }
+            }
+            const closedSessions: ActiveAiSessionTerminalIdentity[] = closedRuntimes.map(runtime => ({
+                provider: runtime.identity.provider,
+                sessionId: runtime.identity.sessionId as string,
+                workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+            }));
             const hadRuntimeClient = [...aiSessionRuntimeCoordinator.getActive(), ...aiSessionRuntimeCoordinator.getPending()]
                 .some(runtime => runtime.terminal === terminal);
             aiSessionRuntimeCoordinator.handleClosedTerminal(terminal);
@@ -1592,6 +1612,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
             if (closedSessions.length || hadRuntimeClient) {
                 refreshAiSessionViewsIncrementally();
+                if (userClosedTerminal) {
+                    void runSafeAiSessionRuntimeLifecycleTask(
+                        'acknowledge-user-terminal-close',
+                        async () => {
+                            for (const identity of closedSessions) {
+                                await acknowledgeAiSessionAttention(identity);
+                            }
+                        }
+                    );
+                }
                 void runSafeAiSessionRuntimeLifecycleTask(
                     'evaluate-attention-closed-terminal', evaluateAiSessionAttention
                 );

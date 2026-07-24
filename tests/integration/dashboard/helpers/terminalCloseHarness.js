@@ -147,18 +147,42 @@ async function runTerminalCloseContract(transform = source => source) {
         await new Promise(resolve => setImmediate(resolve));
         assert.equal(typeof listeners.closeTerminal, 'function',
             'ATTENTION-TERMINAL-CLOSE-WIRING-001 production activation must register terminal close');
-        const terminal = { name: 'tracked fixture terminal' };
+        const terminal = {
+            name: 'tracked fixture terminal',
+            exitStatus: mode === 'user-close'
+                ? { code: undefined, reason: 3 }
+                : { code: 0, reason: 2 },
+        };
         activeFixtures = [{
             backend: 'vscode', terminal, state: 'active', runStartedAtMs: 1,
-            identity: { provider: 'codex', sessionId: 'session', projectKey: '/fixture', cwd: '/fixture' },
+            identity: {
+                provider: 'codex',
+                sessionId: 'session',
+                workspaceScopeIdentity: 'a'.repeat(64),
+                workspaceNavigationIdentity: 'navigation:fixture',
+                workspaceRootHostPaths: ['/fixture'],
+                cwd: '/fixture',
+            },
         }];
         listeners.closeTerminal(terminal);
         await new Promise(resolve => setImmediate(resolve));
         await new Promise(resolve => setImmediate(resolve));
         assert.ok(calls.some(call => call[0] === 'runtime-close'));
         assert.ok(calls.some(call => call[0] === 'highlight-close'));
-        assert.equal(calls.some(call => call[0] === 'local-acknowledge' || call[0] === 'bridge-acknowledge'), false,
-            'ATTENTION-TERMINAL-CLOSE-WIRING-001 closing a terminal must not acknowledge unread attention');
+        if (mode === 'user-close') {
+            const suppressionIndex = calls.findIndex(call => call[0] === 'suppress-runtime-completion');
+            const runtimeCloseIndex = calls.findIndex(call => call[0] === 'runtime-close');
+            const localAcknowledgeIndex = calls.findIndex(call => call[0] === 'local-acknowledge');
+            assert.ok(suppressionIndex >= 0 && suppressionIndex < runtimeCloseIndex,
+                'ATTENTION-USER-TERMINAL-CLOSE-001 must suppress completion before releasing the runtime');
+            assert.ok(localAcknowledgeIndex > runtimeCloseIndex,
+                'ATTENTION-USER-TERMINAL-CLOSE-001 must acknowledge after the user close is observed');
+        } else {
+            assert.equal(calls.some(call => call[0] === 'suppress-runtime-completion'), false,
+                'ATTENTION-TERMINAL-CLOSE-WIRING-001 process exit must not suppress completion');
+            assert.equal(calls.some(call => call[0] === 'local-acknowledge' || call[0] === 'bridge-acknowledge'), false,
+                'ATTENTION-TERMINAL-CLOSE-WIRING-001 process exit must not acknowledge unread attention');
+        }
         if (mode === 'explicit-close' || mode === 'explicit-detach') {
             if (mode === 'explicit-detach') {
                 activeFixtures[0] = {
