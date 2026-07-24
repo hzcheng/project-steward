@@ -172,7 +172,7 @@ function defineProviderContract({ id, serviceFactory, fixtures, definition }) {
     }, {
         state: 'stopped',
         expected: {
-            phase: 'needsAttention',
+            phase: manifest.lifecycle.stoppedPhase,
             reason: manifest.lifecycle.stoppedReason,
             executionState: 'stopped',
         },

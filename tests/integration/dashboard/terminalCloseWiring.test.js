@@ -13,15 +13,15 @@ function harnessEnvironment() {
     return { ...process.env, NODE_V8_COVERAGE: '' };
 }
 
-test('ATTENTION-TERMINAL-CLOSE-WIRING-001 production process exit preserves unread attention', async () => {
+test('ATTENTION-RUNTIME-EXIT-NEUTRAL-001 production process exit creates no attention side effect', async () => {
     await execFile(process.execPath, [harnessPath, 'baseline'], { env: harnessEnvironment() });
 });
 
-test('ATTENTION-USER-TERMINAL-CLOSE-001 production user close suppresses and acknowledges completion attention', async () => {
+test('ATTENTION-USER-TERMINAL-CLOSE-001 production user close acknowledges existing attention without completion suppression', async () => {
     await execFile(process.execPath, [harnessPath, 'user-close'], { env: harnessEnvironment() });
 });
 
-test('ATTENTION-EXPLICIT-SESSION-CLOSE-001 production close action suppresses its runtime race and acknowledges attention', async () => {
+test('ATTENTION-EXPLICIT-SESSION-CLOSE-001 production close action acknowledges attention without completion suppression', async () => {
     await execFile(process.execPath, [harnessPath, 'explicit-close'], { env: harnessEnvironment() });
 });
 
@@ -29,8 +29,8 @@ test('ATTENTION-EXPLICIT-SESSION-CLOSE-001 tmux detach acknowledges current atte
     await execFile(process.execPath, [harnessPath, 'explicit-detach'], { env: harnessEnvironment() });
 });
 
-test('ATTENTION-TERMINAL-CLOSE-WIRING-001 controlled acknowledgement mutation is rejected', async () => {
+test('ATTENTION-RUNTIME-EXIT-NEUTRAL-001 controlled completion-suppression mutation is rejected', async () => {
     await assert.rejects(
         execFile(process.execPath, [harnessPath, 'mutation'], { env: harnessEnvironment() }),
-        /process exit must not acknowledge unread attention/);
+        /runtime exit must never suppress completion attention/);
 });

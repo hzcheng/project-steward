@@ -146,7 +146,7 @@ async function runTerminalCloseContract(transform = source => source) {
         await new Promise(resolve => setImmediate(resolve));
         await new Promise(resolve => setImmediate(resolve));
         assert.equal(typeof listeners.closeTerminal, 'function',
-            'ATTENTION-TERMINAL-CLOSE-WIRING-001 production activation must register terminal close');
+            'ATTENTION-RUNTIME-EXIT-NEUTRAL-001 production activation must register terminal close');
         const terminal = {
             name: 'tracked fixture terminal',
             exitStatus: mode === 'user-close'
@@ -173,15 +173,15 @@ async function runTerminalCloseContract(transform = source => source) {
             const suppressionIndex = calls.findIndex(call => call[0] === 'suppress-runtime-completion');
             const runtimeCloseIndex = calls.findIndex(call => call[0] === 'runtime-close');
             const localAcknowledgeIndex = calls.findIndex(call => call[0] === 'local-acknowledge');
-            assert.ok(suppressionIndex >= 0 && suppressionIndex < runtimeCloseIndex,
-                'ATTENTION-USER-TERMINAL-CLOSE-001 must suppress completion before releasing the runtime');
+            assert.equal(suppressionIndex, -1,
+                'ATTENTION-RUNTIME-EXIT-NEUTRAL-001 runtime exit must never suppress completion attention');
             assert.ok(localAcknowledgeIndex > runtimeCloseIndex,
                 'ATTENTION-USER-TERMINAL-CLOSE-001 must acknowledge after the user close is observed');
         } else {
             assert.equal(calls.some(call => call[0] === 'suppress-runtime-completion'), false,
-                'ATTENTION-TERMINAL-CLOSE-WIRING-001 process exit must not suppress completion');
+                'ATTENTION-RUNTIME-EXIT-NEUTRAL-001 runtime exit must never suppress completion attention');
             assert.equal(calls.some(call => call[0] === 'local-acknowledge' || call[0] === 'bridge-acknowledge'), false,
-                'ATTENTION-TERMINAL-CLOSE-WIRING-001 process exit must not acknowledge unread attention');
+                'ATTENTION-RUNTIME-EXIT-NEUTRAL-001 process exit must not acknowledge unread attention');
         }
         if (mode === 'explicit-close' || mode === 'explicit-detach') {
             if (mode === 'explicit-detach') {
@@ -212,13 +212,8 @@ async function runTerminalCloseContract(transform = source => source) {
             const suppressionIndex = calls.findIndex(call => call[0] === 'suppress-runtime-completion');
             const detachIndex = calls.findIndex(call => call[0] === 'runtime-detach');
             const localAcknowledgeIndex = calls.findIndex(call => call[0] === 'local-acknowledge');
-            if (mode === 'explicit-close') {
-                assert.ok(suppressionIndex >= 0 && suppressionIndex < detachIndex,
-                    'ATTENTION-EXPLICIT-SESSION-CLOSE-001 must suppress the exact run before close');
-            } else {
-                assert.equal(suppressionIndex, -1,
-                    'ATTENTION-EXPLICIT-SESSION-CLOSE-001 detach must preserve future completion attention');
-            }
+            assert.equal(suppressionIndex, -1,
+                'ATTENTION-RUNTIME-EXIT-NEUTRAL-001 explicit runtime actions must not suppress completion attention');
             assert.ok(localAcknowledgeIndex > detachIndex,
                 'ATTENTION-EXPLICIT-SESSION-CLOSE-001 must acknowledge only after confirmed detach succeeds');
             assert.equal(calls.some(call => call[0] === 'restore-runtime-completion'), false);
@@ -239,7 +234,7 @@ const run = mode === 'mutation'
         const needle = 'aiSessionRuntimeCoordinator.handleClosedTerminal(terminal);';
         assert.ok(source.includes(needle), 'controlled mutation must find the production callback');
         return source.replace(needle,
-            `${needle}\n            aiSessionAttentionController.acknowledge(['attention-event']);`);
+            `${needle}\n            aiSessionAttentionController.suppressRuntimeCompletion('synthetic-exit');`);
     })
     : () => runTerminalCloseContract();
 

@@ -2753,7 +2753,6 @@ async function runAiSessionAttentionControllerChecks() {
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
         getRuntimeById: (providerId, sessionId) => runtimeEntries.get(`${providerId}:${sessionId}`) || null,
-        isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async (items, forceHeartbeat) => {
             published.push({ items: items.map(item => ({ ...item })), forceHeartbeat: Boolean(forceHeartbeat) });
             return true;
@@ -2815,7 +2814,6 @@ async function runAiSessionAttentionControllerChecks() {
             backend: 'vscode', state: 'active', markerPath: '/tmp/live.marker',
             runStartedAtMs: 1200, attached: true,
         }),
-        isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async items => { coexistPublished.push(items.map(item => ({ ...item }))); return true; },
         scheduleRefresh: () => undefined,
         nowMs: () => nowMs,
@@ -2831,9 +2829,8 @@ async function runAiSessionAttentionControllerChecks() {
     await coexistController.evaluate([{
         providerId: 'codex', sessionId: 'session-a', runtime: oldInactiveRuntime,
     }]);
-    assert.ok(coexistPublished[0][0].eventId.endsWith(
-        crypto.createHash('sha256').update('terminal-exit:800').digest('hex')
-    ), 'an old inactive lifecycle must publish its own event even if a live runtime anomalously coexists');
+    assert.deepStrictEqual(coexistPublished[0], [],
+        'an old inactive runtime must not synthesize attention without a provider event');
     const multiRunEvaluation = await coexistController.evaluate([
         {
             providerId: 'codex', sessionId: 'session-a', attentionKey: 'codex:session-a:700:tmux',
@@ -2847,10 +2844,10 @@ async function runAiSessionAttentionControllerChecks() {
     assert.deepStrictEqual(multiRunEvaluation.inScopeSessionKeys, [
         'codex:session-a:700:tmux', 'codex:session-a:800:vscode',
     ]);
-    assert.strictEqual(coexistPublished[1].length, 3,
-        'same-session inactive runs must publish stable distinct lifecycle events alongside retained events');
-    assert.strictEqual(new Set(coexistPublished[1].map(item => item.eventId)).size, 3);
+    assert.deepStrictEqual(coexistPublished[1], [],
+        'multiple inactive runtimes must remain attention-neutral without provider events');
 
+    lifecycleSignalsEnabled = true;
     const retainedPublished = [];
     const retainedController = new AiSessionAttentionController({
         isEnabled: () => true,
@@ -2858,7 +2855,6 @@ async function runAiSessionAttentionControllerChecks() {
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
         getRuntimeById: () => null,
-        isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async items => {
             retainedPublished.push(items.map(item => ({ ...item })));
             return true;
@@ -2893,7 +2889,6 @@ async function runAiSessionAttentionControllerChecks() {
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
         getRuntimeById: () => null,
-        isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async () => true,
         scheduleRefresh: () => undefined,
         nowMs: () => nowMs,
@@ -2918,7 +2913,6 @@ async function runAiSessionAttentionControllerChecks() {
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
         getRuntimeById: () => null,
-        isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async items => { boundedPublished.push(items); return true; },
         scheduleRefresh: () => undefined,
         nowMs: () => nowMs,
@@ -2931,17 +2925,12 @@ async function runAiSessionAttentionControllerChecks() {
     })));
     assert.strictEqual(boundedPublished[0].length, 1000,
         'retained attention publication must respect the protocol item bound');
-    assert.strictEqual(Math.min(...boundedPublished[0].map(item => item.observedAtMs)), 2,
-        'the bounded publication keeps the newest completion observations');
+    assert.strictEqual(boundedEvaluation.overflowedSessionKeys.length, 1,
+        'the bounded publication must report the single discarded provider event');
     assert.strictEqual(
-        boundedController.getLocalSnapshot()['codex:session-a:1:tmux'],
+        boundedController.getLocalSnapshot()[boundedEvaluation.overflowedSessionKeys[0]],
         undefined,
-        'the oldest overflow event is discarded instead of accumulating locally'
-    );
-    assert.deepStrictEqual(
-        boundedEvaluation.overflowedSessionKeys,
-        ['codex:session-a:1:tmux'],
-        'lifecycle settlement receives explicit evidence for the discarded event'
+        'the overflow provider event is discarded instead of accumulating locally'
     );
 
     const equalTimestampPublished = [];
@@ -2951,7 +2940,6 @@ async function runAiSessionAttentionControllerChecks() {
         getProviders: () => providersForTest,
         getSessionKey: (providerId, sessionId) => `${providerId}:${sessionId}`,
         getRuntimeById: () => null,
-        isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async items => { equalTimestampPublished.push(items); return true; },
         scheduleRefresh: () => undefined,
         nowMs: () => nowMs,
@@ -3021,8 +3009,9 @@ async function runAiSessionAttentionControllerChecks() {
             'codex:session-b:800:tmux',
             'codex:session-c:900:tmux',
             'codex:stopped',
+            'kimi:missing-event',
         ],
-        retainedKeys: ['kimi:missing-event'],
+        retainedKeys: [],
     });
     assert.deepStrictEqual(completionOrder, [
         'publish',
@@ -3031,6 +3020,7 @@ async function runAiSessionAttentionControllerChecks() {
         'release:tmux:codex:session-b:800:tmux',
         'release:tmux:codex:session-c:900:tmux',
         'release:tmux:codex:stopped',
+        'release:tmux:kimi:missing-event',
     ], 'delivery releases both backends without acknowledging user attention');
 
     let prematureRelease = 0;
@@ -3951,7 +3941,7 @@ function runAiSessionTerminalResolutionChecks() {
         assert.strictEqual(
             service.getActiveById('codex', 'session-env', 'scope:/work/app'),
             null,
-            'released shells must not generate a second terminal-exit attention event'
+            'released shells must not re-enter active runtime ownership'
         );
         assert.deepStrictEqual(
             service.getReleasedSessions(),
@@ -5017,7 +5007,8 @@ function runWebviewContentChecks() {
     assert.ok(attentionControllerSource.includes('observedAtMs: attention.stateChangedAt'));
     assert.ok(attentionControllerSource.includes("if (!runtime || runtime.state === 'stopped'"));
     assert.ok(attentionControllerSource.includes('provider.service.getLifecycleSignals(requests)'));
-    assert.ok(evaluateAttentionFunction.includes('terminal-exit:'));
+    assert.ok(!evaluateAttentionFunction.includes('terminal-exit:'));
+    assert.ok(!attentionControllerSource.includes('isRuntimeComplete'));
     assert.ok(!evaluateAttentionFunction.includes('activityToken'));
     assert.ok(!evaluateAttentionFunction.includes('projectId: project.id'));
     const pendingTerminalResolverSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'aiSessions', 'pendingTerminalResolver.ts'), 'utf8');
@@ -5145,10 +5136,12 @@ function runWebviewContentChecks() {
     const closeTerminalHandler = dashboard.slice(closeTerminalHandlerStart, closeTerminalHandlerEnd);
     assert.match(closeTerminalHandler, /hadRuntimeClient[\s\S]*?aiSessionRuntimeCoordinator\.handleClosedTerminal\(terminal\)[\s\S]*?closedSessions\.length \|\| hadRuntimeClient[\s\S]*?refreshAiSessionViewsIncrementally\(\)/);
     assert.ok(!dashboard.includes('acknowledge-closed-attention'));
+    assert.doesNotMatch(closeTerminalHandler, /suppressRuntimeCompletion|restoreRuntimeCompletion/,
+        'terminal exit and close handlers must not manufacture or suppress runtime-completion attention');
     assert.match(
         closeTerminalHandler,
-        /const userClosedTerminal = exitStatus\?\.reason === USER_TERMINAL_EXIT_REASON;[\s\S]*?if \(userClosedTerminal\) \{[\s\S]*?suppressRuntimeCompletion\([\s\S]*?handleClosedTerminal\(terminal\)[\s\S]*?if \(userClosedTerminal\) \{[\s\S]*?'acknowledge-user-terminal-close'[\s\S]*?acknowledgeAiSessionAttention\(identity\)/,
-        'user terminal closure must suppress completion before release and acknowledge only inside its reason guard'
+        /const userClosedTerminal = exitStatus\?\.reason === USER_TERMINAL_EXIT_REASON;[\s\S]*?handleClosedTerminal\(terminal\)[\s\S]*?if \(userClosedTerminal\) \{[\s\S]*?'acknowledge-user-terminal-close'[\s\S]*?acknowledgeAiSessionAttention\(identity\)/,
+        'user terminal closure must acknowledge only inside its reason guard'
     );
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
     assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?runSafeAiSessionRuntimeLifecycleTask\([\s\S]*?'evaluate-attention-active-terminal'[\s\S]*?\}\)/);
@@ -8071,9 +8064,11 @@ function runLifecycleParserChecks() {
     assert.strictEqual(lifecycle.parseCodexLifecycleLines([
         JSON.stringify({ timestamp: '2026-07-15T00:00:09.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'next' } }),
     ], runStartedAtMs).executionState, 'running');
-    assert.strictEqual(lifecycle.parseCodexLifecycleLines([
+    const codexAborted = lifecycle.parseCodexLifecycleLines([
         JSON.stringify({ timestamp: '2026-07-15T00:00:03.000Z', type: 'event_msg', payload: { type: 'turn_aborted', turn_id: 'turn-2' } }),
-    ], runStartedAtMs).reason, 'aborted');
+    ], runStartedAtMs);
+    assert.strictEqual(codexAborted.phase, 'idle');
+    assert.strictEqual(codexAborted.reason, undefined);
     assert.strictEqual(lifecycle.parseCodexLifecycleLines([
         JSON.stringify({ timestamp: '2026-07-15T00:00:04.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'request_user_input', call_id: 'call-1' } }),
     ], runStartedAtMs).reason, 'input-required');
@@ -8117,9 +8112,11 @@ function runLifecycleParserChecks() {
         JSON.stringify({ timestamp: 1784073602, message: { type: 'QuestionRequest', payload: { id: 'question-1' } } }),
     ], runStartedAtMs);
     assert.strictEqual(kimiSignal.reason, 'input-required');
-    assert.strictEqual(lifecycle.parseKimiLifecycleLines([
+    const kimiInterrupted = lifecycle.parseKimiLifecycleLines([
         JSON.stringify({ timestamp: 1784073603, message: { type: 'StepInterrupted', payload: {} } }),
-    ], runStartedAtMs).reason, 'aborted');
+    ], runStartedAtMs);
+    assert.strictEqual(kimiInterrupted.phase, 'idle');
+    assert.strictEqual(kimiInterrupted.reason, undefined);
     assert.strictEqual(lifecycle.parseKimiLifecycleLines([
         JSON.stringify({ timestamp: 1784073604, message: { type: 'TurnEnd', payload: {} } }),
     ], runStartedAtMs).reason, 'completed');

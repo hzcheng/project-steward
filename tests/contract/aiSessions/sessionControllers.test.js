@@ -150,7 +150,7 @@ test('SESSION-AI-SESSION-TERMINAL-COMMAND-CONTROLLER-001 ATTENTION-EXPLICIT-SESS
     assert.equal(effects.length, before);
 });
 
-test('ATTENTION-EXPLICIT-SESSION-CLOSE-001 rolls back close-race suppression after detach failure', async () => {
+test('ATTENTION-EXPLICIT-SESSION-CLOSE-001 reports failed detach without a success acknowledgement', async () => {
     const effects = [];
     const identity = {
         provider: 'codex',

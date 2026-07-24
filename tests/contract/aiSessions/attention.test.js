@@ -52,7 +52,10 @@ for (const providerId of ['codex', 'kimi', 'claude']) {
             running: { state: 'running', reason: undefined },
             waiting: { state: 'needsAttention', reason: 'input-required' },
             completed: { state: 'needsAttention', reason: 'completed' },
-            stopped: { state: 'needsAttention', reason: manifest.lifecycle.stoppedReason },
+            stopped: {
+                state: manifest.lifecycle.stoppedPhase,
+                reason: manifest.lifecycle.stoppedReason,
+            },
         };
 
         for (const state of ['running', 'waiting', 'completed', 'stopped']) {
@@ -322,7 +325,7 @@ for (const [providerId, sessionsKey] of [
     ['kimi', 'kimiSessions'],
     ['claude', 'claudeSessions'],
 ]) {
-    test(`ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 [${providerId}] retains unread completion through runtime handoff until acknowledgement`, async () => {
+    test(`ATTENTION-RUNTIME-EXIT-NEUTRAL-001 [${providerId}] does not synthesize attention from completed runtime state`, async () => {
         let runtime = { state: 'completed', runStartedAtMs: 900 };
         const publications = [];
         const runtimeLookups = [];
@@ -359,7 +362,6 @@ for (const [providerId, sessionsKey] of [
                 id: 'claude', projectSessionsKey: 'claudeSessions', service: { getLifecycleSignals: () => ({}) },
             }],
             getRuntimeById,
-            isRuntimeComplete: value => value.state === 'completed',
             publish: async items => { publications.push(items.map(item => ({ ...item }))); return true; },
             scheduleRefresh: () => undefined,
             postProjectsUpdated: () => undefined,
@@ -367,19 +369,15 @@ for (const [providerId, sessionsKey] of [
         });
 
         const first = await controller.evaluate();
-        const eventId = publications[0][0].eventId;
-        assert.deepEqual(first.eventIdsBySession[`${providerId}:session`], [eventId]);
+        assert.deepEqual(publications[0], []);
+        assert.deepEqual(first.eventIdsBySession, {});
         assert.deepEqual(runtimeLookups, [[providerId, 'session']]);
         runtimeLookups.length = 0;
         runtime = null;
         await controller.evaluate();
-        assert.deepEqual(publications[1].map(item => item.eventId), [eventId]);
+        assert.deepEqual(publications[1], []);
         assert.deepEqual(runtimeLookups, [[providerId, 'session']]);
-        runtimeLookups.length = 0;
-        controller.acknowledge([eventId]);
-        await controller.evaluate();
-        assert.deepEqual(publications[2], []);
-        assert.deepEqual(runtimeLookups, [[providerId, 'session']]);
+        assert.deepEqual(controller.getRecoverySessionEvents(), []);
     });
 }
 
@@ -422,7 +420,6 @@ test('ATTENTION-SINGLE-RUN-COMPLETION-DEDUP-001 does not reopen an acknowledged 
             },
         }],
         getRuntimeById: () => runtime,
-        isRuntimeComplete: value => value.state === 'completed',
         publish: async items => {
             publications.push(items.map(item => ({ ...item })));
             return true;
@@ -485,7 +482,6 @@ test('ATTENTION-NEW-RUN-CLEARS-STALE-001 clears an older run event when the logi
             },
         }],
         getRuntimeById: () => runtime,
-        isRuntimeComplete: value => value.state === 'completed',
         publish: async items => {
             publications.push(items.map(item => ({ ...item })));
             return true;
@@ -501,6 +497,13 @@ test('ATTENTION-NEW-RUN-CLEARS-STALE-001 clears an older run event when the logi
         runStartedAtMs: 100,
         backend: 'tmux',
     });
+    signal = {
+        token: 'task-complete:100',
+        phase: 'needsAttention',
+        reason: 'completed',
+        executionState: 'stopped',
+        occurredAtMs: 100,
+    };
     await controller.evaluate([{
         providerId: 'codex',
         sessionId: 'session',
@@ -525,7 +528,7 @@ test('ATTENTION-NEW-RUN-CLEARS-STALE-001 clears an older run event when the logi
     assert.deepEqual(refreshReasons, ['attention', 'attention']);
 });
 
-test('ATTENTION-EXPLICIT-SESSION-CLOSE-001 suppresses only the exact runtime completion created while a confirmed close settles', async () => {
+test('ATTENTION-RUNTIME-EXIT-NEUTRAL-001 completed runtime overrides never create attention without a provider event', async () => {
     const workspace = {
         navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
         kind: 'singleFolder', displayName: 'Fixture', navigationUri: 'file:///fixtures/project',
@@ -554,7 +557,6 @@ test('ATTENTION-EXPLICIT-SESSION-CLOSE-001 suppresses only the exact runtime com
             service: { getLifecycleSignals: () => ({}) },
         }],
         getRuntimeById: () => null,
-        isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: async items => {
             publications.push(items.map(item => ({ ...item })));
             return true;
@@ -577,7 +579,6 @@ test('ATTENTION-EXPLICIT-SESSION-CLOSE-001 suppresses only the exact runtime com
         backend: 'vscode',
     });
 
-    controller.suppressRuntimeCompletion(closedRunKey);
     await controller.evaluate([{
         providerId: 'codex',
         sessionId: 'session',
@@ -586,7 +587,7 @@ test('ATTENTION-EXPLICIT-SESSION-CLOSE-001 suppresses only the exact runtime com
     }]);
 
     assert.deepEqual(publications[0], []);
-    assert.equal(controller.getLocalSnapshot()[closedRunKey], undefined);
+    assert.equal(controller.getLocalSnapshot()[closedRunKey]?.event, undefined);
     assert.deepEqual(controller.getRecoverySessionEvents(), []);
 
     await controller.evaluate([{
@@ -595,20 +596,12 @@ test('ATTENTION-EXPLICIT-SESSION-CLOSE-001 suppresses only the exact runtime com
         attentionKey: naturalRunKey,
         runtime: { state: 'completed', runStartedAtMs: 200 },
     }]);
-    assert.equal(publications[1].length, 1);
-    assert.equal(publications[1][0].sessionKey, naturalRunKey);
-
-    controller.restoreRuntimeCompletion(closedRunKey);
-    await controller.evaluate([{
-        providerId: 'codex',
-        sessionId: 'session',
-        attentionKey: closedRunKey,
-        runtime: { state: 'completed', runStartedAtMs: 100 },
-    }]);
-    assert.equal(publications[2].some(item => item.sessionKey === closedRunKey), true);
+    assert.deepEqual(publications[1], []);
+    assert.equal(controller.getLocalSnapshot()[naturalRunKey]?.event, undefined);
+    assert.deepEqual(controller.getRecoverySessionEvents(), []);
 });
 
-test('ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 releases completed runtime ownership only after published attention evidence', async () => {
+test('ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 releases no-event completions after attention evaluation', async () => {
     const released = [];
     const candidates = [
         { key: 'codex:complete', state: 'completed' },
@@ -627,10 +620,10 @@ test('ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 releases completed runtime o
         release: candidate => { released.push(candidate.key); },
     });
     assert.deepEqual(result, {
-        releasedKeys: ['codex:complete', 'kimi:stopped'],
-        retainedKeys: ['claude:retry'],
+        releasedKeys: ['claude:retry', 'codex:complete', 'kimi:stopped'],
+        retainedKeys: [],
     });
-    assert.deepEqual(released, ['codex:complete', 'kimi:stopped']);
+    assert.deepEqual(released, ['claude:retry', 'codex:complete', 'kimi:stopped']);
 });
 
 test('ATTENTION-PRODUCTION-ATTENTION-STORE-LIFECYCLE-001 rejects old owner events and retains the newest sequence', async t => {

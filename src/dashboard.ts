@@ -741,41 +741,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         logRuntimeFailure: logAiSessionRuntimeFailure,
         getProviderLabel: getAiSessionProviderLabel,
         refresh: refreshAiSessionViewsIncrementally,
-        onRuntimeCloseStart: runtime => {
-            const sessionId = runtime.identity.sessionId;
-            if (!sessionId || runtime.backend !== 'vscode') {
-                return;
-            }
-            aiSessionAttentionController.suppressRuntimeCompletion(
-                getAttentionRuntimeSessionKey({
-                    workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
-                    provider: runtime.identity.provider,
-                    sessionId,
-                    runStartedAtMs: runtime.runStartedAtMs,
-                    backend: runtime.backend,
-                })
-            );
-        },
         onRuntimeCloseEnd: (runtime, succeeded) => {
             const sessionId = runtime.identity.sessionId;
-            if (!sessionId) {
-                return;
-            }
-            const attentionKey = getAttentionRuntimeSessionKey({
-                workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
-                provider: runtime.identity.provider,
-                sessionId,
-                runStartedAtMs: runtime.runStartedAtMs,
-                backend: runtime.backend,
-            });
-            if (!succeeded) {
-                if (runtime.backend === 'vscode') {
-                    aiSessionAttentionController.restoreRuntimeCompletion(attentionKey);
-                }
-                void runSafeAiSessionRuntimeLifecycleTask(
-                    'evaluate-attention-close-rollback',
-                    evaluateAiSessionAttention
-                );
+            if (!sessionId || !succeeded) {
                 return;
             }
             void runSafeAiSessionRuntimeLifecycleTask(
@@ -831,7 +799,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getWorkspaceTarget: getCurrentWorkspaceActionTargetWithoutCardId,
         getProviders: getRegisteredAiSessionProviders,
         getRuntimeById: getAiSessionRuntimeById,
-        isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: (items, forceHeartbeat) => aiSessionAttentionBridgeClient.publish(items, forceHeartbeat),
         scheduleRefresh: reason => scheduleAiSessionRefresh(reason),
         nowMs: () => Date.now(),
@@ -1587,19 +1554,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const exitStatus = terminal.exitStatus as
                 (vscode.TerminalExitStatus & { reason?: number }) | undefined;
             const userClosedTerminal = exitStatus?.reason === USER_TERMINAL_EXIT_REASON;
-            if (userClosedTerminal) {
-                for (const runtime of closedRuntimes) {
-                    aiSessionAttentionController.suppressRuntimeCompletion(
-                        getAttentionRuntimeSessionKey({
-                            workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
-                            provider: runtime.identity.provider,
-                            sessionId: runtime.identity.sessionId as string,
-                            runStartedAtMs: runtime.runStartedAtMs,
-                            backend: runtime.backend,
-                        })
-                    );
-                }
-            }
             const closedSessions: ActiveAiSessionTerminalIdentity[] = closedRuntimes.map(runtime => ({
                 provider: runtime.identity.provider,
                 sessionId: runtime.identity.sessionId as string,

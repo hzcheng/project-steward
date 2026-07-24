@@ -20,6 +20,7 @@ All notable changes to the "Project Steward" extension will be documented in thi
 -   Rebind a managed tmux pane when Codex switches to a new root thread/session, keeping the replacement session in `ACTIVE` with its running animation while rejecting subagents and ambiguous process evidence.
 -   Preserve `OTHER WINDOWS` navigation identity and privacy guarantees through incremental rendering updates.
 -   Stabilize attention cleanup synchronization under full Linux CI load.
+-   Keep provider aborts, Direct Terminal exit, user terminal close, and tmux runtime cleanup attention-neutral; only explicit provider completion, failure, or input events can create a red indicator.
 
 ## [2.1.4] 2026-07-22
 

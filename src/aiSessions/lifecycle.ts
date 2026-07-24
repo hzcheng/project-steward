@@ -102,7 +102,7 @@ export function createCodexLifecycleAccumulator(runStartedAtMs: number): AiSessi
                     return attention('codex', payload.type, occurredAtMs, 'completed', payload.turn_id);
                 case 'turn_aborted':
                     pendingInputCallIds.clear();
-                    return attention('codex', payload.type, occurredAtMs, 'aborted', payload.turn_id);
+                    return idle('codex', payload.type, occurredAtMs, payload.turn_id);
                 default:
                     return null;
             }
@@ -144,7 +144,7 @@ export function createKimiLifecycleAccumulator(runStartedAtMs: number): AiSessio
             return attention('kimi', message.type, occurredAtMs, 'completed');
         }
         if (message.type === 'StepInterrupted') {
-            return attention('kimi', message.type, occurredAtMs, 'aborted');
+            return idle('kimi', message.type, occurredAtMs);
         }
         if (message.type === 'ApprovalRequest' || message.type === 'QuestionRequest') {
             return attention('kimi', message.type, occurredAtMs, 'input-required', payload.id || payload.tool_call_id);

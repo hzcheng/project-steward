@@ -30,7 +30,6 @@ export interface AiSessionAttentionControllerOptions<TRuntime extends AiSessionA
     getProviders: () => AiSessionAttentionProvider[];
     getSessionKey?: (providerId: AiSessionProviderId, sessionId: string) => string;
     getRuntimeById: (providerId: AiSessionProviderId, sessionId: string) => TRuntime | null;
-    isRuntimeComplete: (runtime: TRuntime) => boolean;
     publish: (items: AttentionPayloadItem[], forceHeartbeat?: boolean) => Promise<boolean>;
     scheduleRefresh: (reason: string) => void;
     nowMs: () => number;
@@ -57,7 +56,6 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     private localItems: AttentionPayloadItem[] = [];
     private attentionKeysBySession = new Map<string, string[]>();
     private locallyAcknowledgedEventIds = new Set<string>();
-    private suppressedRuntimeCompletionKeys = new Set<string>();
 
     constructor(private readonly options: AiSessionAttentionControllerOptions<TRuntime>) {
         this.monitor = new AiSessionAttentionMonitor({ now: options.nowMs });
@@ -72,7 +70,6 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             this.localItems = [];
             this.attentionKeysBySession.clear();
             this.locallyAcknowledgedEventIds.clear();
-            this.suppressedRuntimeCompletionKeys.clear();
             const published = await this.options.publish([], true);
             this.options.scheduleRefresh('attention');
             return {
@@ -87,11 +84,6 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         const workspaceTarget = this.options.getWorkspaceTarget();
         const providers = this.options.getProviders();
         const ownedSessions = this.getOwnedSessions(workspaceTarget?.sessions || null, providers, runtimeOverrides);
-        for (const attentionKey of this.suppressedRuntimeCompletionKeys) {
-            if (ownedSessions.delete(attentionKey)) {
-                this.monitor.discard([attentionKey]);
-            }
-        }
         for (const [attentionKey, owned] of ownedSessions) {
             const keys = this.attentionKeysBySession.get(owned.baseSessionKey) || [];
             if (!keys.includes(attentionKey)) {
@@ -103,17 +95,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         const signalsByProvider = this.getSignalsByProvider(providers, ownedSessions);
         const runningAttentionKeysBySession = new Map<string, string>();
         const inputs = Array.from(ownedSessions, ([key, owned]) => {
-            const providerSignal = signalsByProvider[owned.providerId][owned.session.id];
-            const signal = this.options.isRuntimeComplete(owned.runtime)
-                && providerSignal?.phase !== 'needsAttention'
-                ? {
-                    token: `terminal-exit:${owned.runtime.runStartedAtMs}`,
-                    phase: 'needsAttention' as const,
-                    reason: 'completed' as const,
-                    executionState: 'stopped' as const,
-                    occurredAtMs: owned.runtime.runStartedAtMs,
-                }
-                : providerSignal;
+            const signal = signalsByProvider[owned.providerId][owned.session.id];
             if (signal?.phase === 'running') {
                 runningAttentionKeysBySession.set(owned.baseSessionKey, key);
             }
@@ -164,28 +146,6 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         this.monitor.acknowledge(uniqueEventIds);
         const result = this.buildLocalItems(this.options.getWorkspaceTarget(), this.options.getProviders());
         this.localItems = result.items;
-    }
-
-    suppressRuntimeCompletion(attentionKey: string): void {
-        if (!attentionKey) {
-            return;
-        }
-        this.suppressedRuntimeCompletionKeys.delete(attentionKey);
-        this.suppressedRuntimeCompletionKeys.add(attentionKey);
-        if (this.suppressedRuntimeCompletionKeys.size > MAX_ATTENTION_ITEMS) {
-            const oldestAttentionKey = this.suppressedRuntimeCompletionKeys.values().next().value;
-            if (oldestAttentionKey) {
-                this.suppressedRuntimeCompletionKeys.delete(oldestAttentionKey);
-            }
-        }
-        this.monitor.discard([attentionKey]);
-        this.pruneAttentionKeysBySession();
-    }
-
-    restoreRuntimeCompletion(attentionKey: string): void {
-        if (attentionKey) {
-            this.suppressedRuntimeCompletionKeys.delete(attentionKey);
-        }
     }
 
     setRemoteAggregate(aggregate: AttentionAggregate): boolean {
@@ -489,18 +449,25 @@ export async function settleAiSessionRuntimeLifecycles<
 
     const inScope = new Set(evaluation.inScopeSessionKeys);
     const candidateSessionKey = (candidate: TCandidate): string => candidate.sessionKey || candidate.key;
-    const safeToRelease = candidates.filter(candidate =>
-        candidate.state === 'stopped' || !evaluation.enabled
-        || !inScope.has(candidateSessionKey(candidate)));
     const overflowed = new Set(evaluation.overflowedSessionKeys);
-    const deliveredCompletions = candidates.filter(candidate => candidate.state === 'completed'
-        && evaluation.enabled && inScope.has(candidateSessionKey(candidate))
-        && evaluation.published
-        && ((evaluation.eventIdsBySession[candidateSessionKey(candidate)] || []).length > 0
-            || overflowed.has(candidateSessionKey(candidate))));
+    const hasAttentionEvidence = (candidate: TCandidate): boolean => {
+        const sessionKey = candidateSessionKey(candidate);
+        return (evaluation.eventIdsBySession[sessionKey] || []).length > 0
+            || overflowed.has(sessionKey);
+    };
+    const safeToRelease = candidates.filter(candidate => {
+        if (candidate.state === 'stopped' || !evaluation.enabled) {
+            return true;
+        }
+        const sessionKey = candidateSessionKey(candidate);
+        if (!inScope.has(sessionKey) || !hasAttentionEvidence(candidate)) {
+            return true;
+        }
+        return evaluation.published;
+    });
 
     const eligibleByKey = new Map<string, TCandidate>();
-    for (const candidate of [...safeToRelease, ...deliveredCompletions]) {
+    for (const candidate of safeToRelease) {
         eligibleByKey.set(candidate.key, candidate);
     }
     const releasedKeys: string[] = [];

@@ -3,6 +3,10 @@
 Date: 2026-07-15
 Status: Approved
 
+The terminal-process exit fallback in this historical design is superseded by
+`2026-07-24-attention-runtime-decoupling-design.md`. Provider lifecycle events
+are now the only source of new attention.
+
 ## Decision
 
 Project Steward will stop inferring that an AI session needs attention from a

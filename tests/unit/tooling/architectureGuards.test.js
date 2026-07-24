@@ -26,6 +26,7 @@ function copyGuardFixture(t, mutationPath, mutate = source => source) {
         'src/workspaces/sessionHydrationController.ts',
         'src/aiSessions/dashboardController.ts',
         'src/aiSessions/providers.ts',
+        'src/aiSessions/attentionController.ts',
         'src/aiSessions/attentionAggregate.ts',
         'src/openWorkspaces/protocol.ts',
         'src/openWorkspaces/bridgeClient.ts',
@@ -126,6 +127,12 @@ for (const mutation of [
             "onError: error => logAiSessionRuntimeFailure('sync-runtime', error)",
             "\nfunction deadFallbackDecoy(error: unknown) {"
                 + " logAiSessionRuntimeFailure('sync-focused-runtime', error); }\n"),
+    },
+    {
+        id: 'ARCH-AI-SESSION-FALLBACK-REASON-001',
+        file: 'src/aiSessions/attentionController.ts',
+        expectedDetail: 'runtime completion must not be converted into, or used to suppress, attention',
+        mutate: source => `${source}\nconst obsoleteRuntimeAttentionToken = 'terminal-exit:fixture';\n`,
     },
     {
         id: 'ARCH-PROVIDER-REGISTRY-COMPLETENESS-001',

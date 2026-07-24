@@ -13,14 +13,15 @@ const runStartedAtMs = Date.parse('2026-07-20T00:00:00.000Z');
 const providers = [{
     id: 'codex',
     parser: lifecycle.parseCodexLifecycleLines,
-    stoppedReason: 'aborted',
+    stoppedPhase: 'idle',
 }, {
     id: 'kimi',
     parser: lifecycle.parseKimiLifecycleLines,
-    stoppedReason: 'aborted',
+    stoppedPhase: 'idle',
 }, {
     id: 'claude',
     parser: lifecycle.parseClaudeLifecycleLines,
+    stoppedPhase: 'needsAttention',
     stoppedReason: 'failed',
 }];
 
@@ -43,7 +44,11 @@ for (const provider of providers) {
         expected: { phase: 'needsAttention', reason: 'completed', executionState: 'stopped' },
     }, {
         state: 'stopped',
-        expected: { phase: 'needsAttention', reason: provider.stoppedReason, executionState: 'stopped' },
+        expected: {
+            phase: provider.stoppedPhase,
+            reason: provider.stoppedReason,
+            executionState: 'stopped',
+        },
     }];
 
     for (const fixtureCase of cases) {
