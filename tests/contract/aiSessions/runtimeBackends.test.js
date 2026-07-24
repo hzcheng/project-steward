@@ -38,4 +38,56 @@ for (const layout of ['project', 'session']) {
         assert.equal(harness.viewerCount(), viewerCount);
         assert.equal(harness.terminals[0].shown, true);
     });
+
+    test(`RUNTIME-TMUX-BACKEND-001 RUNTIME-TMUX-THREAD-SWITCH-001 [tmux ${layout}] focuses a durably rebound Codex thread when tmux metadata still names the original thread`, async () => {
+        const harness = createTmuxRuntimeHarness(layout);
+        const originalRequest = fakeResumeRequest(`original-thread-${layout}`);
+        const original = await harness.backend.ensureResume(originalRequest, layout);
+        const originalBinding = await harness.store.getKnown(
+            original.identity.provider,
+            original.identity.sessionId
+        );
+        const reboundSessionId = `rebound-thread-${layout}`;
+
+        assert.equal(
+            await harness.store.rebindKnown(originalBinding, reboundSessionId),
+            'rebound'
+        );
+        await harness.backend.refresh(true);
+        const reboundIdentity = {
+            ...original.identity,
+            sessionId: reboundSessionId,
+        };
+        const rebound = harness.backend.find(reboundIdentity);
+        assert.equal(rebound.length, 1);
+        const focusCount = harness.focusCount();
+
+        await harness.backend.focus(rebound[0]);
+
+        assert.equal(harness.focusCount(), focusCount + 1);
+        const runtimeWindow = harness.windows.find(window =>
+            window.sessionName === rebound[0].tmux.sessionName
+            && (!rebound[0].tmux.windowName
+                || window.windowName === rebound[0].tmux.windowName)
+        );
+        assert.equal(
+            runtimeWindow.metadata.sessionId,
+            original.identity.sessionId,
+            'thread switching does not rewrite the live tmux metadata'
+        );
+
+        await harness.store.removeKnown(
+            reboundIdentity.provider,
+            reboundIdentity.sessionId
+        );
+        await assert.rejects(
+            harness.backend.focus(rebound[0]),
+            error => error?.name === 'AiSessionRuntimeTargetChangedError'
+        );
+        assert.equal(
+            harness.focusCount(),
+            focusCount + 1,
+            'metadata mismatch is accepted only while the exact durable rebind exists'
+        );
+    });
 }

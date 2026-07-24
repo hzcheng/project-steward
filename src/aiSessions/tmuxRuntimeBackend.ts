@@ -7,6 +7,7 @@ import type {
     AiSessionCreateRuntimeRequest,
     AiSessionDurablePendingPromotionCandidate,
     AiSessionExecutableRuntimeBackend,
+    AiSessionManagedTmuxMetadata,
     AiSessionPendingRuntimeSnapshot,
     AiSessionResumeRuntimeRequest,
     AiSessionRuntimeIdentity,
@@ -659,10 +660,37 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             ...(metadata.layout === 'project' || runtime.tmux.windowName
                 ? { windowName: target.windowName } : {}),
         } : null;
-        if (!metadata || !actualLocator || !locatorsEqual(actualLocator, runtime.tmux)
-            || !aiSessionRuntimeIdentitiesEqual(metadata, runtime.identity)) {
+        if (!metadata || !actualLocator || !locatorsEqual(actualLocator, runtime.tmux)) {
             throw new AiSessionRuntimeTargetChangedError();
         }
+        if (!aiSessionRuntimeIdentitiesEqual(metadata, runtime.identity)
+            && !await this.matchesCommittedCodexThreadRebind(runtime, metadata)) {
+            throw new AiSessionRuntimeTargetChangedError();
+        }
+    }
+
+    private async matchesCommittedCodexThreadRebind(
+        runtime: AiSessionRuntimeSnapshot<TTerminal>,
+        metadata: AiSessionManagedTmuxMetadata
+    ): Promise<boolean> {
+        const sessionId = runtime.identity.sessionId;
+        if (runtime.identity.provider !== 'codex' || metadata.provider !== 'codex'
+            || !sessionId || !metadata.sessionId || !runtime.tmux) {
+            return false;
+        }
+        const known = await this.dependencies.runtimeStore.getKnown(
+            runtime.identity.provider,
+            sessionId,
+            runtime.identity.workspaceScopeIdentity
+        );
+        return !!known
+            && aiSessionRuntimeIdentitiesEqual(known, runtime.identity)
+            && locatorsEqual(known.locator, runtime.tmux)
+            && aiSessionRuntimeIdentitiesEqual(metadata, {
+                ...runtime.identity,
+                sessionId: metadata.sessionId,
+                pendingId: undefined,
+            });
     }
 
     getFocusedRuntime(terminal: TTerminal | null | undefined): AiSessionRuntimeSnapshot<TTerminal> | null {
