@@ -2156,6 +2156,20 @@
     ]
   },
   {
+    "id": "TODO-SINGLE-CREATE-DISPATCH-001",
+    "domain": "todo",
+    "title": "A single Todo composer submission dispatches exactly one create command",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/browser/todoCreation.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js",
+      "src/webview/webviewProjectScripts.js"
+    ]
+  },
+  {
     "id": "TODO-TODO-PRIORITY-SIGNAL-001",
     "domain": "todo",
     "title": "Todo Exceptional Priority Signal behavior",

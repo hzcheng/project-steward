@@ -645,6 +645,7 @@ test('TODO-QUICK-CREATE-001 renders and submits a complete fixed-group composer'
     harness.root.dispatch('submit', {
         target: form,
         preventDefault() {},
+        stopPropagation() {},
     });
 
     assert.deepEqual(harness.messages[0].payload, {

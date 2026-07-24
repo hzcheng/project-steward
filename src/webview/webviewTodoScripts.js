@@ -930,6 +930,7 @@ function initTodos(options) {
             return;
         }
         event.preventDefault();
+        event.stopPropagation();
         if (kind === 'quick-add') {
             submitQuickAdd(
                 form.getAttribute('data-group-id'),
