@@ -59,7 +59,7 @@ function getTodoGroupIds(root) {
 }
 
 function getTodoIds(container) {
-    return [].slice.call(container.querySelectorAll(':scope > .todo-item[data-todo-id]'))
+    return [].slice.call(container.querySelectorAll(':scope > .todo-item[data-todo-id]:not([hidden])'))
         .map(todo => todo.getAttribute('data-todo-id'))
         .filter(todoId => Boolean(todoId));
 }

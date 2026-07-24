@@ -1588,6 +1588,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             await dashboardStartupController.checkDataMigration(openStewardAfterMigrate);
         },
         reconcileProjectCatalog: () => projectService.reconcileProjectCatalog(),
+        consumeTodoDataWriteEcho: () => todoService.consumeCurrentSettingsDataLocalWriteEcho(),
         applyProjectColorToCurrentWindow,
         refresh: refreshStewardViews,
         publishOpenWorkspace: followsFocusEvent => openWorkspaceController.publish(followsFocusEvent),

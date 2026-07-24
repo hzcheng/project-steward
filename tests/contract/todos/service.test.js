@@ -208,6 +208,49 @@ test('TODO-TODO-STORAGE-RESOLUTION-001 reads only the configured backend and iso
     assert.deepEqual(harness.service.getSearchItems().map(item => item.title), ['settings item']);
 });
 
+test('TODO-COMPLETION-INCREMENTAL-001 consumes only current successful local Settings write echoes', async () => {
+    const local = makeStorageHarness({
+        settings: makeData('settings'),
+        useSettings: true,
+    });
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+
+    await local.service.completeTodo('todo-settings', true);
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), true);
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+
+    await local.service.completeTodo('todo-settings', false);
+    await local.service.completeTodo('todo-settings', false);
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), true);
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), true);
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+
+    await local.service.completeTodo('todo-settings', true);
+    const formerLocalValue = JSON.parse(JSON.stringify(local.values.settings));
+    local.values.settings = makeData('external');
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+    local.values.settings = formerLocalValue;
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+
+    await local.service.completeTodo('todo-settings', false);
+    const valueBeforeUnsupported = JSON.parse(JSON.stringify(local.values.settings));
+    local.values.settings = { version: 2, groups: [], todos: [] };
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+    local.values.settings = valueBeforeUnsupported;
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+
+    const rejected = makeStorageHarness({
+        settings: makeData('rejected'),
+        useSettings: true,
+        updateSettings: async () => { throw new Error('settings unavailable'); },
+    });
+    await assert.rejects(
+        () => rejected.service.completeTodo('todo-rejected', true),
+        /settings unavailable/
+    );
+    assert.equal(rejected.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+});
+
 test('TODO-TODO-MIGRATION-001 copies a sole non-empty source and refuses conflicting stores', async () => {
     const migration = makeStorageHarness({ global: makeData('global'), settings: null, useSettings: true });
     assert.equal(await migration.service.migrateDataIfNeeded(), true);

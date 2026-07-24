@@ -18,6 +18,10 @@ const dashboardSource = fs.readFileSync(
     path.join(__dirname, '../../../src/webview/webviewDashboardScripts.js'),
     'utf8'
 );
+const dndSource = fs.readFileSync(
+    path.join(__dirname, '../../../src/webview/webviewDnDScripts.js'),
+    'utf8'
+);
 const NOW = '2026-07-24T00:00:00.000Z';
 
 function snapshot() {
@@ -61,7 +65,23 @@ function createHarness(options = {}) {
     const todoNodes = new Map(['todo-a', 'todo-b'].map(todoId => [todoId, {
         className: '',
         innerHTML: '',
+        hidden: false,
     }]));
+    const summaryMeta = { textContent: '' };
+    const groupCount = { textContent: '' };
+    const hiddenCompleted = { textContent: '', hidden: true };
+    const emptyState = { hidden: true };
+    const todoList = {
+        hidden: false,
+        appendChild() {},
+        insertBefore() {},
+        insertAdjacentHTML() {},
+        querySelector(selector) {
+            const match = selector.match(/data-todo-id="([^"]+)"/);
+            return match ? todoNodes.get(match[1]) || null : null;
+        },
+    };
+    todoNodes.forEach(node => { node.parentElement = todoList; });
     const groupClasses = new Set(['todo-group']);
     const groupButton = {
         attributes: {},
@@ -77,7 +97,15 @@ function createHarness(options = {}) {
             },
         },
         querySelector(selector) {
-            return selector === '[data-action="todo-collapse-group"]' ? groupButton : null;
+            if (selector === '[data-action="todo-collapse-group"]') return groupButton;
+            if (selector === '.todo-group-count') return groupCount;
+            if (selector === '.todo-list') return todoList;
+            if (selector === '.todo-hidden-completed') return hiddenCompleted;
+            if (selector === '.todo-group-empty') return emptyState;
+            return null;
+        },
+        insertAdjacentHTML() {
+            hiddenCompleted.hidden = false;
         },
     };
     const undoRegion = { hidden: true, style: {}, innerHTML: '' };
@@ -94,6 +122,7 @@ function createHarness(options = {}) {
         querySelector(selector) {
             if (options.targetedPatches && selector === '.todo-undo-region') return undoRegion;
             if (options.targetedPatches && selector === '.todo-live-region') return liveRegion;
+            if (options.targetedPatches && selector === '.todo-summary-meta') return summaryMeta;
             if (options.targetedPatches && selector.startsWith('.todo-item[')) {
                 const todoMatch = selector.match(/data-todo-id="([^"]+)"/);
                 return todoMatch ? todoNodes.get(todoMatch[1]) || null : null;
@@ -160,6 +189,11 @@ function createHarness(options = {}) {
         getTodoNode: todoId => todoNodes.get(todoId),
         groupButton,
         groupClasses,
+        summaryMeta,
+        groupCount,
+        hiddenCompleted,
+        emptyState,
+        todoList,
     };
 }
 
@@ -269,6 +303,91 @@ test('TODO-INCREMENTAL-ROOT-001 patches inline details and group disclosure with
     assert.equal(harness.getRenderedCount(), mountedRenders);
     assert.equal(harness.groupClasses.has('collapsed'), true);
     assert.equal(harness.groupButton.attributes['aria-expanded'], 'false');
+});
+
+test('TODO-COMPLETION-INCREMENTAL-001 completes one card without rebuilding the list surface', () => {
+    const harness = createHarness({ targetedPatches: true });
+    const mountedRenders = harness.getRenderedCount();
+    const siblingBefore = harness.getTodoNode('todo-b');
+
+    harness.controller.dispatch('complete', { todoId: 'todo-a', completed: true });
+
+    assert.equal(harness.getRenderedCount(), mountedRenders);
+    assert.equal(harness.getTodoNode('todo-a').hidden, true);
+    assert.equal(harness.getTodoNode('todo-b'), siblingBefore);
+    assert.equal(harness.summaryMeta.textContent, '1 open · 1 group · completed hidden');
+    assert.equal(harness.groupCount.textContent, '1 open');
+    assert.equal(harness.hiddenCompleted.textContent, '1 completed hidden');
+    assert.match(dndSource, /:scope > \.todo-item\[data-todo-id\]:not\(\[hidden\]\)/);
+
+    const saved = snapshot();
+    saved.data.todos[0].completed = true;
+    saved.data.todos[0].completedAt = NOW;
+    harness.controller.applyCommandResult({
+        type: 'todo-command-result',
+        version: 2,
+        requestId: 1,
+        revision: 1,
+        success: true,
+        snapshot: saved,
+    });
+
+    assert.equal(harness.getRenderedCount(), mountedRenders);
+    assert.equal(harness.getTodoNode('todo-a').hidden, true);
+    assert.equal(harness.getTodoNode('todo-b'), siblingBefore);
+});
+
+test('TODO-COMPLETION-INCREMENTAL-001 patches the authoritative completion time in an open card', () => {
+    const showingCompleted = snapshot();
+    showingCompleted.showCompleted = true;
+    const harness = createHarness({
+        snapshot: showingCompleted,
+        targetedPatches: true,
+    });
+    harness.controller.openDetail('todo-a');
+    const mountedRenders = harness.getRenderedCount();
+
+    harness.controller.dispatch('complete', { todoId: 'todo-a', completed: true });
+    const saved = snapshot();
+    saved.showCompleted = true;
+    saved.data.todos[0].completed = true;
+    saved.data.todos[0].completedAt = NOW;
+    saved.data.todos[0].updatedAt = NOW;
+    harness.controller.applyCommandResult({
+        type: 'todo-command-result',
+        version: 2,
+        requestId: 1,
+        revision: 1,
+        success: true,
+        snapshot: saved,
+    });
+
+    assert.equal(harness.getRenderedCount(), mountedRenders);
+    assert.equal(harness.controller.getState().selectedTodoId, 'todo-a');
+    assert.match(harness.getTodoNode('todo-a').innerHTML, /2026-07-24/);
+});
+
+test('TODO-COMPLETION-INCREMENTAL-001 renders a concurrent sibling change from the authoritative ACK', () => {
+    const harness = createHarness({ targetedPatches: true });
+    const mountedRenders = harness.getRenderedCount();
+
+    harness.controller.dispatch('complete', { todoId: 'todo-a', completed: true });
+    const saved = snapshot();
+    saved.data.todos[0].completed = true;
+    saved.data.todos[0].completedAt = NOW;
+    saved.data.todos[0].updatedAt = NOW;
+    saved.data.todos[1].title = 'Changed in another window';
+    harness.controller.applyCommandResult({
+        type: 'todo-command-result',
+        version: 2,
+        requestId: 1,
+        revision: 1,
+        success: true,
+        snapshot: saved,
+    });
+
+    assert.equal(harness.getRenderedCount(), mountedRenders + 1);
+    assert.match(harness.root.innerHTML, /Changed in another window/);
 });
 
 test('TODO-FOCUSED-DETAIL-001 lets search reveal hidden or collapsed todos before opening inline details', () => {

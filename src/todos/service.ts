@@ -39,6 +39,11 @@ interface TodoStorageProvenance {
     inactiveFingerprint: string;
 }
 
+interface PendingSettingsWriteEcho {
+    id: number;
+    fingerprint: string;
+}
+
 interface TodoMemento {
     get<T>(key: string): T;
     update(key: string, value: unknown): Thenable<void>;
@@ -93,6 +98,8 @@ export class TodoService {
     private mutationQueue: Promise<void> = Promise.resolve();
     private activeDataBackend: boolean | undefined;
     private inactiveDataFingerprint: string | undefined;
+    private pendingSettingsWriteEchoes: PendingSettingsWriteEcho[] = [];
+    private nextSettingsWriteEchoId = 0;
 
     constructor(contextOrDependencies: vscode.ExtensionContext | TodoServiceDependencies) {
         if (isDependencies(contextOrDependencies)) {
@@ -120,6 +127,28 @@ export class TodoService {
 
     getData(): TodoDataV1 {
         return this.getDataFromBackend(this.useSettings());
+    }
+
+    consumeCurrentSettingsDataLocalWriteEcho(): boolean {
+        if (!this.useSettings()) {
+            this.pendingSettingsWriteEchoes = [];
+            return false;
+        }
+        try {
+            const currentFingerprint = this.getDataFingerprint(this.getRawData(true));
+            const echoIndex = this.pendingSettingsWriteEchoes.findIndex(
+                echo => echo.fingerprint === currentFingerprint
+            );
+            if (echoIndex < 0) {
+                this.pendingSettingsWriteEchoes = [];
+                return false;
+            }
+            this.pendingSettingsWriteEchoes.splice(echoIndex, 1);
+            return true;
+        } catch (_error) {
+            this.pendingSettingsWriteEchoes = [];
+            return false;
+        }
     }
 
     getSearchItems(): TodoSearchCatalogItem[] {
@@ -494,7 +523,22 @@ export class TodoService {
 
     private async writeData(data: TodoDataV1, useSettings: boolean): Promise<void> {
         if (useSettings) {
-            await this.getWritableConfiguration().update(TODO_SETTINGS_KEY, data, GLOBAL_CONFIGURATION_TARGET);
+            const echo: PendingSettingsWriteEcho = {
+                id: ++this.nextSettingsWriteEchoId,
+                fingerprint: this.getDataFingerprint(data),
+            };
+            this.pendingSettingsWriteEchoes.push(echo);
+            try {
+                await this.getWritableConfiguration().update(
+                    TODO_SETTINGS_KEY,
+                    data,
+                    GLOBAL_CONFIGURATION_TARGET
+                );
+            } catch (error) {
+                this.pendingSettingsWriteEchoes = this.pendingSettingsWriteEchoes
+                    .filter(candidate => candidate.id !== echo.id);
+                throw error;
+            }
             return;
         }
 

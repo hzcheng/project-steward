@@ -167,17 +167,41 @@ function initTodos(options) {
             + '9.4-24.4 9.4-33.8 0z"></path></svg></span>';
     }
 
-    function renderGroup(group) {
-        var allTodos = state.snapshot.data.todos.filter(function (todo) {
-            return todo.groupId === group.id;
+    function getGroupStats(groupId) {
+        var todos = state.snapshot.data.todos.filter(function (todo) {
+            return todo.groupId === groupId;
         });
-        var incompleteCount = allTodos.filter(function (todo) { return !todo.completed; }).length;
-        var completedCount = allTodos.length - incompleteCount;
+        var incompleteCount = todos.filter(function (todo) { return !todo.completed; }).length;
+        var completedCount = todos.length - incompleteCount;
+        var visibleCompletedCount = orderedTodos(groupId)
+            .filter(function (todo) { return todo.completed; }).length;
+        return {
+            incompleteCount: incompleteCount,
+            completedCount: completedCount,
+            hiddenCompletedCount: completedCount - visibleCompletedCount,
+        };
+    }
+
+    function todoGroupMeta(groupId) {
+        var stats = getGroupStats(groupId);
+        return stats.incompleteCount + ' open'
+            + (state.snapshot.showCompleted && stats.completedCount
+                ? ' · ' + stats.completedCount + ' done'
+                : '');
+    }
+
+    function todoSummaryMeta() {
+        var todos = state.snapshot.data.todos;
+        var incomplete = todos.filter(function (todo) { return !todo.completed; }).length;
+        var completed = todos.length - incomplete;
+        var groupCount = orderedGroups().length;
+        return incomplete + ' open · ' + groupCount + (groupCount === 1 ? ' group' : ' groups')
+            + ' · ' + (state.snapshot.showCompleted ? completed + ' completed shown' : 'completed hidden');
+    }
+
+    function renderGroup(group) {
         var visibleTodos = orderedTodos(group.id);
-        var hiddenCompleted = completedCount
-            - visibleTodos.filter(function (todo) { return todo.completed; }).length;
-        var meta = incompleteCount + ' open'
-            + (state.snapshot.showCompleted && completedCount ? ' · ' + completedCount + ' done' : '');
+        var stats = getGroupStats(group.id);
         return '<section class="todo-group group steward-section' + (group.collapsed ? ' collapsed' : '')
             + '" data-todo-group-id="' + escapeHtml(group.id) + '">'
             + '<header class="todo-group-header group-title steward-group-header">'
@@ -188,7 +212,7 @@ function initTodos(options) {
             + (group.collapsed ? 'Expand ' : 'Collapse ') + escapeHtml(group.title) + '">'
             + renderGroupChevron() + '</button>'
             + '<h2 data-drag-todo-group title="' + escapeHtml(group.title) + '">' + escapeHtml(group.title) + '</h2>'
-            + '<span class="todo-group-count">' + meta + '</span></div>'
+            + '<span class="todo-group-count">' + todoGroupMeta(group.id) + '</span></div>'
             + '<div class="todo-group-actions group-actions right">'
             + '<button class="todo-group-action" type="button" data-action="todo-quick-add" data-group-id="'
             + escapeHtml(group.id) + '" title="Quick add todo" aria-label="Quick add todo">＋</button>'
@@ -202,8 +226,8 @@ function initTodos(options) {
             + (visibleTodos.length
                 ? '<ul class="todo-list">' + visibleTodos.map(renderTodo).join('') + '</ul>'
                 : '<p class="todo-group-empty">No visible todos</p>')
-            + (hiddenCompleted > 0
-                ? '<p class="todo-hidden-completed">' + hiddenCompleted + ' completed hidden</p>'
+            + (stats.hiddenCompletedCount > 0
+                ? '<p class="todo-hidden-completed">' + stats.hiddenCompletedCount + ' completed hidden</p>'
                 : '')
             + '</section>';
     }
@@ -224,16 +248,11 @@ function initTodos(options) {
     }
 
     function renderListSurface() {
-        var todos = state.snapshot.data.todos;
-        var incomplete = todos.filter(function (todo) { return !todo.completed; }).length;
-        var completed = todos.length - incomplete;
         var groups = orderedGroups();
-        var meta = incomplete + ' open · ' + groups.length + (groups.length === 1 ? ' group' : ' groups')
-            + ' · ' + (state.snapshot.showCompleted ? completed + ' completed shown' : 'completed hidden');
         return '<div class="todo-list-surface">'
             + '<header class="todo-page-header todo-page-command-bar">'
             + '<div class="todo-summary-copy"><strong>TODO</strong>'
-            + '<span class="todo-summary-meta steward-meta">' + meta + '</span></div>'
+            + '<span class="todo-summary-meta steward-meta">' + todoSummaryMeta() + '</span></div>'
             + '<div class="todo-summary-actions group-actions right">'
             + '<button class="todo-square-button steward-icon-button" type="button" data-action="todo-add" '
             + 'title="Add todo" aria-label="Add todo">' + renderTodoCommandIcon('add') + '</button>'
@@ -396,6 +415,82 @@ function initTodos(options) {
             patch.item.className = todoClassName(patch.todo);
             patch.item.innerHTML = renderTodoBody(patch.todo);
         });
+        state.renderedSurfaceHtml = renderListSurface();
+        updateFeedback();
+        return true;
+    }
+
+    function patchTodoCompletion(todoId) {
+        if (!root || !root.querySelector) {
+            return false;
+        }
+        var todo = findTodo(todoId);
+        var group = todo ? findGroup(todo.groupId) : null;
+        var itemSelector = '.todo-item[data-todo-id="' + String(todoId).replace(/"/g, '\\"') + '"]';
+        var groupSelector = group
+            ? '.todo-group[data-todo-group-id="' + String(group.id).replace(/"/g, '\\"') + '"]'
+            : '';
+        var item = todo ? root.querySelector(itemSelector) : null;
+        var groupElement = group && groupSelector ? root.querySelector(groupSelector) : null;
+        var list = groupElement && groupElement.querySelector
+            ? groupElement.querySelector('.todo-list')
+            : null;
+        var summaryMeta = root.querySelector('.todo-summary-meta');
+        var groupCount = groupElement && groupElement.querySelector
+            ? groupElement.querySelector('.todo-group-count')
+            : null;
+        if (!todo || !group || !item || typeof item.innerHTML !== 'string'
+            || !groupElement || !list || !summaryMeta || !groupCount) {
+            return false;
+        }
+
+        var visibleTodos = orderedTodos(group.id);
+        var visibleIndex = visibleTodos.findIndex(function (candidate) {
+            return candidate.id === todoId;
+        });
+        var remainsVisible = visibleIndex >= 0;
+        if (!remainsVisible && state.selectedTodoId === todoId) {
+            state.selectedTodoId = null;
+            state.draft = null;
+        }
+        item.hidden = !remainsVisible;
+        if (remainsVisible) {
+            item.className = todoClassName(todo);
+            item.innerHTML = renderTodoBody(todo);
+            var nextTodo = visibleTodos[visibleIndex + 1];
+            var nextItem = nextTodo && list.querySelector
+                ? list.querySelector('.todo-item[data-todo-id="'
+                    + String(nextTodo.id).replace(/"/g, '\\"') + '"]')
+                : null;
+            if (nextItem && nextItem !== item && list.insertBefore) {
+                list.insertBefore(item, nextItem);
+            } else if (list.appendChild) {
+                list.appendChild(item);
+            }
+        }
+
+        summaryMeta.textContent = todoSummaryMeta();
+        groupCount.textContent = todoGroupMeta(group.id);
+        var stats = getGroupStats(group.id);
+        var hiddenCompleted = groupElement.querySelector('.todo-hidden-completed');
+        if (hiddenCompleted) {
+            hiddenCompleted.hidden = stats.hiddenCompletedCount === 0;
+            hiddenCompleted.textContent = stats.hiddenCompletedCount + ' completed hidden';
+        } else if (stats.hiddenCompletedCount > 0 && groupElement.insertAdjacentHTML) {
+            groupElement.insertAdjacentHTML(
+                'beforeend',
+                '<p class="todo-hidden-completed">'
+                    + stats.hiddenCompletedCount + ' completed hidden</p>'
+            );
+        }
+
+        var emptyState = groupElement.querySelector('.todo-group-empty');
+        list.hidden = visibleTodos.length === 0;
+        if (emptyState) {
+            emptyState.hidden = visibleTodos.length > 0;
+        } else if (!visibleTodos.length && list.insertAdjacentHTML) {
+            list.insertAdjacentHTML('afterend', '<p class="todo-group-empty">No visible todos</p>');
+        }
         state.renderedSurfaceHtml = renderListSurface();
         updateFeedback();
         return true;
@@ -581,7 +676,11 @@ function initTodos(options) {
             payload: clone(payload || {}),
         });
         optimisticMutation(action, payload || {});
-        if (action === 'collapse-group') {
+        if (action === 'complete') {
+            if (!patchTodoCompletion(payload.todoId)) {
+                render();
+            }
+        } else if (action === 'collapse-group') {
             patchGroupElements([payload.groupId]);
         } else if (action === 'collapse-groups') {
             patchGroupElements(state.snapshot.data.groups.map(function (group) { return group.id; }));
@@ -624,6 +723,39 @@ function initTodos(options) {
         }, 5000);
     }
 
+    function isCompletionOnlySnapshotChange(previousSnapshot, nextSnapshot, pending) {
+        if (!isSnapshot(previousSnapshot)
+            || !isSnapshot(nextSnapshot)
+            || !pending
+            || pending.action !== 'complete'
+            || !pending.payload
+            || typeof pending.payload.todoId !== 'string'
+            || typeof pending.payload.completed !== 'boolean') {
+            return false;
+        }
+        var previousComparable = clone(previousSnapshot);
+        var nextComparable = clone(nextSnapshot);
+        var previousTodo = previousComparable.data.todos.find(function (todo) {
+            return todo.id === pending.payload.todoId;
+        });
+        var nextTodo = nextComparable.data.todos.find(function (todo) {
+            return todo.id === pending.payload.todoId;
+        });
+        if (!previousTodo
+            || !nextTodo
+            || nextTodo.completed !== pending.payload.completed) {
+            return false;
+        }
+        ['completed', 'completedAt', 'updatedAt'].forEach(function (key) {
+            if (Object.prototype.hasOwnProperty.call(nextTodo, key)) {
+                previousTodo[key] = nextTodo[key];
+            } else {
+                delete previousTodo[key];
+            }
+        });
+        return JSON.stringify(previousComparable) === JSON.stringify(nextComparable);
+    }
+
     function applyCommandResult(message) {
         if (!message
             || message.type !== 'todo-command-result'
@@ -635,6 +767,7 @@ function initTodos(options) {
         }
         state.lastRevision = message.revision;
         var pending = state.pending.get(message.requestId);
+        var previousSnapshot = clone(state.snapshot);
         state.pending.delete(message.requestId);
         state.snapshot = clone(message.snapshot);
         Array.from(state.pending.entries())
@@ -663,7 +796,14 @@ function initTodos(options) {
             }
             state.announcement = errorMessage(message.errorCode);
         }
-        render();
+        if (message.success === true
+            && isCompletionOnlySnapshotChange(previousSnapshot, state.snapshot, pending)) {
+            if (!patchTodoCompletion(pending.payload.todoId)) {
+                render();
+            }
+        } else {
+            render();
+        }
         return true;
     }
 
