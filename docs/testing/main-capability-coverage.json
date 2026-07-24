@@ -2,7 +2,7 @@
     "version": 1,
     "audit": {
         "base": "2b34c653119bdf480f2af0330ee3809b51441807",
-        "head": "e9145123b3ad1cdcbc625e52291ae053e8acbce5",
+        "head": "e756a78e1fabdec0d7a811260505952c9ff0ba5b",
         "ignoredDocumentationCommits": []
     },
     "capabilities": [
@@ -360,6 +360,246 @@
             "behaviors": [
                 "ARCH-CI-QUALITY-GATE-001",
                 "RUNTIME-REAL-TMUX-CI-GATE-001"
+            ],
+            "prGates": [
+                "test:ci:linux"
+            ],
+            "scheduledJobs": [
+                "quality-linux",
+                "platform-windows",
+                "scheduled-macos",
+                "tmux-smoke-linux"
+            ],
+            "realEnvironmentRequired": true
+        },
+        {
+            "id": "MAIN-TODO-CONTINUOUS-EXPERIENCE",
+            "title": "Continuous TODO interaction and layout",
+            "requirement": "TODO refreshes remain incremental while group limits, expansion, card content, and browser layout stay coherent.",
+            "commits": [
+                "982d9c30ca568f1075adb0821337546fe7ba0906",
+                "549b3bf3d404c6ee43cfe691fa071cbe02e41fd9",
+                "3da8d9296443e922084c26f978602faea241bb44",
+                "1b5111b76f34c0cf110343739c1537ca68b458ad",
+                "14921ed120cf0f9fd63da22b39e18946f34fe5d9",
+                "b76e3e04ff25ad567fb36116abcffb8fda2487ef",
+                "e9fb35598c42d8e1e605dcca741f061f208e869b",
+                "5ac95b15262c29d6b56da7fe620ae68626100f6e",
+                "401e29e44e738708315a7a534872ee0d6b94b5d4",
+                "1518584b97f12d2fd6ac5acec791092995e29a8a",
+                "928b67cdd517d0923a68c4d0b9fd05df81094b77",
+                "8c63fb0027c9f5d2b2cf79602fa7f7ed747a2b5d",
+                "66be82e37d664e8780338ded5d16dc0f6b88bee1",
+                "f1c28dff002053d9339606a73302b6ed1954944c",
+                "c669eb1009cae4071d6a20446f6c4dc7861e5a33",
+                "a6edd2d3f40271bb10fd1b3077f171d3c70eeab4",
+                "4c7a06b7ba201e272e6850cb86809e7c8ea9cc14",
+                "3d301e88481b559cf998f97124960e9fb97d800c",
+                "ad9a6805c1c5d29544041b4f5225ced01f456b97",
+                "41ab7df268ac2806b9b1dd88259ee38ecb10dfb7",
+                "6a069fc081e0068b776c7001cbc64e006b3418d2",
+                "81fc3d857b021e497e7ca437ae01d35ae09c0aa0",
+                "26183703c4fdd6609518700f269339faa77a1792"
+            ],
+            "behaviors": [
+                "TODO-COMPLETION-INCREMENTAL-001",
+                "TODO-MAX-VISIBLE-PER-GROUP-001",
+                "TODO-BROWSER-EXPANDED-LAYOUT-001",
+                "TODO-INCREMENTAL-ROOT-001"
+            ],
+            "prGates": [
+                "test:ci:linux"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-PROJECT-CATALOG-CONSISTENCY",
+            "title": "Incremental project catalog consistency",
+            "requirement": "Project discovery, synchronization, conflict handling, and dashboard updates preserve stable cards without full rerenders.",
+            "commits": [
+                "692fff6a6285bdf4e8491d7487c8cfc7a813ab6a",
+                "e11e829360dcb89789f7fa427159e53480d5f524",
+                "97cb0e8537abfd04fcfd43f6722b4f8935668a8e",
+                "33fafc2aa7b29b99aa780524fa301009ccfdf0a5",
+                "441270e0a0cd84055df63a6ea07f1ba250c0165e",
+                "12cd28b4d5445fa7b2fa1d2617b874083d5dbd98",
+                "4a79472354f07a4850b79973a858f0827347f2b4",
+                "2f61afa791633f69c5c7ffc736043fc56bff9f0c",
+                "cf2d7293dd23eab059d26bc6b4ea71ad6b5d0f2a",
+                "66a2037807fa57c2228f88cb4e03896c220b32a4",
+                "6890eea623e2b0ea100f78ee9f2ea1f756b6a59e",
+                "dba8178bcecc2c5953e21724c2133c34b0bf660f",
+                "f6c10ae51f4af85e854c53f420eb1bd0fc3510b4",
+                "1e8499510e9167f60cfa84257f9a6f60c9a9ccb5",
+                "08e9f26e241397c366dbae226cdfc2cf7cc860ca",
+                "3a3e07bc7fad01957dc6db1f505bb961efaf831f",
+                "ef5fc3170c0fe1a753b1c6313daa5d4a7cc40e2f",
+                "4ad7604bb9a4d4ff10f790486512c3313c351200"
+            ],
+            "behaviors": [
+                "PROJECT-CATALOG-SYNC-CONFLICT-001",
+                "PROJECT-INCREMENTAL-REFRESH-001",
+                "OPEN-OPEN-PROJECT-INCREMENTAL-RENDERING-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-ATTENTION-LIFECYCLE-HARDENING",
+            "title": "Attention lifecycle hardening",
+            "requirement": "Attention indicators reflect the newest logical session state and discard stale owners, leases, and persisted evidence.",
+            "commits": [
+                "118618bcf3545724ea75a0b902089597cc1ffb77",
+                "b56b0d72d34a212aa5c4f7ebefc42ebdae322386",
+                "de08dabd82adf8fca6596b1e728004242b40df79",
+                "9eddda6591f7d85e8e1b660c278aef3460c35a70",
+                "e2eeb5e433fa44b0556aa98264ffb59d6f7bed62",
+                "2d93d708d6bb66af65968266164e83d77bb31c81",
+                "63ef5f63b3b965c39fd7074159b2e0176eb7edd1",
+                "379644d9f792b1be53ed17d23ad5fc79c1ba7d88",
+                "78d004f6640039f09f47b6f24d6f4e8b1dd3ca98",
+                "62cf47fa2b5cefa7538e80e7ba9002e86f641a35",
+                "1b389cb78b26cf72904b936f6119d2625abd78bd"
+            ],
+            "behaviors": [
+                "ATTENTION-ACTIVE-UNREGISTER-ON-DEACTIVATE-001",
+                "ATTENTION-LOGICAL-SESSION-CARD-COUNT-001",
+                "ATTENTION-PRODUCTION-ATTENTION-STORE-LIFECYCLE-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-RUNTIME-SESSION-RECOVERY",
+            "title": "Runtime session recovery and activation",
+            "requirement": "Direct, tmux, pending, aliased, and resumed AI sessions preserve identity and can be activated from their cards.",
+            "commits": [
+                "4e69826dd7f4da3776e0b550e5cfe802af39e108",
+                "d5b2cd4449555bc67eff6d5074372f2de3fa0ba4",
+                "aa256f3b1a6f23b56d9902b5055079012587ed9b",
+                "9e9e33261d7e4da42ae68ee46deb86204b65bff3",
+                "f40c28366f89d10fb866f7d49aa3041ad0b9db4d",
+                "f9df1d460ab20327095df8bc003e4c81b681f1d8",
+                "a53f6bbcba0f2e13582ea5b1e10a7758e0b1ace6",
+                "ef87b104f3053154f13ed963a115f7c9281f45f4",
+                "b68f61a62baf52a2f08b1b9fdbc5e8b791fbe0e2",
+                "6718d75b31bf961fae4cd77e7880581d5525406a",
+                "c7dc326cc6f59138324cef3f0f69b33f6101d713",
+                "6879e829c12563f5da5c90868c6da2f7f9268a11",
+                "1fdf09e122697a1cec23b17876a9cb854968ef49",
+                "4864f644e0bd820bb3b9f06536f9082eb8731be5",
+                "2145c7b325b7742e2c423d08934690f68259dd2e",
+                "8a2670ce0a24af0e1f13c95655e9e615d5241539",
+                "6aabee69cab29988a6a4e5024b3ff3b426857511",
+                "e2da608dfcf844180bc3f1a0d9c9bc7feb7d9db6",
+                "49c06bbc0883a97a62907f3cef6ec3782d1c6d72",
+                "ff9c0c69aaaeb22a0318c2a998561e8146841fc3",
+                "05b7b77999f59c4fb105390d5e26261a398461f0",
+                "b3a4757ca559630e3f02a1833091bce7605d02b0",
+                "e9620c5fb39050f8f103090282ab15e3fd1e484e",
+                "970012f802be49cba0f974c21609290e7ab36ac2",
+                "058a949deb9ed5b4b30315e56ae02e29ac4464a9",
+                "85ac0fdffa00c00cbc7e8b6e73a7f007063c5337",
+                "2aad760472f1ca6677e9563ae9d7b9252e30d375",
+                "c73809a3c681059a4b032c4f8762e0074bf5ea66",
+                "e44f4c56df3172c11cd85421d4184cc855a4d159",
+                "db6d444ac544451ad24d74b5bab3e5f34a90ee0d",
+                "cdc26e875c37cb777a2fcae744718968eff3f0cc",
+                "10b5c94288db3941e0eb06180f60535e99fbad42",
+                "a04e2692d58ba3fd8e719da80a4036802cb11dfc",
+                "e8bc2bd31be039fe23493dab4fef77f05007a17b",
+                "68b698205cb496409d5d9b533ab43c08ecf389f5",
+                "1ad33b4b496634e32377eb47e557adb34c65c476",
+                "4ff041a72b03c11e939a0278effe889b6a0848a9",
+                "14f8bd37667e79c6ab0bd80d083610c36b00620c",
+                "8452a2accb9738a3a4496f3d0098d2e3ed842a1f",
+                "4ad04b8937721d2088cdb4c8e0f6fd1eb2083110",
+                "57f6557e528cf2959b6f90412b7c4a51d8df2d3a",
+                "94aab6901794660b31fb99ee713e8a3ab75d7940",
+                "34df29af34e5a6b1931ae2e7d47fa12c22bd0bc5",
+                "be4a62ee10383a7172d795c155000aaf3e5960b4",
+                "5911998bc1316ad2e1bfa23213177fe9e558f3ec",
+                "562e55d8880e315b61909cdade9b6a225a75c7e4",
+                "94b40e19b1ae2867e2db78931fd4fef6f3bd89c6",
+                "36ac6e0647b1b320e986cd689319210195bc6fa6",
+                "e5711ec2dfe3e3d090e8d7db70caa7e7879f2910",
+                "9a344806a1846d2c1e6996a93dafa0e18f97492a"
+            ],
+            "behaviors": [
+                "RUNTIME-TMUX-BACKEND-001",
+                "RUNTIME-TMUX-DISCOVERY-001",
+                "SESSION-AI-SESSION-TERMINAL-COMMAND-CONTROLLER-001",
+                "SESSION-ALIAS-THREAD-SWITCH-001",
+                "WEBVIEW-AI-SESSION-CARD-ACTIVATION-001"
+            ],
+            "prGates": [
+                "test:ci:linux"
+            ],
+            "scheduledJobs": [
+                "tmux-smoke-linux"
+            ],
+            "realEnvironmentRequired": true
+        },
+        {
+            "id": "MAIN-DASHBOARD-WEBVIEW-RECOVERY",
+            "title": "Dashboard webview recovery",
+            "requirement": "Dashboard resources, lazy panels, and sidebar providers recover from transient rendering failures without replacing healthy state.",
+            "commits": [
+                "ab43d61d84775366c269bef2ba7f2f7268cb1a9d",
+                "44a8070095f7a3fc961b2a0f1af48e6478f036c5",
+                "0b5e21c7d8cdcffa83d253e225f9ed01c70ba020",
+                "ddec9ac8b377121b671ea6a7887700e2e345ee9c",
+                "94b571ade72bcf0d34a5f093f5f2e028d152122f",
+                "bcebac80a8f423b1b4cba07020634e77dd237341"
+            ],
+            "behaviors": [
+                "WEBVIEW-RESOURCE-RECOVERY-001",
+                "WEBVIEW-LAZY-PANEL-RECOVERY-001",
+                "SESSION-SIDEBAR-STEWARD-VIEW-PROVIDER-ORDERING-001"
+            ],
+            "prGates": [
+                "test:deterministic:run"
+            ],
+            "scheduledJobs": [],
+            "realEnvironmentRequired": false
+        },
+        {
+            "id": "MAIN-REGRESSION-CI-CURRENCY",
+            "title": "Current regression CI coverage",
+            "requirement": "Behavior ownership, capability audits, browser contracts, platform workflows, and release packaging remain current and enforced.",
+            "commits": [
+                "7c71d908e65ac33e036aa4f120c9099d2c27fd5f",
+                "4407de900695cb96433674698bd51eca739e696a",
+                "40fa479db8b86dc4fc20a4b85c0258478bdc80f8",
+                "ec51685cd3ae16fdfc1a52808622d0ce0ca48a4d",
+                "0ea00d746a08e337947b928bf7d040281f9fd1f3",
+                "6064ea97e7f2f2de92c2f2f3833427d3965d9fc5",
+                "2d34fce4714729c4e9c4ff7048504b56a80bedfb",
+                "6406f090fe2cdb6fad4a545dba81708dae0a11ea",
+                "e08e81ba0ca1a4f2ebc69b5bb8cc14a76933c23d",
+                "f9fea7e847683ea8ee35019a28d675b303894dd9",
+                "1bef95a09e4b969d617187b058adc5448363b2d6",
+                "b0fec8cabc0c6187e2dcce40b348d232de63a77e",
+                "cb34b5c0ca32af9c938d0d06f61d0c70f2bcba9b",
+                "a634c618dcab5329e20959a5340fa593acd71d6c",
+                "b2bdc29febe14ffcce78f7812f1145de3072b640",
+                "1ef9efbcc7812fc8fb6d54b637be5f76daa0f3f5",
+                "56b80868dca5092bc87813d2c8a8e400a93de436",
+                "d51fa0d228e381dafd213b07d8be858281a8d24b",
+                "e756a78e1fabdec0d7a811260505952c9ff0ba5b"
+            ],
+            "behaviors": [
+                "ARCH-CI-QUALITY-GATE-001",
+                "ARCH-MAIN-CAPABILITY-COVERAGE-001",
+                "ARCH-MAIN-CAPABILITY-CURRENCY-001",
+                "RELEASE-VSIX-PACKAGING-001"
             ],
             "prGates": [
                 "test:ci:linux"
