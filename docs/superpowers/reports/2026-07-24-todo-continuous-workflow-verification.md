@@ -6,7 +6,7 @@ Status: **PASS**
 
 Branch: `feat/todo-ux-overhaul`
 
-Verified implementation commit: `66be82e37d664e8780338ded5d16dc0f6b88bee1`
+Verified implementation commit: `94b571ade72bcf0d34a5f093f5f2e028d152122f`
 
 The branch and worktree started from `main` commit
 `6e614d84b1ca7717e9e28a813cd27dc7b1df7633`. The primary checkout was not
@@ -38,12 +38,15 @@ The TODO surface now provides:
   for disclosure changes and matching command acknowledgements;
 - preservation of unsaved edit drafts across unrelated command results;
 - responsive composition controls down to a 240-pixel panel width.
+- activation- and document-scoped Webview asset URLs, so a window recovers its
+  stylesheet and scripts after a same-version forced extension replacement
+  instead of remaining in the unstyled startup state.
 
 ## Fresh verification gates
 
 | Command | Exit | Result |
 | --- | ---: | --- |
-| `npm run test:deterministic` | 0 | 496 tests passed: 167 unit, 250 contract, 79 integration |
+| `npm run test:deterministic` | 0 | 497 tests passed: 167 unit, 250 contract, 80 integration |
 | `npm run test:behavior-contracts` | 0 | 37 catalog and main-capability tests passed; catalog checks passed |
 | `npm run test:dashboard` | 0 | Dashboard Webview checks passed |
 | `npm run test:architecture-guards` | 0 | Architecture guards passed |
@@ -60,8 +63,8 @@ gate above still exited successfully.
 
 | Artifact | SHA-256 | Verification |
 | --- | --- | --- |
-| `artifacts/project-steward-2.1.5.vsix` | `dd20ce5d19cfca6bd1fdb45b88227206805587a1c2ef6e26777a5e7da2cf846e` | Archive integrity passed; contains `media/webviewTodoScripts.js` |
-| `artifacts/project-steward-attention-ui-bridge-0.1.4.vsix` | `dad067ef43bc1e8f7b75def5ff3c6a66323721ce370dcb11d1dcd661bfda8520` | Archive integrity and release packaging checks passed |
+| `artifacts/project-steward-2.1.5.vsix` | `f466febc990b119d3e133bca2af712737b17b691a2c937c3603936c4592ed615` | Archive integrity passed; contains the Webview asset-recovery fix |
+| `artifacts/project-steward-attention-ui-bridge-0.1.4.vsix` | `4193c24166547f4a46354a51cd3e39057129de9d2ecd28af34291d205593d301` | Archive integrity and release packaging checks passed |
 
 ## VS Code Server installation
 
@@ -96,8 +99,17 @@ Post-install listing reports `hzcheng.project-steward@2.1.5`. The installed
 The installed `media/styles.css` and the packaged worktree asset both have
 SHA-256
 `b83e912bbc9057a9348aafe323c529d16f4bec9d04a0c9980236c6a8f04c9fff`.
-These matches confirm that the installed TODO interaction and presentation code
-is the verified build. The already-installed UI bridge was not changed.
+The installed and packaged `dist/dashboard.js` both have SHA-256
+`2067079260b4b076b914b277e8dc98212280b627687d701cb1b1cc90ed2b2d15`.
+These matches confirm that the installed TODO interaction, presentation, and
+Webview asset-recovery code is the verified build. The already-installed UI
+bridge was not changed.
+
+The P0 `WEBVIEW-RESOURCE-RECOVERY-001` integration contract verifies that every
+external stylesheet and script URL shares one revision within a rendered
+document, that a subsequent render receives a new revision, and that a fresh
+Extension Host activation receives a new namespace rather than repeating the
+previous URL.
 
 The active Extension Host must reload before it can execute the newly installed
 extension files.
