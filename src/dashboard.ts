@@ -736,6 +736,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         logRuntimeFailure: logAiSessionRuntimeFailure,
         getProviderLabel: getAiSessionProviderLabel,
         refresh: refreshAiSessionViewsIncrementally,
+        focusTerminalView: () =>
+            vscode.commands.executeCommand('workbench.action.terminal.focus'),
     });
     const aiSessionResumeController = new AiSessionResumeController<vscode.Terminal>({
         getWorkspaceTarget: getCurrentWorkspaceActionTarget,

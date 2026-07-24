@@ -37,6 +37,7 @@ export interface AiSessionTerminalCommandControllerCommonOptions {
     showErrorMessage(message: string): Thenable<unknown> | Promise<unknown>;
     getProviderLabel(providerId: AiSessionProviderId): string;
     refresh(): void;
+    focusTerminalView?(): Thenable<unknown> | Promise<unknown>;
     logRuntimeFailure?(
         operation: string,
         error: unknown,
@@ -111,6 +112,7 @@ export class AiSessionTerminalCommandController<
             try {
                 await this.options.runtimeCoordinator.focus({ ...runtime.identity });
                 this.options.refresh();
+                await this.options.focusTerminalView?.();
             } catch (error) {
                 await this.handleRuntimeActionFailure(
                     'focus-runtime', 'Could not focus the AI session terminal.',
@@ -157,6 +159,7 @@ export class AiSessionTerminalCommandController<
                 return;
             }
             options.refresh();
+            await options.focusTerminalView?.();
         } catch (error) {
             await this.handleRuntimeActionFailure(
                 'focus-selected-runtime', 'Could not focus the selected AI session runtime.',
@@ -174,6 +177,7 @@ export class AiSessionTerminalCommandController<
             try {
                 await this.options.runtimeCoordinator.focus({ ...runtime.identity });
                 this.options.refresh();
+                await this.options.focusTerminalView?.();
             } catch (error) {
                 await this.handleRuntimeActionFailure(
                     'focus-runtime', 'Could not focus the AI session terminal.',

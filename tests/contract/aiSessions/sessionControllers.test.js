@@ -131,13 +131,87 @@ test('SESSION-AI-SESSION-TERMINAL-COMMAND-CONTROLLER-001 focuses and closes only
         },
         confirmRuntimeClose: async () => 'Close Terminal',
         announceStatus: async () => undefined,
+        focusTerminalView: async () => effects.push('focus-terminal-view'),
     });
     await controller.focusActive('p', 'codex', 's');
     await controller.closeTerminal({ projectId: 'p', providerId: 'codex', sessionId: 's' });
     const before = effects.length;
     await controller.focusActive('other', 'codex', 's');
-    assert.deepEqual(effects.slice(0, 4), ['show', 'refresh', 'dispose', 'refresh']);
+    assert.deepEqual(
+        effects.slice(0, 5),
+        ['show', 'refresh', 'focus-terminal-view', 'dispose', 'refresh']
+    );
     assert.equal(effects.length, before);
+});
+
+test('SESSION-AI-SESSION-TERMINAL-COMMAND-CONTROLLER-001 focuses the workbench only after pending and selected-conflict runtime success', async () => {
+    const effects = [];
+    let rejectFocus = false;
+    const pendingIdentity = {
+        provider: 'codex',
+        pendingId: 'pending',
+        workspaceScopeIdentity: 'scope:fixture',
+        workspaceNavigationIdentity: 'navigation:fixture',
+        workspaceRootHostPaths: ['/work'],
+        cwd: '/work',
+    };
+    const pending = {
+        backend: 'tmux', state: 'pending', identity: pendingIdentity,
+        createdAt: '2026-07-24T00:00:00.000Z', excludedSessionIds: [],
+        attached: false, stale: false, runStartedAtMs: 1,
+        tmux: { layout: 'project', sessionName: 'project', windowName: 'pending' },
+    };
+    const conflictIdentity = {
+        ...pendingIdentity,
+        pendingId: undefined,
+        sessionId: 's',
+    };
+    const conflict = {
+        backend: 'tmux', state: 'conflict', identity: conflictIdentity,
+        attached: true, stale: false, runStartedAtMs: 1,
+        tmux: { layout: 'project', sessionName: 'project', windowName: 'session' },
+    };
+    const controller = new AiSessionTerminalCommandController({
+        isProviderId: value => value === 'codex',
+        getWorkspaceTarget: id => id === 'p' ? makeWorkspaceTarget([{ id: 's' }]) : null,
+        showErrorMessage: async message => effects.push(`error:${message}`),
+        getProviderLabel: () => 'Codex',
+        refresh: () => effects.push('refresh'),
+        runtimeCoordinator: {
+            getById: () => conflict,
+            getActiveCandidates: () => [conflict],
+            getPending: () => [pending],
+            focus: async () => {
+                effects.push('focus-runtime');
+                if (rejectFocus) throw new Error('focus failed');
+            },
+            focusSelected: async () => {
+                effects.push('focus-selected-runtime');
+                return true;
+            },
+            detach: async () => undefined,
+        },
+        chooseRuntimeConflict: async () => conflict,
+        confirmRuntimeClose: async () => undefined,
+        announceStatus: async () => undefined,
+        focusTerminalView: async () => effects.push('focus-terminal-view'),
+    });
+
+    await controller.focusPending('p', 'codex', pending.createdAt);
+    assert.deepEqual(effects, ['focus-runtime', 'refresh', 'focus-terminal-view']);
+
+    effects.length = 0;
+    await controller.focusActive('p', 'codex', 's');
+    assert.deepEqual(effects, ['focus-selected-runtime', 'refresh', 'focus-terminal-view']);
+
+    effects.length = 0;
+    rejectFocus = true;
+    await controller.focusPending('p', 'codex', pending.createdAt);
+    assert.deepEqual(effects, [
+        'focus-runtime',
+        'error:Could not focus the AI session terminal.',
+        'refresh',
+    ]);
 });
 
 test('SESSION-AI-SESSION-EXECUTION-CONTROLLER-001 schedules one refresh only when lifecycle output changes', () => {
