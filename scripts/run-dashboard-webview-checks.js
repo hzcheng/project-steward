@@ -2744,8 +2744,24 @@ function runTodoViewModelChecks() {
         'TODO cards with nested controls must not use role=button');
     assert.ok(html.includes('todo-item-content'));
     const addFormCount = (html.match(/<form class="todo-add-form\b/g) || []).length;
-    assert.strictEqual(addFormCount, 1, 'TODO panels must render one reachable compose form');
+    assert.strictEqual(
+        addFormCount,
+        hiddenCompleted.groups.length + 1,
+        'TODO panels must render one global composer plus one composer per group'
+    );
     assert.ok(html.includes('<form class="todo-add-form todo-compose-panel steward-card" data-todo-form="add" hidden>'));
+    assert.strictEqual(
+        (html.match(/data-todo-form="quick-add"/g) || []).length,
+        hiddenCompleted.groups.length,
+        'every TODO group must render its full fixed-group composer'
+    );
+    assert.ok(html.includes(
+        'data-todo-form="quick-add" data-group-id="group-a" hidden'
+    ));
+    assert.ok(html.includes('<input type="hidden" name="groupId" value="group-a">'));
+    assert.ok(html.includes(
+        '<span class="todo-compose-group-fixed steward-meta" title="Launch &lt;Group&gt;"'
+    ));
     assert.ok(html.includes('name="title"'));
     assert.ok(html.includes('name="priority"'));
     assert.ok(html.includes('name="notes"'));
@@ -2800,6 +2816,8 @@ function runTodoViewModelChecks() {
     assert.ok(emptyGroupHtml.includes('data-todo-group-id="empty-group"'));
     assert.ok(emptyGroupHtml.includes('Empty Group'));
     assert.ok(emptyGroupHtml.includes('data-action="todo-quick-add" data-group-id="empty-group"'));
+    assert.strictEqual((emptyGroupHtml.match(/<form class="todo-add-form\b/g) || []).length, 2,
+        'an empty group must keep the global composer and its fixed-group composer');
     assert.strictEqual(emptyGroupHtml.includes('No todos yet'), false);
 
     const dashboardViewModel = require('../out/webview/dashboardViewModel');
