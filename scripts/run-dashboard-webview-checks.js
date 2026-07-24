@@ -2687,7 +2687,7 @@ function runTodoViewModelChecks() {
         'completed TODOs must be stably projected after incomplete TODOs'
     );
 
-    const html = todoWebviewContent.getTodoPanelContent(hiddenCompleted, { maxVisibleTodosPerGroup: 7 });
+    const html = todoWebviewContent.getTodoPanelContent(hiddenCompleted);
     assert.ok(html.includes('todo-panel'));
     assert.ok(html.includes('todo-list-surface'));
     assert.ok(html.includes('todo-detail-surface'));
@@ -4332,6 +4332,7 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'request-projects-panel': async e =>"));
     assert.ok(extensionHostSource.includes("'request-todo-panel': async e =>"));
     assert.ok(packageJson.includes('"projectSteward.maxVisibleTodosPerGroup"'));
+    assert.ok(packageJson.includes('Deprecated. TODO groups now share the page scroll'));
     assert.ok(packageJson.includes('"projectSteward.maxVisibleProjectsPerGroup"'));
     assert.strictEqual(extensionHostSource.includes('function handleStewardMessage('), false);
     assert.ok(extensionHostSource.includes('getAiSessionProviderIds: () => getRegisteredAiSessionProviders().map(provider => provider.id)'));
@@ -4339,7 +4340,7 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("type: 'todo-panel-content'"));
     assert.ok(extensionHostSource.includes('getProjectsPanelContent(projectService.getGroups(), stewardInfos)'));
     assert.ok(extensionHostSource.includes('getTodoPanelContent(buildTodoViewModel(todoData'));
-    assert.ok(extensionHostSource.includes('getMaxVisibleTodosPerGroup(config)'));
+    assert.strictEqual(extensionHostSource.includes('getMaxVisibleTodosPerGroup('), false);
     assert.ok(webviewContentSource.includes("'maxVisibleProjectsPerGroup',"));
     assert.ok(webviewContentSource.includes('DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP = 5'));
     assert.ok(webviewContentSource.includes('--steward-max-visible-projects-per-group: ${maxVisibleProjectsPerGroup};'));

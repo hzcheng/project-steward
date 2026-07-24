@@ -61,6 +61,11 @@ function validateTodoLayout(source) {
     const detailTitle = extractBlock(source, '.todo-detail-title');
     assert.ok(detailTitle.includes('white-space: pre-wrap') && detailTitle.includes('overflow-wrap: anywhere'),
         'TODO-RESPONSIVE-LAYOUT-001 focused detail must reveal the complete title');
+    const narrow = extractBlock(source, '@media (max-width: 320px)');
+    for (const value of ['.todo-quick-add-form', 'grid-template-columns: minmax(0, 1fr) auto',
+        '.todo-compose-meta', 'flex-wrap: wrap']) {
+        assert.ok(narrow.includes(value), `TODO-RESPONSIVE-LAYOUT-001 narrow layout missing ${value}`);
+    }
 }
 
 function cssRules(source) {

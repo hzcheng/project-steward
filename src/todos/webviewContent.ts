@@ -7,10 +7,6 @@ const PRIORITIES = [
     { value: 'low', label: 'LOW' },
 ];
 
-export interface TodoPanelRenderOptions {
-    maxVisibleTodosPerGroup?: number;
-}
-
 function escapeHtml(value: string): string {
     return String(value || '')
         .replace(/&/g, '&amp;')
@@ -131,8 +127,7 @@ function renderTodoGroup(group: TodoGroupViewModel): string {
     </section>`;
 }
 
-export function getTodoPanelContent(viewModel: TodoPanelViewModel, options: TodoPanelRenderOptions = {}): string {
-    void options;
+export function getTodoPanelContent(viewModel: TodoPanelViewModel): string {
     const listContent = viewModel.isEmpty
         ? '<p class="todo-empty-state steward-empty-state">No todos yet</p>'
         : `<div class="todo-groups">${viewModel.groups.map(renderTodoGroup).join('')}</div>`;

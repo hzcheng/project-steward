@@ -63,6 +63,9 @@ function createHarness() {
             listeners[type] = listener;
         },
         removeEventListener() {},
+        dispatch(type, event) {
+            return listeners[type] && listeners[type](event);
+        },
         querySelector(selector) {
             const match = selector.match(/data-todo-id="([^"]+)"/);
             if (!match) return null;
@@ -211,6 +214,44 @@ test('TODO-TODO-ORDERING-INTERACTION-001 keeps the dropped task order while the 
             .map(todo => todo.id),
         ['todo-b', 'todo-a']
     );
+});
+
+test('TODO-FOCUSED-DETAIL-001 preserves an unsaved detail draft across unrelated results', () => {
+    const harness = createHarness();
+    harness.controller.openDetail('todo-a');
+    const editAction = {
+        getAttribute(name) {
+            return name === 'data-action' ? 'todo-edit-detail' : null;
+        },
+    };
+    harness.root.dispatch('click', {
+        target: {
+            closest(selector) {
+                return selector === '[data-action]' ? editAction : null;
+            },
+        },
+    });
+    const titleField = {
+        value: 'A locally edited draft',
+        getAttribute(name) {
+            return name === 'name' ? 'title' : null;
+        },
+        closest(selector) {
+            return selector === '.todo-detail-edit-form' ? {} : null;
+        },
+    };
+    harness.root.dispatch('input', { target: titleField });
+    harness.controller.applyCommandResult({
+        type: 'todo-command-result',
+        version: 2,
+        requestId: 99,
+        revision: 1,
+        success: true,
+        snapshot: snapshot(),
+    });
+
+    assert.equal(harness.controller.getState().draft.title, 'A locally edited draft');
+    assert.match(harness.root.innerHTML, /A locally edited draft/);
 });
 
 test('TODO-INCREMENTAL-ROOT-001 isolates mounted TODO events from the legacy project controller', () => {

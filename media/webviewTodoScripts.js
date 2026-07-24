@@ -86,7 +86,8 @@ function initTodos(options) {
     }
 
     function renderGroupOptions(selected) {
-        return orderedGroups().map(function (group) {
+        return '<option value=""' + (!selected ? ' selected' : '') + '>Inbox</option>'
+            + orderedGroups().map(function (group) {
             return '<option value="' + escapeHtml(group.id) + '"'
                 + (group.id === selected ? ' selected' : '') + '>'
                 + escapeHtml(group.title) + '</option>';
@@ -316,6 +317,7 @@ function initTodos(options) {
             root.removeEventListener('change', onChange);
             root.removeEventListener('submit', onSubmit);
             root.removeEventListener('keydown', onKeyDown);
+            root.removeEventListener('input', onInput);
         }
         panelHost = nextPanelHost;
         root = nextRoot;
@@ -328,6 +330,7 @@ function initTodos(options) {
         root.addEventListener('change', onChange);
         root.addEventListener('submit', onSubmit);
         root.addEventListener('keydown', onKeyDown);
+        root.addEventListener('input', onInput);
         render();
         return true;
     }
@@ -645,6 +648,7 @@ function initTodos(options) {
     }
 
     function onChange(event) {
+        onInput(event);
         var toggle = closest(event.target, '[data-action="todo-toggle"]');
         if (toggle) {
             dispatch('complete', {
@@ -676,6 +680,21 @@ function initTodos(options) {
         } else if (event.altKey && event.key === 'ArrowLeft' && state.mode === 'detail') {
             backToList();
             event.preventDefault();
+        }
+    }
+
+    function onInput(event) {
+        var field = event.target;
+        if (!state.draft
+            || !field
+            || !field.closest
+            || !field.closest('.todo-detail-edit-form')
+            || !field.getAttribute) {
+            return;
+        }
+        var name = field.getAttribute('name');
+        if (name === 'title' || name === 'notes' || name === 'priority' || name === 'groupId') {
+            state.draft[name] = String(field.value || '');
         }
     }
 

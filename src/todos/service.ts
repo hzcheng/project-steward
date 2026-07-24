@@ -306,8 +306,17 @@ export class TodoService {
             if (patch.priority !== undefined) {
                 todo.priority = normalizeTodoPriority(patch.priority);
             }
-            if (patch.groupId !== undefined && data.groups.some(group => group.id === patch.groupId)) {
+            if (patch.groupId !== undefined
+                && patch.groupId !== todo.groupId
+                && data.groups.some(group => group.id === patch.groupId)) {
+                const sourceGroupId = todo.groupId;
+                const targetTodos = data.todos
+                    .filter(item => item.groupId === patch.groupId && item.id !== todo.id)
+                    .sort((left, right) => left.order - right.order);
                 todo.groupId = patch.groupId;
+                targetTodos.unshift(todo);
+                targetTodos.forEach((item, order) => { item.order = order; });
+                this.compactGroupOrders(data, sourceGroupId);
             }
             todo.updatedAt = this.now();
 

@@ -525,6 +525,23 @@ test('SESSION-CONTROLLER-001 validates lazy responses and preserves independent 
     assert.equal(harness.todoPanel.innerHTML, '<p>current todo</p>');
 });
 
+test('WEBVIEW-DASHBOARD-SEARCH-CATALOG-001 accepts the migrated TODO catalog with the lazy panel', () => {
+    const harness = createDashboardHarness({ initialTab: 'todo' });
+    assert.equal(harness.controller.applyTodoPanelMessage({
+        type: 'todo-panel-content',
+        version: 1,
+        requestId: 1,
+        html: '<p>todo</p>',
+        searchCatalog: makeCatalog('lazy'),
+    }), true);
+    harness.controller.setSearchQuery('lazy');
+    const todoSection = harness.searchResults.children.find(section =>
+        section.dataset.sectionType === 'todo'
+    );
+
+    assert.equal(todoSection.children[1].dataset.todoId, 'tlazy');
+});
+
 test('TODO-TODO-SEARCH-RESULT-RENDERING-001 search reveal requests host data then focuses the mounted TODO', () => {
     const harness = createDashboardHarness({ initialTab: 'todo', synchronousFrames: false });
     assert.equal(harness.controller.applyTodoPanelMessage({

@@ -189,7 +189,7 @@
                     "type": "number",
                     "default": 5,
                     "minimum": 1,
-                    "markdownDescription": "Maximum number of TODO items visible in each TODO group before the group list scrolls."
+                    "markdownDescription": "Deprecated. TODO groups now share the page scroll so titles and tasks remain continuously visible."
                 },
                 "projectSteward.maxVisibleProjectsPerGroup": {
                     "type": "number",

@@ -542,6 +542,9 @@ function initDashboard(options) {
         acceptedTodoRequestId = message.requestId;
         panels.todo.innerHTML = message.html;
         todoState = 'mounted';
+        if (normalizeDashboardSearchCatalog(message.searchCatalog) === message.searchCatalog) {
+            replaceSearchCatalog(message.searchCatalog);
+        }
         if (typeof options.onTodoMounted === 'function') {
             options.onTodoMounted(panels.todo, message);
         }

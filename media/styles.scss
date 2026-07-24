@@ -1354,7 +1354,7 @@ body .project {
 .todo-item {
     display: grid;
     gap: 8px;
-    cursor: default;
+    cursor: pointer;
 }
 
 .todo-item.editing .todo-edit-form {
@@ -1790,6 +1790,32 @@ body .project {
 
     body.steward-sidebar .project .codex-sessions {
         transition: none !important;
+    }
+}
+
+@media (max-width: 320px) {
+    .todo-quick-add-form {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .todo-quick-add-form input {
+        grid-column: 1 / -1;
+    }
+
+    .todo-compose-meta {
+        flex-wrap: wrap;
+    }
+
+    .todo-compose-meta select {
+        flex: 1 1 calc(50% - 3px);
+    }
+
+    .todo-detail-card {
+        padding: 10px;
+    }
+
+    .todo-item-actions {
+        opacity: .65;
     }
 }
 

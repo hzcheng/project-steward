@@ -12,7 +12,10 @@ const NOW = '2026-07-24T00:00:00.000Z';
 function makeData() {
     return {
         version: 1,
-        groups: [{ id: 'group-a', title: 'A', collapsed: false, order: 0 }],
+        groups: [
+            { id: 'group-a', title: 'A', collapsed: false, order: 0 },
+            { id: 'group-b', title: 'B', collapsed: false, order: 1 },
+        ],
         todos: [
             {
                 id: 'todo-a', groupId: 'group-a', title: 'First', notes: '',
@@ -29,6 +32,7 @@ function makeData() {
 function createHarness({ writeError, nowMs = () => 1_000 } = {}) {
     let data = makeData();
     let viewState = { showCompleted: false };
+    let todoWriteCount = 0;
     const service = new TodoService({
         globalState: {
             get(key) {
@@ -38,7 +42,10 @@ function createHarness({ writeError, nowMs = () => 1_000 } = {}) {
             },
             async update(key, value) {
                 if (writeError && key === 'todos') throw writeError;
-                if (key === 'todos') data = value;
+                if (key === 'todos') {
+                    todoWriteCount += 1;
+                    data = value;
+                }
                 if (key === 'todoViewState') viewState = value;
             },
         },
@@ -58,7 +65,13 @@ function createHarness({ writeError, nowMs = () => 1_000 } = {}) {
         nowMs,
         createUndoToken: () => `undo-${++token}`,
     });
-    return { controller, service, getData: () => data, getViewState: () => viewState };
+    return {
+        controller,
+        service,
+        getData: () => data,
+        getViewState: () => viewState,
+        getTodoWriteCount: () => todoWriteCount,
+    };
 }
 
 function command(requestId, action, payload = {}) {
@@ -163,11 +176,65 @@ test('TODO-TODO-COMMAND-CONTROLLER-001 distinguishes invalid input from missing 
     const missing = await controller.handle(command(2, 'delete', {
         todoId: 'missing',
     }));
+    const invalidOrder = await controller.handle(command(3, 'reorder-groups', {
+        groupIds: ['group-a'],
+    }));
+    const missingGroup = await controller.handle(command(4, 'collapse-group', {
+        groupId: 'missing',
+        collapsed: true,
+    }));
 
     assert.deepEqual(
-        [invalid.success, invalid.errorCode, missing.success, missing.errorCode],
-        [false, 'invalid', false, 'not-found']
+        [
+            invalid.success, invalid.errorCode,
+            missing.success, missing.errorCode,
+            invalidOrder.success, invalidOrder.errorCode,
+            missingGroup.success, missingGroup.errorCode,
+        ],
+        [
+            false, 'invalid',
+            false, 'not-found',
+            false, 'invalid',
+            false, 'not-found',
+        ]
     );
+});
+
+test('TODO-TODO-COMMAND-CONTROLLER-001 serializes concurrent command snapshots for exact Undo', async () => {
+    const { controller } = createHarness();
+    const completing = controller.handle(command(1, 'complete', {
+        todoId: 'todo-a',
+        completed: true,
+    }));
+    const reopening = controller.handle(command(2, 'complete', {
+        todoId: 'todo-a',
+        completed: false,
+    }));
+    const [, reopened] = await Promise.all([completing, reopening]);
+    const restored = await controller.handle(command(3, 'undo', {
+        undoToken: reopened.undoToken,
+    }));
+
+    assert.equal(restored.snapshot.data.todos.find(todo => todo.id === 'todo-a').completed, true);
+});
+
+test('TODO-TODO-COMMAND-CONTROLLER-001 updates fields and group position in one authoritative write', async () => {
+    const { controller, getTodoWriteCount } = createHarness();
+    const result = await controller.handle(command(1, 'update', {
+        todoId: 'todo-b',
+        title: 'Moved and edited',
+        notes: 'Still atomic',
+        priority: 'low',
+        groupId: 'group-b',
+    }));
+    const moved = result.snapshot.data.todos.find(todo => todo.id === 'todo-b');
+
+    assert.equal(result.success, true);
+    assert.deepEqual(
+        [moved.groupId, moved.order, moved.title, moved.notes, moved.priority],
+        ['group-b', 0, 'Moved and edited', 'Still atomic', 'low']
+    );
+    assert.equal(getTodoWriteCount(), 1);
 });
 
 test('TODO-TODO-COMMAND-CONTROLLER-001 routes versioned commands through the production dashboard', () => {

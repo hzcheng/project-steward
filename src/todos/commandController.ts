@@ -31,7 +31,7 @@ const TODO_COMMAND_ACTIONS = new Set<TodoCommandAction>([
     'show-completed',
 ]);
 
-interface TodoCommandControllerOptions {
+export interface TodoCommandControllerOptions {
     service: TodoService;
     getViewState: () => TodoViewState;
     setShowCompleted: (value: boolean) => Promise<TodoViewState>;
@@ -119,6 +119,7 @@ export class TodoCommandController {
     private readonly nowMs: () => number;
     private readonly createUndoToken: () => string;
     private readonly undoRecords = new Map<string, TodoUndoRecord>();
+    private commandQueue: Promise<void> = Promise.resolve();
     private revision = 0;
 
     constructor(options: TodoCommandControllerOptions) {
@@ -138,6 +139,15 @@ export class TodoCommandController {
         }
 
         const revision = ++this.revision;
+        const result = this.commandQueue.then(() => this.handleAccepted(message, revision));
+        this.commandQueue = result.then(() => undefined, () => undefined);
+        return result;
+    }
+
+    private async handleAccepted(
+        message: TodoCommandMessage,
+        revision: number
+    ): Promise<TodoCommandResultMessage> {
         try {
             const execution = await this.execute(message.action, message.payload);
             return {
@@ -183,8 +193,14 @@ export class TodoCommandController {
     private async execute(action: TodoCommandAction, value: unknown): Promise<TodoCommandExecution> {
         const payload = asObject(value);
         switch (action) {
-            case 'add':
-                return { data: await this.service.addTodo(this.readAddInput(payload)) };
+            case 'add': {
+                const input = this.readAddInput(payload);
+                if (input.groupId
+                    && !this.service.getData().groups.some(group => group.id === input.groupId)) {
+                    throw new TodoCommandInputError('not-found');
+                }
+                return { data: await this.service.addTodo(input) };
+            }
             case 'update':
                 return { data: await this.updateTodo(payload) };
             case 'complete':
@@ -194,29 +210,36 @@ export class TodoCommandController {
             case 'undo':
                 return { data: await this.undo(payload) };
             case 'reorder-items':
-                return {
-                    data: await this.service.reorderTodos(
-                        requiredString(payload.groupId),
-                        requiredStringArray(payload.todoIds)
-                    ),
-                };
-            case 'reorder-groups':
-                return { data: await this.service.reorderGroups(requiredStringArray(payload.groupIds)) };
-            case 'collapse-group':
+                return { data: await this.reorderTodos(payload) };
+            case 'reorder-groups': {
+                const groupIds = requiredStringArray(payload.groupIds);
+                const currentGroupIds = this.service.getData().groups.map(group => group.id);
+                if (!this.hasExactIds(currentGroupIds, groupIds)) {
+                    throw new TodoCommandInputError('invalid');
+                }
+                return { data: await this.service.reorderGroups(groupIds) };
+            }
+            case 'collapse-group': {
+                const groupId = requiredString(payload.groupId);
+                this.assertGroupExists(groupId);
                 return {
                     data: await this.service.setGroupCollapsed(
-                        requiredString(payload.groupId),
+                        groupId,
                         requiredBoolean(payload.collapsed)
                     ),
                 };
+            }
             case 'collapse-groups':
                 return {
                     data: await this.service.setGroupsCollapsed(requiredBoolean(payload.collapsed)),
                 };
-            case 'sort-priority':
+            case 'sort-priority': {
+                const groupId = requiredString(payload.groupId);
+                this.assertGroupExists(groupId);
                 return {
-                    data: await this.service.sortGroupByPriority(requiredString(payload.groupId)),
+                    data: await this.service.sortGroupByPriority(groupId),
                 };
+            }
             case 'show-completed': {
                 const state = await this.setShowCompleted(requiredBoolean(payload.showCompleted));
                 if (!state.showCompleted) {
@@ -236,20 +259,47 @@ export class TodoCommandController {
         };
     }
 
+    private async reorderTodos(payload: { [key: string]: unknown }): Promise<TodoDataV1> {
+        const groupId = requiredString(payload.groupId);
+        const todoIds = requiredStringArray(payload.todoIds);
+        this.assertGroupExists(groupId);
+        const groupTodos = this.service.getData().todos.filter(todo => todo.groupId === groupId);
+        const allTodoIds = groupTodos.map(todo => todo.id);
+        const incompleteTodoIds = groupTodos.filter(todo => !todo.completed).map(todo => todo.id);
+        if (!this.hasExactIds(allTodoIds, todoIds)
+            && !this.hasExactIds(incompleteTodoIds, todoIds)) {
+            throw new TodoCommandInputError('invalid');
+        }
+        return this.service.reorderTodos(groupId, todoIds);
+    }
+
+    private assertGroupExists(groupId: string): void {
+        if (!this.service.getData().groups.some(group => group.id === groupId)) {
+            throw new TodoCommandInputError('not-found');
+        }
+    }
+
+    private hasExactIds(actualIds: string[], requestedIds: string[]): boolean {
+        if (actualIds.length !== requestedIds.length) {
+            return false;
+        }
+        const requested = new Set(requestedIds);
+        return requested.size === requestedIds.length
+            && actualIds.every(id => requested.has(id));
+    }
+
     private async updateTodo(payload: { [key: string]: unknown }): Promise<TodoDataV1> {
         const todoId = requiredString(payload.todoId);
-        const current = this.findTodo(todoId);
+        this.findTodo(todoId);
         const groupId = optionalString(payload.groupId);
         if (groupId !== undefined && !this.service.getData().groups.some(group => group.id === groupId)) {
             throw new TodoCommandInputError('not-found');
-        }
-        if (groupId && groupId !== current.groupId) {
-            await this.service.moveTodo(todoId, groupId);
         }
         const patch: TodoPatch = {
             title: optionalString(payload.title),
             notes: optionalString(payload.notes),
             priority: optionalPriority(payload.priority),
+            groupId,
         };
         return this.service.updateTodo(todoId, patch);
     }
@@ -309,9 +359,15 @@ export class TodoCommandController {
     }
 
     private rememberUndo(item: TodoItem, position: TodoRestorePosition): string {
+        const now = this.nowMs();
+        for (const [existingToken, record] of this.undoRecords) {
+            if (now > record.expiresAt) {
+                this.undoRecords.delete(existingToken);
+            }
+        }
         const token = this.createUndoToken();
         this.undoRecords.set(token, {
-            expiresAt: this.nowMs() + TODO_UNDO_WINDOW_MS,
+            expiresAt: now + TODO_UNDO_WINDOW_MS,
             item: { ...item },
             position,
         });
