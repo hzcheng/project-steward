@@ -512,6 +512,7 @@ function createTmuxRuntimeHarness(layout, options = {}) {
     };
     const dependencies = {
         platform: 'linux', client, discovery, runtimeStore: store, attachStore,
+        getTerminals: () => terminals.filter(terminal => !terminal.disposed),
         withCreationLock: async (key, operation) => {
             const previous = lockQueues.get(key) || Promise.resolve();
             let release;
@@ -544,6 +545,7 @@ function createTmuxRuntimeHarness(layout, options = {}) {
     const backend = new TmuxRuntimeBackend(dependencies);
     return {
         backend, dependencies, discovery, store, operations, windows, terminals,
+        createReloadedBackend: () => new TmuxRuntimeBackend(dependencies),
         providerCreateCount: () => operations.filter(item =>
             (item.type === 'new-session' || item.type === 'new-window')
             && item.command.includes('exit_code=$?')).length,

@@ -97,6 +97,7 @@ export interface TmuxRuntimeBackendDependencies<TTerminal> {
     discovery: TmuxRuntimeDiscovery;
     runtimeStore: TmuxRuntimeBindingStore;
     attachStore: TmuxAttachBindingStore;
+    getTerminals?(): readonly TTerminal[];
     withCreationLock<T>(key: string, operation: () => Promise<T>): Promise<T>;
     createTerminal(options: vscode.TerminalOptions): TTerminal;
     nowMs(): number;
@@ -1322,6 +1323,12 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             throw new Error('A tmux runtime must include a locator.');
         }
         const key = registryKey(runtime);
+        if (!this.attaches.has(key)) {
+            const terminals = this.dependencies.getTerminals?.() || [];
+            if (terminals.length) {
+                await this.restoreAttachTerminals(terminals);
+            }
+        }
         const selectingEntry = this.attaches.get(key);
         if (selectingEntry) {
             selectingEntry.focusEpoch++;

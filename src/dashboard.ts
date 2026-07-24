@@ -420,6 +420,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         discovery: tmuxRuntimeDiscovery,
         runtimeStore: tmuxRuntimeStore,
         attachStore: tmuxAttachBindingStore,
+        getTerminals: () => vscode.window.terminals,
         withCreationLock: (key, operation) => withTmuxCreationLock(context.globalStoragePath, key, operation),
         createTerminal: options => vscode.window.createTerminal(options),
         nowMs: () => Date.now(),

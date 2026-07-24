@@ -558,6 +558,7 @@ function createTmuxBackendHarness(options = {}) {
         discovery,
         runtimeStore,
         attachStore,
+        getTerminals: () => terminals.filter(terminal => !terminal.disposed),
         withCreationLock: async (key, operation) => {
             operations.push({ type: 'lock-queued', key });
             const previous = lockQueues.get(key) || Promise.resolve();
@@ -7002,6 +7003,44 @@ async function runTmuxBackendChecks() {
         launch: { executable: 'codex', args: ['resume', 's1'] },
     }, 'session'), /POSIX/);
     assert.strictEqual(unavailableHarness.operations.filter(item => item.type === 'new-session').length, 0);
+
+    const missedReloadHarness = createTmuxBackendHarness();
+    const beforeMissedReload = new backendModule.TmuxRuntimeBackend(
+        missedReloadHarness.dependencies
+    );
+    const beforeMissedReloadRuntime = await beforeMissedReload.ensureResume({
+        identity: {
+            provider: 'codex',
+            workspaceScopeIdentity: 'missed-reload',
+            workspaceNavigationIdentity: 'nav-missed-reload',
+            workspaceRootHostPaths: ['/work'],
+            cwd: '/work',
+            sessionId: 'missed-reload-session',
+        },
+        projectName: 'Missed reload',
+        terminalName: 'AI Sessions: Missed reload',
+        launch: {
+            executable: 'codex',
+            args: ['resume', 'missed-reload-session'],
+            markerPath: '/tmp/missed-reload',
+        },
+    }, 'project');
+    await missedReloadHarness.attachStore.flush();
+    const createsBeforeMissedReloadFocus = missedReloadHarness.operations
+        .filter(item => item.type === 'create-terminal').length;
+    missedReloadHarness.terminals[0].shown = false;
+    const afterMissedReload = new backendModule.TmuxRuntimeBackend(
+        missedReloadHarness.dependencies
+    );
+    await afterMissedReload.focus(
+        afterMissedReload.find(beforeMissedReloadRuntime.identity)[0]
+    );
+    assert.strictEqual(missedReloadHarness.operations
+        .filter(item => item.type === 'create-terminal').length,
+    createsBeforeMissedReloadFocus,
+    'focus must recover a current-window attach terminal missed during reload');
+    assert.strictEqual(missedReloadHarness.terminals[0].shown, true,
+        'focus must reveal the recovered current-window attach terminal');
 
     const restoreHarness = createTmuxBackendHarness();
     const restoreBackend = new backendModule.TmuxRuntimeBackend(restoreHarness.dependencies);
