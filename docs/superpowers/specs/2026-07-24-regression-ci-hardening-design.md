@@ -37,4 +37,3 @@ Extract the decision that maps a click target and session row to a host message 
 - No visual snapshot or pixel-perfect theme testing.
 - No fake claim that multi-window focus, sleep/disconnect, or remote lifecycle is automated.
 - No production behavior change beyond extracting the existing session-card message decision.
-

@@ -1,7 +1,7 @@
 # Max Visible Todos Per Group Verification
 
-Date: 2026-07-24  
-Branch: `feat/todo-ux-overhaul`  
+Date: 2026-07-24
+Branch: `feat/todo-ux-overhaul`
 Verified head before this report: `ad9a6805c1c5d29544041b4f5225ced01f456b97`
 
 ## Outcome
