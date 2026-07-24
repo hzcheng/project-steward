@@ -2810,6 +2810,7 @@
     "status": "automated",
     "owners": [
       "tests/contract/persistence/projectCatalogSync.test.js",
+      "tests/contract/projects/panelController.test.js",
       "tests/contract/openProjects/dashboardController.test.js",
       "tests/integration/dashboard/errorRecovery.test.js",
       "tests/integration/dashboard/webviewState.test.js"
@@ -2817,6 +2818,7 @@
     "evidence": [
       "src/services/projectCatalogSyncService.ts",
       "src/dashboard/lifecycleController.ts",
+      "src/dashboard/projectsPanelController.ts",
       "src/openWorkspaces/dashboardController.ts",
       "src/webview/webviewDashboardScripts.js",
       "src/dashboard.ts"

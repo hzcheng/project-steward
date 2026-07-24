@@ -6,7 +6,7 @@ export interface ProjectOrderControllerOptions {
     getGroups: () => Group[];
     saveGroups: (groups: Group[]) => Thenable<unknown>;
     showInformationMessage: (message: string) => unknown;
-    refreshAfterMutation: () => void;
+    refreshAfterMutation: (mode?: 'replace' | 'preserve-order') => void;
 }
 
 export class ProjectOrderController {
@@ -44,6 +44,6 @@ export class ProjectOrderController {
         }
 
         await this.options.saveGroups(reorderedGroups);
-        this.options.refreshAfterMutation();
+        this.options.refreshAfterMutation('preserve-order');
     }
 }

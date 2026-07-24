@@ -729,3 +729,44 @@ test('PROJECT-INCREMENTAL-REFRESH-001 treats a mismatched Settings value as exte
         legacyGroups: true,
     }), false);
 });
+
+test('PROJECT-INCREMENTAL-REFRESH-001 removes only the token for a failed Settings write', async () => {
+    const syncError = new Error('sync write rejected');
+    const harness = makeSyncPersistenceHarness({ failSync: syncError });
+
+    await assert.rejects(
+        harness.service.saveGroups(makeCatalogGroups([{
+            id: 'project-failed',
+            name: 'Failed',
+            path: '/work/failed',
+            color: '#778899',
+        }])),
+        syncError
+    );
+
+    assert.equal(harness.service.consumeConfigurationWriteEcho({
+        syncData: true,
+        legacyGroups: false,
+    }), false);
+});
+
+test('PROJECT-INCREMENTAL-REFRESH-001 consumes the final value when rapid local writes are coalesced', async () => {
+    const harness = makeSyncPersistenceHarness();
+    await harness.service.saveGroups(makeCatalogGroups([{
+        id: 'project-first',
+        name: 'First',
+        path: '/work/first',
+        color: '#111111',
+    }]));
+    await harness.service.saveGroups(makeCatalogGroups([{
+        id: 'project-final',
+        name: 'Final',
+        path: '/work/final',
+        color: '#222222',
+    }]));
+
+    assert.equal(harness.service.consumeConfigurationWriteEcho({
+        syncData: true,
+        legacyGroups: true,
+    }), true);
+});

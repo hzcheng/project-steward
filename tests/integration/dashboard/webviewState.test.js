@@ -573,6 +573,80 @@ test('PROJECT-INCREMENTAL-REFRESH-001 replaces only Projects and rejects stale u
     assert.equal(harness.projectsPanel.innerHTML, '<p>updated projects</p>');
 });
 
+test('PROJECT-INCREMENTAL-REFRESH-001 preserves matching drag DOM and replaces a mismatched order', () => {
+    const harness = createDashboardHarness({ initialTab: 'projects' });
+    assert.equal(harness.controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '<p>dragged</p>',
+    }), true);
+    const projects = ['project-b', 'project-a'].map(id => ({
+        getAttribute: name => name === 'data-id' ? id : null,
+    }));
+    const favorites = ['project-a'].map(id => ({
+        getAttribute: name => name === 'data-id' ? id : null,
+    }));
+    const group = {
+        getAttribute: name => name === 'data-group-id' ? 'work' : null,
+        querySelectorAll: selector => selector.includes('.project[data-id]') ? projects : [],
+    };
+    const favoritesGroup = {
+        querySelectorAll: selector => selector === '.project[data-id]' ? favorites : [],
+    };
+    harness.projectsPanel.querySelectorAll = selector => (
+        selector.includes('.groups-wrapper > .group') ? [group] : []
+    );
+    harness.projectsPanel.querySelector = selector => (
+        selector === '.group[data-system-group="__favorites"]' ? favoritesGroup : null
+    );
+
+    assert.equal(harness.controller.applyProjectsPanelUpdatedMessage({
+        type: 'projects-panel-updated',
+        version: 1,
+        sequence: 1,
+        mode: 'preserve-order',
+        html: '<p>authoritative</p>',
+        searchCatalog: makeCatalog('matching'),
+        groupOrders: [{ groupId: 'work', projectIds: ['project-b', 'project-a'] }],
+        favoriteProjectIds: ['project-a'],
+    }), true);
+    assert.equal(harness.projectsPanel.innerHTML, '<p>dragged</p>');
+
+    assert.equal(harness.controller.applyProjectsPanelUpdatedMessage({
+        type: 'projects-panel-updated',
+        version: 1,
+        sequence: 2,
+        mode: 'preserve-order',
+        html: '<p>authoritative fallback</p>',
+        searchCatalog: makeCatalog('mismatch'),
+        groupOrders: [{ groupId: 'work', projectIds: ['project-a', 'project-b'] }],
+        favoriteProjectIds: ['project-a'],
+    }), true);
+    assert.equal(harness.projectsPanel.innerHTML, '<p>authoritative fallback</p>');
+});
+
+test('PROJECT-INCREMENTAL-REFRESH-001 ignores stale window messages without requesting a full refresh', () => {
+    const harness = createDashboardHarness({ initialTab: 'projects' });
+    harness.controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '<p>initial</p>',
+    });
+    const update = {
+        type: 'projects-panel-updated',
+        version: 1,
+        sequence: 2,
+        mode: 'replace',
+        html: '<p>current</p>',
+        searchCatalog: makeCatalog('current'),
+        groupOrders: [],
+        favoriteProjectIds: [],
+    };
+    harness.windowListeners.message({ data: update });
+    harness.windowListeners.message({ data: { ...update, sequence: 1, html: '<p>stale</p>' } });
+
+    assert.equal(harness.projectsPanel.innerHTML, '<p>current</p>');
+    assert.deepEqual(toPlain(harness.messages.filter(
+        message => message.type === 'request-full-refresh'
+    )), []);
+});
+
 test('SESSION-CONTROLLER-001 validates lazy responses and preserves independent background-tab scroll state', () => {
     const harness = createDashboardHarness();
     assert.equal(harness.context.normalizeDashboardTab('unknown'), 'open');

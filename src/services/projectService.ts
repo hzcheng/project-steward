@@ -14,6 +14,7 @@ import type { ProjectCatalogMutationOptions } from '../projects/projectCatalogSy
 import BaseService from './baseService';
 import ColorService from './colorService';
 import {
+    ProjectCatalogConfigurationChange,
     ProjectCatalogLocalStateV1,
     ProjectCatalogSyncService,
 } from './projectCatalogSyncService';
@@ -268,6 +269,11 @@ export default class ProjectService extends BaseService {
             return Promise.resolve();
         }
         return this.catalogSyncService.reconcile().then(() => undefined);
+    }
+
+    consumeProjectCatalogWriteEcho(change: ProjectCatalogConfigurationChange): boolean {
+        return this.useSettingsStorage()
+            && this.catalogSyncService.consumeConfigurationWriteEcho(change);
     }
 
     private saveGroupsWithMutation(

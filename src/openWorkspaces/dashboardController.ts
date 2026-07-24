@@ -194,6 +194,8 @@ export class OpenWorkspaceDashboardController {
             this.aggregate?.semanticRevision || null,
             this.options.getAttentionAggregate()?.aggregateRevision || null,
             this.options.getRunningCardAnimation(),
+            this.options.getGroups(),
+            this.options.getTodoSearchItems(),
         ])).digest('hex');
     }
 

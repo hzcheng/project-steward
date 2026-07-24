@@ -13,11 +13,56 @@ import {
     getOpenWorkspacesGroupContent,
 } from '../webview/webviewContent';
 
+export type ProjectsPanelUpdateMode = 'replace' | 'preserve-order';
+
+export interface ProjectGroupOrder {
+    groupId: string;
+    projectIds: string[];
+}
+
+export interface ProjectsPanelUpdatedMessage {
+    type: 'projects-panel-updated';
+    version: 1;
+    sequence: number;
+    mode: ProjectsPanelUpdateMode;
+    html: string;
+    searchCatalog: DashboardWorkspaceSearchCatalog;
+    groupOrders: ProjectGroupOrder[];
+    favoriteProjectIds: string[];
+}
+
+export interface BuildProjectsPanelUpdatedMessageInput {
+    sequence: number;
+    mode: ProjectsPanelUpdateMode;
+    html: string;
+    searchCatalog: DashboardWorkspaceSearchCatalog;
+    groupOrders: ProjectGroupOrder[];
+    favoriteProjectIds: string[];
+}
+
 export interface WorkspaceUpdatedMessage {
     type: 'workspace-updated';
     version: 2;
     currentWorkspaceCount: 0 | 1;
     html: string;
+}
+
+export function buildProjectsPanelUpdatedMessage(
+    input: BuildProjectsPanelUpdatedMessageInput
+): ProjectsPanelUpdatedMessage {
+    return {
+        type: 'projects-panel-updated',
+        version: 1,
+        sequence: input.sequence,
+        mode: input.mode,
+        html: input.html,
+        searchCatalog: input.searchCatalog,
+        groupOrders: input.groupOrders.map(group => ({
+            groupId: group.groupId,
+            projectIds: [...group.projectIds],
+        })),
+        favoriteProjectIds: [...input.favoriteProjectIds],
+    };
 }
 
 export interface BuildWorkspaceUpdatedMessageInput {

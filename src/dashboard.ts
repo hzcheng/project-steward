@@ -114,7 +114,9 @@ import { getErrorContent } from './dashboard/errorContent';
 import { GroupCollapseController } from './dashboard/groupCollapseController';
 import { DashboardLifecycleController } from './dashboard/lifecycleController';
 import { createDashboardMessageRouter } from './dashboard/messageRouter';
+import { ProjectsPanelController } from './dashboard/projectsPanelController';
 import { DashboardRuntimeController } from './dashboard/runtimeController';
+import type { ProjectsPanelUpdateMode } from './dashboard/webviewUpdateMessages';
 import { DashboardStartupController, settleMigration } from './dashboard/startupController';
 import { getDashboardWebviewOptions } from './dashboard/webviewOptions';
 import OpenWorkspaceBridgeClient from './openWorkspaces/bridgeClient';
@@ -1552,6 +1554,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         get openWorkspacesGroupCollapsed() { return groupCollapseController.getOpenWorkspacesCollapsed() },
         get todoSearchItems() { return todoService.getSearchItems() },
     };
+    const projectsPanelController = new ProjectsPanelController({
+        getGroups: () => projectService.getGroups(),
+        getSearchCatalog: () => buildWorkspaceDashboardSearchCatalog(
+            projectService.getGroups(),
+            getOpenWorkspaceCards(),
+            todoService.getSearchItems(),
+        ),
+        renderHtml: groups => getProjectsPanelContent(groups, stewardInfos),
+        postMessage: message => provider.postMessage(message),
+        refresh: reason => dashboardRuntimeController.refresh(reason),
+        isVisible: () => provider.visible,
+        logError,
+    });
     const dashboardStartupController = new DashboardStartupController({
         stewardInfos,
         relevantExtensions: RelevantExtensions,
@@ -1589,8 +1604,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         reconcileProjectCatalog: () => projectService.reconcileProjectCatalog(),
         consumeTodoDataWriteEcho: () => todoService.consumeCurrentSettingsDataLocalWriteEcho(),
+        consumeProjectCatalogWriteEcho: change =>
+            projectService.consumeProjectCatalogWriteEcho(change),
         applyProjectColorToCurrentWindow,
         refresh: refreshStewardViews,
+        refreshProjects: () => postProjectSurfacesUpdated('replace'),
         publishOpenWorkspace: followsFocusEvent => openWorkspaceController.publish(followsFocusEvent),
         evaluateAiSessionAttention: () => runSafeAiSessionRuntimeLifecycleTask(
             'evaluate-attention-window-state', evaluateAiSessionAttention
@@ -1996,8 +2014,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getRegisteredAiSessionProvider(providerId)?.service.invalidateCache();
     }
 
-    function refreshAfterMutation() {
-        dashboardRuntimeController.refreshAfterMutation();
+    function postProjectSurfacesUpdated(mode: ProjectsPanelUpdateMode): void {
+        projectsPanelController.postUpdated(mode);
+        openWorkspaceDashboardController.postUpdated();
+    }
+
+    function refreshAfterMutation(mode: ProjectsPanelUpdateMode = 'replace') {
+        postProjectSurfacesUpdated(mode);
+        applyProjectColorToCurrentWindow();
+        openWorkspaceController.publish();
     }
 
     function applyProjectColorToCurrentWindow(project: Project = null) {

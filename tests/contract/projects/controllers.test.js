@@ -96,7 +96,7 @@ test('PROJECT-ADD-PROJECTS-FROM-FOLDER-CONTROLLER-001 imports child folders and 
 
 test('PROJECT-ADD-PROJECTS-FROM-FOLDER-CONTROLLER-001 treats dialog and token cancellation as no-ops', async () => {
     let selection = [];
-    let refreshes = 0;
+    const refreshModes = [];
     let errors = 0;
     const controller = new AddProjectsFromFolderController({
         getCurrentWorkspacePath: () => null,
@@ -108,14 +108,14 @@ test('PROJECT-ADD-PROJECTS-FROM-FOLDER-CONTROLLER-001 treats dialog and token ca
         getRandomColor: () => '#fff',
         isFolderGitRepo: () => false,
         showErrorMessage: () => { errors += 1; },
-        refreshAfterMutation: () => { refreshes += 1; },
+        refreshAfterMutation: mode => refreshModes.push(mode),
         userCanceledToken: 'CanceledByUser',
     });
 
     await controller.addProjectsFromFolder();
     selection = [{ fsPath: '/work/canceled' }];
     await controller.addProjectsFromFolder();
-    assert.equal(refreshes, 0);
+    assert.deepEqual(refreshModes, []);
     assert.equal(errors, 0);
 });
 
@@ -134,14 +134,19 @@ test('PROJECT-FAVORITE-PROJECT-CONTROLLER-001 serializes toggle and drag orderin
             events.push('save');
             groups = nextGroups;
         },
-        refreshAfterMutation: () => events.push('refresh'),
+        refreshAfterMutation: mode => events.push(['refresh', mode]),
     });
 
     await controller.toggleProjectFavorite('b');
     await controller.reorderFavoriteProjects(['b', 'a', 'b', 'missing']);
     await controller.toggleProjectFavorite('missing');
 
-    assert.deepEqual(events, ['save', 'refresh', 'save', 'refresh']);
+    assert.deepEqual(events, [
+        'save',
+        ['refresh', undefined],
+        'save',
+        ['refresh', 'preserve-order'],
+    ]);
     assert.deepEqual(
         groups[0].projects.filter(project => project.favorite)
             .sort((left, right) => left.favoriteOrder - right.favoriteOrder)
@@ -158,17 +163,17 @@ test('PROJECT-PROJECT-ORDER-CONTROLLER-001 rebuilds groups from exact drag paylo
     }];
     const saves = [];
     const messages = [];
-    let refreshes = 0;
+    const refreshModes = [];
     const controller = new ProjectOrderController({
         getGroups: () => groups,
         saveGroups: async nextGroups => saves.push(nextGroups),
         showInformationMessage: message => messages.push(message),
-        refreshAfterMutation: () => { refreshes += 1; },
+        refreshAfterMutation: mode => refreshModes.push(mode),
     });
 
     await controller.reorderGroups(null);
     assert.deepEqual(messages, ['Invalid Argument passed to Reordering Projects.']);
-    assert.equal(refreshes, 0);
+    assert.deepEqual(refreshModes, []);
 
     await controller.reorderGroups([
         { groupId: 'group-b', projectIds: ['b1', 'a1'] },
@@ -181,7 +186,7 @@ test('PROJECT-PROJECT-ORDER-CONTROLLER-001 rebuilds groups from exact drag paylo
         { name: 'B', projects: ['b1', 'a1'] },
         { name: 'Group #2', projects: ['a2'] },
     ]);
-    assert.equal(refreshes, 1);
+    assert.deepEqual(refreshModes, ['preserve-order']);
 });
 
 test('TODO-GROUP-COLLAPSE-CONTROLLER-001 persists virtual and saved group collapse state', async () => {

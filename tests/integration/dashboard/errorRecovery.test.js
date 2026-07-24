@@ -323,6 +323,7 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 reconciles synchronized project data bef
         },
         applyProjectColorToCurrentWindow: () => events.push('color'),
         refresh: reason => events.push(['refresh', reason]),
+        refreshProjects: reason => events.push(['projects', reason]),
         publishOpenWorkspace: () => events.push('publish'),
         evaluateAiSessionAttention: () => undefined,
     });
@@ -334,8 +335,8 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 reconciles synchronized project data bef
     assert.deepEqual(events, [
         'reconcile:start',
         'reconcile:end',
+        ['projects', 'configuration-changed'],
         'color',
-        ['refresh', 'configuration-changed'],
         'publish',
     ]);
 });

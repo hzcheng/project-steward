@@ -24,6 +24,51 @@ function validateProjectsPanelMessage(message) {
         && typeof message.html === 'string';
 }
 
+function validateProjectsPanelUpdatedMessage(message) {
+    if (!message
+        || message.type !== 'projects-panel-updated'
+        || message.version !== 1
+        || !Number.isSafeInteger(message.sequence)
+        || message.sequence < 1
+        || (message.mode !== 'replace' && message.mode !== 'preserve-order')
+        || typeof message.html !== 'string'
+        || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog
+        || !Array.isArray(message.groupOrders)
+        || !Array.isArray(message.favoriteProjectIds)) {
+        return false;
+    }
+    var groupIds = new Set();
+    var savedProjectIds = new Set();
+    for (var group of message.groupOrders) {
+        if (!group
+            || typeof group.groupId !== 'string'
+            || !group.groupId
+            || groupIds.has(group.groupId)
+            || !Array.isArray(group.projectIds)) {
+            return false;
+        }
+        groupIds.add(group.groupId);
+        for (var projectId of group.projectIds) {
+            if (typeof projectId !== 'string'
+                || !projectId
+                || savedProjectIds.has(projectId)) {
+                return false;
+            }
+            savedProjectIds.add(projectId);
+        }
+    }
+    var favoriteIds = new Set();
+    for (var favoriteId of message.favoriteProjectIds) {
+        if (typeof favoriteId !== 'string'
+            || !favoriteId
+            || favoriteIds.has(favoriteId)) {
+            return false;
+        }
+        favoriteIds.add(favoriteId);
+    }
+    return true;
+}
+
 function validateTodoPanelMessage(message) {
     return !!message
         && message.type === 'todo-panel-content'
@@ -191,6 +236,7 @@ function initDashboard(options) {
     var projectsState = 'unloaded';
     var projectsRequestId = 0;
     var acceptedProjectsRequestId = 0;
+    var acceptedProjectsUpdateSequence = 0;
     var todoState = 'unloaded';
     var todoRequestId = 0;
     var acceptedTodoRequestId = 0;
@@ -530,6 +576,104 @@ function initDashboard(options) {
         return true;
     }
 
+    function getProjectIdsFromGroup(group) {
+        return Array.from(group.querySelectorAll('.project[data-id]:not([data-virtual-project])'))
+            .map(project => project.getAttribute('data-id'));
+    }
+
+    function arraysEqual(left, right) {
+        return left.length === right.length
+            && left.every((value, index) => value === right[index]);
+    }
+
+    function isProjectsPanelOrderConsistent(message) {
+        if (!panels.projects || typeof panels.projects.querySelectorAll !== 'function') {
+            return false;
+        }
+        var groups = Array.from(panels.projects.querySelectorAll(
+            '.groups-wrapper > .group[data-group-id]:not([data-virtual-group])'
+        ));
+        if (groups.length !== message.groupOrders.length) {
+            return false;
+        }
+        for (var index = 0; index < groups.length; index += 1) {
+            var expected = message.groupOrders[index];
+            if (groups[index].getAttribute('data-group-id') !== expected.groupId
+                || !arraysEqual(getProjectIdsFromGroup(groups[index]), expected.projectIds)) {
+                return false;
+            }
+        }
+        var favoritesGroup = panels.projects.querySelector(
+            '.group[data-system-group="__favorites"]'
+        );
+        var favoriteIds = favoritesGroup
+            ? Array.from(favoritesGroup.querySelectorAll('.project[data-id]'))
+                .map(project => project.getAttribute('data-id'))
+            : [];
+        return arraysEqual(favoriteIds, message.favoriteProjectIds);
+    }
+
+    function getProjectsFocusTarget() {
+        var activeElement = document.activeElement;
+        if (!activeElement || !panels.projects || !panels.projects.contains(activeElement)) {
+            return null;
+        }
+        var project = activeElement.closest ? activeElement.closest('.project[data-id]') : null;
+        var action = activeElement.closest ? activeElement.closest('[data-action]') : null;
+        return project ? {
+            projectId: project.getAttribute('data-id'),
+            action: action ? action.getAttribute('data-action') : null,
+        } : null;
+    }
+
+    function restoreProjectsFocus(target) {
+        if (!target || !panels.projects) {
+            return;
+        }
+        var project = Array.from(panels.projects.querySelectorAll('.project[data-id]'))
+            .find(candidate => candidate.getAttribute('data-id') === target.projectId);
+        if (!project) {
+            return;
+        }
+        var focusTarget = project;
+        if (target.action) {
+            focusTarget = Array.from(project.querySelectorAll('[data-action]'))
+                .find(candidate => candidate.getAttribute('data-action') === target.action)
+                || project;
+        }
+        if (focusTarget && typeof focusTarget.focus === 'function') {
+            focusTarget.focus();
+        }
+    }
+
+    function replaceProjectsPanelHtml(html) {
+        var focusTarget = getProjectsFocusTarget();
+        panels.projects.innerHTML = html;
+        projectsState = 'mounted';
+        if (typeof options.onProjectsMounted === 'function') {
+            options.onProjectsMounted(panels.projects);
+        }
+        restoreProjectsFocus(focusTarget);
+    }
+
+    function applyProjectsPanelUpdatedMessage(message) {
+        if (!validateProjectsPanelUpdatedMessage(message)
+            || message.sequence <= acceptedProjectsUpdateSequence
+            || !panels.projects) {
+            return false;
+        }
+        acceptedProjectsUpdateSequence = message.sequence;
+        replaceSearchCatalog(message.searchCatalog);
+        if (projectsState !== 'mounted') {
+            return true;
+        }
+        if (message.mode === 'preserve-order' && isProjectsPanelOrderConsistent(message)) {
+            return true;
+        }
+        replaceProjectsPanelHtml(message.html);
+        return true;
+    }
+
     function applyTodoPanelMessage(message) {
         if (!validateTodoPanelMessage(message)
             || todoState !== 'loading'
@@ -611,6 +755,18 @@ function initDashboard(options) {
         if (event && event.data && event.data.type === 'projects-panel-content') {
             applyProjectsPanelMessage(event.data);
         }
+        if (event && event.data && event.data.type === 'projects-panel-updated') {
+            if (validateProjectsPanelUpdatedMessage(event.data)
+                && event.data.sequence <= acceptedProjectsUpdateSequence) {
+                return;
+            }
+            if (!applyProjectsPanelUpdatedMessage(event.data)) {
+                options.postMessage({
+                    type: 'request-full-refresh',
+                    reason: 'invalid-projects-panel-update',
+                });
+            }
+        }
         if (event && event.data && event.data.type === 'todo-panel-content') {
             applyTodoPanelMessage(event.data);
         }
@@ -637,6 +793,7 @@ function initDashboard(options) {
     return {
         activateTab,
         applyProjectsPanelMessage,
+        applyProjectsPanelUpdatedMessage,
         applyTodoPanelMessage,
         applyTodoPanelUpdatedMessage,
         ensureProjectsPanel,
