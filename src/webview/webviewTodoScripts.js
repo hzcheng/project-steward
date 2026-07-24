@@ -337,6 +337,29 @@ function initTodos(options) {
             + '<button class="todo-primary-button steward-button" type="button" data-action="todo-undo">Undo</button></div>';
     }
 
+    function syncTodoListExpandedHeights() {
+        if (!root || !root.querySelectorAll) {
+            return;
+        }
+        var collapsedHeightValue = typeof getComputedStyle === 'function'
+            ? getComputedStyle(root).getPropertyValue('--todo-collapsed-item-height')
+            : '';
+        var collapsedHeight = parseFloat(collapsedHeightValue) || 58;
+        Array.from(root.querySelectorAll('.todo-list')).forEach(function (list) {
+            if (!list || !list.style || !list.querySelectorAll) {
+                return;
+            }
+            var expandedExtraHeight = Array.from(list.querySelectorAll('.todo-item.expanded'))
+                .reduce(function (total, item) {
+                    return total + Math.max(0, item.offsetHeight - collapsedHeight);
+                }, 0);
+            list.style.setProperty(
+                '--todo-list-expanded-extra-height',
+                expandedExtraHeight + 'px'
+            );
+        });
+    }
+
     function updateFeedback() {
         if (!root || !root.querySelector) {
             return;
@@ -384,6 +407,7 @@ function initTodos(options) {
                 + escapeHtml(state.announcement) + '</div>';
         }
         state.renderedSurfaceHtml = surfaceHtml;
+        syncTodoListExpandedHeights();
         updateFeedback();
         if (typeof options.onRendered === 'function') {
             options.onRendered(panelHost);
@@ -416,6 +440,7 @@ function initTodos(options) {
             patch.item.innerHTML = renderTodoBody(patch.todo);
         });
         state.renderedSurfaceHtml = renderListSurface();
+        syncTodoListExpandedHeights();
         updateFeedback();
         return true;
     }
@@ -492,6 +517,7 @@ function initTodos(options) {
             list.insertAdjacentHTML('afterend', '<p class="todo-group-empty">No visible todos</p>');
         }
         state.renderedSurfaceHtml = renderListSurface();
+        syncTodoListExpandedHeights();
         updateFeedback();
         return true;
     }

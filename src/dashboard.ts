@@ -1977,8 +1977,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 throw unsupportedVersionError;
             }
             const todoData = todoService.getData();
+            const config = getStewardConfiguration();
+            const todoRenderOptions = {
+                maxVisibleTodosPerGroup: getMaxVisibleTodosPerGroup(config),
+            };
             snapshot = buildTodoPanelSnapshot(todoData, todoViewState, revealedTodoId);
-            html = getTodoPanelContent(buildTodoViewModel(todoData, todoViewState, revealedTodoId));
+            html = getTodoPanelContent(
+                buildTodoViewModel(todoData, todoViewState, revealedTodoId),
+                todoRenderOptions,
+            );
         } catch (error) {
             if (!(error instanceof UnsupportedTodoDataVersionError)) {
                 throw error;
@@ -2009,6 +2016,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     todoService.getSearchItems(),
                 ),
             });
+    }
+
+    function getMaxVisibleTodosPerGroup(config: vscode.WorkspaceConfiguration): number {
+        const configuredItems = config.get('maxVisibleTodosPerGroup', 5);
+        const visibleItems = Math.floor(Number(configuredItems));
+        return Number.isFinite(visibleItems) && visibleItems > 0 ? visibleItems : 5;
     }
 
     async function runTodoPanelMutation(mutate: () => Promise<unknown>): Promise<boolean> {

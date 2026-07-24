@@ -2692,7 +2692,7 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('todo-list-surface'));
     assert.strictEqual(html.includes('todo-detail-surface'), false);
     assert.ok(html.includes('data-action="todo-open-detail" data-todo-id="todo-a" aria-expanded="false"'));
-    assert.strictEqual(html.includes('--todo-list-max-height'), false);
+    assert.ok(html.includes('--todo-list-max-height: 318px'));
     assert.ok(html.includes('Launch &lt;Group&gt;'));
     assert.ok(html.includes('Write &lt;spec&gt;'));
     assert.ok(html.includes('<span class="todo-title-text">Write &lt;spec&gt;</span>'));
@@ -4342,7 +4342,9 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("type: 'projects-panel-content'"));
     assert.ok(extensionHostSource.includes("type: 'todo-panel-content'"));
     assert.ok(extensionHostSource.includes('getProjectsPanelContent(projectService.getGroups(), stewardInfos)'));
-    assert.ok(extensionHostSource.includes('getTodoPanelContent(buildTodoViewModel(todoData'));
+    assert.ok(extensionHostSource.includes('getTodoPanelContent('));
+    assert.ok(extensionHostSource.includes('buildTodoViewModel(todoData, todoViewState, revealedTodoId)'));
+    assert.ok(extensionHostSource.includes('todoRenderOptions'));
     assert.ok(extensionHostSource.includes('getMaxVisibleTodosPerGroup('));
     assert.ok(webviewContentSource.includes("'maxVisibleProjectsPerGroup',"));
     assert.ok(webviewContentSource.includes('DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP = 5'));
@@ -4849,10 +4851,10 @@ function runSourceContractChecks(source) {
         'todo priority selected state should be driven by the radio checked state');
     const todoListRules = extractCssRules(styles, '.todo-list');
     const todoListRule = todoListRules.join('\n');
-    assert.ok(todoListRule.includes('overflow: visible')
-        && !todoListRule.includes('max-height:')
-        && !todoListRule.includes('overflow-y: auto'),
-        'todo lists should share the page scroll without nested group viewports');
+    assert.ok(todoListRule.includes(
+        'max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px))'
+    ) && todoListRule.includes('overflow-y: auto'),
+    'todo lists should honor the configured per-group viewport');
     assert.ok(todoListRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, 'gap: 0')),
         'shared item card margins should be the only spacing source inside TODO lists');
     const todoLastItemRule = extractCssRule(styles, '.todo-list > .steward-item-card:last-child');

@@ -189,7 +189,7 @@
                     "type": "number",
                     "default": 5,
                     "minimum": 1,
-                    "markdownDescription": "Deprecated. TODO groups now share the page scroll so titles and tasks remain continuously visible."
+                    "markdownDescription": "Maximum number of TODO cards visible in each group before the group list scrolls."
                 },
                 "projectSteward.maxVisibleProjectsPerGroup": {
                     "type": "number",
