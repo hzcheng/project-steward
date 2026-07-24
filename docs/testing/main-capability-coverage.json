@@ -2,7 +2,7 @@
     "version": 1,
     "audit": {
         "base": "2b34c653119bdf480f2af0330ee3809b51441807",
-        "head": "0e30949f0c0ec685f15037070bda94c10e1ea8d0",
+        "head": "e7d5f879ad84dbaced56d952ff8908408fc497e3",
         "ignoredDocumentationCommits": []
     },
     "capabilities": [
@@ -295,13 +295,15 @@
                 "2142e65dc2f4b127a25182fb1c28e1b5679a2b24",
                 "7665b340ac9a68718205462a2208a14dbc154191",
                 "0e77f61d2236067a3e2a208f8950bfd5dc3ec699",
-                "8e9a82e34f9b5821366ec64dd4231b01c92dcf50"
+                "8e9a82e34f9b5821366ec64dd4231b01c92dcf50",
+                "e7d5f879ad84dbaced56d952ff8908408fc497e3"
             ],
             "behaviors": [
                 "RUNTIME-TMUX-LAYOUT-001",
                 "RUNTIME-TMUX-NAMING-001",
                 "RUNTIME-TMUX-DISCOVERY-001",
-                "RUNTIME-TMUX-STORE-001"
+                "RUNTIME-TMUX-STORE-001",
+                "RUNTIME-TMUX-PROJECT-FIRST-WINDOW-001"
             ],
             "prGates": [
                 "test:deterministic:run"
