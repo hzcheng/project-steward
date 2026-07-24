@@ -446,6 +446,44 @@ test('WEBVIEW-WEBVIEW-CONTENT-001 renders OPEN PROJECTS and lazy PROJECTS TODO t
     assert.match(html, /data-id="current"/);
 });
 
+test('WEBVIEW-RESOURCE-RECOVERY-001 gives every rendered document fresh versioned asset URLs', () => {
+    const render = () => webviewModules.content.getStewardContent(
+        { extensionPath: '/extension' },
+        { cspSource: 'test', asWebviewUri: uri => uri.toString() },
+        [],
+        {
+            config: { get: (_key, fallback) => fallback },
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: true },
+            otherStorageHasData: false,
+        },
+        true,
+    );
+    const first = render();
+    const second = render();
+    const revisionPattern = /file:\/\/\/extension\/media\/styles\.css\?stewardAssetRevision=(\d+)/;
+    const firstRevision = first.match(revisionPattern);
+    const secondRevision = second.match(revisionPattern);
+
+    assert.ok(firstRevision, 'stylesheet URL must carry a document-scoped asset revision');
+    assert.ok(secondRevision, 'refreshed stylesheet URL must carry an asset revision');
+    assert.notEqual(firstRevision[1], secondRevision[1],
+        'a refreshed document must not reuse a possibly failed cached asset URL');
+    for (const asset of [
+        'fitty.min.js',
+        'dragula.min.js',
+        'dom-autoscroller.min.js',
+        'webviewProjectScripts.js',
+        'webviewDashboardScripts.js',
+        'webviewTodoScripts.js',
+        'webviewDnDScripts.js',
+        'webviewFilterScripts.js',
+    ]) {
+        assert.match(first, new RegExp(
+            `file:\\/\\/\\/extension\\/media\\/${asset.replace(/\./g, '\\.')}\\?stewardAssetRevision=${firstRevision[1]}`
+        ), `${asset} must share the document asset revision`);
+    }
+});
+
 test('WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001 SESSION-CONTROLLER-001 preserves OPEN PROJECTS and TODO mounted tab state', () => {
     const harness = createDashboardHarness();
     harness.context.window.scrollY = 12;

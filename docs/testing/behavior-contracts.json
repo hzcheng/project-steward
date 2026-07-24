@@ -1805,6 +1805,19 @@
     ]
   },
   {
+    "id": "WEBVIEW-RESOURCE-RECOVERY-001",
+    "domain": "webview",
+    "title": "Webview assets bypass stale failed resource loads after a document refresh",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewContent.ts"
+    ]
+  },
+  {
     "id": "TODO-GROUP-COLLAPSE-CONTROLLER-001",
     "domain": "todo",
     "title": "Group Collapse Controller behavior",

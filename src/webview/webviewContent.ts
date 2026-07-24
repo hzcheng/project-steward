@@ -78,6 +78,8 @@ interface AiSessionSurfaceViewModel {
     activeAiSessions?: ActiveAiSessionViewModel[];
 }
 
+let webviewAssetRevision = 0;
+
 export function getStewardContent(
     context: vscode.ExtensionContext,
     webview: vscode.Webview,
@@ -87,35 +89,41 @@ export function getStewardContent(
     workspaceCards: WorkspaceCardViewModel[] = [],
     otherWindowsStatus: OpenWorkspaceBridgeStatus = 'ready',
 ): string {
-    var stylesPath = getMediaResource(context, webview, 'styles.css');
-    var fittyPath = getMediaResource(context, webview, 'fitty.min.js');
-    var dragulaPath = getMediaResource(context, webview, 'dragula.min.js');
-    var autoScrollerPath = getMediaResource(context, webview, 'dom-autoscroller.min.js');
+    var assetRevision = String(++webviewAssetRevision);
+    var stylesPath = getMediaResource(context, webview, 'styles.css', assetRevision);
+    var fittyPath = getMediaResource(context, webview, 'fitty.min.js', assetRevision);
+    var dragulaPath = getMediaResource(context, webview, 'dragula.min.js', assetRevision);
+    var autoScrollerPath = getMediaResource(context, webview, 'dom-autoscroller.min.js', assetRevision);
 
     var projectScriptsPath = getMediaResource(
         context,
         webview,
-        'webviewProjectScripts.js'
+        'webviewProjectScripts.js',
+        assetRevision,
     );
     var dndScriptsPath = getMediaResource(
         context,
         webview,
-        'webviewDnDScripts.js'
+        'webviewDnDScripts.js',
+        assetRevision,
     );
     var dashboardScriptsPath = getMediaResource(
         context,
         webview,
-        'webviewDashboardScripts.js'
+        'webviewDashboardScripts.js',
+        assetRevision,
     );
     var todoScriptsPath = getMediaResource(
         context,
         webview,
-        'webviewTodoScripts.js'
+        'webviewTodoScripts.js',
+        assetRevision,
     );
     var filterScriptsPath = getMediaResource(
         context,
         webview,
-        'webviewFilterScripts.js'
+        'webviewFilterScripts.js',
+        assetRevision,
     );
 
     var customCss = infos.config.get('customCss') || '';
@@ -1225,12 +1233,13 @@ function getMaxVisibleAiSessions(config: vscode.WorkspaceConfiguration): number 
 function getMediaResource(
     context: vscode.ExtensionContext,
     webview: vscode.Webview,
-    name: string
+    name: string,
+    assetRevision: string,
 ) {
     let resource = vscode.Uri.file(
         path.join(context.extensionPath, 'media', name)
     );
     resource = webview.asWebviewUri(resource);
 
-    return resource;
+    return `${resource.toString()}?stewardAssetRevision=${assetRevision}`;
 }
