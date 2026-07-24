@@ -2687,17 +2687,19 @@ function runTodoViewModelChecks() {
         'completed TODOs must be stably projected after incomplete TODOs'
     );
 
-    const html = todoWebviewContent.getTodoPanelContent(hiddenCompleted, { maxVisibleTodosPerGroup: 7 });
+    const html = todoWebviewContent.getTodoPanelContent(hiddenCompleted);
     assert.ok(html.includes('todo-panel'));
-    assert.ok(html.includes('--todo-visible-items: 7;'));
-    assert.ok(html.includes('--todo-list-max-height: 448px;'));
-    assert.ok(html.includes('--todo-collapsed-item-height: 58px;'));
+    assert.ok(html.includes('todo-list-surface'));
+    assert.strictEqual(html.includes('todo-detail-surface'), false);
+    assert.ok(html.includes('data-action="todo-open-detail" data-todo-id="todo-a" aria-expanded="false"'));
+    assert.ok(html.includes('--todo-list-max-height: 318px'));
     assert.ok(html.includes('Launch &lt;Group&gt;'));
     assert.ok(html.includes('Write &lt;spec&gt;'));
-    assert.ok(html.includes('title="Write &lt;spec&gt;"'));
+    assert.ok(html.includes('<span class="todo-title-text">Write &lt;spec&gt;</span>'));
     assert.strictEqual(html.includes('Done task'), false);
     assert.ok(html.includes('1 completed hidden'));
-    assert.ok(html.includes('todo-page-header group-title steward-group-header'));
+    assert.ok(html.includes('todo-page-header todo-page-command-bar'));
+    assert.strictEqual(html.includes('todo-page-header group-title steward-group-header'), false);
     assert.ok(html.includes('todo-group-header group-title steward-group-header'));
     assert.ok(html.includes('todo-item steward-item-card'));
     assert.ok(html.includes('todo-item-accent steward-item-accent'));
@@ -2716,11 +2718,12 @@ function runTodoViewModelChecks() {
     assert.ok(html.includes('data-action="todo-rename-group"'));
     assert.ok(html.includes('data-action="todo-delete-group"'));
     assert.ok(html.includes('data-drag-todo-group'));
+    assert.ok(html.includes('data-drag-todo-item="todo-a"'));
     assert.ok(html.includes('todo-priority-badge steward-badge'));
     const todoTitleLineOpeningTag = '<div class="todo-title-line">';
     const todoTitleLineBody = extractHtmlElementBody(html, todoTitleLineOpeningTag);
     const todoTitleIndex = todoTitleLineBody.indexOf(
-        '<span class="todo-title-text" title="Write &lt;spec&gt;">Write &lt;spec&gt;</span>'
+        '<span class="todo-title-text">Write &lt;spec&gt;</span>'
     );
     const todoPriorityIndex = todoTitleLineBody.indexOf(
         '<span class="todo-priority-badge steward-badge">HIGH</span>'
@@ -2731,41 +2734,45 @@ function runTodoViewModelChecks() {
         todoTitleIndex < todoPriorityIndex,
         'todo titles should appear before their priority badges'
     );
-    assert.ok(html.includes('todo-item-footer steward-meta'));
     assert.ok(html.includes('todo-icon-button steward-icon-button'));
-    assert.ok(html.includes('type="button" data-action="todo-toggle-expanded"'),
-        'the native TODO expand button must provide Enter and Space activation');
-    assert.ok(html.includes('aria-expanded="false"'));
+    assert.ok(html.includes('data-action="todo-open-detail" data-todo-id="todo-a"'),
+        'the TODO title must provide Enter and Space detail activation');
+    assert.strictEqual(html.includes('data-action="todo-toggle-expanded"'), false);
     assert.strictEqual(html.includes('<li class="todo-item steward-item-card todo-priority-high" data-todo-id="todo-a" aria-expanded='), false,
         'TODO list items must not impersonate buttons or own the expand control state');
     assert.strictEqual(html.includes('role="button"'), false,
         'TODO cards with nested controls must not use role=button');
     assert.ok(html.includes('todo-item-content'));
-    assert.ok(html.includes('todo-item-footer'));
     const addFormCount = (html.match(/<form class="todo-add-form\b/g) || []).length;
-    assert.strictEqual(addFormCount, 1, 'TODO panels must render one reachable compose form');
+    assert.strictEqual(
+        addFormCount,
+        hiddenCompleted.groups.length + 1,
+        'TODO panels must render one global composer plus one composer per group'
+    );
     assert.ok(html.includes('<form class="todo-add-form todo-compose-panel steward-card" data-todo-form="add" hidden>'));
+    assert.strictEqual(
+        (html.match(/data-todo-form="quick-add"/g) || []).length,
+        hiddenCompleted.groups.length,
+        'every TODO group must render its full fixed-group composer'
+    );
+    assert.ok(html.includes(
+        'data-todo-form="quick-add" data-group-id="group-a" hidden'
+    ));
+    assert.ok(html.includes('<input type="hidden" name="groupId" value="group-a">'));
+    assert.ok(html.includes(
+        '<span class="todo-compose-group-fixed steward-meta" title="Launch &lt;Group&gt;"'
+    ));
     assert.ok(html.includes('name="title"'));
     assert.ok(html.includes('name="priority"'));
     assert.ok(html.includes('name="notes"'));
     assert.ok(html.includes('name="groupId"'));
     assert.ok(html.includes('data-action="todo-add"'));
     assert.ok(html.includes('data-action="todo-cancel-add"'));
-    assert.ok(html.includes('todo-edit-form'));
-    assert.ok(html.includes('todo-edit-panel'));
-    assert.ok(html.includes('todo-priority-segment'));
-    assert.ok(html.includes('data-action="todo-save-edit"'));
-    assert.ok(html.includes('data-action="todo-cancel-edit"'));
+    assert.strictEqual(html.includes('todo-edit-form'), false);
     assert.ok(html.includes('data-action="todo-toggle-show-completed"'));
 
     const defaultHtml = todoWebviewContent.getTodoPanelContent(hiddenCompleted);
-    assert.ok(defaultHtml.includes('--todo-visible-items: 5;'));
-    assert.ok(defaultHtml.includes('--todo-list-max-height: 318px;'));
-
     const configuredCardCount = 5;
-    const collapsedCardHeight = 58;
-    const interCardSpacing = 7;
-    const configuredMaxHeight = 318;
     const countRenderedTodoCards = content => (content.match(/<li class="todo-item steward-item-card\b/g) || []).length;
     const exactBoundaryHtml = todoWebviewContent.getTodoPanelContent(
         todoViewModel.buildTodoViewModel(makeTodoBoundaryData(configuredCardCount))
@@ -2775,17 +2782,9 @@ function runTodoViewModelChecks() {
     );
     assert.strictEqual(countRenderedTodoCards(exactBoundaryHtml), configuredCardCount);
     assert.strictEqual(countRenderedTodoCards(overflowBoundaryHtml), configuredCardCount + 1);
-    assert.ok(exactBoundaryHtml.includes('--todo-list-max-height: 318px;'));
-    assert.ok(overflowBoundaryHtml.includes('--todo-list-max-height: 318px;'));
-    assert.strictEqual(
-        (configuredCardCount * collapsedCardHeight) + ((configuredCardCount - 1) * interCardSpacing),
-        configuredMaxHeight
-    );
-    assert.ok(
-        ((configuredCardCount + 1) * collapsedCardHeight) + (configuredCardCount * interCardSpacing)
-            > configuredMaxHeight,
-        'N+1 rendered cards should exceed the unchanged N-card viewport height'
-    );
+    assert.ok(exactBoundaryHtml.includes('--todo-visible-items: 5'));
+    assert.ok(exactBoundaryHtml.includes('--todo-list-max-height: 318px'));
+    assert.ok(overflowBoundaryHtml.includes('--todo-list-max-height: 318px'));
 
     const emptyHtml = todoWebviewContent.getTodoPanelContent(todoViewModel.buildTodoViewModel({ version: 1, groups: [], todos: [] }));
     assert.ok(emptyHtml.includes('todo-empty-state steward-empty-state'));
@@ -2816,7 +2815,9 @@ function runTodoViewModelChecks() {
     assert.strictEqual(emptyGroupViewModel.isEmpty, false, 'a panel with an empty group is not globally empty');
     assert.ok(emptyGroupHtml.includes('data-todo-group-id="empty-group"'));
     assert.ok(emptyGroupHtml.includes('Empty Group'));
-    assert.ok(emptyGroupHtml.includes('data-action="todo-add" data-group-id="empty-group"'));
+    assert.ok(emptyGroupHtml.includes('data-action="todo-quick-add" data-group-id="empty-group"'));
+    assert.strictEqual((emptyGroupHtml.match(/<form class="todo-add-form\b/g) || []).length, 2,
+        'an empty group must keep the global composer and its fixed-group composer');
     assert.strictEqual(emptyGroupHtml.includes('No todos yet'), false);
 
     const dashboardViewModel = require('../out/webview/dashboardViewModel');
@@ -4340,7 +4341,9 @@ function runSourceContractChecks(source) {
     assert.ok(webviewContentSource.includes('class="group-title steward-section-header steward-group-header"'));
     assert.ok(webviewContentSource.includes('class="project steward-item-card"'));
     assert.ok(webviewContentSource.includes('class="project-border steward-item-accent"'));
-    assert.ok(webviewContentSource.includes('onTodoMounted: () =>'));
+    assert.ok(webviewContentSource.includes('onTodoMounted: (panel, message) =>'));
+    assert.ok(webviewContentSource.includes('todos.mount(panel, message.snapshot)'));
+    assert.ok(webviewContentSource.includes("'webviewTodoScripts.js'"));
     assert.ok(webviewContentSource.includes("window.__projectStewardSyncCollapseButton('todo')"));
     assert.ok(source.includes("setAttribute('aria-selected'"));
     assert.ok(source.includes("setAttribute('tabindex'"));
@@ -4350,14 +4353,17 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'request-projects-panel': async e =>"));
     assert.ok(extensionHostSource.includes("'request-todo-panel': async e =>"));
     assert.ok(packageJson.includes('"projectSteward.maxVisibleTodosPerGroup"'));
+    assert.ok(packageJson.includes('Maximum number of TODO cards visible in each group before the group list scrolls.'));
     assert.ok(packageJson.includes('"projectSteward.maxVisibleProjectsPerGroup"'));
     assert.strictEqual(extensionHostSource.includes('function handleStewardMessage('), false);
     assert.ok(extensionHostSource.includes('getAiSessionProviderIds: () => getRegisteredAiSessionProviders().map(provider => provider.id)'));
     assert.ok(extensionHostSource.includes("type: 'projects-panel-content'"));
     assert.ok(extensionHostSource.includes("type: 'todo-panel-content'"));
     assert.ok(extensionHostSource.includes('getProjectsPanelContent(projectService.getGroups(), stewardInfos)'));
-    assert.ok(extensionHostSource.includes('getTodoPanelContent(buildTodoViewModel(todoData'));
-    assert.ok(extensionHostSource.includes('getMaxVisibleTodosPerGroup(config)'));
+    assert.ok(extensionHostSource.includes('getTodoPanelContent('));
+    assert.ok(extensionHostSource.includes('buildTodoViewModel(todoData, todoViewState, revealedTodoId)'));
+    assert.ok(extensionHostSource.includes('todoRenderOptions'));
+    assert.ok(extensionHostSource.includes('getMaxVisibleTodosPerGroup('));
     assert.ok(webviewContentSource.includes("'maxVisibleProjectsPerGroup',"));
     assert.ok(webviewContentSource.includes('DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP = 5'));
     assert.ok(webviewContentSource.includes('--steward-max-visible-projects-per-group: ${maxVisibleProjectsPerGroup};'));
@@ -4430,8 +4436,8 @@ function runSourceContractChecks(source) {
     assert.ok(todoShowCompletedHandler.indexOf('await todoService.setShowCompleted(')
         < todoShowCompletedHandler.indexOf('revealedTodoId = undefined;'),
     'an explicit completed toggle must clear the temporary target only after persistence succeeds');
-    assert.strictEqual((extensionHostSource.match(/revealedTodoId = undefined;/g) || []).length, 1,
-        'the temporary target must persist until an explicit toggle or a later reveal replaces it');
+    assert.strictEqual((extensionHostSource.match(/revealedTodoId = undefined;/g) || []).length, 2,
+        'only legacy and versioned completed-visibility controls may clear the temporary target');
     assert.ok(extensionHostSource.includes('buildTodoViewModel(todoData, todoViewState, revealedTodoId)'),
         'all TODO panel refreshes must project the temporary reveal target');
     assert.ok(extensionHostSource.includes("'todo-update': async e =>"));
@@ -4616,7 +4622,7 @@ function runSourceContractChecks(source) {
         '.dashboard-search-section[data-section-type="todo"]',
         '.open-current-workspace-group', '.open-other-windows-group', '.dashboard-projects-loading',
         '.dashboard-todo-loading', '.todo-panel', '.todo-item', '.todo-priority-high',
-        '.todo-empty-state', '.todo-edit-form', '.steward-group-header', '.todo-page-header',
+        '.todo-empty-state', '.todo-edit-form', '.steward-group-header', '.todo-page-command-bar',
         '.todo-edit-panel', '.todo-priority-segment',
     ]) {
         assert.ok(styles.includes(selector), `missing ${selector}`);
@@ -4810,14 +4816,20 @@ function runSourceContractChecks(source) {
         && sharedDangerActionRule.includes('color: var(--vscode-errorForeground)'),
         'shared group header danger actions must retain their danger color on hover and keyboard focus');
 
-    const todoPageHeaderRules = extractCssRulesContainingSelector(styles, '.todo-page-header').join('\n');
-    for (const forbidden of [
-        'display:', 'width:', 'padding:', 'border:', 'border-radius:', 'background:', 'box-shadow:',
-        'font-family:', 'font-size:', 'font-weight:', 'line-height:', 'box-sizing:',
+    const todoPageCommandBarRule = extractCssRule(styles, '.todo-page-command-bar');
+    for (const declaration of [
+        'display: flex',
+        'width: 100%',
+        'min-width: 0',
+        'border: 0',
+        'background: transparent',
+        'box-shadow: none',
     ]) {
-        assert.strictEqual(cssRuleIncludesDeclaration(todoPageHeaderRules, forbidden), false,
-            `TODO page header must not own ${forbidden}`);
+        assert.ok(todoPageCommandBarRule.includes(declaration),
+            `TODO page command bar is missing ${declaration}`);
     }
+    assert.strictEqual(todoPageCommandBarRule.includes('border-radius:'), false,
+        'TODO page command bar must not look like another group shell');
 
     for (const selector of ['.todo-group-action', '.todo-square-button', '.todo-square-toggle']) {
         const todoActionRules = extractCssRulesContainingSelector(styles, selector).join('\n');
@@ -4845,11 +4857,11 @@ function runSourceContractChecks(source) {
         && todoGroupCountRule.includes('opacity: .55'),
         'todo group counts should not introduce a separate badge color language');
     const todoTitleRule = extractCssRule(styles, '.todo-title-text');
-    assert.ok(todoTitleRule.includes('display: block')
-        && todoTitleRule.includes('white-space: nowrap')
-        && todoTitleRule.includes('text-overflow: ellipsis')
-        && !todoTitleRule.includes('-webkit-line-clamp'),
-        'todo item titles should stay on one line and ellipsize');
+    assert.ok(todoTitleRule.includes('display: -webkit-box')
+        && todoTitleRule.includes('-webkit-line-clamp: 2')
+        && todoTitleRule.includes('overflow-wrap: anywhere')
+        && !todoTitleRule.includes('white-space: nowrap'),
+        'todo item titles should use two readable lines');
     const todoPriorityChoiceRule = extractCssRule(styles, '.todo-priority-choice');
     assert.ok(todoPriorityChoiceRule.includes('transition:'),
         'todo priority choices should animate visual selected-state changes');
@@ -4857,52 +4869,35 @@ function runSourceContractChecks(source) {
         'todo priority selected state should be driven by the radio checked state');
     const todoListRules = extractCssRules(styles, '.todo-list');
     const todoListRule = todoListRules.join('\n');
-    assert.ok(todoListRule.includes('max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px))')
-        && todoListRule.includes('overflow-y: auto'),
-        'todo lists should scroll inside each group when they exceed the configured collapsed-card count');
-    assert.ok(todoListRule.includes('var(--todo-list-expanded-extra-height, 0px)'),
-        'todo lists should add expanded-card content to the collapsed-card viewport height');
+    assert.ok(todoListRule.includes(
+        'max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px))'
+    ) && todoListRule.includes('overflow-y: auto'),
+    'todo lists should honor the configured per-group viewport');
     assert.ok(todoListRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, 'gap: 0')),
         'shared item card margins should be the only spacing source inside TODO lists');
     const todoLastItemRule = extractCssRule(styles, '.todo-list > .steward-item-card:last-child');
     assert.ok(cssRuleIncludesTopLevelDeclaration(todoLastItemRule, 'margin-bottom: 0'),
-        'the final configured TODO card should not add trailing margin beyond the max-height budget');
-    const todoListEditingRule = extractCssRule(styles, '.todo-list.has-editing-item');
-    assert.ok(todoListEditingRule.includes('max-height: none')
-        && todoListEditingRule.includes('overflow-y: visible'),
-        'editing a todo should remove the group list viewport limit so the full editor is visible');
-    assert.ok(styles.includes('.todo-item:not(.expanded)'),
-        'todo items should have a collapsed state that controls the visible-count height');
-    assert.ok(sharedItemCardRule.includes('&.expanded')
-        && sharedItemCardRule.includes('&.editing'),
-        'shared item cards should own expanded and editing states');
+        'the final TODO card should not add trailing margin');
     assert.ok(sharedItemCardRule.includes('height: 58px'),
         'collapsed todo items should keep the same normal card height as current workspace cards');
-    assert.ok(sharedItemCardRule.includes('height: auto')
-        && sharedItemCardRule.includes('min-height: 58px'),
-        'expanded todo items should open from the normal collapsed card height');
-    assert.ok(styles.includes('.todo-item.editing .todo-edit-form'),
-        'editing todo items should force the edit form to render');
-    const collapsedNotesRule = extractCssRule(styles, '.todo-item:not(.expanded) .todo-notes');
-    assert.ok(collapsedNotesRule.includes('white-space: nowrap'));
-    assert.ok(collapsedNotesRule.includes('text-overflow: ellipsis'));
-    assert.strictEqual(collapsedNotesRule.includes('display: none'), false);
-
-    const collapsedFooterRule = extractCssRule(styles, '.todo-item:not(.expanded) .todo-item-footer');
-    assert.ok(collapsedFooterRule.includes('display: none'));
-
-    const expandedNotesRule = extractCssRule(styles, '.todo-item.expanded .todo-notes,\n.todo-item.editing .todo-notes');
-    assert.ok(expandedNotesRule.includes('white-space: pre-wrap'));
+    assert.ok(styles.includes('.todo-item.expanded')
+        && styles.includes('-webkit-line-clamp: unset'),
+        'expanded TODO cards must show their complete title');
+    const detailNotesRule = extractCssRule(styles, '.todo-detail-notes');
+    assert.ok(detailNotesRule.includes('white-space: pre-wrap'),
+        'inline TODO detail notes must preserve every line');
 
     assert.ok(compiledStyles.includes('.group.collapsed .collapse-icon svg'),
         'collapsed groups must keep the existing SVG rotation path');
+    assert.ok(compiledStyles.includes('.todo-group.collapsed .todo-group-chevron svg'),
+        'collapsed TODO groups must rotate their centered chevron to the right');
     assert.strictEqual(
         compiledStyles.includes('.todo-group-collapse-button[aria-expanded=false] .collapse-icon'),
         false,
         'TODO group collapse must not add a parent transform on top of the existing SVG rotation'
     );
-    assert.ok(compiledStyles.includes('.todo-expand-control[aria-expanded=false] svg'),
-        'the independent TODO expand control must retain its own SVG rotation');
+    assert.ok(compiledStyles.includes('.todo-inline-detail'),
+        'TODO cards must expose their details inline');
 
     const completedRules = extractCompiledCssRulesContainingSelector(
         compiledStyles,
@@ -4928,8 +4923,7 @@ function runSourceContractChecks(source) {
         'completed TODO selectors must not own a ::before layer'
     );
 
-    assert.ok(styles.includes('.todo-list.has-editing-item'));
-    assert.ok(styles.includes('.todo-item.editing .todo-edit-form'));
+    assert.ok(styles.includes('.todo-detail-edit-form'));
     assert.strictEqual(styles.includes('.todo-empty-orb'), false);
     assert.strictEqual(styles.includes('.todo-empty-primary'), false);
     assert.strictEqual(styles.includes('.todo-empty-secondary'), false);

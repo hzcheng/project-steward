@@ -66,6 +66,7 @@ async function main() {
     const aliasRebinds = [];
     let simulatedAliasRebind = false;
     let dashboardCommandRegistrationInvocations = 0;
+    let attentionShutdownCalls = 0;
     const patch = (prototype, name, replacement) => {
         const original = prototype[name];
         prototype[name] = replacement;
@@ -106,6 +107,7 @@ async function main() {
         const { TmuxRuntimeBindingStore } = require('../../../out/aiSessions/tmuxRuntimeBindingStore');
         const { TmuxRuntimeDiscovery } = require('../../../out/aiSessions/tmuxRuntimeDiscovery');
         const { AiSessionAttentionController } = require('../../../out/aiSessions/attentionController');
+        const AttentionBridgeClient = require('../../../out/aiSessions/attentionBridgeClient').default;
         const AiSessionAliasController = require('../../../out/aiSessions/aliasController').default;
         const { DashboardCommandRegistration } = require('../../../out/dashboard/commandRegistration');
 
@@ -158,6 +160,14 @@ async function main() {
         patch(AiSessionAttentionController.prototype, 'evaluate', async () => ({
             enabled: true, published: true, inScopeSessionKeys: [], eventIdsBySession: {}, overflowedSessionKeys: [],
         }));
+        const originalAttentionShutdown = AttentionBridgeClient.prototype.shutdown;
+        patch(AttentionBridgeClient.prototype, 'shutdown', async function () {
+            attentionShutdownCalls += 1;
+            if (typeof originalAttentionShutdown === 'function') {
+                await originalAttentionShutdown.call(this);
+            }
+            events.push('attention-shutdown-complete');
+        });
 
         delete require.cache[require.resolve(dashboardPath)];
         const dashboard = require(dashboardPath);
@@ -168,6 +178,10 @@ async function main() {
             failure = error instanceof Error ? error.message : String(error);
         }
         await new Promise(resolve => setImmediate(resolve));
+        if (failure === null) {
+            await dashboard.deactivate();
+            events.push('dashboard-deactivated');
+        }
         process.stdout.write(JSON.stringify({
             events,
             failure,
@@ -175,6 +189,7 @@ async function main() {
             registeredCommands: vscode.registeredCommands,
             dashboardCommandRegistrationInvocations,
             aliasRebinds,
+            attentionShutdownCalls,
         }));
     } finally {
         for (const subscription of context.subscriptions.slice().reverse()) subscription.dispose?.();

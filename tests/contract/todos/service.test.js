@@ -133,6 +133,63 @@ test('TODO-TODO-ORDERING-MUTATION-001 accepts exact visible reorder and rejects 
     await assert.rejects(() => harness.service.reorderGroups(['a', 'a']), /exactly/);
 });
 
+test('TODO-TODO-EXACT-RESTORE-001 restores identity and relative order between surviving neighbors', async () => {
+    const harness = makeStorageHarness({ global: {
+        version: 1,
+        groups: [
+            { id: 'a', title: 'A', collapsed: false, order: 0 },
+            { id: 'b', title: 'B', collapsed: false, order: 1 },
+        ],
+        todos: [
+            { ...makeData('a').todos[0], id: 'a1', groupId: 'a', title: 'First', order: 0 },
+            { ...makeData('a').todos[0], id: 'a2', groupId: 'a', title: 'Deleted', order: 1 },
+            { ...makeData('a').todos[0], id: 'a3', groupId: 'a', title: 'Third', order: 2 },
+            { ...makeData('b').todos[0], id: 'b1', groupId: 'b', title: 'Other', order: 0 },
+        ],
+    } });
+    const deleted = harness.service.getData().todos.find(todo => todo.id === 'a2');
+
+    await harness.service.deleteTodo('a2');
+    await harness.service.restoreTodo(deleted, { beforeId: 'a1', afterId: 'a3' });
+
+    assert.deepEqual(
+        harness.service.getData().todos.filter(todo => todo.groupId === 'a')
+            .sort((left, right) => left.order - right.order)
+            .map(todo => [todo.id, todo.title]),
+        [['a1', 'First'], ['a2', 'Deleted'], ['a3', 'Third']]
+    );
+});
+
+test('TODO-TODO-EXACT-RESTORE-001 moves a todo to the top and compacts both groups', async () => {
+    const harness = makeStorageHarness({ global: {
+        version: 1,
+        groups: [
+            { id: 'a', title: 'A', collapsed: false, order: 0 },
+            { id: 'b', title: 'B', collapsed: false, order: 1 },
+        ],
+        todos: [
+            { ...makeData('a').todos[0], id: 'a1', groupId: 'a', order: 0 },
+            { ...makeData('a').todos[0], id: 'a2', groupId: 'a', order: 1 },
+            { ...makeData('b').todos[0], id: 'b1', groupId: 'b', order: 0 },
+        ],
+    } });
+
+    await harness.service.moveTodo('a2', 'b');
+
+    assert.deepEqual(
+        harness.service.getData().todos.filter(todo => todo.groupId === 'a')
+            .sort((left, right) => left.order - right.order)
+            .map(todo => [todo.id, todo.order]),
+        [['a1', 0]]
+    );
+    assert.deepEqual(
+        harness.service.getData().todos.filter(todo => todo.groupId === 'b')
+            .sort((left, right) => left.order - right.order)
+            .map(todo => [todo.id, todo.order]),
+        [['a2', 0], ['b1', 1]]
+    );
+});
+
 test('TODO-TODO-STORAGE-RESOLUTION-001 reads only the configured backend and isolates future versions', () => {
     const harness = makeStorageHarness({
         global: makeData('global'),
@@ -149,6 +206,49 @@ test('TODO-TODO-STORAGE-RESOLUTION-001 reads only the configured backend and iso
     harness.values.global = null;
     assert.equal(harness.service.getUnsupportedVersionError(), undefined);
     assert.deepEqual(harness.service.getSearchItems().map(item => item.title), ['settings item']);
+});
+
+test('TODO-COMPLETION-INCREMENTAL-001 consumes only current successful local Settings write echoes', async () => {
+    const local = makeStorageHarness({
+        settings: makeData('settings'),
+        useSettings: true,
+    });
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+
+    await local.service.completeTodo('todo-settings', true);
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), true);
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+
+    await local.service.completeTodo('todo-settings', false);
+    await local.service.completeTodo('todo-settings', false);
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), true);
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), true);
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+
+    await local.service.completeTodo('todo-settings', true);
+    const formerLocalValue = JSON.parse(JSON.stringify(local.values.settings));
+    local.values.settings = makeData('external');
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+    local.values.settings = formerLocalValue;
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+
+    await local.service.completeTodo('todo-settings', false);
+    const valueBeforeUnsupported = JSON.parse(JSON.stringify(local.values.settings));
+    local.values.settings = { version: 2, groups: [], todos: [] };
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+    local.values.settings = valueBeforeUnsupported;
+    assert.equal(local.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
+
+    const rejected = makeStorageHarness({
+        settings: makeData('rejected'),
+        useSettings: true,
+        updateSettings: async () => { throw new Error('settings unavailable'); },
+    });
+    await assert.rejects(
+        () => rejected.service.completeTodo('todo-rejected', true),
+        /settings unavailable/
+    );
+    assert.equal(rejected.service.consumeCurrentSettingsDataLocalWriteEcho(), false);
 });
 
 test('TODO-TODO-MIGRATION-001 copies a sole non-empty source and refuses conflicting stores', async () => {

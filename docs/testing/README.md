@@ -34,10 +34,13 @@ The standard layered commands are:
 npm run test:unit
 npm run test:contract
 npm run test:integration
+npm run test:browser
 npm run test:deterministic
 ```
 
 `test:deterministic` covers the full unit, contract, and integration suite with controlled fakes and temporary data. It does not replace the isolated real-environment smoke:
+
+`test:browser` launches the pinned Chromium distributed by `playwright-chromium`. It renders production Webview markup, CSS, and browser scripts to protect computed layout behavior that synthetic DOM tests cannot observe. After `npm ci`, run `npx playwright install chromium` if the browser cache is not already populated.
 
 ```bash
 PROJECT_STEWARD_TMUX_PATH=/usr/bin/tmux npm run test:tmux:smoke

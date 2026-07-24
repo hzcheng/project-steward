@@ -464,6 +464,19 @@
     ]
   },
   {
+    "id": "ATTENTION-SINGLE-RUN-COMPLETION-DEDUP-001",
+    "domain": "attention",
+    "title": "A single AI Session run publishes at most one completion event across provider and terminal signals",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/attentionController.ts"
+    ]
+  },
+  {
     "id": "SESSION-AI-SESSION-EXECUTION-CONTROLLER-001",
     "domain": "session",
     "title": "AI Session Execution Controller behavior",
@@ -722,6 +735,19 @@
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "WEBVIEW-AI-SESSION-CARD-ACTIVATION-001",
+    "domain": "webview",
+    "title": "AI session cards activate from their body without stealing nested controls",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/sessionCardInteraction.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewProjectScripts.js"
     ]
   },
   {
@@ -987,6 +1013,20 @@
     ]
   },
   {
+    "id": "ATTENTION-NEW-RUN-CLEARS-STALE-001",
+    "domain": "attention",
+    "title": "A new running turn clears stale attention from older runs of the same logical Session",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/attentionController.ts",
+      "src/aiSessions/attentionMonitor.ts"
+    ]
+  },
+  {
     "id": "SESSION-AI-SESSION-EXECUTION-MONITOR-001",
     "domain": "session",
     "title": "AI Session Execution Monitor behavior",
@@ -1103,6 +1143,21 @@
     ],
     "evidence": [
       "scripts/run-ai-session-safety-checks.js"
+    ]
+  },
+  {
+    "id": "ATTENTION-ACTIVE-UNREGISTER-ON-DEACTIVATE-001",
+    "domain": "attention",
+    "title": "Orderly extension deactivation awaits active attention owner unregister",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js",
+      "tests/contract/aiSessions/runtimeComposition.test.js"
+    ],
+    "evidence": [
+      "src/dashboard.ts",
+      "src/aiSessions/attentionBridgeClient.ts"
     ]
   },
   {
@@ -1264,6 +1319,20 @@
       "tests/contract/aiSessions/runtimeBackends.test.js"
     ],
     "evidence": [
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
+    "id": "RUNTIME-TMUX-PROJECT-FIRST-WINDOW-001",
+    "domain": "runtime",
+    "title": "First project runtime uses the tmux session initial window",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimeBackends.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/tmuxRuntimeBackend.ts",
       "scripts/run-ai-session-tmux-checks.js"
     ]
   },
@@ -1805,6 +1874,19 @@
     ]
   },
   {
+    "id": "WEBVIEW-RESOURCE-RECOVERY-001",
+    "domain": "webview",
+    "title": "Webview assets bypass stale failed resource loads after a document refresh",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewContent.ts"
+    ]
+  },
+  {
     "id": "TODO-GROUP-COLLAPSE-CONTROLLER-001",
     "domain": "todo",
     "title": "Group Collapse Controller behavior",
@@ -1868,6 +1950,249 @@
     ],
     "evidence": [
       "scripts/run-dashboard-webview-checks.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-COMMAND-SNAPSHOT-001",
+    "domain": "todo",
+    "title": "Todo Command Snapshot behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/todos/types.test.js"
+    ],
+    "evidence": [
+      "src/todos/viewModel.ts"
+    ]
+  },
+  {
+    "id": "TODO-TODO-EXACT-RESTORE-001",
+    "domain": "todo",
+    "title": "Todo Exact Restore behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/service.test.js"
+    ],
+    "evidence": [
+      "src/todos/service.ts"
+    ]
+  },
+  {
+    "id": "TODO-TODO-COMMAND-CONTROLLER-001",
+    "domain": "todo",
+    "title": "Todo Incremental Command Coordination behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/commandController.test.js"
+    ],
+    "evidence": [
+      "src/todos/commandController.ts",
+      "src/dashboard.ts"
+    ]
+  },
+  {
+    "id": "TODO-COMPLETION-INCREMENTAL-001",
+    "domain": "todo",
+    "title": "Todo completion patches one card without reloading the Dashboard or list surface",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/service.test.js",
+      "tests/integration/dashboard/errorRecovery.test.js",
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/todos/service.ts",
+      "src/dashboard/lifecycleController.ts",
+      "src/dashboard.ts",
+      "src/webview/webviewTodoScripts.js",
+      "src/webview/webviewDnDScripts.js"
+    ]
+  },
+  {
+    "id": "TODO-PAGE-HIERARCHY-001",
+    "domain": "todo",
+    "title": "Todo page command bar remains distinct from real group headers",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoContent.test.js"
+    ],
+    "evidence": [
+      "src/todos/webviewContent.ts",
+      "src/webview/webviewTodoScripts.js",
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "TODO-TODO-CONTINUOUS-LAYOUT-001",
+    "domain": "todo",
+    "title": "Todo Continuous Page Layout behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoContent.test.js"
+    ],
+    "evidence": [
+      "src/todos/webviewContent.ts",
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "TODO-MAX-VISIBLE-PER-GROUP-001",
+    "domain": "todo",
+    "title": "Configured maximum visible TODOs bounds each group without breaking inline details or incremental updates",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoContent.test.js",
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/todos/webviewContent.ts",
+      "src/dashboard.ts",
+      "src/webview/webviewTodoScripts.js",
+      "media/styles.scss",
+      "package.json"
+    ]
+  },
+  {
+    "id": "TODO-BROWSER-EXPANDED-LAYOUT-001",
+    "domain": "todo",
+    "title": "Expanded TODO cards own their complete Chromium layout height",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/browser/todoLayout.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js",
+      "src/todos/webviewContent.ts",
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "TODO-TODO-FOCUSED-DETAIL-001",
+    "domain": "todo",
+    "title": "Todo Inline Detail Entry behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoContent.test.js"
+    ],
+    "evidence": [
+      "src/todos/webviewContent.ts",
+      "media/styles.scss"
+    ]
+  },
+  {
+    "id": "TODO-FOCUSED-DETAIL-001",
+    "domain": "todo",
+    "title": "Todo Inline Detail Toggle behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoContent.test.js",
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/todos/webviewContent.ts",
+      "src/webview/webviewTodoScripts.js"
+    ]
+  },
+  {
+    "id": "TODO-INCREMENTAL-ROOT-001",
+    "domain": "todo",
+    "title": "Todo Stable Incremental Root behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js",
+      "src/webview/webviewDashboardScripts.js"
+    ]
+  },
+  {
+    "id": "TODO-OPTIMISTIC-ROLLBACK-001",
+    "domain": "todo",
+    "title": "Todo Optimistic Rollback behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js"
+    ]
+  },
+  {
+    "id": "TODO-STALE-RESULT-001",
+    "domain": "todo",
+    "title": "Todo Stale Command Result behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js"
+    ]
+  },
+  {
+    "id": "TODO-QUICK-CREATE-001",
+    "domain": "todo",
+    "title": "Todo Group Full Create behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoInteraction.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js"
+    ]
+  },
+  {
+    "id": "TODO-SINGLE-CREATE-DISPATCH-001",
+    "domain": "todo",
+    "title": "A single Todo composer submission dispatches exactly one create command",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/browser/todoCreation.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js",
+      "src/webview/webviewProjectScripts.js"
+    ]
+  },
+  {
+    "id": "TODO-TODO-PRIORITY-SIGNAL-001",
+    "domain": "todo",
+    "title": "Todo Exceptional Priority Signal behavior",
+    "priority": "P2",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/todoContent.test.js"
+    ],
+    "evidence": [
+      "src/todos/webviewContent.ts"
+    ]
+  },
+  {
+    "id": "TODO-TODO-UNDO-001",
+    "domain": "todo",
+    "title": "Todo Timed Exact Undo behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/commandController.test.js"
+    ],
+    "evidence": [
+      "src/todos/commandController.ts"
     ]
   },
   {
@@ -2373,9 +2698,40 @@
     ]
   },
   {
-    "id": "ATTENTION-TERMINAL-CLOSE-WIRING-001",
+    "id": "ATTENTION-RUNTIME-EXIT-NEUTRAL-001",
     "domain": "attention",
-    "title": "Production terminal close wiring preserves unread attention",
+    "title": "Runtime exit never synthesizes attention",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js",
+      "tests/integration/dashboard/terminalCloseWiring.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/attentionController.ts",
+      "src/dashboard.ts"
+    ]
+  },
+  {
+    "id": "ATTENTION-EXPLICIT-SESSION-CLOSE-001",
+    "domain": "attention",
+    "title": "User-confirmed session close acknowledges existing attention without synthesizing completion",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/sessionControllers.test.js",
+      "tests/integration/dashboard/terminalCloseWiring.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/attentionController.ts",
+      "src/aiSessions/terminalCommandController.ts",
+      "src/dashboard.ts"
+    ]
+  },
+  {
+    "id": "ATTENTION-USER-TERMINAL-CLOSE-001",
+    "domain": "attention",
+    "title": "User-closing a managed terminal acknowledges existing attention without creating completion attention",
     "priority": "P0",
     "status": "automated",
     "owners": [
@@ -2596,6 +2952,28 @@
     ]
   },
   {
+    "id": "PROJECT-INCREMENTAL-REFRESH-001",
+    "domain": "project",
+    "title": "Projects mutations preserve the Dashboard and update only the necessary project surface",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/persistence/projectCatalogSync.test.js",
+      "tests/contract/projects/panelController.test.js",
+      "tests/contract/openProjects/dashboardController.test.js",
+      "tests/integration/dashboard/errorRecovery.test.js",
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "src/services/projectCatalogSyncService.ts",
+      "src/dashboard/lifecycleController.ts",
+      "src/dashboard/projectsPanelController.ts",
+      "src/openWorkspaces/dashboardController.ts",
+      "src/webview/webviewDashboardScripts.js",
+      "src/dashboard.ts"
+    ]
+  },
+  {
     "id": "OPEN-WORKSPACE-NAVIGATION-001",
     "domain": "open-project",
     "title": "Workspace navigation uses exact URIs and fails closed without root substitution",
@@ -2621,6 +2999,34 @@
       "scripts/lib/mainCapabilityCoverage.js",
       "docs/testing/main-capability-coverage.json",
       ".github/workflows/verify.yml"
+    ]
+  },
+  {
+    "id": "ARCH-MAIN-CAPABILITY-CURRENCY-001",
+    "domain": "architecture",
+    "title": "Implementation commits cannot remain beyond the recorded capability audit head",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/unit/tooling/mainCapabilityCoverage.test.js"
+    ],
+    "evidence": [
+      "scripts/check-behavior-contracts.js",
+      "scripts/lib/mainCapabilityCoverage.js",
+      "docs/testing/main-capability-coverage.json"
+    ]
+  },
+  {
+    "id": "WEBVIEW-LAZY-PANEL-RECOVERY-001",
+    "domain": "webview",
+    "title": "Lazy dashboard panels recover from a missing initial response",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/webviewState.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewDashboardScripts.js"
     ]
   },
   {

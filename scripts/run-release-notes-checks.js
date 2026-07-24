@@ -15,8 +15,8 @@ function runReleaseContentChecks() {
     const readme = read('README.md');
     const changelog = read('CHANGELOG.md');
     const packageMetadata = JSON.parse(read('package.json'));
-    assert.strictEqual(packageMetadata.version, '2.1.5',
-        'the CI and tmux rebinding release must increment the Project Steward patch version');
+    assert.strictEqual(packageMetadata.version, '2.1.6',
+        'the TODO, attention, and tmux reload release must increment the Project Steward patch version');
     const currentReleaseMarker = `## [${packageMetadata.version}]`;
     assert.ok(changelog.includes(currentReleaseMarker),
         'CHANGELOG must contain the package.json release version');
@@ -41,12 +41,14 @@ function runReleaseContentChecks() {
         assert.match(workspaceFirstRelease, pattern, `2.1.4 CHANGELOG release must document ${label}`);
     }
 
-    assert.match(currentRelease, /CI[\s\S]{0,160}(?:Linux|Windows|tmux)/i,
-        'current CHANGELOG release must document the cross-platform CI gate');
+    assert.match(currentRelease, /TODO[\s\S]{0,160}(?:inline|incremental)/i,
+        'current CHANGELOG release must document the continuous TODO workflow');
+    assert.match(currentRelease, /Session exit[\s\S]{0,200}(?:red|attention)/i,
+        'current CHANGELOG release must document attention-neutral Session exit');
+    assert.match(currentRelease, /terminal PID[\s\S]{0,160}tmux client session/i,
+        'current CHANGELOG release must document tmux viewer recovery after reload');
     assert.match(currentRelease, /behavior[\s-]+contract/i,
-        'current CHANGELOG release must document behavior contract coverage');
-    assert.match(currentRelease, /rebind[\s\S]{0,80}tmux[\s\S]{0,100}Codex[\s\S]{0,100}(?:thread|session)/i,
-        'current CHANGELOG release must document Codex tmux thread rebinding');
+        'current CHANGELOG release must document regression coverage');
     assert.match(packageMetadata.description, /workspace/i,
         'package metadata must describe the workspace-first product boundary');
 }

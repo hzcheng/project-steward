@@ -309,6 +309,7 @@ function createTmuxBackendHarness(options = {}) {
             return options.availability || { available: true, version: '3.2a' };
         },
         getExecutablePath: () => '/opt/tmux',
+        getClientSessionForProcess: async () => null,
         setExecutablePath: () => undefined,
         listWindows: async () => {
             operations.push({ type: 'list-windows' });
@@ -558,6 +559,7 @@ function createTmuxBackendHarness(options = {}) {
         discovery,
         runtimeStore,
         attachStore,
+        getTerminals: () => terminals.filter(terminal => !terminal.disposed),
         withCreationLock: async (key, operation) => {
             operations.push({ type: 'lock-queued', key });
             const previous = lockQueues.get(key) || Promise.resolve();
@@ -4686,7 +4688,11 @@ async function runTmuxBackendChecks() {
         'a renamed project card must reuse the workspace-owned creation-time container');
     assert.match(secondProject.tmux.windowName, /^claude-Audit-failover-[0-9a-f]{8}$/);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-session').length, 1);
-    assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 2);
+    assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 1);
+    assert.strictEqual(projectHarness.windows.length, 2,
+        'the first project runtime must use the tmux session initial window');
+    assert.strictEqual(projectHarness.windows.some(item => item.windowName === 'project-steward'), false,
+        'project layout must not retain an empty bootstrap window');
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'configure-window').length, 2);
     const firstProjectRequest = {
         identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
@@ -4697,13 +4703,14 @@ async function runTmuxBackendChecks() {
     assert.deepStrictEqual(reusedFirstProject.tmux, firstProject.tmux,
         'an existing identity must reuse its actual creation-time locator after display changes');
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-session').length, 1);
-    assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 2);
+    assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 1);
     assert.strictEqual(projectHarness.terminals.length, 1);
     assert.strictEqual(projectHarness.terminals[0].creationOptions.name,
         'Project Steward: App [tmux]');
     assert.strictEqual(projectHarness.terminals[0].creationOptions.shellPath, '/opt/tmux');
     assert.deepStrictEqual(projectHarness.terminals[0].creationOptions.shellArgs,
-        ['attach-session', '-t', firstProject.tmux.sessionName]);
+        ['attach-session', '-t', firstProject.tmux.sessionName],
+        'managed viewers must attach without replacing a live viewer');
     assert.strictEqual(projectHarness.terminals[0].creationOptions.env.TMUX, null);
     assert.match(projectHarness.terminals[0].creationOptions.env.PROJECT_STEWARD_TMUX_ATTACH_ID,
         /^[0-9a-f]{32}$/,
@@ -4868,7 +4875,6 @@ async function runTmuxBackendChecks() {
         null,
         { ...validTargetWindow, metadata: { ...validTargetMetadata, workspaceScopeIdentity: 'other' } },
         { ...validTargetWindow, metadata: { ...validTargetMetadata, provider: 'kimi' } },
-        { ...validTargetWindow, metadata: { ...validTargetMetadata, sessionId: 'other' } },
         { ...validTargetWindow, windowName: 'other-window' },
         { ...validTargetWindow, metadata: { managed: '1', version: '2', layout: 'project' } },
     ]) {
@@ -4882,6 +4888,11 @@ async function runTmuxBackendChecks() {
         assert.strictEqual(projectHarness.terminals.length, terminalCount,
             'a changed target must not create an attach terminal');
     }
+    projectHarness.setTargetWindow({
+        ...validTargetWindow,
+        metadata: { ...validTargetMetadata, sessionId: 'rebound-session' },
+    });
+    await projectBackend.focus(firstProject);
 
     const readableFocusIdentity = {
         provider: 'codex', workspaceScopeIdentity: 'readable-focus',
@@ -5118,7 +5129,7 @@ async function runTmuxBackendChecks() {
         }, 'project'),
     ]);
     assert.strictEqual(concurrentProjectHarness.operations.filter(item => item.type === 'new-session').length, 1);
-    assert.strictEqual(concurrentProjectHarness.operations.filter(item => item.type === 'new-window').length, 2);
+    assert.strictEqual(concurrentProjectHarness.operations.filter(item => item.type === 'new-window').length, 1);
 
     const projectOwnershipHarness = createTmuxBackendHarness();
     const requestedOwnershipIdentity = {
@@ -6921,7 +6932,7 @@ async function runTmuxBackendChecks() {
         .ensureResume(nonzeroSessionRequest, 'session');
     assert.strictEqual(nonzeroSessionHarness.operations.filter(item => item.type === 'new-session').length, 2);
 
-    const nonzeroProjectHarness = createTmuxBackendHarness({ failCreateWindowNonzeroCount: 1 });
+    const nonzeroProjectHarness = createTmuxBackendHarness({ failCreateSessionNonzeroCount: 1 });
     const nonzeroProjectRequest = {
         identity: { provider: 'claude', workspaceScopeIdentity: 'nonzero-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Claude: Nonzero',
@@ -6935,8 +6946,8 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(nonzeroProjectHarness.ambiguous.size, 0);
     await new backendModule.TmuxRuntimeBackend(nonzeroProjectHarness.dependencies)
         .ensureResume(nonzeroProjectRequest, 'project');
-    assert.strictEqual(nonzeroProjectHarness.operations.filter(item => item.type === 'new-session').length, 1);
-    assert.strictEqual(nonzeroProjectHarness.operations.filter(item => item.type === 'new-window').length, 2);
+    assert.strictEqual(nonzeroProjectHarness.operations.filter(item => item.type === 'new-session').length, 2);
+    assert.strictEqual(nonzeroProjectHarness.operations.filter(item => item.type === 'new-window').length, 0);
 
     const occupiedHarness = createTmuxBackendHarness();
     const occupiedIdentity = { provider: 'codex', workspaceScopeIdentity: 'occupied', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' };
@@ -6981,7 +6992,7 @@ async function runTmuxBackendChecks() {
         identity: unknownProjectIdentity, projectName: 'App', terminalName: 'AI Sessions: Occupied',
         launch: { executable: 'claude', args: ['--resume', 'unknown'] },
     }, 'project'), /occupied/);
-    assert.strictEqual(occupiedProjectHarness.operations.filter(item => item.type === 'new-window').length, 1);
+    assert.strictEqual(occupiedProjectHarness.operations.filter(item => item.type === 'new-window').length, 0);
 
     const unavailablePosixHarness = createTmuxBackendHarness({
         availability: { available: false, category: 'not-found', message: 'tmux unavailable' },
@@ -7002,6 +7013,44 @@ async function runTmuxBackendChecks() {
         launch: { executable: 'codex', args: ['resume', 's1'] },
     }, 'session'), /POSIX/);
     assert.strictEqual(unavailableHarness.operations.filter(item => item.type === 'new-session').length, 0);
+
+    const missedReloadHarness = createTmuxBackendHarness();
+    const beforeMissedReload = new backendModule.TmuxRuntimeBackend(
+        missedReloadHarness.dependencies
+    );
+    const beforeMissedReloadRuntime = await beforeMissedReload.ensureResume({
+        identity: {
+            provider: 'codex',
+            workspaceScopeIdentity: 'missed-reload',
+            workspaceNavigationIdentity: 'nav-missed-reload',
+            workspaceRootHostPaths: ['/work'],
+            cwd: '/work',
+            sessionId: 'missed-reload-session',
+        },
+        projectName: 'Missed reload',
+        terminalName: 'AI Sessions: Missed reload',
+        launch: {
+            executable: 'codex',
+            args: ['resume', 'missed-reload-session'],
+            markerPath: '/tmp/missed-reload',
+        },
+    }, 'project');
+    await missedReloadHarness.attachStore.flush();
+    const createsBeforeMissedReloadFocus = missedReloadHarness.operations
+        .filter(item => item.type === 'create-terminal').length;
+    missedReloadHarness.terminals[0].shown = false;
+    const afterMissedReload = new backendModule.TmuxRuntimeBackend(
+        missedReloadHarness.dependencies
+    );
+    await afterMissedReload.focus(
+        afterMissedReload.find(beforeMissedReloadRuntime.identity)[0]
+    );
+    assert.strictEqual(missedReloadHarness.operations
+        .filter(item => item.type === 'create-terminal').length,
+    createsBeforeMissedReloadFocus,
+    'focus must recover a current-window attach terminal missed during reload');
+    assert.strictEqual(missedReloadHarness.terminals[0].shown, true,
+        'focus must reveal the recovered current-window attach terminal');
 
     const restoreHarness = createTmuxBackendHarness();
     const restoreBackend = new backendModule.TmuxRuntimeBackend(restoreHarness.dependencies);

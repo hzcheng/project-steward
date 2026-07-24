@@ -285,6 +285,7 @@ function runRealVsixArchiveChecks(mainPackage, bridgePackage) {
         'extension/media/webviewDnDScripts.js',
         'extension/media/webviewFilterScripts.js',
         'extension/media/webviewProjectScripts.js',
+        'extension/media/webviewTodoScripts.js',
         ...workspaceOutputs,
         ...openWorkspaceOutputs,
     ];
@@ -354,6 +355,7 @@ function runRealVsixArchiveChecks(mainPackage, bridgePackage) {
     for (const [archiveEntry, localPath] of [
         ['extension/media/styles.css', 'media/styles.css'],
         ['extension/media/webviewProjectScripts.js', 'media/webviewProjectScripts.js'],
+        ['extension/media/webviewTodoScripts.js', 'media/webviewTodoScripts.js'],
     ]) {
         assert.deepStrictEqual(mainEntries.get(archiveEntry), fs.readFileSync(path.join(repositoryRoot, localPath)),
             `${archiveEntry} must match the production-generated local asset`);
@@ -639,6 +641,7 @@ function run() {
     assertNotIncludes(mainIgnore, '!out/openWorkspaces/**', 'main VSIX ignore rules');
     assertIncludes(mainIgnore, 'out/**/*.map', 'main VSIX ignore rules');
     assertIncludes(mainIgnore, '!media/webviewProjectScripts.js', 'main VSIX ignore rules');
+    assertIncludes(mainIgnore, '!media/webviewTodoScripts.js', 'main VSIX ignore rules');
     assertIncludes(mainIgnore, '!media/styles.css', 'main VSIX ignore rules');
     assertIncludes(bridgeIgnore, 'src/**', 'UI Bridge VSIX ignore rules');
     assertIncludes(bridgeIgnore, 'out/**', 'UI Bridge VSIX ignore rules');
@@ -652,6 +655,7 @@ function run() {
         'out/openWorkspaces/navigationController.js',
         'dist/dashboard.js',
         'media/webviewProjectScripts.js',
+        'media/webviewTodoScripts.js',
         'media/styles.css',
         'extensions/attention-ui-bridge/dist/extension.js',
     ]) {

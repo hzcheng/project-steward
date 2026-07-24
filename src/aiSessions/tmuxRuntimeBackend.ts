@@ -7,6 +7,7 @@ import type {
     AiSessionCreateRuntimeRequest,
     AiSessionDurablePendingPromotionCandidate,
     AiSessionExecutableRuntimeBackend,
+    AiSessionManagedTmuxMetadata,
     AiSessionPendingRuntimeSnapshot,
     AiSessionResumeRuntimeRequest,
     AiSessionRuntimeIdentity,
@@ -52,9 +53,7 @@ import {
 } from './tmuxRuntimeBindingStore';
 import { getTmuxCollisionRuntimes, TmuxRuntimeDiscovery } from './tmuxRuntimeDiscovery';
 
-const PROJECT_BOOTSTRAP_WINDOW = 'project-steward';
 const SESSION_WINDOW = 'ai-session';
-const PROJECT_BOOTSTRAP_COMMAND = 'exec /bin/sh';
 const TERMINAL_PROCESS_ID_TIMEOUT_MS = 2000;
 const MAX_LOCAL_PATH_LENGTH = 4096;
 const MAX_IDENTITY_FIELD_LENGTH = 512;
@@ -97,6 +96,7 @@ export interface TmuxRuntimeBackendDependencies<TTerminal> {
     discovery: TmuxRuntimeDiscovery;
     runtimeStore: TmuxRuntimeBindingStore;
     attachStore: TmuxAttachBindingStore;
+    getTerminals?(): readonly TTerminal[];
     withCreationLock<T>(key: string, operation: () => Promise<T>): Promise<T>;
     createTerminal(options: vscode.TerminalOptions): TTerminal;
     nowMs(): number;
@@ -658,10 +658,37 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             ...(metadata.layout === 'project' || runtime.tmux.windowName
                 ? { windowName: target.windowName } : {}),
         } : null;
-        if (!metadata || !actualLocator || !locatorsEqual(actualLocator, runtime.tmux)
-            || !aiSessionRuntimeIdentitiesEqual(metadata, runtime.identity)) {
+        if (!metadata || !actualLocator || !locatorsEqual(actualLocator, runtime.tmux)) {
             throw new AiSessionRuntimeTargetChangedError();
         }
+        if (!aiSessionRuntimeIdentitiesEqual(metadata, runtime.identity)
+            && !await this.matchesCommittedCodexThreadRebind(runtime, metadata)) {
+            throw new AiSessionRuntimeTargetChangedError();
+        }
+    }
+
+    private async matchesCommittedCodexThreadRebind(
+        runtime: AiSessionRuntimeSnapshot<TTerminal>,
+        metadata: AiSessionManagedTmuxMetadata
+    ): Promise<boolean> {
+        const sessionId = runtime.identity.sessionId;
+        if (runtime.identity.provider !== 'codex' || metadata.provider !== 'codex'
+            || !sessionId || !metadata.sessionId || !runtime.tmux) {
+            return false;
+        }
+        const known = await this.dependencies.runtimeStore.getKnown(
+            runtime.identity.provider,
+            sessionId,
+            runtime.identity.workspaceScopeIdentity
+        );
+        return !!known
+            && aiSessionRuntimeIdentitiesEqual(known, runtime.identity)
+            && locatorsEqual(known.locator, runtime.tmux)
+            && aiSessionRuntimeIdentitiesEqual(metadata, {
+                ...runtime.identity,
+                sessionId: metadata.sessionId,
+                pendingId: undefined,
+            });
     }
 
     getFocusedRuntime(terminal: TTerminal | null | undefined): AiSessionRuntimeSnapshot<TTerminal> | null {
@@ -778,8 +805,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             const bindingMatchesTerminal = binding
                 ? Boolean(recovery) || terminalMatchesBinding(attach, binding, launchSessionName)
                 : false;
+            const liveSessionName = !bindingMatchesTerminal && launchSessionName === null
+                ? await this.dependencies.client.getClientSessionForProcess(processId)
+                : launchSessionName;
             let runtime = bindingMatchesTerminal ? this.runtimeForBinding(binding as TmuxAttachBinding)
-                : await this.runtimeForAttachSession(launchSessionName);
+                : await this.runtimeForAttachSession(liveSessionName);
             if (!bindingMatchesTerminal && runtime) {
                 binding = attachBinding(runtime, getTerminalCreationName(attach)
                     || this.getAttachTerminalName(runtime));
@@ -969,6 +999,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!projectTmuxSessionMatchesWorkspace(locator.sessionName, identity)) {
             throw new Error('The requested project tmux session is an unverified target.');
         }
+        if (!locator.windowName) {
+            throw new Error('A project tmux runtime requires a window name.');
+        }
         const hasSession = await this.dependencies.client.hasSession(locator.sessionName);
         const compatibleContainer = this.projectContainerIsVerified(locator, identity.workspaceScopeIdentity)
             || (hasSession && recordsEqual(
@@ -979,14 +1012,14 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             throw new Error('The requested project tmux session is occupied by an unverified target.');
         }
         if (!hasSession) {
+            await onProviderLaunch();
             await this.dependencies.client.createSession(
-                locator.sessionName, PROJECT_BOOTSTRAP_WINDOW, cwd, PROJECT_BOOTSTRAP_COMMAND
+                locator.sessionName, locator.windowName, cwd, command
             );
             await this.dependencies.client.setSessionOptions(locator.sessionName,
                 projectSessionMetadata(identity));
-        }
-        if (!locator.windowName) {
-            throw new Error('A project tmux runtime requires a window name.');
+            await this.dependencies.client.configureManagedWindow(locator.sessionName, locator.windowName);
+            return;
         }
         if (await this.locatorIsOccupied(locator)) {
             throw new Error('The requested project tmux window is occupied by an unverified target.');
@@ -1322,6 +1355,12 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             throw new Error('A tmux runtime must include a locator.');
         }
         const key = registryKey(runtime);
+        if (!this.attaches.has(key)) {
+            const terminals = this.dependencies.getTerminals?.() || [];
+            if (terminals.length) {
+                await this.restoreAttachTerminals(terminals);
+            }
+        }
         const selectingEntry = this.attaches.get(key);
         if (selectingEntry) {
             selectingEntry.focusEpoch++;
@@ -1999,13 +2038,21 @@ function getTmuxAttachSessionName(
 ): string | null {
     if (!creationOptions || !('shellPath' in creationOptions)
         || creationOptions.shellPath !== tmuxExecutablePath
-        || !Array.isArray(creationOptions.shellArgs)
-        || creationOptions.shellArgs.length !== 3
-        || creationOptions.shellArgs[0] !== 'attach-session'
-        || creationOptions.shellArgs[1] !== '-t') {
+        || !Array.isArray(creationOptions.shellArgs)) {
         return null;
     }
-    const sessionName = creationOptions.shellArgs[2];
+    const args = creationOptions.shellArgs;
+    const targetIndex = args.length === 3
+        && args[0] === 'attach-session'
+        && args[1] === '-t'
+        ? 2
+        : args.length === 4
+            && args[0] === 'attach-session'
+            && args[1] === '-d'
+            && args[2] === '-t'
+            ? 3
+            : -1;
+    const sessionName = targetIndex >= 0 ? args[targetIndex] : null;
     return typeof sessionName === 'string' && sessionName.length > 0
         ? sessionName
         : null;

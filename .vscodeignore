@@ -23,6 +23,7 @@ tslint.json
 DemoProjects.json
 media/*.scss
 !media/webviewProjectScripts.js
+!media/webviewTodoScripts.js
 !media/styles.css
 webpack.config.json
 *.gif

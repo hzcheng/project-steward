@@ -15,7 +15,9 @@ import {
     AddTodoInput,
     TodoDataV1,
     TodoGroup,
+    TodoItem,
     TodoPatch,
+    TodoRestorePosition,
     TodoSearchCatalogItem,
     TodoStorageConflictError,
     TodoViewState,
@@ -35,6 +37,11 @@ interface TodoStorageProvenance {
     version: typeof TODO_STORAGE_PROVENANCE_VERSION;
     activeBackend: TodoStorageBackend;
     inactiveFingerprint: string;
+}
+
+interface PendingSettingsWriteEcho {
+    id: number;
+    fingerprint: string;
 }
 
 interface TodoMemento {
@@ -91,6 +98,8 @@ export class TodoService {
     private mutationQueue: Promise<void> = Promise.resolve();
     private activeDataBackend: boolean | undefined;
     private inactiveDataFingerprint: string | undefined;
+    private pendingSettingsWriteEchoes: PendingSettingsWriteEcho[] = [];
+    private nextSettingsWriteEchoId = 0;
 
     constructor(contextOrDependencies: vscode.ExtensionContext | TodoServiceDependencies) {
         if (isDependencies(contextOrDependencies)) {
@@ -118,6 +127,28 @@ export class TodoService {
 
     getData(): TodoDataV1 {
         return this.getDataFromBackend(this.useSettings());
+    }
+
+    consumeCurrentSettingsDataLocalWriteEcho(): boolean {
+        if (!this.useSettings()) {
+            this.pendingSettingsWriteEchoes = [];
+            return false;
+        }
+        try {
+            const currentFingerprint = this.getDataFingerprint(this.getRawData(true));
+            const echoIndex = this.pendingSettingsWriteEchoes.findIndex(
+                echo => echo.fingerprint === currentFingerprint
+            );
+            if (echoIndex < 0) {
+                this.pendingSettingsWriteEchoes = [];
+                return false;
+            }
+            this.pendingSettingsWriteEchoes.splice(echoIndex, 1);
+            return true;
+        } catch (_error) {
+            this.pendingSettingsWriteEchoes = [];
+            return false;
+        }
     }
 
     getSearchItems(): TodoSearchCatalogItem[] {
@@ -304,8 +335,17 @@ export class TodoService {
             if (patch.priority !== undefined) {
                 todo.priority = normalizeTodoPriority(patch.priority);
             }
-            if (patch.groupId !== undefined && data.groups.some(group => group.id === patch.groupId)) {
+            if (patch.groupId !== undefined
+                && patch.groupId !== todo.groupId
+                && data.groups.some(group => group.id === patch.groupId)) {
+                const sourceGroupId = todo.groupId;
+                const targetTodos = data.todos
+                    .filter(item => item.groupId === patch.groupId && item.id !== todo.id)
+                    .sort((left, right) => left.order - right.order);
                 todo.groupId = patch.groupId;
+                targetTodos.unshift(todo);
+                targetTodos.forEach((item, order) => { item.order = order; });
+                this.compactGroupOrders(data, sourceGroupId);
             }
             todo.updatedAt = this.now();
 
@@ -335,6 +375,68 @@ export class TodoService {
         return this.enqueueDataMutation(async useSettings => {
             const data = this.getDataFromBackend(useSettings);
             data.todos = data.todos.filter(todo => todo.id !== id);
+            await this.saveDataNow(data, useSettings);
+            return data;
+        });
+    }
+
+    restoreTodo(item: TodoItem, position: TodoRestorePosition = {}): Promise<TodoDataV1> {
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
+            const targetGroup = data.groups.find(group => group.id === item.groupId);
+            if (!targetGroup) {
+                throw new Error('TODO restore group must exist.');
+            }
+
+            const previousGroupIds = new Set(data.todos
+                .filter(todo => todo.id === item.id)
+                .map(todo => todo.groupId));
+            data.todos = data.todos.filter(todo => todo.id !== item.id);
+            previousGroupIds.forEach(groupId => this.compactGroupOrders(data, groupId));
+
+            const targetTodos = data.todos
+                .filter(todo => todo.groupId === targetGroup.id)
+                .sort((left, right) => left.order - right.order);
+            let insertAt = targetTodos.findIndex(todo => todo.id === position.afterId);
+            if (insertAt < 0) {
+                const beforeIndex = targetTodos.findIndex(todo => todo.id === position.beforeId);
+                insertAt = beforeIndex >= 0
+                    ? beforeIndex + 1
+                    : Math.max(0, Math.min(Math.floor(item.order), targetTodos.length));
+            }
+
+            const restored: TodoItem = {
+                ...item,
+                groupId: targetGroup.id,
+            };
+            targetTodos.splice(insertAt, 0, restored);
+            targetTodos.forEach((todo, order) => { todo.order = order; });
+            data.todos.push(restored);
+            await this.saveDataNow(data, useSettings);
+            return data;
+        });
+    }
+
+    moveTodo(id: string, groupId: string): Promise<TodoDataV1> {
+        return this.enqueueDataMutation(async useSettings => {
+            const data = this.getDataFromBackend(useSettings);
+            const todo = data.todos.find(item => item.id === id);
+            const targetGroup = data.groups.find(group => group.id === groupId);
+            if (!todo || !targetGroup) {
+                throw new Error('TODO move item and group must exist.');
+            }
+
+            const sourceGroupId = todo.groupId;
+            const targetTodos = data.todos
+                .filter(item => item.groupId === groupId && item.id !== id)
+                .sort((left, right) => left.order - right.order);
+            todo.groupId = groupId;
+            todo.updatedAt = this.now();
+            targetTodos.unshift(todo);
+            targetTodos.forEach((item, order) => { item.order = order; });
+            if (sourceGroupId !== groupId) {
+                this.compactGroupOrders(data, sourceGroupId);
+            }
             await this.saveDataNow(data, useSettings);
             return data;
         });
@@ -421,7 +523,22 @@ export class TodoService {
 
     private async writeData(data: TodoDataV1, useSettings: boolean): Promise<void> {
         if (useSettings) {
-            await this.getWritableConfiguration().update(TODO_SETTINGS_KEY, data, GLOBAL_CONFIGURATION_TARGET);
+            const echo: PendingSettingsWriteEcho = {
+                id: ++this.nextSettingsWriteEchoId,
+                fingerprint: this.getDataFingerprint(data),
+            };
+            this.pendingSettingsWriteEchoes.push(echo);
+            try {
+                await this.getWritableConfiguration().update(
+                    TODO_SETTINGS_KEY,
+                    data,
+                    GLOBAL_CONFIGURATION_TARGET
+                );
+            } catch (error) {
+                this.pendingSettingsWriteEchoes = this.pendingSettingsWriteEchoes
+                    .filter(candidate => candidate.id !== echo.id);
+                throw error;
+            }
             return;
         }
 
@@ -580,6 +697,13 @@ export class TodoService {
         const requestedIdSet = new Set(requestedIds);
         return requestedIdSet.size === requestedIds.length
             && actualIds.every(id => requestedIdSet.has(id));
+    }
+
+    private compactGroupOrders(data: TodoDataV1, groupId: string): void {
+        data.todos
+            .filter(todo => todo.groupId === groupId)
+            .sort((left, right) => left.order - right.order)
+            .forEach((todo, order) => { todo.order = order; });
     }
 
     private resolveTargetGroup(data: TodoDataV1, requestedGroupId?: string): TodoGroup {

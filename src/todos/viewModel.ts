@@ -1,4 +1,11 @@
-import { TodoDataV1, TodoGroup, TodoItem, TodoViewState, normalizeTodoData } from './types';
+import {
+    TodoDataV1,
+    TodoGroup,
+    TodoItem,
+    TodoPanelSnapshot,
+    TodoViewState,
+    normalizeTodoData,
+} from './types';
 
 export interface TodoItemViewModel extends TodoItem {
     priorityLabel: string;
@@ -32,6 +39,22 @@ function toTodoItemViewModel(todo: TodoItem): TodoItemViewModel {
         ...todo,
         priorityLabel: PRIORITY_LABELS[todo.priority],
     };
+}
+
+export function buildTodoPanelSnapshot(
+    data: TodoDataV1,
+    viewState: Partial<TodoViewState> = {},
+    revealedTodoId?: string
+): TodoPanelSnapshot {
+    const snapshot: TodoPanelSnapshot = {
+        version: 1,
+        data: normalizeTodoData(data),
+        showCompleted: viewState.showCompleted === true,
+    };
+    if (revealedTodoId) {
+        snapshot.revealedTodoId = revealedTodoId;
+    }
+    return snapshot;
 }
 
 export function buildTodoViewModel(

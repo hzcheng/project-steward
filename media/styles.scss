@@ -984,6 +984,13 @@ body .project {
     box-sizing: border-box;
 }
 
+.todo-list-surface,
+.todo-detail-surface {
+    display: grid;
+    gap: 14px;
+    min-width: 0;
+}
+
 /* The `hidden` attribute must win over `display: grid/flex` on todo elements. */
 .todo-panel [hidden] {
     display: none !important;
@@ -999,13 +1006,50 @@ body .project {
     gap: 6px;
 }
 
-.todo-page-header,
 .todo-group-header {
     justify-content: space-between;
 }
 
-.todo-page-header {
-    min-height: 28px;
+.todo-page-command-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    min-height: 32px;
+    padding: 2px 4px 6px;
+    border: 0;
+    color: var(--steward-foreground);
+    background: transparent;
+    box-shadow: none;
+    box-sizing: border-box;
+}
+
+.todo-page-command-bar .todo-summary-copy strong {
+    font-size: 17px;
+    font-weight: 750;
+    letter-spacing: .02em;
+}
+
+.todo-page-command-bar .todo-summary-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 2px;
+    opacity: 1;
+    pointer-events: all;
+}
+
+.todo-page-command-bar .todo-summary-actions svg {
+    display: block;
+    width: 14px;
+    height: 14px;
+    fill: currentColor;
+}
+
+.todo-page-command-bar .todo-summary-actions svg[fill="none"] {
+    fill: none;
 }
 
 .todo-summary-copy {
@@ -1230,6 +1274,22 @@ body .project {
     resize: vertical;
 }
 
+.todo-compose-group-fixed {
+    display: inline-flex;
+    flex: 1 1 0;
+    align-items: center;
+    min-width: 0;
+    min-height: 28px;
+    padding: 5px 8px;
+    box-sizing: border-box;
+    overflow: hidden;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 6px;
+    background: var(--vscode-inputOption-activeBackground, var(--vscode-input-background));
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .todo-form-row {
     align-items: stretch;
 }
@@ -1267,8 +1327,8 @@ body .project {
     flex: 0 0 auto;
     align-items: center;
     justify-content: center;
-    width: 18px;
-    height: 18px;
+    width: 20px;
+    height: 20px;
     padding: 0;
     border: 0;
     color: inherit;
@@ -1281,12 +1341,26 @@ body .project {
     }
 }
 
-.todo-expand-control[aria-expanded="false"] svg {
-    transform: rotate(-90deg);
+.todo-group-chevron {
+    display: grid !important;
+    width: 12px;
+    height: 12px;
+    padding: 0 !important;
+    place-items: center;
+    line-height: 0;
+
+    svg {
+        display: block;
+        width: 9px !important;
+        height: 9px !important;
+        margin: 0 !important;
+        transform: rotate(0);
+        transform-origin: center;
+    }
 }
 
-.todo-expand-control svg {
-    transition: transform 120ms ease;
+.todo-group.collapsed .todo-group-chevron svg {
+    transform: rotate(-90deg);
 }
 
 .todo-group-header h2 {
@@ -1333,11 +1407,6 @@ body .project {
     margin-bottom: 0;
 }
 
-.todo-list.has-editing-item {
-    max-height: none;
-    overflow-y: visible;
-}
-
 .todo-item {
     display: grid;
     gap: 8px;
@@ -1350,25 +1419,6 @@ body .project {
 
 .todo-item.editing .todo-item-actions {
     opacity: 1;
-}
-
-.todo-item:not(.expanded) .todo-notes {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.todo-item:not(.expanded) .todo-item-footer {
-    display: none;
-}
-
-.todo-item:not(.expanded) .todo-edit-form {
-    display: none !important;
-}
-
-.todo-item.expanded .todo-notes,
-.todo-item.editing .todo-notes {
-    white-space: pre-wrap;
 }
 
 .todo-item-accent {
@@ -1471,20 +1521,40 @@ body .project {
 .todo-title-line {
     min-width: 0;
     overflow: hidden;
-    align-items: baseline;
+    align-items: flex-start;
     gap: 8px;
+}
+
+.todo-title-button {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+}
+
+.todo-title-button:focus-visible {
+    border-radius: 3px;
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 2px;
 }
 
 .todo-title-text {
     min-width: 0;
     overflow: hidden;
-    display: block;
+    display: -webkit-box;
     color: var(--vscode-foreground);
     font-size: 13px;
     font-weight: 600;
     line-height: 1.35;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
 }
 
 .todo-priority-badge {
@@ -1537,13 +1607,24 @@ body .project {
     flex: 0 0 auto;
     justify-content: flex-end;
     gap: 0;
-    opacity: 0;
+    opacity: .35;
     transition: opacity 120ms ease;
 }
 
 .todo-item:hover .todo-item-actions,
 .todo-item:focus-within .todo-item-actions {
     opacity: 1;
+}
+
+.todo-drag-handle {
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: -3px;
+    cursor: grab;
+}
+
+.todo-drag-handle:active {
+    cursor: grabbing;
 }
 
 .todo-item.completed .todo-title-text {
@@ -1559,6 +1640,50 @@ body .project {
 .todo-item.completed .todo-notes,
 .todo-item.completed .todo-item-footer {
     color: var(--vscode-descriptionForeground);
+}
+
+.todo-item.expanded {
+    height: var(--todo-expanded-item-height, auto) !important;
+    cursor: default;
+
+    .todo-title-text {
+        display: block;
+        overflow: visible;
+        -webkit-line-clamp: unset;
+    }
+}
+
+.todo-inline-detail {
+    display: grid;
+    gap: 8px;
+    margin: 10px 0 2px 20px;
+    padding: 10px 0 0;
+    border-top: 1px solid var(--vscode-panel-border);
+    cursor: default;
+}
+
+.todo-inline-row {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 10px;
+    min-width: 0;
+    align-items: start;
+}
+
+.todo-inline-label {
+    color: var(--vscode-descriptionForeground);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.45;
+}
+
+.todo-inline-value {
+    min-width: 0;
+    color: var(--vscode-foreground);
+    font-size: 11px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
 }
 
 .todo-edit-panel {
@@ -1645,6 +1770,109 @@ body .project {
     text-align: center;
 }
 
+.todo-detail-surface {
+    padding-bottom: 12px;
+}
+
+.todo-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.todo-detail-back {
+    flex: 0 0 auto;
+}
+
+.todo-detail-context {
+    min-width: 0;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+}
+
+.todo-detail-card {
+    display: grid;
+    gap: 14px;
+    padding: 14px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 12px;
+    background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+}
+
+.todo-detail-title {
+    margin: 0;
+    color: var(--vscode-foreground);
+    font-size: 18px;
+    font-weight: 650;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.todo-detail-notes {
+    margin: 0;
+    color: var(--vscode-descriptionForeground);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.todo-detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    font-size: 11px;
+}
+
+.todo-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.todo-detail-edit-form {
+    display: grid;
+    gap: 10px;
+}
+
+@media (max-width: 300px) {
+    .todo-inline-row {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 2px;
+    }
+
+    .todo-inline-detail {
+        margin-left: 0;
+    }
+}
+
+.todo-undo-region {
+    position: sticky;
+    bottom: 8px;
+    z-index: 5;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 8px;
+    color: var(--vscode-notifications-foreground, var(--vscode-foreground));
+    background: var(--vscode-notifications-background, var(--vscode-editorWidget-background));
+    box-shadow: 0 4px 16px var(--vscode-widget-shadow);
+}
+
+.todo-live-region {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 .open-current-workspace-group {
     .group-title-text {
         cursor: default !important;
@@ -1673,6 +1901,24 @@ body .project {
 
     body.steward-sidebar .project .codex-sessions {
         transition: none !important;
+    }
+}
+
+@media (max-width: 320px) {
+    .todo-compose-meta {
+        flex-wrap: wrap;
+    }
+
+    .todo-compose-meta select {
+        flex: 1 1 calc(50% - 3px);
+    }
+
+    .todo-detail-card {
+        padding: 10px;
+    }
+
+    .todo-item-actions {
+        opacity: .65;
     }
 }
 

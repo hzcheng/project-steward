@@ -52,7 +52,10 @@ for (const providerId of ['codex', 'kimi', 'claude']) {
             running: { state: 'running', reason: undefined },
             waiting: { state: 'needsAttention', reason: 'input-required' },
             completed: { state: 'needsAttention', reason: 'completed' },
-            stopped: { state: 'needsAttention', reason: manifest.lifecycle.stoppedReason },
+            stopped: {
+                state: manifest.lifecycle.stoppedPhase,
+                reason: manifest.lifecycle.stoppedReason,
+            },
         };
 
         for (const state of ['running', 'waiting', 'completed', 'stopped']) {
@@ -72,6 +75,32 @@ for (const providerId of ['codex', 'kimi', 'claude']) {
         }
     });
 }
+
+test('ATTENTION-ATTENTION-MONITOR-001 clears attention when an interrupted session becomes idle', () => {
+    const monitor = new AttentionMonitor({ now: () => 2000 });
+    const key = 'claude:interrupted';
+    monitor.evaluate([{ key, signal: {
+        token: 'claude:waiting:1000',
+        phase: 'needsAttention',
+        reason: 'input-required',
+        executionState: 'stopped',
+        occurredAtMs: 1000,
+    } }]);
+
+    const events = monitor.evaluate([{ key, signal: {
+        token: 'claude:user_interrupt:1001',
+        phase: 'idle',
+        executionState: 'stopped',
+        occurredAtMs: 1001,
+    } }]);
+
+    assert.deepEqual(events, []);
+    assert.deepEqual(monitor.getSnapshot()[key], {
+        state: 'idle',
+        stateChangedAt: 2000,
+        event: undefined,
+    });
+});
 
 test('ATTENTION-ATTENTION-PAYLOAD-001 validates privacy-safe owner snapshots and deterministic aggregation', () => {
     const projectId = attentionProject.getAttentionProjectKey('/fixtures/project');
@@ -253,12 +282,50 @@ test('ATTENTION-LOGICAL-SESSION-CARD-COUNT-001 counts logical sessions and retai
     );
 });
 
+test('ATTENTION-LOGICAL-SESSION-CARD-COUNT-001 counts scoped runtime keys as one logical session', () => {
+    const projectKey = attentionProject.getAttentionProjectKey('/fixtures/project');
+    const workspaceScopeIdentity = 'b'.repeat(64);
+    const sessionId = '019f9178-8dce-79d1-8b5d-d19ffa92c3dd';
+    const sessions = [
+        [100, 'tmux'],
+        [200, 'vscode'],
+        [300, 'tmux'],
+        [400, 'vscode'],
+        [500, 'tmux'],
+    ].map(([runStartedAtMs, backend], index) => ({
+        projectId: projectKey,
+        sessionKey: attentionProject.getAttentionRuntimeSessionKey({
+            workspaceScopeIdentity,
+            provider: 'codex',
+            sessionId,
+            runStartedAtMs,
+            backend,
+        }),
+        reasons: ['completed'],
+        eventIds: [`event-${index}`],
+        observedAtMs: runStartedAtMs,
+    }));
+
+    const summary = attentionProject.getAttentionProjectSummaries({
+        protocolVersion: 1,
+        aggregateRevision: 'c'.repeat(64),
+        generatedAtMs: 500,
+        sessions,
+    })[0];
+
+    assert.equal(summary.attentionCount, 1);
+    assert.equal(summary.sessions[0].sessionKey, `codex:${sessionId}`);
+    assert.deepEqual(summary.eventIds, [
+        'event-0', 'event-1', 'event-2', 'event-3', 'event-4',
+    ]);
+});
+
 for (const [providerId, sessionsKey] of [
     ['codex', 'codexSessions'],
     ['kimi', 'kimiSessions'],
     ['claude', 'claudeSessions'],
 ]) {
-    test(`ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 [${providerId}] retains unread completion through runtime handoff until acknowledgement`, async () => {
+    test(`ATTENTION-RUNTIME-EXIT-NEUTRAL-001 [${providerId}] does not synthesize attention from completed runtime state`, async () => {
         let runtime = { state: 'completed', runStartedAtMs: 900 };
         const publications = [];
         const runtimeLookups = [];
@@ -295,7 +362,6 @@ for (const [providerId, sessionsKey] of [
                 id: 'claude', projectSessionsKey: 'claudeSessions', service: { getLifecycleSignals: () => ({}) },
             }],
             getRuntimeById,
-            isRuntimeComplete: value => value.state === 'completed',
             publish: async items => { publications.push(items.map(item => ({ ...item }))); return true; },
             scheduleRefresh: () => undefined,
             postProjectsUpdated: () => undefined,
@@ -303,23 +369,320 @@ for (const [providerId, sessionsKey] of [
         });
 
         const first = await controller.evaluate();
-        const eventId = publications[0][0].eventId;
-        assert.deepEqual(first.eventIdsBySession[`${providerId}:session`], [eventId]);
+        assert.deepEqual(publications[0], []);
+        assert.deepEqual(first.eventIdsBySession, {});
         assert.deepEqual(runtimeLookups, [[providerId, 'session']]);
         runtimeLookups.length = 0;
         runtime = null;
         await controller.evaluate();
-        assert.deepEqual(publications[1].map(item => item.eventId), [eventId]);
+        assert.deepEqual(publications[1], []);
         assert.deepEqual(runtimeLookups, [[providerId, 'session']]);
-        runtimeLookups.length = 0;
-        controller.acknowledge([eventId]);
-        await controller.evaluate();
-        assert.deepEqual(publications[2], []);
-        assert.deepEqual(runtimeLookups, [[providerId, 'session']]);
+        assert.deepEqual(controller.getRecoverySessionEvents(), []);
     });
 }
 
-test('ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 releases completed runtime ownership only after published attention evidence', async () => {
+test('ATTENTION-SINGLE-RUN-COMPLETION-DEDUP-001 does not reopen an acknowledged provider completion when the terminal exit arrives', async () => {
+    const workspace = {
+        navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
+        kind: 'singleFolder', displayName: 'Fixture', navigationUri: 'file:///fixtures/project',
+        environment: 'local', roots: [{
+            id: 'root:fixture', name: 'Fixture', uri: 'file:///fixtures/project',
+            hostPath: '/fixtures/project', ordinal: 0,
+        }],
+    };
+    const workspaceSessions = {
+        sessionsByProvider: {
+            codex: [{ id: 'session', primaryRootId: 'root:fixture' }],
+            kimi: [],
+            claude: [],
+        },
+    };
+    const completionSignal = {
+        token: 'codex:task_complete:950:turn',
+        phase: 'needsAttention',
+        reason: 'completed',
+        executionState: 'stopped',
+        occurredAtMs: 950,
+    };
+    const runtime = { state: 'active', runStartedAtMs: 900 };
+    const publications = [];
+    const controller = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getWorkspaceTarget: () => ({
+            cardId: 'workspace:fixture',
+            workspace,
+            sessions: workspaceSessions,
+        }),
+        getProviders: () => [{
+            id: 'codex',
+            service: {
+                getLifecycleSignals: () => ({ session: completionSignal }),
+            },
+        }],
+        getRuntimeById: () => runtime,
+        publish: async items => {
+            publications.push(items.map(item => ({ ...item })));
+            return true;
+        },
+        scheduleRefresh: () => undefined,
+        nowMs: () => 1000,
+    });
+
+    await controller.evaluate();
+    const providerCompletionEventId = publications[0][0].eventId;
+    controller.acknowledge([providerCompletionEventId]);
+
+    runtime.state = 'completed';
+    const terminalEvaluation = await controller.evaluate();
+
+    assert.deepEqual(
+        terminalEvaluation.eventIdsBySession['codex:session'],
+        [providerCompletionEventId]
+    );
+    assert.equal(publications.at(-1)[0].eventId, providerCompletionEventId);
+    assert.equal(publications.at(-1)[0].state, 'acknowledged');
+    assert.equal(
+        controller.getLocalSnapshot()['codex:session'].event.eventId,
+        providerCompletionEventId
+    );
+    assert.equal(controller.getLocalSnapshot()['codex:session'].state, 'acknowledged');
+});
+
+test('ATTENTION-SINGLE-RUN-COMPLETION-DEDUP-001 keeps an acknowledged Kimi completion quiet when exit scopes the runtime key', async () => {
+    const workspace = {
+        navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
+        kind: 'singleFolder', displayName: 'Fixture', navigationUri: 'file:///fixtures/project',
+        environment: 'local', roots: [{
+            id: 'root:fixture', name: 'Fixture', uri: 'file:///fixtures/project',
+            hostPath: '/fixtures/project', ordinal: 0,
+        }],
+    };
+    const workspaceSessions = {
+        sessionsByProvider: {
+            codex: [],
+            kimi: [{ id: 'session', primaryRootId: 'root:fixture' }],
+            claude: [],
+        },
+    };
+    const completionSignal = {
+        token: 'kimi:TurnEnd:950:',
+        phase: 'needsAttention',
+        reason: 'completed',
+        executionState: 'stopped',
+        occurredAtMs: 950,
+    };
+    const runtime = { state: 'active', runStartedAtMs: 900 };
+    const publications = [];
+    const controller = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getWorkspaceTarget: () => ({
+            cardId: 'workspace:fixture',
+            workspace,
+            sessions: workspaceSessions,
+        }),
+        getProviders: () => [{
+            id: 'kimi',
+            service: {
+                getLifecycleSignals: () => ({ session: completionSignal }),
+            },
+        }],
+        getRuntimeById: () => runtime,
+        publish: async items => {
+            publications.push(items.map(item => ({ ...item })));
+            return true;
+        },
+        scheduleRefresh: () => undefined,
+        nowMs: () => 1000,
+    });
+
+    await controller.evaluate();
+    const acknowledgedEventId = publications[0][0].eventId;
+    controller.acknowledge([acknowledgedEventId]);
+
+    const runtimeKey = attentionProject.getAttentionRuntimeSessionKey({
+        workspaceScopeIdentity: 'a'.repeat(64),
+        provider: 'kimi',
+        sessionId: 'session',
+        runStartedAtMs: 900,
+        backend: 'vscode',
+    });
+    const exitEvaluation = await controller.evaluate([{
+        providerId: 'kimi',
+        sessionId: 'session',
+        attentionKey: runtimeKey,
+        runtime: { state: 'completed', runStartedAtMs: 900 },
+    }]);
+
+    assert.deepEqual(
+        Array.from(new Set(exitEvaluation.eventIdsBySession[runtimeKey])),
+        [acknowledgedEventId],
+        'runtime settlement must preserve the provider event identity'
+    );
+    assert.ok(
+        publications.at(-1).every(item => item.state === 'acknowledged'),
+        'runtime settlement must not republish an acknowledged completion as unread'
+    );
+    assert.deepEqual(
+        controller.getEffectiveAggregate().sessions,
+        [],
+        'an acknowledged completion must remain absent from the visible red-dot aggregate'
+    );
+});
+
+test('ATTENTION-NEW-RUN-CLEARS-STALE-001 clears an older run event when the logical Session starts running again', async () => {
+    const workspace = {
+        navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
+        kind: 'singleFolder', displayName: 'Fixture', navigationUri: 'file:///fixtures/project',
+        environment: 'local', roots: [{
+            id: 'root:fixture', name: 'Fixture', uri: 'file:///fixtures/project',
+            hostPath: '/fixtures/project', ordinal: 0,
+        }],
+    };
+    const workspaceSessions = {
+        sessionsByProvider: {
+            codex: [{ id: 'session', primaryRootId: 'root:fixture' }],
+            kimi: [],
+            claude: [],
+        },
+    };
+    const publications = [];
+    const refreshReasons = [];
+    let runtime = null;
+    let signal = undefined;
+    const controller = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getWorkspaceTarget: () => ({
+            cardId: 'workspace:fixture',
+            workspace,
+            sessions: workspaceSessions,
+        }),
+        getProviders: () => [{
+            id: 'codex',
+            service: {
+                getLifecycleSignals: () => signal ? { session: signal } : {},
+            },
+        }],
+        getRuntimeById: () => runtime,
+        publish: async items => {
+            publications.push(items.map(item => ({ ...item })));
+            return true;
+        },
+        scheduleRefresh: reason => refreshReasons.push(reason),
+        nowMs: () => 1000,
+    });
+
+    const oldRunKey = attentionProject.getAttentionRuntimeSessionKey({
+        workspaceScopeIdentity: 'a'.repeat(64),
+        provider: 'codex',
+        sessionId: 'session',
+        runStartedAtMs: 100,
+        backend: 'tmux',
+    });
+    signal = {
+        token: 'task-complete:100',
+        phase: 'needsAttention',
+        reason: 'completed',
+        executionState: 'stopped',
+        occurredAtMs: 100,
+    };
+    await controller.evaluate([{
+        providerId: 'codex',
+        sessionId: 'session',
+        attentionKey: oldRunKey,
+        runtime: { state: 'completed', runStartedAtMs: 100 },
+    }]);
+    assert.equal(publications[0].length, 1);
+
+    runtime = { state: 'active', runStartedAtMs: 200 };
+    signal = {
+        token: 'task-started:200',
+        phase: 'running',
+        executionState: 'running',
+        occurredAtMs: 200,
+    };
+    await controller.evaluate();
+
+    assert.deepEqual(publications[1], []);
+    assert.equal(controller.getLocalSnapshot()[oldRunKey], undefined);
+    assert.equal(controller.getLocalSnapshot()['codex:session'].state, 'running');
+    assert.deepEqual(controller.getRecoverySessionEvents(), []);
+    assert.deepEqual(refreshReasons, ['attention', 'attention']);
+});
+
+test('ATTENTION-RUNTIME-EXIT-NEUTRAL-001 completed runtime overrides never create attention without a provider event', async () => {
+    const workspace = {
+        navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
+        kind: 'singleFolder', displayName: 'Fixture', navigationUri: 'file:///fixtures/project',
+        environment: 'local', roots: [{
+            id: 'root:fixture', name: 'Fixture', uri: 'file:///fixtures/project',
+            hostPath: '/fixtures/project', ordinal: 0,
+        }],
+    };
+    const workspaceSessions = {
+        sessionsByProvider: {
+            codex: [{ id: 'session', primaryRootId: 'root:fixture' }],
+            kimi: [],
+            claude: [],
+        },
+    };
+    const publications = [];
+    const controller = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getWorkspaceTarget: () => ({
+            cardId: 'workspace:fixture',
+            workspace,
+            sessions: workspaceSessions,
+        }),
+        getProviders: () => [{
+            id: 'codex',
+            service: { getLifecycleSignals: () => ({}) },
+        }],
+        getRuntimeById: () => null,
+        publish: async items => {
+            publications.push(items.map(item => ({ ...item })));
+            return true;
+        },
+        scheduleRefresh: () => undefined,
+        nowMs: () => 1000,
+    });
+    const closedRunKey = attentionProject.getAttentionRuntimeSessionKey({
+        workspaceScopeIdentity: 'a'.repeat(64),
+        provider: 'codex',
+        sessionId: 'session',
+        runStartedAtMs: 100,
+        backend: 'vscode',
+    });
+    const naturalRunKey = attentionProject.getAttentionRuntimeSessionKey({
+        workspaceScopeIdentity: 'a'.repeat(64),
+        provider: 'codex',
+        sessionId: 'session',
+        runStartedAtMs: 200,
+        backend: 'vscode',
+    });
+
+    await controller.evaluate([{
+        providerId: 'codex',
+        sessionId: 'session',
+        attentionKey: closedRunKey,
+        runtime: { state: 'completed', runStartedAtMs: 100 },
+    }]);
+
+    assert.deepEqual(publications[0], []);
+    assert.equal(controller.getLocalSnapshot()[closedRunKey]?.event, undefined);
+    assert.deepEqual(controller.getRecoverySessionEvents(), []);
+
+    await controller.evaluate([{
+        providerId: 'codex',
+        sessionId: 'session',
+        attentionKey: naturalRunKey,
+        runtime: { state: 'completed', runStartedAtMs: 200 },
+    }]);
+    assert.deepEqual(publications[1], []);
+    assert.equal(controller.getLocalSnapshot()[naturalRunKey]?.event, undefined);
+    assert.deepEqual(controller.getRecoverySessionEvents(), []);
+});
+
+test('ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 releases no-event completions after attention evaluation', async () => {
     const released = [];
     const candidates = [
         { key: 'codex:complete', state: 'completed' },
@@ -338,10 +701,10 @@ test('ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 releases completed runtime o
         release: candidate => { released.push(candidate.key); },
     });
     assert.deepEqual(result, {
-        releasedKeys: ['codex:complete', 'kimi:stopped'],
-        retainedKeys: ['claude:retry'],
+        releasedKeys: ['claude:retry', 'codex:complete', 'kimi:stopped'],
+        retainedKeys: [],
     });
-    assert.deepEqual(released, ['codex:complete', 'kimi:stopped']);
+    assert.deepEqual(released, ['claude:retry', 'codex:complete', 'kimi:stopped']);
 });
 
 test('ATTENTION-PRODUCTION-ATTENTION-STORE-LIFECYCLE-001 rejects old owner events and retains the newest sequence', async t => {
@@ -528,4 +891,41 @@ test('ATTENTION-ATTENTION-BRIDGE-CLIENT-LIFECYCLE-001 ATTENTION-ATTENTION-BRIDGE
     assert.ok(errors.length >= 1);
     client.dispose();
     await flushAsync();
+});
+
+test('ATTENTION-ACTIVE-UNREGISTER-ON-DEACTIVATE-001 exposes an awaitable active unregister', async () => {
+    const unregisterStarted = createDeferred();
+    const unregisterReleased = createDeferred();
+    const vscode = { commands: {
+        registerCommand: () => ({ dispose() {} }),
+        executeCommand: async command => {
+            if (command === '_projectStewardAttention.bridge.handshake') {
+                return {
+                    accepted: true, protocolVersion: 1, bridgeExtensionVersion: 'fixture',
+                    capabilities: { snapshots: true, acknowledgements: true, atomicReplace: true },
+                };
+            }
+            if (command === '_projectStewardAttention.bridge.unregister') {
+                unregisterStarted.resolve();
+                await unregisterReleased.promise;
+            }
+            return undefined;
+        },
+    } };
+    const Client = loadFreshWithFakeVscode(
+        '../../../out/aiSessions/attentionBridgeClient', vscode, __dirname
+    ).default;
+    const client = new Client(() => undefined, () => undefined, {
+        mainExtensionVersion: 'fixture',
+    });
+    await flushAsync();
+
+    assert.equal(typeof client.shutdown, 'function');
+    let settled = false;
+    const shutdown = client.shutdown().then(() => { settled = true; });
+    await unregisterStarted.promise;
+    assert.equal(settled, false);
+    unregisterReleased.resolve();
+    await shutdown;
+    assert.equal(settled, true);
 });

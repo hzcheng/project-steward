@@ -156,6 +156,14 @@ function createDashboardHarness({ initialTab = 'open', initialSearchQuery = '', 
     const openPanel = createElement('dashboard-tab-open');
     const projectsPanel = createElement('dashboard-tab-projects');
     const todoPanel = createElement('dashboard-tab-todo');
+    const projectsLoading = createElement();
+    const todoLoading = createElement();
+    projectsPanel.querySelector = selector => selector === '.dashboard-projects-loading'
+        ? projectsLoading
+        : null;
+    todoPanel.querySelector = selector => selector === '.dashboard-todo-loading'
+        ? todoLoading
+        : null;
     const searchResults = createSearchElement();
     searchResults.id = 'dashboard-search-results';
     const catalogElement = { textContent: JSON.stringify(makeCatalog()) };
@@ -169,7 +177,9 @@ function createDashboardHarness({ initialTab = 'open', initialSearchQuery = '', 
     const storage = new Map([['projectSteward.activeDashboardTab', initialTab]]);
     const messages = [];
     const frames = [];
+    const timers = [];
     const windowListeners = {};
+    let nextTimerId = 1;
     const context = {
         document: {
             activeElement: null,
@@ -194,6 +204,16 @@ function createDashboardHarness({ initialTab = 'open', initialSearchQuery = '', 
             if (synchronousFrames) callback();
             else frames.push(callback);
         },
+        setTimeout(callback) {
+            const timer = { id: nextTimerId, callback, cancelled: false };
+            nextTimerId += 1;
+            timers.push(timer);
+            return timer.id;
+        },
+        clearTimeout(timerId) {
+            const timer = timers.find(candidate => candidate.id === timerId);
+            if (timer) timer.cancelled = true;
+        },
     };
     vm.runInNewContext(dashboardSource, context);
     const controller = context.initDashboard({
@@ -205,6 +225,14 @@ function createDashboardHarness({ initialTab = 'open', initialSearchQuery = '', 
         controller,
         messages,
         frames,
+        runNextTimer() {
+            let timer;
+            do {
+                timer = timers.shift();
+            } while (timer && timer.cancelled);
+            if (timer) timer.callback();
+            return Boolean(timer);
+        },
         storage,
         windowListeners,
         openButton,
@@ -213,15 +241,21 @@ function createDashboardHarness({ initialTab = 'open', initialSearchQuery = '', 
         openPanel,
         projectsPanel,
         todoPanel,
+        projectsLoading,
+        todoLoading,
         searchResults,
     };
 }
 
-function loadWebviewModules() {
+function loadWebviewModules(options = {}) {
     const vscode = createFakeVscode({});
     vscode.Uri = {
         file: value => ({ fsPath: value, path: value, toString: () => `file://${value}` }),
     };
+    const contentPath = require.resolve('../../../out/webview/webviewContent');
+    if (options.fresh) {
+        delete require.cache[contentPath];
+    }
     const previousLoad = Module._load;
     try {
         Module._load = function (request, parent, isMain) {
@@ -440,8 +474,69 @@ test('WEBVIEW-WEBVIEW-CONTENT-001 renders OPEN PROJECTS and lazy PROJECTS TODO t
         assert.match(html, new RegExp(`id="dashboard-tab-${tab}"`));
     }
     assert.match(html, /id="dashboard-search-catalog"/);
+    assert.match(html, /webviewTodoScripts\.js/);
+    assert.match(html, /initTodos\(/);
     assert.equal(html.includes('data-id="hidden"'), false);
     assert.match(html, /data-id="current"/);
+    assert.match(
+        html,
+        /onProjectsMounted: panel => \{\s*fitProjectHeaders\(panel\);\s*disposeDnD\(panel\);\s*initDnD\(panel\);/,
+        'Projects-only replacement must rebuild DnD bindings for the new cards'
+    );
+});
+
+test('WEBVIEW-RESOURCE-RECOVERY-001 gives every rendered document fresh versioned asset URLs', () => {
+    const render = () => webviewModules.content.getStewardContent(
+        { extensionPath: '/extension' },
+        { cspSource: 'test', asWebviewUri: uri => uri.toString() },
+        [],
+        {
+            config: { get: (_key, fallback) => fallback },
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: true },
+            otherStorageHasData: false,
+        },
+        true,
+    );
+    const first = render();
+    const second = render();
+    const freshModules = loadWebviewModules({ fresh: true });
+    const afterReactivation = freshModules.content.getStewardContent(
+        { extensionPath: '/extension' },
+        { cspSource: 'test', asWebviewUri: uri => uri.toString() },
+        [],
+        {
+            config: { get: (_key, fallback) => fallback },
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: true },
+            otherStorageHasData: false,
+        },
+        true,
+    );
+    const revisionPattern = /file:\/\/\/extension\/media\/styles\.css\?stewardAssetRevision=([a-z0-9]+-\d+)/;
+    const firstRevision = first.match(revisionPattern);
+    const secondRevision = second.match(revisionPattern);
+    const reactivatedRevision = afterReactivation.match(revisionPattern);
+
+    assert.ok(firstRevision, 'stylesheet URL must carry a document-scoped asset revision');
+    assert.ok(secondRevision, 'refreshed stylesheet URL must carry an asset revision');
+    assert.ok(reactivatedRevision, 'reactivated stylesheet URL must carry an asset revision');
+    assert.notEqual(firstRevision[1], secondRevision[1],
+        'a refreshed document must not reuse a possibly failed cached asset URL');
+    assert.notEqual(firstRevision[1], reactivatedRevision[1],
+        'a new extension activation must not restart asset URLs at a cached revision');
+    for (const asset of [
+        'fitty.min.js',
+        'dragula.min.js',
+        'dom-autoscroller.min.js',
+        'webviewProjectScripts.js',
+        'webviewDashboardScripts.js',
+        'webviewTodoScripts.js',
+        'webviewDnDScripts.js',
+        'webviewFilterScripts.js',
+    ]) {
+        assert.match(first, new RegExp(
+            `file:\\/\\/\\/extension\\/media\\/${asset.replace(/\./g, '\\.')}\\?stewardAssetRevision=${firstRevision[1]}`
+        ), `${asset} must share the document asset revision`);
+    }
 });
 
 test('WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001 SESSION-CONTROLLER-001 preserves OPEN PROJECTS and TODO mounted tab state', () => {
@@ -469,6 +564,170 @@ test('WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001 SESSION-CONTROLLER-001 preserves OPEN
     assert.equal(harness.messages.filter(message => message.type === 'request-projects-panel').length, 1);
     assert.equal(harness.messages.filter(message => message.type === 'request-todo-panel').length, 1);
     assert.equal(harness.storage.get('projectSteward.activeDashboardTab'), 'todo');
+});
+
+test('WEBVIEW-LAZY-PANEL-RECOVERY-001 retries one missing response and unlocks later tab retries', () => {
+    for (const tab of ['projects', 'todo']) {
+        const harness = createDashboardHarness({ initialTab: tab });
+        const requestType = `request-${tab}-panel`;
+        const getState = tab === 'projects'
+            ? harness.controller.getProjectsState
+            : harness.controller.getTodoState;
+        const applyMessage = tab === 'projects'
+            ? harness.controller.applyProjectsPanelMessage
+            : harness.controller.applyTodoPanelMessage;
+
+        assert.deepEqual(toPlain(harness.messages), [{
+            type: requestType,
+            version: 1,
+            requestId: 1,
+        }]);
+        assert.equal(getState(), 'loading');
+
+        assert.equal(harness.runNextTimer(), true);
+        assert.deepEqual(toPlain(harness.messages.at(-1)), {
+            type: requestType,
+            version: 1,
+            requestId: 2,
+        });
+        assert.equal(getState(), 'loading');
+
+        assert.equal(harness.runNextTimer(), true);
+        assert.equal(getState(), 'unloaded');
+        const loading = tab === 'projects' ? harness.projectsLoading : harness.todoLoading;
+        assert.match(loading.textContent, /temporarily unavailable/i);
+
+        harness.controller.activateTab(tab);
+        assert.deepEqual(toPlain(harness.messages.at(-1)), {
+            type: requestType,
+            version: 1,
+            requestId: 3,
+        });
+        assert.equal(applyMessage({
+            type: `${tab}-panel-content`,
+            version: 1,
+            requestId: 3,
+            html: `<p>${tab}</p>`,
+        }), true);
+        assert.equal(getState(), 'mounted');
+        assert.match(loading.textContent, /^Loading /);
+    }
+});
+
+test('PROJECT-INCREMENTAL-REFRESH-001 replaces only Projects and rejects stale updates', () => {
+    const harness = createDashboardHarness({ initialTab: 'projects' });
+    assert.equal(harness.controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '<p>initial</p>',
+    }), true);
+    harness.todoPanel.innerHTML = '<p>todo-state</p>';
+    harness.openPanel.innerHTML = '<p>open-state</p>';
+    harness.context.window.scrollY = 73;
+    const openIdentity = harness.openPanel;
+    const todoIdentity = harness.todoPanel;
+
+    assert.equal(harness.controller.applyProjectsPanelUpdatedMessage({
+        type: 'projects-panel-updated',
+        version: 1,
+        sequence: 2,
+        mode: 'replace',
+        html: '<p>updated projects</p>',
+        searchCatalog: makeCatalog('projects'),
+        groupOrders: [],
+        favoriteProjectIds: [],
+    }), true);
+    assert.equal(harness.projectsPanel.innerHTML, '<p>updated projects</p>');
+    assert.equal(harness.openPanel, openIdentity);
+    assert.equal(harness.todoPanel, todoIdentity);
+    assert.equal(harness.openPanel.innerHTML, '<p>open-state</p>');
+    assert.equal(harness.todoPanel.innerHTML, '<p>todo-state</p>');
+    assert.equal(harness.controller.getActiveTab(), 'projects');
+    assert.equal(harness.context.window.scrollY, 73);
+
+    assert.equal(harness.controller.applyProjectsPanelUpdatedMessage({
+        type: 'projects-panel-updated',
+        version: 1,
+        sequence: 1,
+        mode: 'replace',
+        html: '<p>stale</p>',
+        searchCatalog: makeCatalog('stale'),
+        groupOrders: [],
+        favoriteProjectIds: [],
+    }), false);
+    assert.equal(harness.projectsPanel.innerHTML, '<p>updated projects</p>');
+});
+
+test('PROJECT-INCREMENTAL-REFRESH-001 preserves matching drag DOM and replaces a mismatched order', () => {
+    const harness = createDashboardHarness({ initialTab: 'projects' });
+    assert.equal(harness.controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '<p>dragged</p>',
+    }), true);
+    const projects = ['project-b', 'project-a'].map(id => ({
+        getAttribute: name => name === 'data-id' ? id : null,
+    }));
+    const favorites = ['project-a'].map(id => ({
+        getAttribute: name => name === 'data-id' ? id : null,
+    }));
+    const group = {
+        getAttribute: name => name === 'data-group-id' ? 'work' : null,
+        querySelectorAll: selector => selector.includes('.project[data-id]') ? projects : [],
+    };
+    const favoritesGroup = {
+        querySelectorAll: selector => selector === '.project[data-id]' ? favorites : [],
+    };
+    harness.projectsPanel.querySelectorAll = selector => (
+        selector.includes('.groups-wrapper > .group') ? [group] : []
+    );
+    harness.projectsPanel.querySelector = selector => (
+        selector === '.group[data-system-group="__favorites"]' ? favoritesGroup : null
+    );
+
+    assert.equal(harness.controller.applyProjectsPanelUpdatedMessage({
+        type: 'projects-panel-updated',
+        version: 1,
+        sequence: 1,
+        mode: 'preserve-order',
+        html: '<p>authoritative</p>',
+        searchCatalog: makeCatalog('matching'),
+        groupOrders: [{ groupId: 'work', projectIds: ['project-b', 'project-a'] }],
+        favoriteProjectIds: ['project-a'],
+    }), true);
+    assert.equal(harness.projectsPanel.innerHTML, '<p>dragged</p>');
+
+    assert.equal(harness.controller.applyProjectsPanelUpdatedMessage({
+        type: 'projects-panel-updated',
+        version: 1,
+        sequence: 2,
+        mode: 'preserve-order',
+        html: '<p>authoritative fallback</p>',
+        searchCatalog: makeCatalog('mismatch'),
+        groupOrders: [{ groupId: 'work', projectIds: ['project-a', 'project-b'] }],
+        favoriteProjectIds: ['project-a'],
+    }), true);
+    assert.equal(harness.projectsPanel.innerHTML, '<p>authoritative fallback</p>');
+});
+
+test('PROJECT-INCREMENTAL-REFRESH-001 ignores stale window messages without requesting a full refresh', () => {
+    const harness = createDashboardHarness({ initialTab: 'projects' });
+    harness.controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '<p>initial</p>',
+    });
+    const update = {
+        type: 'projects-panel-updated',
+        version: 1,
+        sequence: 2,
+        mode: 'replace',
+        html: '<p>current</p>',
+        searchCatalog: makeCatalog('current'),
+        groupOrders: [],
+        favoriteProjectIds: [],
+    };
+    harness.windowListeners.message({ data: update });
+    harness.windowListeners.message({ data: { ...update, sequence: 1, html: '<p>stale</p>' } });
+
+    assert.equal(harness.projectsPanel.innerHTML, '<p>current</p>');
+    assert.deepEqual(toPlain(harness.messages.filter(
+        message => message.type === 'request-full-refresh'
+    )), []);
 });
 
 test('SESSION-CONTROLLER-001 validates lazy responses and preserves independent background-tab scroll state', () => {
@@ -523,6 +782,23 @@ test('SESSION-CONTROLLER-001 validates lazy responses and preserves independent 
     assert.equal(harness.todoPanel.innerHTML, '<p>current todo</p>');
 });
 
+test('WEBVIEW-DASHBOARD-SEARCH-CATALOG-001 accepts the migrated TODO catalog with the lazy panel', () => {
+    const harness = createDashboardHarness({ initialTab: 'todo' });
+    assert.equal(harness.controller.applyTodoPanelMessage({
+        type: 'todo-panel-content',
+        version: 1,
+        requestId: 1,
+        html: '<p>todo</p>',
+        searchCatalog: makeCatalog('lazy'),
+    }), true);
+    harness.controller.setSearchQuery('lazy');
+    const todoSection = harness.searchResults.children.find(section =>
+        section.dataset.sectionType === 'todo'
+    );
+
+    assert.equal(todoSection.children[1].dataset.todoId, 'tlazy');
+});
+
 test('TODO-TODO-SEARCH-RESULT-RENDERING-001 search reveal requests host data then focuses the mounted TODO', () => {
     const harness = createDashboardHarness({ initialTab: 'todo', synchronousFrames: false });
     assert.equal(harness.controller.applyTodoPanelMessage({
@@ -543,6 +819,13 @@ test('TODO-TODO-SEARCH-RESULT-RENDERING-001 search reveal requests host data the
     }]);
 
     let focused = 0;
+    let openedTodoId = null;
+    harness.context.window.__projectStewardTodo = {
+        openDetail(todoId) {
+            openedTodoId = todoId;
+            return true;
+        },
+    };
     const todoGroup = { classList: createClassList() };
     const todoItem = {
         isConnected: true,
@@ -562,8 +845,8 @@ test('TODO-TODO-SEARCH-RESULT-RENDERING-001 search reveal requests host data the
         type: 'todo-panel-updated', version: 1, html: '<p>revealed</p>', searchCatalog: makeCatalog('search'),
     });
     while (harness.frames.length) harness.frames.shift()();
-    assert.equal(focused, 1);
-    assert.equal(harness.context.document.activeElement, todoItem);
+    assert.equal(openedTodoId, 'tsearch');
+    assert.equal(focused, 0);
 });
 
 function createProjectVm({ querySelector, querySelectorAll, activeElement, source = projectSource } = {}) {
@@ -944,6 +1227,11 @@ function createDndHarness({ projectContainers = [], todoGroups = [], todoLists =
             addEventListener: (type, listener) => { windowListeners[type] = listener; },
             removeEventListener: () => undefined,
             vscode: { postMessage: message => messages.push(message) },
+            __projectStewardTodo: {
+                dispatch(action, payload) {
+                    messages.push({ action, payload });
+                },
+            },
         },
         dragula(containers, options) {
             const handlers = {};
@@ -1035,10 +1323,14 @@ test('TODO-TODO-ORDERING-INTERACTION-001 constrains TODO drag state and posts ex
     const todoGroupElement = { matches: selector => selector === '.todo-group' };
     const todoItemElement = { matches: selector => selector === '.todo-item' };
     const groupHandle = { closest: selector => selector === '[data-drag-todo-group]' ? {} : null };
-    const itemHandle = { closest: () => null };
+    const itemHandle = {
+        closest: selector => selector === '[data-drag-todo-item]' ? {} : null,
+    };
+    const ordinaryItemTarget = { closest: () => null };
     assert.equal(harness.context.canMoveTodoGroup(todoGroupElement, todoGroupsContainer, groupHandle), true);
     assert.equal(harness.context.canAcceptTodoGroup(todoGroupsContainer, todoGroupsContainer), true);
     assert.equal(harness.context.canMoveTodoItem(todoItemElement, todoList, itemHandle), true);
+    assert.equal(harness.context.canMoveTodoItem(todoItemElement, todoList, ordinaryItemTarget), false);
     assert.equal(harness.context.canAcceptTodoItem(todoList, todoList), true);
     assert.equal(harness.context.canAcceptTodoItem({ matches: () => true }, todoList), false);
     assert.deepEqual(
@@ -1051,8 +1343,8 @@ test('TODO-TODO-ORDERING-INTERACTION-001 constrains TODO drag state and posts ex
     harness.drakes[2].handlers.drop();
     harness.drakes[3].handlers.drop({}, todoList, todoList);
     assert.deepEqual(toPlain(harness.messages), [
-        { type: 'todo-reorder-groups', groupIds: ['group-b', 'group-a'] },
-        { type: 'todo-reorder-items', groupId: 'group-a', todoIds: ['todo-b', 'todo-a'] },
+        { action: 'reorder-groups', payload: { groupIds: ['group-b', 'group-a'] } },
+        { action: 'reorder-items', payload: { groupId: 'group-a', todoIds: ['todo-b', 'todo-a'] } },
     ]);
 
     harness.context.disposeDnD(harness.rootElement);

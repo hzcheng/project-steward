@@ -30,6 +30,13 @@ function collectAuditedCommits(repositoryRoot, audit) {
     }));
 }
 
+function collectUnauditedCommits(repositoryRoot, audit) {
+    return collectAuditedCommits(repositoryRoot, {
+        base: audit.head,
+        head: 'HEAD',
+    });
+}
+
 function loadWorkflowSources(repositoryRoot) {
     const workflowDirectory = path.join(repositoryRoot, '.github', 'workflows');
     return Object.fromEntries(
@@ -68,6 +75,7 @@ function main() {
             scripts: require(path.join(repositoryRoot, 'package.json')).scripts,
             workflows: loadWorkflowSources(repositoryRoot),
             auditedCommits: collectAuditedCommits(repositoryRoot, manifest.audit),
+            unauditedCommits: collectUnauditedCommits(repositoryRoot, manifest.audit),
         });
     } catch (error) {
         capabilityErrors = [`cannot collect main capability evidence: ${error.message}`];

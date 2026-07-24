@@ -20,10 +20,12 @@ const {
     makePublication,
 } = require('../../contract/openProjects/helpers');
 
-function makeConfigurationEvent(section) {
+function makeConfigurationEvent(...sections) {
     return {
         affectsConfiguration(candidate) {
-            return section === candidate || section.startsWith(`${candidate}.`);
+            return sections.some(section => (
+                section === candidate || section.startsWith(`${candidate}.`)
+            ));
         },
     };
 }
@@ -268,6 +270,48 @@ test('PERSIST-DASHBOARD-LIFECYCLE-CONTROLLER-001 routes workspace, configuration
     ]);
 });
 
+test('TODO-COMPLETION-INCREMENTAL-001 suppresses only a local todoData configuration echo', async () => {
+    const events = [];
+    let localEcho = true;
+    const controller = new DashboardLifecycleController({
+        checkDataMigration: async () => events.push('migrate'),
+        reconcileProjectCatalog: async () => events.push('reconcile'),
+        applyProjectColorToCurrentWindow: () => events.push('color'),
+        refresh: reason => events.push(['refresh', reason]),
+        publishOpenWorkspace: () => events.push('publish'),
+        evaluateAiSessionAttention: () => undefined,
+        consumeTodoDataWriteEcho: () => localEcho,
+    });
+    const todoDataChange = makeConfigurationEvent('projectSteward.todoData');
+
+    await controller.handleConfigurationChanged(todoDataChange);
+    assert.deepEqual(events, []);
+
+    localEcho = false;
+    await controller.handleConfigurationChanged(todoDataChange);
+    assert.deepEqual(events, [
+        'color',
+        ['refresh', 'configuration-changed'],
+        'publish',
+    ]);
+
+    events.length = 0;
+    localEcho = true;
+    await controller.handleConfigurationChanged(makeConfigurationEvent(
+        'projectSteward.todoData',
+        'projectSteward.storeProjectsInSettings',
+        'projectSteward.projectSyncData',
+        'projectSteward.customCss'
+    ));
+    assert.deepEqual(events, [
+        'migrate',
+        'reconcile',
+        'color',
+        ['refresh', 'configuration-changed'],
+        'publish',
+    ]);
+});
+
 test('PROJECT-CATALOG-SYNC-CONFLICT-001 reconciles synchronized project data before dashboard publication', async () => {
     const events = [];
     const controller = new DashboardLifecycleController({
@@ -279,6 +323,7 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 reconciles synchronized project data bef
         },
         applyProjectColorToCurrentWindow: () => events.push('color'),
         refresh: reason => events.push(['refresh', reason]),
+        refreshProjects: reason => events.push(['projects', reason]),
         publishOpenWorkspace: () => events.push('publish'),
         evaluateAiSessionAttention: () => undefined,
     });
@@ -290,6 +335,58 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 reconciles synchronized project data bef
     assert.deepEqual(events, [
         'reconcile:start',
         'reconcile:end',
+        ['projects', 'configuration-changed'],
+        'color',
+        'publish',
+    ]);
+});
+
+test('PROJECT-INCREMENTAL-REFRESH-001 suppresses local catalog echoes and routes external catalog changes partially', async () => {
+    const events = [];
+    let localEcho = true;
+    const controller = new DashboardLifecycleController({
+        checkDataMigration: async () => events.push('migrate'),
+        reconcileProjectCatalog: async () => events.push('reconcile'),
+        consumeProjectCatalogWriteEcho: change => {
+            events.push(['consume', change]);
+            return localEcho;
+        },
+        applyProjectColorToCurrentWindow: () => events.push('color'),
+        refresh: reason => events.push(['refresh', reason]),
+        refreshProjects: reason => events.push(['projects', reason]),
+        publishOpenWorkspace: () => events.push('publish'),
+        evaluateAiSessionAttention: () => undefined,
+    });
+    const catalogChange = makeConfigurationEvent(
+        'projectSteward.projectSyncData',
+        'projectSteward.projectData'
+    );
+
+    await controller.handleConfigurationChanged(catalogChange);
+    assert.deepEqual(events, [[
+        'consume',
+        { syncData: true, legacyGroups: true },
+    ]]);
+
+    events.length = 0;
+    localEcho = false;
+    await controller.handleConfigurationChanged(catalogChange);
+    assert.deepEqual(events, [
+        ['consume', { syncData: true, legacyGroups: true }],
+        'reconcile',
+        ['projects', 'configuration-changed'],
+        'color',
+        'publish',
+    ]);
+
+    events.length = 0;
+    await controller.handleConfigurationChanged(makeConfigurationEvent(
+        'projectSteward.projectSyncData',
+        'projectSteward.customCss'
+    ));
+    assert.deepEqual(events, [
+        ['consume', { syncData: true, legacyGroups: false }],
+        'reconcile',
         'color',
         ['refresh', 'configuration-changed'],
         'publish',

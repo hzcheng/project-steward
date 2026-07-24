@@ -62,13 +62,18 @@ function validateJob(
     expectedRunner,
     expectedGate,
     prerequisiteCommands = [],
-    requiresFullHistory = false
+    requiresFullHistory = false,
+    expectedTimeoutMinutes = 10
 ) {
     const job = jobs[jobId];
     assert.ok(isMapping(job), `GitHub verification workflow must define ${jobId}`);
     assert.equal(job.name, jobId, `${jobId} must expose the stable check name ${jobId}`);
     assert.equal(job['runs-on'], expectedRunner, `${jobId} must use ${expectedRunner}`);
-    assert.equal(job['timeout-minutes'], 10, `${jobId} timeout-minutes must be 10`);
+    assert.equal(
+        job['timeout-minutes'],
+        expectedTimeoutMinutes,
+        `${jobId} timeout-minutes must be ${expectedTimeoutMinutes}`
+    );
 
     const checkout = findStep(job,
         step => isMapping(step) && step.uses === 'actions/checkout@v4');
@@ -111,8 +116,9 @@ function validateVerifyWorkflow(verifyWorkflow) {
         'quality-linux',
         'ubuntu-latest',
         'npm run test:ci:linux',
-        [],
-        true
+        ['npx playwright install --with-deps chromium'],
+        true,
+        15
     );
     validateJob(workflow.jobs, 'platform-windows', 'windows-latest', 'npm run test:ci:windows');
     validateJob(workflow.jobs, 'tmux-smoke-linux', 'ubuntu-latest',

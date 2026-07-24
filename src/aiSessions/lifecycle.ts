@@ -2,7 +2,7 @@
 
 export type AiSessionAttentionReason = 'completed' | 'aborted' | 'failed' | 'input-required';
 export type AiSessionExecutionState = 'running' | 'stopped';
-export type AiSessionLifecyclePhase = 'running' | 'needsAttention';
+export type AiSessionLifecyclePhase = 'running' | 'idle' | 'needsAttention';
 
 export interface AiSessionLifecycleRequest {
     sessionId: string;
@@ -74,6 +74,10 @@ function running(provider: string, eventType: string, occurredAtMs: number, id?:
     return { token: getToken(provider, eventType, occurredAtMs, id), phase: 'running', executionState: 'running', occurredAtMs };
 }
 
+function idle(provider: string, eventType: string, occurredAtMs: number, id?: unknown): AiSessionLifecycleSignal {
+    return { token: getToken(provider, eventType, occurredAtMs, id), phase: 'idle', executionState: 'stopped', occurredAtMs };
+}
+
 function attention(
     provider: string,
     eventType: string,
@@ -98,7 +102,7 @@ export function createCodexLifecycleAccumulator(runStartedAtMs: number): AiSessi
                     return attention('codex', payload.type, occurredAtMs, 'completed', payload.turn_id);
                 case 'turn_aborted':
                     pendingInputCallIds.clear();
-                    return attention('codex', payload.type, occurredAtMs, 'aborted', payload.turn_id);
+                    return idle('codex', payload.type, occurredAtMs, payload.turn_id);
                 default:
                     return null;
             }
@@ -140,7 +144,7 @@ export function createKimiLifecycleAccumulator(runStartedAtMs: number): AiSessio
             return attention('kimi', message.type, occurredAtMs, 'completed');
         }
         if (message.type === 'StepInterrupted') {
-            return attention('kimi', message.type, occurredAtMs, 'aborted');
+            return idle('kimi', message.type, occurredAtMs);
         }
         if (message.type === 'ApprovalRequest' || message.type === 'QuestionRequest') {
             return attention('kimi', message.type, occurredAtMs, 'input-required', payload.id || payload.tool_call_id);
@@ -155,12 +159,28 @@ export function parseKimiLifecycleLines(lines: readonly string[], runStartedAtMs
     return accumulator.getSignal();
 }
 
+function isClaudeUserInterrupt(event: JsonRecord): boolean {
+    let content = event?.message?.content;
+    let textParts = Array.isArray(content)
+        ? content.map((part: unknown) => {
+            if (typeof part === 'string') {
+                return part;
+            }
+            return typeof (part as JsonRecord)?.text === 'string' ? (part as JsonRecord).text : '';
+        })
+        : [typeof content === 'string' ? content : ''];
+    return textParts.some(text => text.trim() === '[Request interrupted by user]');
+}
+
 export function createClaudeLifecycleAccumulator(runStartedAtMs: number): AiSessionLifecycleAccumulator {
     return createAccumulator(runStartedAtMs, (event, occurredAtMs) => {
         if (event?.type === 'system' && event?.subtype === 'api_error') {
             return attention('claude', 'api_error', occurredAtMs, 'failed');
         }
         if (event?.type === 'user') {
+            if (isClaudeUserInterrupt(event)) {
+                return idle('claude', 'user_interrupt', occurredAtMs, event.uuid);
+            }
             return running('claude', 'user', occurredAtMs, event.uuid);
         }
         if (event?.type !== 'assistant') {

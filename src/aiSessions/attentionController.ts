@@ -30,7 +30,6 @@ export interface AiSessionAttentionControllerOptions<TRuntime extends AiSessionA
     getProviders: () => AiSessionAttentionProvider[];
     getSessionKey?: (providerId: AiSessionProviderId, sessionId: string) => string;
     getRuntimeById: (providerId: AiSessionProviderId, sessionId: string) => TRuntime | null;
-    isRuntimeComplete: (runtime: TRuntime) => boolean;
     publish: (items: AttentionPayloadItem[], forceHeartbeat?: boolean) => Promise<boolean>;
     scheduleRefresh: (reason: string) => void;
     nowMs: () => number;
@@ -94,26 +93,36 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             this.attentionKeysBySession.set(owned.baseSessionKey, keys);
         }
         const signalsByProvider = this.getSignalsByProvider(providers, ownedSessions);
+        const runningAttentionKeysBySession = new Map<string, string>();
         const inputs = Array.from(ownedSessions, ([key, owned]) => {
-            const signal = this.options.isRuntimeComplete(owned.runtime)
-                ? {
-                    token: `terminal-exit:${owned.runtime.runStartedAtMs}`,
-                    phase: 'needsAttention' as const,
-                    reason: 'completed' as const,
-                    executionState: 'stopped' as const,
-                    occurredAtMs: owned.runtime.runStartedAtMs,
-                }
-                : signalsByProvider[owned.providerId][owned.session.id];
+            const signal = signalsByProvider[owned.providerId][owned.session.id];
+            if (signal?.phase === 'running') {
+                runningAttentionKeysBySession.set(owned.baseSessionKey, key);
+            }
             return {
                 key,
+                eventKey: owned.baseSessionKey,
                 signal,
                 observedAt: signal?.occurredAtMs,
             };
         });
 
         const events = this.monitor.evaluate(inputs);
+        const acknowledgedReplayEventIds = events
+            .map(event => event.eventId)
+            .filter(eventId => this.locallyAcknowledgedEventIds.has(eventId));
+        if (acknowledgedReplayEventIds.length) {
+            this.monitor.acknowledge(acknowledgedReplayEventIds);
+        }
+        let discardedStaleAttention = false;
+        for (const [sessionKey, runningAttentionKey] of runningAttentionKeysBySession) {
+            const staleAttentionKeys = (this.attentionKeysBySession.get(sessionKey) || [])
+                .filter(attentionKey => attentionKey !== runningAttentionKey);
+            discardedStaleAttention ||= staleAttentionKeys.length > 0;
+            this.monitor.discard(staleAttentionKeys);
+        }
         this.pruneAttentionKeysBySession();
-        if (events.length) {
+        if (events.length || discardedStaleAttention) {
             this.options.scheduleRefresh('attention');
         }
 
@@ -447,18 +456,25 @@ export async function settleAiSessionRuntimeLifecycles<
 
     const inScope = new Set(evaluation.inScopeSessionKeys);
     const candidateSessionKey = (candidate: TCandidate): string => candidate.sessionKey || candidate.key;
-    const safeToRelease = candidates.filter(candidate =>
-        candidate.state === 'stopped' || !evaluation.enabled
-        || !inScope.has(candidateSessionKey(candidate)));
     const overflowed = new Set(evaluation.overflowedSessionKeys);
-    const deliveredCompletions = candidates.filter(candidate => candidate.state === 'completed'
-        && evaluation.enabled && inScope.has(candidateSessionKey(candidate))
-        && evaluation.published
-        && ((evaluation.eventIdsBySession[candidateSessionKey(candidate)] || []).length > 0
-            || overflowed.has(candidateSessionKey(candidate))));
+    const hasAttentionEvidence = (candidate: TCandidate): boolean => {
+        const sessionKey = candidateSessionKey(candidate);
+        return (evaluation.eventIdsBySession[sessionKey] || []).length > 0
+            || overflowed.has(sessionKey);
+    };
+    const safeToRelease = candidates.filter(candidate => {
+        if (candidate.state === 'stopped' || !evaluation.enabled) {
+            return true;
+        }
+        const sessionKey = candidateSessionKey(candidate);
+        if (!inScope.has(sessionKey) || !hasAttentionEvidence(candidate)) {
+            return true;
+        }
+        return evaluation.published;
+    });
 
     const eligibleByKey = new Map<string, TCandidate>();
-    for (const candidate of [...safeToRelease, ...deliveredCompletions]) {
+    for (const candidate of safeToRelease) {
         eligibleByKey.set(candidate.key, candidate);
     }
     const releasedKeys: string[] = [];

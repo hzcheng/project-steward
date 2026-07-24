@@ -31,6 +31,16 @@ export interface ProjectCatalogSyncServiceOptions {
     onConflict?: (projectIds: string[]) => void;
 }
 
+export interface ProjectCatalogConfigurationChange {
+    syncData: boolean;
+    legacyGroups: boolean;
+}
+
+interface PendingConfigurationWrite {
+    id: number;
+    fingerprint: string;
+}
+
 interface CurrentProjectCatalogState {
     actorId: string;
     document: ProjectCatalogSyncDocumentV1;
@@ -53,6 +63,15 @@ function clone<T>(value: T): T {
 
 function equals(left: unknown, right: unknown): boolean {
     return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function fingerprint(value: unknown): string | null {
+    try {
+        const serialized = JSON.stringify(value);
+        return typeof serialized === 'string' ? serialized : null;
+    } catch (_error) {
+        return null;
+    }
 }
 
 function parseLocalState(value: ProjectCatalogLocalStateV1 | null): ProjectCatalogLocalStateV1 | null {
@@ -235,6 +254,9 @@ function importLegacyChanges(
 
 export class ProjectCatalogSyncService {
     private pending: Promise<unknown> = Promise.resolve();
+    private nextConfigurationWriteId = 1;
+    private pendingSyncDataWrites: PendingConfigurationWrite[] = [];
+    private pendingLegacyGroupWrites: PendingConfigurationWrite[] = [];
 
     constructor(private readonly options: ProjectCatalogSyncServiceOptions) {
     }
@@ -265,6 +287,28 @@ export class ProjectCatalogSyncService {
             await this.persist(current, document, false);
             return materializeProjectCatalog(document);
         });
+    }
+
+    consumeConfigurationWriteEcho(change: ProjectCatalogConfigurationChange): boolean {
+        if (!change || (!change.syncData && !change.legacyGroups)) {
+            return false;
+        }
+        let local = true;
+        if (change.syncData) {
+            local = this.consumeWriteEcho(
+                this.pendingSyncDataWrites,
+                this.options.getSyncData(),
+                value => !!parseProjectCatalogSyncDocument(value)
+            ) && local;
+        }
+        if (change.legacyGroups) {
+            local = this.consumeWriteEcho(
+                this.pendingLegacyGroupWrites,
+                this.options.getLegacyGroups(),
+                value => Array.isArray(value)
+            ) && local;
+        }
+        return local;
     }
 
     private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -393,10 +437,18 @@ export class ProjectCatalogSyncService {
             await this.options.updateLocalState(localState);
         }
         if (writeSync) {
-            await this.options.updateSyncData(document);
+            await this.writeConfigurationValue(
+                this.pendingSyncDataWrites,
+                document,
+                () => this.options.updateSyncData(document)
+            );
         }
         if (writeLegacy) {
-            await this.options.updateLegacyGroups(groups);
+            await this.writeConfigurationValue(
+                this.pendingLegacyGroupWrites,
+                groups,
+                () => this.options.updateLegacyGroups(groups)
+            );
         }
         const confirmedLocalState: ProjectCatalogLocalStateV1 = {
             ...localState,
@@ -432,5 +484,50 @@ export class ProjectCatalogSyncService {
             conflictProjectIds: [...current.conflictProjectIds],
             repaired: writeLocal || writeSync || writeLegacy || acknowledgeLegacyProjection,
         };
+    }
+
+    private consumeWriteEcho(
+        pendingWrites: PendingConfigurationWrite[],
+        currentValue: unknown,
+        isReadable: (value: unknown) => boolean
+    ): boolean {
+        const currentFingerprint = isReadable(currentValue)
+            ? fingerprint(currentValue)
+            : null;
+        const matchingIndex = currentFingerprint === null
+            ? -1
+            : pendingWrites.map(write => write.fingerprint).lastIndexOf(currentFingerprint);
+        if (matchingIndex < 0) {
+            pendingWrites.length = 0;
+            return false;
+        }
+        pendingWrites.splice(0, matchingIndex + 1);
+        return true;
+    }
+
+    private async writeConfigurationValue(
+        pendingWrites: PendingConfigurationWrite[],
+        value: unknown,
+        update: () => Thenable<void>
+    ): Promise<void> {
+        const valueFingerprint = fingerprint(value);
+        if (valueFingerprint === null) {
+            await update();
+            return;
+        }
+        const token = {
+            id: this.nextConfigurationWriteId++,
+            fingerprint: valueFingerprint,
+        };
+        pendingWrites.push(token);
+        try {
+            await update();
+        } catch (error) {
+            const index = pendingWrites.findIndex(candidate => candidate.id === token.id);
+            if (index >= 0) {
+                pendingWrites.splice(index, 1);
+            }
+            throw error;
+        }
     }
 }

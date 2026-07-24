@@ -83,6 +83,18 @@ test('ARCH-MAIN-CAPABILITY-COVERAGE-001 requires full Git history in the Linux q
     );
 });
 
+test('TODO-BROWSER-EXPANDED-LAYOUT-001 requires pinned Chromium in the Linux quality job', () => {
+    const missingChromiumWorkflow = verifyWorkflow.replace(
+        '        run: npx playwright install --with-deps chromium',
+        '        run: npx playwright --version'
+    );
+
+    assert.throws(
+        () => validateVerifyWorkflow(missingChromiumWorkflow),
+        /quality-linux must run npx playwright install --with-deps chromium/
+    );
+});
+
 test('RELEASE-VSIX-PACKAGING-001 requires npm caching in the Windows job itself', () => {
     const cacheMatches = [...verifyWorkflow.matchAll(/          cache: npm/g)];
     assert.ok(cacheMatches.length >= 2);

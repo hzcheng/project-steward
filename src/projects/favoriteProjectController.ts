@@ -6,7 +6,7 @@ import { withFavoriteProjectOrder, withToggledProjectFavorite } from './favorite
 export interface FavoriteProjectControllerOptions {
     getGroups: () => Group[];
     saveGroups: (groups: Group[]) => Thenable<unknown>;
-    refreshAfterMutation: () => void;
+    refreshAfterMutation: (mode?: 'replace' | 'preserve-order') => void;
 }
 
 export class FavoriteProjectController {
@@ -28,6 +28,6 @@ export class FavoriteProjectController {
         var groups = this.options.getGroups();
         var reorderedGroups = withFavoriteProjectOrder(groups, projectIds);
         await this.options.saveGroups(reorderedGroups);
-        this.options.refreshAfterMutation();
+        this.options.refreshAfterMutation('preserve-order');
     }
 }

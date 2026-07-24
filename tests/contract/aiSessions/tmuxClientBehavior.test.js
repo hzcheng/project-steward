@@ -142,6 +142,53 @@ test('RUNTIME-TMUX-CLIENT-001 parses one active window and rejects malformed, fo
     await assert.rejects(client.getActiveWindow('bad\nsession'), TypeError);
 });
 
+test('RUNTIME-TMUX-CLIENT-001 resolves a live terminal process to exactly one tmux client session', async () => {
+    const calls = [];
+    let result = {
+        exitCode: 0,
+        stdout: [
+            '4311|:ps-field:|other-session',
+            '4312|:ps-field:|managed-session',
+        ].join('\n') + '\n',
+        stderr: '',
+    };
+    const client = new TmuxClient('/private/tmux', {
+        run: async (_file, args) => {
+            calls.push(args);
+            return availabilityResult(args) || result;
+        },
+    });
+
+    assert.equal(await client.getClientSessionForProcess(4312), 'managed-session');
+    assert.deepEqual(calls.at(-1), [
+        'list-clients', '-F', '#{client_pid}|:ps-field:|#{session_name}',
+    ]);
+    assert.equal(await client.getClientSessionForProcess(9999), null);
+
+    result = {
+        exitCode: 1,
+        stdout: '',
+        stderr: 'no server running on /private/tmux-1000/default',
+    };
+    assert.equal(await client.getClientSessionForProcess(4312), null);
+
+    for (const stdout of [
+        '4312|:ps-field:|managed-session\n4312|:ps-field:|other-session\n',
+        'not-a-pid|:ps-field:|managed-session\n',
+        '4312|:ps-field:|bad\nsession\n',
+        'x'.repeat(1024 * 1024 + 1),
+    ]) {
+        result = { exitCode: 0, stdout, stderr: '' };
+        await assert.rejects(
+            client.getClientSessionForProcess(4312),
+            error => error instanceof TmuxClientError
+                && error.operation === 'list-clients'
+                && error.category === 'invalid-output'
+        );
+    }
+    await assert.rejects(client.getClientSessionForProcess(0), TypeError);
+});
+
 test('RUNTIME-TMUX-CLIENT-001 reads and writes metadata options and maps runner failures safely', async () => {
     const calls = [];
     const values = {

@@ -358,6 +358,7 @@ function createTmuxRuntimeHarness(layout, options = {}) {
     const operations = [];
     const windows = [];
     const terminals = [];
+    const clientSessionsByProcessId = new Map();
     const attachBindings = new Map();
     const recoveryBindings = new Map();
     const store = createSyntheticTmuxStore();
@@ -383,6 +384,10 @@ function createTmuxRuntimeHarness(layout, options = {}) {
     const client = {
         checkAvailability: async () => { operations.push({ type: 'availability' }); return availability; },
         getExecutablePath: () => '/fixtures/bin/tmux',
+        getClientSessionForProcess: async processId => {
+            operations.push({ type: 'get-client-session', processId });
+            return clientSessionsByProcessId.get(processId) || null;
+        },
         listWindows: async () => {
             operations.push({ type: 'list-windows' });
             if (listError) throw listError;
@@ -512,6 +517,7 @@ function createTmuxRuntimeHarness(layout, options = {}) {
     };
     const dependencies = {
         platform: 'linux', client, discovery, runtimeStore: store, attachStore,
+        getTerminals: () => terminals.filter(terminal => !terminal.disposed),
         withCreationLock: async (key, operation) => {
             const previous = lockQueues.get(key) || Promise.resolve();
             let release;
@@ -528,6 +534,13 @@ function createTmuxRuntimeHarness(layout, options = {}) {
         createTerminal: creationOptions => {
             operations.push({ type: 'create-terminal', creationOptions });
             const processId = nextProcessId++;
+            const targetIndex = creationOptions.shellArgs.indexOf('-t');
+            const sessionName = targetIndex >= 0
+                ? creationOptions.shellArgs[targetIndex + 1]
+                : null;
+            if (sessionName) {
+                clientSessionsByProcessId.set(processId, sessionName);
+            }
             const terminal = {
                 name: creationOptions.name,
                 processId: Promise.resolve(processId),
@@ -544,6 +557,7 @@ function createTmuxRuntimeHarness(layout, options = {}) {
     const backend = new TmuxRuntimeBackend(dependencies);
     return {
         backend, dependencies, discovery, store, operations, windows, terminals,
+        createReloadedBackend: () => new TmuxRuntimeBackend(dependencies),
         providerCreateCount: () => operations.filter(item =>
             (item.type === 'new-session' || item.type === 'new-window')
             && item.command.includes('exit_code=$?')).length,
@@ -579,6 +593,12 @@ function createTmuxRuntimeHarness(layout, options = {}) {
         },
         setUnavailable(category = 'not-found') {
             availability = { available: false, category, message: 'tmux unavailable' };
+        },
+        loseReloadAttachMetadata(terminal) {
+            terminal.name = 'tmux';
+            delete terminal.creationOptions;
+            attachBindings.clear();
+            recoveryBindings.clear();
         },
         setListError(error) { listError = error; },
     };

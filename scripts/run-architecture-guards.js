@@ -168,7 +168,7 @@ function walkOwnScope(root, visit) {
 
 const PROTOCOL_EXPECTATIONS = [
     { file: 'src/aiSessions/attentionBridgeClient.ts', site: 'attention client unregister writer',
-        scope: { kind: 'class-method-variable', className: 'AttentionBridgeClient', methodName: 'dispose', variableName: 'unregister' },
+        scope: { kind: 'class-method-variable', className: 'AttentionBridgeClient', methodName: 'shutdown', variableName: 'unregister' },
         nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' }] },
     { file: 'src/aiSessions/attentionBridgeClient.ts', site: 'attention client handshake writer',
         scope: { kind: 'class-method', className: 'AttentionBridgeClient', methodName: 'handshake' },
@@ -308,12 +308,22 @@ const guards = {
 
     // ARCH-AI-SESSION-FALLBACK-REASON-001
     'ARCH-AI-SESSION-FALLBACK-REASON-001'(root) {
-        const risk = 'anonymous fallbacks hide the regression path and defeat diagnostics';
+        const risk = 'anonymous fallbacks and runtime-derived attention hide regressions and defeat diagnostics';
         const dashboard = parseTypescript(root, 'src/dashboard.ts', this.id, risk);
+        const attentionController = parseTypescript(
+            root, 'src/aiSessions/attentionController.ts', this.id, risk
+        );
+        const attentionSource = attentionController.getFullText();
+        if (attentionSource.includes('terminal-exit:')
+            || attentionSource.includes('suppressRuntimeCompletion')
+            || attentionSource.includes('isRuntimeComplete')) {
+            fail(this.id, risk,
+                'runtime completion must not be converted into, or used to suppress, attention');
+        }
         const lifecycleReasons = callArguments(dashboard, 'runSafeAiSessionRuntimeLifecycleTask')
             .map(args => stringArgument(args[0]));
         if (!lifecycleReasons.includes('evaluate-attention-closed-terminal')) {
-            fail(this.id, risk, 'terminal-close attention fallback must have an explicit diagnostic reason');
+            fail(this.id, risk, 'terminal-close provider-event reconciliation must have an explicit diagnostic reason');
         }
         const syncErrorCallback = newExpressionOptionCallback(dashboard, 'tmuxFocusedRuntimeMonitor',
             'TmuxFocusedRuntimeMonitor', 'onError', this.id, risk);

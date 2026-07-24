@@ -24,6 +24,51 @@ function validateProjectsPanelMessage(message) {
         && typeof message.html === 'string';
 }
 
+function validateProjectsPanelUpdatedMessage(message) {
+    if (!message
+        || message.type !== 'projects-panel-updated'
+        || message.version !== 1
+        || !Number.isSafeInteger(message.sequence)
+        || message.sequence < 1
+        || (message.mode !== 'replace' && message.mode !== 'preserve-order')
+        || typeof message.html !== 'string'
+        || normalizeDashboardSearchCatalog(message.searchCatalog) !== message.searchCatalog
+        || !Array.isArray(message.groupOrders)
+        || !Array.isArray(message.favoriteProjectIds)) {
+        return false;
+    }
+    var groupIds = new Set();
+    var savedProjectIds = new Set();
+    for (var group of message.groupOrders) {
+        if (!group
+            || typeof group.groupId !== 'string'
+            || !group.groupId
+            || groupIds.has(group.groupId)
+            || !Array.isArray(group.projectIds)) {
+            return false;
+        }
+        groupIds.add(group.groupId);
+        for (var projectId of group.projectIds) {
+            if (typeof projectId !== 'string'
+                || !projectId
+                || savedProjectIds.has(projectId)) {
+                return false;
+            }
+            savedProjectIds.add(projectId);
+        }
+    }
+    var favoriteIds = new Set();
+    for (var favoriteId of message.favoriteProjectIds) {
+        if (typeof favoriteId !== 'string'
+            || !favoriteId
+            || favoriteIds.has(favoriteId)) {
+            return false;
+        }
+        favoriteIds.add(favoriteId);
+    }
+    return true;
+}
+
 function validateTodoPanelMessage(message) {
     return !!message
         && message.type === 'todo-panel-content'
@@ -191,11 +236,23 @@ function initDashboard(options) {
     var projectsState = 'unloaded';
     var projectsRequestId = 0;
     var acceptedProjectsRequestId = 0;
+    var acceptedProjectsUpdateSequence = 0;
+    var projectsRequestAttempts = 0;
+    var projectsRequestTimer = null;
     var todoState = 'unloaded';
     var todoRequestId = 0;
     var acceptedTodoRequestId = 0;
+    var todoRequestAttempts = 0;
+    var todoRequestTimer = null;
     var pendingTodoSearchTarget = null;
     var pendingScrollRestoreTab = null;
+    var panelRequestTimeoutMs = Number(options.panelRequestTimeoutMs) > 0
+        ? Number(options.panelRequestTimeoutMs)
+        : 5000;
+    var scheduleTimeout = options.setTimeout
+        || (typeof setTimeout === 'function' ? setTimeout : null);
+    var cancelTimeout = options.clearTimeout
+        || (typeof clearTimeout === 'function' ? clearTimeout : function () {});
     var catalog = readInitialDashboardSearchCatalog();
     var searchQuery = String(options.initialSearchQuery || '').trim();
     var tabButtons = Array.from(document.querySelectorAll('[data-dashboard-tab]'));
@@ -256,23 +313,91 @@ function initDashboard(options) {
         }
     }
 
+    function getPanelLoadingElement(tab) {
+        var panel = panels[tab];
+        if (!panel || !panel.querySelector) {
+            return null;
+        }
+        return panel.querySelector(tab === 'projects'
+            ? '.dashboard-projects-loading'
+            : '.dashboard-todo-loading');
+    }
+
+    function showPanelLoading(tab) {
+        var loadingElement = getPanelLoadingElement(tab);
+        if (!loadingElement) {
+            return;
+        }
+        loadingElement.textContent = tab === 'projects' ? 'Loading projects…' : 'Loading todos…';
+        loadingElement.hidden = false;
+    }
+
+    function showPanelUnavailable(tab) {
+        var loadingElement = getPanelLoadingElement(tab);
+        if (!loadingElement) {
+            return;
+        }
+        loadingElement.textContent = (tab === 'projects' ? 'Projects' : 'TODO')
+            + ' are temporarily unavailable. Select this tab to retry.';
+        loadingElement.hidden = false;
+    }
+
+    function scheduleProjectsRequestTimeout(requestId) {
+        if (!scheduleTimeout) {
+            return;
+        }
+        if (projectsRequestTimer !== null) {
+            cancelTimeout(projectsRequestTimer);
+        }
+        projectsRequestTimer = scheduleTimeout(function () {
+            projectsRequestTimer = null;
+            if (projectsState !== 'loading' || requestId !== projectsRequestId) {
+                return;
+            }
+            projectsState = 'unloaded';
+            if (projectsRequestAttempts < 2 && activeTab === 'projects' && !searchQuery) {
+                ensureProjectsPanel();
+                return;
+            }
+            showPanelUnavailable('projects');
+        }, panelRequestTimeoutMs);
+    }
+
+    function scheduleTodoRequestTimeout(requestId) {
+        if (!scheduleTimeout) {
+            return;
+        }
+        if (todoRequestTimer !== null) {
+            cancelTimeout(todoRequestTimer);
+        }
+        todoRequestTimer = scheduleTimeout(function () {
+            todoRequestTimer = null;
+            if (todoState !== 'loading' || requestId !== todoRequestId) {
+                return;
+            }
+            todoState = 'unloaded';
+            if (todoRequestAttempts < 2 && activeTab === 'todo' && !searchQuery) {
+                ensureTodoPanel();
+                return;
+            }
+            showPanelUnavailable('todo');
+        }, panelRequestTimeoutMs);
+    }
+
     function ensureProjectsPanel() {
         if (projectsState !== 'unloaded') {
             return;
         }
         projectsState = 'loading';
+        projectsRequestAttempts += 1;
         projectsRequestId += 1;
-        var loadingElement = panels.projects && panels.projects.querySelector
-            ? panels.projects.querySelector('.dashboard-projects-loading')
-            : null;
-        if (loadingElement) {
-            loadingElement.hidden = false;
-        }
+        showPanelLoading('projects');
         options.postMessage({
             type: 'request-projects-panel',
             version: 1,
             requestId: projectsRequestId,
         });
+        scheduleProjectsRequestTimeout(projectsRequestId);
     }
 
     function ensureTodoPanel() {
@@ -280,18 +405,15 @@ function initDashboard(options) {
             return;
         }
         todoState = 'loading';
+        todoRequestAttempts += 1;
         todoRequestId += 1;
-        var loadingElement = panels.todo && panels.todo.querySelector
-            ? panels.todo.querySelector('.dashboard-todo-loading')
-            : null;
-        if (loadingElement) {
-            loadingElement.hidden = false;
-        }
+        showPanelLoading('todo');
         options.postMessage({
             type: 'request-todo-panel',
             version: 1,
             requestId: todoRequestId,
         });
+        scheduleTodoRequestTimeout(todoRequestId);
     }
 
     function activateTab(tab, saveScroll) {
@@ -464,6 +586,12 @@ function initDashboard(options) {
                 return;
             }
             scheduledTarget.focusScheduled = false;
+            if (window.__projectStewardTodo
+                && typeof window.__projectStewardTodo.openDetail === 'function'
+                && window.__projectStewardTodo.openDetail(scheduledTarget.todoId)) {
+                pendingTodoSearchTarget = null;
+                return;
+            }
             var todoItem = Array.from(panels.todo.querySelectorAll('.todo-item[data-todo-id]'))
                 .find(item => item.getAttribute('data-todo-id') === scheduledTarget.todoId);
             var todoGroup = todoItem && todoItem.closest ? todoItem.closest('.todo-group') : null;
@@ -510,6 +638,11 @@ function initDashboard(options) {
         }
 
         acceptedProjectsRequestId = message.requestId;
+        if (projectsRequestTimer !== null) {
+            cancelTimeout(projectsRequestTimer);
+            projectsRequestTimer = null;
+        }
+        projectsRequestAttempts = 0;
         panels.projects.innerHTML = message.html;
         projectsState = 'mounted';
         if (typeof options.onProjectsMounted === 'function') {
@@ -524,6 +657,104 @@ function initDashboard(options) {
         return true;
     }
 
+    function getProjectIdsFromGroup(group) {
+        return Array.from(group.querySelectorAll('.project[data-id]:not([data-virtual-project])'))
+            .map(project => project.getAttribute('data-id'));
+    }
+
+    function arraysEqual(left, right) {
+        return left.length === right.length
+            && left.every((value, index) => value === right[index]);
+    }
+
+    function isProjectsPanelOrderConsistent(message) {
+        if (!panels.projects || typeof panels.projects.querySelectorAll !== 'function') {
+            return false;
+        }
+        var groups = Array.from(panels.projects.querySelectorAll(
+            '.groups-wrapper > .group[data-group-id]:not([data-virtual-group])'
+        ));
+        if (groups.length !== message.groupOrders.length) {
+            return false;
+        }
+        for (var index = 0; index < groups.length; index += 1) {
+            var expected = message.groupOrders[index];
+            if (groups[index].getAttribute('data-group-id') !== expected.groupId
+                || !arraysEqual(getProjectIdsFromGroup(groups[index]), expected.projectIds)) {
+                return false;
+            }
+        }
+        var favoritesGroup = panels.projects.querySelector(
+            '.group[data-system-group="__favorites"]'
+        );
+        var favoriteIds = favoritesGroup
+            ? Array.from(favoritesGroup.querySelectorAll('.project[data-id]'))
+                .map(project => project.getAttribute('data-id'))
+            : [];
+        return arraysEqual(favoriteIds, message.favoriteProjectIds);
+    }
+
+    function getProjectsFocusTarget() {
+        var activeElement = document.activeElement;
+        if (!activeElement || !panels.projects || !panels.projects.contains(activeElement)) {
+            return null;
+        }
+        var project = activeElement.closest ? activeElement.closest('.project[data-id]') : null;
+        var action = activeElement.closest ? activeElement.closest('[data-action]') : null;
+        return project ? {
+            projectId: project.getAttribute('data-id'),
+            action: action ? action.getAttribute('data-action') : null,
+        } : null;
+    }
+
+    function restoreProjectsFocus(target) {
+        if (!target || !panels.projects) {
+            return;
+        }
+        var project = Array.from(panels.projects.querySelectorAll('.project[data-id]'))
+            .find(candidate => candidate.getAttribute('data-id') === target.projectId);
+        if (!project) {
+            return;
+        }
+        var focusTarget = project;
+        if (target.action) {
+            focusTarget = Array.from(project.querySelectorAll('[data-action]'))
+                .find(candidate => candidate.getAttribute('data-action') === target.action)
+                || project;
+        }
+        if (focusTarget && typeof focusTarget.focus === 'function') {
+            focusTarget.focus();
+        }
+    }
+
+    function replaceProjectsPanelHtml(html) {
+        var focusTarget = getProjectsFocusTarget();
+        panels.projects.innerHTML = html;
+        projectsState = 'mounted';
+        if (typeof options.onProjectsMounted === 'function') {
+            options.onProjectsMounted(panels.projects);
+        }
+        restoreProjectsFocus(focusTarget);
+    }
+
+    function applyProjectsPanelUpdatedMessage(message) {
+        if (!validateProjectsPanelUpdatedMessage(message)
+            || message.sequence <= acceptedProjectsUpdateSequence
+            || !panels.projects) {
+            return false;
+        }
+        acceptedProjectsUpdateSequence = message.sequence;
+        replaceSearchCatalog(message.searchCatalog);
+        if (projectsState !== 'mounted') {
+            return true;
+        }
+        if (message.mode === 'preserve-order' && isProjectsPanelOrderConsistent(message)) {
+            return true;
+        }
+        replaceProjectsPanelHtml(message.html);
+        return true;
+    }
+
     function applyTodoPanelMessage(message) {
         if (!validateTodoPanelMessage(message)
             || todoState !== 'loading'
@@ -534,10 +765,18 @@ function initDashboard(options) {
         }
 
         acceptedTodoRequestId = message.requestId;
+        if (todoRequestTimer !== null) {
+            cancelTimeout(todoRequestTimer);
+            todoRequestTimer = null;
+        }
+        todoRequestAttempts = 0;
         panels.todo.innerHTML = message.html;
         todoState = 'mounted';
+        if (normalizeDashboardSearchCatalog(message.searchCatalog) === message.searchCatalog) {
+            replaceSearchCatalog(message.searchCatalog);
+        }
         if (typeof options.onTodoMounted === 'function') {
-            options.onTodoMounted(panels.todo);
+            options.onTodoMounted(panels.todo, message);
         }
         if (pendingScrollRestoreTab === 'todo') {
             pendingScrollRestoreTab = null;
@@ -560,9 +799,14 @@ function initDashboard(options) {
             && activeElement.getAttribute('data-action') === 'todo-toggle-show-completed';
         panels.todo.innerHTML = message.html;
         todoState = 'mounted';
+        if (todoRequestTimer !== null) {
+            cancelTimeout(todoRequestTimer);
+            todoRequestTimer = null;
+        }
+        todoRequestAttempts = 0;
         replaceSearchCatalog(message.searchCatalog);
         if (typeof options.onTodoMounted === 'function') {
-            options.onTodoMounted(panels.todo);
+            options.onTodoMounted(panels.todo, message);
         }
         if (restoreShowCompletedFocus) {
             var showCompletedToggle = panels.todo.querySelector('[data-action="todo-toggle-show-completed"]');
@@ -602,6 +846,18 @@ function initDashboard(options) {
         if (event && event.data && event.data.type === 'projects-panel-content') {
             applyProjectsPanelMessage(event.data);
         }
+        if (event && event.data && event.data.type === 'projects-panel-updated') {
+            if (validateProjectsPanelUpdatedMessage(event.data)
+                && event.data.sequence <= acceptedProjectsUpdateSequence) {
+                return;
+            }
+            if (!applyProjectsPanelUpdatedMessage(event.data)) {
+                options.postMessage({
+                    type: 'request-full-refresh',
+                    reason: 'invalid-projects-panel-update',
+                });
+            }
+        }
         if (event && event.data && event.data.type === 'todo-panel-content') {
             applyTodoPanelMessage(event.data);
         }
@@ -628,6 +884,7 @@ function initDashboard(options) {
     return {
         activateTab,
         applyProjectsPanelMessage,
+        applyProjectsPanelUpdatedMessage,
         applyTodoPanelMessage,
         applyTodoPanelUpdatedMessage,
         ensureProjectsPanel,

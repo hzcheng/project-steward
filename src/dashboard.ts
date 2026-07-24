@@ -10,6 +10,7 @@ import { USER_CANCELED, RelevantExtensions, REOPEN_KEY, WSL_DEFAULT_REGEX } from
 
 import ColorService from './services/colorService';
 import ProjectService from './services/projectService';
+import { TodoCommandController } from './todos/commandController';
 import { TodoService } from './todos/service';
 import {
     deleteTodoWithConfirmation,
@@ -19,7 +20,7 @@ import {
     runTodoRequestMutation,
 } from './todos/hostMutation';
 import { UnsupportedTodoDataVersionError } from './todos/types';
-import { buildTodoViewModel } from './todos/viewModel';
+import { buildTodoPanelSnapshot, buildTodoViewModel } from './todos/viewModel';
 import { getTodoPanelContent, getUnsupportedTodoVersionPanelContent } from './todos/webviewContent';
 import FileService from './services/fileService';
 import CodexSessionService from './services/codexSessionService';
@@ -34,7 +35,7 @@ import AiSessionPinController from './aiSessions/pinController';
 import AiSessionWorkspaceStateStore from './aiSessions/workspaceStateStore';
 import ActiveAiSessionTerminalHighlighter from './aiSessions/activeTerminalHighlight';
 import AttentionBridgeClient from './aiSessions/attentionBridgeClient';
-import { withAttentionProject } from './aiSessions/attentionProject';
+import { getAttentionRuntimeSessionKey, withAttentionProject } from './aiSessions/attentionProject';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { getAiSessionKey } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_DEFINITIONS, createAiSessionProviderRegistry, getAiSessionProviderLabel } from './aiSessions/providers';
@@ -113,7 +114,9 @@ import { getErrorContent } from './dashboard/errorContent';
 import { GroupCollapseController } from './dashboard/groupCollapseController';
 import { DashboardLifecycleController } from './dashboard/lifecycleController';
 import { createDashboardMessageRouter } from './dashboard/messageRouter';
+import { ProjectsPanelController } from './dashboard/projectsPanelController';
 import { DashboardRuntimeController } from './dashboard/runtimeController';
+import type { ProjectsPanelUpdateMode } from './dashboard/webviewUpdateMessages';
 import { DashboardStartupController, settleMigration } from './dashboard/startupController';
 import { getDashboardWebviewOptions } from './dashboard/webviewOptions';
 import OpenWorkspaceBridgeClient from './openWorkspaces/bridgeClient';
@@ -133,6 +136,10 @@ const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
 const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
 const AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS = 10000;
 const AI_SESSION_INCREMENTAL_SCAN_MAX_FILES = 2000;
+// Mirrors vscode.TerminalExitReason.User. The extension's minimum VS Code typings
+// predate TerminalExitStatus.reason, while supported hosts expose it at runtime.
+const USER_TERMINAL_EXIT_REASON = 3;
+let activeAiSessionAttentionBridgeClient: AttentionBridgeClient | null = null;
 
 function resolveAiProviderExecutable(commandName: string): string | null {
     if (!commandName) {
@@ -215,6 +222,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const todoService = new TodoService(context);
     const todoViewState = todoService.getViewState();
     let revealedTodoId: string | undefined;
+    const todoCommandController = new TodoCommandController({
+        service: todoService,
+        getViewState: () => todoViewState,
+        setShowCompleted: async showCompleted => {
+            const persistedViewState = await todoService.setShowCompleted(showCompleted);
+            todoViewState.showCompleted = persistedViewState.showCompleted;
+            return persistedViewState;
+        },
+        getRevealedTodoId: () => revealedTodoId,
+        clearRevealedTodoId: () => { revealedTodoId = undefined; },
+    });
     const todoStorageMigration = { ready: Promise.resolve<unknown>(undefined) };
     const groupCollapseController = new GroupCollapseController({
         state: context.globalState,
@@ -297,7 +315,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         confirmRemoveProject: projectName => vscode.window.showWarningMessage(`Remove ${projectName}?`, { modal: true }, 'Remove'),
         removeProject: projectId => projectService.removeProject(projectId),
         refreshAfterMutation,
-        postCommandRemoval: () => { void showSteward(); },
+        postCommandRemoval: () => { void dashboardRuntimeController.revealSidebarSteward(); },
     });
     const projectManualEditController = new ProjectManualEditController({
         getGroups: () => projectService.getGroups(),
@@ -311,7 +329,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             projectService.saveGroupsFromManualEdit(groups, baselineGroups),
         executeCommand: command => vscode.commands.executeCommand(command),
         showErrorMessage: message => vscode.window.showErrorMessage(message),
-        postSave: () => showSteward(),
+        postSave: () => {
+            refreshAfterMutation();
+            void dashboardRuntimeController.revealSidebarSteward();
+        },
     });
     const addProjectsFromFolderController = new AddProjectsFromFolderController({
         getCurrentWorkspacePath: () => resolveWorkspacePath(vscode.workspace.workspaceFile, vscode.workspace.workspaceFolders),
@@ -403,6 +424,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         discovery: tmuxRuntimeDiscovery,
         runtimeStore: tmuxRuntimeStore,
         attachStore: tmuxAttachBindingStore,
+        getTerminals: () => vscode.window.terminals,
         withCreationLock: (key, operation) => withTmuxCreationLock(context.globalStoragePath, key, operation),
         createTerminal: options => vscode.window.createTerminal(options),
         nowMs: () => Date.now(),
@@ -452,6 +474,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const workspacePrimaryRootStore = new WorkspacePrimaryRootStore(context.globalState);
     let openWorkspaceController: OpenWorkspaceController;
     let openWorkspaceDashboardController: OpenWorkspaceDashboardController;
+    let projectsPanelController: ProjectsPanelController | undefined;
     let workspaceNavigationController: WorkspaceNavigationController<vscode.Uri>;
     const resolveCurrentOpenWorkspace = (): OpenWorkspace | null => workspaceContextResolver.resolve({
         workspaceFile: vscode.workspace.workspaceFile,
@@ -718,6 +741,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         logRuntimeFailure: logAiSessionRuntimeFailure,
         getProviderLabel: getAiSessionProviderLabel,
         refresh: refreshAiSessionViewsIncrementally,
+        onRuntimeCloseEnd: (runtime, succeeded) => {
+            const sessionId = runtime.identity.sessionId;
+            if (!sessionId || !succeeded) {
+                return;
+            }
+            void runSafeAiSessionRuntimeLifecycleTask(
+                'acknowledge-explicit-session-close',
+                () => acknowledgeAiSessionAttention({
+                    provider: runtime.identity.provider,
+                    sessionId,
+                    workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+                })
+            );
+        },
+        focusTerminalView: () =>
+            vscode.commands.executeCommand('workbench.action.terminal.focus'),
     });
     const aiSessionResumeController = new AiSessionResumeController<vscode.Terminal>({
         getWorkspaceTarget: getCurrentWorkspaceActionTarget,
@@ -760,7 +799,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         getWorkspaceTarget: getCurrentWorkspaceActionTargetWithoutCardId,
         getProviders: getRegisteredAiSessionProviders,
         getRuntimeById: getAiSessionRuntimeById,
-        isRuntimeComplete: runtime => runtime.state === 'completed',
         publish: (items, forceHeartbeat) => aiSessionAttentionBridgeClient.publish(items, forceHeartbeat),
         scheduleRefresh: reason => scheduleAiSessionRefresh(reason),
         nowMs: () => Date.now(),
@@ -834,7 +872,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (!sessionId || (runtime.state !== 'completed' && runtime.state !== 'stopped')) {
                 continue;
             }
-            const key = `${runtime.identity.workspaceScopeIdentity}:${runtime.identity.provider}:${sessionId}:${runtime.runStartedAtMs}:${runtime.backend}`;
+            const key = getAttentionRuntimeSessionKey({
+                workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+                provider: runtime.identity.provider,
+                sessionId,
+                runStartedAtMs: runtime.runStartedAtMs,
+                backend: runtime.backend,
+            });
             if (settlingAiSessionRuntimeKeys.has(key)) {
                 continue;
             }
@@ -925,6 +969,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         error => logError('AI session attention bridge unavailable; using local-window monitoring.', error)
     );
+    activeAiSessionAttentionBridgeClient = aiSessionAttentionBridgeClient;
     const aiSessionAttentionInterval = setInterval(() => {
         void runSafeAiSessionRuntimeLifecycleTask(
             'evaluate-attention-interval', evaluateAiSessionAttention
@@ -984,6 +1029,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     return;
                 }
                 await postTodoPanelContent(e.requestId as number);
+            },
+            'todo-command': async e => {
+                await todoStorageMigration.ready;
+                const result = await todoCommandController.handle(e);
+                if (result) {
+                    await provider.postMessage({
+                        ...result,
+                        searchCatalog: buildWorkspaceDashboardSearchCatalog(
+                            projectService.getGroups(),
+                            getOpenWorkspaceCards(),
+                            todoService.getSearchItems(),
+                        ),
+                    });
+                }
             },
             'todo-add': async e => {
                 const valid = typeof e.title === 'string' && Boolean(e.title.trim());
@@ -1327,6 +1386,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         renderError: getErrorContent,
         onMessage: dashboardMessageRouter,
         onVisibleChanged: async visible => {
+            projectsPanelController?.invalidatePendingUpdates();
+            openWorkspaceDashboardController?.invalidatePendingUpdates();
             setAiSessionWatchersActive(visible);
             activeAiSessionTerminalHighlighter.setVisible(visible);
             if (visible) {
@@ -1356,7 +1417,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
     const dashboardRuntimeController = new DashboardRuntimeController({
         isVisible: () => provider.visible,
-        refreshProvider: () => provider.refresh(),
+        refreshProvider: () => {
+            projectsPanelController?.invalidatePendingUpdates();
+            openWorkspaceDashboardController?.invalidatePendingUpdates();
+            provider.refresh();
+        },
         logDashboardDiagnostic,
         executeCommand: (command, ...args) => vscode.commands.executeCommand(command, ...args),
         viewType: SidebarStewardViewProvider.viewType,
@@ -1483,13 +1548,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }));
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(terminal => {
-            const closedSessions = aiSessionRuntimeCoordinator.getActive()
+            const closedRuntimes = aiSessionRuntimeCoordinator.getActive()
                 .filter(runtime => runtime.backend === 'vscode' && runtime.terminal === terminal
-                    && Boolean(runtime.identity.sessionId))
-                .map(runtime => ({
-                    provider: runtime.identity.provider,
-                    sessionId: runtime.identity.sessionId as string,
-                }));
+                    && Boolean(runtime.identity.sessionId));
+            const exitStatus = terminal.exitStatus as
+                (vscode.TerminalExitStatus & { reason?: number }) | undefined;
+            const userClosedTerminal = exitStatus?.reason === USER_TERMINAL_EXIT_REASON;
+            const closedSessions: ActiveAiSessionTerminalIdentity[] = closedRuntimes.map(runtime => ({
+                provider: runtime.identity.provider,
+                sessionId: runtime.identity.sessionId as string,
+                workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+            }));
             const hadRuntimeClient = [...aiSessionRuntimeCoordinator.getActive(), ...aiSessionRuntimeCoordinator.getPending()]
                 .some(runtime => runtime.terminal === terminal);
             aiSessionRuntimeCoordinator.handleClosedTerminal(terminal);
@@ -1497,6 +1566,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             activeAiSessionTerminalHighlighter.handleTerminalClosed(terminal);
             if (closedSessions.length || hadRuntimeClient) {
                 refreshAiSessionViewsIncrementally();
+                if (userClosedTerminal) {
+                    void runSafeAiSessionRuntimeLifecycleTask(
+                        'acknowledge-user-terminal-close',
+                        async () => {
+                            for (const identity of closedSessions) {
+                                await acknowledgeAiSessionAttention(identity);
+                            }
+                        }
+                    );
+                }
                 void runSafeAiSessionRuntimeLifecycleTask(
                     'evaluate-attention-closed-terminal', evaluateAiSessionAttention
                 );
@@ -1526,6 +1605,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         get openWorkspacesGroupCollapsed() { return groupCollapseController.getOpenWorkspacesCollapsed() },
         get todoSearchItems() { return todoService.getSearchItems() },
     };
+    projectsPanelController = new ProjectsPanelController({
+        getGroups: () => projectService.getGroups(),
+        getSearchCatalog: () => buildWorkspaceDashboardSearchCatalog(
+            projectService.getGroups(),
+            getOpenWorkspaceCards(),
+            todoService.getSearchItems(),
+        ),
+        renderHtml: groups => getProjectsPanelContent(groups, stewardInfos),
+        postMessage: message => provider.postMessage(message),
+        refresh: reason => dashboardRuntimeController.refresh(reason),
+        isVisible: () => provider.visible,
+        logError,
+    });
     const dashboardStartupController = new DashboardStartupController({
         stewardInfos,
         relevantExtensions: RelevantExtensions,
@@ -1562,8 +1654,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             await dashboardStartupController.checkDataMigration(openStewardAfterMigrate);
         },
         reconcileProjectCatalog: () => projectService.reconcileProjectCatalog(),
+        consumeTodoDataWriteEcho: () => todoService.consumeCurrentSettingsDataLocalWriteEcho(),
+        consumeProjectCatalogWriteEcho: change =>
+            projectService.consumeProjectCatalogWriteEcho(change),
         applyProjectColorToCurrentWindow,
         refresh: refreshStewardViews,
+        refreshProjects: () => postProjectSurfacesUpdated('replace'),
         publishOpenWorkspace: followsFocusEvent => openWorkspaceController.publish(followsFocusEvent),
         evaluateAiSessionAttention: () => runSafeAiSessionRuntimeLifecycleTask(
             'evaluate-attention-window-state', evaluateAiSessionAttention
@@ -1914,6 +2010,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     async function postTodoPanelContent(requestId?: number) {
         let html: string;
+        let snapshot: ReturnType<typeof buildTodoPanelSnapshot> | undefined;
         try {
             await todoStorageMigration.ready;
             const unsupportedVersionError = todoService.getUnsupportedVersionError();
@@ -1925,7 +2022,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const todoRenderOptions = {
                 maxVisibleTodosPerGroup: getMaxVisibleTodosPerGroup(config),
             };
-            html = getTodoPanelContent(buildTodoViewModel(todoData, todoViewState, revealedTodoId), todoRenderOptions);
+            snapshot = buildTodoPanelSnapshot(todoData, todoViewState, revealedTodoId);
+            html = getTodoPanelContent(
+                buildTodoViewModel(todoData, todoViewState, revealedTodoId),
+                todoRenderOptions,
+            );
         } catch (error) {
             if (!(error instanceof UnsupportedTodoDataVersionError)) {
                 throw error;
@@ -1938,17 +2039,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 version: 1,
                 requestId,
                 html,
+                ...(snapshot ? { snapshot } : {}),
+                searchCatalog: buildWorkspaceDashboardSearchCatalog(
+                    projectService.getGroups(),
+                    getOpenWorkspaceCards(),
+                    todoService.getSearchItems(),
+                ),
             }
             : {
                 type: 'todo-panel-updated',
                 version: 1,
                 html,
+                ...(snapshot ? { snapshot } : {}),
                 searchCatalog: buildWorkspaceDashboardSearchCatalog(
                     projectService.getGroups(),
                     getOpenWorkspaceCards(),
                     todoService.getSearchItems(),
                 ),
             });
+    }
+
+    function getMaxVisibleTodosPerGroup(config: vscode.WorkspaceConfiguration): number {
+        const configuredItems = config.get('maxVisibleTodosPerGroup', 5);
+        const visibleItems = Math.floor(Number(configuredItems));
+        return Number.isFinite(visibleItems) && visibleItems > 0 ? visibleItems : 5;
     }
 
     async function runTodoPanelMutation(mutate: () => Promise<unknown>): Promise<boolean> {
@@ -1960,18 +2074,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         });
     }
 
-    function getMaxVisibleTodosPerGroup(config: vscode.WorkspaceConfiguration): number {
-        const configuredItems = config.get('maxVisibleTodosPerGroup', 5);
-        const visibleItems = Math.floor(Number(configuredItems));
-        return Number.isFinite(visibleItems) && visibleItems > 0 ? visibleItems : 5;
-    }
-
     function invalidateAiSessionCache(providerId: AiSessionProviderId) {
         getRegisteredAiSessionProvider(providerId)?.service.invalidateCache();
     }
 
-    function refreshAfterMutation() {
-        dashboardRuntimeController.refreshAfterMutation();
+    function postProjectSurfacesUpdated(mode: ProjectsPanelUpdateMode): void {
+        projectsPanelController?.postUpdated(mode);
+        openWorkspaceDashboardController.postUpdated();
+    }
+
+    function refreshAfterMutation(mode: ProjectsPanelUpdateMode = 'replace') {
+        postProjectSurfacesUpdated(mode);
+        applyProjectColorToCurrentWindow();
+        openWorkspaceController.publish();
     }
 
     function applyProjectColorToCurrentWindow(project: Project = null) {
@@ -2045,5 +2160,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 
 // this method is called when your extension is deactivated
-export function deactivate() {
+export async function deactivate(): Promise<void> {
+    const client = activeAiSessionAttentionBridgeClient;
+    activeAiSessionAttentionBridgeClient = null;
+    await client?.shutdown();
 }

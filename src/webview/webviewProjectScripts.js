@@ -2,6 +2,72 @@ function normalizeAiSessionTab(value) {
     return value === 'active' ? 'active' : 'sessions';
 }
 
+function getAiSessionCardActivation(target, projectId) {
+    if (!target || typeof target.closest !== 'function') {
+        return { handled: false, sessionRow: null, message: null };
+    }
+    var primarySessionAction = target.closest('[data-action="activate-ai-session"]');
+    var interactiveSessionChild = target.closest(
+        'button, input, select, textarea, a[href], [data-action]'
+    );
+    var activationSessionRow = primarySessionAction
+        ? primarySessionAction.closest('.codex-session-row')
+        : (!interactiveSessionChild ? target.closest('.codex-session-row') : null);
+    if (!activationSessionRow) {
+        return {
+            handled: !!target.closest('.codex-session-row'),
+            sessionRow: null,
+            message: null,
+        };
+    }
+
+    var provider = activationSessionRow.getAttribute('data-session-provider') || 'codex';
+    var supportedProvider = provider === 'codex' || provider === 'kimi' || provider === 'claude';
+    if (activationSessionRow.hasAttribute('data-session-pending')) {
+        var createdAt = activationSessionRow.getAttribute('data-pending-created-at');
+        return {
+            handled: true,
+            sessionRow: activationSessionRow,
+            message: supportedProvider && createdAt ? {
+                type: 'focus-pending-ai-session',
+                projectId: projectId,
+                provider: provider,
+                createdAt: createdAt,
+            } : null,
+        };
+    }
+
+    var sessionId = activationSessionRow.getAttribute('data-session-id');
+    if (!sessionId || !supportedProvider) {
+        return { handled: true, sessionRow: activationSessionRow, message: null };
+    }
+    if (activationSessionRow.hasAttribute('data-session-active')) {
+        return {
+            handled: true,
+            sessionRow: activationSessionRow,
+            message: {
+                type: 'focus-ai-session-terminal',
+                projectId: projectId,
+                provider: provider,
+                sessionId: sessionId,
+            },
+        };
+    }
+    return {
+        handled: true,
+        sessionRow: activationSessionRow,
+        message: {
+            type: provider === 'kimi'
+                ? 'resume-kimi-session'
+                : provider === 'claude'
+                    ? 'resume-claude-session'
+                    : 'resume-codex-session',
+            projectId: projectId,
+            sessionId: sessionId,
+        },
+    };
+}
+
 function getAdjacentAiSessionTab(tab, key) {
     tab = normalizeAiSessionTab(tab);
     if (key === 'ArrowLeft' || key === 'ArrowRight') return tab === 'active' ? 'sessions' : 'active';
@@ -437,6 +503,13 @@ function initProjects() {
     var activeAiSessionTerminalState = { provider: null, sessionId: null };
     var pendingWorkspaceSessionReveal = null;
 
+    function isDedicatedTodoTarget(target) {
+        return Boolean(window.__projectStewardTodo
+            && target
+            && target.closest
+            && target.closest('#dashboard-tab-todo'));
+    }
+
     function enter(projectId, provider) {
         if (batchAiSessionState.pending)
             return;
@@ -685,7 +758,6 @@ function initProjects() {
                 if (terminalRow.hasAttribute('data-session-pending')) {
                     terminalMessage.pendingCreatedAt = terminalRow.getAttribute('data-pending-created-at');
                 } else {
-                    acknowledgeAiSessionRow(terminalRow);
                     terminalMessage.sessionId = terminalRow.getAttribute('data-session-id');
                 }
                 window.vscode.postMessage(terminalMessage);
@@ -738,52 +810,17 @@ function initProjects() {
             return true;
         }
 
-        var primarySessionAction = target.closest('[data-action="activate-ai-session"]');
-        var pendingSessionRow = primarySessionAction
-            ? primarySessionAction.closest('.codex-session-row[data-session-pending]') : null;
-        if (pendingSessionRow) {
-            var pendingProvider = pendingSessionRow.getAttribute('data-session-provider');
-            var pendingCreatedAt = pendingSessionRow.getAttribute('data-pending-created-at');
-            if (isAiSessionProvider(pendingProvider) && pendingCreatedAt) {
-                window.vscode.postMessage({
-                    type: 'focus-pending-ai-session',
-                    projectId,
-                    provider: pendingProvider,
-                    createdAt: pendingCreatedAt,
-                });
-            }
-            return true;
+        var activation = getAiSessionCardActivation(target, projectId);
+        if (!activation.handled)
+            return false;
+        if (activation.sessionRow
+            && !activation.sessionRow.hasAttribute('data-session-pending')
+            && activation.sessionRow.getAttribute('data-session-id')) {
+            acknowledgeAiSessionRow(activation.sessionRow);
         }
-
-        var sessionRow = primarySessionAction
-            ? primarySessionAction.closest('.codex-session-row[data-session-id]') : null;
-        if (!sessionRow)
-            return !!target.closest('.codex-session-row');
-
-        var sessionId = sessionRow.getAttribute("data-session-id");
-        if (!sessionId)
-            return true;
-        var sessionProvider = sessionRow.getAttribute("data-session-provider") || "codex";
-
-        acknowledgeAiSessionRow(sessionRow);
-
-        if (isAiSessionProvider(sessionProvider)) {
-            if (sessionRow.hasAttribute('data-session-active')) {
-                window.vscode.postMessage({
-                    type: 'focus-ai-session-terminal',
-                    projectId,
-                    provider: sessionProvider,
-                    sessionId,
-                });
-            } else {
-                window.vscode.postMessage({
-                    type: getResumeAiSessionMessageType(sessionProvider),
-                    projectId,
-                    sessionId,
-                });
-            }
+        if (activation.message) {
+            window.vscode.postMessage(activation.message);
         }
-
         return true;
     }
 
@@ -1216,6 +1253,12 @@ function initProjects() {
     }
 
     function onTodoFormSubmit(e) {
+        if (window.__projectStewardTodo
+            && e.target
+            && e.target.closest
+            && e.target.closest('#dashboard-tab-todo')) {
+            return;
+        }
         var addForm = e.target && e.target.closest ? e.target.closest('.todo-add-form') : null;
         if (addForm) {
             e.preventDefault();
@@ -1575,7 +1618,12 @@ function initProjects() {
         var shouldCollapse = groups.some(group => !group.classList.contains("collapsed"));
 
         if (activeTab === 'todo') {
-            collapseTodoGroups(groups, shouldCollapse, message => window.vscode.postMessage(message));
+            if (window.__projectStewardTodo
+                && typeof window.__projectStewardTodo.dispatch === 'function') {
+                window.__projectStewardTodo.dispatch('collapse-groups', { collapsed: shouldCollapse });
+            } else {
+                collapseTodoGroups(groups, shouldCollapse, message => window.vscode.postMessage(message));
+            }
             syncCollapseButton();
             return;
         }
@@ -1588,6 +1636,8 @@ function initProjects() {
 
     function onMouseEvent(e) {
         if (!e.target || e.target.closest(".disabled"))
+            return;
+        if (isDedicatedTodoTarget(e.target))
             return;
 
         var contextMenuElement = e.target.closest("#projectContextMenu [data-action]");
@@ -1671,6 +1721,8 @@ function initProjects() {
 
     function onChangeEvent(e) {
         if (!e.target)
+            return;
+        if (isDedicatedTodoTarget(e.target))
             return;
 
         var todoPriorityInput = e.target.closest('.todo-priority-choice input[name="priority"]');

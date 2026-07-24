@@ -37,11 +37,14 @@ export interface AiSessionTerminalCommandControllerCommonOptions {
     showErrorMessage(message: string): Thenable<unknown> | Promise<unknown>;
     getProviderLabel(providerId: AiSessionProviderId): string;
     refresh(): void;
+    focusTerminalView?(): Thenable<unknown> | Promise<unknown>;
     logRuntimeFailure?(
         operation: string,
         error: unknown,
         backend: 'vscode' | 'tmux'
     ): void;
+    onRuntimeCloseStart?(runtime: AiSessionRuntimeSnapshot<unknown>): void;
+    onRuntimeCloseEnd?(runtime: AiSessionRuntimeSnapshot<unknown>, succeeded: boolean): void;
 }
 
 export interface AiSessionTerminalCommandRuntimeControllerOptions<
@@ -111,6 +114,7 @@ export class AiSessionTerminalCommandController<
             try {
                 await this.options.runtimeCoordinator.focus({ ...runtime.identity });
                 this.options.refresh();
+                await this.options.focusTerminalView?.();
             } catch (error) {
                 await this.handleRuntimeActionFailure(
                     'focus-runtime', 'Could not focus the AI session terminal.',
@@ -157,6 +161,7 @@ export class AiSessionTerminalCommandController<
                 return;
             }
             options.refresh();
+            await options.focusTerminalView?.();
         } catch (error) {
             await this.handleRuntimeActionFailure(
                 'focus-selected-runtime', 'Could not focus the selected AI session runtime.',
@@ -174,6 +179,7 @@ export class AiSessionTerminalCommandController<
             try {
                 await this.options.runtimeCoordinator.focus({ ...runtime.identity });
                 this.options.refresh();
+                await this.options.focusTerminalView?.();
             } catch (error) {
                 await this.handleRuntimeActionFailure(
                     'focus-runtime', 'Could not focus the AI session terminal.',
@@ -242,10 +248,12 @@ export class AiSessionTerminalCommandController<
             await this.handleChangedRuntime(request.projectId, options);
             return;
         }
+        this.options.onRuntimeCloseStart?.(cloneRuntime(currentRuntime));
         try {
             const detach = options.runtimeCoordinator.detach({ ...currentRuntime.identity });
             await detach;
         } catch (error) {
+            this.options.onRuntimeCloseEnd?.(cloneRuntime(currentRuntime), false);
             options.logRuntimeFailure?.('detach-runtime', error, runtime.backend);
             await options.showErrorMessage(runtime.backend === 'tmux'
                 ? 'Could not detach the AI session terminal.'
@@ -253,6 +261,7 @@ export class AiSessionTerminalCommandController<
             options.refresh();
             return;
         }
+        this.options.onRuntimeCloseEnd?.(cloneRuntime(currentRuntime), true);
         options.refresh();
     }
 

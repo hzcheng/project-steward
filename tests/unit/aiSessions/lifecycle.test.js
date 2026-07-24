@@ -13,14 +13,15 @@ const runStartedAtMs = Date.parse('2026-07-20T00:00:00.000Z');
 const providers = [{
     id: 'codex',
     parser: lifecycle.parseCodexLifecycleLines,
-    stoppedReason: 'aborted',
+    stoppedPhase: 'idle',
 }, {
     id: 'kimi',
     parser: lifecycle.parseKimiLifecycleLines,
-    stoppedReason: 'aborted',
+    stoppedPhase: 'idle',
 }, {
     id: 'claude',
     parser: lifecycle.parseClaudeLifecycleLines,
+    stoppedPhase: 'needsAttention',
     stoppedReason: 'failed',
 }];
 
@@ -43,7 +44,11 @@ for (const provider of providers) {
         expected: { phase: 'needsAttention', reason: 'completed', executionState: 'stopped' },
     }, {
         state: 'stopped',
-        expected: { phase: 'needsAttention', reason: provider.stoppedReason, executionState: 'stopped' },
+        expected: {
+            phase: provider.stoppedPhase,
+            reason: provider.stoppedReason,
+            executionState: 'stopped',
+        },
     }];
 
     for (const fixtureCase of cases) {
@@ -66,3 +71,33 @@ for (const provider of providers) {
         assert.ok(signal.occurredAtMs >= runStartedAtMs);
     });
 }
+
+test('PERSIST-LIFECYCLE-PARSER-001 [claude] treats the explicit user interrupt marker as stopped', () => {
+    const signal = lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({
+            type: 'assistant',
+            timestamp: '2026-07-24T08:42:19.029Z',
+            uuid: 'assistant-before-interrupt',
+            message: {
+                role: 'assistant',
+                stop_reason: null,
+                content: [{ type: 'text', text: 'Partial response before interruption' }],
+            },
+        }),
+        JSON.stringify({
+            type: 'user',
+            timestamp: '2026-07-24T08:42:19.030Z',
+            uuid: 'user-interrupt',
+            message: {
+                role: 'user',
+                content: [{ type: 'text', text: '[Request interrupted by user]' }],
+            },
+        }),
+    ], runStartedAtMs);
+
+    assert.ok(signal);
+    assert.equal(signal.phase, 'idle');
+    assert.equal(signal.reason, undefined);
+    assert.equal(signal.executionState, 'stopped');
+    assert.match(signal.token, /^claude:user_interrupt:/);
+});

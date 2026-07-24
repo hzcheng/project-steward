@@ -2,6 +2,28 @@
 
 All notable changes to the "Project Steward" extension will be documented in this file. It follows the [Keep a Changelog](http://keepachangelog.com/) recommendations.
 
+## [2.1.6] 2026-07-25
+
+### Added
+
+-   Add a continuous TODO workflow with full inline card details, fixed-group creation forms, stable drag ordering, undo, and browser-level expanded-layout coverage.
+-   Add recoverable project-catalog synchronization that preserves concurrent additions, deletions, group ordering, favorites, and local write ownership.
+-   Add CI-owned behavior contracts for TODO incremental rendering, session-card activation, terminal focus, attention lifecycle, and tmux reload recovery.
+
+### Changed
+
+-   Update TODO completion, inline editing, group disclosure, and Projects rendering incrementally without replacing the whole dashboard surface.
+-   Keep Active Session card ordering stable when terminal focus changes, and focus the VS Code terminal workbench after selecting a Session.
+-   Size TODO groups around both the configured visible-card limit and the complete expanded card, while keeping the page command bar visually distinct from saved groups.
+
+### Fixed
+
+-   Recover a live tmux viewer after VS Code reload by resolving the restored terminal PID to its real tmux client session, preventing a second terminal from attaching to the same runtime.
+-   Use the first tmux project window for the first Session instead of leaving an empty bootstrap window.
+-   Keep Session exit, explicit close, provider interrupt, and acknowledged completion from creating or reopening false red attention indicators.
+-   Recover stalled lazy dashboard panels and version Webview assets per activation so reloads do not leave the sidebar blank or stale.
+-   Preserve aliases across Codex root-thread switches and focus the rebound tmux Session without duplicating the viewer.
+
 ## [2.1.5] 2026-07-23
 
 ### Added
@@ -20,6 +42,7 @@ All notable changes to the "Project Steward" extension will be documented in thi
 -   Rebind a managed tmux pane when Codex switches to a new root thread/session, keeping the replacement session in `ACTIVE` with its running animation while rejecting subagents and ambiguous process evidence.
 -   Preserve `OTHER WINDOWS` navigation identity and privacy guarantees through incremental rendering updates.
 -   Stabilize attention cleanup synchronization under full Linux CI load.
+-   Keep provider aborts, Direct Terminal exit, user terminal close, and tmux runtime cleanup attention-neutral; only explicit provider completion, failure, or input events can create a red indicator.
 
 ## [2.1.4] 2026-07-22
 

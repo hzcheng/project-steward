@@ -19,7 +19,7 @@ jobs:
   quality-linux:
     name: quality-linux
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,6 +32,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Install pinned Chromium
+        run: npx playwright install --with-deps chromium
       - name: Run Linux quality gate
         run: npm run test:ci:linux
 
