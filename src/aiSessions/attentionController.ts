@@ -94,6 +94,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             this.attentionKeysBySession.set(owned.baseSessionKey, keys);
         }
         const signalsByProvider = this.getSignalsByProvider(providers, ownedSessions);
+        const runningAttentionKeysBySession = new Map<string, string>();
         const inputs = Array.from(ownedSessions, ([key, owned]) => {
             const signal = this.options.isRuntimeComplete(owned.runtime)
                 ? {
@@ -104,6 +105,9 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                     occurredAtMs: owned.runtime.runStartedAtMs,
                 }
                 : signalsByProvider[owned.providerId][owned.session.id];
+            if (signal?.phase === 'running') {
+                runningAttentionKeysBySession.set(owned.baseSessionKey, key);
+            }
             return {
                 key,
                 signal,
@@ -112,6 +116,12 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         });
 
         const events = this.monitor.evaluate(inputs);
+        for (const [sessionKey, runningAttentionKey] of runningAttentionKeysBySession) {
+            this.monitor.discard(
+                (this.attentionKeysBySession.get(sessionKey) || [])
+                    .filter(attentionKey => attentionKey !== runningAttentionKey)
+            );
+        }
         this.pruneAttentionKeysBySession();
         if (events.length) {
             this.options.scheduleRefresh('attention');

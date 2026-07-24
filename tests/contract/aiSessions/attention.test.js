@@ -383,6 +383,78 @@ for (const [providerId, sessionsKey] of [
     });
 }
 
+test('ATTENTION-NEW-RUN-CLEARS-STALE-001 clears an older run event when the logical Session starts running again', async () => {
+    const workspace = {
+        navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
+        kind: 'singleFolder', displayName: 'Fixture', navigationUri: 'file:///fixtures/project',
+        environment: 'local', roots: [{
+            id: 'root:fixture', name: 'Fixture', uri: 'file:///fixtures/project',
+            hostPath: '/fixtures/project', ordinal: 0,
+        }],
+    };
+    const workspaceSessions = {
+        sessionsByProvider: {
+            codex: [{ id: 'session', primaryRootId: 'root:fixture' }],
+            kimi: [],
+            claude: [],
+        },
+    };
+    const publications = [];
+    let runtime = null;
+    let signal = undefined;
+    const controller = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getWorkspaceTarget: () => ({
+            cardId: 'workspace:fixture',
+            workspace,
+            sessions: workspaceSessions,
+        }),
+        getProviders: () => [{
+            id: 'codex',
+            service: {
+                getLifecycleSignals: () => signal ? { session: signal } : {},
+            },
+        }],
+        getRuntimeById: () => runtime,
+        isRuntimeComplete: value => value.state === 'completed',
+        publish: async items => {
+            publications.push(items.map(item => ({ ...item })));
+            return true;
+        },
+        scheduleRefresh: () => undefined,
+        nowMs: () => 1000,
+    });
+
+    const oldRunKey = attentionProject.getAttentionRuntimeSessionKey({
+        workspaceScopeIdentity: 'a'.repeat(64),
+        provider: 'codex',
+        sessionId: 'session',
+        runStartedAtMs: 100,
+        backend: 'tmux',
+    });
+    await controller.evaluate([{
+        providerId: 'codex',
+        sessionId: 'session',
+        attentionKey: oldRunKey,
+        runtime: { state: 'completed', runStartedAtMs: 100 },
+    }]);
+    assert.equal(publications[0].length, 1);
+
+    runtime = { state: 'active', runStartedAtMs: 200 };
+    signal = {
+        token: 'task-started:200',
+        phase: 'running',
+        executionState: 'running',
+        occurredAtMs: 200,
+    };
+    await controller.evaluate();
+
+    assert.deepEqual(publications[1], []);
+    assert.equal(controller.getLocalSnapshot()[oldRunKey], undefined);
+    assert.equal(controller.getLocalSnapshot()['codex:session'].state, 'running');
+    assert.deepEqual(controller.getRecoverySessionEvents(), []);
+});
+
 test('ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 releases completed runtime ownership only after published attention evidence', async () => {
     const released = [];
     const candidates = [

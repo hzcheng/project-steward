@@ -1000,6 +1000,20 @@
     ]
   },
   {
+    "id": "ATTENTION-NEW-RUN-CLEARS-STALE-001",
+    "domain": "attention",
+    "title": "A new running turn clears stale attention from older runs of the same logical Session",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/attentionController.ts",
+      "src/aiSessions/attentionMonitor.ts"
+    ]
+  },
+  {
     "id": "SESSION-AI-SESSION-EXECUTION-MONITOR-001",
     "domain": "session",
     "title": "AI Session Execution Monitor behavior",
