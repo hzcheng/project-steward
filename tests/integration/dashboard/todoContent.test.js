@@ -1,11 +1,21 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const { getTodoPanelContent } = require('../../../out/todos/webviewContent');
 const { buildTodoViewModel } = require('../../../out/todos/viewModel');
 
 const NOW = '2026-07-24T00:00:00.000Z';
+const todoScript = fs.readFileSync(
+    path.join(__dirname, '../../../src/webview/webviewTodoScripts.js'),
+    'utf8'
+);
+const styles = fs.readFileSync(
+    path.join(__dirname, '../../../media/styles.scss'),
+    'utf8'
+);
 
 function renderPanel() {
     const data = {
@@ -64,4 +74,14 @@ test('TODO-TODO-PRIORITY-SIGNAL-001 hides the default medium badge while retaini
 
     assert.doesNotMatch(html, />MED<\/span>/);
     assert.match(html, />HIGH<\/span>/);
+});
+
+test('TODO-GROUP-DISCLOSURE-001 uses one centered SVG chevron with distinct expanded and collapsed directions', () => {
+    const html = renderPanel();
+
+    assert.match(html, /class="todo-group-chevron collapse-icon"[\s\S]*<svg/);
+    assert.match(todoScript, /class="todo-group-chevron collapse-icon"[\s\S]*<svg/);
+    assert.doesNotMatch(todoScript, /<span class="collapse-icon"[^>]*>⌄<\/span>/);
+    assert.match(styles, /\.todo-group-chevron\s*\{[\s\S]*display:\s*grid[\s\S]*place-items:\s*center/);
+    assert.match(styles, /\.todo-group\.collapsed \.todo-group-chevron svg\s*\{[\s\S]*transform:\s*rotate\(-90deg\)/);
 });

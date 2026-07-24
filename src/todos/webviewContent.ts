@@ -103,7 +103,7 @@ function renderTodoGroup(group: TodoGroupViewModel): string {
         <header class="todo-group-header group-title steward-group-header">
             <div class="todo-group-title-block group-title-text">
                 <button class="todo-group-collapse-button" type="button" data-action="todo-collapse-group" data-todo-group-id="${escapeHtml(group.id)}" aria-expanded="${group.collapsed ? 'false' : 'true'}" title="${group.collapsed ? 'Expand' : 'Collapse'} todo group" aria-label="${group.collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(group.title)}">
-                    <span class="collapse-icon" aria-hidden="true">${Icons.collapse}</span>
+                    <span class="todo-group-chevron collapse-icon" aria-hidden="true">${Icons.collapse}</span>
                 </button>
                 <h2 data-drag-todo-group title="${escapeHtml(group.title)}">${escapeHtml(group.title)}</h2>
                 <span class="todo-group-count">${groupMeta}</span>
