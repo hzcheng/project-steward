@@ -6415,6 +6415,11 @@ function runBatchAiSessionWebviewChecks() {
     });
     assert.strictEqual(primarySpacePrevented, false,
         'native Space activation on the primary button must not be intercepted');
+    eventListeners.click({ button: 0, target: activeRow });
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [{
+        type: 'focus-ai-session-terminal', projectId: 'project-a', provider: 'codex', sessionId: 'active-session',
+    }], 'clicking the active session card outside its inner button must focus that session');
+    messages.length = 0;
     eventListeners.click({ button: 0, target: activeRow.primaryAction });
     eventListeners.click({ button: 0, target: otherCodexRow.primaryAction });
     eventListeners.click({ button: 0, target: pendingRow.primaryAction });

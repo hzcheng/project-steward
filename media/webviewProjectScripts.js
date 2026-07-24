@@ -746,8 +746,13 @@ function initProjects() {
         }
 
         var primarySessionAction = target.closest('[data-action="activate-ai-session"]');
-        var pendingSessionRow = primarySessionAction
-            ? primarySessionAction.closest('.codex-session-row[data-session-pending]') : null;
+        var interactiveSessionChild = target.closest('button, input, select, textarea, a[href], [data-action]');
+        var activationSessionRow = primarySessionAction
+            ? primarySessionAction.closest('.codex-session-row')
+            : (!interactiveSessionChild ? target.closest('.codex-session-row') : null);
+        var pendingSessionRow = activationSessionRow
+            && activationSessionRow.hasAttribute('data-session-pending')
+            ? activationSessionRow : null;
         if (pendingSessionRow) {
             var pendingProvider = pendingSessionRow.getAttribute('data-session-provider');
             var pendingCreatedAt = pendingSessionRow.getAttribute('data-pending-created-at');
@@ -762,8 +767,9 @@ function initProjects() {
             return true;
         }
 
-        var sessionRow = primarySessionAction
-            ? primarySessionAction.closest('.codex-session-row[data-session-id]') : null;
+        var sessionRow = activationSessionRow
+            && activationSessionRow.getAttribute('data-session-id')
+            ? activationSessionRow : null;
         if (!sessionRow)
             return !!target.closest('.codex-session-row');
 
