@@ -400,6 +400,7 @@ test('ATTENTION-NEW-RUN-CLEARS-STALE-001 clears an older run event when the logi
         },
     };
     const publications = [];
+    const refreshReasons = [];
     let runtime = null;
     let signal = undefined;
     const controller = new AiSessionAttentionController({
@@ -421,7 +422,7 @@ test('ATTENTION-NEW-RUN-CLEARS-STALE-001 clears an older run event when the logi
             publications.push(items.map(item => ({ ...item })));
             return true;
         },
-        scheduleRefresh: () => undefined,
+        scheduleRefresh: reason => refreshReasons.push(reason),
         nowMs: () => 1000,
     });
 
@@ -453,6 +454,7 @@ test('ATTENTION-NEW-RUN-CLEARS-STALE-001 clears an older run event when the logi
     assert.equal(controller.getLocalSnapshot()[oldRunKey], undefined);
     assert.equal(controller.getLocalSnapshot()['codex:session'].state, 'running');
     assert.deepEqual(controller.getRecoverySessionEvents(), []);
+    assert.deepEqual(refreshReasons, ['attention', 'attention']);
 });
 
 test('ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 releases completed runtime ownership only after published attention evidence', async () => {

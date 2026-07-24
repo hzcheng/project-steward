@@ -116,14 +116,15 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         });
 
         const events = this.monitor.evaluate(inputs);
+        let discardedStaleAttention = false;
         for (const [sessionKey, runningAttentionKey] of runningAttentionKeysBySession) {
-            this.monitor.discard(
-                (this.attentionKeysBySession.get(sessionKey) || [])
-                    .filter(attentionKey => attentionKey !== runningAttentionKey)
-            );
+            const staleAttentionKeys = (this.attentionKeysBySession.get(sessionKey) || [])
+                .filter(attentionKey => attentionKey !== runningAttentionKey);
+            discardedStaleAttention ||= staleAttentionKeys.length > 0;
+            this.monitor.discard(staleAttentionKeys);
         }
         this.pruneAttentionKeysBySession();
-        if (events.length) {
+        if (events.length || discardedStaleAttention) {
             this.options.scheduleRefresh('attention');
         }
 
