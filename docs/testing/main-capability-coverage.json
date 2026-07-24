@@ -2,7 +2,7 @@
     "version": 1,
     "audit": {
         "base": "2b34c653119bdf480f2af0330ee3809b51441807",
-        "head": "82849460b41370f3b63bd9d86b18fef39f68233a",
+        "head": "dfb81f1fa68651407fe1f7d3958a67688478d301",
         "ignoredDocumentationCommits": []
     },
     "capabilities": [
@@ -552,10 +552,13 @@
                 "36ac6e0647b1b320e986cd689319210195bc6fa6",
                 "e5711ec2dfe3e3d090e8d7db70caa7e7879f2910",
                 "9a344806a1846d2c1e6996a93dafa0e18f97492a",
-                "71fc7e40c24515b4a3616ef1b5d4d790647c93b2"
+                "71fc7e40c24515b4a3616ef1b5d4d790647c93b2",
+                "e942284864c939c8ee65d74a6581aebd193b5ecf",
+                "dfb81f1fa68651407fe1f7d3958a67688478d301"
             ],
             "behaviors": [
                 "RUNTIME-TMUX-BACKEND-001",
+                "RUNTIME-TMUX-CLIENT-001",
                 "RUNTIME-TMUX-DISCOVERY-001",
                 "SESSION-AI-SESSION-TERMINAL-COMMAND-CONTROLLER-001",
                 "SESSION-ALIAS-THREAD-SWITCH-001",
