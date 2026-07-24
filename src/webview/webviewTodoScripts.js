@@ -338,53 +338,36 @@ function initTodos(options) {
             + '<button class="todo-primary-button steward-button" type="button" data-action="todo-undo">Undo</button></div>';
     }
 
-    function syncTodoListViewportHeights() {
+    function syncTodoListExpandedHeights() {
         if (!root || !root.querySelectorAll) {
             return;
         }
-        var visibleItemsValue = typeof getComputedStyle === 'function'
-            ? getComputedStyle(root).getPropertyValue('--todo-visible-items')
+        var collapsedHeightValue = typeof getComputedStyle === 'function'
+            ? getComputedStyle(root).getPropertyValue('--todo-collapsed-item-height')
             : '';
-        var maxVisibleItems = Math.max(1, Math.floor(parseFloat(visibleItemsValue) || 5));
+        var collapsedHeight = parseFloat(collapsedHeightValue) || 58;
         Array.from(root.querySelectorAll('.todo-list')).forEach(function (list) {
             if (!list || !list.style || !list.querySelectorAll) {
                 return;
             }
-            var items = Array.from(
-                list.querySelectorAll('.todo-item[data-todo-id]:not([hidden])')
-            );
-            if (items.length <= maxVisibleItems) {
-                list.style.setProperty('--todo-list-viewport-height', 'none');
-                return;
-            }
-
-            var measuredItems = items.slice(0, maxVisibleItems);
-            var expandedItem = items.find(function (item) {
-                return item.classList
-                    ? item.classList.contains('expanded')
-                    : String(item.className || '').split(/\s+/).includes('expanded');
-            });
-            if (expandedItem && measuredItems.indexOf(expandedItem) < 0) {
-                measuredItems[measuredItems.length - 1] = expandedItem;
-            }
-
-            var viewportHeight = measuredItems.reduce(function (total, item, index) {
-                var itemHeight = Number(item.offsetHeight) || 0;
-                if (!itemHeight) {
-                    return total;
-                }
-                var itemStyle = typeof getComputedStyle === 'function'
-                    ? getComputedStyle(item)
-                    : null;
-                var marginTop = itemStyle ? parseFloat(itemStyle.marginTop) || 0 : 0;
-                var marginBottom = index < measuredItems.length - 1 && itemStyle
-                    ? parseFloat(itemStyle.marginBottom) || 0
-                    : 0;
-                return total + itemHeight + marginTop + marginBottom;
-            }, 0);
+            var expandedExtraHeight = Array.from(list.querySelectorAll('.todo-item.expanded'))
+                .reduce(function (total, item) {
+                    var itemStyle = typeof getComputedStyle === 'function'
+                        ? getComputedStyle(item)
+                        : null;
+                    var borderHeight = itemStyle
+                        ? (parseFloat(itemStyle.borderTopWidth) || 0)
+                            + (parseFloat(itemStyle.borderBottomWidth) || 0)
+                        : 0;
+                    var expandedHeight = Math.max(
+                        Number(item.offsetHeight) || 0,
+                        (Number(item.scrollHeight) || 0) + borderHeight
+                    );
+                    return total + Math.max(0, expandedHeight - collapsedHeight);
+                }, 0);
             list.style.setProperty(
-                '--todo-list-viewport-height',
-                viewportHeight > 0 ? viewportHeight + 'px' : 'var(--todo-list-max-height)'
+                '--todo-list-expanded-extra-height',
+                expandedExtraHeight + 'px'
             );
         });
     }
@@ -411,7 +394,7 @@ function initTodos(options) {
             return;
         }
         layoutObserver = new ResizeObserver(function () {
-            syncTodoListViewportHeights();
+            syncTodoListExpandedHeights();
         });
         refreshTodoLayoutObserverTargets();
     }
@@ -463,7 +446,7 @@ function initTodos(options) {
                 + escapeHtml(state.announcement) + '</div>';
         }
         state.renderedSurfaceHtml = surfaceHtml;
-        syncTodoListViewportHeights();
+        syncTodoListExpandedHeights();
         refreshTodoLayoutObserverTargets();
         updateFeedback();
         if (typeof options.onRendered === 'function') {
@@ -497,7 +480,7 @@ function initTodos(options) {
             patch.item.innerHTML = renderTodoBody(patch.todo);
         });
         state.renderedSurfaceHtml = renderListSurface();
-        syncTodoListViewportHeights();
+        syncTodoListExpandedHeights();
         refreshTodoLayoutObserverTargets();
         updateFeedback();
         return true;
@@ -575,7 +558,7 @@ function initTodos(options) {
             list.insertAdjacentHTML('afterend', '<p class="todo-group-empty">No visible todos</p>');
         }
         state.renderedSurfaceHtml = renderListSurface();
-        syncTodoListViewportHeights();
+        syncTodoListExpandedHeights();
         refreshTodoLayoutObserverTargets();
         updateFeedback();
         return true;

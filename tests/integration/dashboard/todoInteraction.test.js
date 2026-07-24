@@ -71,6 +71,10 @@ function createHarness(options = {}) {
         hidden: false,
         get offsetHeight() {
             if (!layoutVisible) return 0;
+            return 58;
+        },
+        get scrollHeight() {
+            if (!layoutVisible) return 0;
             return this.className.includes('expanded') ? expandedTodoHeight : 58;
         },
     }]));
@@ -355,7 +359,7 @@ test('TODO-INCREMENTAL-ROOT-001 patches inline details and group disclosure with
     assert.equal(harness.groupButton.attributes['aria-expanded'], 'false');
 });
 
-test('TODO-MAX-VISIBLE-PER-GROUP-001 expands the current group viewport without replacing its root', () => {
+test('TODO-MAX-VISIBLE-PER-GROUP-001 uses full scroll height when the expanded border box is still collapsed', () => {
     const harness = createHarness({ targetedPatches: true, maxVisibleTodos: 1 });
     const root = harness.root;
     const mountedRenders = harness.getRenderedCount();
@@ -365,8 +369,8 @@ test('TODO-MAX-VISIBLE-PER-GROUP-001 expands the current group viewport without 
     assert.equal(harness.root, root);
     assert.equal(harness.getRenderedCount(), mountedRenders);
     assert.equal(
-        harness.todoList.style.properties['--todo-list-viewport-height'],
-        '180px'
+        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
+        '122px'
     );
 });
 
@@ -379,16 +383,16 @@ test('TODO-MAX-VISIBLE-PER-GROUP-001 remeasures an inline detail when its hidden
 
     harness.controller.toggleDetail('todo-a');
     assert.equal(
-        harness.todoList.style.properties['--todo-list-viewport-height'],
-        'var(--todo-list-max-height)'
+        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
+        '0px'
     );
 
     harness.setLayoutVisible(true);
     harness.notifyResize();
 
     assert.equal(
-        harness.todoList.style.properties['--todo-list-viewport-height'],
-        '180px'
+        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
+        '122px'
     );
 });
 
@@ -396,16 +400,16 @@ test('TODO-MAX-VISIBLE-PER-GROUP-001 remeasures wrapped inline detail after side
     const harness = createHarness({ targetedPatches: true, maxVisibleTodos: 1 });
     harness.controller.toggleDetail('todo-a');
     assert.equal(
-        harness.todoList.style.properties['--todo-list-viewport-height'],
-        '180px'
+        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
+        '122px'
     );
 
     harness.setExpandedTodoHeight(220);
     harness.notifyResize();
 
     assert.equal(
-        harness.todoList.style.properties['--todo-list-viewport-height'],
-        '220px'
+        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
+        '162px'
     );
 });
 

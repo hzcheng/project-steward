@@ -1400,7 +1400,7 @@ body .project {
 .todo-list {
     display: grid;
     gap: 0;
-    max-height: var(--todo-list-viewport-height, var(--todo-list-max-height));
+    max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px));
     margin: 0;
     padding: 0;
     overflow-y: auto;
@@ -1647,6 +1647,7 @@ body .project {
 }
 
 .todo-item.expanded {
+    height: auto !important;
     cursor: default;
 
     .todo-title-text {

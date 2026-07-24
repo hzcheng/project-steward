@@ -49,7 +49,7 @@ function validateTodoFocus(source) {
 function validateTodoLayout(source) {
     const list = extractBlock(source, '.todo-list');
     assert.ok(list.includes(
-        'max-height: var(--todo-list-viewport-height, var(--todo-list-max-height))'
+        'max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px))'
     ), 'TODO-RESPONSIVE-LAYOUT-001 list must honor the configured group viewport');
     assert.ok(list.includes('overflow-y: auto'),
         'TODO-RESPONSIVE-LAYOUT-001 overflowing groups must remain scrollable');
@@ -61,6 +61,8 @@ function validateTodoLayout(source) {
     assert.equal(title.includes('white-space: nowrap'), false,
         'TODO-RESPONSIVE-LAYOUT-001 titles must use both available lines');
     const expanded = extractBlock(source, '.todo-item.expanded');
+    assert.ok(expanded.includes('height: auto !important'),
+        'TODO-MAX-VISIBLE-PER-GROUP-001 expanded cards must override the shared collapsed height');
     assert.ok(expanded.includes('-webkit-line-clamp: unset'),
         'TODO-RESPONSIVE-LAYOUT-001 inline detail must reveal the complete title');
     const inlineValue = extractBlock(source, '.todo-inline-value');
