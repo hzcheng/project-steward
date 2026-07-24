@@ -217,11 +217,15 @@ function createDashboardHarness({ initialTab = 'open', initialSearchQuery = '', 
     };
 }
 
-function loadWebviewModules() {
+function loadWebviewModules(options = {}) {
     const vscode = createFakeVscode({});
     vscode.Uri = {
         file: value => ({ fsPath: value, path: value, toString: () => `file://${value}` }),
     };
+    const contentPath = require.resolve('../../../out/webview/webviewContent');
+    if (options.fresh) {
+        delete require.cache[contentPath];
+    }
     const previousLoad = Module._load;
     try {
         Module._load = function (request, parent, isMain) {
@@ -460,14 +464,30 @@ test('WEBVIEW-RESOURCE-RECOVERY-001 gives every rendered document fresh versione
     );
     const first = render();
     const second = render();
-    const revisionPattern = /file:\/\/\/extension\/media\/styles\.css\?stewardAssetRevision=(\d+)/;
+    const freshModules = loadWebviewModules({ fresh: true });
+    const afterReactivation = freshModules.content.getStewardContent(
+        { extensionPath: '/extension' },
+        { cspSource: 'test', asWebviewUri: uri => uri.toString() },
+        [],
+        {
+            config: { get: (_key, fallback) => fallback },
+            relevantExtensionsInstalls: { remoteSSH: false, remoteContainers: true },
+            otherStorageHasData: false,
+        },
+        true,
+    );
+    const revisionPattern = /file:\/\/\/extension\/media\/styles\.css\?stewardAssetRevision=([a-z0-9]+-\d+)/;
     const firstRevision = first.match(revisionPattern);
     const secondRevision = second.match(revisionPattern);
+    const reactivatedRevision = afterReactivation.match(revisionPattern);
 
     assert.ok(firstRevision, 'stylesheet URL must carry a document-scoped asset revision');
     assert.ok(secondRevision, 'refreshed stylesheet URL must carry an asset revision');
+    assert.ok(reactivatedRevision, 'reactivated stylesheet URL must carry an asset revision');
     assert.notEqual(firstRevision[1], secondRevision[1],
         'a refreshed document must not reuse a possibly failed cached asset URL');
+    assert.notEqual(firstRevision[1], reactivatedRevision[1],
+        'a new extension activation must not restart asset URLs at a cached revision');
     for (const asset of [
         'fitty.min.js',
         'dragula.min.js',

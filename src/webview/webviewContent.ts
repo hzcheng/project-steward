@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 
 import {
     Project,
@@ -78,6 +79,7 @@ interface AiSessionSurfaceViewModel {
     activeAiSessions?: ActiveAiSessionViewModel[];
 }
 
+const WEBVIEW_ASSET_ACTIVATION = randomBytes(8).toString('hex');
 let webviewAssetRevision = 0;
 
 export function getStewardContent(
@@ -89,7 +91,7 @@ export function getStewardContent(
     workspaceCards: WorkspaceCardViewModel[] = [],
     otherWindowsStatus: OpenWorkspaceBridgeStatus = 'ready',
 ): string {
-    var assetRevision = String(++webviewAssetRevision);
+    var assetRevision = `${WEBVIEW_ASSET_ACTIVATION}-${++webviewAssetRevision}`;
     var stylesPath = getMediaResource(context, webview, 'styles.css', assetRevision);
     var fittyPath = getMediaResource(context, webview, 'fitty.min.js', assetRevision);
     var dragulaPath = getMediaResource(context, webview, 'dragula.min.js', assetRevision);
