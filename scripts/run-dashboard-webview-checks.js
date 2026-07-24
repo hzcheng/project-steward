@@ -4852,7 +4852,7 @@ function runSourceContractChecks(source) {
     const todoListRules = extractCssRules(styles, '.todo-list');
     const todoListRule = todoListRules.join('\n');
     assert.ok(todoListRule.includes(
-        'max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px))'
+        'max-height: var(--todo-list-viewport-height, var(--todo-list-max-height))'
     ) && todoListRule.includes('overflow-y: auto'),
     'todo lists should honor the configured per-group viewport');
     assert.ok(todoListRules.some(rule => cssRuleIncludesTopLevelDeclaration(rule, 'gap: 0')),

@@ -49,7 +49,7 @@ function validateTodoFocus(source) {
 function validateTodoLayout(source) {
     const list = extractBlock(source, '.todo-list');
     assert.ok(list.includes(
-        'max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px))'
+        'max-height: var(--todo-list-viewport-height, var(--todo-list-max-height))'
     ), 'TODO-RESPONSIVE-LAYOUT-001 list must honor the configured group viewport');
     assert.ok(list.includes('overflow-y: auto'),
         'TODO-RESPONSIVE-LAYOUT-001 overflowing groups must remain scrollable');

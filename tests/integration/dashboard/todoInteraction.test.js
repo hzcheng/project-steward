@@ -94,6 +94,9 @@ function createHarness(options = {}) {
             return match ? todoNodes.get(match[1]) || null : null;
         },
         querySelectorAll(selector) {
+            if (selector === '.todo-item[data-todo-id]:not([hidden])') {
+                return Array.from(todoNodes.values()).filter(node => !node.hidden);
+            }
             if (selector === '.todo-item.expanded') {
                 return Array.from(todoNodes.values()).filter(node =>
                     node.className.includes('expanded')
@@ -185,7 +188,9 @@ function createHarness(options = {}) {
         },
         getComputedStyle: () => ({
             getPropertyValue(name) {
-                return name === '--todo-collapsed-item-height' ? '58px' : '';
+                if (name === '--todo-collapsed-item-height') return '58px';
+                if (name === '--todo-visible-items') return String(options.maxVisibleTodos || 5);
+                return '';
             },
         }),
         setTimeout: callback => {
@@ -351,7 +356,7 @@ test('TODO-INCREMENTAL-ROOT-001 patches inline details and group disclosure with
 });
 
 test('TODO-MAX-VISIBLE-PER-GROUP-001 expands the current group viewport without replacing its root', () => {
-    const harness = createHarness({ targetedPatches: true });
+    const harness = createHarness({ targetedPatches: true, maxVisibleTodos: 1 });
     const root = harness.root;
     const mountedRenders = harness.getRenderedCount();
 
@@ -360,43 +365,47 @@ test('TODO-MAX-VISIBLE-PER-GROUP-001 expands the current group viewport without 
     assert.equal(harness.root, root);
     assert.equal(harness.getRenderedCount(), mountedRenders);
     assert.equal(
-        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
-        '122px'
+        harness.todoList.style.properties['--todo-list-viewport-height'],
+        '180px'
     );
 });
 
 test('TODO-MAX-VISIBLE-PER-GROUP-001 remeasures an inline detail when its hidden tab becomes visible', () => {
-    const harness = createHarness({ targetedPatches: true, layoutVisible: false });
+    const harness = createHarness({
+        targetedPatches: true,
+        layoutVisible: false,
+        maxVisibleTodos: 1,
+    });
 
     harness.controller.toggleDetail('todo-a');
     assert.equal(
-        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
-        '0px'
+        harness.todoList.style.properties['--todo-list-viewport-height'],
+        'var(--todo-list-max-height)'
     );
 
     harness.setLayoutVisible(true);
     harness.notifyResize();
 
     assert.equal(
-        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
-        '122px'
+        harness.todoList.style.properties['--todo-list-viewport-height'],
+        '180px'
     );
 });
 
 test('TODO-MAX-VISIBLE-PER-GROUP-001 remeasures wrapped inline detail after sidebar resize', () => {
-    const harness = createHarness({ targetedPatches: true });
+    const harness = createHarness({ targetedPatches: true, maxVisibleTodos: 1 });
     harness.controller.toggleDetail('todo-a');
     assert.equal(
-        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
-        '122px'
+        harness.todoList.style.properties['--todo-list-viewport-height'],
+        '180px'
     );
 
     harness.setExpandedTodoHeight(220);
     harness.notifyResize();
 
     assert.equal(
-        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
-        '162px'
+        harness.todoList.style.properties['--todo-list-viewport-height'],
+        '220px'
     );
 });
 

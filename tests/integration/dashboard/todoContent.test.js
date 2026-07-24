@@ -82,7 +82,7 @@ test('TODO-MAX-VISIBLE-PER-GROUP-001 applies the configured per-group viewport a
     );
     assert.match(
         styles,
-        /\.todo-list\s*\{[\s\S]*max-height:\s*calc\(var\(--todo-list-max-height\) \+ var\(--todo-list-expanded-extra-height,\s*0px\)\)[\s\S]*overflow-y:\s*auto/
+        /\.todo-list\s*\{[\s\S]*max-height:\s*var\(--todo-list-viewport-height,\s*var\(--todo-list-max-height\)\)[\s\S]*overflow-y:\s*auto/
     );
     assert.match(dashboardSource, /function getMaxVisibleTodosPerGroup\(/);
     assert.match(
