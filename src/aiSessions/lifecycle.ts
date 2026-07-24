@@ -155,12 +155,28 @@ export function parseKimiLifecycleLines(lines: readonly string[], runStartedAtMs
     return accumulator.getSignal();
 }
 
+function isClaudeUserInterrupt(event: JsonRecord): boolean {
+    let content = event?.message?.content;
+    let textParts = Array.isArray(content)
+        ? content.map((part: unknown) => {
+            if (typeof part === 'string') {
+                return part;
+            }
+            return typeof (part as JsonRecord)?.text === 'string' ? (part as JsonRecord).text : '';
+        })
+        : [typeof content === 'string' ? content : ''];
+    return textParts.some(text => text.trim() === '[Request interrupted by user]');
+}
+
 export function createClaudeLifecycleAccumulator(runStartedAtMs: number): AiSessionLifecycleAccumulator {
     return createAccumulator(runStartedAtMs, (event, occurredAtMs) => {
         if (event?.type === 'system' && event?.subtype === 'api_error') {
             return attention('claude', 'api_error', occurredAtMs, 'failed');
         }
         if (event?.type === 'user') {
+            if (isClaudeUserInterrupt(event)) {
+                return attention('claude', 'user_interrupt', occurredAtMs, 'aborted', event.uuid);
+            }
             return running('claude', 'user', occurredAtMs, event.uuid);
         }
         if (event?.type !== 'assistant') {

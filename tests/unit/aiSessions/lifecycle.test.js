@@ -66,3 +66,33 @@ for (const provider of providers) {
         assert.ok(signal.occurredAtMs >= runStartedAtMs);
     });
 }
+
+test('PERSIST-LIFECYCLE-PARSER-001 [claude] treats the explicit user interrupt marker as stopped', () => {
+    const signal = lifecycle.parseClaudeLifecycleLines([
+        JSON.stringify({
+            type: 'assistant',
+            timestamp: '2026-07-24T08:42:19.029Z',
+            uuid: 'assistant-before-interrupt',
+            message: {
+                role: 'assistant',
+                stop_reason: null,
+                content: [{ type: 'text', text: 'Partial response before interruption' }],
+            },
+        }),
+        JSON.stringify({
+            type: 'user',
+            timestamp: '2026-07-24T08:42:19.030Z',
+            uuid: 'user-interrupt',
+            message: {
+                role: 'user',
+                content: [{ type: 'text', text: '[Request interrupted by user]' }],
+            },
+        }),
+    ], runStartedAtMs);
+
+    assert.ok(signal);
+    assert.equal(signal.phase, 'needsAttention');
+    assert.equal(signal.reason, 'aborted');
+    assert.equal(signal.executionState, 'stopped');
+    assert.match(signal.token, /^claude:user_interrupt:/);
+});
