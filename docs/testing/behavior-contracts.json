@@ -1871,6 +1871,32 @@
     ]
   },
   {
+    "id": "TODO-TODO-COMMAND-SNAPSHOT-001",
+    "domain": "todo",
+    "title": "Todo Command Snapshot behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/unit/todos/types.test.js"
+    ],
+    "evidence": [
+      "src/todos/viewModel.ts"
+    ]
+  },
+  {
+    "id": "TODO-TODO-EXACT-RESTORE-001",
+    "domain": "todo",
+    "title": "Todo Exact Restore behavior",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/todos/service.test.js"
+    ],
+    "evidence": [
+      "src/todos/service.ts"
+    ]
+  },
+  {
     "id": "TODO-TODO-INSERTION-ORDER-NORMALIZATION-001",
     "domain": "todo",
     "title": "Todo Insertion Order Normalization behavior",

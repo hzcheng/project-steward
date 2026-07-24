@@ -133,6 +133,63 @@ test('TODO-TODO-ORDERING-MUTATION-001 accepts exact visible reorder and rejects 
     await assert.rejects(() => harness.service.reorderGroups(['a', 'a']), /exactly/);
 });
 
+test('TODO-TODO-EXACT-RESTORE-001 restores identity and relative order between surviving neighbors', async () => {
+    const harness = makeStorageHarness({ global: {
+        version: 1,
+        groups: [
+            { id: 'a', title: 'A', collapsed: false, order: 0 },
+            { id: 'b', title: 'B', collapsed: false, order: 1 },
+        ],
+        todos: [
+            { ...makeData('a').todos[0], id: 'a1', groupId: 'a', title: 'First', order: 0 },
+            { ...makeData('a').todos[0], id: 'a2', groupId: 'a', title: 'Deleted', order: 1 },
+            { ...makeData('a').todos[0], id: 'a3', groupId: 'a', title: 'Third', order: 2 },
+            { ...makeData('b').todos[0], id: 'b1', groupId: 'b', title: 'Other', order: 0 },
+        ],
+    } });
+    const deleted = harness.service.getData().todos.find(todo => todo.id === 'a2');
+
+    await harness.service.deleteTodo('a2');
+    await harness.service.restoreTodo(deleted, { beforeId: 'a1', afterId: 'a3' });
+
+    assert.deepEqual(
+        harness.service.getData().todos.filter(todo => todo.groupId === 'a')
+            .sort((left, right) => left.order - right.order)
+            .map(todo => [todo.id, todo.title]),
+        [['a1', 'First'], ['a2', 'Deleted'], ['a3', 'Third']]
+    );
+});
+
+test('TODO-TODO-EXACT-RESTORE-001 moves a todo to the top and compacts both groups', async () => {
+    const harness = makeStorageHarness({ global: {
+        version: 1,
+        groups: [
+            { id: 'a', title: 'A', collapsed: false, order: 0 },
+            { id: 'b', title: 'B', collapsed: false, order: 1 },
+        ],
+        todos: [
+            { ...makeData('a').todos[0], id: 'a1', groupId: 'a', order: 0 },
+            { ...makeData('a').todos[0], id: 'a2', groupId: 'a', order: 1 },
+            { ...makeData('b').todos[0], id: 'b1', groupId: 'b', order: 0 },
+        ],
+    } });
+
+    await harness.service.moveTodo('a2', 'b');
+
+    assert.deepEqual(
+        harness.service.getData().todos.filter(todo => todo.groupId === 'a')
+            .sort((left, right) => left.order - right.order)
+            .map(todo => [todo.id, todo.order]),
+        [['a1', 0]]
+    );
+    assert.deepEqual(
+        harness.service.getData().todos.filter(todo => todo.groupId === 'b')
+            .sort((left, right) => left.order - right.order)
+            .map(todo => [todo.id, todo.order]),
+        [['a2', 0], ['b1', 1]]
+    );
+});
+
 test('TODO-TODO-STORAGE-RESOLUTION-001 reads only the configured backend and isolates future versions', () => {
     const harness = makeStorageHarness({
         global: makeData('global'),

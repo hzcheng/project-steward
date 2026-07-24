@@ -8,7 +8,7 @@ const {
     normalizeTodoData,
     normalizeTodoPriority,
 } = require('../../../out/todos/types');
-const { buildTodoViewModel } = require('../../../out/todos/viewModel');
+const { buildTodoPanelSnapshot, buildTodoViewModel } = require('../../../out/todos/viewModel');
 
 const NOW = '2026-07-23T00:00:00.000Z';
 
@@ -147,4 +147,31 @@ test('TODO-TODO-VIEW-MODEL-001 keeps incomplete items first and reveals only the
         visible.groups[0].visibleTodos.map(item => item.id),
         ['open-first', 'open-second', 'done-first', 'done-second']
     );
+});
+
+test('TODO-TODO-COMMAND-SNAPSHOT-001 builds a defensive normalized panel snapshot', () => {
+    const source = {
+        version: 1,
+        groups: [{ id: 'group', title: ' Group ', collapsed: false, order: 0 }],
+        todos: [todo('first', 'group', { title: ' First ', order: 0 })],
+    };
+
+    const snapshot = buildTodoPanelSnapshot(source, { showCompleted: true }, 'first');
+    source.groups[0].title = 'Mutated group';
+    source.todos[0].title = 'Mutated todo';
+
+    assert.deepEqual(snapshot, {
+        version: 1,
+        data: {
+            version: 1,
+            groups: [{ id: 'group', title: 'Group', collapsed: false, order: 0 }],
+            todos: [todo('first', 'group', {
+                title: 'First',
+                order: 0,
+                completedAt: undefined,
+            })],
+        },
+        showCompleted: true,
+        revealedTodoId: 'first',
+    });
 });

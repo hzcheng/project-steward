@@ -67,6 +67,57 @@ export interface TodoMutationResult {
     data: TodoDataV1;
 }
 
+export type TodoCommandAction =
+    | 'add'
+    | 'update'
+    | 'complete'
+    | 'delete'
+    | 'undo'
+    | 'reorder-items'
+    | 'reorder-groups'
+    | 'collapse-group'
+    | 'collapse-groups'
+    | 'sort-priority'
+    | 'show-completed';
+
+export interface TodoPanelSnapshot {
+    version: 1;
+    data: TodoDataV1;
+    showCompleted: boolean;
+    revealedTodoId?: string;
+}
+
+export interface TodoCommandMessage {
+    type: 'todo-command';
+    version: 2;
+    requestId: number;
+    action: TodoCommandAction;
+    payload: unknown;
+}
+
+export type TodoCommandErrorCode =
+    | 'invalid'
+    | 'not-found'
+    | 'conflict'
+    | 'storage'
+    | 'undo-expired';
+
+export interface TodoCommandResultMessage {
+    type: 'todo-command-result';
+    version: 2;
+    requestId: number;
+    revision: number;
+    success: boolean;
+    snapshot?: TodoPanelSnapshot;
+    undoToken?: string;
+    errorCode?: TodoCommandErrorCode;
+}
+
+export interface TodoRestorePosition {
+    beforeId?: string;
+    afterId?: string;
+}
+
 export class UnsupportedTodoDataVersionError extends Error {
     readonly version: unknown;
 
