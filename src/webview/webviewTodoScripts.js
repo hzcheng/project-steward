@@ -480,6 +480,10 @@ function initTodos(options) {
         var pending = state.pending.get(message.requestId);
         state.pending.delete(message.requestId);
         state.snapshot = clone(message.snapshot);
+        if (message.searchCatalog
+            && typeof options.replaceSearchCatalog === 'function') {
+            options.replaceSearchCatalog(message.searchCatalog);
+        }
         if (message.success === true) {
             if (pending && pending.action === 'update') {
                 state.draft = null;

@@ -1001,7 +1001,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 await todoStorageMigration.ready;
                 const result = await todoCommandController.handle(e);
                 if (result) {
-                    await provider.postMessage(result);
+                    await provider.postMessage({
+                        ...result,
+                        searchCatalog: buildWorkspaceDashboardSearchCatalog(
+                            projectService.getGroups(),
+                            getOpenWorkspaceCards(),
+                            todoService.getSearchItems(),
+                        ),
+                    });
                 }
             },
             'todo-add': async e => {
@@ -1960,6 +1967,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 requestId,
                 html,
                 ...(snapshot ? { snapshot } : {}),
+                searchCatalog: buildWorkspaceDashboardSearchCatalog(
+                    projectService.getGroups(),
+                    getOpenWorkspaceCards(),
+                    todoService.getSearchItems(),
+                ),
             }
             : {
                 type: 'todo-panel-updated',

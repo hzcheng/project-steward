@@ -54,6 +54,7 @@ function snapshot() {
 
 function createHarness() {
     const messages = [];
+    const catalogs = [];
     const listeners = {};
     let focusedTodoId;
     const root = {
@@ -106,9 +107,10 @@ function createHarness() {
     vm.runInNewContext(source, context, { filename: 'webviewTodoScripts.js' });
     const controller = context.initTodos({
         postMessage: message => messages.push(JSON.parse(JSON.stringify(message))),
+        replaceSearchCatalog: catalog => catalogs.push(JSON.parse(JSON.stringify(catalog))),
     });
     controller.mount(panel, snapshot());
-    return { context, controller, root, panel, messages, getFocusedTodoId: () => focusedTodoId };
+    return { context, controller, root, panel, messages, catalogs, getFocusedTodoId: () => focusedTodoId };
 }
 
 test('TODO-FOCUSED-DETAIL-001 reveals complete values and restores list scroll and originating focus', () => {
@@ -132,9 +134,13 @@ test('TODO-INCREMENTAL-ROOT-001 accepts command results without replacing the pa
         revision: 1,
         success: true,
         snapshot: snapshot(),
+        searchCatalog: {
+            version: 2, sessions: [], openWorkspaces: [], savedProjects: [], todos: [],
+        },
     });
 
     assert.equal(harness.panel.querySelector('.todo-panel'), root);
+    assert.equal(harness.catalogs.length, 1);
 });
 
 test('TODO-OPTIMISTIC-ROLLBACK-001 posts versioned completion and restores the authoritative failure snapshot', () => {

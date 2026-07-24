@@ -545,6 +545,13 @@ test('TODO-TODO-SEARCH-RESULT-RENDERING-001 search reveal requests host data the
     }]);
 
     let focused = 0;
+    let openedTodoId = null;
+    harness.context.window.__projectStewardTodo = {
+        openDetail(todoId) {
+            openedTodoId = todoId;
+            return true;
+        },
+    };
     const todoGroup = { classList: createClassList() };
     const todoItem = {
         isConnected: true,
@@ -564,8 +571,8 @@ test('TODO-TODO-SEARCH-RESULT-RENDERING-001 search reveal requests host data the
         type: 'todo-panel-updated', version: 1, html: '<p>revealed</p>', searchCatalog: makeCatalog('search'),
     });
     while (harness.frames.length) harness.frames.shift()();
-    assert.equal(focused, 1);
-    assert.equal(harness.context.document.activeElement, todoItem);
+    assert.equal(openedTodoId, 'tsearch');
+    assert.equal(focused, 0);
 });
 
 function createProjectVm({ querySelector, querySelectorAll, activeElement, source = projectSource } = {}) {

@@ -179,5 +179,5 @@ test('TODO-TODO-COMMAND-CONTROLLER-001 routes versioned commands through the pro
     assert.match(dashboardSource, /new TodoCommandController\s*\(/);
     assert.match(dashboardSource, /'todo-command': async e =>/);
     assert.match(dashboardSource, /todoCommandController\.handle\(e\)/);
-    assert.match(dashboardSource, /provider\.postMessage\(result\)/);
+    assert.match(dashboardSource, /provider\.postMessage\(\{\s*\.\.\.result,\s*searchCatalog:/);
 });

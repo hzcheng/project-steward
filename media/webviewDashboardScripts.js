@@ -464,6 +464,12 @@ function initDashboard(options) {
                 return;
             }
             scheduledTarget.focusScheduled = false;
+            if (window.__projectStewardTodo
+                && typeof window.__projectStewardTodo.openDetail === 'function'
+                && window.__projectStewardTodo.openDetail(scheduledTarget.todoId)) {
+                pendingTodoSearchTarget = null;
+                return;
+            }
             var todoItem = Array.from(panels.todo.querySelectorAll('.todo-item[data-todo-id]'))
                 .find(item => item.getAttribute('data-todo-id') === scheduledTarget.todoId);
             var todoGroup = todoItem && todoItem.closest ? todoItem.closest('.todo-group') : null;

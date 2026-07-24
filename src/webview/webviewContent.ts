@@ -222,6 +222,11 @@ export function getStewardContent(
                 let filtering;
                 const todos = initTodos({
                     postMessage: message => window.vscode.postMessage(message),
+                    replaceSearchCatalog: catalog => {
+                        if (window.__projectStewardDashboard) {
+                            window.__projectStewardDashboard.replaceSearchCatalog(catalog);
+                        }
+                    },
                     onRendered: panel => {
                         disposeDnD(panel);
                         initDnD(panel);
