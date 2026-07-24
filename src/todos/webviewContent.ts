@@ -75,7 +75,7 @@ function renderTodoItem(todo: TodoItemViewModel): string {
                 </label>
                 <div class="todo-item-content">
                     <div class="todo-title-line">
-                        <button class="todo-title-button" type="button" data-action="todo-open-detail" data-todo-id="${escapeHtml(todo.id)}" title="Open full todo">
+                        <button class="todo-title-button" type="button" data-action="todo-open-detail" data-todo-id="${escapeHtml(todo.id)}" aria-expanded="false" title="Expand details">
                             <span class="todo-title-text">${escapeHtml(todo.title)}</span>
                         </button>
                         ${priorityBadge}
@@ -138,7 +138,6 @@ export function getTodoPanelContent(viewModel: TodoPanelViewModel): string {
             ${renderTodoAddForm(viewModel)}
             ${listContent}
         </div>
-        <section class="todo-detail-surface" aria-label="Todo details" hidden></section>
         <div class="todo-undo-region" role="status" aria-live="polite" hidden></div>
         <div class="todo-live-region" role="status" aria-live="polite" aria-atomic="true"></div>
     </div>`;

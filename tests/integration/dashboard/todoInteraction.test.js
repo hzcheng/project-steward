@@ -116,13 +116,25 @@ function createHarness() {
     return { context, controller, root, panel, messages, catalogs, getFocusedTodoId: () => focusedTodoId };
 }
 
-test('TODO-FOCUSED-DETAIL-001 reveals complete values and restores list scroll and originating focus', () => {
+test('TODO-FOCUSED-DETAIL-001 reveals complete values inline and toggles without replacing list context', () => {
     const harness = createHarness();
     harness.controller.openDetail('todo-a');
+    assert.match(harness.root.innerHTML, /class="todo-list-surface"/);
+    assert.doesNotMatch(harness.root.innerHTML, /class="todo-list-surface" hidden/);
+    assert.match(harness.root.innerHTML, /class="todo-inline-detail"/);
     assert.match(harness.root.innerHTML, /A complete title that must never disappear/);
     assert.match(harness.root.innerHTML, /Every line of the full notes belongs in detail/);
+    assert.match(
+        harness.root.innerHTML,
+        />Notes<[\s\S]*>Group<[\s\S]*>Priority<[\s\S]*>Created<[\s\S]*>Updated</
+    );
+    assert.equal(harness.context.window.scrollY, 240);
 
-    harness.controller.backToList();
+    assert.equal(harness.controller.openDetail('todo-a'), true);
+    assert.equal(harness.controller.getState().selectedTodoId, 'todo-a');
+    assert.equal(harness.controller.toggleDetail('todo-a'), true);
+    assert.equal(harness.controller.getState().selectedTodoId, null);
+    assert.doesNotMatch(harness.root.innerHTML, /class="todo-inline-detail"/);
     assert.equal(harness.context.window.scrollY, 240);
     assert.equal(harness.getFocusedTodoId(), 'todo-a');
 });

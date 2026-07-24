@@ -1608,6 +1608,49 @@ body .project {
     color: var(--vscode-descriptionForeground);
 }
 
+.todo-item.expanded {
+    cursor: default;
+
+    .todo-title-text {
+        display: block;
+        overflow: visible;
+        -webkit-line-clamp: unset;
+    }
+}
+
+.todo-inline-detail {
+    display: grid;
+    gap: 8px;
+    margin: 10px 0 2px 20px;
+    padding: 10px 0 0;
+    border-top: 1px solid var(--vscode-panel-border);
+    cursor: default;
+}
+
+.todo-inline-row {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 10px;
+    min-width: 0;
+    align-items: start;
+}
+
+.todo-inline-label {
+    color: var(--vscode-descriptionForeground);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.45;
+}
+
+.todo-inline-value {
+    min-width: 0;
+    color: var(--vscode-foreground);
+    font-size: 11px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
 .todo-edit-panel {
     gap: 7px;
     margin-top: 2px;
@@ -1756,6 +1799,17 @@ body .project {
 .todo-detail-edit-form {
     display: grid;
     gap: 10px;
+}
+
+@media (max-width: 300px) {
+    .todo-inline-row {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 2px;
+    }
+
+    .todo-inline-detail {
+        margin-left: 0;
+    }
 }
 
 .todo-undo-region {

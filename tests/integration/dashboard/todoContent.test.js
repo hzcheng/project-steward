@@ -54,15 +54,16 @@ test('TODO-TODO-CONTINUOUS-LAYOUT-001 renders one stable continuous list without
 
     assert.match(html, /class="todo-panel"/);
     assert.match(html, /class="todo-list-surface"/);
-    assert.match(html, /class="todo-detail-surface"[^>]* hidden/);
+    assert.doesNotMatch(html, /class="todo-detail-surface"/);
     assert.doesNotMatch(html, /--todo-list-max-height/);
     assert.doesNotMatch(html, /maxVisibleTodosPerGroup/);
 });
 
-test('TODO-TODO-FOCUSED-DETAIL-001 makes the title the detail entry point and drag a separate affordance', () => {
+test('TODO-TODO-FOCUSED-DETAIL-001 makes the title an inline disclosure and drag a separate affordance', () => {
     const html = renderPanel();
 
     assert.match(html, /data-action="todo-open-detail" data-todo-id="todo-medium"/);
+    assert.match(html, /data-action="todo-open-detail"[^>]*aria-expanded="false"/);
     assert.match(html, /class="todo-title-text"[\s\S]*A deliberately long title/);
     assert.match(html, /data-drag-todo-item="todo-medium"/);
     assert.match(html, /aria-label="Drag A deliberately long title/);
