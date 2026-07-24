@@ -4687,7 +4687,11 @@ async function runTmuxBackendChecks() {
         'a renamed project card must reuse the workspace-owned creation-time container');
     assert.match(secondProject.tmux.windowName, /^claude-Audit-failover-[0-9a-f]{8}$/);
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-session').length, 1);
-    assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 2);
+    assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 1);
+    assert.strictEqual(projectHarness.windows.length, 2,
+        'the first project runtime must use the tmux session initial window');
+    assert.strictEqual(projectHarness.windows.some(item => item.windowName === 'project-steward'), false,
+        'project layout must not retain an empty bootstrap window');
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'configure-window').length, 2);
     const firstProjectRequest = {
         identity: { provider: 'codex', workspaceScopeIdentity: 'pk', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
@@ -4698,7 +4702,7 @@ async function runTmuxBackendChecks() {
     assert.deepStrictEqual(reusedFirstProject.tmux, firstProject.tmux,
         'an existing identity must reuse its actual creation-time locator after display changes');
     assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-session').length, 1);
-    assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 2);
+    assert.strictEqual(projectHarness.operations.filter(item => item.type === 'new-window').length, 1);
     assert.strictEqual(projectHarness.terminals.length, 1);
     assert.strictEqual(projectHarness.terminals[0].creationOptions.name,
         'Project Steward: App [tmux]');
@@ -5123,7 +5127,7 @@ async function runTmuxBackendChecks() {
         }, 'project'),
     ]);
     assert.strictEqual(concurrentProjectHarness.operations.filter(item => item.type === 'new-session').length, 1);
-    assert.strictEqual(concurrentProjectHarness.operations.filter(item => item.type === 'new-window').length, 2);
+    assert.strictEqual(concurrentProjectHarness.operations.filter(item => item.type === 'new-window').length, 1);
 
     const projectOwnershipHarness = createTmuxBackendHarness();
     const requestedOwnershipIdentity = {
@@ -6926,7 +6930,7 @@ async function runTmuxBackendChecks() {
         .ensureResume(nonzeroSessionRequest, 'session');
     assert.strictEqual(nonzeroSessionHarness.operations.filter(item => item.type === 'new-session').length, 2);
 
-    const nonzeroProjectHarness = createTmuxBackendHarness({ failCreateWindowNonzeroCount: 1 });
+    const nonzeroProjectHarness = createTmuxBackendHarness({ failCreateSessionNonzeroCount: 1 });
     const nonzeroProjectRequest = {
         identity: { provider: 'claude', workspaceScopeIdentity: 'nonzero-project', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' },
         projectName: 'App', terminalName: 'Claude: Nonzero',
@@ -6940,8 +6944,8 @@ async function runTmuxBackendChecks() {
     assert.strictEqual(nonzeroProjectHarness.ambiguous.size, 0);
     await new backendModule.TmuxRuntimeBackend(nonzeroProjectHarness.dependencies)
         .ensureResume(nonzeroProjectRequest, 'project');
-    assert.strictEqual(nonzeroProjectHarness.operations.filter(item => item.type === 'new-session').length, 1);
-    assert.strictEqual(nonzeroProjectHarness.operations.filter(item => item.type === 'new-window').length, 2);
+    assert.strictEqual(nonzeroProjectHarness.operations.filter(item => item.type === 'new-session').length, 2);
+    assert.strictEqual(nonzeroProjectHarness.operations.filter(item => item.type === 'new-window').length, 0);
 
     const occupiedHarness = createTmuxBackendHarness();
     const occupiedIdentity = { provider: 'codex', workspaceScopeIdentity: 'occupied', workspaceNavigationIdentity: 'nav-1', workspaceRootHostPaths: ['/work'], cwd: '/work', sessionId: 's1' };
@@ -6986,7 +6990,7 @@ async function runTmuxBackendChecks() {
         identity: unknownProjectIdentity, projectName: 'App', terminalName: 'AI Sessions: Occupied',
         launch: { executable: 'claude', args: ['--resume', 'unknown'] },
     }, 'project'), /occupied/);
-    assert.strictEqual(occupiedProjectHarness.operations.filter(item => item.type === 'new-window').length, 1);
+    assert.strictEqual(occupiedProjectHarness.operations.filter(item => item.type === 'new-window').length, 0);
 
     const unavailablePosixHarness = createTmuxBackendHarness({
         availability: { available: false, category: 'not-found', message: 'tmux unavailable' },

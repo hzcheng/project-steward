@@ -91,3 +91,21 @@ for (const layout of ['project', 'session']) {
         );
     });
 }
+
+test('RUNTIME-TMUX-PROJECT-FIRST-WINDOW-001 creates the first project runtime in the initial tmux window', async () => {
+    const harness = createTmuxRuntimeHarness('project');
+    const runtime = await harness.backend.ensureResume(
+        fakeResumeRequest('first-project-window'),
+        'project'
+    );
+    const newSessionOperations = harness.operations.filter(item => item.type === 'new-session');
+    const newWindowOperations = harness.operations.filter(item => item.type === 'new-window');
+
+    assert.equal(harness.windows.length, 1);
+    assert.equal(newSessionOperations.length, 1);
+    assert.equal(newWindowOperations.length, 0);
+    assert.equal(harness.windows[0].sessionName, runtime.tmux.sessionName);
+    assert.equal(harness.windows[0].windowName, runtime.tmux.windowName);
+    assert.equal(newSessionOperations[0].windowName, runtime.tmux.windowName);
+    assert.notEqual(harness.windows[0].windowName, 'project-steward');
+});

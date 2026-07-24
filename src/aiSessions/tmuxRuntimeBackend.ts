@@ -53,9 +53,7 @@ import {
 } from './tmuxRuntimeBindingStore';
 import { getTmuxCollisionRuntimes, TmuxRuntimeDiscovery } from './tmuxRuntimeDiscovery';
 
-const PROJECT_BOOTSTRAP_WINDOW = 'project-steward';
 const SESSION_WINDOW = 'ai-session';
-const PROJECT_BOOTSTRAP_COMMAND = 'exec /bin/sh';
 const TERMINAL_PROCESS_ID_TIMEOUT_MS = 2000;
 const MAX_LOCAL_PATH_LENGTH = 4096;
 const MAX_IDENTITY_FIELD_LENGTH = 512;
@@ -998,6 +996,9 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
         if (!projectTmuxSessionMatchesWorkspace(locator.sessionName, identity)) {
             throw new Error('The requested project tmux session is an unverified target.');
         }
+        if (!locator.windowName) {
+            throw new Error('A project tmux runtime requires a window name.');
+        }
         const hasSession = await this.dependencies.client.hasSession(locator.sessionName);
         const compatibleContainer = this.projectContainerIsVerified(locator, identity.workspaceScopeIdentity)
             || (hasSession && recordsEqual(
@@ -1008,14 +1009,14 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             throw new Error('The requested project tmux session is occupied by an unverified target.');
         }
         if (!hasSession) {
+            await onProviderLaunch();
             await this.dependencies.client.createSession(
-                locator.sessionName, PROJECT_BOOTSTRAP_WINDOW, cwd, PROJECT_BOOTSTRAP_COMMAND
+                locator.sessionName, locator.windowName, cwd, command
             );
             await this.dependencies.client.setSessionOptions(locator.sessionName,
                 projectSessionMetadata(identity));
-        }
-        if (!locator.windowName) {
-            throw new Error('A project tmux runtime requires a window name.');
+            await this.dependencies.client.configureManagedWindow(locator.sessionName, locator.windowName);
+            return;
         }
         if (await this.locatorIsOccupied(locator)) {
             throw new Error('The requested project tmux window is occupied by an unverified target.');

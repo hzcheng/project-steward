@@ -1310,6 +1310,20 @@
     ]
   },
   {
+    "id": "RUNTIME-TMUX-PROJECT-FIRST-WINDOW-001",
+    "domain": "runtime",
+    "title": "First project runtime uses the tmux session initial window",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/runtimeBackends.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/tmuxRuntimeBackend.ts",
+      "scripts/run-ai-session-tmux-checks.js"
+    ]
+  },
+  {
     "id": "SESSION-DIRECT-BACKEND-001",
     "domain": "session",
     "title": "Direct Backend behavior",
