@@ -57,6 +57,7 @@ function createHarness() {
     const catalogs = [];
     const listeners = {};
     let focusedTodoId;
+    let renderedCount = 0;
     const root = {
         innerHTML: '',
         addEventListener(type, listener) {
@@ -111,9 +112,21 @@ function createHarness() {
     const controller = context.initTodos({
         postMessage: message => messages.push(JSON.parse(JSON.stringify(message))),
         replaceSearchCatalog: catalog => catalogs.push(JSON.parse(JSON.stringify(catalog))),
+        onRendered: () => {
+            renderedCount += 1;
+        },
     });
     controller.mount(panel, snapshot());
-    return { context, controller, root, panel, messages, catalogs, getFocusedTodoId: () => focusedTodoId };
+    return {
+        context,
+        controller,
+        root,
+        panel,
+        messages,
+        catalogs,
+        getFocusedTodoId: () => focusedTodoId,
+        getRenderedCount: () => renderedCount,
+    };
 }
 
 test('TODO-FOCUSED-DETAIL-001 reveals complete values inline and toggles without replacing list context', () => {
@@ -181,6 +194,29 @@ test('TODO-OPTIMISTIC-ROLLBACK-001 posts versioned completion and restores the a
     });
     assert.equal(harness.controller.getState().snapshot.data.todos[0].completed, false);
     assert.match(harness.root.innerHTML, /Could not save the TODO change/);
+});
+
+test('TODO-INCREMENTAL-ROOT-001 does not redraw an optimistic surface again for its matching acknowledgement', () => {
+    const harness = createHarness();
+    harness.controller.dispatch('complete', { todoId: 'todo-a', completed: true });
+    const rendersAfterOptimisticChange = harness.getRenderedCount();
+    const saved = snapshot();
+    saved.data.todos[0].completed = true;
+    saved.data.todos[0].completedAt = NOW;
+
+    harness.controller.applyCommandResult({
+        type: 'todo-command-result',
+        version: 2,
+        requestId: 1,
+        revision: 1,
+        success: true,
+        snapshot: saved,
+        undoToken: 'undo-complete',
+    });
+
+    assert.equal(harness.getRenderedCount(), rendersAfterOptimisticChange);
+    assert.equal(harness.controller.getState().announcement, 'TODO saved');
+    assert.equal(harness.controller.getState().undo.token, 'undo-complete');
 });
 
 test('TODO-STALE-RESULT-001 rejects stale revisions and posts Undo exactly once', () => {

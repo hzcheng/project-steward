@@ -2690,7 +2690,8 @@ function runTodoViewModelChecks() {
     const html = todoWebviewContent.getTodoPanelContent(hiddenCompleted);
     assert.ok(html.includes('todo-panel'));
     assert.ok(html.includes('todo-list-surface'));
-    assert.ok(html.includes('todo-detail-surface'));
+    assert.strictEqual(html.includes('todo-detail-surface'), false);
+    assert.ok(html.includes('data-action="todo-open-detail" data-todo-id="todo-a" aria-expanded="false"'));
     assert.strictEqual(html.includes('--todo-list-max-height'), false);
     assert.ok(html.includes('Launch &lt;Group&gt;'));
     assert.ok(html.includes('Write &lt;spec&gt;'));
@@ -4851,23 +4852,24 @@ function runSourceContractChecks(source) {
         'the final TODO card should not add trailing margin');
     assert.ok(sharedItemCardRule.includes('height: 58px'),
         'collapsed todo items should keep the same normal card height as current workspace cards');
-    const detailTitleRule = extractCssRule(styles, '.todo-detail-title');
-    assert.ok(detailTitleRule.includes('white-space: pre-wrap')
-        && detailTitleRule.includes('overflow-wrap: anywhere'),
-        'focused TODO detail titles must show their complete value');
+    assert.ok(styles.includes('.todo-item.expanded')
+        && styles.includes('-webkit-line-clamp: unset'),
+        'expanded TODO cards must show their complete title');
     const detailNotesRule = extractCssRule(styles, '.todo-detail-notes');
     assert.ok(detailNotesRule.includes('white-space: pre-wrap'),
-        'focused TODO detail notes must preserve every line');
+        'inline TODO detail notes must preserve every line');
 
     assert.ok(compiledStyles.includes('.group.collapsed .collapse-icon svg'),
         'collapsed groups must keep the existing SVG rotation path');
+    assert.ok(compiledStyles.includes('.todo-group.collapsed .todo-group-chevron svg'),
+        'collapsed TODO groups must rotate their centered chevron to the right');
     assert.strictEqual(
         compiledStyles.includes('.todo-group-collapse-button[aria-expanded=false] .collapse-icon'),
         false,
         'TODO group collapse must not add a parent transform on top of the existing SVG rotation'
     );
-    assert.strictEqual(compiledStyles.includes('.todo-expand-control[aria-expanded=false] svg'), false,
-        'TODO cards must use the focused detail surface instead of inline expansion');
+    assert.ok(compiledStyles.includes('.todo-inline-detail'),
+        'TODO cards must expose their details inline');
 
     const completedRules = extractCompiledCssRulesContainingSelector(
         compiledStyles,

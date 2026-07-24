@@ -6,10 +6,8 @@ function initTodos(options) {
         ? options.postMessage
         : function (message) { window.vscode.postMessage(message); };
     var state = {
-        mode: 'list',
         snapshot: null,
         selectedTodoId: null,
-        listScrollTop: 0,
         restoreFocusTodoId: null,
         draft: null,
         composeGroupId: undefined,
@@ -19,6 +17,7 @@ function initTodos(options) {
         undo: null,
         undoTimer: null,
         announcement: '',
+        renderedSurfaceHtml: '',
     };
     var panelHost = null;
     var root = null;
@@ -300,21 +299,118 @@ function initTodos(options) {
             + '<button class="todo-primary-button steward-button" type="button" data-action="todo-undo">Undo</button></div>';
     }
 
-    function render() {
-        if (!root || !isSnapshot(state.snapshot)) {
+    function updateFeedback() {
+        if (!root || !root.querySelector) {
             return;
+        }
+        var undoRegion = root.querySelector('.todo-undo-region');
+        if (undoRegion) {
+            undoRegion.hidden = !state.undo;
+            if (undoRegion.style) {
+                undoRegion.style.display = state.undo ? 'flex' : '';
+            }
+            undoRegion.innerHTML = state.undo
+                ? '<span>' + escapeHtml(state.undo.label) + '</span>'
+                    + '<button class="todo-primary-button steward-button" type="button" '
+                    + 'data-action="todo-undo">Undo</button>'
+                : '';
+        }
+        var liveRegion = root.querySelector('.todo-live-region');
+        if (liveRegion) {
+            liveRegion.textContent = state.announcement;
+        }
+    }
+
+    function render(force) {
+        if (!root || !isSnapshot(state.snapshot)) {
+            return false;
         }
         if (state.selectedTodoId && !findTodo(state.selectedTodoId)) {
             state.selectedTodoId = null;
             state.draft = null;
         }
-        root.innerHTML = renderListSurface()
-            + renderUndo()
-            + '<div class="todo-live-region" role="status" aria-live="polite" aria-atomic="true">'
-            + escapeHtml(state.announcement) + '</div>';
+        var surfaceHtml = renderListSurface();
+        if (!force && surfaceHtml === state.renderedSurfaceHtml) {
+            updateFeedback();
+            return false;
+        }
+        var surface = !force && root.querySelector
+            ? root.querySelector('.todo-list-surface')
+            : null;
+        if (surface && typeof surface.outerHTML === 'string') {
+            surface.outerHTML = surfaceHtml;
+        } else {
+            root.innerHTML = surfaceHtml
+                + renderUndo()
+                + '<div class="todo-live-region" role="status" aria-live="polite" aria-atomic="true">'
+                + escapeHtml(state.announcement) + '</div>';
+        }
+        state.renderedSurfaceHtml = surfaceHtml;
+        updateFeedback();
         if (typeof options.onRendered === 'function') {
             options.onRendered(panelHost);
         }
+        return true;
+    }
+
+    function patchTodoElements(todoIds) {
+        if (!root || !root.querySelector) {
+            render();
+            return false;
+        }
+        var patches = [];
+        var uniqueTodoIds = todoIds.filter(function (todoId, index) {
+            return todoId && todoIds.indexOf(todoId) === index;
+        });
+        for (var index = 0; index < uniqueTodoIds.length; index += 1) {
+            var todoId = uniqueTodoIds[index];
+            var todo = findTodo(todoId);
+            var selector = '.todo-item[data-todo-id="' + String(todoId).replace(/"/g, '\\"') + '"]';
+            var item = root.querySelector(selector);
+            if (!todo || !item || typeof item.innerHTML !== 'string') {
+                render();
+                return false;
+            }
+            patches.push({ item: item, todo: todo });
+        }
+        patches.forEach(function (patch) {
+            patch.item.className = todoClassName(patch.todo);
+            patch.item.innerHTML = renderTodoBody(patch.todo);
+        });
+        state.renderedSurfaceHtml = renderListSurface();
+        updateFeedback();
+        return true;
+    }
+
+    function patchGroupElements(groupIds) {
+        if (!root || !root.querySelector) {
+            render();
+            return false;
+        }
+        var patches = [];
+        for (var index = 0; index < groupIds.length; index += 1) {
+            var groupId = groupIds[index];
+            var group = findGroup(groupId);
+            var selector = '.todo-group[data-todo-group-id="' + String(groupId).replace(/"/g, '\\"') + '"]';
+            var groupElement = root.querySelector(selector);
+            var button = groupElement && groupElement.querySelector
+                ? groupElement.querySelector('[data-action="todo-collapse-group"]')
+                : null;
+            if (!group || !groupElement || !groupElement.classList || !button) {
+                render();
+                return false;
+            }
+            patches.push({ group: group, element: groupElement, button: button });
+        }
+        patches.forEach(function (patch) {
+            patch.element.classList.toggle('collapsed', patch.group.collapsed);
+            patch.button.setAttribute('aria-expanded', patch.group.collapsed ? 'false' : 'true');
+            patch.button.setAttribute('aria-label',
+                (patch.group.collapsed ? 'Expand ' : 'Collapse ') + patch.group.title);
+        });
+        state.renderedSurfaceHtml = renderListSurface();
+        updateFeedback();
+        return true;
     }
 
     function announce(message) {
@@ -338,6 +434,7 @@ function initTodos(options) {
         }
         panelHost = nextPanelHost;
         root = nextRoot;
+        state.renderedSurfaceHtml = '';
         state.snapshot = clone(snapshotValue);
         state.selectedTodoId = null;
         state.draft = null;
@@ -347,7 +444,7 @@ function initTodos(options) {
         root.addEventListener('submit', onSubmit);
         root.addEventListener('keydown', onKeyDown);
         root.addEventListener('input', onInput);
-        render();
+        render(true);
         return true;
     }
 
@@ -358,11 +455,12 @@ function initTodos(options) {
         if (state.selectedTodoId === todoId) {
             return true;
         }
+        var previousTodoId = state.selectedTodoId;
         state.restoreFocusTodoId = todoId;
         state.selectedTodoId = todoId;
         state.draft = null;
         state.composeGroupId = undefined;
-        render();
+        patchTodoElements([previousTodoId, todoId]);
         return true;
     }
 
@@ -373,7 +471,7 @@ function initTodos(options) {
         var focusTodoId = state.selectedTodoId;
         state.selectedTodoId = null;
         state.draft = null;
-        render();
+        patchTodoElements([focusTodoId]);
         if (focusTodoId && root && root.querySelector) {
             var selector = '[data-action="todo-open-detail"][data-todo-id="' + focusTodoId.replace(/"/g, '\\"') + '"]';
             var focusTarget = root.querySelector(selector);
@@ -455,7 +553,16 @@ function initTodos(options) {
             action: action,
         });
         optimisticMutation(action, payload || {});
-        render();
+        if (action === 'collapse-group') {
+            patchGroupElements([payload.groupId]);
+        } else if (action === 'collapse-groups') {
+            patchGroupElements(state.snapshot.data.groups.map(function (group) { return group.id; }));
+        } else if (action === 'reorder-items' || action === 'reorder-groups') {
+            state.renderedSurfaceHtml = renderListSurface();
+            updateFeedback();
+        } else {
+            render();
+        }
         postMessage({
             type: 'todo-command',
             version: 2,
@@ -485,7 +592,7 @@ function initTodos(options) {
         state.undoTimer = setTimeout(function () {
             state.undo = null;
             state.undoTimer = null;
-            render();
+            updateFeedback();
         }, 5000);
     }
 
@@ -628,10 +735,10 @@ function initTodos(options) {
         } else if (action === 'todo-edit-detail') {
             var todo = findTodo(state.selectedTodoId);
             state.draft = todo ? detailDraft(todo) : null;
-            render();
+            patchTodoElements([state.selectedTodoId]);
         } else if (action === 'todo-cancel-detail-edit') {
             state.draft = null;
-            render();
+            patchTodoElements([state.selectedTodoId]);
         } else if (action === 'todo-toggle-detail') {
             var detailTodo = findTodo(todoId);
             if (detailTodo) dispatch('complete', { todoId: todoId, completed: !detailTodo.completed });

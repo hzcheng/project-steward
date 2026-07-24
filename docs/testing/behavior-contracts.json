@@ -1927,7 +1927,7 @@
   {
     "id": "TODO-TODO-FOCUSED-DETAIL-001",
     "domain": "todo",
-    "title": "Todo Focused Detail Entry behavior",
+    "title": "Todo Inline Detail Entry behavior",
     "priority": "P1",
     "status": "automated",
     "owners": [
@@ -1941,7 +1941,7 @@
   {
     "id": "TODO-FOCUSED-DETAIL-001",
     "domain": "todo",
-    "title": "Todo Focused Detail Navigation behavior",
+    "title": "Todo Inline Detail Toggle behavior",
     "priority": "P1",
     "status": "automated",
     "owners": [

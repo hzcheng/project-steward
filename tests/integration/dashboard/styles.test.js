@@ -58,9 +58,12 @@ function validateTodoLayout(source) {
     }
     assert.equal(title.includes('white-space: nowrap'), false,
         'TODO-RESPONSIVE-LAYOUT-001 titles must use both available lines');
-    const detailTitle = extractBlock(source, '.todo-detail-title');
-    assert.ok(detailTitle.includes('white-space: pre-wrap') && detailTitle.includes('overflow-wrap: anywhere'),
-        'TODO-RESPONSIVE-LAYOUT-001 focused detail must reveal the complete title');
+    const expanded = extractBlock(source, '.todo-item.expanded');
+    assert.ok(expanded.includes('-webkit-line-clamp: unset'),
+        'TODO-RESPONSIVE-LAYOUT-001 inline detail must reveal the complete title');
+    const inlineValue = extractBlock(source, '.todo-inline-value');
+    assert.ok(inlineValue.includes('overflow-wrap: anywhere') && inlineValue.includes('white-space: pre-wrap'),
+        'TODO-RESPONSIVE-LAYOUT-001 inline detail values must wrap without clipping');
     const narrow = extractBlock(source, '@media (max-width: 320px)');
     for (const value of ['.todo-quick-add-form', 'grid-template-columns: minmax(0, 1fr) auto',
         '.todo-compose-meta', 'flex-wrap: wrap']) {
