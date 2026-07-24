@@ -26,6 +26,7 @@ export class ProjectRemovalController {
         }
 
         await this.options.removeProject(selectedProjectPick.id);
+        this.options.refreshAfterMutation();
         this.options.postCommandRemoval();
     }
 

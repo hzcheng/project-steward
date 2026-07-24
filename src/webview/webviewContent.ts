@@ -248,6 +248,7 @@ export function getStewardContent(
                     postMessage: message => window.vscode.postMessage(message),
                     onProjectsMounted: panel => {
                         fitProjectHeaders(panel);
+                        disposeDnD(panel);
                         initDnD(panel);
                         window.__projectStewardSyncCollapseButton();
                     },

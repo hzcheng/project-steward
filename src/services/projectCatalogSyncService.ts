@@ -496,12 +496,12 @@ export class ProjectCatalogSyncService {
             : null;
         const matchingIndex = currentFingerprint === null
             ? -1
-            : pendingWrites.findIndex(write => write.fingerprint === currentFingerprint);
+            : pendingWrites.map(write => write.fingerprint).lastIndexOf(currentFingerprint);
         if (matchingIndex < 0) {
             pendingWrites.length = 0;
             return false;
         }
-        pendingWrites.splice(matchingIndex, 1);
+        pendingWrites.splice(0, matchingIndex + 1);
         return true;
     }
 

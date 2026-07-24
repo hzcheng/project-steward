@@ -26,6 +26,16 @@ function flushAsync() {
     return new Promise(resolve => setImmediate(resolve));
 }
 
+function createDeferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+}
+
 test('PROJECT-INCREMENTAL-REFRESH-001 posts authoritative order with a monotonic sequence', async () => {
     const posted = [];
     const groups = [{
@@ -115,4 +125,35 @@ test('PROJECT-INCREMENTAL-REFRESH-001 falls back to a full refresh on delivery f
         'Failed to post Projects panel update message.',
         'closed',
     ]]);
+});
+
+test('PROJECT-INCREMENTAL-REFRESH-001 ignores stale and invalidated delivery failures', async () => {
+    const deliveries = [];
+    const refreshes = [];
+    const controller = new ProjectsPanelController({
+        getGroups: () => [],
+        getSearchCatalog: makeCatalog,
+        renderHtml: () => '<main></main>',
+        postMessage: () => {
+            const deferred = createDeferred();
+            deliveries.push(deferred);
+            return deferred.promise;
+        },
+        refresh: reason => refreshes.push(reason),
+        isVisible: () => true,
+        logError: () => undefined,
+    });
+
+    controller.postUpdated();
+    controller.postUpdated();
+    deliveries[1].resolve(true);
+    deliveries[0].resolve(false);
+    await flushAsync();
+
+    controller.postUpdated();
+    controller.invalidatePendingUpdates();
+    deliveries[2].resolve(false);
+    await flushAsync();
+
+    assert.deepEqual(refreshes, []);
 });

@@ -312,8 +312,14 @@ test('PROJECT-PROJECT-REMOVAL-CONTROLLER-001 honors picker and confirmation canc
     await controller.removeProject('missing');
 
     assert.equal(events.filter(event => event[0] === 'remove').length, 2);
-    assert.equal(events.filter(event => event[0] === 'refresh').length, 1);
+    assert.equal(events.filter(event => event[0] === 'refresh').length, 2);
     assert.equal(events.filter(event => event[0] === 'post-command').length, 1);
+    assert.deepEqual(events.slice(0, 4).map(event => event[0]), [
+        'picker',
+        'remove',
+        'refresh',
+        'post-command',
+    ]);
 });
 
 test('PROJECT-CATALOG-SYNC-CONFLICT-001 manual editor passes its exported baseline with the edited groups', async () => {

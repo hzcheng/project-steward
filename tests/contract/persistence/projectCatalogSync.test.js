@@ -758,6 +758,8 @@ test('PROJECT-INCREMENTAL-REFRESH-001 consumes the final value when rapid local 
         path: '/work/first',
         color: '#111111',
     }]));
+    const firstSyncData = clone(harness.values.syncData);
+    const firstLegacyGroups = clone(harness.values.legacyGroups);
     await harness.service.saveGroups(makeCatalogGroups([{
         id: 'project-final',
         name: 'Final',
@@ -769,4 +771,11 @@ test('PROJECT-INCREMENTAL-REFRESH-001 consumes the final value when rapid local 
         syncData: true,
         legacyGroups: true,
     }), true);
+
+    harness.values.syncData = firstSyncData;
+    harness.values.legacyGroups = firstLegacyGroups;
+    assert.equal(harness.service.consumeConfigurationWriteEcho({
+        syncData: true,
+        legacyGroups: true,
+    }), false);
 });

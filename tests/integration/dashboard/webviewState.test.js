@@ -448,6 +448,11 @@ test('WEBVIEW-WEBVIEW-CONTENT-001 renders OPEN PROJECTS and lazy PROJECTS TODO t
     assert.match(html, /initTodos\(/);
     assert.equal(html.includes('data-id="hidden"'), false);
     assert.match(html, /data-id="current"/);
+    assert.match(
+        html,
+        /onProjectsMounted: panel => \{\s*fitProjectHeaders\(panel\);\s*disposeDnD\(panel\);\s*initDnD\(panel\);/,
+        'Projects-only replacement must rebuild DnD bindings for the new cards'
+    );
 });
 
 test('WEBVIEW-RESOURCE-RECOVERY-001 gives every rendered document fresh versioned asset URLs', () => {

@@ -3192,6 +3192,17 @@ function runDashboardBridgeLifecycleChecks() {
     assert.ok(dashboard.includes('editProjects: () => projectManualEditController.editProjectsManually()'));
     assert.ok(dashboard.includes('removeProject: () => projectRemovalController.removeProjectPerCommand()'));
     assert.ok(dashboard.includes('removeGroup: () => groupCommandController.removeGroupPerCommand()'));
+    assert.ok(dashboard.includes(
+        'postCommandRemoval: () => { void dashboardRuntimeController.revealSidebarSteward(); },'
+    ), 'command-driven removal must focus the sidebar without forcing a complete Webview refresh');
+    const manualEditWiring = dashboard.slice(
+        dashboard.indexOf('const projectManualEditController = new ProjectManualEditController({'),
+        dashboard.indexOf('const addProjectsFromFolderController = new AddProjectsFromFolderController({')
+    );
+    assert.ok(manualEditWiring.includes('refreshAfterMutation();'));
+    assert.ok(manualEditWiring.includes('dashboardRuntimeController.revealSidebarSteward();'));
+    assert.strictEqual(manualEditWiring.includes('showSteward()'), false,
+        'manual project saves must use the partial Projects surface before focusing the sidebar');
     assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryProjectFields('));
     assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryGroup('));
     assert.ok(projectMutationControllerSource.includes('this.options.prompt.queryProjectDescription('));
@@ -3207,9 +3218,14 @@ function runDashboardBridgeLifecycleChecks() {
     const dashboardLifecycleControllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'dashboard', 'lifecycleController.ts'), 'utf8');
     assert.ok(dashboardLifecycleControllerSource.includes('if (windowState.focused)'));
     assert.ok(dashboardLifecycleControllerSource.includes('this.options.publishOpenWorkspace(true);'));
-    assert.ok(
+    assert.ok(refreshAfterMutation.includes('postProjectSurfacesUpdated(mode);'),
+        'saved project metadata mutations must update Projects and OPEN surfaces directly');
+    assert.ok(refreshAfterMutation.includes('openWorkspaceController.publish();'),
+        'saved project metadata mutations must republish even when configuration storage is disabled');
+    assert.strictEqual(
         refreshAfterMutation.includes('dashboardRuntimeController.refreshAfterMutation();'),
-        'saved project metadata mutations must republish even when configuration storage is disabled'
+        false,
+        'ordinary saved project mutations must not rebuild the complete Dashboard Webview'
     );
     assert.ok(
         showSteward.includes('dashboardRuntimeController.showSteward();'),

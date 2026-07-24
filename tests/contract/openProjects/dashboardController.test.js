@@ -56,6 +56,16 @@ function createOptions(overrides = {}) {
     };
 }
 
+function createDeferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+}
+
 test('OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001 posts each semantic revision once with the complete search catalog', async () => {
     const posted = [];
     const diagnostics = [];
@@ -115,6 +125,44 @@ test('PROJECT-INCREMENTAL-REFRESH-001 republishes OPEN search when only the save
     assert.equal(posted.length, 2);
     assert.notEqual(posted[0].semanticRevision, posted[1].semanticRevision);
     assert.deepEqual(posted[1].searchCatalog.savedProjects.map(item => item.projectId), ['saved']);
+});
+
+test('PROJECT-INCREMENTAL-REFRESH-001 ignores stale and invalidated OPEN delivery failures', async () => {
+    const deliveries = [];
+    const refreshes = [];
+    let groups = [];
+    const controller = new OpenWorkspaceDashboardController(createOptions({
+        getGroups: () => groups,
+        postMessage: () => {
+            const deferred = createDeferred();
+            deliveries.push(deferred);
+            return deferred.promise;
+        },
+        refresh: reason => refreshes.push(reason),
+    }));
+
+    controller.postUpdated();
+    groups = [{
+        id: 'work',
+        groupName: 'Work',
+        projects: [{ id: 'saved', name: 'Saved', path: '/work/saved' }],
+    }];
+    controller.postUpdated();
+    deliveries[1].resolve(true);
+    deliveries[0].resolve(false);
+    await flushAsync();
+
+    groups = [{
+        id: 'work',
+        groupName: 'Work renamed',
+        projects: [{ id: 'saved', name: 'Saved', path: '/work/saved' }],
+    }];
+    controller.postUpdated();
+    controller.invalidatePendingUpdates();
+    deliveries[2].resolve(false);
+    await flushAsync();
+
+    assert.deepEqual(refreshes, []);
 });
 
 test('OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001 retries undelivered and rejected incremental updates through full refresh', async () => {

@@ -42,6 +42,7 @@ export class OpenWorkspaceDashboardController {
     private bridgeStatus: OpenWorkspaceBridgeStatus = 'ready';
     private navigationWorkspacesById = new Map<string, OpenWorkspaceRecord>();
     private lastPostedSemanticRevision: string | null = null;
+    private deliveryGeneration = 0;
 
     constructor(private readonly options: OpenWorkspaceDashboardControllerOptions) {
     }
@@ -117,16 +118,32 @@ export class OpenWorkspaceDashboardController {
             runningCardAnimation: this.options.getRunningCardAnimation(),
         });
         this.lastPostedSemanticRevision = message.semanticRevision;
+        const deliveryGeneration = this.deliveryGeneration;
         this.options.postMessage(message).then(delivered => {
             if (!delivered) {
-                this.clearPostedSemanticRevision(message.semanticRevision);
-                if (this.options.isVisible()) { this.options.refresh('open-workspace-update-not-delivered'); }
+                const current = this.clearPostedSemanticRevision(
+                    message.semanticRevision,
+                    deliveryGeneration
+                );
+                if (current && this.options.isVisible()) {
+                    this.options.refresh('open-workspace-update-not-delivered');
+                }
             }
         }, error => {
-            this.clearPostedSemanticRevision(message.semanticRevision);
+            const current = this.clearPostedSemanticRevision(
+                message.semanticRevision,
+                deliveryGeneration
+            );
             this.options.logError('Failed to post OPEN WORKSPACE update message.', error);
-            if (this.options.isVisible()) { this.options.refresh('open-workspace-update-post-error'); }
+            if (current && this.options.isVisible()) {
+                this.options.refresh('open-workspace-update-post-error');
+            }
         });
+    }
+
+    invalidatePendingUpdates(): void {
+        this.deliveryGeneration += 1;
+        this.lastPostedSemanticRevision = null;
     }
 
     private createCurrentCard(
@@ -182,10 +199,16 @@ export class OpenWorkspaceDashboardController {
         return PREDEFINED_COLORS[digest.readUInt32BE(0) % PREDEFINED_COLORS.length].value;
     }
 
-    private clearPostedSemanticRevision(semanticRevision: string): void {
-        if (this.lastPostedSemanticRevision === semanticRevision) {
+    private clearPostedSemanticRevision(
+        semanticRevision: string,
+        deliveryGeneration: number
+    ): boolean {
+        if (this.lastPostedSemanticRevision === semanticRevision
+            && this.deliveryGeneration === deliveryGeneration) {
             this.lastPostedSemanticRevision = null;
+            return true;
         }
+        return false;
     }
 
     private getViewSemanticRevision(): string {

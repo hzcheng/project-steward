@@ -311,7 +311,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         confirmRemoveProject: projectName => vscode.window.showWarningMessage(`Remove ${projectName}?`, { modal: true }, 'Remove'),
         removeProject: projectId => projectService.removeProject(projectId),
         refreshAfterMutation,
-        postCommandRemoval: () => { void showSteward(); },
+        postCommandRemoval: () => { void dashboardRuntimeController.revealSidebarSteward(); },
     });
     const projectManualEditController = new ProjectManualEditController({
         getGroups: () => projectService.getGroups(),
@@ -325,7 +325,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             projectService.saveGroupsFromManualEdit(groups, baselineGroups),
         executeCommand: command => vscode.commands.executeCommand(command),
         showErrorMessage: message => vscode.window.showErrorMessage(message),
-        postSave: () => showSteward(),
+        postSave: () => {
+            refreshAfterMutation();
+            void dashboardRuntimeController.revealSidebarSteward();
+        },
     });
     const addProjectsFromFolderController = new AddProjectsFromFolderController({
         getCurrentWorkspacePath: () => resolveWorkspacePath(vscode.workspace.workspaceFile, vscode.workspace.workspaceFolders),
@@ -466,6 +469,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const workspacePrimaryRootStore = new WorkspacePrimaryRootStore(context.globalState);
     let openWorkspaceController: OpenWorkspaceController;
     let openWorkspaceDashboardController: OpenWorkspaceDashboardController;
+    let projectsPanelController: ProjectsPanelController | undefined;
     let workspaceNavigationController: WorkspaceNavigationController<vscode.Uri>;
     const resolveCurrentOpenWorkspace = (): OpenWorkspace | null => workspaceContextResolver.resolve({
         workspaceFile: vscode.workspace.workspaceFile,
@@ -1355,6 +1359,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         renderError: getErrorContent,
         onMessage: dashboardMessageRouter,
         onVisibleChanged: async visible => {
+            projectsPanelController?.invalidatePendingUpdates();
+            openWorkspaceDashboardController?.invalidatePendingUpdates();
             setAiSessionWatchersActive(visible);
             activeAiSessionTerminalHighlighter.setVisible(visible);
             if (visible) {
@@ -1384,7 +1390,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
     const dashboardRuntimeController = new DashboardRuntimeController({
         isVisible: () => provider.visible,
-        refreshProvider: () => provider.refresh(),
+        refreshProvider: () => {
+            projectsPanelController?.invalidatePendingUpdates();
+            openWorkspaceDashboardController?.invalidatePendingUpdates();
+            provider.refresh();
+        },
         logDashboardDiagnostic,
         executeCommand: (command, ...args) => vscode.commands.executeCommand(command, ...args),
         viewType: SidebarStewardViewProvider.viewType,
@@ -1554,7 +1564,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         get openWorkspacesGroupCollapsed() { return groupCollapseController.getOpenWorkspacesCollapsed() },
         get todoSearchItems() { return todoService.getSearchItems() },
     };
-    const projectsPanelController = new ProjectsPanelController({
+    projectsPanelController = new ProjectsPanelController({
         getGroups: () => projectService.getGroups(),
         getSearchCatalog: () => buildWorkspaceDashboardSearchCatalog(
             projectService.getGroups(),
@@ -2015,7 +2025,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     function postProjectSurfacesUpdated(mode: ProjectsPanelUpdateMode): void {
-        projectsPanelController.postUpdated(mode);
+        projectsPanelController?.postUpdated(mode);
         openWorkspaceDashboardController.postUpdated();
     }
 

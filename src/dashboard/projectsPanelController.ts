@@ -20,6 +20,7 @@ export interface ProjectsPanelControllerOptions {
 
 export class ProjectsPanelController {
     private sequence = 0;
+    private deliveryGeneration = 0;
 
     constructor(private readonly options: ProjectsPanelControllerOptions) {
     }
@@ -45,15 +46,28 @@ export class ProjectsPanelController {
             favoriteProjectIds: getFavoriteProjectsInOrder(projects)
                 .map(project => project.id),
         });
+        const deliveryGeneration = this.deliveryGeneration;
         this.options.postMessage(message).then(delivered => {
-            if (!delivered && this.options.isVisible()) {
+            if (!delivered
+                && this.isCurrentDelivery(message.sequence, deliveryGeneration)
+                && this.options.isVisible()) {
                 this.options.refresh('projects-panel-update-not-delivered');
             }
         }, error => {
             this.options.logError('Failed to post Projects panel update message.', error);
-            if (this.options.isVisible()) {
+            if (this.isCurrentDelivery(message.sequence, deliveryGeneration)
+                && this.options.isVisible()) {
                 this.options.refresh('projects-panel-update-post-error');
             }
         });
+    }
+
+    invalidatePendingUpdates(): void {
+        this.deliveryGeneration += 1;
+    }
+
+    private isCurrentDelivery(sequence: number, deliveryGeneration: number): boolean {
+        return sequence === this.sequence
+            && deliveryGeneration === this.deliveryGeneration;
     }
 }
