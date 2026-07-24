@@ -449,7 +449,15 @@ function initTodos(options) {
     }
 
     function openDetail(todoId) {
-        if (!findTodo(todoId)) {
+        var todo = findTodo(todoId);
+        if (!todo) {
+            return false;
+        }
+        var group = findGroup(todo.groupId);
+        var rendered = orderedTodos(todo.groupId).some(function (item) {
+            return item.id === todoId;
+        });
+        if (!rendered || (group && group.collapsed)) {
             return false;
         }
         if (state.selectedTodoId === todoId) {
@@ -551,6 +559,7 @@ function initTodos(options) {
             selectedTodoId: state.selectedTodoId,
             draft: clone(state.draft),
             action: action,
+            payload: clone(payload || {}),
         });
         optimisticMutation(action, payload || {});
         if (action === 'collapse-group') {
@@ -609,6 +618,11 @@ function initTodos(options) {
         var pending = state.pending.get(message.requestId);
         state.pending.delete(message.requestId);
         state.snapshot = clone(message.snapshot);
+        Array.from(state.pending.entries())
+            .sort(function (left, right) { return left[0] - right[0]; })
+            .forEach(function (entry) {
+                optimisticMutation(entry[1].action, entry[1].payload);
+            });
         if (message.searchCatalog
             && typeof options.replaceSearchCatalog === 'function') {
             options.replaceSearchCatalog(message.searchCatalog);
@@ -719,7 +733,9 @@ function initTodos(options) {
         var actionTarget = closest(event.target, '[data-action]');
         if (!actionTarget) {
             var item = closest(event.target, '.todo-item[data-todo-id]');
-            if (item && !closest(event.target, 'button, input, textarea, select, label, a')) {
+            if (item
+                && !closest(event.target, '.todo-inline-detail')
+                && !closest(event.target, 'button, input, textarea, select, label, a')) {
                 toggleDetail(item.getAttribute('data-todo-id'));
             }
             return;
@@ -820,6 +836,7 @@ function initTodos(options) {
         var name = field.getAttribute('name');
         if (name === 'title' || name === 'notes' || name === 'priority' || name === 'groupId') {
             state.draft[name] = String(field.value || '');
+            state.renderedSurfaceHtml = renderListSurface();
         }
     }
 

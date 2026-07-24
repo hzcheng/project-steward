@@ -52,12 +52,36 @@ function snapshot() {
     };
 }
 
-function createHarness() {
+function createHarness(options = {}) {
     const messages = [];
     const catalogs = [];
     const listeners = {};
     let focusedTodoId;
     let renderedCount = 0;
+    const todoNodes = new Map(['todo-a', 'todo-b'].map(todoId => [todoId, {
+        className: '',
+        innerHTML: '',
+    }]));
+    const groupClasses = new Set(['todo-group']);
+    const groupButton = {
+        attributes: {},
+        setAttribute(name, value) {
+            this.attributes[name] = value;
+        },
+    };
+    const groupNode = {
+        classList: {
+            toggle(name, enabled) {
+                if (enabled) groupClasses.add(name);
+                else groupClasses.delete(name);
+            },
+        },
+        querySelector(selector) {
+            return selector === '[data-action="todo-collapse-group"]' ? groupButton : null;
+        },
+    };
+    const undoRegion = { hidden: true, style: {}, innerHTML: '' };
+    const liveRegion = { textContent: '' };
     const root = {
         innerHTML: '',
         addEventListener(type, listener) {
@@ -68,6 +92,13 @@ function createHarness() {
             return listeners[type] && listeners[type](event);
         },
         querySelector(selector) {
+            if (options.targetedPatches && selector === '.todo-undo-region') return undoRegion;
+            if (options.targetedPatches && selector === '.todo-live-region') return liveRegion;
+            if (options.targetedPatches && selector.startsWith('.todo-item[')) {
+                const todoMatch = selector.match(/data-todo-id="([^"]+)"/);
+                return todoMatch ? todoNodes.get(todoMatch[1]) || null : null;
+            }
+            if (options.targetedPatches && selector.startsWith('.todo-group[')) return groupNode;
             const match = selector.match(/data-todo-id="([^"]+)"/);
             if (!match) return null;
             return {
@@ -116,7 +147,7 @@ function createHarness() {
             renderedCount += 1;
         },
     });
-    controller.mount(panel, snapshot());
+    controller.mount(panel, options.snapshot || snapshot());
     return {
         context,
         controller,
@@ -126,6 +157,9 @@ function createHarness() {
         catalogs,
         getFocusedTodoId: () => focusedTodoId,
         getRenderedCount: () => renderedCount,
+        getTodoNode: todoId => todoNodes.get(todoId),
+        groupButton,
+        groupClasses,
     };
 }
 
@@ -219,6 +253,67 @@ test('TODO-INCREMENTAL-ROOT-001 does not redraw an optimistic surface again for 
     assert.equal(harness.controller.getState().undo.token, 'undo-complete');
 });
 
+test('TODO-INCREMENTAL-ROOT-001 patches inline details and group disclosure without rebuilding the surface', () => {
+    const harness = createHarness({ targetedPatches: true });
+    const mountedRenders = harness.getRenderedCount();
+
+    harness.controller.toggleDetail('todo-a');
+    assert.equal(harness.getRenderedCount(), mountedRenders);
+    assert.match(harness.getTodoNode('todo-a').innerHTML, /class="todo-inline-detail"/);
+
+    harness.controller.toggleDetail('todo-a');
+    assert.equal(harness.getRenderedCount(), mountedRenders);
+    assert.doesNotMatch(harness.getTodoNode('todo-a').innerHTML, /class="todo-inline-detail"/);
+
+    harness.controller.dispatch('collapse-group', { groupId: 'group-a', collapsed: true });
+    assert.equal(harness.getRenderedCount(), mountedRenders);
+    assert.equal(harness.groupClasses.has('collapsed'), true);
+    assert.equal(harness.groupButton.attributes['aria-expanded'], 'false');
+});
+
+test('TODO-FOCUSED-DETAIL-001 lets search reveal hidden or collapsed todos before opening inline details', () => {
+    const hiddenCompleted = snapshot();
+    hiddenCompleted.data.todos[0].completed = true;
+    hiddenCompleted.data.todos[0].completedAt = NOW;
+    const hiddenHarness = createHarness({ snapshot: hiddenCompleted });
+    assert.equal(hiddenHarness.controller.openDetail('todo-a'), false);
+    assert.equal(hiddenHarness.controller.getState().selectedTodoId, null);
+
+    const collapsed = snapshot();
+    collapsed.data.groups[0].collapsed = true;
+    const collapsedHarness = createHarness({ snapshot: collapsed });
+    assert.equal(collapsedHarness.controller.openDetail('todo-a'), false);
+    assert.equal(collapsedHarness.controller.getState().selectedTodoId, null);
+
+    hiddenCompleted.revealedTodoId = 'todo-a';
+    const revealedHarness = createHarness({ snapshot: hiddenCompleted });
+    assert.equal(revealedHarness.controller.openDetail('todo-a'), true);
+    assert.equal(revealedHarness.controller.getState().selectedTodoId, 'todo-a');
+});
+
+test('TODO-INCREMENTAL-ROOT-001 rebases later optimistic changes over an earlier acknowledgement', () => {
+    const harness = createHarness();
+    harness.controller.dispatch('complete', { todoId: 'todo-a', completed: true });
+    harness.controller.dispatch('complete', { todoId: 'todo-b', completed: true });
+    const rendersAfterBothChanges = harness.getRenderedCount();
+
+    const firstSaved = snapshot();
+    firstSaved.data.todos[0].completed = true;
+    firstSaved.data.todos[0].completedAt = NOW;
+    harness.controller.applyCommandResult({
+        type: 'todo-command-result',
+        version: 2,
+        requestId: 1,
+        revision: 1,
+        success: true,
+        snapshot: firstSaved,
+    });
+
+    assert.equal(harness.controller.getState().snapshot.data.todos[0].completed, true);
+    assert.equal(harness.controller.getState().snapshot.data.todos[1].completed, true);
+    assert.equal(harness.getRenderedCount(), rendersAfterBothChanges);
+});
+
 test('TODO-STALE-RESULT-001 rejects stale revisions and posts Undo exactly once', () => {
     const harness = createHarness();
     harness.controller.applyCommandResult({
@@ -289,6 +384,7 @@ test('TODO-FOCUSED-DETAIL-001 preserves an unsaved detail draft across unrelated
         },
     };
     harness.root.dispatch('input', { target: titleField });
+    const rendersAfterTyping = harness.getRenderedCount();
     harness.controller.applyCommandResult({
         type: 'todo-command-result',
         version: 2,
@@ -299,7 +395,43 @@ test('TODO-FOCUSED-DETAIL-001 preserves an unsaved detail draft across unrelated
     });
 
     assert.equal(harness.controller.getState().draft.title, 'A locally edited draft');
-    assert.match(harness.root.innerHTML, /A locally edited draft/);
+    assert.equal(harness.getRenderedCount(), rendersAfterTyping);
+});
+
+test('TODO-FOCUSED-DETAIL-001 keeps inline editing open when form whitespace is clicked', () => {
+    const harness = createHarness();
+    harness.controller.openDetail('todo-a');
+    const editAction = {
+        getAttribute(name) {
+            return name === 'data-action' ? 'todo-edit-detail' : null;
+        },
+    };
+    harness.root.dispatch('click', {
+        target: {
+            closest(selector) {
+                return selector === '[data-action]' ? editAction : null;
+            },
+        },
+    });
+    const item = {
+        getAttribute(name) {
+            return name === 'data-todo-id' ? 'todo-a' : null;
+        },
+    };
+    const form = {};
+    harness.root.dispatch('click', {
+        target: {
+            closest(selector) {
+                if (selector === '[data-action]') return null;
+                if (selector === '.todo-item[data-todo-id]') return item;
+                if (selector === '.todo-inline-detail') return form;
+                return null;
+            },
+        },
+    });
+
+    assert.equal(harness.controller.getState().selectedTodoId, 'todo-a');
+    assert.ok(harness.controller.getState().draft);
 });
 
 test('TODO-INCREMENTAL-ROOT-001 isolates mounted TODO events from the legacy project controller', () => {
