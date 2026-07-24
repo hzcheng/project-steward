@@ -237,11 +237,22 @@ function initDashboard(options) {
     var projectsRequestId = 0;
     var acceptedProjectsRequestId = 0;
     var acceptedProjectsUpdateSequence = 0;
+    var projectsRequestAttempts = 0;
+    var projectsRequestTimer = null;
     var todoState = 'unloaded';
     var todoRequestId = 0;
     var acceptedTodoRequestId = 0;
+    var todoRequestAttempts = 0;
+    var todoRequestTimer = null;
     var pendingTodoSearchTarget = null;
     var pendingScrollRestoreTab = null;
+    var panelRequestTimeoutMs = Number(options.panelRequestTimeoutMs) > 0
+        ? Number(options.panelRequestTimeoutMs)
+        : 5000;
+    var scheduleTimeout = options.setTimeout
+        || (typeof setTimeout === 'function' ? setTimeout : null);
+    var cancelTimeout = options.clearTimeout
+        || (typeof clearTimeout === 'function' ? clearTimeout : function () {});
     var catalog = readInitialDashboardSearchCatalog();
     var searchQuery = String(options.initialSearchQuery || '').trim();
     var tabButtons = Array.from(document.querySelectorAll('[data-dashboard-tab]'));
@@ -302,23 +313,91 @@ function initDashboard(options) {
         }
     }
 
+    function getPanelLoadingElement(tab) {
+        var panel = panels[tab];
+        if (!panel || !panel.querySelector) {
+            return null;
+        }
+        return panel.querySelector(tab === 'projects'
+            ? '.dashboard-projects-loading'
+            : '.dashboard-todo-loading');
+    }
+
+    function showPanelLoading(tab) {
+        var loadingElement = getPanelLoadingElement(tab);
+        if (!loadingElement) {
+            return;
+        }
+        loadingElement.textContent = tab === 'projects' ? 'Loading projects…' : 'Loading todos…';
+        loadingElement.hidden = false;
+    }
+
+    function showPanelUnavailable(tab) {
+        var loadingElement = getPanelLoadingElement(tab);
+        if (!loadingElement) {
+            return;
+        }
+        loadingElement.textContent = (tab === 'projects' ? 'Projects' : 'TODO')
+            + ' are temporarily unavailable. Select this tab to retry.';
+        loadingElement.hidden = false;
+    }
+
+    function scheduleProjectsRequestTimeout(requestId) {
+        if (!scheduleTimeout) {
+            return;
+        }
+        if (projectsRequestTimer !== null) {
+            cancelTimeout(projectsRequestTimer);
+        }
+        projectsRequestTimer = scheduleTimeout(function () {
+            projectsRequestTimer = null;
+            if (projectsState !== 'loading' || requestId !== projectsRequestId) {
+                return;
+            }
+            projectsState = 'unloaded';
+            if (projectsRequestAttempts < 2 && activeTab === 'projects' && !searchQuery) {
+                ensureProjectsPanel();
+                return;
+            }
+            showPanelUnavailable('projects');
+        }, panelRequestTimeoutMs);
+    }
+
+    function scheduleTodoRequestTimeout(requestId) {
+        if (!scheduleTimeout) {
+            return;
+        }
+        if (todoRequestTimer !== null) {
+            cancelTimeout(todoRequestTimer);
+        }
+        todoRequestTimer = scheduleTimeout(function () {
+            todoRequestTimer = null;
+            if (todoState !== 'loading' || requestId !== todoRequestId) {
+                return;
+            }
+            todoState = 'unloaded';
+            if (todoRequestAttempts < 2 && activeTab === 'todo' && !searchQuery) {
+                ensureTodoPanel();
+                return;
+            }
+            showPanelUnavailable('todo');
+        }, panelRequestTimeoutMs);
+    }
+
     function ensureProjectsPanel() {
         if (projectsState !== 'unloaded') {
             return;
         }
         projectsState = 'loading';
+        projectsRequestAttempts += 1;
         projectsRequestId += 1;
-        var loadingElement = panels.projects && panels.projects.querySelector
-            ? panels.projects.querySelector('.dashboard-projects-loading')
-            : null;
-        if (loadingElement) {
-            loadingElement.hidden = false;
-        }
+        showPanelLoading('projects');
         options.postMessage({
             type: 'request-projects-panel',
             version: 1,
             requestId: projectsRequestId,
         });
+        scheduleProjectsRequestTimeout(projectsRequestId);
     }
 
     function ensureTodoPanel() {
@@ -326,18 +405,15 @@ function initDashboard(options) {
             return;
         }
         todoState = 'loading';
+        todoRequestAttempts += 1;
         todoRequestId += 1;
-        var loadingElement = panels.todo && panels.todo.querySelector
-            ? panels.todo.querySelector('.dashboard-todo-loading')
-            : null;
-        if (loadingElement) {
-            loadingElement.hidden = false;
-        }
+        showPanelLoading('todo');
         options.postMessage({
             type: 'request-todo-panel',
             version: 1,
             requestId: todoRequestId,
         });
+        scheduleTodoRequestTimeout(todoRequestId);
     }
 
     function activateTab(tab, saveScroll) {
@@ -562,6 +638,11 @@ function initDashboard(options) {
         }
 
         acceptedProjectsRequestId = message.requestId;
+        if (projectsRequestTimer !== null) {
+            cancelTimeout(projectsRequestTimer);
+            projectsRequestTimer = null;
+        }
+        projectsRequestAttempts = 0;
         panels.projects.innerHTML = message.html;
         projectsState = 'mounted';
         if (typeof options.onProjectsMounted === 'function') {
@@ -684,6 +765,11 @@ function initDashboard(options) {
         }
 
         acceptedTodoRequestId = message.requestId;
+        if (todoRequestTimer !== null) {
+            cancelTimeout(todoRequestTimer);
+            todoRequestTimer = null;
+        }
+        todoRequestAttempts = 0;
         panels.todo.innerHTML = message.html;
         todoState = 'mounted';
         if (normalizeDashboardSearchCatalog(message.searchCatalog) === message.searchCatalog) {
@@ -713,6 +799,11 @@ function initDashboard(options) {
             && activeElement.getAttribute('data-action') === 'todo-toggle-show-completed';
         panels.todo.innerHTML = message.html;
         todoState = 'mounted';
+        if (todoRequestTimer !== null) {
+            cancelTimeout(todoRequestTimer);
+            todoRequestTimer = null;
+        }
+        todoRequestAttempts = 0;
         replaceSearchCatalog(message.searchCatalog);
         if (typeof options.onTodoMounted === 'function') {
             options.onTodoMounted(panels.todo, message);

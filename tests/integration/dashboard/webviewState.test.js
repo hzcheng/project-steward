@@ -156,6 +156,14 @@ function createDashboardHarness({ initialTab = 'open', initialSearchQuery = '', 
     const openPanel = createElement('dashboard-tab-open');
     const projectsPanel = createElement('dashboard-tab-projects');
     const todoPanel = createElement('dashboard-tab-todo');
+    const projectsLoading = createElement();
+    const todoLoading = createElement();
+    projectsPanel.querySelector = selector => selector === '.dashboard-projects-loading'
+        ? projectsLoading
+        : null;
+    todoPanel.querySelector = selector => selector === '.dashboard-todo-loading'
+        ? todoLoading
+        : null;
     const searchResults = createSearchElement();
     searchResults.id = 'dashboard-search-results';
     const catalogElement = { textContent: JSON.stringify(makeCatalog()) };
@@ -169,7 +177,9 @@ function createDashboardHarness({ initialTab = 'open', initialSearchQuery = '', 
     const storage = new Map([['projectSteward.activeDashboardTab', initialTab]]);
     const messages = [];
     const frames = [];
+    const timers = [];
     const windowListeners = {};
+    let nextTimerId = 1;
     const context = {
         document: {
             activeElement: null,
@@ -194,6 +204,16 @@ function createDashboardHarness({ initialTab = 'open', initialSearchQuery = '', 
             if (synchronousFrames) callback();
             else frames.push(callback);
         },
+        setTimeout(callback) {
+            const timer = { id: nextTimerId, callback, cancelled: false };
+            nextTimerId += 1;
+            timers.push(timer);
+            return timer.id;
+        },
+        clearTimeout(timerId) {
+            const timer = timers.find(candidate => candidate.id === timerId);
+            if (timer) timer.cancelled = true;
+        },
     };
     vm.runInNewContext(dashboardSource, context);
     const controller = context.initDashboard({
@@ -205,6 +225,14 @@ function createDashboardHarness({ initialTab = 'open', initialSearchQuery = '', 
         controller,
         messages,
         frames,
+        runNextTimer() {
+            let timer;
+            do {
+                timer = timers.shift();
+            } while (timer && timer.cancelled);
+            if (timer) timer.callback();
+            return Boolean(timer);
+        },
         storage,
         windowListeners,
         openButton,
@@ -213,6 +241,8 @@ function createDashboardHarness({ initialTab = 'open', initialSearchQuery = '', 
         openPanel,
         projectsPanel,
         todoPanel,
+        projectsLoading,
+        todoLoading,
         searchResults,
     };
 }
@@ -534,6 +564,54 @@ test('WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001 SESSION-CONTROLLER-001 preserves OPEN
     assert.equal(harness.messages.filter(message => message.type === 'request-projects-panel').length, 1);
     assert.equal(harness.messages.filter(message => message.type === 'request-todo-panel').length, 1);
     assert.equal(harness.storage.get('projectSteward.activeDashboardTab'), 'todo');
+});
+
+test('WEBVIEW-LAZY-PANEL-RECOVERY-001 retries one missing response and unlocks later tab retries', () => {
+    for (const tab of ['projects', 'todo']) {
+        const harness = createDashboardHarness({ initialTab: tab });
+        const requestType = `request-${tab}-panel`;
+        const getState = tab === 'projects'
+            ? harness.controller.getProjectsState
+            : harness.controller.getTodoState;
+        const applyMessage = tab === 'projects'
+            ? harness.controller.applyProjectsPanelMessage
+            : harness.controller.applyTodoPanelMessage;
+
+        assert.deepEqual(toPlain(harness.messages), [{
+            type: requestType,
+            version: 1,
+            requestId: 1,
+        }]);
+        assert.equal(getState(), 'loading');
+
+        assert.equal(harness.runNextTimer(), true);
+        assert.deepEqual(toPlain(harness.messages.at(-1)), {
+            type: requestType,
+            version: 1,
+            requestId: 2,
+        });
+        assert.equal(getState(), 'loading');
+
+        assert.equal(harness.runNextTimer(), true);
+        assert.equal(getState(), 'unloaded');
+        const loading = tab === 'projects' ? harness.projectsLoading : harness.todoLoading;
+        assert.match(loading.textContent, /temporarily unavailable/i);
+
+        harness.controller.activateTab(tab);
+        assert.deepEqual(toPlain(harness.messages.at(-1)), {
+            type: requestType,
+            version: 1,
+            requestId: 3,
+        });
+        assert.equal(applyMessage({
+            type: `${tab}-panel-content`,
+            version: 1,
+            requestId: 3,
+            html: `<p>${tab}</p>`,
+        }), true);
+        assert.equal(getState(), 'mounted');
+        assert.match(loading.textContent, /^Loading /);
+    }
 });
 
 test('PROJECT-INCREMENTAL-REFRESH-001 replaces only Projects and rejects stale updates', () => {
