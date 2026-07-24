@@ -35,7 +35,7 @@ import AiSessionPinController from './aiSessions/pinController';
 import AiSessionWorkspaceStateStore from './aiSessions/workspaceStateStore';
 import ActiveAiSessionTerminalHighlighter from './aiSessions/activeTerminalHighlight';
 import AttentionBridgeClient from './aiSessions/attentionBridgeClient';
-import { withAttentionProject } from './aiSessions/attentionProject';
+import { getAttentionRuntimeSessionKey, withAttentionProject } from './aiSessions/attentionProject';
 import type { ActiveAiSessionTerminalIdentity } from './aiSessions/activeTerminalHighlight';
 import { getAiSessionKey } from './aiSessions/sessionHelpers';
 import { AI_SESSION_PROVIDER_DEFINITIONS, createAiSessionProviderRegistry, getAiSessionProviderLabel } from './aiSessions/providers';
@@ -855,7 +855,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             if (!sessionId || (runtime.state !== 'completed' && runtime.state !== 'stopped')) {
                 continue;
             }
-            const key = `${runtime.identity.workspaceScopeIdentity}:${runtime.identity.provider}:${sessionId}:${runtime.runStartedAtMs}:${runtime.backend}`;
+            const key = getAttentionRuntimeSessionKey({
+                workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+                provider: runtime.identity.provider,
+                sessionId,
+                runStartedAtMs: runtime.runStartedAtMs,
+                backend: runtime.backend,
+            });
             if (settlingAiSessionRuntimeKeys.has(key)) {
                 continue;
             }

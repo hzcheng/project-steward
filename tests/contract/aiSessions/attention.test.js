@@ -279,6 +279,44 @@ test('ATTENTION-LOGICAL-SESSION-CARD-COUNT-001 counts logical sessions and retai
     );
 });
 
+test('ATTENTION-LOGICAL-SESSION-CARD-COUNT-001 counts scoped runtime keys as one logical session', () => {
+    const projectKey = attentionProject.getAttentionProjectKey('/fixtures/project');
+    const workspaceScopeIdentity = 'b'.repeat(64);
+    const sessionId = '019f9178-8dce-79d1-8b5d-d19ffa92c3dd';
+    const sessions = [
+        [100, 'tmux'],
+        [200, 'vscode'],
+        [300, 'tmux'],
+        [400, 'vscode'],
+        [500, 'tmux'],
+    ].map(([runStartedAtMs, backend], index) => ({
+        projectId: projectKey,
+        sessionKey: attentionProject.getAttentionRuntimeSessionKey({
+            workspaceScopeIdentity,
+            provider: 'codex',
+            sessionId,
+            runStartedAtMs,
+            backend,
+        }),
+        reasons: ['completed'],
+        eventIds: [`event-${index}`],
+        observedAtMs: runStartedAtMs,
+    }));
+
+    const summary = attentionProject.getAttentionProjectSummaries({
+        protocolVersion: 1,
+        aggregateRevision: 'c'.repeat(64),
+        generatedAtMs: 500,
+        sessions,
+    })[0];
+
+    assert.equal(summary.attentionCount, 1);
+    assert.equal(summary.sessions[0].sessionKey, `codex:${sessionId}`);
+    assert.deepEqual(summary.eventIds, [
+        'event-0', 'event-1', 'event-2', 'event-3', 'event-4',
+    ]);
+});
+
 for (const [providerId, sessionsKey] of [
     ['codex', 'codexSessions'],
     ['kimi', 'kimiSessions'],
