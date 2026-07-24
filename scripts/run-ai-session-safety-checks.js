@@ -6474,6 +6474,10 @@ function runBatchAiSessionWebviewChecks() {
     eventListeners.click({ button: 0, target: closeActiveTarget });
     eventListeners.click({ button: 0, target: closePendingTarget });
     eventListeners.click({ button: 0, target: detachTmuxTarget });
+    assert.strictEqual(activeRow.hasAttribute('data-ai-session-attention'), true,
+        'ATTENTION-EXPLICIT-SESSION-CLOSE-001 must wait for confirmed host close before acknowledging');
+    assert.strictEqual(tmuxRow.hasAttribute('data-ai-session-attention'), true,
+        'ATTENTION-EXPLICIT-SESSION-CLOSE-001 must wait for confirmed host detach before acknowledging');
     assert.deepStrictEqual(JSON.parse(JSON.stringify(messages)), [{
         type: 'focus-ai-session-terminal', projectId: 'project-a', provider: 'codex', sessionId: 'active-session',
     }, {
@@ -6484,16 +6488,10 @@ function runBatchAiSessionWebviewChecks() {
     }, {
         type: 'create-ai-session', projectId: 'project-a',
     }, {
-        type: 'acknowledge-ai-session-attention',
-        eventIds: ['attention-active-old', 'attention-active-new'],
-    }, {
         type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'codex', sessionId: 'active-session',
     }, {
         type: 'close-ai-session-terminal', projectId: 'project-a', provider: 'claude',
         pendingCreatedAt: '2026-07-18T08:00:00Z',
-    }, {
-        type: 'acknowledge-ai-session-attention',
-        eventIds: ['attention-tmux-old', 'attention-tmux-new'],
     }, {
         type: 'detach-ai-session-terminal', projectId: 'project-a', provider: 'kimi',
         sessionId: 'tmux-session',
