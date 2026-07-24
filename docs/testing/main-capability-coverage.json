@@ -2,7 +2,7 @@
     "version": 1,
     "audit": {
         "base": "2b34c653119bdf480f2af0330ee3809b51441807",
-        "head": "41fb25cf1786e8f5efeafbe31ebd673ca057f04f",
+        "head": "d9c66b32fc2487d7836bf66472ac07f337acc1a5",
         "ignoredDocumentationCommits": []
     },
     "capabilities": [
@@ -464,7 +464,8 @@
                 "78d004f6640039f09f47b6f24d6f4e8b1dd3ca98",
                 "62cf47fa2b5cefa7538e80e7ba9002e86f641a35",
                 "1b389cb78b26cf72904b936f6119d2625abd78bd",
-                "41fb25cf1786e8f5efeafbe31ebd673ca057f04f"
+                "41fb25cf1786e8f5efeafbe31ebd673ca057f04f",
+                "d9c66b32fc2487d7836bf66472ac07f337acc1a5"
             ],
             "behaviors": [
                 "ATTENTION-ACTIVE-UNREGISTER-ON-DEACTIVATE-001",
