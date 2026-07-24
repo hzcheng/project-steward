@@ -91,8 +91,8 @@ test('PERSIST-LIFECYCLE-PARSER-001 [claude] treats the explicit user interrupt m
     ], runStartedAtMs);
 
     assert.ok(signal);
-    assert.equal(signal.phase, 'needsAttention');
-    assert.equal(signal.reason, 'aborted');
+    assert.equal(signal.phase, 'idle');
+    assert.equal(signal.reason, undefined);
     assert.equal(signal.executionState, 'stopped');
     assert.match(signal.token, /^claude:user_interrupt:/);
 });

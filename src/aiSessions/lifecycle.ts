@@ -2,7 +2,7 @@
 
 export type AiSessionAttentionReason = 'completed' | 'aborted' | 'failed' | 'input-required';
 export type AiSessionExecutionState = 'running' | 'stopped';
-export type AiSessionLifecyclePhase = 'running' | 'needsAttention';
+export type AiSessionLifecyclePhase = 'running' | 'idle' | 'needsAttention';
 
 export interface AiSessionLifecycleRequest {
     sessionId: string;
@@ -72,6 +72,10 @@ function getToken(provider: string, eventType: string, occurredAtMs: number, id:
 
 function running(provider: string, eventType: string, occurredAtMs: number, id?: unknown): AiSessionLifecycleSignal {
     return { token: getToken(provider, eventType, occurredAtMs, id), phase: 'running', executionState: 'running', occurredAtMs };
+}
+
+function idle(provider: string, eventType: string, occurredAtMs: number, id?: unknown): AiSessionLifecycleSignal {
+    return { token: getToken(provider, eventType, occurredAtMs, id), phase: 'idle', executionState: 'stopped', occurredAtMs };
 }
 
 function attention(
@@ -175,7 +179,7 @@ export function createClaudeLifecycleAccumulator(runStartedAtMs: number): AiSess
         }
         if (event?.type === 'user') {
             if (isClaudeUserInterrupt(event)) {
-                return attention('claude', 'user_interrupt', occurredAtMs, 'aborted', event.uuid);
+                return idle('claude', 'user_interrupt', occurredAtMs, event.uuid);
             }
             return running('claude', 'user', occurredAtMs, event.uuid);
         }

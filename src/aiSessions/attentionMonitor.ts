@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import type { AiSessionAttentionReason, AiSessionLifecycleSignal } from './lifecycle';
 
 export { AiSessionAttentionReason } from './lifecycle';
-export type AiSessionAttentionState = 'pending' | 'running' | 'needsAttention' | 'acknowledged';
+export type AiSessionAttentionState = 'pending' | 'running' | 'idle' | 'needsAttention' | 'acknowledged';
 
 export interface AiSessionAttentionInput {
     key: string;
@@ -66,8 +66,8 @@ export default class AiSessionAttentionMonitor {
             entry.lastSignalToken = signal.token;
             entry.stateChangedAt = observedAt;
 
-            if (signal.phase === 'running') {
-                entry.state = 'running';
+            if (signal.phase === 'running' || signal.phase === 'idle') {
+                entry.state = signal.phase;
                 entry.event = undefined;
                 continue;
             }

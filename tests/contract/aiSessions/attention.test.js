@@ -73,6 +73,32 @@ for (const providerId of ['codex', 'kimi', 'claude']) {
     });
 }
 
+test('ATTENTION-ATTENTION-MONITOR-001 clears attention when an interrupted session becomes idle', () => {
+    const monitor = new AttentionMonitor({ now: () => 2000 });
+    const key = 'claude:interrupted';
+    monitor.evaluate([{ key, signal: {
+        token: 'claude:waiting:1000',
+        phase: 'needsAttention',
+        reason: 'input-required',
+        executionState: 'stopped',
+        occurredAtMs: 1000,
+    } }]);
+
+    const events = monitor.evaluate([{ key, signal: {
+        token: 'claude:user_interrupt:1001',
+        phase: 'idle',
+        executionState: 'stopped',
+        occurredAtMs: 1001,
+    } }]);
+
+    assert.deepEqual(events, []);
+    assert.deepEqual(monitor.getSnapshot()[key], {
+        state: 'idle',
+        stateChangedAt: 2000,
+        event: undefined,
+    });
+});
+
 test('ATTENTION-ATTENTION-PAYLOAD-001 validates privacy-safe owner snapshots and deterministic aggregation', () => {
     const projectId = attentionProject.getAttentionProjectKey('/fixtures/project');
     const item = {
