@@ -2,7 +2,7 @@
     "version": 1,
     "audit": {
         "base": "2b34c653119bdf480f2af0330ee3809b51441807",
-    "head": "6917f663c6aa86a279ba7b5e5465ce18aa26c8e8",
+    "head": "abda678bf58b78ee0af1ef9830560dd4166e8995",
         "ignoredDocumentationCommits": []
     },
     "capabilities": [
@@ -474,7 +474,8 @@
                 "b288765990142b149bfc3bd9e0b56187fdedcf1f",
                 "5e46502ed698c5acf1b69ceff136a0e0bada1b85",
                 "c6198e5a3545bff4e70a71701a46c405ef3aaee6",
-                "6917f663c6aa86a279ba7b5e5465ce18aa26c8e8"
+                "6917f663c6aa86a279ba7b5e5465ce18aa26c8e8",
+                "abda678bf58b78ee0af1ef9830560dd4166e8995"
             ],
             "behaviors": [
                 "ATTENTION-ACTIVE-UNREGISTER-ON-DEACTIVATE-001",
@@ -482,6 +483,7 @@
                 "ATTENTION-NEW-RUN-CLEARS-STALE-001",
                 "ATTENTION-EXPLICIT-SESSION-CLOSE-001",
                 "ATTENTION-USER-TERMINAL-CLOSE-001",
+                "ATTENTION-SINGLE-RUN-COMPLETION-DEDUP-001",
                 "ATTENTION-PRODUCTION-ATTENTION-STORE-LIFECYCLE-001"
             ],
             "prGates": [
