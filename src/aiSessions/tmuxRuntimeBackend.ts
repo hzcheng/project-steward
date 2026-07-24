@@ -805,8 +805,11 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
             const bindingMatchesTerminal = binding
                 ? Boolean(recovery) || terminalMatchesBinding(attach, binding, launchSessionName)
                 : false;
+            const liveSessionName = !bindingMatchesTerminal && launchSessionName === null
+                ? await this.dependencies.client.getClientSessionForProcess(processId)
+                : launchSessionName;
             let runtime = bindingMatchesTerminal ? this.runtimeForBinding(binding as TmuxAttachBinding)
-                : await this.runtimeForAttachSession(launchSessionName);
+                : await this.runtimeForAttachSession(liveSessionName);
             if (!bindingMatchesTerminal && runtime) {
                 binding = attachBinding(runtime, getTerminalCreationName(attach)
                     || this.getAttachTerminalName(runtime));
@@ -1372,7 +1375,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 const terminal = this.dependencies.createTerminal({
                     name: terminalName,
                     shellPath: this.dependencies.client.getExecutablePath(),
-                    shellArgs: ['attach-session', '-d', '-t', runtime.tmux.sessionName],
+                    shellArgs: ['attach-session', '-t', runtime.tmux.sessionName],
                     env: { TMUX: null, [TMUX_ATTACH_RECOVERY_ENV]: recoveryToken },
                 });
                 entry = {

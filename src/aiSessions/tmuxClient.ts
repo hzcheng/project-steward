@@ -14,6 +14,9 @@ const LIST_WINDOWS_FORMAT = [
 const LIST_PANES_FORMAT = [
     '#{window_id}', '#{pane_id}', '#{pane_active}', '#{pane_pid}',
 ].join(FIELD_SEPARATOR);
+const LIST_CLIENTS_FORMAT = [
+    '#{client_pid}', '#{session_name}',
+].join(FIELD_SEPARATOR);
 const TARGET_WINDOW_FORMAT = [
     '#{session_name}', '#{window_name}', '#{window_id}',
     ...Object.values(TMUX_METADATA_OPTIONS).map(option => `#{${option}}`),
@@ -113,6 +116,7 @@ type TmuxOperation =
     | 'list-commands'
     | 'list-windows'
     | 'list-panes'
+    | 'list-clients'
     | 'get-active-window'
     | 'get-target-window'
     | 'has-session'
@@ -296,6 +300,23 @@ export class TmuxClient {
             windowName: active[0].windowName,
             windowId: active[0].windowId,
         } : null;
+    }
+
+    async getClientSessionForProcess(processId: number): Promise<string | null> {
+        if (!Number.isSafeInteger(processId) || processId < 1 || processId > MAX_PID) {
+            throw new TypeError('The terminal process ID is invalid.');
+        }
+        await this.requireAvailable();
+        const result = await this.invoke('list-clients', [
+            'list-clients', '-F', LIST_CLIENTS_FORMAT,
+        ]);
+        if (result.exitCode !== 0) {
+            if (isNoServerResult(result)) {
+                return null;
+            }
+            throw resultError('list-clients', result);
+        }
+        return parseClientSessions(result.stdout).get(processId) || null;
     }
 
     async getTargetWindow(locator: AiSessionTmuxLocator): Promise<TmuxTargetWindowRecord | null> {
@@ -730,6 +751,35 @@ function parseActivePanePids(stdout: string): Map<string, number> {
         }
     }
     return activePanePids;
+}
+
+function parseClientSessions(stdout: string): Map<number, string> {
+    if (stdout.length > MAX_LIST_OUTPUT_LENGTH) {
+        throw new TmuxClientError('list-clients', 'invalid-output');
+    }
+    if (!stdout) {
+        return new Map();
+    }
+    const lines = stdout.endsWith('\n') ? stdout.slice(0, -1).split('\n') : stdout.split('\n');
+    if (lines.length > MAX_LIST_ROWS || lines.some(line => !line)) {
+        throw new TmuxClientError('list-clients', 'invalid-output');
+    }
+    const sessions = new Map<number, string>();
+    for (const line of lines) {
+        const fields = line.split(FIELD_SEPARATOR);
+        if (fields.length !== 2) {
+            throw new TmuxClientError('list-clients', 'invalid-output');
+        }
+        const [processIdValue, sessionName] = fields;
+        const processId = Number(processIdValue);
+        if (!/^[1-9][0-9]{0,9}$/.test(processIdValue)
+            || !Number.isSafeInteger(processId) || processId > MAX_PID
+            || !isTargetField(sessionName) || sessions.has(processId)) {
+            throw new TmuxClientError('list-clients', 'invalid-output');
+        }
+        sessions.set(processId, sessionName);
+    }
+    return sessions;
 }
 
 function parseMetadataOptionValue(stdout: string, operation: TmuxOperation): string | null {

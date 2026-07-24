@@ -309,6 +309,7 @@ function createTmuxBackendHarness(options = {}) {
             return options.availability || { available: true, version: '3.2a' };
         },
         getExecutablePath: () => '/opt/tmux',
+        getClientSessionForProcess: async () => null,
         setExecutablePath: () => undefined,
         listWindows: async () => {
             operations.push({ type: 'list-windows' });
@@ -4708,8 +4709,8 @@ async function runTmuxBackendChecks() {
         'Project Steward: App [tmux]');
     assert.strictEqual(projectHarness.terminals[0].creationOptions.shellPath, '/opt/tmux');
     assert.deepStrictEqual(projectHarness.terminals[0].creationOptions.shellArgs,
-        ['attach-session', '-d', '-t', firstProject.tmux.sessionName],
-        'managed viewers must attach exclusively across VS Code windows');
+        ['attach-session', '-t', firstProject.tmux.sessionName],
+        'managed viewers must attach without replacing a live viewer');
     assert.strictEqual(projectHarness.terminals[0].creationOptions.env.TMUX, null);
     assert.match(projectHarness.terminals[0].creationOptions.env.PROJECT_STEWARD_TMUX_ATTACH_ID,
         /^[0-9a-f]{32}$/,

@@ -39,10 +39,36 @@ for (const layout of ['project', 'session']) {
         assert.equal(harness.terminals[0].shown, true);
     });
 
-    test(`RUNTIME-TMUX-BACKEND-001 [tmux ${layout}] attaches exclusively across VS Code windows`, async () => {
+    test(`RUNTIME-TMUX-BACKEND-001 [tmux ${layout}] focus after reload recovers the live tmux client when VS Code drops terminal metadata`, async () => {
+        const harness = createTmuxRuntimeHarness(layout);
+        const request = fakeResumeRequest(`reload-live-client-${layout}`);
+        const runtime = await harness.backend.ensureResume(request, layout);
+        await harness.dependencies.attachStore.flush();
+        const originalTerminal = harness.terminals[0];
+        const viewerCount = harness.viewerCount();
+        originalTerminal.shown = false;
+        harness.loseReloadAttachMetadata(originalTerminal);
+
+        const reloadedBackend = harness.createReloadedBackend();
+        await reloadedBackend.focus(reloadedBackend.find(runtime.identity)[0]);
+
+        assert.equal(
+            harness.viewerCount(),
+            viewerCount,
+            'a reload must not open a second terminal for the same live tmux client'
+        );
+        assert.equal(originalTerminal.shown, true);
+        assert.equal(
+            harness.operations.some(operation => operation.type === 'get-client-session'),
+            true,
+            'reload recovery must use the live terminal process when VS Code metadata is unavailable'
+        );
+    });
+
+    test(`RUNTIME-TMUX-BACKEND-001 [tmux ${layout}] creates a recoverable tmux attach terminal`, async () => {
         const harness = createTmuxRuntimeHarness(layout);
         await harness.backend.ensureResume(
-            fakeResumeRequest(`exclusive-attach-${layout}`),
+            fakeResumeRequest(`recoverable-attach-${layout}`),
             layout
         );
         const attach = harness.operations.find(operation =>
@@ -50,16 +76,15 @@ for (const layout of ['project', 'session']) {
         );
 
         assert.deepEqual(
-            attach.creationOptions.shellArgs.slice(0, 3),
-            ['attach-session', '-d', '-t'],
-            'a later managed viewer must detach an older viewer from the same tmux session'
+            attach.creationOptions.shellArgs.slice(0, 2),
+            ['attach-session', '-t']
         );
         assert.equal(
             harness.backend.isAttachTerminalCandidate({
                 creationOptions: attach.creationOptions,
             }),
             true,
-            'exclusive attach terminals must remain recoverable after extension reload'
+            'managed attach terminals must remain recoverable after extension reload'
         );
         assert.equal(
             harness.backend.isAttachTerminalCandidate({
@@ -67,13 +92,14 @@ for (const layout of ['project', 'session']) {
                     ...attach.creationOptions,
                     shellArgs: [
                         'attach-session',
+                        '-d',
                         '-t',
-                        attach.creationOptions.shellArgs[3],
+                        attach.creationOptions.shellArgs[2],
                     ],
                 },
             }),
             true,
-            'terminals created before exclusive attach was introduced must remain recoverable'
+            'terminals created by the previous exclusive-attach build must remain recoverable'
         );
     });
 
