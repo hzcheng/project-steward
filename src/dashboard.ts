@@ -136,6 +136,7 @@ const NEW_AI_SESSION_REFRESH_DELAYS_MS = [250, 1000, 2500, 5000];
 const AI_SESSION_REFRESH_DEBOUNCE_MS = 3000;
 const AI_SESSION_WATCHER_REFRESH_MIN_INTERVAL_MS = 10000;
 const AI_SESSION_INCREMENTAL_SCAN_MAX_FILES = 2000;
+let activeAiSessionAttentionBridgeClient: AttentionBridgeClient | null = null;
 
 function resolveAiProviderExecutable(commandName: string): string | null {
     if (!commandName) {
@@ -952,6 +953,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         error => logError('AI session attention bridge unavailable; using local-window monitoring.', error)
     );
+    activeAiSessionAttentionBridgeClient = aiSessionAttentionBridgeClient;
     const aiSessionAttentionInterval = setInterval(() => {
         void runSafeAiSessionRuntimeLifecycleTask(
             'evaluate-attention-interval', evaluateAiSessionAttention
@@ -2128,5 +2130,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 
 // this method is called when your extension is deactivated
-export function deactivate() {
+export async function deactivate(): Promise<void> {
+    const client = activeAiSessionAttentionBridgeClient;
+    activeAiSessionAttentionBridgeClient = null;
+    await client?.shutdown();
 }

@@ -44,6 +44,7 @@ export default class AttentionBridgeClient implements vscode.Disposable {
     private retryTimer: unknown = null;
     private handshakeFlight: Promise<boolean> | null = null;
     private publicationQueue: Promise<void> = Promise.resolve();
+    private shutdownFlight: Promise<void> | null = null;
 
     constructor(
         private readonly onAggregate: (aggregate: AttentionAggregate) => void,
@@ -67,7 +68,11 @@ export default class AttentionBridgeClient implements vscode.Disposable {
     }
 
     dispose(): void {
-        if (this.disposed) return;
+        void this.shutdown();
+    }
+
+    shutdown(): Promise<void> {
+        if (this.shutdownFlight) return this.shutdownFlight;
         this.disposed = true;
         this.aggregateRegistration.dispose();
         if (this.retryTimer !== null) this.cancelTimeout(this.retryTimer);
@@ -78,6 +83,8 @@ export default class AttentionBridgeClient implements vscode.Disposable {
         ).then(() => undefined, () => undefined);
         const result = this.publicationQueue.then(unregister, unregister);
         this.publicationQueue = result.then(() => undefined, () => undefined);
+        this.shutdownFlight = this.publicationQueue;
+        return this.shutdownFlight;
     }
 
     async acknowledge(eventIds: string[]): Promise<void> {

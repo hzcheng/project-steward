@@ -1106,6 +1106,21 @@
     ]
   },
   {
+    "id": "ATTENTION-ACTIVE-UNREGISTER-ON-DEACTIVATE-001",
+    "domain": "attention",
+    "title": "Orderly extension deactivation awaits active attention owner unregister",
+    "priority": "P1",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js",
+      "tests/contract/aiSessions/runtimeComposition.test.js"
+    ],
+    "evidence": [
+      "src/dashboard.ts",
+      "src/aiSessions/attentionBridgeClient.ts"
+    ]
+  },
+  {
     "id": "ATTENTION-ATTENTION-PROJECT-001",
     "domain": "attention",
     "title": "Attention Project behavior",

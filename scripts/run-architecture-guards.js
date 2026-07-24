@@ -168,7 +168,7 @@ function walkOwnScope(root, visit) {
 
 const PROTOCOL_EXPECTATIONS = [
     { file: 'src/aiSessions/attentionBridgeClient.ts', site: 'attention client unregister writer',
-        scope: { kind: 'class-method-variable', className: 'AttentionBridgeClient', methodName: 'dispose', variableName: 'unregister' },
+        scope: { kind: 'class-method-variable', className: 'AttentionBridgeClient', methodName: 'shutdown', variableName: 'unregister' },
         nodes: [{ kind: ts.SyntaxKind.PropertyAssignment, text: 'protocolVersion: 1' }] },
     { file: 'src/aiSessions/attentionBridgeClient.ts', site: 'attention client handshake writer',
         scope: { kind: 'class-method', className: 'AttentionBridgeClient', methodName: 'handshake' },

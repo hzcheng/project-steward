@@ -593,3 +593,40 @@ test('ATTENTION-ATTENTION-BRIDGE-CLIENT-LIFECYCLE-001 ATTENTION-ATTENTION-BRIDGE
     client.dispose();
     await flushAsync();
 });
+
+test('ATTENTION-ACTIVE-UNREGISTER-ON-DEACTIVATE-001 exposes an awaitable active unregister', async () => {
+    const unregisterStarted = createDeferred();
+    const unregisterReleased = createDeferred();
+    const vscode = { commands: {
+        registerCommand: () => ({ dispose() {} }),
+        executeCommand: async command => {
+            if (command === '_projectStewardAttention.bridge.handshake') {
+                return {
+                    accepted: true, protocolVersion: 1, bridgeExtensionVersion: 'fixture',
+                    capabilities: { snapshots: true, acknowledgements: true, atomicReplace: true },
+                };
+            }
+            if (command === '_projectStewardAttention.bridge.unregister') {
+                unregisterStarted.resolve();
+                await unregisterReleased.promise;
+            }
+            return undefined;
+        },
+    } };
+    const Client = loadFreshWithFakeVscode(
+        '../../../out/aiSessions/attentionBridgeClient', vscode, __dirname
+    ).default;
+    const client = new Client(() => undefined, () => undefined, {
+        mainExtensionVersion: 'fixture',
+    });
+    await flushAsync();
+
+    assert.equal(typeof client.shutdown, 'function');
+    let settled = false;
+    const shutdown = client.shutdown().then(() => { settled = true; });
+    await unregisterStarted.promise;
+    assert.equal(settled, false);
+    unregisterReleased.resolve();
+    await shutdown;
+    assert.equal(settled, true);
+});
