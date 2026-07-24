@@ -62,12 +62,16 @@ function createHarness(options = {}) {
     const listeners = {};
     let focusedTodoId;
     let renderedCount = 0;
+    let layoutVisible = options.layoutVisible !== false;
+    let expandedTodoHeight = 180;
+    let resizeObserverCallback;
     const todoNodes = new Map(['todo-a', 'todo-b'].map(todoId => [todoId, {
         className: '',
         innerHTML: '',
         hidden: false,
         get offsetHeight() {
-            return this.className.includes('expanded') ? 180 : 58;
+            if (!layoutVisible) return 0;
+            return this.className.includes('expanded') ? expandedTodoHeight : 58;
         },
     }]));
     const summaryMeta = { textContent: '' };
@@ -172,6 +176,13 @@ function createHarness(options = {}) {
         Array,
         String,
         Math,
+        ResizeObserver: class {
+            constructor(callback) {
+                resizeObserverCallback = callback;
+            }
+            observe() {}
+            disconnect() {}
+        },
         getComputedStyle: () => ({
             getPropertyValue(name) {
                 return name === '--todo-collapsed-item-height' ? '58px' : '';
@@ -219,6 +230,15 @@ function createHarness(options = {}) {
         hiddenCompleted,
         emptyState,
         todoList,
+        setLayoutVisible: visible => {
+            layoutVisible = visible;
+        },
+        setExpandedTodoHeight: height => {
+            expandedTodoHeight = height;
+        },
+        notifyResize: () => {
+            if (resizeObserverCallback) resizeObserverCallback();
+        },
     };
 }
 
@@ -342,6 +362,41 @@ test('TODO-MAX-VISIBLE-PER-GROUP-001 expands the current group viewport without 
     assert.equal(
         harness.todoList.style.properties['--todo-list-expanded-extra-height'],
         '122px'
+    );
+});
+
+test('TODO-MAX-VISIBLE-PER-GROUP-001 remeasures an inline detail when its hidden tab becomes visible', () => {
+    const harness = createHarness({ targetedPatches: true, layoutVisible: false });
+
+    harness.controller.toggleDetail('todo-a');
+    assert.equal(
+        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
+        '0px'
+    );
+
+    harness.setLayoutVisible(true);
+    harness.notifyResize();
+
+    assert.equal(
+        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
+        '122px'
+    );
+});
+
+test('TODO-MAX-VISIBLE-PER-GROUP-001 remeasures wrapped inline detail after sidebar resize', () => {
+    const harness = createHarness({ targetedPatches: true });
+    harness.controller.toggleDetail('todo-a');
+    assert.equal(
+        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
+        '122px'
+    );
+
+    harness.setExpandedTodoHeight(220);
+    harness.notifyResize();
+
+    assert.equal(
+        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
+        '162px'
     );
 });
 

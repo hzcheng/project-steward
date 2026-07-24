@@ -21,6 +21,7 @@ function initTodos(options) {
     };
     var panelHost = null;
     var root = null;
+    var layoutObserver = null;
 
     function escapeHtml(value) {
         return String(value == null ? '' : value)
@@ -360,6 +361,20 @@ function initTodos(options) {
         });
     }
 
+    function observeTodoLayout() {
+        if (layoutObserver) {
+            layoutObserver.disconnect();
+            layoutObserver = null;
+        }
+        if (!root || typeof ResizeObserver !== 'function') {
+            return;
+        }
+        layoutObserver = new ResizeObserver(function () {
+            syncTodoListExpandedHeights();
+        });
+        layoutObserver.observe(root);
+    }
+
     function updateFeedback() {
         if (!root || !root.querySelector) {
             return;
@@ -585,6 +600,7 @@ function initTodos(options) {
         root.addEventListener('keydown', onKeyDown);
         root.addEventListener('input', onInput);
         render(true);
+        observeTodoLayout();
         return true;
     }
 
