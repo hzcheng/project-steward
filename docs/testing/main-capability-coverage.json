@@ -2,7 +2,7 @@
     "version": 1,
     "audit": {
         "base": "2b34c653119bdf480f2af0330ee3809b51441807",
-        "head": "dfb81f1fa68651407fe1f7d3958a67688478d301",
+        "head": "2fcfb60b427f037c0e6427c2dcfc93ce8f34f0bc",
         "ignoredDocumentationCommits": []
     },
     "capabilities": [
@@ -338,7 +338,8 @@
             "commits": [
                 "88d366ce6292a66ec39c5980d1875bbe5c16d6a1",
                 "1ae927aef9cde0e5a6c9e067dd9de3f8477aceea",
-                "a17c97bc68f44b67a827637788f908e11f5611ed"
+                "a17c97bc68f44b67a827637788f908e11f5611ed",
+                "2fcfb60b427f037c0e6427c2dcfc93ce8f34f0bc"
             ],
             "behaviors": [
                 "RELEASE-VSIX-PACKAGING-001",
