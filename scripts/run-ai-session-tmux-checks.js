@@ -4869,7 +4869,6 @@ async function runTmuxBackendChecks() {
         null,
         { ...validTargetWindow, metadata: { ...validTargetMetadata, workspaceScopeIdentity: 'other' } },
         { ...validTargetWindow, metadata: { ...validTargetMetadata, provider: 'kimi' } },
-        { ...validTargetWindow, metadata: { ...validTargetMetadata, sessionId: 'other' } },
         { ...validTargetWindow, windowName: 'other-window' },
         { ...validTargetWindow, metadata: { managed: '1', version: '2', layout: 'project' } },
     ]) {
@@ -4883,6 +4882,11 @@ async function runTmuxBackendChecks() {
         assert.strictEqual(projectHarness.terminals.length, terminalCount,
             'a changed target must not create an attach terminal');
     }
+    projectHarness.setTargetWindow({
+        ...validTargetWindow,
+        metadata: { ...validTargetMetadata, sessionId: 'rebound-session' },
+    });
+    await projectBackend.focus(firstProject);
 
     const readableFocusIdentity = {
         provider: 'codex', workspaceScopeIdentity: 'readable-focus',
