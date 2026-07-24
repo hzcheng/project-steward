@@ -19,8 +19,16 @@ const styles = fs.readFileSync(
     path.join(__dirname, '../../../media/styles.scss'),
     'utf8'
 );
+const dashboardSource = fs.readFileSync(
+    path.join(__dirname, '../../../src/dashboard.ts'),
+    'utf8'
+);
+const packageJson = fs.readFileSync(
+    path.join(__dirname, '../../../package.json'),
+    'utf8'
+);
 
-function renderPanel() {
+function renderPanel(options) {
     const data = {
         version: 1,
         groups: [{ id: 'group-a', title: 'Work', collapsed: false, order: 0 }],
@@ -49,17 +57,42 @@ function renderPanel() {
             },
         ],
     };
-    return getTodoPanelContent(buildTodoViewModel(data, { showCompleted: false }));
+    return getTodoPanelContent(buildTodoViewModel(data, { showCompleted: false }), options);
 }
 
-test('TODO-TODO-CONTINUOUS-LAYOUT-001 renders one stable continuous list without per-group height limits', () => {
+test('TODO-TODO-CONTINUOUS-LAYOUT-001 renders one stable page with inline list details', () => {
     const html = renderPanel();
 
     assert.match(html, /class="todo-panel"/);
     assert.match(html, /class="todo-list-surface"/);
     assert.doesNotMatch(html, /class="todo-detail-surface"/);
-    assert.doesNotMatch(html, /--todo-list-max-height/);
-    assert.doesNotMatch(html, /maxVisibleTodosPerGroup/);
+});
+
+test('TODO-MAX-VISIBLE-PER-GROUP-001 applies the configured per-group viewport and safe fallback', () => {
+    const configuredHtml = renderPanel({ maxVisibleTodosPerGroup: 2.9 });
+    const fallbackHtml = renderPanel({ maxVisibleTodosPerGroup: 0 });
+
+    assert.match(
+        configuredHtml,
+        /class="todo-panel" style="--todo-visible-items: 2; --todo-collapsed-item-height: 58px; --todo-list-max-height: 123px;"/
+    );
+    assert.match(
+        fallbackHtml,
+        /class="todo-panel" style="--todo-visible-items: 5; --todo-collapsed-item-height: 58px; --todo-list-max-height: 318px;"/
+    );
+    assert.match(
+        styles,
+        /\.todo-list\s*\{[\s\S]*max-height:\s*calc\(var\(--todo-list-max-height\) \+ var\(--todo-list-expanded-extra-height,\s*0px\)\)[\s\S]*overflow-y:\s*auto/
+    );
+    assert.match(dashboardSource, /function getMaxVisibleTodosPerGroup\(/);
+    assert.match(
+        dashboardSource,
+        /maxVisibleTodosPerGroup:\s*getMaxVisibleTodosPerGroup\(config\)/
+    );
+    assert.match(
+        packageJson,
+        /Maximum number of TODO cards visible in each group before the group list scrolls\./
+    );
 });
 
 test('TODO-PAGE-HIERARCHY-001 separates the page command bar from real group headers', () => {

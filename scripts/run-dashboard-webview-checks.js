@@ -2766,8 +2766,9 @@ function runTodoViewModelChecks() {
     );
     assert.strictEqual(countRenderedTodoCards(exactBoundaryHtml), configuredCardCount);
     assert.strictEqual(countRenderedTodoCards(overflowBoundaryHtml), configuredCardCount + 1);
-    assert.strictEqual(exactBoundaryHtml.includes('--todo-list-max-height'), false);
-    assert.strictEqual(overflowBoundaryHtml.includes('--todo-list-max-height'), false);
+    assert.ok(exactBoundaryHtml.includes('--todo-visible-items: 5'));
+    assert.ok(exactBoundaryHtml.includes('--todo-list-max-height: 318px'));
+    assert.ok(overflowBoundaryHtml.includes('--todo-list-max-height: 318px'));
 
     const emptyHtml = todoWebviewContent.getTodoPanelContent(todoViewModel.buildTodoViewModel({ version: 1, groups: [], todos: [] }));
     assert.ok(emptyHtml.includes('todo-empty-state steward-empty-state'));
@@ -4334,7 +4335,7 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("'request-projects-panel': async e =>"));
     assert.ok(extensionHostSource.includes("'request-todo-panel': async e =>"));
     assert.ok(packageJson.includes('"projectSteward.maxVisibleTodosPerGroup"'));
-    assert.ok(packageJson.includes('Deprecated. TODO groups now share the page scroll'));
+    assert.ok(packageJson.includes('Maximum number of TODO cards visible in each group before the group list scrolls.'));
     assert.ok(packageJson.includes('"projectSteward.maxVisibleProjectsPerGroup"'));
     assert.strictEqual(extensionHostSource.includes('function handleStewardMessage('), false);
     assert.ok(extensionHostSource.includes('getAiSessionProviderIds: () => getRegisteredAiSessionProviders().map(provider => provider.id)'));
@@ -4342,7 +4343,7 @@ function runSourceContractChecks(source) {
     assert.ok(extensionHostSource.includes("type: 'todo-panel-content'"));
     assert.ok(extensionHostSource.includes('getProjectsPanelContent(projectService.getGroups(), stewardInfos)'));
     assert.ok(extensionHostSource.includes('getTodoPanelContent(buildTodoViewModel(todoData'));
-    assert.strictEqual(extensionHostSource.includes('getMaxVisibleTodosPerGroup('), false);
+    assert.ok(extensionHostSource.includes('getMaxVisibleTodosPerGroup('));
     assert.ok(webviewContentSource.includes("'maxVisibleProjectsPerGroup',"));
     assert.ok(webviewContentSource.includes('DEFAULT_MAX_VISIBLE_PROJECTS_PER_GROUP = 5'));
     assert.ok(webviewContentSource.includes('--steward-max-visible-projects-per-group: ${maxVisibleProjectsPerGroup};'));

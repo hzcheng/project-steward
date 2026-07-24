@@ -66,6 +66,9 @@ function createHarness(options = {}) {
         className: '',
         innerHTML: '',
         hidden: false,
+        get offsetHeight() {
+            return this.className.includes('expanded') ? 180 : 58;
+        },
     }]));
     const summaryMeta = { textContent: '' };
     const groupCount = { textContent: '' };
@@ -73,12 +76,26 @@ function createHarness(options = {}) {
     const emptyState = { hidden: true };
     const todoList = {
         hidden: false,
+        style: {
+            properties: {},
+            setProperty(name, value) {
+                this.properties[name] = value;
+            },
+        },
         appendChild() {},
         insertBefore() {},
         insertAdjacentHTML() {},
         querySelector(selector) {
             const match = selector.match(/data-todo-id="([^"]+)"/);
             return match ? todoNodes.get(match[1]) || null : null;
+        },
+        querySelectorAll(selector) {
+            if (selector === '.todo-item.expanded') {
+                return Array.from(todoNodes.values()).filter(node =>
+                    node.className.includes('expanded')
+                );
+            }
+            return [];
         },
     };
     todoNodes.forEach(node => { node.parentElement = todoList; });
@@ -136,6 +153,9 @@ function createHarness(options = {}) {
                 },
             };
         },
+        querySelectorAll(selector) {
+            return options.targetedPatches && selector === '.todo-list' ? [todoList] : [];
+        },
     };
     const panel = {
         querySelector(selector) {
@@ -152,6 +172,11 @@ function createHarness(options = {}) {
         Array,
         String,
         Math,
+        getComputedStyle: () => ({
+            getPropertyValue(name) {
+                return name === '--todo-collapsed-item-height' ? '58px' : '';
+            },
+        }),
         setTimeout: callback => {
             context.pendingTimer = callback;
             return 1;
@@ -303,6 +328,21 @@ test('TODO-INCREMENTAL-ROOT-001 patches inline details and group disclosure with
     assert.equal(harness.getRenderedCount(), mountedRenders);
     assert.equal(harness.groupClasses.has('collapsed'), true);
     assert.equal(harness.groupButton.attributes['aria-expanded'], 'false');
+});
+
+test('TODO-MAX-VISIBLE-PER-GROUP-001 expands the current group viewport without replacing its root', () => {
+    const harness = createHarness({ targetedPatches: true });
+    const root = harness.root;
+    const mountedRenders = harness.getRenderedCount();
+
+    harness.controller.toggleDetail('todo-a');
+
+    assert.equal(harness.root, root);
+    assert.equal(harness.getRenderedCount(), mountedRenders);
+    assert.equal(
+        harness.todoList.style.properties['--todo-list-expanded-extra-height'],
+        '122px'
+    );
 });
 
 test('TODO-COMPLETION-INCREMENTAL-001 completes one card without rebuilding the list surface', () => {
