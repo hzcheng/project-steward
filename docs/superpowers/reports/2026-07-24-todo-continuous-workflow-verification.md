@@ -6,7 +6,7 @@ Status: **PASS**
 
 Branch: `feat/todo-ux-overhaul`
 
-Verified implementation commit: `94b571ade72bcf0d34a5f093f5f2e028d152122f`
+Verified implementation commit: `f1c28dff002053d9339606a73302b6ed1954944c`
 
 The branch and worktree started from `main` commit
 `6e614d84b1ca7717e9e28a813cd27dc7b1df7633`. The primary checkout was not
@@ -41,12 +41,15 @@ The TODO surface now provides:
 - activation- and document-scoped Webview asset URLs, so a window recovers its
   stylesheet and scripts after a same-version forced extension replacement
   instead of remaining in the unstyled startup state.
+- a borderless page-level TODO command bar that is visually distinct from
+  bordered, collapsible group headers, with identical 14-pixel SVG actions
+  before and after client-side redraws.
 
 ## Fresh verification gates
 
 | Command | Exit | Result |
 | --- | ---: | --- |
-| `npm run test:deterministic` | 0 | 497 tests passed: 167 unit, 250 contract, 80 integration |
+| `npm run test:deterministic` | 0 | 498 tests passed: 167 unit, 250 contract, 81 integration |
 | `npm run test:behavior-contracts` | 0 | 37 catalog and main-capability tests passed; catalog checks passed |
 | `npm run test:dashboard` | 0 | Dashboard Webview checks passed |
 | `npm run test:architecture-guards` | 0 | Architecture guards passed |
@@ -63,7 +66,7 @@ gate above still exited successfully.
 
 | Artifact | SHA-256 | Verification |
 | --- | --- | --- |
-| `artifacts/project-steward-2.1.5.vsix` | `f466febc990b119d3e133bca2af712737b17b691a2c937c3603936c4592ed615` | Archive integrity passed; contains the Webview asset-recovery fix |
+| `artifacts/project-steward-2.1.5.vsix` | `715ff3ef5931a90ea61e73605a64c2652b90965634fc49581c62aeb5221ed096` | Archive integrity passed; contains the Webview asset-recovery and TODO page-hierarchy fixes |
 | `artifacts/project-steward-attention-ui-bridge-0.1.4.vsix` | `4193c24166547f4a46354a51cd3e39057129de9d2ecd28af34291d205593d301` | Archive integrity and release packaging checks passed |
 
 ## VS Code Server installation
@@ -95,12 +98,12 @@ Extension 'project-steward-2.1.5.vsix' was successfully installed.
 
 Post-install listing reports `hzcheng.project-steward@2.1.5`. The installed
 `media/webviewTodoScripts.js` and the packaged worktree asset both have SHA-256
-`6661429c70e63f11606ba97258b29cc8aa5563150ed7772ea37d97f0047fea70`.
+`5c4a65e62aa5d4c3102c7bbea9b6cecb0d26afc3533f2e067c0193bb4f20d256`.
 The installed `media/styles.css` and the packaged worktree asset both have
 SHA-256
-`b83e912bbc9057a9348aafe323c529d16f4bec9d04a0c9980236c6a8f04c9fff`.
+`6af8f1b1ef866cfbd32ac4da794fd4b5f5aaabb75c577f8d44d7b6402650d3db`.
 The installed and packaged `dist/dashboard.js` both have SHA-256
-`2067079260b4b076b914b277e8dc98212280b627687d701cb1b1cc90ed2b2d15`.
+`af61696b7083c82ef6058614a2812da88f708e00ff8d967dcdd9e510860e62a6`.
 These matches confirm that the installed TODO interaction, presentation, and
 Webview asset-recovery code is the verified build. The already-installed UI
 bridge was not changed.
@@ -116,5 +119,6 @@ extension files.
 
 ## Decision
 
-The continuous TODO workflow is implemented, packaged, installed, and verified.
-The feature branch remains isolated and has not been merged into `main`.
+The continuous TODO workflow, Webview resource recovery, and TODO page
+hierarchy are implemented, packaged, installed, and verified. The feature
+branch remains isolated and has not been merged into `main`.
