@@ -57,6 +57,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
     private localItems: AttentionPayloadItem[] = [];
     private attentionKeysBySession = new Map<string, string[]>();
     private locallyAcknowledgedEventIds = new Set<string>();
+    private suppressedRuntimeCompletionKeys = new Set<string>();
 
     constructor(private readonly options: AiSessionAttentionControllerOptions<TRuntime>) {
         this.monitor = new AiSessionAttentionMonitor({ now: options.nowMs });
@@ -71,6 +72,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             this.localItems = [];
             this.attentionKeysBySession.clear();
             this.locallyAcknowledgedEventIds.clear();
+            this.suppressedRuntimeCompletionKeys.clear();
             const published = await this.options.publish([], true);
             this.options.scheduleRefresh('attention');
             return {
@@ -85,6 +87,11 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         const workspaceTarget = this.options.getWorkspaceTarget();
         const providers = this.options.getProviders();
         const ownedSessions = this.getOwnedSessions(workspaceTarget?.sessions || null, providers, runtimeOverrides);
+        for (const attentionKey of this.suppressedRuntimeCompletionKeys) {
+            if (ownedSessions.delete(attentionKey)) {
+                this.monitor.discard([attentionKey]);
+            }
+        }
         for (const [attentionKey, owned] of ownedSessions) {
             const keys = this.attentionKeysBySession.get(owned.baseSessionKey) || [];
             if (!keys.includes(attentionKey)) {
@@ -155,6 +162,28 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         this.monitor.acknowledge(uniqueEventIds);
         const result = this.buildLocalItems(this.options.getWorkspaceTarget(), this.options.getProviders());
         this.localItems = result.items;
+    }
+
+    suppressRuntimeCompletion(attentionKey: string): void {
+        if (!attentionKey) {
+            return;
+        }
+        this.suppressedRuntimeCompletionKeys.delete(attentionKey);
+        this.suppressedRuntimeCompletionKeys.add(attentionKey);
+        if (this.suppressedRuntimeCompletionKeys.size > MAX_ATTENTION_ITEMS) {
+            const oldestAttentionKey = this.suppressedRuntimeCompletionKeys.values().next().value;
+            if (oldestAttentionKey) {
+                this.suppressedRuntimeCompletionKeys.delete(oldestAttentionKey);
+            }
+        }
+        this.monitor.discard([attentionKey]);
+        this.pruneAttentionKeysBySession();
+    }
+
+    restoreRuntimeCompletion(attentionKey: string): void {
+        if (attentionKey) {
+            this.suppressedRuntimeCompletionKeys.delete(attentionKey);
+        }
     }
 
     setRemoteAggregate(aggregate: AttentionAggregate): boolean {

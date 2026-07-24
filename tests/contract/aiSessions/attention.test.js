@@ -457,6 +457,89 @@ test('ATTENTION-NEW-RUN-CLEARS-STALE-001 clears an older run event when the logi
     assert.deepEqual(refreshReasons, ['attention', 'attention']);
 });
 
+test('ATTENTION-EXPLICIT-SESSION-CLOSE-001 suppresses only the exact runtime completion created while a confirmed close settles', async () => {
+    const workspace = {
+        navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
+        kind: 'singleFolder', displayName: 'Fixture', navigationUri: 'file:///fixtures/project',
+        environment: 'local', roots: [{
+            id: 'root:fixture', name: 'Fixture', uri: 'file:///fixtures/project',
+            hostPath: '/fixtures/project', ordinal: 0,
+        }],
+    };
+    const workspaceSessions = {
+        sessionsByProvider: {
+            codex: [{ id: 'session', primaryRootId: 'root:fixture' }],
+            kimi: [],
+            claude: [],
+        },
+    };
+    const publications = [];
+    const controller = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getWorkspaceTarget: () => ({
+            cardId: 'workspace:fixture',
+            workspace,
+            sessions: workspaceSessions,
+        }),
+        getProviders: () => [{
+            id: 'codex',
+            service: { getLifecycleSignals: () => ({}) },
+        }],
+        getRuntimeById: () => null,
+        isRuntimeComplete: runtime => runtime.state === 'completed',
+        publish: async items => {
+            publications.push(items.map(item => ({ ...item })));
+            return true;
+        },
+        scheduleRefresh: () => undefined,
+        nowMs: () => 1000,
+    });
+    const closedRunKey = attentionProject.getAttentionRuntimeSessionKey({
+        workspaceScopeIdentity: 'a'.repeat(64),
+        provider: 'codex',
+        sessionId: 'session',
+        runStartedAtMs: 100,
+        backend: 'vscode',
+    });
+    const naturalRunKey = attentionProject.getAttentionRuntimeSessionKey({
+        workspaceScopeIdentity: 'a'.repeat(64),
+        provider: 'codex',
+        sessionId: 'session',
+        runStartedAtMs: 200,
+        backend: 'vscode',
+    });
+
+    controller.suppressRuntimeCompletion(closedRunKey);
+    await controller.evaluate([{
+        providerId: 'codex',
+        sessionId: 'session',
+        attentionKey: closedRunKey,
+        runtime: { state: 'completed', runStartedAtMs: 100 },
+    }]);
+
+    assert.deepEqual(publications[0], []);
+    assert.equal(controller.getLocalSnapshot()[closedRunKey], undefined);
+    assert.deepEqual(controller.getRecoverySessionEvents(), []);
+
+    await controller.evaluate([{
+        providerId: 'codex',
+        sessionId: 'session',
+        attentionKey: naturalRunKey,
+        runtime: { state: 'completed', runStartedAtMs: 200 },
+    }]);
+    assert.equal(publications[1].length, 1);
+    assert.equal(publications[1][0].sessionKey, naturalRunKey);
+
+    controller.restoreRuntimeCompletion(closedRunKey);
+    await controller.evaluate([{
+        providerId: 'codex',
+        sessionId: 'session',
+        attentionKey: closedRunKey,
+        runtime: { state: 'completed', runStartedAtMs: 100 },
+    }]);
+    assert.equal(publications[2].some(item => item.sessionKey === closedRunKey), true);
+});
+
 test('ATTENTION-AI-SESSION-ATTENTION-CONTROLLER-001 releases completed runtime ownership only after published attention evidence', async () => {
     const released = [];
     const candidates = [

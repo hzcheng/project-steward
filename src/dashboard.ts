@@ -738,6 +738,52 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         logRuntimeFailure: logAiSessionRuntimeFailure,
         getProviderLabel: getAiSessionProviderLabel,
         refresh: refreshAiSessionViewsIncrementally,
+        onRuntimeCloseStart: runtime => {
+            const sessionId = runtime.identity.sessionId;
+            if (!sessionId || runtime.backend !== 'vscode') {
+                return;
+            }
+            aiSessionAttentionController.suppressRuntimeCompletion(
+                getAttentionRuntimeSessionKey({
+                    workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+                    provider: runtime.identity.provider,
+                    sessionId,
+                    runStartedAtMs: runtime.runStartedAtMs,
+                    backend: runtime.backend,
+                })
+            );
+        },
+        onRuntimeCloseEnd: (runtime, succeeded) => {
+            const sessionId = runtime.identity.sessionId;
+            if (!sessionId) {
+                return;
+            }
+            const attentionKey = getAttentionRuntimeSessionKey({
+                workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+                provider: runtime.identity.provider,
+                sessionId,
+                runStartedAtMs: runtime.runStartedAtMs,
+                backend: runtime.backend,
+            });
+            if (!succeeded) {
+                if (runtime.backend === 'vscode') {
+                    aiSessionAttentionController.restoreRuntimeCompletion(attentionKey);
+                }
+                void runSafeAiSessionRuntimeLifecycleTask(
+                    'evaluate-attention-close-rollback',
+                    evaluateAiSessionAttention
+                );
+                return;
+            }
+            void runSafeAiSessionRuntimeLifecycleTask(
+                'acknowledge-explicit-session-close',
+                () => acknowledgeAiSessionAttention({
+                    provider: runtime.identity.provider,
+                    sessionId,
+                    workspaceScopeIdentity: runtime.identity.workspaceScopeIdentity,
+                })
+            );
+        },
         focusTerminalView: () =>
             vscode.commands.executeCommand('workbench.action.terminal.focus'),
     });

@@ -43,6 +43,8 @@ export interface AiSessionTerminalCommandControllerCommonOptions {
         error: unknown,
         backend: 'vscode' | 'tmux'
     ): void;
+    onRuntimeCloseStart?(runtime: AiSessionRuntimeSnapshot<unknown>): void;
+    onRuntimeCloseEnd?(runtime: AiSessionRuntimeSnapshot<unknown>, succeeded: boolean): void;
 }
 
 export interface AiSessionTerminalCommandRuntimeControllerOptions<
@@ -246,10 +248,12 @@ export class AiSessionTerminalCommandController<
             await this.handleChangedRuntime(request.projectId, options);
             return;
         }
+        this.options.onRuntimeCloseStart?.(cloneRuntime(currentRuntime));
         try {
             const detach = options.runtimeCoordinator.detach({ ...currentRuntime.identity });
             await detach;
         } catch (error) {
+            this.options.onRuntimeCloseEnd?.(cloneRuntime(currentRuntime), false);
             options.logRuntimeFailure?.('detach-runtime', error, runtime.backend);
             await options.showErrorMessage(runtime.backend === 'tmux'
                 ? 'Could not detach the AI session terminal.'
@@ -257,6 +261,7 @@ export class AiSessionTerminalCommandController<
             options.refresh();
             return;
         }
+        this.options.onRuntimeCloseEnd?.(cloneRuntime(currentRuntime), true);
         options.refresh();
     }
 

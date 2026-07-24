@@ -2684,6 +2684,23 @@
     ]
   },
   {
+    "id": "ATTENTION-EXPLICIT-SESSION-CLOSE-001",
+    "domain": "attention",
+    "title": "User-confirmed session close suppresses only that runtime's close-race attention",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/contract/aiSessions/attention.test.js",
+      "tests/contract/aiSessions/sessionControllers.test.js",
+      "tests/integration/dashboard/terminalCloseWiring.test.js"
+    ],
+    "evidence": [
+      "src/aiSessions/attentionController.ts",
+      "src/aiSessions/terminalCommandController.ts",
+      "src/dashboard.ts"
+    ]
+  },
+  {
     "id": "WEBVIEW-DASHBOARD-MESSAGE-ROUTER-001",
     "domain": "webview",
     "title": "Dashboard Message Router behavior",

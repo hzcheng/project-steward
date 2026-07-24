@@ -18,12 +18,15 @@ function createHarnessVscode(listeners, commands) {
     const uri = value => ({ scheme: 'file', fsPath: value, path: value, toString: () => value });
     return {
         ConfigurationTarget: { Global: 1, Workspace: 2 }, ExtensionMode: { Test: 3 }, ViewColumn: { One: 1 },
-        Uri: { file: uri, parse: uri },
+        Uri: { file: uri, parse: uri, joinPath: (base, ...parts) => uri(path.join(base.fsPath, ...parts)) },
         window: {
             terminals: [], activeTerminal: null, activeTextEditor: undefined, visibleTextEditors: [],
             createOutputChannel: () => ({ appendLine: () => undefined, dispose: () => undefined }),
             createTerminal: () => ({ name: 'fixture', show: () => undefined, dispose: () => undefined, sendText: () => undefined }),
-            registerWebviewViewProvider: () => disposable(),
+            registerWebviewViewProvider: (_id, provider) => {
+                listeners.viewProvider = provider;
+                return disposable();
+            },
             onDidChangeActiveTerminal: callback => { listeners.activeTerminal = callback; return disposable(); },
             onDidOpenTerminal: () => disposable(),
             onDidCloseTerminal: callback => { listeners.closeTerminal = callback; return disposable(); },
@@ -82,7 +85,8 @@ async function runTerminalCloseContract(transform = source => source) {
     const state = () => ({ get: (_key, fallback) => fallback, update: async () => undefined });
     const uri = value => ({ scheme: 'file', fsPath: value, path: value, toString: () => value });
     const context = {
-        globalStoragePath: storageRoot, globalStorageUri: uri(storageRoot), extensionUri: uri(root),
+        globalStoragePath: storageRoot, globalStorageUri: uri(storageRoot),
+        extensionPath: root, extensionUri: uri(root),
         subscriptions: [], globalState: state(), workspaceState: state(),
         extension: { packageJSON: { version: '2.1.3' } }, extensionMode: 3,
     };
@@ -91,11 +95,20 @@ async function runTerminalCloseContract(transform = source => source) {
         const { AiSessionRuntimeCoordinator } = require('../../../../out/aiSessions/runtimeCoordinator');
         const ActiveAiSessionTerminalHighlighter = require('../../../../out/aiSessions/activeTerminalHighlight').default;
         const { AiSessionAttentionController } = require('../../../../out/aiSessions/attentionController');
+        const { AiSessionTerminalCommandController } = require(
+            '../../../../out/aiSessions/terminalCommandController'
+        );
         const AttentionBridgeClient = require('../../../../out/aiSessions/attentionBridgeClient').default;
         patchMethod(AiSessionRuntimeCoordinator.prototype, 'getActive', function () { return activeFixtures; });
         patchMethod(AiSessionRuntimeCoordinator.prototype, 'getPending', function () { return []; });
         patchMethod(AiSessionRuntimeCoordinator.prototype, 'handleClosedTerminal', terminal => {
             calls.push(['runtime-close', terminal]);
+        });
+        patchMethod(AiSessionRuntimeCoordinator.prototype, 'getById', function () {
+            return activeFixtures.length === 1 ? activeFixtures[0] : null;
+        });
+        patchMethod(AiSessionRuntimeCoordinator.prototype, 'detach', async identity => {
+            calls.push(['runtime-detach', identity]);
         });
         patchMethod(ActiveAiSessionTerminalHighlighter.prototype, 'handleTerminalClosed', terminal => {
             calls.push(['highlight-close', terminal]);
@@ -106,6 +119,12 @@ async function runTerminalCloseContract(transform = source => source) {
         patchMethod(AiSessionAttentionController.prototype, 'acknowledge', eventIds => {
             calls.push(['local-acknowledge', eventIds]);
         });
+        patchMethod(AiSessionAttentionController.prototype, 'suppressRuntimeCompletion', attentionKey => {
+            calls.push(['suppress-runtime-completion', attentionKey]);
+        });
+        patchMethod(AiSessionAttentionController.prototype, 'restoreRuntimeCompletion', attentionKey => {
+            calls.push(['restore-runtime-completion', attentionKey]);
+        });
         patchMethod(AiSessionAttentionController.prototype, 'evaluate', async () => {
             calls.push(['attention-evaluate']);
             return { enabled: true, published: true, inScopeSessionKeys: [], eventIdsBySession: {}, overflowedSessionKeys: [] };
@@ -113,6 +132,14 @@ async function runTerminalCloseContract(transform = source => source) {
         patchMethod(AttentionBridgeClient.prototype, 'acknowledge', async eventIds => {
             calls.push(['bridge-acknowledge', eventIds]);
         });
+        if (mode === 'explicit-close' || mode === 'explicit-detach') {
+            patchMethod(AiSessionTerminalCommandController.prototype, 'closeTerminal', async function () {
+                const runtime = activeFixtures[0];
+                this.options.onRuntimeCloseStart?.(runtime);
+                calls.push(['runtime-detach', runtime.identity]);
+                this.options.onRuntimeCloseEnd?.(runtime, true);
+            });
+        }
 
         const dashboard = loadDashboard(transform);
         await dashboard.activate(context);
@@ -132,6 +159,46 @@ async function runTerminalCloseContract(transform = source => source) {
         assert.ok(calls.some(call => call[0] === 'highlight-close'));
         assert.equal(calls.some(call => call[0] === 'local-acknowledge' || call[0] === 'bridge-acknowledge'), false,
             'ATTENTION-TERMINAL-CLOSE-WIRING-001 closing a terminal must not acknowledge unread attention');
+        if (mode === 'explicit-close' || mode === 'explicit-detach') {
+            if (mode === 'explicit-detach') {
+                activeFixtures[0] = {
+                    ...activeFixtures[0],
+                    backend: 'tmux',
+                    tmux: { layout: 'project', sessionName: 'project', windowName: 'session' },
+                };
+            }
+            let onMessage;
+            const webview = {
+                options: {}, html: '', cspSource: 'fixture', asWebviewUri: value => value,
+                onDidReceiveMessage: callback => { onMessage = callback; return disposable(); },
+                postMessage: async () => true,
+            };
+            const view = { visible: false, webview, onDidChangeVisibility: () => disposable() };
+            await listeners.viewProvider.resolveWebviewView(view, {}, {});
+            assert.equal(typeof onMessage, 'function');
+            await onMessage({
+                type: mode === 'explicit-detach'
+                    ? 'detach-ai-session-terminal'
+                    : 'close-ai-session-terminal',
+                projectId: '__currentWorkspace',
+                provider: 'codex',
+                sessionId: 'session',
+            });
+            await new Promise(resolve => setImmediate(resolve));
+            const suppressionIndex = calls.findIndex(call => call[0] === 'suppress-runtime-completion');
+            const detachIndex = calls.findIndex(call => call[0] === 'runtime-detach');
+            const localAcknowledgeIndex = calls.findIndex(call => call[0] === 'local-acknowledge');
+            if (mode === 'explicit-close') {
+                assert.ok(suppressionIndex >= 0 && suppressionIndex < detachIndex,
+                    'ATTENTION-EXPLICIT-SESSION-CLOSE-001 must suppress the exact run before close');
+            } else {
+                assert.equal(suppressionIndex, -1,
+                    'ATTENTION-EXPLICIT-SESSION-CLOSE-001 detach must preserve future completion attention');
+            }
+            assert.ok(localAcknowledgeIndex > detachIndex,
+                'ATTENTION-EXPLICIT-SESSION-CLOSE-001 must acknowledge only after confirmed detach succeeds');
+            assert.equal(calls.some(call => call[0] === 'restore-runtime-completion'), false);
+        }
         return calls;
     } finally {
         for (const subscription of context.subscriptions.slice().reverse()) subscription.dispose?.();
