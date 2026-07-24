@@ -131,15 +131,28 @@ function initTodos(options) {
             + renderTodoBody(todo) + '</li>';
     }
 
-    function renderQuickAdd(group) {
-        var visible = state.composeGroupId === group.id;
-        return '<form class="todo-quick-add-form" data-todo-form="quick-add" data-group-id="'
-            + escapeHtml(group.id) + '"' + (visible ? '' : ' hidden') + '>'
-            + '<input type="text" name="title" placeholder="Add to ' + escapeHtml(group.title)
-            + '" aria-label="New todo in ' + escapeHtml(group.title) + '">'
+    function renderCompose(group) {
+        var groupId = group ? group.id : null;
+        var visible = state.composeGroupId === groupId;
+        var groupControl = group
+            ? '<input type="hidden" name="groupId" value="' + escapeHtml(group.id) + '">'
+                + '<span class="todo-compose-group-fixed steward-meta" title="' + escapeHtml(group.title)
+                + '" aria-label="Todo group: ' + escapeHtml(group.title) + '">' + escapeHtml(group.title) + '</span>'
+            : '<select name="groupId" aria-label="Todo group">' + renderGroupOptions('') + '</select>';
+        return '<form class="todo-add-form todo-compose-panel steward-card" data-todo-form="'
+            + (group ? 'quick-add' : 'add') + '"'
+            + (group ? ' data-group-id="' + escapeHtml(group.id) + '"' : '')
+            + (visible ? '' : ' hidden') + '>'
+            + '<div class="todo-compose-primary"><span class="todo-compose-icon">＋</span>'
+            + '<input class="todo-title-input" type="text" name="title" placeholder="'
+            + (group ? 'Add to ' + escapeHtml(group.title) : 'Add a todo') + '" aria-label="Todo title">'
+            + '</div><textarea class="todo-notes-input" name="notes" rows="2" placeholder="Notes" '
+            + 'aria-label="Todo notes"></textarea><div class="todo-form-row todo-compose-meta">'
+            + '<select name="priority" aria-label="Todo priority">' + renderPriorityOptions('medium') + '</select>'
+            + groupControl
             + '<button class="todo-primary-button steward-button steward-button-primary" type="submit">Add</button>'
-            + '<button class="todo-quiet-button" type="button" data-action="todo-cancel-quick-add">Cancel</button>'
-            + '</form>';
+            + '<button class="todo-secondary-button steward-button" type="button" data-action="'
+            + (group ? 'todo-cancel-quick-add' : 'todo-cancel-add') + '">Cancel</button></div></form>';
     }
 
     function renderTodoCommandIcon(kind) {
@@ -216,14 +229,15 @@ function initTodos(options) {
             + '<span class="todo-group-count">' + todoGroupMeta(group.id) + '</span></div>'
             + '<div class="todo-group-actions group-actions right">'
             + '<button class="todo-group-action" type="button" data-action="todo-quick-add" data-group-id="'
-            + escapeHtml(group.id) + '" title="Quick add todo" aria-label="Quick add todo">＋</button>'
+            + escapeHtml(group.id) + '" title="Add todo to group" aria-label="Add todo to '
+            + escapeHtml(group.title) + '">＋</button>'
             + '<button class="todo-group-action" type="button" data-action="todo-sort-priority" data-group-id="'
             + escapeHtml(group.id) + '" title="Sort by priority" aria-label="Sort by priority">⇅</button>'
             + '<button class="todo-group-action" type="button" data-action="todo-rename-group" data-group-id="'
             + escapeHtml(group.id) + '" title="Rename todo group" aria-label="Rename todo group">✎</button>'
             + '<button class="todo-group-action danger" type="button" data-action="todo-delete-group" data-group-id="'
             + escapeHtml(group.id) + '" title="Delete todo group" aria-label="Delete todo group">×</button>'
-            + '</div></header>' + renderQuickAdd(group)
+            + '</div></header>' + renderCompose(group)
             + (visibleTodos.length
                 ? '<ul class="todo-list">' + visibleTodos.map(renderTodo).join('') + '</ul>'
                 : '<p class="todo-group-empty">No visible todos</p>')
@@ -234,18 +248,7 @@ function initTodos(options) {
     }
 
     function renderGlobalCompose() {
-        var visible = state.composeGroupId === null;
-        return '<form class="todo-add-form todo-compose-panel steward-card" data-todo-form="add"'
-            + (visible ? '' : ' hidden') + '>'
-            + '<div class="todo-compose-primary"><span class="todo-compose-icon">＋</span>'
-            + '<input class="todo-title-input" type="text" name="title" placeholder="Add a todo" aria-label="Todo title">'
-            + '</div><textarea class="todo-notes-input" name="notes" rows="2" placeholder="Notes" '
-            + 'aria-label="Todo notes"></textarea><div class="todo-form-row todo-compose-meta">'
-            + '<select name="priority" aria-label="Todo priority">' + renderPriorityOptions('medium') + '</select>'
-            + '<select name="groupId" aria-label="Todo group">' + renderGroupOptions('') + '</select>'
-            + '<button class="todo-primary-button steward-button steward-button-primary" type="submit">Add</button>'
-            + '<button class="todo-secondary-button steward-button" type="button" '
-            + 'data-action="todo-cancel-add">Cancel</button></div></form>';
+        return renderCompose(null);
     }
 
     function renderListSurface() {
@@ -896,7 +899,7 @@ function initTodos(options) {
         return true;
     }
 
-    function submitQuickAdd(groupId, title) {
+    function submitQuickAdd(groupId, title, notes, priority) {
         var normalizedTitle = String(title || '').trim();
         if (!normalizedTitle) {
             announce('Enter a TODO title.');
@@ -905,8 +908,8 @@ function initTodos(options) {
         state.composeGroupId = undefined;
         dispatch('add', {
             title: normalizedTitle,
-            notes: '',
-            priority: 'medium',
+            notes: String(notes || ''),
+            priority: String(priority || '') || 'medium',
             groupId: groupId,
         });
         return true;
@@ -928,7 +931,12 @@ function initTodos(options) {
         }
         event.preventDefault();
         if (kind === 'quick-add') {
-            submitQuickAdd(form.getAttribute('data-group-id'), readValue(form, 'title'));
+            submitQuickAdd(
+                form.getAttribute('data-group-id'),
+                readValue(form, 'title'),
+                readValue(form, 'notes'),
+                readValue(form, 'priority')
+            );
         } else if (kind === 'add') {
             var title = readValue(form, 'title').trim();
             if (!title) {
@@ -1080,7 +1088,8 @@ function initTodos(options) {
         }
         var selector = groupId === null
             ? '.todo-add-form [name="title"]'
-            : '.todo-quick-add-form[data-group-id="' + String(groupId).replace(/"/g, '\\"') + '"] [name="title"]';
+            : '.todo-add-form[data-todo-form="quick-add"][data-group-id="'
+                + String(groupId).replace(/"/g, '\\"') + '"] [name="title"]';
         var input = root.querySelector(selector);
         if (input && input.focus) {
             input.focus();

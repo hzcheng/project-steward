@@ -65,18 +65,34 @@ function renderGroupOptions(groups: TodoGroupViewModel[], selectedGroupId = ''):
     )].join('');
 }
 
-function renderTodoAddForm(viewModel: TodoPanelViewModel): string {
-    return `<form class="todo-add-form todo-compose-panel steward-card" data-todo-form="add" hidden>
+function renderTodoAddForm(
+    groups: TodoGroupViewModel[],
+    lockedGroup?: TodoGroupViewModel,
+): string {
+    const formKind = lockedGroup ? 'quick-add' : 'add';
+    const groupAttribute = lockedGroup
+        ? ` data-group-id="${escapeHtml(lockedGroup.id)}"`
+        : '';
+    const titlePlaceholder = lockedGroup
+        ? `Add to ${escapeHtml(lockedGroup.title)}`
+        : 'Add a todo';
+    const groupControl = lockedGroup
+        ? `<input type="hidden" name="groupId" value="${escapeHtml(lockedGroup.id)}">
+            <span class="todo-compose-group-fixed steward-meta" title="${escapeHtml(lockedGroup.title)}" aria-label="Todo group: ${escapeHtml(lockedGroup.title)}">${escapeHtml(lockedGroup.title)}</span>`
+        : `<select name="groupId" aria-label="Todo group">${renderGroupOptions(groups)}</select>`;
+    const cancelAction = lockedGroup ? 'todo-cancel-quick-add' : 'todo-cancel-add';
+
+    return `<form class="todo-add-form todo-compose-panel steward-card" data-todo-form="${formKind}"${groupAttribute} hidden>
         <div class="todo-compose-primary">
             <span class="todo-compose-icon">${Icons.add}</span>
-            <input class="todo-title-input" type="text" name="title" placeholder="Add a todo" aria-label="Todo title">
+            <input class="todo-title-input" type="text" name="title" placeholder="${titlePlaceholder}" aria-label="Todo title">
         </div>
         <textarea class="todo-notes-input" name="notes" rows="2" placeholder="Notes" aria-label="Todo notes"></textarea>
         <div class="todo-form-row todo-compose-meta">
             <select name="priority" aria-label="Todo priority">${renderPriorityOptions('medium')}</select>
-            <select name="groupId" aria-label="Todo group">${renderGroupOptions(viewModel.groups)}</select>
-            <button class="todo-primary-button steward-button steward-button-primary" type="submit" data-action="todo-add"><span>${Icons.add}</span>Add</button>
-            <button class="todo-secondary-button steward-button" type="button" data-action="todo-cancel-add">Cancel</button>
+            ${groupControl}
+            <button class="todo-primary-button steward-button steward-button-primary" type="submit"><span>${Icons.add}</span>Add</button>
+            <button class="todo-secondary-button steward-button" type="button" data-action="${cancelAction}">Cancel</button>
         </div>
     </form>`;
 }
@@ -131,17 +147,13 @@ function renderTodoGroup(group: TodoGroupViewModel): string {
                 <span class="todo-group-count">${groupMeta}</span>
             </div>
             <div class="todo-group-actions group-actions right">
-                <button class="todo-group-action" type="button" data-action="todo-quick-add" data-group-id="${escapeHtml(group.id)}" title="Quick add todo" aria-label="Quick add todo">${Icons.add}</button>
+                <button class="todo-group-action" type="button" data-action="todo-quick-add" data-group-id="${escapeHtml(group.id)}" title="Add todo to group" aria-label="Add todo to ${escapeHtml(group.title)}">${Icons.add}</button>
                 <button class="todo-group-action" type="button" data-action="todo-sort-priority" data-group-id="${escapeHtml(group.id)}" title="Sort by priority" aria-label="Sort by priority">${Icons.manage}</button>
                 <button class="todo-group-action" type="button" data-action="todo-rename-group" data-group-id="${escapeHtml(group.id)}" title="Rename todo group" aria-label="Rename todo group">${Icons.edit}</button>
                 <button class="todo-group-action danger" type="button" data-action="todo-delete-group" data-group-id="${escapeHtml(group.id)}" title="Delete todo group" aria-label="Delete todo group">${Icons.remove}</button>
             </div>
         </header>
-        <form class="todo-quick-add-form" data-todo-form="quick-add" data-group-id="${escapeHtml(group.id)}" hidden>
-            <input type="text" name="title" placeholder="Add to ${escapeHtml(group.title)}" aria-label="New todo in ${escapeHtml(group.title)}">
-            <button class="todo-primary-button steward-button steward-button-primary" type="submit">Add</button>
-            <button class="todo-quiet-button" type="button" data-action="todo-cancel-quick-add">Cancel</button>
-        </form>
+        ${renderTodoAddForm([], group)}
         ${group.visibleTodos.length
             ? `<ul class="todo-list">${group.visibleTodos.map(renderTodoItem).join('')}</ul>`
             : `<p class="todo-group-empty">No visible todos</p>`}
@@ -161,7 +173,7 @@ export function getTodoPanelContent(
     return `<div class="todo-panel${viewModel.isEmpty ? ' todo-panel-empty' : ''}"${panelStyle}>
         <div class="todo-list-surface">
             ${renderTodoCommandBar(viewModel)}
-            ${renderTodoAddForm(viewModel)}
+            ${renderTodoAddForm(viewModel.groups)}
             ${listContent}
         </div>
         <div class="todo-undo-region" role="status" aria-live="polite" hidden></div>

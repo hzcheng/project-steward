@@ -68,6 +68,21 @@ test('TODO-TODO-CONTINUOUS-LAYOUT-001 renders one stable page with inline list d
     assert.doesNotMatch(html, /class="todo-detail-surface"/);
 });
 
+test('TODO-QUICK-CREATE-001 renders the full add form with a fixed group', () => {
+    const html = renderPanel();
+    const quickAddMarkup = html.match(
+        /<form class="[^"]*" data-todo-form="quick-add"[\s\S]*?<\/form>/
+    )[0];
+
+    assert.match(quickAddMarkup, /class="todo-add-form todo-compose-panel steward-card"/);
+    assert.match(quickAddMarkup, /name="title"/);
+    assert.match(quickAddMarkup, /name="notes"/);
+    assert.match(quickAddMarkup, /name="priority"/);
+    assert.match(quickAddMarkup, /name="groupId" value="group-a"/);
+    assert.match(quickAddMarkup, />Work<\/span>/);
+    assert.doesNotMatch(quickAddMarkup, /<select name="groupId"/);
+});
+
 test('TODO-MAX-VISIBLE-PER-GROUP-001 applies the configured per-group viewport and safe fallback', () => {
     const configuredHtml = renderPanel({ maxVisibleTodosPerGroup: 2.9 });
     const fallbackHtml = renderPanel({ maxVisibleTodosPerGroup: 0 });

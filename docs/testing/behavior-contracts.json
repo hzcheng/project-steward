@@ -2067,9 +2067,11 @@
     "priority": "P1",
     "status": "automated",
     "owners": [
+      "tests/integration/dashboard/todoContent.test.js",
       "tests/integration/dashboard/todoInteraction.test.js"
     ],
     "evidence": [
+      "src/todos/webviewContent.ts",
       "src/webview/webviewTodoScripts.js"
     ]
   },
@@ -2116,7 +2118,7 @@
   {
     "id": "TODO-QUICK-CREATE-001",
     "domain": "todo",
-    "title": "Todo Group Quick Create behavior",
+    "title": "Todo Group Full Create behavior",
     "priority": "P1",
     "status": "automated",
     "owners": [

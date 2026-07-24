@@ -68,9 +68,11 @@ function validateTodoLayout(source) {
     const inlineValue = extractBlock(source, '.todo-inline-value');
     assert.ok(inlineValue.includes('overflow-wrap: anywhere') && inlineValue.includes('white-space: pre-wrap'),
         'TODO-RESPONSIVE-LAYOUT-001 inline detail values must wrap without clipping');
+    const fixedGroup = extractBlock(source, '.todo-compose-group-fixed');
+    assert.ok(fixedGroup.includes('flex: 1 1 0') && fixedGroup.includes('min-height: 28px'),
+        'TODO-RESPONSIVE-LAYOUT-001 fixed group must align with the full composer controls');
     const narrow = extractBlock(source, '@media (max-width: 320px)');
-    for (const value of ['.todo-quick-add-form', 'grid-template-columns: minmax(0, 1fr) auto',
-        '.todo-compose-meta', 'flex-wrap: wrap']) {
+    for (const value of ['.todo-compose-meta', 'flex-wrap: wrap']) {
         assert.ok(narrow.includes(value), `TODO-RESPONSIVE-LAYOUT-001 narrow layout missing ${value}`);
     }
 }

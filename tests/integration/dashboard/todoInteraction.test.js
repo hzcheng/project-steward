@@ -595,15 +595,62 @@ test('TODO-STALE-RESULT-001 rejects stale revisions and posts Undo exactly once'
     assert.equal(harness.messages.filter(message => message.action === 'undo').length, 1);
 });
 
-test('TODO-QUICK-CREATE-001 refuses empty titles and dispatches trimmed group-local tasks', () => {
+test('TODO-QUICK-CREATE-001 renders and submits a complete fixed-group composer', () => {
     const harness = createHarness();
     assert.equal(harness.controller.submitQuickAdd('group-a', '   '), false);
     assert.equal(harness.messages.length, 0);
-    assert.equal(harness.controller.submitQuickAdd('group-a', '  Ship it  '), true);
+
+    const quickAddAction = {
+        getAttribute(name) {
+            if (name === 'data-action') return 'todo-quick-add';
+            if (name === 'data-group-id') return 'group-a';
+            return null;
+        },
+    };
+    harness.root.dispatch('click', {
+        target: {
+            closest(selector) {
+                return selector === '[data-action]' ? quickAddAction : null;
+            },
+        },
+    });
+    const quickAddMarkup = harness.root.innerHTML.match(
+        /<form class="[^"]*" data-todo-form="quick-add"[\s\S]*?<\/form>/
+    )[0];
+    assert.match(quickAddMarkup, /class="todo-add-form todo-compose-panel steward-card"/);
+    assert.match(quickAddMarkup, /name="title"/);
+    assert.match(quickAddMarkup, /name="notes"/);
+    assert.match(quickAddMarkup, /name="priority"/);
+    assert.match(quickAddMarkup, /name="groupId" value="group-a"/);
+    assert.match(quickAddMarkup, />Planning<\/span>/);
+    assert.doesNotMatch(quickAddMarkup, /<select name="groupId"/);
+
+    const fields = {
+        title: { value: '  Ship it  ' },
+        notes: { value: 'Include the release notes.' },
+        priority: { value: 'high' },
+        groupId: { value: 'group-a' },
+    };
+    const form = {
+        getAttribute(name) {
+            if (name === 'data-todo-form') return 'quick-add';
+            if (name === 'data-group-id') return 'group-a';
+            return null;
+        },
+        querySelector(selector) {
+            const match = selector.match(/\[name="([^"]+)"\]/);
+            return match ? fields[match[1]] || null : null;
+        },
+    };
+    harness.root.dispatch('submit', {
+        target: form,
+        preventDefault() {},
+    });
+
     assert.deepEqual(harness.messages[0].payload, {
         title: 'Ship it',
-        notes: '',
-        priority: 'medium',
+        notes: 'Include the release notes.',
+        priority: 'high',
         groupId: 'group-a',
     });
 });
