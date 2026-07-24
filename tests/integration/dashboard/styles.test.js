@@ -48,9 +48,11 @@ function validateTodoFocus(source) {
 
 function validateTodoLayout(source) {
     const list = extractBlock(source, '.todo-list');
-    assert.equal(list.includes('max-height'), false,
-        'TODO-RESPONSIVE-LAYOUT-001 list must use the page scroll');
-    assert.ok(list.includes('overflow: visible'), 'TODO-RESPONSIVE-LAYOUT-001 list must remain continuous');
+    assert.ok(list.includes(
+        'max-height: calc(var(--todo-list-max-height) + var(--todo-list-expanded-extra-height, 0px))'
+    ), 'TODO-RESPONSIVE-LAYOUT-001 list must honor the configured group viewport');
+    assert.ok(list.includes('overflow-y: auto'),
+        'TODO-RESPONSIVE-LAYOUT-001 overflowing groups must remain scrollable');
     const title = extractBlock(source, '.todo-title-text');
     for (const value of ['display: -webkit-box', '-webkit-line-clamp: 2', '-webkit-box-orient: vertical',
         'overflow-wrap: anywhere']) {
@@ -186,11 +188,15 @@ test('TODO-KEYBOARD-FOCUS-001 keeps the hidden completed toggle keyboard-visible
         /TODO-KEYBOARD-FOCUS-001/);
 });
 
-test('TODO-RESPONSIVE-LAYOUT-001 keeps TODO titles readable and groups in one page scroll', () => {
+test('TODO-RESPONSIVE-LAYOUT-001 keeps TODO titles readable in configured scrolling groups', () => {
     validateTodoLayout(styles);
     assert.throws(() => validateTodoLayout(styles.replace(
         'overflow-wrap: anywhere;\n    -webkit-box-orient: vertical;\n    -webkit-line-clamp: 2;',
         'overflow-wrap: anywhere;\n    -webkit-box-orient: vertical;\n    -webkit-line-clamp: 1;')),
+        /TODO-RESPONSIVE-LAYOUT-001/);
+    assert.throws(() => validateTodoLayout(styles.replace(
+        'overflow-y: auto;',
+        'overflow: visible;')),
         /TODO-RESPONSIVE-LAYOUT-001/);
 });
 
