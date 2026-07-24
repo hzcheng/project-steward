@@ -683,3 +683,49 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 hardening confirms the legacy baseline o
     await harness.service.reconcile();
     assert.deepEqual(harness.writes, []);
 });
+
+test('PROJECT-INCREMENTAL-REFRESH-001 consumes each exact local Settings write echo once', async () => {
+    const addedProject = {
+        id: 'project-echo',
+        name: 'Echo',
+        path: '/work/echo',
+        color: '#123456',
+    };
+    const harness = makeSyncPersistenceHarness();
+
+    await harness.service.saveGroups(makeCatalogGroups([addedProject]));
+
+    assert.equal(harness.service.consumeConfigurationWriteEcho({
+        syncData: true,
+        legacyGroups: true,
+    }), true);
+    assert.equal(harness.service.consumeConfigurationWriteEcho({
+        syncData: true,
+        legacyGroups: true,
+    }), false);
+});
+
+test('PROJECT-INCREMENTAL-REFRESH-001 treats a mismatched Settings value as external', async () => {
+    const harness = makeSyncPersistenceHarness();
+    await harness.service.saveGroups(makeCatalogGroups([{
+        id: 'project-local',
+        name: 'Local',
+        path: '/work/local',
+        color: '#654321',
+    }]));
+    harness.values.legacyGroups = makeCatalogGroups([{
+        id: 'project-external',
+        name: 'External',
+        path: '/work/external',
+        color: '#abcdef',
+    }]);
+
+    assert.equal(harness.service.consumeConfigurationWriteEcho({
+        syncData: false,
+        legacyGroups: true,
+    }), false);
+    assert.equal(harness.service.consumeConfigurationWriteEcho({
+        syncData: false,
+        legacyGroups: true,
+    }), false);
+});

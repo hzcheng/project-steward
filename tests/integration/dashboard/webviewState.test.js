@@ -531,6 +531,48 @@ test('WEBVIEW-DASHBOARD-UPDATE-MESSAGE-001 SESSION-CONTROLLER-001 preserves OPEN
     assert.equal(harness.storage.get('projectSteward.activeDashboardTab'), 'todo');
 });
 
+test('PROJECT-INCREMENTAL-REFRESH-001 replaces only Projects and rejects stale updates', () => {
+    const harness = createDashboardHarness({ initialTab: 'projects' });
+    assert.equal(harness.controller.applyProjectsPanelMessage({
+        type: 'projects-panel-content', version: 1, requestId: 1, html: '<p>initial</p>',
+    }), true);
+    harness.todoPanel.innerHTML = '<p>todo-state</p>';
+    harness.openPanel.innerHTML = '<p>open-state</p>';
+    harness.context.window.scrollY = 73;
+    const openIdentity = harness.openPanel;
+    const todoIdentity = harness.todoPanel;
+
+    assert.equal(harness.controller.applyProjectsPanelUpdatedMessage({
+        type: 'projects-panel-updated',
+        version: 1,
+        sequence: 2,
+        mode: 'replace',
+        html: '<p>updated projects</p>',
+        searchCatalog: makeCatalog('projects'),
+        groupOrders: [],
+        favoriteProjectIds: [],
+    }), true);
+    assert.equal(harness.projectsPanel.innerHTML, '<p>updated projects</p>');
+    assert.equal(harness.openPanel, openIdentity);
+    assert.equal(harness.todoPanel, todoIdentity);
+    assert.equal(harness.openPanel.innerHTML, '<p>open-state</p>');
+    assert.equal(harness.todoPanel.innerHTML, '<p>todo-state</p>');
+    assert.equal(harness.controller.getActiveTab(), 'projects');
+    assert.equal(harness.context.window.scrollY, 73);
+
+    assert.equal(harness.controller.applyProjectsPanelUpdatedMessage({
+        type: 'projects-panel-updated',
+        version: 1,
+        sequence: 1,
+        mode: 'replace',
+        html: '<p>stale</p>',
+        searchCatalog: makeCatalog('stale'),
+        groupOrders: [],
+        favoriteProjectIds: [],
+    }), false);
+    assert.equal(harness.projectsPanel.innerHTML, '<p>updated projects</p>');
+});
+
 test('SESSION-CONTROLLER-001 validates lazy responses and preserves independent background-tab scroll state', () => {
     const harness = createDashboardHarness();
     assert.equal(harness.context.normalizeDashboardTab('unknown'), 'open');

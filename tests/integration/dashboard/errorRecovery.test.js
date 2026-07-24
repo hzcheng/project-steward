@@ -340,6 +340,58 @@ test('PROJECT-CATALOG-SYNC-CONFLICT-001 reconciles synchronized project data bef
     ]);
 });
 
+test('PROJECT-INCREMENTAL-REFRESH-001 suppresses local catalog echoes and routes external catalog changes partially', async () => {
+    const events = [];
+    let localEcho = true;
+    const controller = new DashboardLifecycleController({
+        checkDataMigration: async () => events.push('migrate'),
+        reconcileProjectCatalog: async () => events.push('reconcile'),
+        consumeProjectCatalogWriteEcho: change => {
+            events.push(['consume', change]);
+            return localEcho;
+        },
+        applyProjectColorToCurrentWindow: () => events.push('color'),
+        refresh: reason => events.push(['refresh', reason]),
+        refreshProjects: reason => events.push(['projects', reason]),
+        publishOpenWorkspace: () => events.push('publish'),
+        evaluateAiSessionAttention: () => undefined,
+    });
+    const catalogChange = makeConfigurationEvent(
+        'projectSteward.projectSyncData',
+        'projectSteward.projectData'
+    );
+
+    await controller.handleConfigurationChanged(catalogChange);
+    assert.deepEqual(events, [[
+        'consume',
+        { syncData: true, legacyGroups: true },
+    ]]);
+
+    events.length = 0;
+    localEcho = false;
+    await controller.handleConfigurationChanged(catalogChange);
+    assert.deepEqual(events, [
+        ['consume', { syncData: true, legacyGroups: true }],
+        'reconcile',
+        ['projects', 'configuration-changed'],
+        'color',
+        'publish',
+    ]);
+
+    events.length = 0;
+    await controller.handleConfigurationChanged(makeConfigurationEvent(
+        'projectSteward.projectSyncData',
+        'projectSteward.customCss'
+    ));
+    assert.deepEqual(events, [
+        ['consume', { syncData: true, legacyGroups: false }],
+        'reconcile',
+        'color',
+        ['refresh', 'configuration-changed'],
+        'publish',
+    ]);
+});
+
 test('WEBVIEW-DASHBOARD-STARTUP-CONTROLLER-001 retries a failed migration without stale refresh or publication', async () => {
     const events = [];
     let attempt = 0;

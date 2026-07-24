@@ -90,6 +90,33 @@ test('OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001 posts each semantic revision on
     assert.notEqual(posted[0].semanticRevision, posted[1].semanticRevision);
 });
 
+test('PROJECT-INCREMENTAL-REFRESH-001 republishes OPEN search when only the saved project catalog changes', async () => {
+    const posted = [];
+    let groups = [];
+    const controller = new OpenWorkspaceDashboardController(createOptions({
+        getGroups: () => groups,
+        postMessage: message => {
+            posted.push(message);
+            return Promise.resolve(true);
+        },
+    }));
+
+    controller.postUpdated();
+    await flushAsync();
+    groups = [{
+        id: 'work',
+        groupName: 'Work',
+        collapsed: false,
+        projects: [{ id: 'saved', name: 'Saved', path: '/work/saved' }],
+    }];
+    controller.postUpdated();
+    await flushAsync();
+
+    assert.equal(posted.length, 2);
+    assert.notEqual(posted[0].semanticRevision, posted[1].semanticRevision);
+    assert.deepEqual(posted[1].searchCatalog.savedProjects.map(item => item.projectId), ['saved']);
+});
+
 test('OPEN-OPEN-PROJECT-DASHBOARD-CONTROLLER-001 retries undelivered and rejected incremental updates through full refresh', async () => {
     const posted = [];
     const refreshes = [];
