@@ -725,6 +725,19 @@
     ]
   },
   {
+    "id": "WEBVIEW-AI-SESSION-CARD-ACTIVATION-001",
+    "domain": "webview",
+    "title": "AI session cards activate from their body without stealing nested controls",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/integration/dashboard/sessionCardInteraction.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewProjectScripts.js"
+    ]
+  },
+  {
     "id": "ARCH-AI-SESSION-INCREMENTAL-REFRESH-SOURCE-001",
     "domain": "architecture",
     "title": "AI Session Incremental Refresh Source behavior",
