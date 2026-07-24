@@ -4708,7 +4708,8 @@ async function runTmuxBackendChecks() {
         'Project Steward: App [tmux]');
     assert.strictEqual(projectHarness.terminals[0].creationOptions.shellPath, '/opt/tmux');
     assert.deepStrictEqual(projectHarness.terminals[0].creationOptions.shellArgs,
-        ['attach-session', '-t', firstProject.tmux.sessionName]);
+        ['attach-session', '-d', '-t', firstProject.tmux.sessionName],
+        'managed viewers must attach exclusively across VS Code windows');
     assert.strictEqual(projectHarness.terminals[0].creationOptions.env.TMUX, null);
     assert.match(projectHarness.terminals[0].creationOptions.env.PROJECT_STEWARD_TMUX_ATTACH_ID,
         /^[0-9a-f]{32}$/,

@@ -39,6 +39,44 @@ for (const layout of ['project', 'session']) {
         assert.equal(harness.terminals[0].shown, true);
     });
 
+    test(`RUNTIME-TMUX-BACKEND-001 [tmux ${layout}] attaches exclusively across VS Code windows`, async () => {
+        const harness = createTmuxRuntimeHarness(layout);
+        await harness.backend.ensureResume(
+            fakeResumeRequest(`exclusive-attach-${layout}`),
+            layout
+        );
+        const attach = harness.operations.find(operation =>
+            operation.type === 'create-terminal'
+        );
+
+        assert.deepEqual(
+            attach.creationOptions.shellArgs.slice(0, 3),
+            ['attach-session', '-d', '-t'],
+            'a later managed viewer must detach an older viewer from the same tmux session'
+        );
+        assert.equal(
+            harness.backend.isAttachTerminalCandidate({
+                creationOptions: attach.creationOptions,
+            }),
+            true,
+            'exclusive attach terminals must remain recoverable after extension reload'
+        );
+        assert.equal(
+            harness.backend.isAttachTerminalCandidate({
+                creationOptions: {
+                    ...attach.creationOptions,
+                    shellArgs: [
+                        'attach-session',
+                        '-t',
+                        attach.creationOptions.shellArgs[3],
+                    ],
+                },
+            }),
+            true,
+            'terminals created before exclusive attach was introduced must remain recoverable'
+        );
+    });
+
     test(`RUNTIME-TMUX-BACKEND-001 RUNTIME-TMUX-THREAD-SWITCH-001 [tmux ${layout}] focuses a durably rebound Codex thread when tmux metadata still names the original thread`, async () => {
         const harness = createTmuxRuntimeHarness(layout);
         const originalRequest = fakeResumeRequest(`original-thread-${layout}`);

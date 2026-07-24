@@ -1372,7 +1372,7 @@ implements AiSessionExecutableRuntimeBackend<TTerminal> {
                 const terminal = this.dependencies.createTerminal({
                     name: terminalName,
                     shellPath: this.dependencies.client.getExecutablePath(),
-                    shellArgs: ['attach-session', '-t', runtime.tmux.sessionName],
+                    shellArgs: ['attach-session', '-d', '-t', runtime.tmux.sessionName],
                     env: { TMUX: null, [TMUX_ATTACH_RECOVERY_ENV]: recoveryToken },
                 });
                 entry = {
@@ -2035,13 +2035,21 @@ function getTmuxAttachSessionName(
 ): string | null {
     if (!creationOptions || !('shellPath' in creationOptions)
         || creationOptions.shellPath !== tmuxExecutablePath
-        || !Array.isArray(creationOptions.shellArgs)
-        || creationOptions.shellArgs.length !== 3
-        || creationOptions.shellArgs[0] !== 'attach-session'
-        || creationOptions.shellArgs[1] !== '-t') {
+        || !Array.isArray(creationOptions.shellArgs)) {
         return null;
     }
-    const sessionName = creationOptions.shellArgs[2];
+    const args = creationOptions.shellArgs;
+    const targetIndex = args.length === 3
+        && args[0] === 'attach-session'
+        && args[1] === '-t'
+        ? 2
+        : args.length === 4
+            && args[0] === 'attach-session'
+            && args[1] === '-d'
+            && args[2] === '-t'
+            ? 3
+            : -1;
+    const sessionName = targetIndex >= 0 ? args[targetIndex] : null;
     return typeof sessionName === 'string' && sessionName.length > 0
         ? sessionName
         : null;
