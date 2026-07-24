@@ -6,7 +6,7 @@ Status: **PASS**
 
 Branch: `feat/todo-ux-overhaul`
 
-Verified implementation commit: `f1c28dff002053d9339606a73302b6ed1954944c`
+Verified implementation commit: `c669eb1009cae4071d6a20446f6c4dc7861e5a33`
 
 The branch and worktree started from `main` commit
 `6e614d84b1ca7717e9e28a813cd27dc7b1df7633`. The primary checkout was not
@@ -36,6 +36,14 @@ The TODO surface now provides:
   detail;
 - targeted card and group DOM patches that avoid rebuilding the TODO surface
   for disclosure changes and matching command acknowledgements;
+- completion that hides or updates only the selected card in place, updates its
+  group and page counts, and does not reload the Webview document or TODO list;
+- one-time local Settings write echoes that suppress completion-triggered
+  lifecycle refreshes without hiding later Settings Sync or mixed
+  configuration changes;
+- authoritative completion acknowledgements that stay incremental when only
+  completion timestamps differ, while concurrent sibling or structural changes
+  safely fall back to a full authoritative render;
 - preservation of unsaved edit drafts across unrelated command results;
 - responsive composition controls down to a 240-pixel panel width.
 - activation- and document-scoped Webview asset URLs, so a window recovers its
@@ -49,7 +57,7 @@ The TODO surface now provides:
 
 | Command | Exit | Result |
 | --- | ---: | --- |
-| `npm run test:deterministic` | 0 | 498 tests passed: 167 unit, 250 contract, 81 integration |
+| `npm run test:deterministic` | 0 | 503 tests passed: 167 unit, 251 contract, 85 integration |
 | `npm run test:behavior-contracts` | 0 | 37 catalog and main-capability tests passed; catalog checks passed |
 | `npm run test:dashboard` | 0 | Dashboard Webview checks passed |
 | `npm run test:architecture-guards` | 0 | Architecture guards passed |
@@ -66,8 +74,8 @@ gate above still exited successfully.
 
 | Artifact | SHA-256 | Verification |
 | --- | --- | --- |
-| `artifacts/project-steward-2.1.5.vsix` | `715ff3ef5931a90ea61e73605a64c2652b90965634fc49581c62aeb5221ed096` | Archive integrity passed; contains the Webview asset-recovery and TODO page-hierarchy fixes |
-| `artifacts/project-steward-attention-ui-bridge-0.1.4.vsix` | `4193c24166547f4a46354a51cd3e39057129de9d2ecd28af34291d205593d301` | Archive integrity and release packaging checks passed |
+| `artifacts/project-steward-2.1.5.vsix` | `209fca7bb7d70766f9273f2eead6bccc18ccf65a9ae3870a8ef49dc7d040bce5` | Archive integrity passed; contains the incremental TODO completion, Webview asset-recovery, and TODO page-hierarchy fixes |
+| `artifacts/project-steward-attention-ui-bridge-0.1.4.vsix` | `0ecf88203691abe88dc860adad778e476962b7899c9db9c4dfd0d93dc8d5e18f` | Archive integrity and release packaging checks passed |
 
 ## VS Code Server installation
 
@@ -79,11 +87,8 @@ Environment:
 - Node.js `v26.5.0`
 - npm `12.0.1`
 
-The repository's `npm run install-local` packaged both artifacts successfully,
-then encountered an environment-only failure because the inherited
-`VSCODE_IPC_HOOK_CLI` referenced a stale socket. The active VS Code Server and
-its server-side extension CLI were verified independently. The workspace
-extension was then installed through that pinned CLI:
+The active VS Code Server and its server-side extension CLI were verified
+independently. The workspace extension was installed through that pinned CLI:
 
 ```text
 /home/hzcheng/.vscode-server/bin/4fe60c8b1cdac1c4c174f2fb180d0d758272d713/bin/code-server
@@ -98,12 +103,15 @@ Extension 'project-steward-2.1.5.vsix' was successfully installed.
 
 Post-install listing reports `hzcheng.project-steward@2.1.5`. The installed
 `media/webviewTodoScripts.js` and the packaged worktree asset both have SHA-256
-`5c4a65e62aa5d4c3102c7bbea9b6cecb0d26afc3533f2e067c0193bb4f20d256`.
+`c6420ddac9e6c6b240754c4f97c71892f72ac850bedac93cbddf558ff9bf0bb9`.
+The installed `media/webviewDnDScripts.js` and the packaged worktree asset both
+have SHA-256
+`4334c58898bd1c3657e84155ed5cae37cde364f15f1502c5b27f971e04006bd7`.
 The installed `media/styles.css` and the packaged worktree asset both have
 SHA-256
 `6af8f1b1ef866cfbd32ac4da794fd4b5f5aaabb75c577f8d44d7b6402650d3db`.
 The installed and packaged `dist/dashboard.js` both have SHA-256
-`af61696b7083c82ef6058614a2812da88f708e00ff8d967dcdd9e510860e62a6`.
+`6f3e2a90ebc5325db372b3d0e6d5fad0ea11ea3257dd7a240efb030266b5856a`.
 These matches confirm that the installed TODO interaction, presentation, and
 Webview asset-recovery code is the verified build. The already-installed UI
 bridge was not changed.
@@ -114,11 +122,17 @@ document, that a subsequent render receives a new revision, and that a fresh
 Extension Host activation receives a new namespace rather than repeating the
 previous URL.
 
+The P0 `TODO-COMPLETION-INCREMENTAL-001` contract verifies local Settings echo
+consumption, external A-to-B-to-A and unsupported-version recovery, mixed
+configuration events, single-card DOM completion, matching authoritative
+acknowledgements, concurrent sibling changes, and hidden-card DnD exclusion.
+
 The active Extension Host must reload before it can execute the newly installed
 extension files.
 
 ## Decision
 
-The continuous TODO workflow, Webview resource recovery, and TODO page
-hierarchy are implemented, packaged, installed, and verified. The feature
-branch remains isolated and has not been merged into `main`.
+The continuous TODO workflow, completion-without-reload behavior, Webview
+resource recovery, and TODO page hierarchy are implemented, packaged,
+installed, and verified. The feature branch remains isolated and has not been
+merged into `main`.
