@@ -103,7 +103,9 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
         const signalsByProvider = this.getSignalsByProvider(providers, ownedSessions);
         const runningAttentionKeysBySession = new Map<string, string>();
         const inputs = Array.from(ownedSessions, ([key, owned]) => {
+            const providerSignal = signalsByProvider[owned.providerId][owned.session.id];
             const signal = this.options.isRuntimeComplete(owned.runtime)
+                && providerSignal?.phase !== 'needsAttention'
                 ? {
                     token: `terminal-exit:${owned.runtime.runStartedAtMs}`,
                     phase: 'needsAttention' as const,
@@ -111,7 +113,7 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
                     executionState: 'stopped' as const,
                     occurredAtMs: owned.runtime.runStartedAtMs,
                 }
-                : signalsByProvider[owned.providerId][owned.session.id];
+                : providerSignal;
             if (signal?.phase === 'running') {
                 runningAttentionKeysBySession.set(owned.baseSessionKey, key);
             }

@@ -2687,6 +2687,7 @@ async function runWorkspaceLaunchPreflightControllerChecks() {
 async function runAiSessionAttentionControllerChecks() {
     let nowMs = 1000;
     let enabled = true;
+    let lifecycleSignalsEnabled = true;
     const workspaceTarget = {
         cardId: 'workspace-a',
         workspace: {
@@ -2713,15 +2714,17 @@ async function runAiSessionAttentionControllerChecks() {
         id: 'codex',
         projectSessionsKey: 'codexSessions',
         service: {
-            getLifecycleSignals: requests => Object.fromEntries(requests.map(request => [
-                request.sessionId,
-                {
-                    token: `codex:complete:${request.sessionId}`,
-                    phase: 'needsAttention',
-                    reason: 'completed',
-                    occurredAtMs: 1100,
-                },
-            ])),
+            getLifecycleSignals: requests => lifecycleSignalsEnabled
+                ? Object.fromEntries(requests.map(request => [
+                    request.sessionId,
+                    {
+                        token: `codex:complete:${request.sessionId}`,
+                        phase: 'needsAttention',
+                        reason: 'completed',
+                        occurredAtMs: 1100,
+                    },
+                ]))
+                : {},
         },
     }, {
         id: 'kimi',
@@ -2780,10 +2783,10 @@ async function runAiSessionAttentionControllerChecks() {
     assert.strictEqual(published[0].items[0].sessionKey, 'codex:session-a');
     assert.strictEqual(published[0].items[0].state, 'needsAttention');
     assert.strictEqual(published[0].items[0].reason, 'completed');
-    assert.strictEqual(published[0].items[0].observedAtMs, 900);
+    assert.strictEqual(published[0].items[0].observedAtMs, 1100);
     assert.ok(published[0].items[0].eventId.endsWith(
-        crypto.createHash('sha256').update('terminal-exit:900').digest('hex')
-    ), 'a current completion marker must preserve the existing terminal-exit attention signal');
+        crypto.createHash('sha256').update('codex:complete:session-a').digest('hex')
+    ), 'a provider completion must remain authoritative when its terminal exit arrives');
     assert.deepStrictEqual(controller.getRecoverySessionEvents(), [{
         sessionKey: 'codex:session-a',
         eventIds: [published[0].items[0].eventId],
@@ -2798,6 +2801,7 @@ async function runAiSessionAttentionControllerChecks() {
     assert.deepStrictEqual(controller.getAttentionEventIds(), [],
         'acknowledged owner events must not be restored into the webview attention event set');
 
+    lifecycleSignalsEnabled = false;
     const coexistPublished = [];
     const coexistController = new AiSessionAttentionController({
         isEnabled: () => true,

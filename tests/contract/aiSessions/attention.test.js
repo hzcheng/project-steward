@@ -383,6 +383,74 @@ for (const [providerId, sessionsKey] of [
     });
 }
 
+test('ATTENTION-SINGLE-RUN-COMPLETION-DEDUP-001 does not reopen an acknowledged provider completion when the terminal exit arrives', async () => {
+    const workspace = {
+        navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
+        kind: 'singleFolder', displayName: 'Fixture', navigationUri: 'file:///fixtures/project',
+        environment: 'local', roots: [{
+            id: 'root:fixture', name: 'Fixture', uri: 'file:///fixtures/project',
+            hostPath: '/fixtures/project', ordinal: 0,
+        }],
+    };
+    const workspaceSessions = {
+        sessionsByProvider: {
+            codex: [{ id: 'session', primaryRootId: 'root:fixture' }],
+            kimi: [],
+            claude: [],
+        },
+    };
+    const completionSignal = {
+        token: 'codex:task_complete:950:turn',
+        phase: 'needsAttention',
+        reason: 'completed',
+        executionState: 'stopped',
+        occurredAtMs: 950,
+    };
+    const runtime = { state: 'active', runStartedAtMs: 900 };
+    const publications = [];
+    const controller = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getWorkspaceTarget: () => ({
+            cardId: 'workspace:fixture',
+            workspace,
+            sessions: workspaceSessions,
+        }),
+        getProviders: () => [{
+            id: 'codex',
+            service: {
+                getLifecycleSignals: () => ({ session: completionSignal }),
+            },
+        }],
+        getRuntimeById: () => runtime,
+        isRuntimeComplete: value => value.state === 'completed',
+        publish: async items => {
+            publications.push(items.map(item => ({ ...item })));
+            return true;
+        },
+        scheduleRefresh: () => undefined,
+        nowMs: () => 1000,
+    });
+
+    await controller.evaluate();
+    const providerCompletionEventId = publications[0][0].eventId;
+    controller.acknowledge([providerCompletionEventId]);
+
+    runtime.state = 'completed';
+    const terminalEvaluation = await controller.evaluate();
+
+    assert.deepEqual(
+        terminalEvaluation.eventIdsBySession['codex:session'],
+        [providerCompletionEventId]
+    );
+    assert.equal(publications.at(-1)[0].eventId, providerCompletionEventId);
+    assert.equal(publications.at(-1)[0].state, 'acknowledged');
+    assert.equal(
+        controller.getLocalSnapshot()['codex:session'].event.eventId,
+        providerCompletionEventId
+    );
+    assert.equal(controller.getLocalSnapshot()['codex:session'].state, 'acknowledged');
+});
+
 test('ATTENTION-NEW-RUN-CLEARS-STALE-001 clears an older run event when the logical Session starts running again', async () => {
     const workspace = {
         navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
