@@ -2130,9 +2130,3 @@ function initProjects() {
 
     observeStickyGroupHeaderOffset();
 }
-
-if (typeof module !== 'undefined' && module.exports) {
-    module.exports = {
-        getAiSessionCardActivation: getAiSessionCardActivation,
-    };
-}

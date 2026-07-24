@@ -1,10 +1,29 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
-const {
-    getAiSessionCardActivation,
-} = require('../../../src/webview/webviewProjectScripts');
+const vm = require('node:vm');
+
+const projectWebviewSource = fs.readFileSync(
+    path.join(__dirname, '../../../src/webview/webviewProjectScripts.js'),
+    'utf8'
+);
+
+function loadCardActivation() {
+    const context = {};
+    vm.runInNewContext(projectWebviewSource, context, {
+        filename: 'webviewProjectScripts.js',
+    });
+    return context.getAiSessionCardActivation;
+}
+
+const getAiSessionCardActivation = loadCardActivation();
+
+function normalizeRealmValue(value) {
+    return JSON.parse(JSON.stringify(value));
+}
 
 function createRow(attributes) {
     const values = new Map(Object.entries(attributes));
@@ -55,7 +74,7 @@ test('WEBVIEW-AI-SESSION-CARD-ACTIVATION-001 maps card bodies and the primary ac
     });
 
     assert.deepEqual(
-        getAiSessionCardActivation(createTarget(active), 'project-a').message,
+        normalizeRealmValue(getAiSessionCardActivation(createTarget(active), 'project-a').message),
         {
             type: 'focus-ai-session-terminal',
             projectId: 'project-a',
@@ -64,7 +83,7 @@ test('WEBVIEW-AI-SESSION-CARD-ACTIVATION-001 maps card bodies and the primary ac
         }
     );
     assert.deepEqual(
-        getAiSessionCardActivation(createTarget(inactive), 'project-a').message,
+        normalizeRealmValue(getAiSessionCardActivation(createTarget(inactive), 'project-a').message),
         {
             type: 'resume-kimi-session',
             projectId: 'project-a',
@@ -72,7 +91,7 @@ test('WEBVIEW-AI-SESSION-CARD-ACTIVATION-001 maps card bodies and the primary ac
         }
     );
     assert.deepEqual(
-        getAiSessionCardActivation(createTarget(pending), 'project-a').message,
+        normalizeRealmValue(getAiSessionCardActivation(createTarget(pending), 'project-a').message),
         {
             type: 'focus-pending-ai-session',
             projectId: 'project-a',
@@ -81,7 +100,9 @@ test('WEBVIEW-AI-SESSION-CARD-ACTIVATION-001 maps card bodies and the primary ac
         }
     );
     assert.deepEqual(
-        getAiSessionCardActivation(createTarget(active, { primary: true }), 'project-a').message,
+        normalizeRealmValue(
+            getAiSessionCardActivation(createTarget(active, { primary: true }), 'project-a').message
+        ),
         {
             type: 'focus-ai-session-terminal',
             projectId: 'project-a',
