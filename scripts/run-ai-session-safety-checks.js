@@ -5141,10 +5141,10 @@ function runWebviewContentChecks() {
     const closeTerminalHandler = dashboard.slice(closeTerminalHandlerStart, closeTerminalHandlerEnd);
     assert.match(closeTerminalHandler, /hadRuntimeClient[\s\S]*?aiSessionRuntimeCoordinator\.handleClosedTerminal\(terminal\)[\s\S]*?closedSessions\.length \|\| hadRuntimeClient[\s\S]*?refreshAiSessionViewsIncrementally\(\)/);
     assert.ok(!dashboard.includes('acknowledge-closed-attention'));
-    assert.doesNotMatch(
+    assert.match(
         closeTerminalHandler,
-        /acknowledgeAiSessionAttention\(|aiSessionAttentionController\.acknowledge\(|aiSessionAttentionBridgeClient\.acknowledge\(/,
-        'terminal closure must not acknowledge user attention'
+        /const userClosedTerminal = exitStatus\?\.reason === USER_TERMINAL_EXIT_REASON;[\s\S]*?if \(userClosedTerminal\) \{[\s\S]*?suppressRuntimeCompletion\([\s\S]*?handleClosedTerminal\(terminal\)[\s\S]*?if \(userClosedTerminal\) \{[\s\S]*?'acknowledge-user-terminal-close'[\s\S]*?acknowledgeAiSessionAttention\(identity\)/,
+        'user terminal closure must suppress completion before release and acknowledge only inside its reason guard'
     );
     assert.ok(dashboard.includes('vscode.window.onDidChangeActiveTerminal'));
     assert.match(dashboard, /onDidChangeActiveTerminal\(\(\) => \{[\s\S]*?activeAiSessionTerminalHighlighter\.sync\(\);[\s\S]*?runSafeAiSessionRuntimeLifecycleTask\([\s\S]*?'evaluate-attention-active-terminal'[\s\S]*?\}\)/);
