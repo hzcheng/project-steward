@@ -101,12 +101,19 @@ export class AiSessionAttentionController<TRuntime extends AiSessionAttentionRun
             }
             return {
                 key,
+                eventKey: owned.baseSessionKey,
                 signal,
                 observedAt: signal?.occurredAtMs,
             };
         });
 
         const events = this.monitor.evaluate(inputs);
+        const acknowledgedReplayEventIds = events
+            .map(event => event.eventId)
+            .filter(eventId => this.locallyAcknowledgedEventIds.has(eventId));
+        if (acknowledgedReplayEventIds.length) {
+            this.monitor.acknowledge(acknowledgedReplayEventIds);
+        }
         let discardedStaleAttention = false;
         for (const [sessionKey, runningAttentionKey] of runningAttentionKeysBySession) {
             const staleAttentionKeys = (this.attentionKeysBySession.get(sessionKey) || [])

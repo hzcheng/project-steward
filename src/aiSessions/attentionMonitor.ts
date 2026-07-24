@@ -8,6 +8,7 @@ export type AiSessionAttentionState = 'pending' | 'running' | 'idle' | 'needsAtt
 
 export interface AiSessionAttentionInput {
     key: string;
+    eventKey?: string;
     signal?: AiSessionLifecycleSignal;
     observedAt?: number;
 }
@@ -78,7 +79,7 @@ export default class AiSessionAttentionMonitor {
             entry.generation += 1;
             entry.state = 'needsAttention';
             const event: AiSessionAttentionEvent = {
-                eventId: `${input.key}:${signal.reason}:${crypto.createHash('sha256').update(signal.token).digest('hex')}`,
+                eventId: `${input.eventKey || input.key}:${signal.reason}:${crypto.createHash('sha256').update(signal.token).digest('hex')}`,
                 key: input.key,
                 reason: signal.reason,
                 generation: entry.generation,

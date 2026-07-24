@@ -448,6 +448,87 @@ test('ATTENTION-SINGLE-RUN-COMPLETION-DEDUP-001 does not reopen an acknowledged 
     assert.equal(controller.getLocalSnapshot()['codex:session'].state, 'acknowledged');
 });
 
+test('ATTENTION-SINGLE-RUN-COMPLETION-DEDUP-001 keeps an acknowledged Kimi completion quiet when exit scopes the runtime key', async () => {
+    const workspace = {
+        navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
+        kind: 'singleFolder', displayName: 'Fixture', navigationUri: 'file:///fixtures/project',
+        environment: 'local', roots: [{
+            id: 'root:fixture', name: 'Fixture', uri: 'file:///fixtures/project',
+            hostPath: '/fixtures/project', ordinal: 0,
+        }],
+    };
+    const workspaceSessions = {
+        sessionsByProvider: {
+            codex: [],
+            kimi: [{ id: 'session', primaryRootId: 'root:fixture' }],
+            claude: [],
+        },
+    };
+    const completionSignal = {
+        token: 'kimi:TurnEnd:950:',
+        phase: 'needsAttention',
+        reason: 'completed',
+        executionState: 'stopped',
+        occurredAtMs: 950,
+    };
+    const runtime = { state: 'active', runStartedAtMs: 900 };
+    const publications = [];
+    const controller = new AiSessionAttentionController({
+        isEnabled: () => true,
+        getWorkspaceTarget: () => ({
+            cardId: 'workspace:fixture',
+            workspace,
+            sessions: workspaceSessions,
+        }),
+        getProviders: () => [{
+            id: 'kimi',
+            service: {
+                getLifecycleSignals: () => ({ session: completionSignal }),
+            },
+        }],
+        getRuntimeById: () => runtime,
+        publish: async items => {
+            publications.push(items.map(item => ({ ...item })));
+            return true;
+        },
+        scheduleRefresh: () => undefined,
+        nowMs: () => 1000,
+    });
+
+    await controller.evaluate();
+    const acknowledgedEventId = publications[0][0].eventId;
+    controller.acknowledge([acknowledgedEventId]);
+
+    const runtimeKey = attentionProject.getAttentionRuntimeSessionKey({
+        workspaceScopeIdentity: 'a'.repeat(64),
+        provider: 'kimi',
+        sessionId: 'session',
+        runStartedAtMs: 900,
+        backend: 'vscode',
+    });
+    const exitEvaluation = await controller.evaluate([{
+        providerId: 'kimi',
+        sessionId: 'session',
+        attentionKey: runtimeKey,
+        runtime: { state: 'completed', runStartedAtMs: 900 },
+    }]);
+
+    assert.deepEqual(
+        Array.from(new Set(exitEvaluation.eventIdsBySession[runtimeKey])),
+        [acknowledgedEventId],
+        'runtime settlement must preserve the provider event identity'
+    );
+    assert.ok(
+        publications.at(-1).every(item => item.state === 'acknowledged'),
+        'runtime settlement must not republish an acknowledged completion as unread'
+    );
+    assert.deepEqual(
+        controller.getEffectiveAggregate().sessions,
+        [],
+        'an acknowledged completion must remain absent from the visible red-dot aggregate'
+    );
+});
+
 test('ATTENTION-NEW-RUN-CLEARS-STALE-001 clears an older run event when the logical Session starts running again', async () => {
     const workspace = {
         navigationIdentity: 'navigation:fixture', scopeIdentity: 'scope:fixture',
