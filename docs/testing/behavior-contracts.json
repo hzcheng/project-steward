@@ -2005,6 +2005,21 @@
     ]
   },
   {
+    "id": "TODO-BROWSER-EXPANDED-LAYOUT-001",
+    "domain": "todo",
+    "title": "Expanded TODO cards own their complete Chromium layout height",
+    "priority": "P0",
+    "status": "automated",
+    "owners": [
+      "tests/browser/todoLayout.test.js"
+    ],
+    "evidence": [
+      "src/webview/webviewTodoScripts.js",
+      "src/todos/webviewContent.ts",
+      "media/styles.scss"
+    ]
+  },
+  {
     "id": "TODO-TODO-FOCUSED-DETAIL-001",
     "domain": "todo",
     "title": "Todo Inline Detail Entry behavior",
